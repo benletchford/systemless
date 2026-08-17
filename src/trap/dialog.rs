@@ -360,7 +360,11 @@ impl super::TrapDispatcher {
         purgeable: bool,
         load_if_missing: bool,
     ) -> Option<(u32, u32)> {
-        let (refnum, ptr) = self.find_resource_any(res_type, res_id)?;
+        let (refnum, ptr) = if load_if_missing {
+            self.find_or_load_resource_any(bus, res_type, res_id)?
+        } else {
+            self.find_resource_any(res_type, res_id)?
+        };
         let handle = if load_if_missing {
             let handle =
                 self.get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, refnum);
@@ -3448,7 +3452,7 @@ impl super::TrapDispatcher {
                     handle
                 }
                 32 => self
-                    .find_resource_any(*b"ICON", item.resource_id)
+                    .find_or_load_resource_any(bus, *b"ICON", item.resource_id)
                     .map(|(_, ptr)| {
                         self.get_or_create_resource_handle(bus, *b"ICON", item.resource_id, ptr)
                     })
@@ -3462,7 +3466,7 @@ impl super::TrapDispatcher {
                     }
                 }
                 7 => self
-                    .find_resource_any(*b"CNTL", item.resource_id)
+                    .find_or_load_resource_any(bus, *b"CNTL", item.resource_id)
                     .map(|(_, cntl_ptr)| {
                         let value = bus.read_word(cntl_ptr + 8) as i16;
                         let vis_word = bus.read_word(cntl_ptr + 10);
@@ -3500,7 +3504,7 @@ impl super::TrapDispatcher {
                     })
                     .unwrap_or(0),
                 64 => self
-                    .find_resource_any(*b"PICT", item.resource_id)
+                    .find_or_load_resource_any(bus, *b"PICT", item.resource_id)
                     .map(|(_, ptr)| {
                         self.get_or_create_resource_handle(bus, *b"PICT", item.resource_id, ptr)
                     })
@@ -4064,7 +4068,7 @@ impl super::TrapDispatcher {
         position: u16,
         default_item: i16,
     ) -> bool {
-        let Some((_, ditl_data)) = self.find_resource_any(*b"DITL", items_id) else {
+        let Some((_, ditl_data)) = self.find_or_load_resource_any(bus, *b"DITL", items_id) else {
             return false;
         };
         let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
@@ -5848,8 +5852,7 @@ impl super::TrapDispatcher {
         if let Some((red, green, blue)) = self.window_semantic_color(bus, dialog_ptr, 0) {
             let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
                 self.get_screen_params();
-            let pixel_index =
-                super::pict::closest_clut_index(red, green, blue, &self.device_clut);
+            let pixel_index = super::pict::closest_clut_index(red, green, blue, &self.device_clut);
             Self::fb_fill_rect_index(
                 bus,
                 screen_base,
@@ -6001,12 +6004,8 @@ impl super::TrapDispatcher {
         let content_color = self.window_semantic_color(bus, dialog_ptr, 0);
         if !game_managed {
             if let Some((red, green, blue)) = content_color {
-                let pixel_index = super::pict::closest_clut_index(
-                    red,
-                    green,
-                    blue,
-                    &self.device_clut,
-                );
+                let pixel_index =
+                    super::pict::closest_clut_index(red, green, blue, &self.device_clut);
                 Self::fb_fill_rect_index(
                     bus,
                     screen_base,
@@ -6279,16 +6278,18 @@ impl super::TrapDispatcher {
                 // Icon (32)
                 32 => {
                     if !skip_pictures && item.resource_id != 0 {
-                        let drew_cicn = self
-                            .find_resource_any(*b"cicn", item.resource_id)
-                            .is_some_and(|(_, icon_ptr)| {
-                                self.draw_cicn_icon(
-                                    bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
-                                )
-                            });
+                        let drew_cicn = if let Some((_, icon_ptr)) =
+                            self.find_or_load_resource_any(bus, *b"cicn", item.resource_id)
+                        {
+                            self.draw_cicn_icon(
+                                bus, abs_top, abs_left, abs_bottom, abs_right, icon_ptr,
+                            )
+                        } else {
+                            false
+                        };
                         if !drew_cicn {
                             if let Some((_, icon_ptr)) =
-                                self.find_resource_any(*b"ICON", item.resource_id)
+                                self.find_or_load_resource_any(bus, *b"ICON", item.resource_id)
                             {
                                 // ICON resource: 32x32 1-bit bitmap = 128 bytes
                                 // Inside Macintosh Volume I, I-205
@@ -6305,7 +6306,7 @@ impl super::TrapDispatcher {
                     // fully-outside clip happens above the match).
                     if !skip_pictures && item.resource_id != 0 {
                         if let Some((_, pic_ptr)) =
-                            self.find_resource_any(*b"PICT", item.resource_id)
+                            self.find_or_load_resource_any(bus, *b"PICT", item.resource_id)
                         {
                             // Draw PICT into the item's display rectangle
                             let device_ct_seed =
@@ -8073,16 +8074,7 @@ impl super::TrapDispatcher {
             }
         }
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, item.rect);
-        self.draw_button_with_enabled(
-            bus,
-            top,
-            left,
-            bottom,
-            right,
-            &item.text,
-            is_default,
-            true,
-        );
+        self.draw_button_with_enabled(bus, top, left, bottom, right, &item.text, is_default, true);
     }
 
     /// Draw a checkbox item.
@@ -10222,26 +10214,35 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_button_tracking(&mut self, bus: &mut MacMemoryBus) {
-        let Some((dialog_ptr, bounds, mouse_down, item_no, rect, title, is_default, highlighted, item_type)) =
-            self.dialog_tracking.as_ref().and_then(|tracking| {
-                tracking.active_button.as_ref().map(|button| {
-                    (
-                        tracking.dialog_ptr,
-                        tracking.bounds,
-                        button.mouse_down.clone(),
-                        button.item_no,
-                        button.rect,
-                        button.title.clone(),
-                        button.is_default,
-                        button.highlighted,
-                        tracking
-                            .items
-                            .get(button.item_no.saturating_sub(1) as usize)
-                            .map(|item| item.item_type)
-                            .unwrap_or(4),
-                    )
-                })
+        let Some((
+            dialog_ptr,
+            bounds,
+            mouse_down,
+            item_no,
+            rect,
+            title,
+            is_default,
+            highlighted,
+            item_type,
+        )) = self.dialog_tracking.as_ref().and_then(|tracking| {
+            tracking.active_button.as_ref().map(|button| {
+                (
+                    tracking.dialog_ptr,
+                    tracking.bounds,
+                    button.mouse_down.clone(),
+                    button.item_no,
+                    button.rect,
+                    button.title.clone(),
+                    button.is_default,
+                    button.highlighted,
+                    tracking
+                        .items
+                        .get(button.item_no.saturating_sub(1) as usize)
+                        .map(|item| item.item_type)
+                        .unwrap_or(4),
+                )
             })
+        })
         else {
             return;
         };
@@ -10462,7 +10463,7 @@ impl super::TrapDispatcher {
 
                 // Look up DLOG resource
                 let dlog_ptr = self
-                    .find_resource_any(*b"DLOG", dialog_id)
+                    .find_or_load_resource_any(bus, *b"DLOG", dialog_id)
                     .map(|(_, ptr)| ptr);
 
                 if let Some(dlog_data) = dlog_ptr {
@@ -10473,7 +10474,7 @@ impl super::TrapDispatcher {
 
                     // Look up DITL resource
                     let ditl_info = self
-                        .find_resource_any(*b"DITL", items_id)
+                        .find_or_load_resource_any(bus, *b"DITL", items_id)
                         .map(|(_, ptr)| ptr);
 
                     let Some(ditl_data) = ditl_info else {
@@ -10548,7 +10549,7 @@ impl super::TrapDispatcher {
                     }
 
                     let items_handle = if let Some((_, ditl_handle_ptr)) =
-                        self.find_resource_any(*b"DITL", items_id)
+                        self.find_or_load_resource_any(bus, *b"DITL", items_id)
                     {
                         let handle = bus.alloc(4);
                         bus.write_long(handle, ditl_handle_ptr);
@@ -10558,8 +10559,7 @@ impl super::TrapDispatcher {
                     };
                     // A matching DCTab is copied and associated before the
                     // dialog's initial visible shell is drawn.
-                    let dialog_color_table =
-                        self.copy_dialog_color_table_resource(bus, dialog_id);
+                    let dialog_color_table = self.copy_dialog_color_table_resource(bus, dialog_id);
                     // Honor the DLOG resource's visible flag per IM:I I-424.
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
@@ -10696,7 +10696,7 @@ impl super::TrapDispatcher {
                 // binary. Inside Macintosh Volume I, I-422 (ALRT
                 // template) and I-426 (DITL).
                 let alrt_ptr = self
-                    .find_resource_any(*b"ALRT", alert_id)
+                    .find_or_load_resource_any(bus, *b"ALRT", alert_id)
                     .map(|(_, ptr)| ptr);
                 let result: i16 = if let Some(alrt_data) = alrt_ptr {
                     let alrt_len = bus.get_alloc_size(alrt_data).unwrap_or(0);
@@ -10814,7 +10814,8 @@ impl super::TrapDispatcher {
                                 top, left, bottom, right
                             ));
                         } else {
-                            let ditl_match = self.find_resource_any(*b"DITL", items_id);
+                            let ditl_match =
+                                self.find_or_load_resource_any(bus, *b"DITL", items_id);
                             detail.push_str(&format!(
                                 " bounds=({},{},{},{}) itemsID={} ditl={}",
                                 top,
@@ -18130,7 +18131,11 @@ mod tests {
         let table_handle = bus.read_long(aux_ptr + TrapDispatcher::AUX_WIN_CTABLE_OFFSET);
         let table_ptr = bus.read_long(table_handle);
         assert_ne!(table_ptr, resource_ptr, "GetNewDialog must copy the DCTab");
-        assert_ne!(bus.read_long(table_ptr), 0, "the copied table gets a fresh seed");
+        assert_ne!(
+            bus.read_long(table_ptr),
+            0,
+            "the copied table gets a fresh seed"
+        );
         assert_eq!(bus.read_word(table_ptr + 6), 4);
         assert_eq!(
             (

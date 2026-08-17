@@ -98,6 +98,8 @@ pub const PPC_FRAG_HAD_UNRESOLVEDS: i16 = -2807;
 pub const PPC_FRAG_NO_MEM: i16 = -2809;
 pub const PPC_FRAG_NO_ADDR_SPACE: i16 = -2810;
 pub const PPC_FRAG_LIB_CONN_ERR: i16 = -2817;
+pub const PPC_FRAG_CONNECTION_ID_NOT_FOUND: i16 = -2801;
+pub const PPC_FRAG_SYMBOL_NOT_FOUND: i16 = -2802;
 pub const PPC_FRAG_CORRUPT_ERR: i16 = -2820;
 pub const PPC_FRAG_USER_INIT_PROC_ERR: i16 = -2821;
 pub const PPC_FRAG_ARCH_ERR: i16 = -2823;
@@ -130,6 +132,7 @@ const PPC_LINKAGE_SAVED_CR_OFFSET: u32 = 4;
 const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
 const PPC_MIXED_MODE_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 4;
+const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
 const PPC_MIXED_MODE_TRAP: u16 = 0xAAFE;
 const PPC_ROUTINE_DESCRIPTOR_VERSION: u8 = 7;
 const PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE: u32 = 12;
@@ -259,6 +262,9 @@ const PPC_MAIN_VIS_RGN_HANDLE: u32 = 0x02f0_0b00;
 const PPC_MAIN_VIS_RGN: u32 = 0x02f0_0c00;
 const PPC_MAIN_CLIP_RGN_HANDLE: u32 = 0x02f0_0d00;
 const PPC_MAIN_CLIP_RGN: u32 = 0x02f0_0e00;
+const PPC_PORT_LIST_HANDLE: u32 = 0x02f0_1300;
+const PPC_PORT_LIST: u32 = 0x02f0_1400;
+const PPC_PORT_LIST_ADDR: u32 = 0x0d66;
 const PPC_APPLICATION_ZONE: u32 = 0x02f0_2000;
 const PPC_SYSTEM_ZONE: u32 = 0x02f0_2100;
 const PPC_ZONE_STORAGE_SIZE: usize = 64;
@@ -824,6 +830,8 @@ pub enum PpcImportDispatcherTarget {
     KillPicture,
     Gestalt,
     GetSharedLibrary,
+    FindSymbol,
+    CloseConnection,
     GetMemFragment,
     InitCursor,
     HideCursor,
@@ -853,6 +861,7 @@ pub enum PpcImportDispatcherTarget {
     FixMul,
     FixDiv,
     Long2Fix,
+    Fix2Long,
     MoveTo,
     Move,
     LineTo,
@@ -963,6 +972,13 @@ pub enum PpcImportDispatcherTarget {
     SetItemMark,
     CheckItem,
     GetNewMBar,
+    LMGetMenuList,
+    LMGetPaintWhite,
+    LMSetPaintWhite,
+    LMSetResumeProc,
+    LMSetACount,
+    LMSetANumber,
+    LMSetDlgFont,
     ClearMenuBar,
     SetMenuBar,
     GetMenuHandle,
@@ -999,10 +1015,13 @@ pub enum PpcImportDispatcherTarget {
     GetPixBaseAddr,
     LockPixels,
     UnlockPixels,
+    GetPixelsState,
+    SetPixelsState,
     NoPurgePixels,
     SetRect,
     SectRect,
     UnionRect,
+    EqualRect,
     SetPt,
     AddPt,
     SubPt,
@@ -1060,6 +1079,7 @@ pub enum PpcImportDispatcherTarget {
     SndPlay,
     SndChannelStatus,
     SndGetInfo,
+    ParseSndHeader,
     SndDoCommand,
     SndDoImmediate,
     SndPlayDoubleBuffer,
@@ -1084,6 +1104,7 @@ pub enum PpcImportDispatcherTarget {
     GetEOF,
     PBGetEOF,
     SetEOF,
+    AllocContig,
     PBSetEOF,
     GetFPos,
     SetFPos,
@@ -1193,6 +1214,8 @@ pub enum PpcImportDispatcherTarget {
     StillDown,
     GetKeys,
     GetDateTime,
+    ReadDateTime,
+    ReadLocation,
     GetTime,
     Delay,
     GetDblTime,
@@ -1248,6 +1271,7 @@ pub enum PpcImportDispatcherTarget {
     P2CStr,
     C2PStr,
     GetCurrentProcess,
+    SameProcess,
     GetProcessInformation,
     ParamText,
     AlertReturnDefault,
@@ -1694,11 +1718,12 @@ impl PpcFetchObserver for PpcHleFetchObserver<'_> {
             .unwrap_or(true);
         if ppc_trace_regs_enabled() && in_range && r27_matches && r3_matches {
             eprintln!(
-                "[PPC-TRACE] fetch pc=${:08X} word=${:08X} lr=${:08X} sp=${:08X} r3=${:08X} r4=${:08X} r5=${:08X} r12=${:08X} r27=${:08X} r28=${:08X} r29=${:08X} r30=${:08X} r31=${:08X}",
+                "[PPC-TRACE] fetch pc=${:08X} word=${:08X} lr=${:08X} sp=${:08X} rtoc=${:08X} r3=${:08X} r4=${:08X} r5=${:08X} r12=${:08X} r27=${:08X} r28=${:08X} r29=${:08X} r30=${:08X} r31=${:08X}",
                 pc,
                 word,
                 cpu.lr,
                 cpu.gpr[1],
+                cpu.gpr[2],
                 cpu.gpr[3],
                 cpu.gpr[4],
                 cpu.gpr[5],
@@ -2634,6 +2659,12 @@ pub struct PpcCfmConnection {
     pub main_addr: u32,
     pub init_addr: u32,
     pub term_addr: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcCfmLibraryFragment {
+    pub name: String,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4303,6 +4334,7 @@ pub struct PpcLoadedApp {
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) apple_events: PpcAppleEventState,
     pub cfm_connections: Vec<PpcCfmConnection>,
+    pub cfm_library_fragments: Vec<PpcCfmLibraryFragment>,
     pub next_cfm_connection_id: u32,
     pub ptrs: Vec<PpcPtrRecord>,
     pub free_ptr_blocks: Vec<PpcPtrRecord>,
@@ -7384,6 +7416,7 @@ impl PpcLoadedApp {
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut apple_events = std::mem::take(&mut self.apple_events);
         let mut cfm_connections = std::mem::take(&mut self.cfm_connections);
+        let mut cfm_library_fragments = std::mem::take(&mut self.cfm_library_fragments);
         let mut next_cfm_connection_id = self.next_cfm_connection_id;
         let mut ptrs = std::mem::take(&mut self.ptrs);
         let mut free_ptr_blocks = std::mem::take(&mut self.free_ptr_blocks);
@@ -7849,6 +7882,7 @@ impl PpcLoadedApp {
                         &mut dialog_callback_stack,
                         &mut apple_events,
                         &mut cfm_connections,
+                        &mut cfm_library_fragments,
                         &mut next_cfm_connection_id,
                         &mut imports,
                         &mut import_count,
@@ -8126,6 +8160,7 @@ impl PpcLoadedApp {
         self.dialog_callback_stack = dialog_callback_stack;
         self.apple_events = apple_events;
         self.cfm_connections = cfm_connections;
+        self.cfm_library_fragments = cfm_library_fragments;
         self.next_cfm_connection_id = next_cfm_connection_id;
         self.imports = imports;
         self.import_count = import_count;
@@ -8252,6 +8287,10 @@ impl PpcLoadedApp {
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
         self.launched_app_path = Some(ppc_normalize_vfs_path(&path.into()));
         self.refresh_apple_event_launch_capability();
+    }
+
+    pub fn seed_cfm_library_fragments(&mut self, fragments: Vec<PpcCfmLibraryFragment>) {
+        self.cfm_library_fragments = fragments;
     }
 
     pub fn seed_vfs_files_and_resources(
@@ -12173,6 +12212,29 @@ pub fn load_pef_application_with_config(
             offset: loader.main_offset,
         },
     )?;
+    let special_tvector = |section_index: i32, offset: u32| -> Option<(u32, u32, u32)> {
+        if section_index < 0 {
+            return None;
+        }
+        let section_index = usize::try_from(section_index).ok()?;
+        let section = mapped_sections
+            .iter()
+            .find(|section| section.index == section_index)?;
+        let offset = usize::try_from(offset).ok()?;
+        let entry = read_u32(&section.bytes, offset)?;
+        let rtoc = read_u32(&section.bytes, offset.checked_add(4)?)?;
+        let descriptor = section.base.checked_add(offset as u32)?;
+        Some((descriptor, entry, rtoc))
+    };
+    let init_tvector = special_tvector(loader.init_section, loader.init_offset);
+    let term_tvector = special_tvector(loader.term_section, loader.term_offset);
+    if loader.init_section >= 0 && init_tvector.is_none() {
+        return Err(PpcLoadError::PefParse);
+    }
+    if loader.term_section >= 0 && term_tvector.is_none() {
+        return Err(PpcLoadError::PefParse);
+    }
+    let main_tvector = main_section.base + loader.main_offset;
 
     let stack_size = normalize_stack_size(config.stack_size)?;
     let stack_base =
@@ -12206,6 +12268,9 @@ pub fn load_pef_application_with_config(
     let mut memory = PpcSectionMem::new();
     memory.add_region(PPC_HALT_PC, vec![0u8; PPC_LOW_MEMORY_SIZE]);
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
+    // PaintOne normally starts with PaintWhite enabled. Carbon's generated
+    // low-memory accessors preserve this flag around window creation.
+    let _ = memory.write_u16_be(0x09dc, 1);
     // Inside Macintosh Volume V (1986), pp. V-592--V-593, documents the
     // MMU32Bit low-memory byte at $0CB2. Native PowerPC processes always use
     // 32-bit addressing.
@@ -12259,6 +12324,14 @@ pub fn load_pef_application_with_config(
     memory.add_region(PPC_MAIN_VIS_RGN, vec![0u8; 10]);
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; 10]);
+    memory.add_region(PPC_PORT_LIST_HANDLE, vec![0u8; 4]);
+    memory.add_region(PPC_PORT_LIST, vec![0u8; 2]);
+    // PortList is a QuickDraw-owned handle whose first word is the number of
+    // registered ports. Keep a valid empty list even though native clients
+    // normally reach it through the Window Manager instead of low memory.
+    let _ = memory.write_u32_be(PPC_PORT_LIST_ADDR, PPC_PORT_LIST_HANDLE);
+    let _ = memory.write_u32_be(PPC_PORT_LIST_HANDLE, PPC_PORT_LIST);
+    let _ = memory.write_u16_be(PPC_PORT_LIST, 0);
     memory.add_region(PPC_APPLICATION_ZONE, vec![0u8; PPC_ZONE_STORAGE_SIZE]);
     memory.add_region(PPC_SYSTEM_ZONE, vec![0u8; PPC_ZONE_STORAGE_SIZE]);
     ppc_seed_zone_header(
@@ -12298,6 +12371,50 @@ pub fn load_pef_application_with_config(
         vec![0u8; usize::try_from(stack_base - PPC_HEAP_BASE).unwrap()],
     );
 
+    let mut heap_cursor = PPC_HEAP_BASE;
+    let mut cfm_connections = Vec::new();
+    let mut next_cfm_connection_id = PPC_FIRST_CFM_CONNECTION_ID;
+    let startup = if let Some((init_addr, init_entry, init_rtoc)) = init_tvector {
+        // Inside Macintosh: PowerPC System Software (1994), pp. 3-15--3-18
+        // requires CFM to call a fragment initializer before its main routine.
+        // Keep a guest-visible copy of the PEF as an in-memory fragment locator
+        // so the initializer receives the documented InitBlock contract.
+        let fragment_size = u32::try_from(data.len()).map_err(|_| PpcLoadError::AddressOverflow)?;
+        let fragment_addr = ppc_heap_alloc(
+            &mut memory,
+            &mut heap_cursor,
+            stack_base,
+            fragment_size,
+            false,
+        );
+        if fragment_addr == 0 || memory.write_bytes(fragment_addr, data).is_none() {
+            return Err(PpcLoadError::AddressOverflow);
+        }
+        let init_block = ppc_create_mem_fragment_init_block(
+            &mut memory,
+            &mut heap_cursor,
+            stack_base,
+            PPC_FIRST_CFM_CONNECTION_ID,
+            fragment_addr,
+            fragment_size,
+            "application",
+        )
+        .map_err(|_| PpcLoadError::AddressOverflow)?;
+        let trampoline = ppc_application_init_return_trampoline(entry_pc, rtoc);
+        memory.add_readonly_region(PPC_APPLICATION_INIT_RETURN_PC, trampoline);
+        cfm_connections.push(PpcCfmConnection {
+            id: PPC_FIRST_CFM_CONNECTION_ID,
+            library_name: "application".to_string(),
+            main_addr: main_tvector,
+            init_addr,
+            term_addr: term_tvector.map_or(0, |(addr, _, _)| addr),
+        });
+        next_cfm_connection_id += 1;
+        Some((init_entry, init_rtoc, init_block))
+    } else {
+        None
+    };
+
     let stack_pointer = PPC_STACK_TOP - PPC_INITIAL_STACK_FRAME_SIZE;
     let mut stack = vec![0u8; stack_size as usize];
     let sp_offset = usize::try_from(stack_pointer - stack_base).unwrap();
@@ -12305,10 +12422,11 @@ pub fn load_pef_application_with_config(
     memory.add_region(stack_base, stack);
     let mut cpu = PpcCpu::new();
     cpu.alignment_policy = PpcAlignmentPolicy::EmulateData;
-    cpu.pc = entry_pc;
+    cpu.pc = startup.map_or(entry_pc, |(entry, _, _)| entry);
     cpu.gpr[1] = stack_pointer;
-    cpu.gpr[2] = rtoc;
-    cpu.lr = PPC_HALT_PC;
+    cpu.gpr[2] = startup.map_or(rtoc, |(_, init_rtoc, _)| init_rtoc);
+    cpu.gpr[3] = startup.map_or(0, |(_, _, init_block)| init_block);
+    cpu.lr = startup.map_or(PPC_HALT_PC, |_| PPC_APPLICATION_INIT_RETURN_PC);
 
     Ok(PpcLoadedApp {
         cpu,
@@ -12319,7 +12437,7 @@ pub fn load_pef_application_with_config(
         stack_size,
         stack_pointer,
         heap_base: PPC_HEAP_BASE,
-        heap_cursor: PPC_HEAP_BASE,
+        heap_cursor,
         heap_limit: stack_base,
         last_mem_error: 0,
         heap_maximized: false,
@@ -12333,8 +12451,9 @@ pub fn load_pef_application_with_config(
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         apple_events: PpcAppleEventState::default(),
-        cfm_connections: Vec::new(),
-        next_cfm_connection_id: PPC_FIRST_CFM_CONNECTION_ID,
+        cfm_connections,
+        cfm_library_fragments: Vec::new(),
+        next_cfm_connection_id,
         ptrs: Vec::new(),
         free_ptr_blocks: Vec::new(),
         handles: Vec::new(),
@@ -13424,7 +13543,22 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DrawPicture") => PpcImportDispatcherTarget::DrawPicture,
         ("InterfaceLib", "KillPicture") => PpcImportDispatcherTarget::KillPicture,
         ("InterfaceLib", "Gestalt") => PpcImportDispatcherTarget::Gestalt,
-        ("InterfaceLib", "GetSharedLibrary") => PpcImportDispatcherTarget::GetSharedLibrary,
+        // Universal Interfaces exposes Code Fragment Manager entry points
+        // through several compatibility libraries across classic and Carbon
+        // runtimes. Treat the library name as an export namespace alias; the
+        // calling convention and API contract are identical.
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "GetSharedLibrary",
+        ) => PpcImportDispatcherTarget::GetSharedLibrary,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "FindSymbol",
+        ) => PpcImportDispatcherTarget::FindSymbol,
+        (
+            "InterfaceLib" | "CodeFragmentMgr" | "CarbonCore.vlib" | "CFMPriv_CarbonCore",
+            "CloseConnection",
+        ) => PpcImportDispatcherTarget::CloseConnection,
         ("InterfaceLib", "GetMemFragment") => PpcImportDispatcherTarget::GetMemFragment,
         ("InterfaceLib", "InitCursor") => PpcImportDispatcherTarget::InitCursor,
         ("InterfaceLib", "HideCursor") => PpcImportDispatcherTarget::HideCursor,
@@ -13454,6 +13588,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FixMul") => PpcImportDispatcherTarget::FixMul,
         ("InterfaceLib", "FixDiv") => PpcImportDispatcherTarget::FixDiv,
         ("InterfaceLib", "Long2Fix") => PpcImportDispatcherTarget::Long2Fix,
+        ("InterfaceLib", "Fix2Long") => PpcImportDispatcherTarget::Fix2Long,
         ("InterfaceLib", "NewMenu") => PpcImportDispatcherTarget::NewMenu,
         ("InterfaceLib", "DisposeMenu") => PpcImportDispatcherTarget::DisposeMenu,
         ("InterfaceLib", "GetMenu") => PpcImportDispatcherTarget::GetMenu,
@@ -13480,6 +13615,14 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetItemMark") => PpcImportDispatcherTarget::SetItemMark,
         ("InterfaceLib", "CheckItem") => PpcImportDispatcherTarget::CheckItem,
         ("InterfaceLib", "GetNewMBar") => PpcImportDispatcherTarget::GetNewMBar,
+        ("InterfaceLib", "LMGetMenuList") => PpcImportDispatcherTarget::LMGetMenuList,
+        ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
+        ("InterfaceLib", "LMSetPaintWhite") => PpcImportDispatcherTarget::LMSetPaintWhite,
+        ("InterfaceLib", "LMSetResumeProc") => PpcImportDispatcherTarget::LMSetResumeProc,
+        ("InterfaceLib", "LMSetACount") => PpcImportDispatcherTarget::LMSetACount,
+        ("InterfaceLib", "LMSetANumber") => PpcImportDispatcherTarget::LMSetANumber,
+        ("InterfaceLib", "LMSetDlgFont") => PpcImportDispatcherTarget::LMSetDlgFont,
+        ("InterfaceLib", "ErrorSound") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib", "ClearMenuBar") => PpcImportDispatcherTarget::ClearMenuBar,
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
@@ -13672,10 +13815,13 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetPixBaseAddr") => PpcImportDispatcherTarget::GetPixBaseAddr,
         ("InterfaceLib", "LockPixels") => PpcImportDispatcherTarget::LockPixels,
         ("InterfaceLib", "UnlockPixels") => PpcImportDispatcherTarget::UnlockPixels,
+        ("InterfaceLib", "GetPixelsState") => PpcImportDispatcherTarget::GetPixelsState,
+        ("InterfaceLib", "SetPixelsState") => PpcImportDispatcherTarget::SetPixelsState,
         ("InterfaceLib", "NoPurgePixels") => PpcImportDispatcherTarget::NoPurgePixels,
         ("InterfaceLib", "SetRect") => PpcImportDispatcherTarget::SetRect,
         ("InterfaceLib", "SectRect") => PpcImportDispatcherTarget::SectRect,
         ("InterfaceLib", "UnionRect") => PpcImportDispatcherTarget::UnionRect,
+        ("InterfaceLib", "EqualRect") => PpcImportDispatcherTarget::EqualRect,
         ("InterfaceLib", "SetPt") => PpcImportDispatcherTarget::SetPt,
         ("InterfaceLib", "PtInRect") => PpcImportDispatcherTarget::PtInRect,
         ("InterfaceLib", "SetOrigin") => PpcImportDispatcherTarget::SetOrigin,
@@ -13770,6 +13916,9 @@ fn dispatcher_target_for_import(
         | ("InterfaceLib", "PBGetEOFSync")
         | ("InterfaceLib", "PBGetEOFAsync") => PpcImportDispatcherTarget::PBGetEOF,
         ("InterfaceLib", "SetEOF") => PpcImportDispatcherTarget::SetEOF,
+        ("InterfaceLib", "AllocContig") | ("InterfaceLib", "Allocate") => {
+            PpcImportDispatcherTarget::AllocContig
+        }
         ("InterfaceLib", "PBSetEOF")
         | ("InterfaceLib", "PBSetEOFSync")
         | ("InterfaceLib", "PBSetEOFAsync") => PpcImportDispatcherTarget::PBSetEOF,
@@ -13917,6 +14066,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "StillDown") => PpcImportDispatcherTarget::StillDown,
         ("InterfaceLib", "GetKeys") => PpcImportDispatcherTarget::GetKeys,
         ("InterfaceLib", "GetDateTime") => PpcImportDispatcherTarget::GetDateTime,
+        ("InterfaceLib", "ReadDateTime") => PpcImportDispatcherTarget::ReadDateTime,
+        ("InterfaceLib", "ReadLocation") => PpcImportDispatcherTarget::ReadLocation,
         ("InterfaceLib", "GetTime") => PpcImportDispatcherTarget::GetTime,
         ("InterfaceLib", "Delay") => PpcImportDispatcherTarget::Delay,
         ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
@@ -13956,7 +14107,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "c2pstr") | ("InterfaceLib", "C2PStr") => {
             PpcImportDispatcherTarget::C2PStr
         }
-        ("InterfaceLib", "GetCurrentProcess") => PpcImportDispatcherTarget::GetCurrentProcess,
+        ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
+            PpcImportDispatcherTarget::GetCurrentProcess
+        }
+        ("InterfaceLib", "SameProcess") => PpcImportDispatcherTarget::SameProcess,
         ("InterfaceLib", "GetProcessInformation") => {
             PpcImportDispatcherTarget::GetProcessInformation
         }
@@ -13984,6 +14138,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SndPlay") => PpcImportDispatcherTarget::SndPlay,
         ("InterfaceLib", "SndChannelStatus") => PpcImportDispatcherTarget::SndChannelStatus,
         ("SoundLib" | "InterfaceLib", "SndGetInfo") => PpcImportDispatcherTarget::SndGetInfo,
+        ("SoundLib", "ParseSndHeader") => PpcImportDispatcherTarget::ParseSndHeader,
         ("InterfaceLib", "SndDoImmediate") => PpcImportDispatcherTarget::SndDoImmediate,
         ("InterfaceLib", "SndDoCommand") => PpcImportDispatcherTarget::SndDoCommand,
         ("InterfaceLib", "SndPlayDoubleBuffer") => PpcImportDispatcherTarget::SndPlayDoubleBuffer,
@@ -14055,9 +14210,9 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::GetToolTrapAddress
         }
         ("InterfaceLib", "GetOSTrapAddress") => PpcImportDispatcherTarget::GetOSTrapAddress,
-        ("InterfaceLib", "SetToolTrapAddress") | ("InterfaceLib", "SetToolboxTrapAddress") => {
-            PpcImportDispatcherTarget::SetToolTrapAddress
-        }
+        ("InterfaceLib", "SetToolTrapAddress")
+        | ("InterfaceLib", "SetToolboxTrapAddress")
+        | ("InterfaceLib", "NSetTrapAddress") => PpcImportDispatcherTarget::SetToolTrapAddress,
         ("InterfaceLib", "LMGetCurrentA5") => PpcImportDispatcherTarget::LMGetCurrentA5,
         ("InterfaceLib", "InsTime") | ("InterfaceLib", "InsXTime") => {
             PpcImportDispatcherTarget::InsTime
@@ -14245,6 +14400,7 @@ fn dispatch_supported_import(
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
     apple_events: &mut PpcAppleEventState,
     cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &mut Vec<PpcCfmLibraryFragment>,
     next_cfm_connection_id: &mut u32,
     imports: &mut Vec<PpcImportBinding>,
     import_count: &mut u32,
@@ -14972,6 +15128,33 @@ fn dispatch_supported_import(
             *current_resource_refnum,
             last_resource_error,
         ))),
+        PpcImportDispatcherTarget::LMGetMenuList => {
+            Some(PpcImportAction::Return(toolbox_startup.current_menu_bar))
+        }
+        PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
+            memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
+        ))),
+        PpcImportDispatcherTarget::LMSetPaintWhite => {
+            let _ = memory.write_u16_be(0x09dc, u16::from(cpu.gpr[3] != 0));
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMSetResumeProc => {
+            let _ = memory.write_u32_be(crate::memory::globals::addr::RESUME_PROC, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMSetACount => {
+            let _ =
+                memory.write_u16_be(crate::memory::globals::addr::ALERT_STAGE, cpu.gpr[3] as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMSetANumber => {
+            let _ = memory.write_u16_be(crate::memory::globals::addr::ANUMBER, cpu.gpr[3] as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMSetDlgFont => {
+            let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, cpu.gpr[3] as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::ClearMenuBar => {
             // Macintosh Toolbox Essentials (1992), p. 3-110: ClearMenuBar
             // removes every menu from the current list without disposing the
@@ -15401,6 +15584,9 @@ fn dispatch_supported_import(
             cpu.gpr[4] as i32,
         ) as u32)),
         PpcImportDispatcherTarget::Long2Fix => Some(PpcImportAction::Return(ppc_long_to_fix(
+            cpu.gpr[3] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::Fix2Long => Some(PpcImportAction::Return(ppc_fix_to_long(
             cpu.gpr[3] as i32,
         ) as u32)),
         PpcImportDispatcherTarget::MoveTo => {
@@ -16658,6 +16844,28 @@ fn dispatch_supported_import(
             ppc_unlock_pixels(gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::GetPixelsState => {
+            let state = gworlds
+                .iter()
+                .find(|record| record.pixmap_handle == cpu.gpr[3])
+                .map(|record| {
+                    (u32::from(!record.pixels_no_purge) << 6)
+                        | (u32::from(record.pixels_locked) << 7)
+                })
+                .unwrap_or(0);
+            Some(PpcImportAction::Return(state))
+        }
+        PpcImportDispatcherTarget::SetPixelsState => {
+            if let Some(record) = gworlds
+                .iter_mut()
+                .find(|record| record.pixmap_handle == cpu.gpr[3])
+            {
+                let state = cpu.gpr[4];
+                record.pixels_no_purge = state & (1 << 6) == 0;
+                record.pixels_locked = state & (1 << 7) != 0;
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::NoPurgePixels => {
             ppc_no_purge_pixels(gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
@@ -16712,6 +16920,12 @@ fn dispatch_supported_import(
                 let _ = ppc_write_rect(memory, cpu.gpr[5], top, left, bottom, right);
             }
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EqualRect => {
+            let equal = ppc_read_rect(memory, cpu.gpr[3])
+                .zip(ppc_read_rect(memory, cpu.gpr[4]))
+                .is_some_and(|(first, second)| first == second);
+            Some(PpcImportAction::Return(u32::from(equal)))
         }
         PpcImportDispatcherTarget::SetPt => {
             let point_ptr = cpu.gpr[3];
@@ -16894,11 +17108,29 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Gestalt => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_gestalt(cpu, memory),
         ))),
-        PpcImportDispatcherTarget::GetSharedLibrary => {
-            Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_get_shared_library(cpu, memory, cfm_connections, next_cfm_connection_id),
-            )))
-        }
+        PpcImportDispatcherTarget::GetSharedLibrary => Some(ppc_get_shared_library(
+            cpu,
+            memory,
+            heap_cursor,
+            heap_limit,
+            cfm_connections,
+            cfm_library_fragments,
+            next_cfm_connection_id,
+            imports,
+            import_count,
+            import_binding_indices,
+        )),
+        PpcImportDispatcherTarget::FindSymbol => Some(ppc_find_symbol(
+            cpu,
+            memory,
+            cfm_connections,
+            imports,
+            import_count,
+            import_binding_indices,
+        )),
+        PpcImportDispatcherTarget::CloseConnection => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_close_connection(cpu, memory, cfm_connections)),
+        )),
         PpcImportDispatcherTarget::GetMemFragment => Some(ppc_get_mem_fragment(
             cpu,
             memory,
@@ -17354,6 +17586,9 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::SetEOF => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_set_eof(cpu, files, vfs_files),
+        ))),
+        PpcImportDispatcherTarget::AllocContig => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_alloc_contig(cpu, memory, files),
         ))),
         PpcImportDispatcherTarget::PBSetEOF => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_set_eof(cpu, memory, files, vfs_files),
@@ -18689,6 +18924,25 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::ReadDateTime => {
+            let secs_ptr = cpu.gpr[3];
+            let result = if secs_ptr != 0 && ppc_memory_can_write_bytes(memory, secs_ptr, 4) {
+                let _ = memory.write_u32_be(secs_ptr, PPC_FIXED_MAC_TIME);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
+        PpcImportDispatcherTarget::ReadLocation => {
+            // Operating System Utilities (1994), pp. 4-29 and 4-46: an
+            // unset 12-byte MachineLocation record reads as all zeroes.
+            let location = cpu.gpr[3];
+            if location != 0 && ppc_memory_can_write_bytes(memory, location, 12) {
+                let _ = memory.write_bytes(location, &[0; 12]);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetTime => {
             ppc_seconds_to_date(memory, PPC_FIXED_MAC_TIME, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
@@ -19011,6 +19265,9 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetCurrentProcess => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_current_process(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::SameProcess => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_same_process(cpu, memory),
+        ))),
         PpcImportDispatcherTarget::GetProcessInformation => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_process_information(
                 cpu,
@@ -19214,6 +19471,9 @@ fn dispatch_supported_import(
         )),
         PpcImportDispatcherTarget::SndGetInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_snd_get_info(cpu, memory, sound),
+        ))),
+        PpcImportDispatcherTarget::ParseSndHeader => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_parse_snd_header(cpu, memory, handles),
         ))),
         PpcImportDispatcherTarget::SndDoCommand => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_snd_do_command(cpu, memory, sound),
@@ -35889,6 +36149,37 @@ fn ppc_get_current_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     PPC_NO_ERR
 }
 
+fn ppc_same_process(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let first = cpu.gpr[3];
+    let second = cpu.gpr[4];
+    let result_ptr = cpu.gpr[5];
+    if first == 0 || second == 0 || result_ptr == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(first_high) = memory.read_u32_be(first) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(first_low) = memory.read_u32_be(first + 4) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(second_high) = memory.read_u32_be(second) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(second_low) = memory.read_u32_be(second + 4) else {
+        return PPC_PARAM_ERR;
+    };
+    if memory
+        .write_u8(
+            result_ptr,
+            u8::from(first_high == second_high && first_low == second_low),
+        )
+        .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_get_process_information(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -36035,6 +36326,15 @@ fn ppc_new_routine_descriptor(
     last_mem_error: &mut i16,
 ) -> u32 {
     let proc_ptr = cpu.gpr[3];
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] NewRoutineDescriptor proc=${proc_ptr:08X} words=({:08X?},{:08X?}) procInfo=${:08X} isa={}",
+            memory.read_u32_be(proc_ptr),
+            memory.read_u32_be(proc_ptr.wrapping_add(4)),
+            cpu.gpr[4],
+            cpu.gpr[5],
+        );
+    }
     if proc_ptr == 0 {
         return 0;
     }
@@ -36429,6 +36729,14 @@ fn ppc_call_universal_proc(
 ) -> Option<PpcImportAction> {
     let proc_ptr = cpu.gpr[3];
     let proc_info = cpu.gpr[4];
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] CallUniversalProc upp=${proc_ptr:08X} words=({:08X?},{:08X?}) procInfo=${proc_info:08X} sp=${:08X}",
+            memory.read_u32_be(proc_ptr),
+            memory.read_u32_be(proc_ptr.wrapping_add(4)),
+            cpu.gpr[1],
+        );
+    }
     let final_pc = cpu.lr;
     let restore_rtoc = cpu.gpr[2];
     let return_gpr3 = ppc_call_universal_proc_return_gpr3(proc_info);
@@ -36446,6 +36754,22 @@ fn ppc_call_universal_proc(
             selector,
             arguments.as_deref(),
         );
+    }
+    if memory.read_u32_be(proc_ptr) == Some(0x40c0_007c)
+        && memory.read_u32_be(proc_ptr.wrapping_add(4)) == Some(0x0700_4e75)
+    {
+        // Canonical 68K critical-section UPP:
+        //   MOVE.W SR,D0; ORI.W #$0700,SR; RTS
+        // Native PowerPC runtimes invoke it through Mixed Mode to mask
+        // interrupts and retain the previous SR. Systemless has no guest
+        // interrupt priority while executing PPC code, so return a stable
+        // unmasked user SR token for the matching restore shim.
+        return Some(PpcImportAction::Return(0));
+    }
+    if memory.read_u32_be(proc_ptr) == Some(0x46c0_4e75) {
+        // Matching 68K restore UPP: MOVE.W D0,SR; RTS. The PPC HLE never
+        // changed an interrupt mask, so consuming the saved token is a no-op.
+        return Some(PpcImportAction::ReturnPreserve);
     }
     let target = ppc_resolve_callback_target(memory, proc_ptr, restore_rtoc, selector)?;
     memory.read_u32_be(target.entry)?;
@@ -36707,6 +37031,140 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
     } else {
         PPC_PARAM_ERR
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcParsedSndHeader {
+    format: u32,
+    num_channels: u16,
+    sample_size: u16,
+    sample_rate: u32,
+    sample_count: u32,
+    buffer: u32,
+    num_frames: u32,
+    data_offset: u32,
+}
+
+fn ppc_parse_snd_header(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+) -> i16 {
+    let handle = cpu.gpr[3];
+    let info_ptr = cpu.gpr[4];
+    let num_frames_ptr = cpu.gpr[5];
+    let data_offset_ptr = cpu.gpr[6];
+    if info_ptr == 0
+        || num_frames_ptr == 0
+        || data_offset_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, info_ptr, 28)
+        || !ppc_memory_can_write_bytes(memory, num_frames_ptr, 4)
+        || !ppc_memory_can_write_bytes(memory, data_offset_ptr, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(record) = handles.iter().find(|record| record.handle == handle) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(resource_ptr) = memory.read_u32_be(handle) else {
+        return PPC_PARAM_ERR;
+    };
+    if resource_ptr == 0 || resource_ptr != record.ptr {
+        return PPC_PARAM_ERR;
+    }
+    let Some(header_offset) = ppc_sound_header_offset(memory, resource_ptr) else {
+        return PPC_BAD_FORMAT;
+    };
+    let Some(parsed) = ppc_parse_snd_header_fields(memory, resource_ptr, header_offset) else {
+        return PPC_BAD_FORMAT;
+    };
+
+    let writes = [
+        memory.write_u32_be(info_ptr, 0),
+        memory.write_u32_be(info_ptr + 4, parsed.format),
+        memory.write_u16_be(info_ptr + 8, parsed.num_channels),
+        memory.write_u16_be(info_ptr + 10, parsed.sample_size),
+        memory.write_u32_be(info_ptr + 12, parsed.sample_rate),
+        memory.write_u32_be(info_ptr + 16, parsed.sample_count),
+        memory.write_u32_be(info_ptr + 20, parsed.buffer),
+        memory.write_u32_be(info_ptr + 24, 0),
+        memory.write_u32_be(num_frames_ptr, parsed.num_frames),
+        memory.write_u32_be(data_offset_ptr, parsed.data_offset),
+    ];
+    if writes.iter().all(Option::is_some) {
+        PPC_NO_ERR
+    } else {
+        PPC_PARAM_ERR
+    }
+}
+
+/// Parse the sampled-sound header embedded in a format-1 or format-2 `snd `
+/// resource. Sound Manager 3.0's ParseSndHeader reports a SoundComponentData
+/// record plus the frame count and resource-relative start of the sample data.
+fn ppc_parse_snd_header_fields(
+    memory: &mut PpcSectionMem,
+    resource_ptr: u32,
+    header_offset: u32,
+) -> Option<PpcParsedSndHeader> {
+    const STD_SH: u8 = 0x00;
+    const CMP_SH: u8 = 0xfe;
+    const EXT_SH: u8 = 0xff;
+    const RAW_FORMAT: u32 = u32::from_be_bytes(*b"raw ");
+    const TWOS_FORMAT: u32 = u32::from_be_bytes(*b"twos");
+
+    let header = resource_ptr.checked_add(header_offset)?;
+    let sample_ptr = memory.read_u32_be(header)?;
+    let sample_rate = memory.read_u32_be(header.checked_add(8)?)?;
+    let encode = memory.read_u8(header.checked_add(20)?)?;
+    let (format, num_channels, sample_size, sample_count, num_frames, inline_offset) = match encode
+    {
+        STD_SH => {
+            let length = memory.read_u32_be(header.checked_add(4)?)?;
+            (RAW_FORMAT, 1, 8, length, length, 22)
+        }
+        EXT_SH => {
+            let channels = memory.read_u32_be(header.checked_add(4)?)?;
+            let channels = u16::try_from(channels).ok()?;
+            let frames = memory.read_u32_be(header.checked_add(22)?)?;
+            let sample_size = memory.read_u16_be(header.checked_add(48)?)?;
+            let format = match sample_size {
+                8 => RAW_FORMAT,
+                16 => TWOS_FORMAT,
+                _ => return None,
+            };
+            (format, channels, sample_size, frames, frames, 64)
+        }
+        CMP_SH => {
+            let channels = memory.read_u32_be(header.checked_add(4)?)?;
+            let channels = u16::try_from(channels).ok()?;
+            let frames = memory.read_u32_be(header.checked_add(22)?)?;
+            let format = memory.read_u32_be(header.checked_add(40)?)?;
+            let sample_size = memory.read_u16_be(header.checked_add(62)?)?;
+            (format, channels, sample_size, frames, frames, 64)
+        }
+        _ => return None,
+    };
+    let inline_data = header.checked_add(inline_offset)?;
+    let buffer = if sample_ptr == 0 {
+        inline_data
+    } else {
+        sample_ptr
+    };
+    let data_offset = if sample_ptr == 0 {
+        header_offset.checked_add(inline_offset)?
+    } else {
+        sample_ptr.checked_sub(resource_ptr).unwrap_or(0)
+    };
+    Some(PpcParsedSndHeader {
+        format,
+        num_channels,
+        sample_size,
+        sample_rate,
+        sample_count,
+        buffer,
+        num_frames,
+        data_offset,
+    })
 }
 
 fn ppc_snd_do_immediate(
@@ -40838,9 +41296,16 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
 fn ppc_get_shared_library(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
     cfm_connections: &mut Vec<PpcCfmConnection>,
+    cfm_library_fragments: &mut Vec<PpcCfmLibraryFragment>,
     next_cfm_connection_id: &mut u32,
-) -> i16 {
+    imports: &mut Vec<PpcImportBinding>,
+    import_count: &mut u32,
+    import_binding_indices: &mut Vec<Option<usize>>,
+) -> PpcImportAction {
+    let return_error = |error| PpcImportAction::Return(ppc_i16_result(error));
     let lib_name_ptr = cpu.gpr[3];
     let _arch_type = cpu.gpr[4];
     let find_flags = cpu.gpr[5];
@@ -40848,18 +41313,18 @@ fn ppc_get_shared_library(
     let main_addr_ptr = cpu.gpr[7];
     let err_name_ptr = cpu.gpr[8];
     if lib_name_ptr == 0 || conn_id_ptr == 0 || main_addr_ptr == 0 {
-        return PPC_PARAM_ERR;
+        return return_error(PPC_PARAM_ERR);
     }
 
     let Some(lib_name_bytes) = ppc_read_pstring_bytes(memory, lib_name_ptr) else {
-        return PPC_PARAM_ERR;
+        return return_error(PPC_PARAM_ERR);
     };
     let lib_name = decode_mac_roman(&lib_name_bytes);
     if lib_name.trim().is_empty() {
-        return PPC_FRAG_LIB_NOT_FOUND;
+        return return_error(PPC_FRAG_LIB_NOT_FOUND);
     }
 
-    let connection = if find_flags != PPC_CFM_LOAD_NEW_COPY {
+    let existing_connection = if find_flags != PPC_CFM_LOAD_NEW_COPY {
         cfm_connections
             .iter()
             .find(|connection| connection.library_name.eq_ignore_ascii_case(&lib_name))
@@ -40867,22 +41332,78 @@ fn ppc_get_shared_library(
     } else {
         None
     };
-    let connection = match connection {
+    let mut initialization = None;
+    let connection = match existing_connection {
         Some(connection) => connection,
         None => {
             let id = *next_cfm_connection_id;
             if id == 0 || id > PPC_CFM_MAIN_STUB_COUNT {
-                return PPC_FRAG_LIB_CONN_ERR;
+                return return_error(PPC_FRAG_LIB_CONN_ERR);
             }
             let Some(next_id) = next_cfm_connection_id.checked_add(1) else {
-                return PPC_FRAG_LIB_CONN_ERR;
+                return return_error(PPC_FRAG_LIB_CONN_ERR);
             };
-            let connection = PpcCfmConnection {
-                id,
-                library_name: lib_name,
-                main_addr: ppc_cfm_main_stub_addr(id),
-                init_addr: 0,
-                term_addr: 0,
+            let fragment = cfm_library_fragments
+                .iter()
+                .find(|fragment| fragment.name.eq_ignore_ascii_case(&lib_name))
+                .cloned();
+            let connection = if let Some(fragment) = fragment {
+                let fragment_size = match u32::try_from(fragment.bytes.len()) {
+                    Ok(size) => size,
+                    Err(_) => return return_error(PPC_FRAG_NO_MEM),
+                };
+                let fragment_addr =
+                    ppc_heap_alloc(memory, heap_cursor, heap_limit, fragment_size, false);
+                if fragment_addr == 0
+                    || memory.write_bytes(fragment_addr, &fragment.bytes).is_none()
+                {
+                    return return_error(PPC_FRAG_NO_MEM);
+                }
+                let prepared = match ppc_prepare_mem_fragment(
+                    &fragment.bytes,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    imports,
+                    import_count,
+                    import_binding_indices,
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(error) => return return_error(error),
+                };
+                let connection = PpcCfmConnection {
+                    id,
+                    library_name: lib_name.clone(),
+                    main_addr: prepared.main_addr,
+                    init_addr: prepared.init_addr,
+                    term_addr: prepared.term_addr,
+                };
+                if prepared.init_addr != 0 {
+                    let init_block = match ppc_create_mem_fragment_init_block(
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        id,
+                        fragment_addr,
+                        fragment_size,
+                        &lib_name,
+                    ) {
+                        Ok(block) => block,
+                        Err(error) => return return_error(error),
+                    };
+                    initialization = Some((prepared.init_addr, init_block));
+                }
+                connection
+            } else {
+                // System libraries without a supplied PEF remain synthetic
+                // CFM connections whose optional main routine is a no-op.
+                PpcCfmConnection {
+                    id,
+                    library_name: lib_name.clone(),
+                    main_addr: ppc_cfm_main_stub_addr(id),
+                    init_addr: 0,
+                    term_addr: 0,
+                }
             };
             cfm_connections.push(connection.clone());
             *next_cfm_connection_id = next_id;
@@ -40895,12 +41416,126 @@ fn ppc_get_shared_library(
             .write_u32_be(main_addr_ptr, connection.main_addr)
             .is_none()
     {
-        return PPC_PARAM_ERR;
+        return return_error(PPC_PARAM_ERR);
     }
     if err_name_ptr != 0 && memory.write_u8(err_name_ptr, 0).is_none() {
-        return PPC_PARAM_ERR;
+        return return_error(PPC_PARAM_ERR);
     }
+    let Some((init_addr, init_block)) = initialization else {
+        return return_error(PPC_NO_ERR);
+    };
+    let (Some(entry), Some(rtoc)) = (
+        memory.read_u32_be(init_addr),
+        memory.read_u32_be(init_addr.wrapping_add(4)),
+    ) else {
+        return return_error(PPC_FRAG_CORRUPT_ERR);
+    };
+    if entry == 0 || ppc_install_native_call_arguments(cpu, memory, &[init_block]).is_none() {
+        return return_error(PPC_FRAG_CORRUPT_ERR);
+    }
+    let final_pc = cpu.lr;
+    let restore_rtoc = cpu.gpr[2];
+    cpu.gpr[12] = init_addr;
+    PpcImportAction::CallNative {
+        entry,
+        rtoc,
+        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        final_pc,
+        restore_rtoc,
+        return_gpr3: PpcNativeReturnGpr3::ZeroOrSet {
+            zero: ppc_i16_result(PPC_NO_ERR),
+            nonzero: ppc_i16_result(PPC_FRAG_USER_INIT_PROC_ERR),
+        },
+    }
+}
+
+fn ppc_close_connection(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    cfm_connections: &mut Vec<PpcCfmConnection>,
+) -> i16 {
+    // Inside Macintosh: PowerPC System Software (1994), p. 3-23:
+    // CloseConnection receives a pointer to a ConnectionID, invalidates that
+    // connection, and reports fragConnectionIDNotFound for an unknown ID.
+    let connection_id_ptr = cpu.gpr[3];
+    let Some(connection_id) = memory.read_u32_be(connection_id_ptr) else {
+        return PPC_PARAM_ERR;
+    };
+    let Some(index) = cfm_connections
+        .iter()
+        .position(|connection| connection.id == connection_id)
+    else {
+        return PPC_FRAG_CONNECTION_ID_NOT_FOUND;
+    };
+
+    cfm_connections.remove(index);
+    let _ = memory.write_u32_be(connection_id_ptr, 0);
     PPC_NO_ERR
+}
+
+fn ppc_find_symbol(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    cfm_connections: &[PpcCfmConnection],
+    imports: &mut Vec<PpcImportBinding>,
+    import_count: &mut u32,
+    import_binding_indices: &mut Vec<Option<usize>>,
+) -> PpcImportAction {
+    // Inside Macintosh: PowerPC System Software (1994), pp. 3-24--3-25.
+    let connection_id = cpu.gpr[3];
+    let symbol_name_ptr = cpu.gpr[4];
+    let symbol_addr_ptr = cpu.gpr[5];
+    let symbol_class_ptr = cpu.gpr[6];
+    let Some(connection) = cfm_connections
+        .iter()
+        .find(|connection| connection.id == connection_id)
+    else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_CONNECTION_ID_NOT_FOUND));
+    };
+    let Some(symbol_name) =
+        ppc_read_pstring_bytes(memory, symbol_name_ptr).map(|name| decode_mac_roman(&name))
+    else {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    };
+    let target = dispatcher_target_for_import(&connection.library_name, &symbol_name);
+    if target == PpcImportDispatcherTarget::Unsupported || *import_count >= PPC_IMPORT_CAPACITY {
+        return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_SYMBOL_NOT_FOUND));
+    }
+
+    let symbol_index = *import_count;
+    let address = match import_address_for(symbol_index, 2) {
+        Ok(address) => address,
+        Err(_) => return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_ADDR_SPACE)),
+    };
+    let trap_pc = match import_trap_pc(symbol_index) {
+        Ok(address) => address,
+        Err(_) => return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_NO_ADDR_SPACE)),
+    };
+    let binding_index = imports.len();
+    imports.push(PpcImportBinding {
+        library_index: u32::MAX,
+        symbol_index,
+        library_name: connection.library_name.clone(),
+        symbol_name,
+        class: 2,
+        weak: false,
+        address,
+        tvector_address: Some(address),
+        trap_pc,
+        dispatcher_target: target,
+    });
+    if import_binding_indices.len() <= symbol_index as usize {
+        import_binding_indices.resize(symbol_index as usize + 1, None);
+    }
+    import_binding_indices[symbol_index as usize] = Some(binding_index);
+    *import_count += 1;
+
+    if memory.write_u32_be(symbol_addr_ptr, address).is_none()
+        || memory.write_u8(symbol_class_ptr, 2).is_none()
+    {
+        return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+    }
+    PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
 }
 
 fn ppc_get_mem_fragment(
@@ -43273,6 +43908,17 @@ fn ppc_long_to_fix(value: i32) -> i32 {
         i32::MIN
     } else {
         value << 16
+    }
+}
+
+fn ppc_fix_to_long(value: i32) -> i32 {
+    // Operating System Utilities (1994), p. 3-44: round to the nearest
+    // integer, with exact halves rounded away from zero.
+    let value = i64::from(value);
+    if value >= 0 {
+        ((value + 0x8000) >> 16) as i32
+    } else {
+        -(((-value + 0x8000) >> 16) as i32)
     }
 }
 
@@ -60189,6 +60835,21 @@ fn ppc_get_eof(
     }
 }
 
+fn ppc_alloc_contig(cpu: &PpcCpu, memory: &mut PpcSectionMem, files: &[PpcFileRecord]) -> i16 {
+    // Files (1992), pp. 2-119--2-120: AllocContig reserves physical file
+    // blocks without changing logical EOF. The virtual filesystem has no
+    // physical allocation map, so a valid open fork can satisfy the request.
+    let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
+    let count_ptr = cpu.gpr[4];
+    if !files.iter().any(|file| file.ref_num == ref_num) {
+        return PPC_RF_NUM_ERR;
+    }
+    if count_ptr == 0 || !ppc_memory_can_write_bytes(memory, count_ptr, 4) {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_set_eof(
     cpu: &mut PpcCpu,
     files: &mut [PpcFileRecord],
@@ -62598,6 +63259,29 @@ fn import_trap_bytes(count: usize) -> Vec<u8> {
     bytes
 }
 
+fn ppc_application_init_return_trampoline(main_entry: u32, main_rtoc: u32) -> Vec<u8> {
+    // r3 is the initializer's OSErr. A failed initializer terminates launch;
+    // success restores the main routine's TOC and branches to its entry point.
+    // The generated code is ordinary PowerPC ABI glue, not an HLE import.
+    let words = [
+        0x2c03_0000, // cmpwi r3, 0
+        0x4082_0020, // bne failure
+        0x3c40_0000 | (main_rtoc >> 16),
+        0x6042_0000 | (main_rtoc & 0xffff),
+        0x3d80_0000 | (main_entry >> 16),
+        0x618c_0000 | (main_entry & 0xffff),
+        0x7d89_03a6, // mtctr r12
+        0x4e80_0420, // bctr
+        0x3980_0000, // failure: li r12, 0
+        0x7d89_03a6, // mtctr r12
+        0x4e80_0420, // bctr
+    ];
+    words
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>()
+}
+
 fn alignment_bytes(power: u8) -> Result<u32, PpcLoadError> {
     if power >= 31 {
         return Err(PpcLoadError::AddressOverflow);
@@ -63870,6 +64554,15 @@ mod tests {
         );
         assert_eq!(loaded.cpu.gpr[2], PPC_DATA_BASE);
         assert_eq!(loaded.memory.read_u32_be(PPC_CFM_MAIN_STUB_BASE), Some(BLR));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_PORT_LIST_ADDR),
+            Some(PPC_PORT_LIST_HANDLE)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_PORT_LIST_HANDLE),
+            Some(PPC_PORT_LIST)
+        );
+        assert_eq!(loaded.memory.read_u16_be(PPC_PORT_LIST), Some(0));
         assert_eq!(loaded.memory.read_u32_be(0), Some(0));
         assert!(loaded.memory.write_u32_be(0, 0xdead_beef).is_some());
         assert_eq!(loaded.memory.read_u32_be(0), Some(0xdead_beef));
@@ -63938,13 +64631,13 @@ mod tests {
         assert!(!bindings[0].weak);
 
         assert_eq!(bindings[1].symbol_name, "FindSymbol");
-        assert_eq!(bindings[1].address, 0);
+        assert_eq!(bindings[1].address, PPC_IMPORT_TRAP_BASE + 4);
         assert_eq!(bindings[1].tvector_address, None);
         assert_eq!(bindings[1].trap_pc, PPC_IMPORT_TRAP_BASE + 4);
         assert!(bindings[1].weak);
         assert_eq!(
             bindings[1].dispatcher_target,
-            PpcImportDispatcherTarget::UnresolvedWeak
+            PpcImportDispatcherTarget::FindSymbol
         );
     }
 

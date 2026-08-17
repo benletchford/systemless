@@ -7,7 +7,8 @@
 use crate::loader::cfrg::{parse_cfrg_resource, select_powerpc_application_fragment, WHOLE_FORK};
 use crate::loader::pef::{parse_pef_header, parse_pef_loader_header, resolve_pef_main_entry};
 use crate::loader::ppc::{
-    PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord, PpcVfsResourceRecord,
+    PpcCfmLibraryFragment, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord,
+    PpcVfsResourceRecord,
 };
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
@@ -2088,6 +2089,26 @@ fn load_selected_executable(
                     executable.name
                 )
             })?;
+            let library_fragments = ResourceFork::parse(&rsrc)
+                .and_then(|fork| fork.get(*b"cfrg", 0).cloned())
+                .and_then(|resource| parse_cfrg_resource(&resource.data))
+                .map(|cfrg| {
+                    cfrg.fragments
+                        .into_iter()
+                        .filter_map(|fragment| {
+                            if !fragment.is_powerpc_library_data_fork() {
+                                return None;
+                            }
+                            let range = fragment.data_fork_range(data.len())?;
+                            Some(PpcCfmLibraryFragment {
+                                name: fragment.name,
+                                bytes: data.get(range)?.to_vec(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            loaded.seed_cfm_library_fragments(library_fragments);
             loaded.seed_vfs_directories(
                 ppc_vfs.directories,
                 ppc_vfs.default_dir_id,

@@ -1057,10 +1057,7 @@ fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
 /// filter callbacks before their next presentation boundary. Other retained
 /// managers can coexist with modeless dialogs, but do not own those callbacks.
 fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
-    matches!(
-        opcode & !0x0400,
-        0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988
-    )
+    matches!(opcode & !0x0400, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988)
 }
 
 /// Retained managers with their own event loops must keep guest ticks moving
@@ -2986,13 +2983,14 @@ impl FixtureRunner {
     pub fn load_app(&mut self, fork: &ResourceFork) -> Option<LoadedApp> {
         let app = load_app_generic(fork, &mut self.bus, self.config.load_address)?;
         let heap_start = app_heap_start_for_loaded_app(&app);
+        let image_start = app_image_start_for_loaded_app(&app);
 
-        // Resource data is allocated after direct CODE/global loading. Reserve
-        // the app-zone header at the actual heap start so early app resources
-        // cannot land in loader-owned memory or under `bkLim`/`hFstFree`.
-        // Inside Macintosh Volume II, II-22.
-        self.bus
-            .reserve_heap_until(heap_start.saturating_add(APP_ZONE_HEADER_SIZE));
+        // A relocated A5 world leaves valid application-heap space below the
+        // direct-loaded image. Reserve the image itself, plus the zone header,
+        // without throwing that lower partition space away.
+        // Inside Macintosh: Memory (1992), pp. 1-7 to 1-9 and 2-19.
+        self.bus.reserve_heap(APP_ZONE_HEADER_SIZE);
+        self.bus.reserve_heap_range(image_start, heap_start);
         self.dispatcher.load_resources(fork, &mut self.bus);
 
         let segments: HashMap<i16, u32> = app.segment_bases.iter().map(|(&k, &v)| (k, v)).collect();
@@ -3498,8 +3496,7 @@ impl FixtureRunner {
         // Apps and the Memory Manager read the zone header to determine
         // available memory. zcbFree (offset +12) must reflect free bytes.
         // Reserve heap space so alloc() doesn't overwrite the zone header.
-        self.bus
-            .reserve_heap_until(allocation_heap_start.saturating_add(zone_header_size));
+        self.bus.reserve_heap(zone_header_size);
         let zone_size = appl_limit.saturating_sub(visible_zone_start);
         let free_bytes = zone_size.saturating_sub(zone_header_size);
         self.bus.write_long(visible_zone_start, appl_limit); // bkLim: end of zone
@@ -5076,9 +5073,10 @@ impl FixtureRunner {
                 let frame_ret = self.bus.read_long(a6.wrapping_add(4));
                 let frame_arg = self.bus.read_word(a6.wrapping_add(8));
                 eprintln!(
-                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} ccr=${:02X} d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X} a0=${:08X} a1=${:08X} a2=${:08X} a3=${:08X} a4=${:08X} a5=${:08X} a6=${:08X} sp=${:08X} stack0=${:08X} stack4=${:08X} stack8=${:04X} frame_ret=${:08X} frame_arg=${:04X}",
+                    "[TRACE-PC-RANGE] pc=${:08X} op=${:04X} next=${:08X} ccr=${:02X} d0=${:08X} d1=${:08X} d2=${:08X} d3=${:08X} d4=${:08X} d5=${:08X} d6=${:08X} d7=${:08X} a0=${:08X} a1=${:08X} a2=${:08X} a3=${:08X} a4=${:08X} a5=${:08X} a6=${:08X} sp=${:08X} stack0=${:08X} stack4=${:08X} stack8=${:04X} frame_ret=${:08X} frame_arg=${:04X}",
                     pc,
                     self.bus.read_word(pc),
+                    self.bus.read_long(pc.wrapping_add(2)),
                     self.cpu.core.get_ccr(),
                     self.cpu.read_reg(Register::D0),
                     self.cpu.read_reg(Register::D1),
@@ -10336,8 +10334,8 @@ mod tests {
             addressing_32_bit: false,
             ..FixtureRunnerConfig::default()
         }
-            .with_screen_depth(4)
-            .expect("4-bit indexed mode should be supported");
+        .with_screen_depth(4)
+        .expect("4-bit indexed mode should be supported");
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
         let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
         let gdevice = runner.bus.read_long(gdevice_handle);
@@ -10643,7 +10641,7 @@ mod tests {
         let app = runner.load_app(&fork).expect("load app");
         let (_, bgas_ptr) = runner
             .dispatcher
-            .find_resource_any(*b"BGAS", 128)
+            .find_or_load_resource_any(&mut runner.bus, *b"BGAS", 128)
             .expect("BGAS resource loaded");
         assert_eq!(runner.bus.read_bytes(bgas_ptr, bgas.len()), bgas);
 
@@ -10748,7 +10746,7 @@ mod tests {
         let heap_start = app_heap_start_for_loaded_app(&app);
         let (_, marker_ptr) = runner
             .dispatcher
-            .find_resource_any(*b"BGAS", 128)
+            .find_or_load_resource_any(&mut runner.bus, *b"BGAS", 128)
             .expect("BGAS resource loaded");
         assert!(
             marker_ptr >= heap_start + APP_ZONE_HEADER_SIZE,
@@ -10947,7 +10945,7 @@ mod tests {
         // (1993), pp. 1-8 to 1-9.
         let (_, resource_ptr) = runner
             .dispatcher
-            .find_resource_any(*b"SHAP", 128)
+            .find_or_load_resource_any(&mut runner.bus, *b"SHAP", 128)
             .expect("large resource registered");
         assert_ne!(
             resource_ptr, 0,
@@ -10981,14 +10979,15 @@ mod tests {
         let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
 
         let app = runner.load_app(&fork).expect("load app");
-        let allocation_heap_start = app_heap_start_for_loaded_app(&app);
+        let image_start = app_image_start_for_loaded_app(&app);
         let (_, marker_ptr) = runner
             .dispatcher
-            .find_resource_any(*b"BGAS", 128)
+            .find_or_load_resource_any(&mut runner.bus, *b"BGAS", 128)
             .expect("BGAS resource loaded");
+        let marker_end = marker_ptr + marker.len() as u32;
         assert!(
-            marker_ptr >= allocation_heap_start + APP_ZONE_HEADER_SIZE,
-            "preloaded resources must still allocate above the relocated image"
+            marker_end <= image_start || marker_ptr >= app.loaded_image_end,
+            "resource allocation must not overlap the relocated image"
         );
 
         runner.init_app(&app);
@@ -11563,6 +11562,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),
@@ -11689,6 +11689,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),
@@ -12513,6 +12514,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),
@@ -12668,6 +12670,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),
@@ -13056,6 +13059,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),
@@ -13400,6 +13404,7 @@ mod tests {
             dialog_callback_stack: Vec::new(),
             apple_events: Default::default(),
             cfm_connections: Vec::new(),
+            cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             ptrs: Vec::new(),
             free_ptr_blocks: Vec::new(),

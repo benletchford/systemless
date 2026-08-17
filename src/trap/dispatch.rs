@@ -4972,6 +4972,7 @@ impl TrapDispatcher {
         fork: &ResourceFork,
         bus: &mut MacMemoryBus,
     ) -> ResourceFileMap {
+        const RES_PRELOAD_ATTR: u8 = 0x04;
         let mut loaded = HashMap::new();
         let mut named = HashMap::new();
         let mut names_by_id = HashMap::new();
@@ -4980,9 +4981,20 @@ impl TrapDispatcher {
         let mut sorted_resources: Vec<_> = fork.resources().iter().collect();
         sorted_resources.sort_by_key(|((res_type, id), _)| (*res_type, *id));
         for ((res_type, id), res) in sorted_resources {
-            let ptr = bus.alloc(res.data.len() as u32);
-            bus.write_bytes(ptr, &res.data);
-            Self::zero_loaded_resource_padding(bus, ptr, res.data.len() as u32);
+            // OpenResFile reads the resource map plus only resources carrying
+            // resPreload; ordinary resource data stays on disk until requested.
+            // SetResLoad(FALSE) also suppresses preloading.
+            // Inside Macintosh Volume I (1985), I-111, I-115, I-118.
+            let ptr = if self.res_load && res.attrs & RES_PRELOAD_ATTR != 0 {
+                let ptr = bus.alloc(res.data.len() as u32);
+                if ptr != 0 {
+                    bus.write_bytes(ptr, &res.data);
+                    Self::zero_loaded_resource_padding(bus, ptr, res.data.len() as u32);
+                }
+                ptr
+            } else {
+                0
+            };
             loaded.insert((*res_type, *id), ptr);
             attrs.insert((*res_type, *id), res.attrs);
             if let Some(ref name) = res.name {
@@ -4997,6 +5009,15 @@ impl TrapDispatcher {
             attrs,
             map_attrs: 0,
         }
+    }
+
+    fn remember_preloaded_resource_residency(&mut self, refnum: u16, file: &ResourceFileMap) {
+        self.resident_resources.extend(
+            file.loaded
+                .iter()
+                .filter(|(_, ptr)| **ptr != 0)
+                .map(|(&(res_type, res_id), _)| (refnum, res_type, res_id)),
+        );
     }
 
     fn resource_reference_order(fork: &ResourceFork) -> Vec<([u8; 4], i16)> {
@@ -5898,6 +5919,7 @@ impl TrapDispatcher {
                 .insert(format!("__rsrc__{}", app_path), fork.serialized().to_vec());
         }
         let file = self.allocate_resource_fork(fork, bus);
+        self.remember_preloaded_resource_residency(0, &file);
         self.resource_file_order
             .insert(0, Self::resource_reference_order(fork));
         self.clear_resource_file_backing_data(0);
@@ -6032,6 +6054,7 @@ impl TrapDispatcher {
         refnum: u16,
     ) -> usize {
         let incoming = self.allocate_resource_fork(fork, bus);
+        self.remember_preloaded_resource_residency(refnum, &incoming);
         let incoming_order = Self::resource_reference_order(fork);
         let count = incoming.loaded.len();
         let resources = self.resources.get_or_insert_with(|| LoadedResources {
@@ -6076,6 +6099,7 @@ impl TrapDispatcher {
         refnum: u16,
     ) {
         let file = self.allocate_resource_fork(fork, bus);
+        self.remember_preloaded_resource_residency(refnum, &file);
         self.resource_file_order
             .insert(refnum, Self::resource_reference_order(fork));
         let count = file.loaded.len();
@@ -6625,6 +6649,15 @@ mod tests {
     use std::collections::VecDeque;
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
+        make_single_resource_fork_bytes_with_attrs(res_type, res_id, data, 0)
+    }
+
+    fn make_single_resource_fork_bytes_with_attrs(
+        res_type: [u8; 4],
+        res_id: i16,
+        data: &[u8],
+        attrs: u8,
+    ) -> Vec<u8> {
         let data_offset = 16u32;
         let data_length = (4 + data.len()) as u32;
         let map_offset = data_offset + data_length;
@@ -6660,6 +6693,7 @@ mod tests {
         let ref_list_start = map_start + type_list_offset as usize + ref_list_offset as usize;
         bytes[ref_list_start..ref_list_start + 2].copy_from_slice(&(res_id as u16).to_be_bytes());
         bytes[ref_list_start + 2..ref_list_start + 4].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        bytes[ref_list_start + 4] = attrs;
         bytes[ref_list_start + 5..ref_list_start + 8].copy_from_slice(&0u32.to_be_bytes()[1..4]);
 
         bytes
@@ -7028,7 +7062,7 @@ mod tests {
 
     #[test]
     fn load_resources_exposes_application_map_and_fork_to_native_runtime_code() {
-        let serialized = make_single_resource_fork_bytes(*b"TEST", 7, b"payload");
+        let serialized = make_single_resource_fork_bytes_with_attrs(*b"TEST", 7, b"payload", 0x04);
         let fork = ResourceFork::parse(&serialized).unwrap();
         let reference_offset = fork.get(*b"TEST", 7).unwrap().reference_offset as u32;
         let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
@@ -7082,11 +7116,59 @@ mod tests {
             1
         );
 
-        let (_, app_ptr) = disp.find_resource_any(*b"TEST", 1).unwrap();
-        let (_, companion_ptr) = disp.find_resource_any(*b"TEST", 2).unwrap();
+        let (_, app_ptr) = disp
+            .find_or_load_resource_any(&mut bus, *b"TEST", 1)
+            .unwrap();
+        let (_, companion_ptr) = disp
+            .find_or_load_resource_any(&mut bus, *b"TEST", 2)
+            .unwrap();
         assert_eq!(bus.read_bytes(app_ptr, 3), b"app");
         assert_eq!(bus.read_bytes(companion_ptr, 4), b"side");
         assert_eq!(disp.count_resources(*b"TEST", true), 2);
+    }
+
+    #[test]
+    fn opening_resource_fork_defers_non_preload_data_until_requested() {
+        let payload = vec![0xA5; 1024 * 1024];
+        let serialized = make_single_resource_fork_bytes(*b"TEST", 7, &payload);
+        let fork = ResourceFork::parse(&serialized).unwrap();
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut disp = TrapDispatcher::new();
+        let heap_before = bus.heap_bump_ptr();
+
+        disp.load_resources(&fork, &mut bus);
+
+        let heap_after_open = bus.heap_bump_ptr();
+        assert!(
+            heap_after_open - heap_before < payload.len() as u32,
+            "opening the resource map must not copy ordinary resource data into the guest heap"
+        );
+        assert_eq!(
+            disp.resources.as_ref().unwrap().files[&0].loaded[&(*b"TEST", 7)],
+            0
+        );
+
+        let (_, ptr) = disp
+            .find_or_load_resource_any(&mut bus, *b"TEST", 7)
+            .expect("GetResource-style lookup should materialize deferred data");
+        assert_eq!(bus.read_bytes(ptr, payload.len()), payload);
+        assert!(bus.heap_bump_ptr() - heap_after_open >= payload.len() as u32);
+    }
+
+    #[test]
+    fn opening_resource_fork_materializes_respreload_data() {
+        let serialized =
+            make_single_resource_fork_bytes_with_attrs(*b"TEST", 7, b"preloaded", 0x04);
+        let fork = ResourceFork::parse(&serialized).unwrap();
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut disp = TrapDispatcher::new();
+
+        disp.load_resources(&fork, &mut bus);
+
+        let ptr = disp.resources.as_ref().unwrap().files[&0].loaded[&(*b"TEST", 7)];
+        assert_ne!(ptr, 0);
+        assert_eq!(bus.read_bytes(ptr, 9), b"preloaded");
+        assert!(disp.resident_resources.contains(&(0, *b"TEST", 7)));
     }
 
     // Lock the `is_tracking_refire` contract — returns true exactly when
