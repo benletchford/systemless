@@ -3975,15 +3975,17 @@ impl super::TrapDispatcher {
                             }
                             (8, 1) => {
                                 // 8bpp → 1bpp: convert by testing if the 8bpp pixel is
-                                // "dark" (closer to black than white). In the standard Mac
-                                // CLUT, index 255 = black, index 0 = white.
+                                // "dark" (closer to black than white) across RGBColor's
+                                // unsigned 16-bit component range. In the standard Mac CLUT,
+                                // index 255 = black, index 0 = white.
+                                // Imaging With QuickDraw 1994, pp. 4-31–4-34.
                                 let src_addr =
                                     src_info.base + src_y_off * src_info.row_bytes + src_x_off;
                                 let src_pixel = read_src_byte(bus, src_addr);
                                 let src_is_dark = if let Some(clut) = src_clut {
                                     let [r, g, b] = clut[src_pixel as usize];
                                     let lum = (r as u32 + g as u32 + b as u32) / 3;
-                                    lum < 128
+                                    lum < 0x8000
                                 } else {
                                     // No CLUT: treat high index as dark (Mac convention)
                                     src_pixel >= 128
@@ -32772,6 +32774,50 @@ mod tests {
             bus.write_word(entry_ptr + 4, *green);
             bus.write_word(entry_ptr + 6, *blue);
         }
+    }
+
+    #[test]
+    fn copy_bits_8bpp_to_1bpp_uses_the_16_bit_rgb_midpoint() {
+        // Imaging With QuickDraw 1994, pp. 4-31–4-34: CopyBits converts
+        // source depth before mapping the result to the destination device;
+        // RGBColor components use the full unsigned 16-bit intensity range.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x320100u32;
+        let dst_bitmap = 0x320200u32;
+        let src_base = 0x321000u32;
+        let dst_base = 0x322000u32;
+        let src_ctab_handle = 0x323000u32;
+        let src_rect = 0x324000u32;
+        let dst_rect = 0x324010u32;
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[
+                (0, 0x0000, 0x0000, 0x0000),
+                (1, 0x7FFF, 0x7FFF, 0x7FFF),
+                (2, 0x8000, 0x8000, 0x8000),
+                (3, 0xFFFF, 0xFFFF, 0xFFFF),
+            ],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 1, src_ctab_handle);
+        write_bitmap_record(&mut bus, dst_bitmap, dst_base, 2, 0, 0, 1, 16);
+        bus.write_bytes(src_base, &[0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]);
+        bus.write_bytes(dst_base, &[0, 0]);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 16);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 16);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_bitmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(dst_base, 2), vec![0xCC, 0xCC]);
     }
 
     #[test]
