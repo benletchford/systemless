@@ -3563,6 +3563,22 @@ impl FixtureRunner {
         self.mix_host_audio(num_samples);
     }
 
+    /// Keep guest-visible Sound Manager completion callbacks moving when a
+    /// headless caller advances only CPU/tick time. Ordinary playback remains
+    /// opt-in through `mix_audio`, so fixtures that inspect PCM do not consume
+    /// unrelated channels implicitly.
+    fn advance_headless_callback_audio(&mut self, elapsed_ticks: u32) {
+        if elapsed_ticks == 0 || !self.dispatcher.sound_manager.has_playback_gated_callback() {
+            return;
+        }
+
+        let samples_per_tick = (crate::sound::OUTPUT_RATE as f64 / DEFAULT_VBL_HZ).round() as usize;
+        let samples = (elapsed_ticks as usize).saturating_mul(samples_per_tick);
+        self.mix_host_audio(samples);
+        self.dispatcher
+            .sync_guest_sound_channel_state(&mut self.bus);
+    }
+
     fn queue_mixed_audio(&mut self, stereo_samples: &[u8]) {
         if stereo_samples.is_empty() {
             return;
@@ -7533,7 +7549,10 @@ impl FixtureRunner {
     /// [`halted_sp`](Self::halted_sp), [`halted_d0`](Self::halted_d0)
     /// accessors after this call returns.
     pub fn run_steps(&mut self, max_steps: usize, tick_override: Option<u32>) -> (usize, bool) {
-        self.run_steps_internal(max_steps, tick_override, 0, false, false, true)
+        let start_tick = self.guest_tick();
+        let result = self.run_steps_internal(max_steps, tick_override, 0, false, false, true);
+        self.advance_headless_callback_audio(self.guest_tick().wrapping_sub(start_tick));
+        result
     }
 
     /// Halt at the CPU's current position with the standard crash
@@ -10954,6 +10973,59 @@ mod tests {
         runner.mix_audio(2);
         assert_eq!(runner.drain_audio(), vec![0x90, 0x91]);
         assert_eq!(runner.dispatcher.sound_manager.debug_samples_mixed, 2);
+    }
+
+    #[test]
+    fn headless_run_steps_advances_playback_needed_for_sound_callbacks() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let program_start = 0x0001_0000;
+        runner.bus.write_word(program_start, 0x60FE); // BRA.S *
+        runner.cpu.write_reg(Register::PC, program_start);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.set_instructions_per_tick(1);
+
+        let chan_ptr = 0x0039_38C8;
+        let callback_addr = 0x0001_1000;
+        let callback_cmd = SndCommand {
+            cmd: crate::sound::cmd::CALLBACK,
+            param1: 0x1234,
+            param2: 0x0056_7890,
+        };
+        let mut chan = SndChannel::new(chan_ptr, false);
+        chan.callback_addr = callback_addr;
+        chan.play_buffer(vec![0x90; 500], OUTPUT_RATE << 16, PlaybackKind::Buffer, 0);
+        chan.queue_callback(callback_cmd.clone());
+        runner.dispatcher.sound_manager.channels.push(chan);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert!(running);
+        assert_eq!(steps, 2);
+        assert_eq!(
+            runner
+                .dispatcher
+                .sound_manager
+                .pending_sound_callbacks
+                .len(),
+            1
+        );
+        assert!(matches!(
+            &runner.dispatcher.sound_manager.pending_sound_callbacks[0],
+            PendingSoundCallback::Command {
+                callback_addr: actual_callback,
+                chan_ptr: actual_channel,
+                cmd,
+            } if *actual_callback == callback_addr
+                && *actual_channel == chan_ptr
+                && cmd.cmd == callback_cmd.cmd
+                && cmd.param1 == callback_cmd.param1
+                && cmd.param2 == callback_cmd.param2
+        ));
+        assert_eq!(
+            runner.audio_buffer_len(),
+            500,
+            "the complete callback-gated buffer should be captured before completion"
+        );
     }
 
     #[test]

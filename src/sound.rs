@@ -345,6 +345,15 @@ impl SndChannel {
         std::mem::take(&mut self.pending_callback_cmds)
     }
 
+    /// Whether advancing this channel is required to release guest work that
+    /// is waiting behind playback completion.
+    fn has_playback_gated_callback(&self) -> bool {
+        (self.has_active_playback()
+            && ((self.callback_addr != 0 && !self.pending_callback_cmds.is_empty())
+                || self.file_completion_addr != 0))
+            || self.double_buffer.is_some()
+    }
+
     pub fn set_volume(&mut self, packed_volume: u32) {
         self.volume = packed_volume;
     }
@@ -444,6 +453,12 @@ impl SoundManager {
             sys_beep_volume: FULL_STEREO_VOLUME,
             default_output_volume: FULL_STEREO_VOLUME,
         }
+    }
+
+    pub(crate) fn has_playback_gated_callback(&self) -> bool {
+        self.channels
+            .iter()
+            .any(SndChannel::has_playback_gated_callback)
     }
 
     pub fn sys_beep_volume(&self) -> u32 {
