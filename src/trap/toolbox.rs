@@ -3866,6 +3866,7 @@ impl super::TrapDispatcher {
             pn_size: self.pn_size,
             pn_mode: self.pn_mode,
             pn_pat: self.pn_pat,
+            pn_vis: self.pn_vis,
             tx_font: self.tx_font,
             tx_face: self.tx_face,
             tx_mode: self.tx_mode,
@@ -3883,6 +3884,7 @@ impl super::TrapDispatcher {
         self.pn_size = state.pn_size;
         self.pn_mode = state.pn_mode;
         self.pn_pat = state.pn_pat;
+        self.pn_vis = state.pn_vis;
         self.tx_font = state.tx_font;
         self.tx_face = state.tx_face;
         self.tx_mode = state.tx_mode;

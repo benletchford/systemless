@@ -4653,6 +4653,7 @@ impl super::TrapDispatcher {
 
     fn clear_dialog_scoped_item_state(&mut self, dialog_ptr: u32) {
         self.dialogs_drawn_by_app.remove(&dialog_ptr);
+        self.dialog_user_item_port_states.remove(&dialog_ptr);
         self.dialog_items.remove(&dialog_ptr);
         self.dialog_item_handles
             .retain(|_, (dlg, _)| *dlg != dialog_ptr);

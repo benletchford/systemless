@@ -18260,6 +18260,7 @@ impl super::TrapDispatcher {
             pn_size: self.pn_size,
             pn_mode: self.pn_mode,
             pn_pat: self.pn_pat,
+            pn_vis: self.pn_vis,
             tx_font: self.tx_font,
             tx_face: self.tx_face,
             tx_mode: self.tx_mode,
@@ -18292,11 +18293,126 @@ impl super::TrapDispatcher {
         self.pn_size = state.pn_size;
         self.pn_mode = state.pn_mode;
         self.pn_pat = state.pn_pat;
+        self.pn_vis = state.pn_vis;
         self.tx_font = state.tx_font;
         self.tx_face = state.tx_face;
         self.tx_mode = state.tx_mode;
         self.tx_size = state.tx_size;
         self.sync_port_draw_state(bus, port);
+    }
+
+    fn capture_port_region(
+        bus: &MacMemoryBus,
+        port: u32,
+        offset: u32,
+    ) -> Option<super::dispatch::PortRegionSnapshot> {
+        let handle = bus.read_long(port + offset);
+        if !Self::guest_range_in_ram(bus, handle, 4) {
+            return None;
+        }
+        let ptr = bus.read_long(handle);
+        if !Self::guest_range_in_ram(bus, ptr, 2) {
+            return None;
+        }
+        let len = u32::from(bus.read_word(ptr));
+        if len < 10 || !Self::guest_range_in_ram(bus, ptr, len) {
+            return None;
+        }
+        let bytes = (0..len).map(|i| bus.read_byte(ptr + i)).collect();
+        Some(super::dispatch::PortRegionSnapshot { handle, bytes })
+    }
+
+    pub(crate) fn capture_current_port_state(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> super::dispatch::PortStateSnapshot {
+        let port = self.current_port;
+        let mut port_state_bytes = [0; 56];
+        if Self::guest_range_in_ram(bus, port.wrapping_add(32), port_state_bytes.len() as u32) {
+            for (i, byte) in port_state_bytes.iter_mut().enumerate() {
+                *byte = bus.read_byte(port + 32 + i as u32);
+            }
+        }
+        super::dispatch::PortStateSnapshot {
+            port,
+            gdevice: self.current_gdevice,
+            draw_state: self.current_draw_state(),
+            port_state_bytes,
+            vis_region: Self::capture_port_region(bus, port, 24),
+            clip_region: Self::capture_port_region(bus, port, 28),
+        }
+    }
+
+    fn restore_port_region(
+        bus: &mut MacMemoryBus,
+        port: u32,
+        offset: u32,
+        region: &super::dispatch::PortRegionSnapshot,
+    ) {
+        bus.write_long(port + offset, region.handle);
+        let Some(ptr) = Self::ensure_region_capacity(bus, region.handle, region.bytes.len() as u32)
+        else {
+            return;
+        };
+        for (i, byte) in region.bytes.iter().copied().enumerate() {
+            bus.write_byte(ptr + i as u32, byte);
+        }
+    }
+
+    pub(crate) fn restore_current_port_state<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        snapshot: &super::dispatch::PortStateSnapshot,
+    ) {
+        self.set_current_port_state(bus, cpu, snapshot.port, Some(snapshot.gdevice));
+        self.fg_color = snapshot.draw_state.fg_color;
+        self.bg_color = snapshot.draw_state.bg_color;
+        self.pm_fg_color = snapshot.draw_state.pm_fg_color;
+        self.pm_bg_color = snapshot.draw_state.pm_bg_color;
+        self.bk_pat = snapshot.draw_state.bk_pat;
+        self.pn_loc = snapshot.draw_state.pn_loc;
+        self.pn_size = snapshot.draw_state.pn_size;
+        self.pn_mode = snapshot.draw_state.pn_mode;
+        self.pn_pat = snapshot.draw_state.pn_pat;
+        self.pn_vis = snapshot.draw_state.pn_vis;
+        self.tx_font = snapshot.draw_state.tx_font;
+        self.tx_face = snapshot.draw_state.tx_face;
+        self.tx_mode = snapshot.draw_state.tx_mode;
+        self.tx_size = snapshot.draw_state.tx_size;
+        self.port_draw_states
+            .insert(snapshot.port, snapshot.draw_state);
+        self.sync_port_draw_state(bus, snapshot.port);
+        for (i, byte) in snapshot.port_state_bytes.iter().copied().enumerate() {
+            bus.write_byte(snapshot.port + 32 + i as u32, byte);
+        }
+        if let Some(region) = &snapshot.vis_region {
+            Self::restore_port_region(bus, snapshot.port, 24, region);
+        }
+        if let Some(region) = &snapshot.clip_region {
+            Self::restore_port_region(bus, snapshot.port, 28, region);
+        }
+    }
+
+    pub(crate) fn prepare_dialog_user_item_port_state<C: CpuOps>(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        cpu: &mut C,
+        dialog_ptr: u32,
+    ) -> super::dispatch::PortStateSnapshot {
+        self.set_current_port_state(bus, cpu, dialog_ptr, None);
+        let snapshot = self
+            .dialog_user_item_port_states
+            .get(&dialog_ptr)
+            .cloned()
+            .unwrap_or_else(|| {
+                let snapshot = self.capture_current_port_state(bus);
+                self.dialog_user_item_port_states
+                    .insert(dialog_ptr, snapshot.clone());
+                snapshot
+            });
+        self.restore_current_port_state(bus, cpu, &snapshot);
+        snapshot
     }
 
     fn load_port_draw_state(&mut self, bus: &MacMemoryBus, port: u32) -> bool {
