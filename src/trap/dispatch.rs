@@ -5893,6 +5893,10 @@ impl TrapDispatcher {
     /// Load resources into guest memory for trap access.
     /// Loads ALL resource types from the fork (not just a hardcoded whitelist).
     pub fn load_resources(&mut self, fork: &ResourceFork, bus: &mut MacMemoryBus) {
+        if let Some(app_path) = self.launched_app_path.as_ref() {
+            self.vfs
+                .insert(format!("__rsrc__{}", app_path), fork.serialized().to_vec());
+        }
         let file = self.allocate_resource_fork(fork, bus);
         self.resource_file_order
             .insert(0, Self::resource_reference_order(fork));
@@ -5965,6 +5969,41 @@ impl TrapDispatcher {
             current_file: 0,
         });
         bus.write_word(0x0A5A, 0);
+
+        // Some classic runtimes locate relocation resources by walking the
+        // Resource Manager's guest-visible map through TopMapHndl. Keep the
+        // HLE indexes above, but also expose the serialized application map
+        // and populate its reference-record handles.
+        if !fork.map().is_empty() {
+            let map_ptr = bus.alloc(fork.map().len() as u32);
+            bus.write_bytes(map_ptr, fork.map());
+            bus.write_long(map_ptr + 16, 0); // no older map in this minimal chain
+            bus.write_word(map_ptr + 20, 0); // application resource-map refnum
+
+            let map_handle = bus.alloc(4);
+            bus.write_long(map_handle, map_ptr);
+            bus.write_long(0x0A50, map_handle); // TopMapHndl
+
+            let mut resources: Vec<_> = fork.resources().values().collect();
+            resources.sort_by_key(|resource| (resource.res_type, resource.id));
+            for resource in resources {
+                let ptr = self
+                    .resources
+                    .as_ref()
+                    .and_then(|loaded| loaded.files.get(&0))
+                    .and_then(|file| file.loaded.get(&(resource.res_type, resource.id)))
+                    .copied()
+                    .unwrap_or(0);
+                let handle = self.get_or_create_resource_handle_in_file(
+                    bus,
+                    resource.res_type,
+                    resource.id,
+                    ptr,
+                    0,
+                );
+                bus.write_long(map_ptr + resource.reference_offset as u32 + 8, handle);
+            }
+        }
     }
 
     pub(crate) fn register_resource_file(&mut self, refnum: u16, file: ResourceFileMap) {
@@ -6985,6 +7024,41 @@ mod tests {
         assert!(disp.remove_vfs_path_relative_to_launched_app("Plug-Ins/MAGMA"));
         assert!(!disp.vfs.contains_key("Game Folder/Plug-Ins/MAGMA"));
         assert!(!disp.vfs_rsrc.contains_key("Game Folder/Plug-Ins/MAGMA"));
+    }
+
+    #[test]
+    fn load_resources_exposes_application_map_and_fork_to_native_runtime_code() {
+        let serialized = make_single_resource_fork_bytes(*b"TEST", 7, b"payload");
+        let fork = ResourceFork::parse(&serialized).unwrap();
+        let reference_offset = fork.get(*b"TEST", 7).unwrap().reference_offset as u32;
+        let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
+        let mut disp = TrapDispatcher::new();
+        disp.set_launched_app_path("Game Folder/Game App");
+
+        disp.load_resources(&fork, &mut bus);
+
+        let map_handle = bus.read_long(0x0A50);
+        let map_ptr = bus.read_long(map_handle);
+        let resource_handle = bus.read_long(map_ptr + reference_offset + 8);
+        let resource_ptr = bus.read_long(resource_handle);
+
+        assert_ne!(map_handle, 0, "TopMapHndl must address the application map");
+        assert_eq!(
+            bus.read_long(map_ptr + 16),
+            0,
+            "map chain terminates at NIL"
+        );
+        assert_eq!(
+            bus.read_word(map_ptr + 20),
+            0,
+            "map belongs to the app file"
+        );
+        assert_eq!(bus.read_bytes(resource_ptr, 7), b"payload");
+        assert_eq!(
+            disp.vfs.get("__rsrc__Game Folder/Game App"),
+            Some(&serialized),
+            "native PBRead must see the open application resource fork"
+        );
     }
 
     #[test]
