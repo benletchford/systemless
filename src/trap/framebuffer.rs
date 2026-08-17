@@ -633,11 +633,12 @@ impl super::TrapDispatcher {
 
     fn ctab_value_luma(bus: &MacMemoryBus, ctab: u32, wanted_value: u8) -> Option<u32> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+        let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
         let ordinal = u32::from(wanted_value);
         if ordinal < count {
             let entry = ctab + 8 + ordinal * 8;
-            if bus.read_word(entry) == u16::from(wanted_value) {
+            if device_table || bus.read_word(entry) == u16::from(wanted_value) {
                 return Some(
                     u32::from(bus.read_word(entry + 2))
                         + u32::from(bus.read_word(entry + 4))
@@ -662,12 +663,17 @@ impl super::TrapDispatcher {
 
     fn best_luma_pixel_index(bus: &MacMemoryBus, ctab: u32, brightest: bool) -> Option<u8> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+        let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
         let mut best_index = 0u8;
         let mut best_luma = 0u32;
         let mut found = false;
         for ordinal in 0..count {
             let entry = ctab + 8 + ordinal * 8;
-            let value = bus.read_word(entry);
+            let value = if device_table {
+                ordinal as u16
+            } else {
+                bus.read_word(entry)
+            };
             if value > 255 {
                 continue;
             }
@@ -693,6 +699,7 @@ impl super::TrapDispatcher {
     pub(crate) fn fb_pixel_index_for_rgb(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
         let ctab = Self::active_gdevice_ctab(bus)?;
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+        let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
         // Imaging With QuickDraw 1994 p. 4-82 describes inverse-table
         // lookup as the Color Manager path from RGB colors to device pixel
@@ -712,7 +719,11 @@ impl super::TrapDispatcher {
         let mut best_distance = u64::MAX;
         for ordinal in 0..count {
             let entry = ctab + 8 + ordinal * 8;
-            let value = bus.read_word(entry);
+            let value = if device_table {
+                ordinal as u16
+            } else {
+                bus.read_word(entry)
+            };
             if value > 255 {
                 continue;
             }
@@ -749,6 +760,7 @@ impl super::TrapDispatcher {
     pub(crate) fn fb_rgb_for_pixel_index(bus: &MacMemoryBus, index: u8) -> Option<[u16; 3]> {
         let ctab = Self::active_gdevice_ctab(bus)?;
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+        let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
         let ordinal = u32::from(index);
         let read_entry = |entry: u32| {
@@ -758,6 +770,9 @@ impl super::TrapDispatcher {
                 bus.read_word(entry + 6),
             ]
         };
+        if ordinal < count && device_table {
+            return Some(read_entry(ctab + 8 + ordinal * 8));
+        }
         if ordinal < count {
             let entry = ctab + 8 + ordinal * 8;
             if bus.read_word(entry) == u16::from(index) {

@@ -12042,20 +12042,23 @@ impl super::TrapDispatcher {
             //
             // Per IM:V V-147: "The SetClientID procedure sets the gdID field
             // in the current device record to identify this client program to
-            // its search and complement procedures." Systemless's Color Manager
-            // uses identity color matching and the default 1's-complement
-            // procedure path; neither consults a per-client gdID tag. This is
-            // a documented no-op stub that pops the 2-byte INTEGER id and
-            // returns.
+            // its search and complement procedures." The same low-byte ID is
+            // copied into changed device ColorTable entries by SetEntries.
             //
             // Stack: SP+0: id(2). Pop 2. No FUNCTION result slot.
             //
             // The shared behaviour is the Tool-bit Pascal PROCEDURE pop-2
-            // calling convention — A7 unchanged across the call regardless
-            // of the absolute gdID-field mutation, which differs between
-            // engines.
+            // calling convention.
             (true, 0x23C) => {
                 let sp = cpu.read_reg(Register::A7);
+                let client_id = bus.read_word(sp);
+                let gdh = self.active_gdevice_or_main(bus);
+                if gdh != 0 {
+                    let gd = bus.read_long(gdh);
+                    if gd != 0 {
+                        bus.write_word(gd + 2, client_id);
+                    }
+                }
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
@@ -15674,7 +15677,18 @@ impl super::TrapDispatcher {
             let std_clut = Self::standard_mac_8bpp_clut();
             for i in 0u32..256 {
                 let entry = ctab + 8 + i * 8;
-                bus.write_word(entry, i as u16); // value (index)
+                // The standard 8-bit device table's auxiliary primary and
+                // gray ramps are explicit device-index colors. Palette
+                // Manager explicit colors retain the color already assigned
+                // to their device index when logical palettes are installed.
+                // Inside Macintosh Volume V (1986), pp. V-157..V-160;
+                // Imaging With QuickDraw (1994), Table 4-6, p. 4-93.
+                let usage = if (215..=254).contains(&i) {
+                    (PM_EXPLICIT as u16) << 8
+                } else {
+                    0
+                };
+                bus.write_word(entry, usage); // client ID plus Palette Manager usage
                 bus.write_word(entry + 2, std_clut[i as usize][0]); // red
                 bus.write_word(entry + 4, std_clut[i as usize][1]); // green
                 bus.write_word(entry + 6, std_clut[i as usize][2]); // blue
@@ -16685,12 +16699,22 @@ impl super::TrapDispatcher {
         // Some scratch/offscreen tables do not populate every logical index;
         // zero-filling the rest would collapse unrelated indices to black.
         let mut clut = self.color_manager_clut;
-        for entry in entries[..byte_count].chunks_exact(8) {
+        // Device ColorTables are addressed by entry position. Their
+        // ColorSpec.value low byte is a Color Manager client ID, not a pixel
+        // index; the high byte retains per-entry flags. Inside Macintosh
+        // Volume V (1986), pp. V-142..V-143.
+        let device_table = (bus.read_word(ctab_ptr.wrapping_add(4)) & 0x8000) != 0;
+        for (position, entry) in entries[..byte_count].chunks_exact(8).enumerate() {
             let value = u16::from_be_bytes([entry[0], entry[1]]) as usize;
             let red = u16::from_be_bytes([entry[2], entry[3]]);
             let green = u16::from_be_bytes([entry[4], entry[5]]);
             let blue = u16::from_be_bytes([entry[6], entry[7]]);
-            clut[value.min(255)] = [red, green, blue];
+            let index = if device_table {
+                position
+            } else {
+                value.min(255)
+            };
+            clut[index] = [red, green, blue];
         }
         clut
     }
@@ -21568,6 +21592,7 @@ impl super::TrapDispatcher {
         table_ptr: u32,
         start: i16,
         count: i16,
+        client_id: Option<u16>,
     ) -> Option<u32> {
         if !Self::set_entries_request_in_range(bus, table_ptr, start, count) {
             return None;
@@ -21594,7 +21619,14 @@ impl super::TrapDispatcher {
             };
             if idx < 256 {
                 let ct_entry = ctab_ptr + 8 + (idx as u32) * 8;
-                bus.write_word(ct_entry, idx as u16);
+                // High-level Color Manager SetEntries stores the current
+                // GDevice client ID in every changed ColorSpec.value; the
+                // caller's value is only a destination index in index mode.
+                // Inside Macintosh Volume V, V-143.
+                let value = client_id
+                    .map(|id| (bus.read_word(ct_entry) & 0xFF00) | (id & 0x00FF))
+                    .unwrap_or(idx as u16);
+                bus.write_word(ct_entry, value);
                 bus.write_word(ct_entry + 2, r);
                 bus.write_word(ct_entry + 4, g);
                 bus.write_word(ct_entry + 6, b);
@@ -21621,7 +21653,7 @@ impl super::TrapDispatcher {
             self.palette_target_gdevice_handle(bus)
         };
         let ctab_handle = Self::gdevice_ctab_handle(bus, target_gdh);
-        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count);
+        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count, None);
         // Note: color_manager_clut is NOT updated here. Low-level video
         // driver SetEntries only changes the hardware CLUT for palette
         // animation. QuickDraw's index mapping (ITable) stays stable.
@@ -21857,6 +21889,7 @@ impl super::TrapDispatcher {
                 .all(|index| bus.read_word(table_ptr + index * 8) == bus.read_word(table_ptr));
         let previous_frame_was_dimmed =
             Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
+        let physical_clut_before_update = self.device_clut;
 
         // Normal path: install the supplied RGB values into device_clut
         // unconditionally. Per Inside Macintosh Volume V, V-143 the caller's
@@ -21865,14 +21898,36 @@ impl super::TrapDispatcher {
         // substitutes a scaled `color_manager_clut`.
         //
         self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
-        // Sequence-mode ColorSpec.value fields are client IDs after the ROM's
-        // Color Manager processing, not physical CLUT indices. When such a
-        // table ends a hardware fade, the ROM restores the stable physical
-        // palette while retaining the new logical GDevice colors. Treating
-        // the logical table as a fresh hardware palette reinterprets already
-        // indexed artwork through unrelated colors.
-        if target_is_screen && previous_frame_was_dimmed && sequence_uses_client_ids {
-            self.device_clut = self.color_manager_clut;
+        // Uniform sequence-mode ColorSpec.value fields are client IDs after
+        // Color Manager processing, not physical CLUT indices. Preserve the
+        // independently valid physical mapping while updating the logical
+        // GDevice table; treating the latter as a physical palette
+        // reinterprets already indexed artwork through unrelated colors.
+        // Inside Macintosh Volume V (1986), pp. V-142..V-143.
+        if target_is_screen && sequence_uses_client_ids {
+            if previous_frame_was_dimmed {
+                self.device_clut = self.color_manager_clut;
+            } else {
+                let gdh = self.set_entries_target_gdevice_handle(bus);
+                let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
+                if ctab != 0 {
+                    for index in 0..256u32 {
+                        let value = bus.read_word(ctab + 8 + index * 8);
+                        if (value & ((PM_EXPLICIT as u16) << 8)) != 0 {
+                            self.device_clut[index as usize] =
+                                physical_clut_before_update[index as usize];
+                        }
+                    }
+                }
+            }
+            for index in 0..256u32 {
+                let entry = table_ptr + index * 8;
+                self.color_manager_clut[index as usize] = [
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ];
+            }
         }
 
         // Publish `device_clut → color_manager_clut` only on a full-replace
@@ -21907,10 +21962,7 @@ impl super::TrapDispatcher {
                         &self.color_manager_clut,
                     )));
 
-        if target_is_screen
-            && is_full_replace
-            && !transient_fade_table
-            && !(previous_frame_was_dimmed && sequence_uses_client_ids)
+        if target_is_screen && is_full_replace && !transient_fade_table && !sequence_uses_client_ids
         {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
@@ -21942,7 +21994,10 @@ impl super::TrapDispatcher {
             return;
         }
         let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
-        let _ = self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count);
+        let gd = bus.read_long(gdh);
+        let client_id = (gd != 0).then(|| bus.read_word(gd + 2));
+        let _ =
+            self.apply_color_table_updates(bus, ctab_handle, table_ptr, start, count, client_id);
     }
 
     fn set_entries_target_gdevice_handle(&self, bus: &MacMemoryBus) -> u32 {
@@ -30201,7 +30256,9 @@ mod tests {
         // commonly pass a freshly-created zero-length result handle;
         // the result must still become a structurally valid ColorTable.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.ensure_main_gdevice(&mut bus);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let source_ctab = bus.read_long(TrapDispatcher::gdevice_ctab_handle(&bus, gdh));
+        let source_value_42 = bus.read_word(source_ctab + 8 + 42 * 8);
 
         let selection = bus.alloc(2 + 256 * 2);
         bus.write_word(selection, 255); // reqLSize: 256 requests
@@ -30234,10 +30291,65 @@ mod tests {
 
         let canonical = TrapDispatcher::standard_mac_8bpp_clut();
         let entry_42 = result_ptr + 8 + 42 * 8;
-        assert_eq!(bus.read_word(entry_42), 42);
+        assert_eq!(bus.read_word(entry_42), source_value_42);
         assert_eq!(bus.read_word(entry_42 + 2), canonical[42][0]);
         assert_eq!(bus.read_word(entry_42 + 4), canonical[42][1]);
         assert_eq!(bus.read_word(entry_42 + 6), canonical[42][2]);
+    }
+
+    #[test]
+    fn saveentries_restoreentries_preserve_device_value_rgb_and_seed() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        let seed = bus.read_long(ctab);
+        let selected_index = 42u32;
+        let selected_entry = ctab + 8 + selected_index * 8;
+        let original_value = 0x087Au16; // protected flag plus client ID
+        let original_rgb = [0x1234u16, 0x5678, 0x9ABC];
+        bus.write_word(selected_entry, original_value);
+        bus.write_word(selected_entry + 2, original_rgb[0]);
+        bus.write_word(selected_entry + 4, original_rgb[1]);
+        bus.write_word(selected_entry + 6, original_rgb[2]);
+
+        let selection = bus.alloc(4);
+        bus.write_word(selection, 0); // one request
+        bus.write_word(selection + 2, selected_index as u16);
+        let result_handle = bus.alloc(4);
+        let empty_result = bus.alloc(0);
+        bus.write_long(result_handle, empty_result);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, result_handle);
+        bus.write_long(TEST_SP + 8, ctab_handle);
+        let result = d.dispatch_quickdraw(true, 0x249, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let saved_entry = bus.read_long(result_handle) + 8;
+        assert_eq!(bus.read_word(saved_entry), original_value);
+        assert_eq!(bus.read_word(saved_entry + 2), original_rgb[0]);
+        assert_eq!(bus.read_word(saved_entry + 4), original_rgb[1]);
+        assert_eq!(bus.read_word(saved_entry + 6), original_rgb[2]);
+
+        bus.write_word(selected_entry, 0xFFFF);
+        bus.write_word(selected_entry + 2, 0xAAAA);
+        bus.write_word(selected_entry + 4, 0xBBBB);
+        bus.write_word(selected_entry + 6, 0xCCCC);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, selection);
+        bus.write_long(TEST_SP + 4, ctab_handle);
+        bus.write_long(TEST_SP + 8, result_handle);
+        let result = d.dispatch_quickdraw(true, 0x24A, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(bus.read_word(selected_entry), original_value);
+        assert_eq!(bus.read_word(selected_entry + 2), original_rgb[0]);
+        assert_eq!(bus.read_word(selected_entry + 4), original_rgb[1]);
+        assert_eq!(bus.read_word(selected_entry + 6), original_rgb[2]);
+        assert_eq!(bus.read_long(ctab), seed, "RestoreEntries must not reseed");
     }
 
     #[test]
@@ -40783,13 +40895,95 @@ mod tests {
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
         assert_eq!(d.device_clut, baseline);
-        assert_eq!(d.color_manager_clut, baseline);
+        assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
         let ctab_handle = d.current_gdevice_ctab_handle(&bus);
         let ctab = bus.read_long(ctab_handle);
         let entry_42 = ctab + 8 + 42 * 8;
         assert_eq!(bus.read_word(entry_42 + 2), 0x2A00);
         assert_eq!(bus.read_word(entry_42 + 4), 0xD500);
         assert_eq!(bus.read_word(entry_42 + 6), 0x5500);
+    }
+
+    #[test]
+    fn test_setentries_sequence_preserves_flags_and_stores_client_id() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        bus.write_word(gd + 2, 0x1234);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        bus.write_word(ctab + 8 + 245 * 8, 0x08F5);
+
+        let table_ptr = 0x336E00u32;
+        for index in 0..256u32 {
+            let entry = table_ptr + index * 8;
+            bus.write_word(entry, 0);
+            bus.write_word(entry + 2, (index as u16) << 8);
+            bus.write_word(entry + 4, ((255 - index) as u16) << 8);
+            bus.write_word(entry + 6, 0x5500);
+        }
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+
+        let entry_245 = ctab + 8 + 245 * 8;
+        assert_eq!(bus.read_word(entry_245), 0x0834);
+        assert_eq!(bus.read_word(entry_245 + 2), 0xF500);
+        let clut = d.read_ctab_handle_clut(&bus, ctab_handle);
+        assert_eq!(clut[245], [0xF500, 0x0A00, 0x5500]);
+    }
+
+    #[test]
+    fn test_repeated_client_id_sequences_preserve_explicit_physical_cells_without_fade() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let physical = TrapDispatcher::standard_mac_8bpp_clut();
+        d.device_clut = physical;
+        d.color_manager_clut = physical;
+        let table_ptr = 0x336E00u32;
+
+        for pass in 0..2u16 {
+            for index in 0..256u32 {
+                let entry = table_ptr + index * 8;
+                bus.write_word(entry, 0);
+                bus.write_word(entry + 2, ((index as u16).wrapping_add(pass)) << 8);
+                bus.write_word(entry + 4, ((255 - index) as u16) << 8);
+                bus.write_word(entry + 6, 0x5500);
+            }
+            d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+            assert_eq!(d.device_clut[245], physical[245]);
+            assert_eq!(
+                d.device_clut[42],
+                [((42u16).wrapping_add(pass)) << 8, 0xD500, 0x5500]
+            );
+            assert_eq!(
+                d.color_manager_clut[245],
+                [((245u16).wrapping_add(pass)) << 8, 0x0A00, 0x5500]
+            );
+        }
+    }
+
+    #[test]
+    fn test_setentries_index_mode_uses_values_only_as_destinations() {
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        bus.write_word(gd + 2, 0x007A);
+        let ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let ctab = bus.read_long(ctab_handle);
+        bus.write_word(ctab + 8 + 42 * 8, 0x2000);
+        let table_ptr = 0x336E00u32;
+        bus.write_word(table_ptr, 42);
+        bus.write_word(table_ptr + 2, 0x1111);
+        bus.write_word(table_ptr + 4, 0x2222);
+        bus.write_word(table_ptr + 6, 0x3333);
+
+        d.apply_set_entries_with_gdevice(&mut bus, table_ptr, -1, 0);
+
+        let entry_42 = ctab + 8 + 42 * 8;
+        assert_eq!(bus.read_word(entry_42), 0x207A);
+        assert_eq!(bus.read_word(entry_42 + 2), 0x1111);
+        assert_eq!(bus.read_word(entry_42 + 4), 0x2222);
+        assert_eq!(bus.read_word(entry_42 + 6), 0x3333);
     }
 
     #[test]
@@ -41889,6 +42083,8 @@ mod tests {
         // Pops 2 bytes (single 2-byte INTEGER id). Five successive
         // distinct-id calls preserve A7 net-balance.
         let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
 
         let ids: [u16; 5] = [0x1234, 0x5678, 0x4321, 0x7654, 0x0BAD];
         let pre = cpu.read_reg(Register::A7);
@@ -41899,6 +42095,7 @@ mod tests {
             let r = d.dispatch_quickdraw(true, 0x23C, &mut cpu, &mut bus);
             assert!(r.unwrap().is_ok());
             assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(bus.read_word(gd + 2), id);
         }
         assert_eq!(cpu.read_reg(Register::A7), pre);
     }
