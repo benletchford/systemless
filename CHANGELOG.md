@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/benletchford/systemless/compare/v0.13.3...v0.14.0) (2026-08-17)
+
+
+### Features
+
+* expose GPU-ready QD3D frames and fast-forward PowerPC idle polls ([#646](https://github.com/benletchford/systemless/issues/646)) ([7aba7da](https://github.com/benletchford/systemless/commit/7aba7da5fc11709caa77627ff43ea55878575194))
+
 ## [0.13.3](https://github.com/benletchford/systemless/compare/v0.13.2...v0.13.3) (2026-08-16)
 
 
