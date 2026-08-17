@@ -518,6 +518,7 @@ pub(crate) struct StandardFileGetEntry {
     pub dir_id: u32,
     pub file_type: u32,
     pub finder_flags: u16,
+    pub is_directory: bool,
 }
 
 /// Retained state for the Standard File Package open dialogs.
@@ -532,6 +533,8 @@ pub(crate) struct StandardFileGetTrackingState {
     pub stack_ptr: u32,
     pub pop_total: u32,
     pub entries: Vec<StandardFileGetEntry>,
+    pub current_dir_id: u32,
+    pub file_types: Option<Vec<u32>>,
     pub selected: usize,
     pub bounds: (i16, i16, i16, i16),
     pub saved_pixels: Vec<u8>,
