@@ -217,10 +217,10 @@ applications requesting a family by name or ID still resolve to a sensible face
 | **Jarrah**      | Heavy system / UI sans | Chicago (0) |
 | **Kurrajong**   | Humanist body sans     | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
 | **Mallee**    | Monospace              | Monaco (4), Courier (22) |
-| **Ironbark**    | Serif                  | New York (2), Times (20) |
+| **Ironbark**    | Serif                  | New York (2), Palatino (16), Times (20) |
 
 Sizes: Jarrah 9/12; Kurrajong 9/10/12/14/18/24 (+ Application 12, Helvetica 12);
-Mallee 9/10/12; Ironbark 12/14/18.
+Mallee 9/10/12; Ironbark 12/14/18 (with 2× scaling for 24).
 
 Every face is hand-drawn glyph by glyph in a consistent house style, with
 advances, side-bearings and x-height / cap height conformed to the original Mac

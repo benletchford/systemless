@@ -61,6 +61,10 @@ pub mod addr {
     pub const SOUND_LEVEL: u32 = 0x027F;
 
     // Menu Manager globals
+    /// MenuList: handle to the current Menu Manager menu list.
+    /// Inside Macintosh Volume III (1985), low-memory globals table;
+    /// Inside Macintosh Volume V (1986), pp. V-228–V-230.
+    pub const MENU_LIST: u32 = 0x0A1C;
     pub const MBAR_HEIGHT: u32 = 0x0BAA; // Menu bar height in pixels (word) - Inside Macintosh V, V-245
     pub const MENU_FLASH: u32 = 0x0A24; // Number of times menu item blinks (word) - Inside Macintosh Volume I, I-361
 

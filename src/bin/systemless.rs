@@ -1350,9 +1350,12 @@ impl App {
 
         #[cfg(not(target_os = "macos"))]
         {
-            let scale = (buf_w / game_w).min(buf_h / game_h).max(1) as usize;
-            let draw_w = game_w as usize * scale;
-            let draw_h = game_h as usize * scale;
+            let (draw_x, draw_y, draw_w, draw_h) =
+                aspect_fit_dimensions(game_w, game_h, buf_w, buf_h);
+            let draw_x = draw_x as usize;
+            let draw_y = draw_y as usize;
+            let draw_w = draw_w as usize;
+            let draw_h = draw_h as usize;
             let mut scaled_row = std::mem::take(&mut self.scaled_row);
 
             let Some(surface) = self.surface.as_mut() else {
@@ -1373,30 +1376,28 @@ impl App {
 
             let mut buffer = surface.buffer_mut().expect("Failed to get buffer");
 
-            if draw_w != buf_w as usize || draw_h != buf_h as usize {
+            if draw_x != 0 || draw_y != 0 || draw_w != buf_w as usize || draw_h != buf_h as usize {
                 buffer.fill(0xFF000000);
             }
 
-            if scale == 1 {
+            if draw_w == game_w as usize && draw_h == game_h as usize {
                 for row in 0..game_h as usize {
                     let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
-                    let dst_offset = row * buf_w as usize;
+                    let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
                     buffer[dst_offset..dst_offset + game_w as usize].copy_from_slice(src_row);
                 }
             } else {
                 scaled_row.resize(draw_w, 0xFF000000);
-                for row in 0..game_h as usize {
-                    let src_row = &frame_argb[row * game_w as usize..(row + 1) * game_w as usize];
-                    for (dst_chunk, &pixel) in
-                        scaled_row.chunks_exact_mut(scale).zip(src_row.iter())
-                    {
-                        dst_chunk.fill(pixel);
+                for row in 0..draw_h {
+                    let source_y = row * game_h as usize / draw_h;
+                    let src_row =
+                        &frame_argb[source_y * game_w as usize..(source_y + 1) * game_w as usize];
+                    for (destination_x, pixel) in scaled_row.iter_mut().enumerate() {
+                        let source_x = destination_x * game_w as usize / draw_w;
+                        *pixel = src_row[source_x];
                     }
-                    let dst_row_start = row * scale * buf_w as usize;
-                    for repeat in 0..scale {
-                        let dst_offset = dst_row_start + repeat * buf_w as usize;
-                        buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
-                    }
+                    let dst_offset = (draw_y + row) * buf_w as usize + draw_x;
+                    buffer[dst_offset..dst_offset + draw_w].copy_from_slice(&scaled_row);
                 }
             }
 
@@ -1409,6 +1410,38 @@ impl App {
         self.force_next_render = false;
         self.render_headroom = Self::next_render_headroom(render_start.elapsed());
     }
+}
+
+fn aspect_fit_dimensions(
+    source_width: u32,
+    source_height: u32,
+    drawable_width: u32,
+    drawable_height: u32,
+) -> (u32, u32, u32, u32) {
+    if source_width == 0 || source_height == 0 || drawable_width == 0 || drawable_height == 0 {
+        return (0, 0, 0, 0);
+    }
+
+    let width_limited = u64::from(drawable_width) * u64::from(source_height)
+        <= u64::from(drawable_height) * u64::from(source_width);
+    let (width, height) = if width_limited {
+        (
+            drawable_width,
+            (u64::from(drawable_width) * u64::from(source_height) / u64::from(source_width)) as u32,
+        )
+    } else {
+        (
+            (u64::from(drawable_height) * u64::from(source_width) / u64::from(source_height))
+                as u32,
+            drawable_height,
+        )
+    };
+    (
+        (drawable_width - width) / 2,
+        (drawable_height - height) / 2,
+        width,
+        height,
+    )
 }
 
 fn physical_to_mac_in_viewport(
@@ -3362,6 +3395,25 @@ mod tests {
         assert!(
             !content_rect_has_inactive_margins_8bpp(&framebuffer, width, width, height, content,),
             "a separately drawn side panel must keep the full screen visible"
+        );
+    }
+
+    #[test]
+    fn software_presenter_aspect_fits_and_centers_wide_windows() {
+        assert_eq!(
+            aspect_fit_dimensions(800, 600, 1920, 1080),
+            (240, 0, 1440, 1080),
+            "a 4:3 guest should fill a 16:9 window vertically"
+        );
+        assert_eq!(
+            aspect_fit_dimensions(800, 600, 1280, 960),
+            (0, 0, 1280, 960),
+            "matching aspect ratios should fill the drawable"
+        );
+        assert_eq!(
+            aspect_fit_dimensions(800, 600, 600, 800),
+            (0, 175, 600, 450),
+            "portrait windows should center the guest vertically"
         );
     }
 
