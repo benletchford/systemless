@@ -10690,23 +10690,22 @@ impl super::TrapDispatcher {
                     bus.write_word(crate::memory::globals::addr::ANUMBER, alert_id as u16);
 
                     if let Some(default_item) = default_item {
-                        // Until Alert filterProc dispatch is implemented, keep
-                        // non-NIL filterProc calls on the old default-item
-                        // path. Entering local button tracking would ignore
-                        // caller-supplied filter decisions.
-                        if filter_proc == 0
-                            && self.begin_interactive_alert(
-                                cpu,
-                                bus,
-                                sp,
-                                alert_id,
-                                filter_proc,
-                                bounds,
-                                items_id,
-                                position,
-                                default_item,
-                            )
-                        {
+                        // A filter procedure customizes event handling; it does
+                        // not make a multi-button alert non-modal. Until guest
+                        // filter callbacks are supported, preserve the visible
+                        // alert and standard button/Return handling instead of
+                        // silently choosing the default item.
+                        if self.begin_interactive_alert(
+                            cpu,
+                            bus,
+                            sp,
+                            alert_id,
+                            filter_proc,
+                            bounds,
+                            items_id,
+                            position,
+                            default_item,
+                        ) {
                             if super::dispatch::trace_dialog_traps_enabled() {
                                 eprintln!(
                                     "[TRAP] {} id={} -> interactive dialog (PC=${:08X}) stages=${:04X} alertStage={} stageIdx={} nibble=${:X} defaultItem={}",
@@ -19481,6 +19480,29 @@ mod tests {
                  same as Alert"
             );
         }
+    }
+
+    #[test]
+    fn alert_with_filter_proc_keeps_multi_button_dialog_interactive() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alrt_id = 500;
+        let ditl = build_test_ditl_items(&[
+            (4, (110, 20, 130, 100), b"Disagree"),
+            (4, (110, 120, 130, 200), b"Agree"),
+            (8, (20, 20, 90, 300), b"Compatibility notice"),
+        ]);
+        let alrt = build_alrt_template(alrt_id, 0x5555);
+        disp.install_test_resource(&mut bus, *b"ALRT", alrt_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", alrt_id, &ditl);
+        bus.write_long(TEST_SP, 0x0012_3456); // filterProc
+        bus.write_word(TEST_SP + 4, alrt_id as u16);
+
+        let result = disp.dispatch_dialog(true, 0x187, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert!(disp.dialog_tracking.is_some());
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
     }
 
     #[test]
