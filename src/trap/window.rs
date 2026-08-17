@@ -2446,6 +2446,19 @@ impl super::TrapDispatcher {
         self.queue_window_update_event(window_ptr);
     }
 
+    pub(super) fn invalidate_entire_visible_window(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+    ) {
+        if !self.window_visible(bus, window_ptr) {
+            return;
+        }
+        if let Some(content) = self.window_content_rect(bus, window_ptr) {
+            self.invalidate_window_rect(bus, window_ptr, content);
+        }
+    }
+
     fn invalidate_window_global_rect(
         &mut self,
         bus: &mut MacMemoryBus,
