@@ -3293,6 +3293,45 @@ pub struct PpcQ3SceneReplay {
     pub memory_regions: Vec<PpcQ3SceneReplayMemoryRegion>,
 }
 
+/// A browser-friendly QD3D frame whose guest geometry has already been
+/// transformed, clipped, lit, and decoded for direct GPU rasterization.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpcQ3GpuFrame {
+    pub width: u32,
+    pub height: u32,
+    pub viewport: [i32; 4],
+    pub clear_color: Option<[f32; 4]>,
+    pub textures: Vec<PpcQ3GpuTexture>,
+    pub draws: Vec<PpcQ3GpuDraw>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcQ3GpuTexture {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+    pub wrap_u: bool,
+    pub wrap_v: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpcQ3GpuDraw {
+    pub texture: Option<usize>,
+    pub vertices: Vec<PpcQ3GpuVertex>,
+    pub blend: bool,
+    pub write_depth: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PpcQ3GpuVertex {
+    pub screen_x: f32,
+    pub screen_y: f32,
+    pub depth: f32,
+    pub reciprocal_w: f32,
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
 impl PpcQ3SceneReplay {
     pub fn to_json_pretty(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
@@ -4661,6 +4700,230 @@ impl PpcLoadedApp {
             stats.merge_frame_stats(frame_stats, &mut saw_missing_target);
         }
         stats
+    }
+
+    /// Drain the newest completed triangle frame as GPU-ready primitives.
+    /// Unsupported QD3D state leaves the queue untouched so callers can use
+    /// `render_completed_q3_frames_to_front_buffer_fast` as an exact fallback.
+    pub fn take_completed_q3_gpu_frame(&mut self) -> Option<PpcQ3GpuFrame> {
+        let frame = self
+            .q3_completed_frames
+            .iter()
+            .rfind(|frame| {
+                frame
+                    .submissions
+                    .iter()
+                    .any(|submission| submission.kind == PpcQ3SubmissionKind::TriMesh)
+            })?
+            .clone();
+        let commands = self.q3_completed_frame_scene_commands(&frame);
+        let gpu_frame = self.prepare_q3_gpu_frame(commands)?;
+        self.q3_completed_frames.clear();
+        self.q3_state_only_completed_frame_batches.clear();
+        Some(gpu_frame)
+    }
+
+    fn prepare_q3_gpu_frame(&mut self, commands: Vec<PpcQ3SceneCommand>) -> Option<PpcQ3GpuFrame> {
+        let target = self.q3_render_target(&commands)?;
+        let front_buffer = target.front_buffer;
+        if front_buffer.depth != 16 || front_buffer.width == 0 || front_buffer.height == 0 {
+            return None;
+        }
+        let viewport = target
+            .viewport
+            .unwrap_or_else(|| PpcQ3ViewportRect::full(front_buffer));
+        let viewport_bounds = viewport.inclusive_bounds()?;
+        let mut textures = Vec::new();
+        let mut draws = Vec::new();
+
+        for command in commands {
+            let PpcQ3SceneCommand::TriMesh(command) = command else {
+                continue;
+            };
+            if ppc_q3_software_fill_style(&command.material) != PPC_Q3_FILL_STYLE_FILLED {
+                return None;
+            }
+            let material = ppc_q3_software_material_sample(
+                &self.q3_objects,
+                &self.q3_memory_storages,
+                &command.material,
+            );
+            if material.fog_style.is_some()
+                || command
+                    .lights
+                    .lights
+                    .iter()
+                    .any(|light| light.data.is_on != 0)
+            {
+                return None;
+            }
+            let transparency = material.transparency;
+            if (transparency.0 - transparency.1).abs() > 0.001
+                || (transparency.0 - transparency.2).abs() > 0.001
+            {
+                return None;
+            }
+            let points = self.q3_software_trimesh_points(&command)?;
+            let triangles = self.q3_software_trimesh_triangles(&command, points.len());
+            if points.is_empty() || triangles.is_empty() {
+                continue;
+            }
+            let vertex_uvs = if material.texture.is_some() {
+                self.q3_software_trimesh_vertex_uvs(&command, points.len())?
+            } else {
+                vec![(0.0, 0.0); points.len()]
+            };
+            let vertex_diffuse =
+                self.q3_software_trimesh_vertex_diffuse_colors(&command, points.len());
+            let vertex_alpha = self.q3_software_trimesh_vertex_alphas(&command, points.len());
+            let triangle_diffuse = self.q3_software_trimesh_triangle_diffuse_colors(&command);
+            let triangle_alpha = self.q3_software_trimesh_triangle_alphas(&command);
+            let mut projected = points
+                .iter()
+                .copied()
+                .map(|point| ppc_q3_software_project_point(&command, front_buffer, viewport, point))
+                .collect::<Vec<_>>();
+            for (index, projected) in projected.iter_mut().enumerate() {
+                let Some(projected) = projected else {
+                    continue;
+                };
+                projected.uv = vertex_uvs.get(index).copied();
+                projected.diffuse = vertex_diffuse
+                    .as_ref()
+                    .and_then(|colors| colors.get(index).copied());
+                projected.vertex_alpha = vertex_alpha
+                    .as_ref()
+                    .and_then(|alphas| alphas.get(index).copied());
+            }
+
+            let texture_index = match material.texture {
+                Some(texture) => {
+                    let texture = ppc_q3_gpu_texture_from_software(
+                        &mut self.memory,
+                        texture,
+                        material.shader_boundary,
+                    )?;
+                    let index = textures.len();
+                    textures.push(texture);
+                    Some(index)
+                }
+                None => None,
+            };
+            let interpolation_style = ppc_q3_software_interpolation_style(&command.material);
+            let backfacing_style = ppc_q3_software_backfacing_style(&command.material);
+            let orientation_style = ppc_q3_software_orientation_style(&command.material);
+            let mut vertices = Vec::with_capacity(triangles.len().saturating_mul(3));
+            let mut blend =
+                transparency.0 < 0.999 || ppc_q3_software_texture_may_blend(material.texture);
+
+            for triangle in triangles {
+                let mut triangle_vertices = [
+                    projected.get(triangle.points[0]).copied().flatten()?,
+                    projected.get(triangle.points[1]).copied().flatten()?,
+                    projected.get(triangle.points[2]).copied().flatten()?,
+                ];
+                if let Some(diffuse) = triangle_diffuse
+                    .as_ref()
+                    .and_then(|colors| colors.get(triangle.index).copied())
+                {
+                    for vertex in &mut triangle_vertices {
+                        if vertex.diffuse.is_none() {
+                            vertex.diffuse = Some(diffuse);
+                        }
+                    }
+                }
+                if let Some(alpha) = triangle_alpha
+                    .as_ref()
+                    .and_then(|alphas| alphas.get(triangle.index).copied())
+                {
+                    for vertex in &mut triangle_vertices {
+                        if vertex.vertex_alpha.is_none() {
+                            vertex.vertex_alpha = Some(alpha);
+                        }
+                    }
+                }
+                let clipped = ppc_q3_software_clip_projected_triangle(
+                    command.camera,
+                    front_buffer,
+                    viewport,
+                    triangle_vertices,
+                );
+                if clipped.len() < 3 {
+                    continue;
+                }
+                let mut clipped = clipped
+                    .into_iter()
+                    .map(ppc_q3_software_projected_vertex_to_point)
+                    .collect::<Vec<_>>();
+                if ppc_q3_software_culls_backfacing(backfacing_style, orientation_style, &clipped) {
+                    continue;
+                }
+                ppc_q3_software_flip_backfacing_normals(
+                    backfacing_style,
+                    orientation_style,
+                    &mut clipped,
+                );
+                let flat_diffuse = (interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
+                    .then(|| clipped.first().and_then(|vertex| vertex.diffuse))
+                    .flatten();
+                let flat_alpha = (interpolation_style == PPC_Q3_INTERPOLATION_STYLE_NONE)
+                    .then(|| clipped.first().and_then(|vertex| vertex.vertex_alpha))
+                    .flatten();
+                for index in 1..clipped.len().saturating_sub(1) {
+                    for point in [clipped[0], clipped[index], clipped[index + 1]] {
+                        let diffuse = flat_diffuse.or(point.diffuse).unwrap_or(material.diffuse);
+                        let vertex_alpha = flat_alpha.or(point.vertex_alpha).unwrap_or(1.0);
+                        if vertex_alpha < 0.999 {
+                            blend = true;
+                        }
+                        let uv = ppc_q3_software_transform_uv(
+                            point.uv.unwrap_or((0.0, 0.0)),
+                            material.uv_transform,
+                        )?;
+                        vertices.push(PpcQ3GpuVertex {
+                            screen_x: point.x as f32,
+                            screen_y: point.y as f32,
+                            depth: point.z,
+                            reciprocal_w: point.reciprocal_w,
+                            uv: [uv.0, uv.1],
+                            color: [
+                                diffuse.0,
+                                diffuse.1,
+                                diffuse.2,
+                                transparency.0 * vertex_alpha,
+                            ],
+                        });
+                    }
+                }
+            }
+            if !vertices.is_empty() {
+                draws.push(PpcQ3GpuDraw {
+                    texture: texture_index,
+                    vertices,
+                    blend,
+                    write_depth: !blend,
+                });
+            }
+        }
+        if draws.is_empty() {
+            return None;
+        }
+        Some(PpcQ3GpuFrame {
+            width: front_buffer.width,
+            height: front_buffer.height,
+            viewport: [
+                viewport_bounds.0,
+                viewport_bounds.1,
+                viewport_bounds.2,
+                viewport_bounds.3,
+            ],
+            clear_color: target.clear_color.map(|color| {
+                let (red, green, blue) = ppc_q3_rgb555_to_color(color);
+                [red, green, blue, 1.0]
+            }),
+            textures,
+            draws,
+        })
     }
 
     fn render_q3_scene_commands_to_front_buffer_inner(
@@ -7210,6 +7473,7 @@ impl PpcLoadedApp {
         let trace_pc_range = ppc_trace_pc_range();
         let trace_recent_on_halt = ppc_recent_imports_on_halt_enabled();
         let mut recent_imports = VecDeque::<PpcHleImportTraceEntry>::new();
+        let mut idle_poll_counts = HashMap::<u32, u32>::new();
         let needs_fetch_observer = trace_fetches || trace_ppc || trace_pc_range.is_some();
         let mut fetch_observer = PpcHleFetchObserver {
             histogram: if trace_fetches {
@@ -7344,13 +7608,16 @@ impl PpcLoadedApp {
                     }
                     let action = match binding.dispatcher_target {
                         PpcImportDispatcherTarget::Button => {
-                            dispatch_button_import(cpu, input, None)
+                            dispatch_button_import(cpu, input, Some(&mut idle_poll_counts))
                         }
-                        PpcImportDispatcherTarget::StillDown => {
-                            dispatch_still_down_import(cpu, input, &event_queue, None)
-                        }
+                        PpcImportDispatcherTarget::StillDown => dispatch_still_down_import(
+                            cpu,
+                            input,
+                            &event_queue,
+                            Some(&mut idle_poll_counts),
+                        ),
                         PpcImportDispatcherTarget::GetKeys => {
-                            dispatch_getkeys_import(cpu, memory, input, None)
+                            dispatch_getkeys_import(cpu, memory, input, Some(&mut idle_poll_counts))
                         }
                         PpcImportDispatcherTarget::TickCount => {
                             PpcImportAction::Return(import_tick_count)
@@ -7364,7 +7631,7 @@ impl PpcLoadedApp {
                                 clock_cycle_phase,
                                 elapsed,
                             ),
-                            None,
+                            Some(&mut idle_poll_counts),
                         ),
                         _ => unreachable!(),
                     };
@@ -7501,7 +7768,12 @@ impl PpcLoadedApp {
                 };
 
                 let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
-                    Some(dispatch_getkeys_import(cpu, memory, input, None))
+                    Some(dispatch_getkeys_import(
+                        cpu,
+                        memory,
+                        input,
+                        Some(&mut idle_poll_counts),
+                    ))
                 } else if let Some(action) =
                     dispatch_q3_matrix_import_fast(&binding.dispatcher_target, cpu, memory)
                 {
@@ -8737,6 +9009,54 @@ fn ppc_q3_software_texture_pixel_at(
     let pixel_bytes = usize::try_from(texture.pixel_bytes).ok()?;
     memory.read_bytes_into(pixel_ptr, pixel.get_mut(..pixel_bytes)?)?;
     ppc_q3_software_texture_pixel_color(texture.pixel_type, texture.byte_order, &pixel)
+}
+
+fn ppc_q3_gpu_texture_from_software(
+    memory: &mut PpcSectionMem,
+    texture: PpcQ3SoftwareTexture,
+    shader_boundary: Option<PpcQ3ShaderBoundaryRecord>,
+) -> Option<PpcQ3GpuTexture> {
+    let pixel_count = usize::try_from(texture.width.checked_mul(texture.height)?).ok()?;
+    let mut rgba = Vec::with_capacity(pixel_count.checked_mul(4)?);
+    for y in 0..texture.height {
+        for x in 0..texture.width {
+            let sample = ppc_q3_software_texture_pixel_at(memory, texture, x, y)?;
+            rgba.extend([
+                (sample.color.0.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.color.1.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.color.2.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (sample.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+            ]);
+        }
+    }
+    let u_boundary = shader_boundary
+        .map(|record| record.u_boundary)
+        .unwrap_or(PPC_Q3_SHADER_UV_BOUNDARY_WRAP);
+    let v_boundary = shader_boundary
+        .map(|record| record.v_boundary)
+        .unwrap_or(PPC_Q3_SHADER_UV_BOUNDARY_WRAP);
+    if !matches!(
+        u_boundary,
+        PPC_Q3_SHADER_UV_BOUNDARY_WRAP | PPC_Q3_SHADER_UV_BOUNDARY_CLAMP
+    ) || !matches!(
+        v_boundary,
+        PPC_Q3_SHADER_UV_BOUNDARY_WRAP | PPC_Q3_SHADER_UV_BOUNDARY_CLAMP
+    ) {
+        return None;
+    }
+    if (u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP && !texture.width.is_power_of_two())
+        || (v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP && !texture.height.is_power_of_two())
+    {
+        // WebGL 1 only permits REPEAT on power-of-two texture dimensions.
+        return None;
+    }
+    Some(PpcQ3GpuTexture {
+        width: texture.width,
+        height: texture.height,
+        rgba,
+        wrap_u: u_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
+        wrap_v: v_boundary == PPC_Q3_SHADER_UV_BOUNDARY_WRAP,
+    })
 }
 
 fn ppc_q3_read_u32_from_slice(data: &[u8], offset: u32) -> Option<u32> {
@@ -84233,6 +84553,56 @@ mod tests {
         assert!(replay_json.contains("\"memory_regions\""));
         let replay = PpcQ3SceneReplay::from_json_str(&replay_json).unwrap();
 
+        loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+            view,
+            submissions: loaded.q3_submissions.clone(),
+            submission_transforms: loaded.q3_submission_transforms.clone(),
+            submission_materials: loaded.q3_submission_materials.clone(),
+            submission_lights: loaded.q3_submission_lights.clone(),
+            retained_trimeshes: Vec::new(),
+        });
+        let gpu_frame = loaded
+            .take_completed_q3_gpu_frame()
+            .expect("simple filled triangle should use the GPU packet path");
+        assert_eq!((gpu_frame.width, gpu_frame.height), (8, 8));
+        assert_eq!(gpu_frame.viewport, [0, 0, 7, 7]);
+        assert!(gpu_frame.textures.is_empty());
+        assert_eq!(gpu_frame.draws.len(), 1);
+        assert_eq!(gpu_frame.draws[0].vertices.len(), 3);
+        assert_eq!(gpu_frame.draws[0].vertices[0].color, [0.0, 1.0, 0.0, 1.0]);
+        assert!(loaded.q3_completed_frames.is_empty());
+        assert_eq!(
+            loaded.memory.read_u16_be(front_base + 4 * 16 + 4 * 2),
+            Some(0)
+        );
+
+        loaded.q3_submission_lights[0]
+            .lights
+            .push(PpcQ3LightRecord {
+                light: PPC_Q3_OBJECT_BASE + PPC_Q3_OBJECT_STRIDE * 2,
+                light_type: PPC_Q3_LIGHT_TYPE_AMBIENT,
+                data: PpcQ3LightData {
+                    is_on: 1,
+                    brightness: 1.0,
+                    color: (1.0, 1.0, 1.0),
+                },
+                kind: PpcQ3LightKind::Ambient,
+            });
+        loaded.q3_completed_frames.push(PpcQ3CompletedFrameRecord {
+            view,
+            submissions: loaded.q3_submissions.clone(),
+            submission_transforms: loaded.q3_submission_transforms.clone(),
+            submission_materials: loaded.q3_submission_materials.clone(),
+            submission_lights: loaded.q3_submission_lights.clone(),
+            retained_trimeshes: Vec::new(),
+        });
+        assert!(loaded.take_completed_q3_gpu_frame().is_none());
+        assert_eq!(loaded.q3_completed_frames.len(), 1);
+        let fallback_stats = loaded.render_completed_q3_frames_to_front_buffer_fast();
+        assert_eq!(fallback_stats.frames, 1);
+        assert!(fallback_stats.pixels >= 8);
+        assert!(loaded.q3_completed_frames.is_empty());
+
         let mut replay_loaded = load_pef_application(&pef).unwrap();
         replay_loaded
             .memory
@@ -108163,6 +108533,41 @@ mod tests {
             PpcImportAction::ReturnPreserve
         );
         assert!(idle_poll_counts.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_fast_forwards_microseconds_poll_loops() {
+        let pef = synthetic_pef_with_import(b"Microseconds");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let microseconds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(microseconds_ptr, vec![0; 8]);
+        loaded.cpu.gpr[3] = microseconds_ptr;
+        let loop_pc = PPC_DATA_BASE + 0x1100;
+        let trap_hi = (PPC_IMPORT_TRAP_BASE >> 16) as u16;
+        let trap_lo = (PPC_IMPORT_TRAP_BASE & 0xffff) as u16;
+        let mut loop_code = Vec::new();
+        for word in [
+            d_form_u(15, 12, 0, trap_hi),  // lis r12, trap@ha
+            d_form_u(24, 12, 12, trap_lo), // ori r12, r12, trap@l
+            xfx_form(31, 12, 9, 467),      // mtctr r12
+            xl_form(19, 20, 0, 528, true), // bctrl
+            0x4bff_fffc,                   // b -4
+        ] {
+            loop_code.extend_from_slice(&word.to_be_bytes());
+        }
+        loaded.memory.add_region(loop_pc, loop_code);
+        loaded.cpu.pc = loop_pc;
+
+        let probe = loaded.run_with_hle_imports(100_000);
+
+        assert!(ppc_run_result_cycles(probe.result) >= 100_000);
+        assert!(
+            probe.handled_import_count
+                <= PPC_MICROSECONDS_IDLE_POLL_FAST_FORWARD_THRESHOLD.saturating_add(20),
+            "poll loop executed {} imports instead of charging guest cycles",
+            probe.handled_import_count
+        );
+        assert_ne!(loaded.memory.read_u32_be(microseconds_ptr + 4), Some(0));
     }
 
     #[test]
