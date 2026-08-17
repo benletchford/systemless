@@ -5352,7 +5352,7 @@ impl super::TrapDispatcher {
         self.ensure_dialog_background_saved(bus, port, bounds);
     }
 
-    fn dialog_saved_pixel_rect(rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
+    pub(super) fn dialog_saved_pixel_rect(rect: (i16, i16, i16, i16)) -> (i16, i16, i16, i16) {
         let (top, left, bottom, right) = rect;
         let margin = Self::DBOX_FRAME_MARGIN;
         (top - margin, left - margin, bottom + margin, right + margin)
