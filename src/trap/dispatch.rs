@@ -1133,6 +1133,9 @@ pub struct TrapDispatcher {
     pub(crate) detached_handle_files: HashMap<u32, u16>,
     /// Resource fork reference (loaded into memory)
     pub(crate) resources: Option<LoadedResources>,
+    /// On-disk resource reference order for each parsed resource file.
+    /// Inside Macintosh Volume I (1985), p. I-129.
+    pub(crate) resource_file_order: HashMap<u16, Vec<([u8; 4], i16)>>,
     /// Canonical resource bytes keyed by (resource-file refnum, type, id).
     /// Used to reload unloaded resources without reparsing the whole fork.
     pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
@@ -2947,6 +2950,7 @@ impl TrapDispatcher {
             detached_handle_files: HashMap::new(),
             resources: None,
             resource_backing_data: HashMap::new(),
+            resource_file_order: HashMap::new(),
             resident_resources: HashSet::new(),
             movie_states: HashMap::new(),
             movie_by_controller: HashMap::new(),
@@ -4843,6 +4847,15 @@ impl TrapDispatcher {
         }
     }
 
+    fn resource_reference_order(fork: &ResourceFork) -> Vec<([u8; 4], i16)> {
+        let mut resources: Vec<_> = fork.resources().values().collect();
+        resources.sort_by_key(|resource| resource.reference_offset);
+        resources
+            .into_iter()
+            .map(|resource| (resource.res_type, resource.id))
+            .collect()
+    }
+
     pub(crate) fn remember_resource_backing_data(
         &mut self,
         refnum: u16,
@@ -5037,7 +5050,7 @@ impl TrapDispatcher {
             .remove(&(refnum, res_type, res_id));
     }
 
-    pub(crate) fn forget_resource_live_map_entry_for_handle(&mut self, handle: u32) {
+    pub(crate) fn unload_resource_live_map_entry_for_handle(&mut self, handle: u32) {
         let Some((ptr, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
             return;
         };
@@ -5053,11 +5066,13 @@ impl TrapDispatcher {
         };
 
         if file.loaded.get(&(res_type, res_id)).copied() == Some(ptr) {
-            file.loaded.remove(&(res_type, res_id));
+            file.loaded.insert((res_type, res_id), 0);
         }
-        file.named.retain(|(named_type, _), (named_id, named_ptr)| {
-            !(*named_type == res_type && *named_id == res_id && *named_ptr == ptr)
-        });
+        for ((named_type, _), (named_id, named_ptr)) in &mut file.named {
+            if *named_type == res_type && *named_id == res_id && *named_ptr == ptr {
+                *named_ptr = 0;
+            }
+        }
     }
 
     pub(crate) fn clear_resource_file_handle_index(&mut self, refnum: u16) {
@@ -5209,6 +5224,7 @@ impl TrapDispatcher {
             closed = true;
         }
         self.clear_resource_file_backing_data(refnum);
+        self.resource_file_order.remove(&refnum);
         self.clear_resource_file_handle_index(refnum);
         self.resident_resources
             .retain(|(entry_refnum, _, _)| *entry_refnum != refnum);
@@ -5726,6 +5742,8 @@ impl TrapDispatcher {
     /// Loads ALL resource types from the fork (not just a hardcoded whitelist).
     pub fn load_resources(&mut self, fork: &ResourceFork, bus: &mut MacMemoryBus) {
         let file = self.allocate_resource_fork(fork, bus);
+        self.resource_file_order
+            .insert(0, Self::resource_reference_order(fork));
         self.clear_resource_file_backing_data(0);
         self.remember_resource_fork_backing_data(0, fork);
         // Log resource types summary including nrct check.
@@ -5823,6 +5841,7 @@ impl TrapDispatcher {
         refnum: u16,
     ) -> usize {
         let incoming = self.allocate_resource_fork(fork, bus);
+        let incoming_order = Self::resource_reference_order(fork);
         let count = incoming.loaded.len();
         let resources = self.resources.get_or_insert_with(|| LoadedResources {
             files: HashMap::new(),
@@ -5847,6 +5866,12 @@ impl TrapDispatcher {
         for (key, attrs) in incoming.attrs {
             target.attrs.entry(key).or_insert(attrs);
         }
+        let order = self.resource_file_order.entry(refnum).or_default();
+        for key in incoming_order {
+            if !order.contains(&key) {
+                order.push(key);
+            }
+        }
         self.remember_resource_fork_backing_data(refnum, fork);
         count
     }
@@ -5860,6 +5885,8 @@ impl TrapDispatcher {
         refnum: u16,
     ) {
         let file = self.allocate_resource_fork(fork, bus);
+        self.resource_file_order
+            .insert(refnum, Self::resource_reference_order(fork));
         let count = file.loaded.len();
         if trace_sound_enabled() {
             let mut type_counts: HashMap<[u8; 4], usize> = HashMap::new();

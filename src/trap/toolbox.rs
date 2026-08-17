@@ -16426,32 +16426,51 @@ impl super::TrapDispatcher {
                 self.resource_search_order()
             };
 
-            let mut out: Vec<(i16, u16, u32)> = chain
+            let out: Vec<(i16, u16, u32)> = chain
                 .into_iter()
                 .filter_map(|refnum| resources.files.get(&refnum).map(|file| (refnum, file)))
                 .flat_map(|(refnum, file)| {
-                    file.loaded
-                        .iter()
-                        .filter(|((t, _), _)| *t == res_type)
-                        .map(move |((_, id), ptr)| (*id, refnum, *ptr))
-                        .collect::<Vec<_>>()
+                    let resource_order = self.resource_file_order.get(&refnum);
+                    if resource_order.is_none_or(|order| order.is_empty()) {
+                        let mut entries: Vec<_> = file
+                            .loaded
+                            .iter()
+                            .filter(|((t, _), _)| *t == res_type)
+                            .map(|((_, id), ptr)| (*id, refnum, *ptr))
+                            .collect();
+                        entries.sort_by_key(|&(id, _, _)| id);
+                        entries
+                    } else {
+                        resource_order
+                            .unwrap()
+                            .iter()
+                            .filter(|(entry_type, _)| *entry_type == res_type)
+                            .filter_map(|(_, id)| {
+                                file.loaded
+                                    .get(&(res_type, *id))
+                                    .map(|ptr| (*id, refnum, *ptr))
+                            })
+                            .collect()
+                    }
                 })
                 .collect();
-            // Stable, deterministic order: by resource id ascending. Real
-            // ROM iterates the resource map in map order, but Systemless's
-            // HashMap-backed loaded table has no map order to speak of —
-            // sorting by id is the documented Get*IndResource contract
-            // ("returns handles to all resources of the given type", IM:IV-15)
-            // and matches the in-file behaviour of the existing
-            // GetIndResource arm prior to this split.
-            out.sort_by_key(|&(id, _, _)| id);
+            // Synthetic/test maps predate explicit reference ordering, so keep
+            // their deterministic numeric-ID fallback. Parsed forks preserve
+            // the order of their on-disk reference lists above.
             out
         });
 
         if let Some(candidates) = candidates {
             if index >= 1 && (index as usize) <= candidates.len() {
-                let (res_id, _refnum, ptr) = candidates[(index - 1) as usize];
-                let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                let (res_id, refnum, ptr) = candidates[(index - 1) as usize];
+                let ptr = if ptr == 0 && self.res_load {
+                    self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
+                        .unwrap_or(0)
+                } else {
+                    ptr
+                };
+                let handle =
+                    self.get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, refnum);
                 eprintln!(
                     "[TRAP] {}('{}', {}) -> id={} handle=${:08X}",
                     trap_name, type_str, index, res_id, handle
@@ -22198,6 +22217,76 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A0), handle);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         assert_eq!(bus.read_word(0x0A60), 0);
+    }
+
+    #[test]
+    fn get_ind_resource_reloads_released_map_entry_when_loading_is_enabled() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let bytes = vec![0x10, 0x20, 0x30, 0x40];
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([((*b"CODE", 1), 0)]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        disp.remember_resource_backing_data(0, *b"CODE", 1, bytes.clone());
+        let handle = disp.get_or_create_resource_handle_in_file(&mut bus, *b"CODE", 1, 0, 0);
+        assert_eq!(bus.read_long(handle), 0);
+        disp.res_load = true;
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"CODE"));
+        bus.write_long(TEST_SP + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x00E, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        assert_eq!(bus.read_long(TEST_SP + 6), handle);
+        let ptr = bus.read_long(handle);
+        assert_ne!(ptr, 0);
+        assert_eq!(bus.read_bytes(ptr, bytes.len()), bytes);
+        assert_eq!(disp.loaded_handles.get(&handle).unwrap().0, ptr);
+        assert_eq!(disp.resource_handle_files.get(&handle), Some(&0));
+    }
+
+    #[test]
+    fn get_ind_resource_preserves_resource_map_reference_order() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first_ptr = bus.alloc(4);
+        let second_ptr = bus.alloc(4);
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([(
+                0,
+                ResourceFileMap {
+                    loaded: HashMap::from([
+                        ((*b"CODE", 1), second_ptr),
+                        ((*b"CODE", 2), first_ptr),
+                    ]),
+                    ..ResourceFileMap::default()
+                },
+            )]),
+            names: HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        disp.resource_file_order
+            .insert(0, vec![(*b"CODE", 2), (*b"CODE", 1)]);
+
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"CODE"));
+        bus.write_long(TEST_SP + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x00E, &mut cpu, &mut bus);
+
+        assert!(result.is_some() && result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_eq!(bus.read_long(handle), first_ptr);
+        assert_eq!(disp.loaded_handles.get(&handle).unwrap().2, 2);
     }
 
     #[test]
