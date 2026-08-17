@@ -5004,6 +5004,13 @@ impl super::TrapDispatcher {
 
         self.initialize_dialog_item_handles(bus, dlg_ptr, &items);
         self.dialog_items.insert(dlg_ptr, items.clone());
+        // A dialog's screen-backed GrafPort can receive application control
+        // drawing even while its window is hidden. Establish the save-under
+        // before returning the DialogPtr so those dialog-owned writes cannot
+        // become the background later restored by DisposDialog. Draws through
+        // other ports keep this snapshot current until disposal.
+        // Inside Macintosh Volume I, I-412, I-425.
+        self.ensure_dialog_background_saved(bus, dlg_ptr, bounds);
 
         if visible {
             // NewDialog/GetNewDialog create and display visible dialogs
@@ -5185,15 +5192,17 @@ impl super::TrapDispatcher {
                 dialogs.push((tracking.dialog_ptr, tracking.bounds));
             }
         }
+        for &dialog_ptr in self.dialog_saved_pixels.keys() {
+            if !dialogs
+                .iter()
+                .any(|(candidate, _)| *candidate == dialog_ptr)
+                && self.dialog_items.contains_key(&dialog_ptr)
+            {
+                dialogs.push((dialog_ptr, Self::dialog_screen_bounds(bus, dialog_ptr)));
+            }
+        }
         for (dialog_ptr, bounds) in dialogs {
-            let drawing_active_modal_dialog =
-                self.dialog_tracking.as_ref().is_some_and(|tracking| {
-                    tracking.dialog_ptr == dialog_ptr && dialog_ptr == drawing_port
-                });
-            let drawing_premodal_dialog =
-                dialog_ptr == drawing_port && !self.dialog_modal_entered.contains(&dialog_ptr);
-            if drawing_active_modal_dialog
-                || drawing_premodal_dialog
+            if dialog_ptr == drawing_port
                 || self.active_modeless_dialog_draw_proc == Some(dialog_ptr)
             {
                 continue;
@@ -17763,9 +17772,33 @@ mod tests {
             0x77,
             "QuickDraw drawing through a hidden dialog port must be clipped"
         );
-        assert!(
-            !disp.dialog_saved_pixels.contains_key(&dlg_ptr),
-            "no visible draw means no saved-under snapshot"
+        let saved_rect = TrapDispatcher::dialog_saved_pixel_rect((100, 100, 180, 260));
+        let saved_width = (saved_rect.3 - saved_rect.1) as usize;
+        let probe_index =
+            ((125 - saved_rect.0) as usize) * saved_width + (125 - saved_rect.1) as usize;
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x77,
+            "hidden dialog creation must capture the background before setup drawing"
+        );
+
+        // Drawing through another screen-backed port is background drawing
+        // and must keep the hidden dialog's save-under current. Drawing
+        // through the dialog port itself remains dialog-owned even after the
+        // dialog has entered and returned from ModalDialog.
+        bus.write_byte(probe_addr, 0x33);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, 0x300000, (125, 125, 126, 126));
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x33
+        );
+        disp.dialog_modal_entered.insert(dlg_ptr);
+        bus.write_byte(probe_addr, 0x44);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dlg_ptr, (125, 125, 126, 126));
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dlg_ptr).unwrap()[probe_index],
+            0x33,
+            "dialog-owned drawing must not poison the hidden save-under"
         );
     }
 
@@ -27184,11 +27217,11 @@ mod tests {
     }
 
     #[test]
-    fn retained_modal_dialog_saved_background_tracks_same_port_screen_draws() {
-        // After ModalDialog returns with a retained visible modal, the app may
-        // immediately redraw the background before calling DisposDialog while
-        // the dialog remains the current screen-backed port. Treat those
-        // same-port screen writes as background, not as dialog content.
+    fn retained_modal_dialog_saved_background_ignores_same_port_dialog_draws() {
+        // After ModalDialog returns with a retained visible modal, applications
+        // may redraw controls through the dialog's own screen-backed GrafPort.
+        // Those writes update visible dialog content, not the pixels underneath
+        // the window that DisposDialog must later restore.
         let (mut disp, _cpu, mut bus) = setup();
         let screen_base = 0x300000u32;
         let row_bytes: u32 = 640;
@@ -27228,9 +27261,71 @@ mod tests {
         disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dialog_ptr, (120, 130, 121, 131));
         assert_eq!(
             disp.dialog_saved_pixels.get(&dialog_ptr).unwrap()[touched_idx],
-            0x44,
-            "retained modal same-port background drawing should update saved-under pixels"
+            0x11,
+            "retained modal same-port dialog drawing must not update saved-under pixels"
         );
+    }
+
+    #[test]
+    fn nested_child_dialog_drawing_does_not_replace_parent_pixels_saved_underneath() {
+        // A child modal is saved over the already-rendered parent. After the
+        // child returns from ModalDialog, application userItem drawing still
+        // targets the child's screen-backed port; it must update the child,
+        // not the pixels that DisposDialog restores from beneath it.
+        // IM:I I-405, I-425.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 640u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 640, 480, 8);
+
+        let parent_ptr = bus.alloc(170);
+        let child_ptr = bus.alloc(170);
+        let parent_bounds = (80i16, 80i16, 260i16, 360i16);
+        let child_bounds = (120i16, 130i16, 220i16, 310i16);
+        seed_window_regions(&mut bus, parent_ptr, parent_bounds);
+        seed_window_regions(&mut bus, child_ptr, child_bounds);
+        for (window, bounds) in [(parent_ptr, parent_bounds), (child_ptr, child_bounds)] {
+            bus.write_word(window + 8, (-bounds.0) as u16);
+            bus.write_word(window + 10, (-bounds.1) as u16);
+            disp.dialog_items.insert(window, Vec::new());
+        }
+
+        let parent_probe = screen_base + 150 * row_bytes + 170;
+        bus.write_byte(parent_probe, 0x33);
+        disp.ensure_dialog_background_saved(&bus, child_ptr, child_bounds);
+        disp.dialog_visible_snapshots.insert(
+            child_ptr,
+            PersistentDialogSnapshot {
+                bounds: child_bounds,
+                pixels: disp.save_dialog_pixels(&bus, child_bounds),
+            },
+        );
+
+        disp.front_window = child_ptr;
+        disp.current_port = child_ptr;
+        disp.window_bounds = child_bounds;
+        disp.window_list = vec![child_ptr, parent_ptr];
+        disp.window_stack
+            .push((parent_ptr, parent_bounds, 2, "Parent".to_string()));
+        disp.dialog_modal_entered.insert(child_ptr);
+
+        // Simulate a child userItem callback drawing after ModalDialog has
+        // returned, at a pixel that belongs to the parent underneath.
+        bus.write_byte(parent_probe, 0xCC);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, child_ptr, (150, 170, 151, 171));
+
+        bus.write_long(TEST_SP, child_ptr);
+        disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bus.read_byte(parent_probe),
+            0x33,
+            "disposing the child must restore the original parent userItem pixel"
+        );
+        assert_eq!(disp.front_window, parent_ptr);
+        assert_eq!(disp.current_port, parent_ptr);
     }
 
     #[test]
@@ -29174,6 +29269,8 @@ mod tests {
         bus.write_word(dialog_ptr + 20, 180);
         bus.write_word(dialog_ptr + 22, 220);
         let dialog_bounds = (100, 100, 280, 320);
+        let exterior_probe = screen_base + 95 * 800 + 95;
+        bus.write_byte(exterior_probe, 0x33);
 
         let ctrl_ptr = bus.alloc(296);
         let ctrl_handle = bus.alloc(4);
@@ -29194,6 +29291,16 @@ mod tests {
         disp.dialog_control_handles
             .insert(ctrl_handle, (dialog_ptr, 1));
         disp.dialog_control_values.insert((dialog_ptr, 1), 1);
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 7,
+                rect: (10, 20, 30, 130),
+                ..Default::default()
+            }],
+        );
+        disp.ensure_dialog_background_saved(&bus, dialog_ptr, dialog_bounds);
+        let saved_under = disp.dialog_saved_pixels[&dialog_ptr].clone();
         disp.menus.push(Menu {
             id: 900,
             title: "Squadies".to_string(),
@@ -29243,7 +29350,7 @@ mod tests {
             cancel_item: 0,
             edit_text: String::new(),
             edit_item: 0,
-            saved_pixels: Vec::new(),
+            saved_pixels: saved_under,
             stack_ptr: TEST_SP,
             item_hit_ptr: item_hit_addr,
             rendered_pixels: Vec::new(),
@@ -29333,6 +29440,23 @@ mod tests {
         assert!(
             retained.pixels != stale_open_popup_pixels,
             "retained snapshot kept stale open-popup pixels"
+        );
+
+        // After ModalDialog returns the popup hit, the application redraws
+        // the selected pane through the retained dialog port. A draw touching
+        // the dBox structure margin is still visible dialog composition, not
+        // a replacement for title artwork saved underneath the modal.
+        disp.dialog_modal_entered.insert(dialog_ptr);
+        bus.write_byte(exterior_probe, 0x77);
+        disp.refresh_dialog_saved_pixels_after_screen_draw(&bus, dialog_ptr, (95, 95, 96, 96));
+
+        let save_rect = TrapDispatcher::dialog_saved_pixel_rect(dialog_bounds);
+        let save_width = (save_rect.3 - save_rect.1) as usize;
+        let exterior_index = (95 - save_rect.0) as usize * save_width + (95 - save_rect.1) as usize;
+        assert_eq!(
+            disp.dialog_saved_pixels.get(&dialog_ptr).unwrap()[exterior_index],
+            0x33,
+            "popup-era dialog drawing must not replace exterior saved-under pixels"
         );
     }
 
