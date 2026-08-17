@@ -18,7 +18,7 @@
 //! | Chicago                                            | Jarrah          |
 //! | Geneva / Application / Helvetica                   | Kurrajong       |
 //! | Monaco / Courier                                   | Mallee        |
-//! | New York / Times                                   | Ironbark        |
+//! | New York / Palatino / Times                        | Ironbark        |
 //! | Venice                                             | Wattle           |
 //! | London                                             | Karri           |
 //! | Cairo                                              | Grevillea          |
@@ -41,7 +41,7 @@ use std::sync::{LazyLock, Mutex};
 pub use self::heuristics::{
     FONT_APPLICATION, FONT_ATHENS, FONT_CAIRO, FONT_CHICAGO, FONT_COURIER, FONT_GENEVA,
     FONT_HELVETICA, FONT_LONDON, FONT_LOSANGELES, FONT_MOBILE, FONT_MONACO, FONT_NEWYORK,
-    FONT_SANFRAN, FONT_SEATTLE, FONT_SYMBOL, FONT_TIMES, FONT_TORONTO, FONT_VENICE,
+    FONT_PALATINO, FONT_SANFRAN, FONT_SEATTLE, FONT_SYMBOL, FONT_TIMES, FONT_TORONTO, FONT_VENICE,
 };
 
 /// Single-character bitmap descriptor: dimensions + offset into the
@@ -468,6 +468,7 @@ pub static FONT_NAMES: &[(i16, &str)] = &[
     (9, "Toronto"),
     (11, "Cairo"),
     (12, "Los Angeles"),
+    (16, "Palatino"),
     (20, "Times"),
     (21, "Helvetica"),
     (22, "Courier"),
@@ -590,7 +591,7 @@ fn get_baked_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
 fn fallback_font_id(font_id: i16) -> Option<i16> {
     match font_id {
         1 => Some(FONT_GENEVA),
-        FONT_TIMES => Some(FONT_NEWYORK),
+        FONT_PALATINO | FONT_TIMES => Some(FONT_NEWYORK),
         FONT_HELVETICA => Some(FONT_GENEVA),
         FONT_COURIER => Some(FONT_MONACO),
         _ => None,
@@ -836,6 +837,18 @@ mod tests {
     fn fallback_courier_to_monaco() {
         let face = get_font_face_or_default(FONT_COURIER, 12);
         assert_eq!(face.font_id, FONT_MONACO);
+    }
+
+    #[test]
+    fn palatino_uses_the_original_ironbark_serif_face() {
+        assert_eq!(font_id_for_name("Palatino"), Some(FONT_PALATINO));
+        assert_eq!(font_name_for_id(FONT_PALATINO), Some("Palatino"));
+
+        for size in [12, 14, 18, 24] {
+            let (face, scale) = get_font_face_scaled(FONT_PALATINO, size);
+            assert_eq!(face.font_id, FONT_NEWYORK);
+            assert_eq!(i16::from(face.size) * scale, size);
+        }
     }
 
     #[test]

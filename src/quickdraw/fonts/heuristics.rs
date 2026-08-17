@@ -21,6 +21,7 @@ pub const FONT_TORONTO: i16 = 9;
 pub const FONT_SEATTLE: i16 = 10;
 pub const FONT_CAIRO: i16 = 11;
 pub const FONT_LOSANGELES: i16 = 12;
+pub const FONT_PALATINO: i16 = 16;
 pub const FONT_TIMES: i16 = 20;
 pub const FONT_HELVETICA: i16 = 21;
 pub const FONT_COURIER: i16 = 22;

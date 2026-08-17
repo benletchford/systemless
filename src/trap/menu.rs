@@ -1187,6 +1187,63 @@ impl super::TrapDispatcher {
         true
     }
 
+    fn sync_guest_menu_list(&mut self, bus: &mut MacMemoryBus) {
+        let regular = self
+            .menus
+            .iter()
+            .filter(|menu| menu.in_menu_bar && !menu.hierarchical)
+            .collect::<Vec<_>>();
+        let hierarchical = self
+            .menus
+            .iter()
+            .filter(|menu| menu.in_menu_bar && menu.hierarchical)
+            .collect::<Vec<_>>();
+
+        let title_lefts = self
+            .menu_title_regions_with_indices()
+            .into_iter()
+            .filter_map(|(index, left, _)| self.menus.get(index).map(|menu| (menu.handle, left)))
+            .collect::<std::collections::HashMap<_, _>>();
+        let last_right = self
+            .menu_title_regions_with_indices()
+            .into_iter()
+            .last()
+            .map(|(_, _, right)| right)
+            .unwrap_or(0);
+
+        // System 7's DynamicMenuList contains a six-byte header, one
+        // six-byte MenuRec per regular menu, lastHMenu + menuTitleSave,
+        // then one six-byte HMenuRec per hierarchical/pop-up menu.
+        // Inside Macintosh Volume V (1986), pp. V-228–V-230.
+        let mut bytes = Vec::with_capacity(12 + 6 * (regular.len() + hierarchical.len()));
+        bytes.extend_from_slice(&((regular.len() * 6) as i16).to_be_bytes());
+        bytes.extend_from_slice(&last_right.to_be_bytes());
+        bytes.extend_from_slice(&0i16.to_be_bytes());
+        for menu in regular {
+            bytes.extend_from_slice(&menu.handle.to_be_bytes());
+            bytes.extend_from_slice(
+                &title_lefts
+                    .get(&menu.handle)
+                    .copied()
+                    .unwrap_or(0)
+                    .to_be_bytes(),
+            );
+        }
+        bytes.extend_from_slice(&((hierarchical.len() * 6) as i16).to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        for menu in hierarchical {
+            bytes.extend_from_slice(&menu.handle.to_be_bytes());
+            bytes.extend_from_slice(&0i16.to_be_bytes());
+        }
+
+        let mut handle = bus.read_long(addr::MENU_LIST);
+        if handle == 0 {
+            handle = bus.alloc(4);
+            bus.write_long(addr::MENU_LIST, handle);
+        }
+        let _ = self.replace_handle_bytes(bus, handle, &bytes);
+    }
+
     fn ensure_menu_record_capacity(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -1250,6 +1307,7 @@ impl super::TrapDispatcher {
             (true, 0x130) => {
                 let _ = self.ensure_menu_color_table_handle(bus);
                 self.load_menu_color_resource(bus, 0);
+                self.sync_guest_menu_list(bus);
                 Ok(())
             }
 
@@ -1517,6 +1575,8 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                self.sync_guest_menu_list(bus);
+
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
             }
@@ -1551,6 +1611,7 @@ impl super::TrapDispatcher {
                 // information table.
                 self.menus.clear();
                 self.clear_menu_color_table_entries(bus);
+                self.sync_guest_menu_list(bus);
                 Ok(())
             }
 
@@ -1593,6 +1654,7 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
                 if let Some(saved) = self.saved_menu_bars.get(&menu_list).cloned() {
                     self.menus = saved;
+                    self.sync_guest_menu_list(bus);
                 }
                 Ok(())
             }
@@ -1687,7 +1749,23 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 8);
 
                 let res_type = res_type_word.to_be_bytes();
-                let entries = self.named_resources_of_type(res_type);
+                let mut entries = self.named_resources_of_type(res_type);
+                if res_type == *b"FONT" {
+                    // Systemless's built-in bitmap families are HLE data, not
+                    // guest FONT resources. AddResMenu must nevertheless make
+                    // those installed families visible to applications that
+                    // build a Font menu from the Font Manager resource type.
+                    // Inside Macintosh Volume I (1985), pp. I-217, I-353.
+                    for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
+                        if id == crate::quickdraw::fonts::FONT_APPLICATION
+                            || entries.iter().any(|(_, entry)| entry == name)
+                        {
+                            continue;
+                        }
+                        entries.push((id, name.to_string()));
+                    }
+                    entries.sort_by_key(|(id, _)| *id);
+                }
 
                 let mut touched: Option<Menu> = None;
                 if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
@@ -2357,6 +2435,7 @@ impl super::TrapDispatcher {
                 let menu_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 self.menus.retain(|m| m.handle != menu_handle);
+                self.sync_guest_menu_list(bus);
                 if menu_handle != 0 {
                     let menu_ptr = bus.read_long(menu_handle);
                     if menu_ptr != 0 {
@@ -2384,6 +2463,7 @@ impl super::TrapDispatcher {
                 let menu_id = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.menus.retain(|m| m.id != menu_id);
+                self.sync_guest_menu_list(bus);
                 // IM:V 1986 p. V-244: DeleteMenu removes all color
                 // entries for the deleted menu ID from MenuCInfo.
                 self.filter_menu_color_table_entries(bus, |id, _item| id != menu_id);
@@ -6087,6 +6167,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn addresmenu_exposes_builtin_font_families_without_guest_resources() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 331, 0x306A00, "Font");
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, u32::from_be_bytes(*b"FONT"));
+        bus.write_long(TEST_SP + 4, handle);
+        assert!(
+            disp.dispatch_menu(true, 0x14D, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "AddResMenu should succeed"
+        );
+
+        let menu = disp
+            .menus
+            .iter()
+            .find(|menu| menu.handle == handle)
+            .expect("font menu should remain registered");
+        for expected in ["Chicago", "Geneva", "Monaco", "New York", "Palatino"] {
+            assert!(
+                menu.items.iter().any(|item| item.text == expected),
+                "built-in family {expected} should appear in the Font menu"
+            );
+        }
+        assert!(
+            !menu.items.iter().any(|item| item.text == "Application"),
+            "the applFont selector is not a user-facing family"
+        );
+    }
+
     // IM:I I-360: SetItemStyle takes one Style value, one item index,
     // and one MenuHandle argument.
     #[test]
@@ -6923,6 +7035,65 @@ mod tests {
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, menu_id),
             handle,
             "GetMHandle should return the NewMenu handle after InsertMenu"
+        );
+    }
+
+    // IM:V 1986 pp. V-228–V-230: applications may inspect the MenuList
+    // low-memory global directly. Keep its DynamicMenuList records in sync
+    // with InsertMenu and DeleteMenu, not just the host-side menu model.
+    #[test]
+    fn insert_and_delete_menu_sync_the_guest_dynamic_menu_list() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        assert!(
+            disp.dispatch_menu(true, 0x130, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "InitMenus should succeed"
+        );
+
+        let menu_list = bus.read_long(crate::memory::globals::addr::MENU_LIST);
+        assert_ne!(menu_list, 0, "InitMenus should install a MenuList handle");
+        let empty_list = bus.read_long(menu_list);
+        assert_ne!(empty_list, 0, "MenuList handle should dereference");
+        assert_eq!(bus.read_word(empty_list), 0, "lastMenu should start empty");
+        assert_eq!(
+            bus.read_word(empty_list + 6),
+            0,
+            "lastHMenu should start empty"
+        );
+
+        let menu_id = 231i16;
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x30B200, "Home");
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        let inserted_list = bus.read_long(menu_list);
+        assert_eq!(
+            bus.read_word(inserted_list),
+            6,
+            "one regular MenuRec should occupy six bytes"
+        );
+        assert_eq!(
+            bus.read_long(inserted_list + 6),
+            handle,
+            "MenuRec should expose the inserted menu handle"
+        );
+        assert_eq!(
+            bus.read_word(inserted_list + 12),
+            0,
+            "lastHMenu should follow the regular MenuRec"
+        );
+
+        delete_menu_by_id(&mut disp, &mut cpu, &mut bus, menu_id);
+        let deleted_list = bus.read_long(menu_list);
+        assert_eq!(
+            bus.read_word(deleted_list),
+            0,
+            "DeleteMenu should remove the regular MenuRec"
+        );
+        assert_eq!(
+            bus.read_word(deleted_list + 6),
+            0,
+            "lastHMenu should return to the empty-list offset"
         );
     }
 
