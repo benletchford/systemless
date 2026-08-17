@@ -23,6 +23,9 @@ mod metal_present;
 #[path = "desktop/native_application.rs"]
 mod native_application;
 #[cfg(target_os = "macos")]
+#[path = "desktop/native_bundle.rs"]
+mod native_bundle;
+#[cfg(target_os = "macos")]
 #[path = "desktop/native_menu.rs"]
 mod native_menu;
 
@@ -2038,6 +2041,65 @@ fn run_gui(game_path: PathBuf, arrows_as_numpad: bool) {
     event_loop.run_app(&mut app).expect("Event loop failed");
 }
 
+#[cfg(target_os = "macos")]
+fn relaunch_with_native_guest_identity(game_path: &std::path::Path) {
+    if native_bundle::already_relaunched() {
+        return;
+    }
+
+    match native_bundle::cached_bundle(game_path) {
+        Ok(Some(bundle)) => {
+            let error = native_bundle::exec_bundle(&bundle);
+            eprintln!(
+                "[SYSTEMLESS] Could not enter cached native app bundle {}: {}",
+                bundle.bundle_path.display(),
+                error
+            );
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => eprintln!(
+            "[SYSTEMLESS] Could not inspect the native app bundle cache: {}",
+            error
+        ),
+    }
+
+    let mut runner = game::new_runner();
+    if let Err(error) = game::load_game_from_path(&mut runner, game_path) {
+        eprintln!(
+            "[SYSTEMLESS] Could not inspect the guest application before native startup: {}",
+            error
+        );
+        return;
+    }
+    let Some(app_path) = runner.dispatcher().launched_app_path() else {
+        return;
+    };
+    let app_name = app_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(app_path)
+        .to_owned();
+    drop(runner);
+
+    match native_bundle::prepare_bundle(game_path, &app_name) {
+        Ok(bundle) => {
+            eprintln!("[SYSTEMLESS] Native app identity: {}", app_name);
+            let error = native_bundle::exec_bundle(&bundle);
+            eprintln!(
+                "[SYSTEMLESS] Could not enter native app bundle {}: {}",
+                bundle.bundle_path.display(),
+                error
+            );
+        }
+        Err(error) => eprintln!(
+            "[SYSTEMLESS] Could not prepare native app identity for {}: {}",
+            app_name, error
+        ),
+    }
+}
+
 fn save_screenshot(runner: &FixtureRunner, num: usize) {
     let (_, _, scrn_width, scrn_height, _) = runner.dispatcher().screen_mode;
     let w = scrn_width as u32;
@@ -2137,6 +2199,11 @@ fn main() {
     if !game_path.exists() {
         eprintln!("Error: Game file not found: {}", game_path.display());
         std::process::exit(1);
+    }
+
+    #[cfg(target_os = "macos")]
+    if !cli.headless {
+        relaunch_with_native_guest_identity(&game_path);
     }
 
     eprintln!("[SYSTEMLESS] Starting emulator...");
