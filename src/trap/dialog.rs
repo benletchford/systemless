@@ -11962,8 +11962,8 @@ impl super::TrapDispatcher {
                                 let key_code = ((e.message >> 8) & 0xFF) as u8;
                                 let command_period =
                                     char_code == b'.' && (e.modifiers & 0x0100) != 0;
-                                let command_select_all = char_code.eq_ignore_ascii_case(&b'a')
-                                    && (e.modifiers & 0x0100) != 0;
+                                let command_printable =
+                                    (e.modifiers & 0x0100) != 0 && matches!(char_code, 0x20..=0x7E);
                                 match char_code {
                                     // Return or Enter: trigger default button
                                     0x0D | 0x03 => {
@@ -12069,118 +12069,15 @@ impl super::TrapDispatcher {
                                             self.refresh_dialog_tracking_snapshot(bus);
                                         }
                                     }
+                                    // Unhandled Command-key equivalents belong
+                                    // to the application and Menu Manager.
+                                    // ModalDialog ignores them instead of
+                                    // inserting their printable character into
+                                    // the active editText item. Command-period
+                                    // is handled above as Cancel.
+                                    // Inside Macintosh Volume I, I-415, I-428.
+                                    _ if command_printable => {}
                                     // Backspace/Delete or printable ASCII.
-                                    _ if command_select_all => {
-                                        let mut select_trace = None;
-                                        let mut modified_key_to_clear = None;
-                                        if let Some(tracking) = self.dialog_tracking.as_mut() {
-                                            let text_before = tracking.edit_text.clone();
-                                            if tracking.edit_item > 0 {
-                                                let text_len = tracking.edit_text.len();
-                                                tracking.edit_text_modified = false;
-                                                Self::set_tracking_active_edit_selection(
-                                                    tracking, 0, text_len,
-                                                );
-                                                Self::sync_tracking_active_edit_item(tracking);
-
-                                                let edit_item = tracking.edit_item;
-                                                let item_type = tracking
-                                                    .items
-                                                    .get((edit_item - 1) as usize)
-                                                    .map(|item| item.item_type);
-                                                let enabled_edit_text = item_type
-                                                    .map(|ty| (ty & 0x7F) == 16 && (ty & 0x80) == 0)
-                                                    .unwrap_or(false);
-                                                let text_after = tracking.edit_text.clone();
-                                                select_trace = Some((
-                                                    edit_item,
-                                                    item_type,
-                                                    text_before,
-                                                    text_after,
-                                                    enabled_edit_text,
-                                                ));
-                                                modified_key_to_clear =
-                                                    Some((tracking.dialog_ptr, edit_item));
-                                            }
-                                        }
-                                        if let Some(key) = modified_key_to_clear {
-                                            self.dialog_edit_text_modified_items.remove(&key);
-                                        }
-                                        if let Some((
-                                            edit_item,
-                                            item_type,
-                                            text_before,
-                                            text_after,
-                                            enabled_edit_text,
-                                        )) = select_trace
-                                        {
-                                            self.refresh_dialog_tracking_snapshot(bus);
-                                            let outcome = if enabled_edit_text {
-                                                "enabled_edittext_select_all"
-                                            } else {
-                                                "edittext_select_all"
-                                            };
-                                            if enabled_edit_text {
-                                                let (dlg_ptr, active_edit_item, edit_text, items) = {
-                                                    let tracking =
-                                                        self.dialog_tracking.as_mut().unwrap();
-                                                    Self::sync_tracking_active_edit_item(tracking);
-                                                    (
-                                                        tracking.dialog_ptr,
-                                                        tracking.edit_item,
-                                                        tracking.edit_text.clone(),
-                                                        tracking.items.clone(),
-                                                    )
-                                                };
-                                                self.flush_dialog_edit_item_texts(
-                                                    bus,
-                                                    dlg_ptr,
-                                                    &items,
-                                                    active_edit_item,
-                                                    &edit_text,
-                                                );
-                                                let saved = self.dialog_tracking.take().unwrap();
-                                                let saved_dialog_ptr = saved.dialog_ptr;
-                                                self.persist_visible_dialog_snapshot(bus, &saved);
-                                                self.dialog_saved_pixels
-                                                    .insert(saved_dialog_ptr, saved.saved_pixels);
-                                                if item_hit_ptr != 0 {
-                                                    bus.write_word(
-                                                        item_hit_ptr,
-                                                        active_edit_item as u16,
-                                                    );
-                                                }
-                                                cpu.write_reg(Register::A7, stack_ptr + 8);
-                                                self.record_modal_dialog_text_input_trace(
-                                                    "key_down",
-                                                    dialog_ptr,
-                                                    bounds,
-                                                    edit_item,
-                                                    item_type,
-                                                    key_code,
-                                                    char_code,
-                                                    &text_before,
-                                                    &text_after,
-                                                    "returned",
-                                                    outcome,
-                                                );
-                                            } else {
-                                                self.record_modal_dialog_text_input_trace(
-                                                    "key_down",
-                                                    dialog_ptr,
-                                                    bounds,
-                                                    edit_item,
-                                                    item_type,
-                                                    key_code,
-                                                    char_code,
-                                                    &text_before,
-                                                    &text_after,
-                                                    "pending",
-                                                    outcome,
-                                                );
-                                            }
-                                        }
-                                    }
                                     0x08 | 0x20..=0x7E => {
                                         let mut text_trace = None;
                                         let mut modified_key_to_set = None;
@@ -29130,7 +29027,7 @@ mod tests {
     }
 
     #[test]
-    fn modal_dialog_retained_edit_text_appends_across_reentry_and_command_a_selects() {
+    fn modal_dialog_command_printables_preserve_edit_state_before_backspace() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let screen_base = bus.alloc(320 * 240);
         for offset in 0..320u32 * 240 {
@@ -29227,27 +29124,36 @@ mod tests {
             .contains(&(dialog_ptr, 1)));
 
         enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
-        key_down(
-            &mut disp,
-            &mut cpu,
-            &mut bus,
-            item_hit_addr,
-            0x00,
-            b'a',
-            0x0100,
-        );
-        let item = &disp.dialog_items[&dialog_ptr][0];
-        assert_eq!(item.text, "dud");
-        assert_eq!((item.sel_start, item.sel_end), (0, 3));
-        assert!(!disp
-            .dialog_edit_text_modified_items
-            .contains(&(dialog_ptr, 1)));
+        for char_code in [b'a', b'B'] {
+            disp.event_queue
+                .push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 3,
+                    message: u32::from(char_code),
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers: 0x0100,
+                });
+            disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            assert!(disp.dialog_tracking.is_some());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            assert_eq!(bus.read_word(item_hit_addr), 0);
+            let tracking = disp.dialog_tracking.as_ref().unwrap();
+            assert_eq!(tracking.edit_text, "dud");
+            assert_eq!(
+                (tracking.items[0].sel_start, tracking.items[0].sel_end),
+                (3, 3)
+            );
+            assert!(disp
+                .dialog_edit_text_modified_items
+                .contains(&(dialog_ptr, 1)));
+        }
 
-        enter_modal(&mut disp, &mut cpu, &mut bus, item_hit_addr);
         key_down(&mut disp, &mut cpu, &mut bus, item_hit_addr, 0x33, 0x08, 0);
         let item = &disp.dialog_items[&dialog_ptr][0];
-        assert_eq!(item.text, "");
-        assert_eq!((item.sel_start, item.sel_end), (0, 0));
+        assert_eq!(item.text, "du");
+        assert_eq!((item.sel_start, item.sel_end), (2, 2));
     }
 
     #[test]
