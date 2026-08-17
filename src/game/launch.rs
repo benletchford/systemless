@@ -13,14 +13,25 @@ use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
 use crate::memory::MemoryBus;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
+use std::io::{Cursor, Read};
+use std::path::Component;
 use stuffit::SitArchive;
 
 const LEGACY_WEB_PACK_MAGIC: &[u8; 4] = b"KPK1";
 const WEB_PACK_MAGIC: &[u8; 4] = b"KPK2";
 const WEB_PACK_INITIAL_FORK_RESERVE_BYTES: usize = 1024 * 1024;
+const MAX_ZIP_ENTRIES: usize = 4096;
+const MAX_ZIP_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
 
 fn is_web_pack(file_data: &[u8]) -> bool {
     file_data.starts_with(WEB_PACK_MAGIC) || file_data.starts_with(LEGACY_WEB_PACK_MAGIC)
+}
+
+fn is_zip_archive(file_data: &[u8]) -> bool {
+    file_data.starts_with(b"PK\x03\x04")
+        || file_data.starts_with(b"PK\x05\x06")
+        || file_data.starts_with(b"PK\x07\x08")
 }
 
 /// Standard frontend RAM size from the canonical machine profile.
@@ -64,6 +75,8 @@ pub fn load_game(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedA
         load_binhex(runner, file_data)
     } else if crate::disk_image::looks_like_dc42_or_hfs(file_data) {
         load_disk_image(runner, file_data)
+    } else if is_zip_archive(file_data) {
+        load_zip(runner, file_data)
     } else {
         load_macbinary(runner, file_data)
     }
@@ -98,8 +111,12 @@ pub fn pack_game_sources_for_web(
             file_entries.extend(collect_stuffit_payload_files(&archive)?);
         } else if let Some(image) = crate::disk_image::extract_dc42_or_hfs(source)? {
             file_entries.extend(payload_from_disk_image(image, 1)?.files);
+        } else if is_zip_archive(source) {
+            file_entries.extend(collect_zip_payload(source)?.files);
         } else {
-            return Err("Game source is not a StuffIt archive or HFS disk image".to_string());
+            return Err(
+                "Game source is not a StuffIt archive, ZIP archive, or HFS disk image".to_string(),
+            );
         }
     }
 
@@ -167,6 +184,7 @@ pub fn load_game_from_path(
         || is_stuffit_archive(&file_data)
         || crate::binhex::looks_like_binhex(&file_data)
         || crate::disk_image::looks_like_dc42_or_hfs(&file_data)
+        || is_zip_archive(&file_data)
     {
         return load_game(runner, &file_data);
     }
@@ -322,79 +340,51 @@ fn load_binhex(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp
 }
 
 fn load_macbinary(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
-    if file_data.len() < 128 {
-        return Err("File too small for MacBinary".to_string());
-    }
-
-    let data_len =
-        u32::from_be_bytes([file_data[83], file_data[84], file_data[85], file_data[86]]) as usize;
-    let rsrc_len =
-        u32::from_be_bytes([file_data[87], file_data[88], file_data[89], file_data[90]]) as usize;
-
-    let data_start = 128;
-    let data_end_padded = data_start + ((data_len + 127) & !127);
-    let rsrc_start = data_end_padded;
-
-    if rsrc_start + rsrc_len > file_data.len() {
-        return Err("MacBinary truncated".to_string());
-    }
-
-    let data_end = data_start
-        .checked_add(data_len)
-        .ok_or_else(|| "MacBinary data offset overflow".to_string())?;
-    let data_fork = &file_data[data_start..data_end];
-    if is_stuffit_archive(data_fork) {
+    let payload = parse_macbinary_payload(file_data, "", 2)?;
+    if is_stuffit_archive(&payload.data) {
         if crate::runner::trace_load_enabled() {
             eprintln!("[LOAD] MacBinary data fork contains StuffIt archive");
         }
-        return load_stuffit(runner, data_fork);
+        return load_stuffit(runner, &payload.data);
     }
-    if crate::disk_image::looks_like_dc42_or_hfs(data_fork) {
+    if crate::disk_image::looks_like_dc42_or_hfs(&payload.data) {
         if crate::runner::trace_load_enabled() {
             eprintln!("[LOAD] MacBinary data fork contains HFS disk image");
         }
-        return load_disk_image(runner, data_fork);
+        return load_disk_image(runner, &payload.data);
     }
 
     if crate::runner::trace_load_enabled() {
         eprintln!("[LOAD] Loading from MacBinary format");
     }
 
-    // Extract the filename from MacBinary header (length at offset 1,
-    // bytes at offset 2..65, max 63 chars) so GetAppParms / CurApName
-    // have the app name to report.
-    let name_len = (file_data[1] as usize).min(63);
-    let name_bytes = &file_data[2..2 + name_len];
-    let app_name = std::str::from_utf8(name_bytes).unwrap_or("FixtureGen");
-    let rsrc_data = &file_data[rsrc_start..rsrc_start + rsrc_len];
-    let file_type: [u8; 4] = file_data[65..69].try_into().unwrap();
-    let creator: [u8; 4] = file_data[69..73].try_into().unwrap();
-    let finder_flags = (u16::from(file_data[73]) << 8) | u16::from(file_data[101]);
-    insert_forks_into_vfs(
+    let mut executable = None;
+    insert_payload_into_vfs(
         runner,
-        app_name,
-        data_fork.to_vec(),
-        rsrc_data.to_vec(),
-        file_type,
-        creator,
-        finder_flags,
+        Payload {
+            dirs: Vec::new(),
+            files: vec![payload],
+            volumes: Vec::new(),
+            skipped_disk_image_errors: Vec::new(),
+        },
+        &mut executable,
     );
+    let executable = executable.ok_or("No executable found in MacBinary file")?;
+    load_selected_executable(runner, &executable)
+}
 
-    let kind = classify_executable(data_fork, rsrc_data, file_type == *b"APPL")
-        .ok_or("No executable found in MacBinary file")?;
-    let executable = ExecutableCandidate {
-        name: app_name.to_string(),
-        vfs_key: crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(app_name),
-        kind,
-        is_appl: file_type == *b"APPL",
-        has_data_fork: !data_fork.is_empty(),
-        score: data_fork.len().max(rsrc_data.len()),
-        priority: 2,
-        creator,
-        is_installer: is_installer_executable(app_name, creator),
-        is_demo: executable_name_has_role(app_name, "demo"),
-        version: executable_version(rsrc_data),
-    };
+fn load_zip(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedApp, String> {
+    let mut executable = None;
+    let payload = collect_zip_payload(file_data)?;
+    let skipped_disk_image_errors = payload.skipped_disk_image_errors.clone();
+    insert_payload_into_vfs(runner, payload, &mut executable);
+    log_vfs(runner);
+
+    let executable =
+        executable.ok_or_else(|| no_executable_archive_error(&skipped_disk_image_errors))?;
+    if crate::runner::trace_load_enabled() {
+        eprintln!("[LOAD] Selected executable: {}", executable.name);
+    }
     load_selected_executable(runner, &executable)
 }
 
@@ -996,6 +986,191 @@ struct PayloadFile {
     creator: [u8; 4],
     finder_flags: u16,
     executable_priority: u8,
+}
+
+fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
+    let reader = Cursor::new(file_data);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|err| format!("Failed to parse ZIP archive: {err}"))?;
+    if archive.len() > MAX_ZIP_ENTRIES {
+        return Err(format!(
+            "ZIP archive exceeds the {MAX_ZIP_ENTRIES} entry limit"
+        ));
+    }
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
+    let mut total_uncompressed_bytes = 0u64;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("Failed to read ZIP entry {index}: {err}"))?;
+        if entry.encrypted() {
+            return Err(format!(
+                "Encrypted ZIP entry is not supported: {}",
+                entry.name()
+            ));
+        }
+        let path = safe_zip_entry_path(&entry)?;
+        if path.is_empty() {
+            continue;
+        }
+        if entry.is_dir() {
+            payload.dirs.push(path.trim_end_matches('/').to_string());
+            continue;
+        }
+
+        if entry.size() > MAX_ZIP_ENTRY_BYTES {
+            return Err(format!(
+                "ZIP entry exceeds the {} byte extraction limit: {path}",
+                MAX_ZIP_ENTRY_BYTES
+            ));
+        }
+        total_uncompressed_bytes = total_uncompressed_bytes
+            .checked_add(entry.size())
+            .ok_or_else(|| "ZIP uncompressed size overflow".to_string())?;
+        if total_uncompressed_bytes > MAX_ZIP_TOTAL_BYTES {
+            return Err(format!(
+                "ZIP archive exceeds the {} byte extraction limit",
+                MAX_ZIP_TOTAL_BYTES
+            ));
+        }
+
+        let declared_size = entry.size();
+        let entry_size = usize::try_from(declared_size)
+            .map_err(|_| format!("ZIP entry is too large for this platform: {path}"))?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(entry_size)
+            .map_err(|_| format!("Failed to allocate memory for ZIP entry: {path}"))?;
+        (&mut entry)
+            .take(declared_size.saturating_add(1))
+            .read_to_end(&mut data)
+            .map_err(|err| format!("Failed to decompress ZIP entry {path}: {err}"))?;
+        if data.len() as u64 != declared_size {
+            return Err(format!(
+                "ZIP entry size mismatch for {path}: declared {declared_size}, decoded {}",
+                data.len()
+            ));
+        }
+
+        if looks_like_macbinary(&data) {
+            let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+            payload
+                .files
+                .push(parse_macbinary_payload(&data, parent, 1)?);
+            continue;
+        }
+
+        let nested = payload_from_forks(&path, data, Vec::new(), *b"????", *b"????", 0, 1)?;
+        payload.dirs.extend(nested.dirs);
+        payload.files.extend(nested.files);
+        payload.volumes.extend(nested.volumes);
+        payload
+            .skipped_disk_image_errors
+            .extend(nested.skipped_disk_image_errors);
+    }
+
+    Ok(payload)
+}
+
+fn safe_zip_entry_path<R: std::io::Read>(
+    entry: &zip::read::ZipFile<'_, R>,
+) -> Result<String, String> {
+    let original = entry.name();
+    if original.contains('\\') {
+        return Err(format!("Unsafe ZIP entry path: {original}"));
+    }
+    let enclosed = entry
+        .enclosed_name()
+        .ok_or_else(|| format!("Unsafe ZIP entry path: {original}"))?;
+    if enclosed.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(format!("Unsafe ZIP entry path: {original}"));
+    }
+
+    Ok(enclosed
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            Component::CurDir => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn looks_like_macbinary(file_data: &[u8]) -> bool {
+    if file_data.len() < 128 || file_data[0] != 0 || file_data[74] != 0 || file_data[82] != 0 {
+        return false;
+    }
+    let name_len = file_data[1] as usize;
+    if !(1..=63).contains(&name_len) || file_data[2..2 + name_len].contains(&0) {
+        return false;
+    }
+    parse_macbinary_payload(file_data, "", 1).is_ok()
+}
+
+fn parse_macbinary_payload(
+    file_data: &[u8],
+    parent: &str,
+    executable_priority: u8,
+) -> Result<PayloadFile, String> {
+    if file_data.len() < 128 {
+        return Err("File too small for MacBinary".to_string());
+    }
+
+    let data_len =
+        u32::from_be_bytes([file_data[83], file_data[84], file_data[85], file_data[86]]) as usize;
+    let rsrc_len =
+        u32::from_be_bytes([file_data[87], file_data[88], file_data[89], file_data[90]]) as usize;
+    let data_end = 128usize
+        .checked_add(data_len)
+        .ok_or_else(|| "MacBinary data offset overflow".to_string())?;
+    let data_padded_len = data_len
+        .checked_add(127)
+        .map(|len| len & !127)
+        .ok_or_else(|| "MacBinary data padding overflow".to_string())?;
+    let rsrc_start = 128usize
+        .checked_add(data_padded_len)
+        .ok_or_else(|| "MacBinary resource offset overflow".to_string())?;
+    let rsrc_end = rsrc_start
+        .checked_add(rsrc_len)
+        .ok_or_else(|| "MacBinary resource offset overflow".to_string())?;
+    if data_end > file_data.len() || rsrc_end > file_data.len() {
+        return Err("MacBinary truncated".to_string());
+    }
+
+    let name_len = (file_data[1] as usize).min(63);
+    let name = std::str::from_utf8(&file_data[2..2 + name_len]).unwrap_or("FixtureGen");
+    let name = if parent.is_empty() {
+        name.to_string()
+    } else {
+        format!("{parent}/{name}")
+    };
+    let file_type = file_data[65..69]
+        .try_into()
+        .map_err(|_| "MacBinary file type is truncated".to_string())?;
+    let creator = file_data[69..73]
+        .try_into()
+        .map_err(|_| "MacBinary creator is truncated".to_string())?;
+
+    Ok(PayloadFile {
+        name,
+        data: file_data[128..data_end].to_vec(),
+        rsrc: file_data[rsrc_start..rsrc_end].to_vec(),
+        file_type,
+        creator,
+        finder_flags: (u16::from(file_data[73]) << 8) | u16::from(file_data[101]),
+        executable_priority,
+    })
 }
 
 fn collect_stuffit_payload_files(archive: &SitArchive) -> Result<Vec<PayloadFile>, String> {
@@ -2538,6 +2713,7 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn disk_image_payload_registers_a_read_only_file_manager_volume() {
@@ -2704,6 +2880,18 @@ mod tests {
         let rsrc_start = 128 + data_padded_len;
         bytes[rsrc_start..rsrc_start + rsrc.len()].copy_from_slice(rsrc);
         bytes
+    }
+
+    fn make_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, data) in entries {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
     }
 
     struct TestWebPackEntry<'a> {
@@ -3141,6 +3329,98 @@ mod tests {
             runner.dispatcher().vfs_rsrc.get("Self Opening App"),
             Some(&rsrc)
         );
+    }
+
+    #[test]
+    fn zip_archive_mounts_macbinary_application_and_companion_files() {
+        let app_data = b"self-readable application data";
+        let app_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let macbinary = make_macbinary_application("Game App", app_data, &app_rsrc);
+        let zip = make_zip(&[
+            ("Demo/Game App.bin", &macbinary),
+            ("Demo/GAME.000", b"runtime companion"),
+        ]);
+        let mut runner = new_runner();
+
+        load_zip(&mut runner, &zip).expect("ZIP application should load");
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Demo/Game App"),
+            Some(&app_data.to_vec())
+        );
+        assert_eq!(
+            runner.dispatcher().vfs_rsrc.get("Demo/Game App"),
+            Some(&app_rsrc)
+        );
+        assert_eq!(
+            runner.dispatcher().vfs.get("Demo/GAME.000"),
+            Some(&b"runtime companion".to_vec())
+        );
+        let metadata = runner
+            .dispatcher_mut()
+            .vfs_file_metadata("Demo/Game App")
+            .expect("application metadata");
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"APPL"));
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+    }
+
+    #[test]
+    fn zip_archive_rejects_parent_directory_entries() {
+        let zip = make_zip(&[("../escape.dat", b"nope")]);
+        let err = collect_zip_payload(&zip).expect_err("path traversal should be rejected");
+        assert!(err.contains("Unsafe ZIP entry path"), "{err}");
+    }
+
+    #[test]
+    fn zip_archive_rejects_excessive_entry_counts() {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for index in 0..=MAX_ZIP_ENTRIES {
+            writer
+                .start_file(format!("entry-{index}"), options)
+                .unwrap();
+        }
+        let zip = writer.finish().unwrap().into_inner();
+
+        let err = collect_zip_payload(&zip).expect_err("entry limit should be enforced");
+        assert!(err.contains("entry limit"), "{err}");
+    }
+
+    #[test]
+    fn zip_archive_preserves_nested_disk_image_volume_metadata() {
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file("Data File", b"contents", 0o100644);
+        let image = builder.build();
+        let volume_name = crate::disk_image::extract_dc42_or_hfs(&image)
+            .unwrap()
+            .expect("HFS+ image")
+            .volume_name;
+        let zip = make_zip(&[("Demo/Data.img", &image)]);
+
+        let payload = collect_zip_payload(&zip).expect("nested disk image should load");
+
+        assert_eq!(payload.volumes.len(), 1);
+        assert_eq!(payload.volumes[0].0, volume_name);
+    }
+
+    #[test]
+    fn zip_archive_rejects_malformed_input() {
+        let err = collect_zip_payload(b"PK\x03\x04not a zip")
+            .expect_err("malformed ZIP should be rejected");
+        assert!(err.contains("Failed to parse ZIP archive"), "{err}");
+    }
+
+    #[test]
+    fn web_pack_sources_accept_zip_archives() {
+        let zip = make_zip(&[("Demo/GAME.000", b"runtime companion")]);
+        let packed = pack_game_sources_for_web(&[&zip], &[]).expect("ZIP source should pack");
+
+        assert_eq!(&packed[..4], WEB_PACK_MAGIC);
+        assert!(packed
+            .windows(b"Demo/GAME.000".len())
+            .any(|window| window == b"Demo/GAME.000"));
     }
 
     #[test]
