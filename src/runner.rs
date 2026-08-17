@@ -74,7 +74,6 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
-const LARGE_SIZE_RELOCATION_MINIMUM: u32 = 2 * 1024 * 1024;
 const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
@@ -1411,14 +1410,17 @@ fn load_address_for_size_partition(
     let Some(size) = size_resource else {
         return configured_load_address;
     };
-    if size.preferred_partition_size().is_none()
-        || size.minimum_size <= LARGE_SIZE_RELOCATION_MINIMUM
-    {
+    // A normal launch attempts the preferred partition and may fall back to
+    // any available size at or above the minimum; neither path has a size
+    // threshold below which the partition stops governing the 68K A5 world.
+    // Inside Macintosh: Processes (1994), pp. 1-3 and 2-15;
+    // Inside Macintosh: Memory (1992), pp. 1-7 to 1-8.
+    let Some(preferred_partition_size) = size.preferred_partition_size() else {
         return configured_load_address;
-    }
+    };
 
-    let desired_a5 =
-        APP_HEAP_FLOOR.saturating_add(size.minimum_size.saturating_sub(APP_STACK_SAFETY_MARGIN));
+    let desired_a5 = APP_HEAP_FLOOR
+        .saturating_add(preferred_partition_size.saturating_sub(APP_STACK_SAFETY_MARGIN));
     let default_a5 = configured_load_address.saturating_add(header.below_a5);
     if desired_a5 <= default_a5 {
         return configured_load_address;
@@ -10567,7 +10569,7 @@ mod tests {
     }
 
     #[test]
-    fn load_app_leaves_exact_2mb_size_partition_at_default_address() {
+    fn load_app_relocates_exact_2mb_size_partition() {
         let below_a5 = 0x68E8;
         let code0 = minimal_code0(0x0D18, below_a5, 0, 0);
         let size = size_resource_bytes(0x5880, 0x0020_0000, 0x0020_0000);
@@ -10577,8 +10579,28 @@ mod tests {
 
         let app = runner.load_app(&fork).expect("load app");
 
-        assert_eq!(app_image_start_for_loaded_app(&app), DEFAULT_LOAD_ADDRESS);
-        assert_eq!(app.a5_base, DEFAULT_LOAD_ADDRESS + below_a5);
+        assert!(app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR);
+        assert!(app.a5_base - APP_HEAP_FLOOR >= 0x0020_0000 - APP_STACK_SAFETY_MARGIN);
+    }
+
+    #[test]
+    fn load_app_relocates_sub_2mb_size_partition() {
+        let preferred_partition = 1_843_200;
+        let minimum_partition = 768_000;
+        let below_a5 = 29_116;
+        let code0 = minimal_code0(3_816, below_a5, 0, 0);
+        let size = size_resource_bytes(0x5880, preferred_partition, minimum_partition);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0), (*b"SIZE", -1, &size)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(32 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load app");
+
+        assert!(app_image_start_for_loaded_app(&app) > APP_HEAP_FLOOR);
+        assert!(
+            app.a5_base - APP_HEAP_FLOOR >= preferred_partition - APP_STACK_SAFETY_MARGIN,
+            "sub-2 MiB SIZE partitions must still govern the classic A5 layout"
+        );
     }
 
     #[test]
