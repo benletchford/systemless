@@ -952,6 +952,25 @@ pub(crate) struct VfsDirectory {
     pub name: String,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct VfsVolume {
+    pub ref_num: i16,
+    pub name: String,
+    pub root_dir_id: u32,
+    pub attributes: u16,
+    pub file_count: u16,
+    pub allocation_block_count: u16,
+    pub allocation_block_size: u32,
+    pub clump_size: u32,
+    pub free_blocks: u16,
+    pub bitmap_start: u16,
+    pub allocation_pointer: u16,
+    pub allocation_start: u16,
+    pub next_catalog_id: u32,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WorkingDirectory {
     pub ref_num: i16,
@@ -1376,6 +1395,10 @@ pub struct TrapDispatcher {
     pub(crate) vfs_directories: HashMap<String, VfsDirectory>,
     /// Reverse directory lookup by catalog ID.
     pub(crate) vfs_directory_paths: HashMap<u32, String>,
+    /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
+    pub(crate) vfs_volumes: HashMap<i16, VfsVolume>,
+    /// Mounted volume lookup by normalized, case-insensitive name.
+    pub(crate) vfs_volume_names: HashMap<String, i16>,
     /// Open working directories keyed by working directory reference number.
     pub(crate) working_directories: HashMap<i16, WorkingDirectory>,
     /// Open file table: refnum -> filename
@@ -1425,6 +1448,8 @@ pub struct TrapDispatcher {
     pub(crate) default_startup_rec: u32,
     /// Next synthetic catalog directory ID for VFS directories.
     pub(crate) next_vfs_dir_id: u32,
+    /// Next stable negative volume reference for an extracted read-only volume.
+    pub(crate) next_vfs_volume_ref_num: i16,
     /// Next synthetic file ID for VFS files.
     pub(crate) next_vfs_file_id: u32,
     /// Monotonic source for VFS creation and modification timestamps.
@@ -3017,6 +3042,8 @@ impl TrapDispatcher {
             vfs_metadata: HashMap::new(),
             vfs_directories,
             vfs_directory_paths,
+            vfs_volumes: HashMap::new(),
+            vfs_volume_names: HashMap::new(),
             working_directories: HashMap::new(),
             open_files: HashMap::new(),
             synthetic_drivers: HashMap::new(),
@@ -3032,6 +3059,7 @@ impl TrapDispatcher {
             default_os_rec: 0x0001,           // Macintosh Operating System
             default_startup_rec: 0x0000_0000, // zero-filled first-device startup default
             next_vfs_dir_id: 16,
+            next_vfs_volume_ref_num: -2,
             next_vfs_file_id: 32,
             next_vfs_timestamp: 1,
             next_working_dir_refnum: 32,
@@ -3653,6 +3681,96 @@ impl TrapDispatcher {
         BOOT_VOLUME_REF_NUM
     }
 
+    /// Mount an extracted disk-image root as a read-only File Manager volume.
+    /// The root remains a normal top-level VFS directory for compatibility
+    /// while File Manager calls receive a stable negative volume reference.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn mount_vfs_volume(
+        &mut self,
+        name: &str,
+        attributes: u16,
+        file_count: u16,
+        allocation_block_count: u16,
+        allocation_block_size: u32,
+        clump_size: u32,
+        free_blocks: u16,
+        bitmap_start: u16,
+        allocation_pointer: u16,
+        allocation_start: u16,
+        next_catalog_id: u32,
+        created_date: u32,
+        modified_date: u32,
+    ) -> i16 {
+        let normalized = Self::normalize_vfs_path(name);
+        if normalized.is_empty() || normalized.eq_ignore_ascii_case(BOOT_VOLUME_NAME) {
+            return Self::boot_volume_ref_num();
+        }
+        let key = normalized.to_ascii_lowercase();
+        if let Some(ref_num) = self.vfs_volume_names.get(&key).copied() {
+            return ref_num;
+        }
+
+        let root_dir_id = self.ensure_vfs_directory(&normalized);
+        let mut ref_num = self.next_vfs_volume_ref_num;
+        while ref_num == 0
+            || ref_num == Self::boot_volume_ref_num()
+            || self.vfs_volumes.contains_key(&ref_num)
+        {
+            ref_num = ref_num.saturating_sub(1);
+        }
+        self.next_vfs_volume_ref_num = ref_num.saturating_sub(1);
+        self.vfs_volumes.insert(
+            ref_num,
+            VfsVolume {
+                ref_num,
+                name: normalized,
+                root_dir_id,
+                // Extracted images are immutable even when their on-disk
+                // volume header was not locked at creation time.
+                attributes: attributes | 0x8000,
+                file_count,
+                allocation_block_count,
+                allocation_block_size,
+                clump_size,
+                free_blocks,
+                bitmap_start,
+                allocation_pointer,
+                allocation_start,
+                next_catalog_id,
+                created_date,
+                modified_date,
+            },
+        );
+        self.vfs_volume_names.insert(key, ref_num);
+        ref_num
+    }
+
+    pub(crate) fn vfs_volume_by_name(&self, name: &str) -> Option<&VfsVolume> {
+        let key = Self::normalize_vfs_path(name).to_ascii_lowercase();
+        self.vfs_volume_names
+            .get(&key)
+            .and_then(|ref_num| self.vfs_volumes.get(ref_num))
+    }
+
+    pub(crate) fn vfs_volume_for_ref_num(&self, ref_num: i16) -> Option<&VfsVolume> {
+        self.vfs_volumes.get(&ref_num)
+    }
+
+    pub(crate) fn vfs_volume_for_path(&self, path: &str) -> Option<&VfsVolume> {
+        let normalized = Self::normalize_vfs_path(path);
+        let root = normalized.split('/').next()?;
+        self.vfs_volume_by_name(root)
+    }
+
+    /// Return whether a VFS path belongs to an extracted disk-image volume.
+    /// Resource-fork mirrors use a `__rsrc__` prefix, so strip it before
+    /// resolving the volume root. The synthetic boot volume remains writable;
+    /// extracted image volumes are read-only by construction.
+    pub(crate) fn vfs_path_is_read_only(&self, path: &str) -> bool {
+        let path = path.strip_prefix("__rsrc__").unwrap_or(path);
+        self.vfs_volume_for_path(path).is_some()
+    }
+
     pub(crate) fn boot_volume_ref_num_u16() -> u16 {
         BOOT_VOLUME_REF_NUM as u16
     }
@@ -3825,11 +3943,15 @@ impl TrapDispatcher {
         self.ensure_vfs_file_metadata(&normalized);
         if let Some(metadata) = self.vfs_metadata.get(&normalized).copied() {
             self.default_dir_id = metadata.parent_dir_id;
+            let app_volume_ref = self
+                .vfs_volume_for_path(&normalized)
+                .map(|volume| volume.ref_num)
+                .unwrap_or(Self::boot_volume_ref_num());
             // Open a working directory for the app's parent folder so that
             // PBGetVol returns a WDRefNum and PBGetWDInfo resolves the correct dirID.
             // Inside Macintosh Volume IV, IV-72
             if let Some(wd_ref) =
-                self.open_working_directory(Self::boot_volume_ref_num(), metadata.parent_dir_id, 0)
+                self.open_working_directory(app_volume_ref, metadata.parent_dir_id, 0)
             {
                 self.app_wd_refnum = wd_ref;
             }
@@ -3985,6 +4107,9 @@ impl TrapDispatcher {
         if vref == Self::boot_volume_ref_num() {
             return vref;
         }
+        if self.vfs_volumes.contains_key(&vref) {
+            return vref;
+        }
         if let Some(working_directory) = self.working_directories.get(&vref) {
             return working_directory.volume_ref_num;
         }
@@ -3996,6 +4121,9 @@ impl TrapDispatcher {
         // ioDirID is 0 or 1, and they treat vRefNum=0 + ioDirID=0 as the
         // current default directory. Files 1992, 2-151 to 2-153.
         if dir_id <= 1 {
+            if let Some(volume) = self.vfs_volumes.get(&vref) {
+                return volume.root_dir_id;
+            }
             if let Some(working_directory) = self.working_directories.get(&vref) {
                 return working_directory.dir_id;
             }
@@ -4104,6 +4232,14 @@ impl TrapDispatcher {
                 ref_num: wd_ref_num,
                 volume_ref_num: Self::boot_volume_ref_num(),
                 dir_id: 2,
+                proc_id: 0,
+            });
+        }
+        if let Some(volume) = self.vfs_volume_for_ref_num(wd_ref_num) {
+            return Some(WorkingDirectory {
+                ref_num: wd_ref_num,
+                volume_ref_num: wd_ref_num,
+                dir_id: volume.root_dir_id,
                 proc_id: 0,
             });
         }
@@ -4261,6 +4397,15 @@ impl TrapDispatcher {
         // directory ID 2. Files 1992, 1-27 and 2-85.
         if dir_id == 1 && normalized.eq_ignore_ascii_case(BOOT_VOLUME_NAME) {
             return Some(String::new());
+        }
+        if dir_id == 1 {
+            if let Some(volume) = self.vfs_volume_by_name(&normalized) {
+                return Some(
+                    self.directory_path_for_id(volume.root_dir_id)
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
         }
         // Sort vfs_directories keys before first-match .find() to avoid
         // leaking HashMap hash-randomisation into directory resolution

@@ -851,6 +851,7 @@ fn payload_from_exported_host_tree(
     Ok(Payload {
         dirs,
         files,
+        volumes: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     })
 }
@@ -975,6 +976,7 @@ fn read_exported_resource_sidecar_for_rel(
 struct Payload {
     dirs: Vec<String>,
     files: Vec<PayloadFile>,
+    volumes: Vec<(String, crate::disk_image::DiskImageVolumeInfo)>,
     skipped_disk_image_errors: Vec<String>,
 }
 
@@ -1000,6 +1002,7 @@ fn payload_from_stuffit_archive(
     let mut payload = Payload {
         dirs: Vec::new(),
         files: Vec::new(),
+        volumes: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in archive.entries.iter().filter(|entry| !entry.is_folder) {
@@ -1017,6 +1020,10 @@ fn payload_from_stuffit_archive(
         )?;
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
+        payload.volumes.extend(entry_payload.volumes);
+        payload
+            .skipped_disk_image_errors
+            .extend(entry_payload.skipped_disk_image_errors);
     }
     for entry in archive.entries.iter().filter(|entry| entry.is_folder) {
         payload.dirs.push(entry.name.clone());
@@ -1378,6 +1385,7 @@ fn payload_from_forks(
         return Ok(Payload {
             dirs: Vec::new(),
             files: vec![file],
+            volumes: Vec::new(),
             skipped_disk_image_errors: Vec::new(),
         });
     }
@@ -1438,6 +1446,7 @@ fn payload_from_forks(
             finder_flags,
             executable_priority,
         }],
+        volumes: Vec::new(),
         skipped_disk_image_errors,
     })
 }
@@ -1462,6 +1471,7 @@ fn expand_installer_maker_payload(
     let mut payload = Payload {
         dirs: vec![name.to_string()],
         files: Vec::new(),
+        volumes: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in container.entries {
@@ -1522,6 +1532,7 @@ fn expand_installer_maker_payload(
                         finder_flags: entry.finder_flags,
                         executable_priority,
                     }],
+                    volumes: Vec::new(),
                     skipped_disk_image_errors: Vec::new(),
                 }
             }
@@ -1529,6 +1540,7 @@ fn expand_installer_maker_payload(
         };
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
+        payload.volumes.extend(entry_payload.volumes);
         payload
             .skipped_disk_image_errors
             .extend(entry_payload.skipped_disk_image_errors);
@@ -1611,6 +1623,7 @@ fn expand_vise_payload(
             )
             .collect(),
         files: Vec::new(),
+        volumes: Vec::new(),
         skipped_disk_image_errors: Vec::new(),
     };
     for entry in archive.entries {
@@ -1683,6 +1696,7 @@ fn expand_vise_payload(
         )?;
         payload.dirs.extend(entry_payload.dirs);
         payload.files.extend(entry_payload.files);
+        payload.volumes.extend(entry_payload.volumes);
         payload
             .skipped_disk_image_errors
             .extend(entry_payload.skipped_disk_image_errors);
@@ -1726,12 +1740,19 @@ fn payload_from_disk_image(
     image: crate::disk_image::DiskImageContents,
     executable_priority: u8,
 ) -> Result<Payload, String> {
+    let crate::disk_image::DiskImageContents {
+        volume_name,
+        volume_info,
+        dirs,
+        files,
+    } = image;
     let mut payload = Payload {
-        dirs: image.dirs,
+        dirs,
         files: Vec::new(),
+        volumes: vec![(volume_name, volume_info)],
         skipped_disk_image_errors: Vec::new(),
     };
-    for file in image.files {
+    for file in files {
         let file_payload = payload_from_forks(
             &file.path,
             file.data,
@@ -1743,6 +1764,7 @@ fn payload_from_disk_image(
         )?;
         payload.dirs.extend(file_payload.dirs);
         payload.files.extend(file_payload.files);
+        payload.volumes.extend(file_payload.volumes);
         payload
             .skipped_disk_image_errors
             .extend(file_payload.skipped_disk_image_errors);
@@ -1758,6 +1780,24 @@ fn insert_payload_into_vfs(
     for dir in payload.dirs {
         let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&dir);
         runner.dispatcher_mut().ensure_vfs_directory(&normalized);
+    }
+
+    for (volume, info) in payload.volumes {
+        runner.dispatcher_mut().mount_vfs_volume(
+            &volume,
+            info.attributes,
+            info.file_count,
+            info.allocation_block_count,
+            info.allocation_block_size,
+            info.clump_size,
+            info.free_blocks,
+            info.bitmap_start,
+            info.allocation_pointer,
+            info.allocation_start,
+            info.next_catalog_id,
+            info.created_date,
+            info.modified_date,
+        );
     }
 
     for file in payload.files {
@@ -2491,6 +2531,35 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_image_payload_registers_a_read_only_file_manager_volume() {
+        let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
+        builder.add_file("Data File", b"contents", 0o100644);
+        let image_bytes = builder.build();
+        let image = crate::disk_image::extract_dc42_or_hfs(&image_bytes)
+            .unwrap()
+            .expect("HFS+ image");
+        let volume_name = image.volume_name.clone();
+        let mut runner = new_runner();
+        let mut executable = None;
+
+        insert_payload_into_vfs(
+            &mut runner,
+            payload_from_disk_image(image, 1).unwrap(),
+            &mut executable,
+        );
+
+        let volume = runner
+            .dispatcher()
+            .vfs_volume_by_name(&volume_name)
+            .expect("mounted File Manager volume");
+        assert_eq!(volume.ref_num, -2);
+        assert_ne!(volume.attributes & 0x8000, 0, "software-locked volume");
+        assert!(runner
+            .dispatcher()
+            .vfs_path_is_read_only(&format!("{volume_name}/Data File")));
+    }
 
     #[test]
     fn web_pack_sources_accept_hfs_images_and_filter_by_classic_mac_path() {
