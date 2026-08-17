@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/benletchford/systemless/compare/v0.16.0...v0.16.1) (2026-08-17)
+
+
+### Bug Fixes
+
+* launch large universal applications ([650536c](https://github.com/benletchford/systemless/commit/650536cd7ecd4938da3622f369f4420a055ebf6c)), closes [#658](https://github.com/benletchford/systemless/issues/658) [#659](https://github.com/benletchford/systemless/issues/659)
+
 ## [0.16.0](https://github.com/benletchford/systemless/compare/v0.15.0...v0.16.0) (2026-08-17)
 
 
