@@ -162,10 +162,10 @@ fn scribble_uninitialized_allocation(bus: &mut MacMemoryBus, address: u32, size:
     }
     // IM:Memory 1992 / IM:II document that regular NewPtr/NewHandle
     // allocations leave contents undefined; only CLEAR variants are
-    // guaranteed to return zero-filled memory.
-    for offset in 0..size {
-        bus.write_byte(address.wrapping_add(offset), 0xA5);
-    }
+    // guaranteed to return zero-filled memory. One bulk fill: the bus keeps
+    // its per-byte path whenever a tracer, watchpoint or write probe needs
+    // to observe every byte.
+    bus.fill_bytes(address, size, 0xA5);
 }
 
 const NO_ERR: u32 = 0;
@@ -2772,9 +2772,7 @@ impl super::TrapDispatcher {
                 let d0 = cpu.read_reg(Register::D0);
                 let count = (d0 >> 16) & 0xFFFF;
                 let ptr = cpu.read_reg(Register::A0);
-                for i in 0..count {
-                    bus.write_byte(ptr + i, 0);
-                }
+                bus.fill_zeros(ptr, count);
                 cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
@@ -4568,6 +4566,29 @@ mod tests {
             ptr >= app_zone && ptr < bus.read_long(app_zone),
             "a successful NewPtr result must pass the classic [zone, bkLim) validity test"
         );
+    }
+
+    #[test]
+    fn new_ptr_scribbles_every_byte_and_new_ptr_clear_zeroes_every_byte() {
+        // Regular NewPtr leaves contents undefined; systemless scribbles 0xA5
+        // so an application relying on zeroed memory misbehaves here as it
+        // would on a real machine. NewPtrClear guarantees zeros. Both fills
+        // must cover the whole block, first byte to last, at odd sizes.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for (trap_word, size, expected) in [(0xA11Eu16, 0x1235u32, 0xA5u8), (0xA31E, 0x0FFF, 0x00)]
+        {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, size);
+            let result = dispatcher.dispatch_memory(false, 0x1E, &mut cpu, &mut bus);
+            assert!(result.is_some() && result.unwrap().is_ok());
+            let ptr = cpu.read_reg(Register::A0);
+            assert!(ptr != 0);
+            let block = bus.read_bytes(ptr, size as usize);
+            assert!(
+                block.iter().all(|&b| b == expected),
+                "trap ${trap_word:04X} size {size:#x}: every byte must be {expected:#04x}"
+            );
+        }
     }
 
     #[test]
