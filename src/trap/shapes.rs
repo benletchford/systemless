@@ -218,6 +218,74 @@ fn normalize_boolean_transfer_mode(mode: i16) -> i16 {
     }
 }
 
+/// What a whole-row 1bpp operation does to every bit of the clipped rect.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BitRowOp {
+    Set,
+    Clear,
+    Toggle,
+}
+
+/// A solid all-black pattern sets every bit and a solid all-white pattern
+/// clears every bit (`apply_boolean_transfer_1` in srcCopy: the result is
+/// the source bit); anything else needs the per-pixel pattern lookup.
+fn solid_bit_row_op(pattern: [u8; 8]) -> Option<BitRowOp> {
+    if pattern == [0xFF; 8] {
+        Some(BitRowOp::Set)
+    } else if pattern == [0x00; 8] {
+        Some(BitRowOp::Clear)
+    } else {
+        None
+    }
+}
+
+/// Apply `op` to bits `first_bit..end_bit` (MSB-first, as QuickDraw packs
+/// them) of the 1bpp row at `row_base`: masked read-modify-write of the two
+/// edge bytes, one bulk write for the whole bytes between.
+fn apply_bit_row_op(
+    bus: &mut MacMemoryBus,
+    row_base: u32,
+    first_bit: u32,
+    end_bit: u32,
+    op: BitRowOp,
+) {
+    debug_assert!(first_bit < end_bit);
+    let first_byte = first_bit / 8;
+    let last_byte = (end_bit - 1) / 8;
+    let head_mask = 0xFFu8 >> (first_bit % 8);
+    let tail_mask = 0xFFu8 << (7 - ((end_bit - 1) % 8));
+    let apply = |old: u8, mask: u8| match op {
+        BitRowOp::Set => old | mask,
+        BitRowOp::Clear => old & !mask,
+        BitRowOp::Toggle => old ^ mask,
+    };
+    if first_byte == last_byte {
+        let addr = row_base + first_byte;
+        bus.write_byte(addr, apply(bus.read_byte(addr), head_mask & tail_mask));
+        return;
+    }
+    let head_addr = row_base + first_byte;
+    bus.write_byte(head_addr, apply(bus.read_byte(head_addr), head_mask));
+    let middle = last_byte - first_byte - 1;
+    if middle > 0 {
+        let middle_addr = head_addr + 1;
+        match op {
+            BitRowOp::Set => bus.fill_bytes(middle_addr, middle, 0xFF),
+            BitRowOp::Clear => bus.fill_bytes(middle_addr, middle, 0x00),
+            BitRowOp::Toggle => {
+                let mut row = vec![0u8; middle as usize];
+                bus.read_bytes_into(middle_addr, &mut row);
+                for byte in row.iter_mut() {
+                    *byte = !*byte;
+                }
+                bus.write_bytes(middle_addr, &row);
+            }
+        }
+    }
+    let tail_addr = row_base + last_byte;
+    bus.write_byte(tail_addr, apply(bus.read_byte(tail_addr), tail_mask));
+}
+
 fn invert_indexed_pixel(old: u8) -> u8 {
     255 - old
 }
@@ -1430,13 +1498,19 @@ impl super::TrapDispatcher {
             && !has_complex_port_clip
             && installed_raw_pixpat.is_none()
         {
-            if let Some(fill_idx) = self.solid_src_copy_fill_index(
+            // Whole-row 8bpp paths: a solid srcCopy fill writes one prepared
+            // row per scanline; InvertRect maps each row through `255 - x`
+            // (exactly `invert_indexed_pixel`, applied per pixel below) --
+            // both instead of one bus round trip per pixel.
+            let solid_fill_idx = self.solid_src_copy_fill_index(
                 &op,
                 fg_idx,
                 bg_idx,
                 effective_pn_pat,
                 effective_bk_pat,
-            ) {
+            );
+            let invert_rows = matches!(op, ShapeOp::Invert);
+            if solid_fill_idx.is_some() || invert_rows {
                 let top = r.top.max(clip_top);
                 let left = r.left.max(clip_left);
                 let bottom = r.bottom.min(clip_bottom);
@@ -1445,10 +1519,17 @@ impl super::TrapDispatcher {
                     let dx = (left - bounds_left) as u32;
                     let width = (right - left) as u32;
                     if dx < pix_row_bytes && width <= pix_row_bytes.saturating_sub(dx) {
-                        let row = vec![fill_idx; width as usize];
+                        let mut row = vec![solid_fill_idx.unwrap_or(0); width as usize];
                         for y in top..bottom {
                             let dy = (y - bounds_top) as u32;
-                            bus.write_bytes(pix_base + dy * pix_row_bytes + dx, &row);
+                            let addr = pix_base + dy * pix_row_bytes + dx;
+                            if invert_rows {
+                                bus.read_bytes_into(addr, &mut row);
+                                for pixel in row.iter_mut() {
+                                    *pixel = invert_indexed_pixel(*pixel);
+                                }
+                            }
+                            bus.write_bytes(addr, &row);
                         }
                         let screen_rect = (
                             top.saturating_sub(bounds_top),
@@ -1465,6 +1546,54 @@ impl super::TrapDispatcher {
                         return;
                     }
                 }
+            }
+        }
+
+        // Whole-row 1bpp paths. On a monochrome port the per-pixel arm
+        // below reads and writes a byte per PIXEL; the ops that reduce to
+        // "set", "clear" or "toggle" every bit of the clipped rect --
+        // Erase with a solid pattern, srcCopy Paint/Fill with a solid
+        // pattern, and Invert (mode 2 with a black source, i.e. `!old`) --
+        // become masked writes at the two edge bytes and one bulk write in
+        // between, exactly what `apply_boolean_transfer_1` yields per pixel.
+        // EV Override clears its 1-bit offscreen buffers at boot with an
+        // EraseRect + InvertRect pair over 8.3 M pixels each.
+        if pixel_size == 1 && full_rect_coverage && !has_complex_port_clip {
+            let bit_op = match op {
+                ShapeOp::Invert => Some(BitRowOp::Toggle),
+                ShapeOp::Erase => solid_bit_row_op(self.bk_pat),
+                ShapeOp::Fill(pattern) => solid_bit_row_op(pattern),
+                ShapeOp::Paint if normalize_boolean_transfer_mode(self.pn_mode) == 0 => {
+                    solid_bit_row_op(self.pn_pat)
+                }
+                _ => None,
+            };
+            if let Some(bit_op) = bit_op {
+                let top = r.top.max(clip_top);
+                let left = r.left.max(clip_left);
+                let bottom = r.bottom.min(clip_bottom);
+                let right = r.right.min(clip_right);
+                if top < bottom && left < right {
+                    let first_bit = (left - bounds_left) as u32;
+                    // Pixels past the row's last byte are skipped, as the
+                    // per-pixel arm does.
+                    let end_bit = ((right - bounds_left) as u32).min(pix_row_bytes * 8);
+                    if first_bit < end_bit {
+                        for y in top..bottom {
+                            let row_base = pix_base + (y - bounds_top) as u32 * pix_row_bytes;
+                            apply_bit_row_op(bus, row_base, first_bit, end_bit, bit_op);
+                        }
+                    }
+                    let screen_rect = (
+                        top.saturating_sub(bounds_top),
+                        left.saturating_sub(bounds_left),
+                        bottom.saturating_sub(bounds_top),
+                        right.saturating_sub(bounds_left),
+                    );
+                    self.refresh_dialog_saved_pixels_after_screen_draw(bus, port, screen_rect);
+                    self.refresh_visible_dialog_snapshot_region_for_port(bus, port, screen_rect);
+                }
+                return;
             }
         }
 
