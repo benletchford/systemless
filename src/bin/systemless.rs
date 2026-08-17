@@ -114,6 +114,10 @@ struct Cli {
     #[arg(long)]
     headless: bool,
 
+    /// Disable host-native desktop integrations
+    #[arg(long)]
+    no_native_integrations: bool,
+
     /// Map arrow keys to the numeric keypad
     #[arg(long, conflicts_with = "literal_arrows")]
     arrows_as_numpad: bool,
@@ -377,7 +381,9 @@ struct App {
     /// Remap arrow keys to numpad equivalents (for keyboards without a numpad)
     arrows_as_numpad: bool,
     #[cfg(target_os = "macos")]
-    native_menu: native_menu::NativeMenuBridge,
+    native_integrations: bool,
+    #[cfg(target_os = "macos")]
+    native_menu: Option<native_menu::NativeMenuBridge>,
     #[cfg(target_os = "macos")]
     native_app_path: Option<String>,
     #[cfg(target_os = "macos")]
@@ -387,7 +393,9 @@ struct App {
 }
 
 impl App {
-    fn new(game_path: PathBuf, arrows_as_numpad: bool) -> Self {
+    fn new(game_path: PathBuf, arrows_as_numpad: bool, native_integrations: bool) -> Self {
+        #[cfg(not(target_os = "macos"))]
+        let _ = native_integrations;
         #[cfg(target_os = "macos")]
         let native_menu_app_name = game_path
             .file_stem()
@@ -466,7 +474,10 @@ impl App {
             debug_frame_ms: None,
             arrows_as_numpad,
             #[cfg(target_os = "macos")]
-            native_menu: native_menu::NativeMenuBridge::new(native_menu_app_name),
+            native_integrations,
+            #[cfg(target_os = "macos")]
+            native_menu: native_integrations
+                .then(|| native_menu::NativeMenuBridge::new(native_menu_app_name)),
             #[cfg(target_os = "macos")]
             native_app_path: None,
             #[cfg(target_os = "macos")]
@@ -520,7 +531,9 @@ impl App {
 
         let mut runner = game::new_runner();
         #[cfg(target_os = "macos")]
-        runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
+        if self.native_integrations {
+            runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
+        }
         let app =
             game::load_game_from_path(&mut runner, &self.game_path).expect("Failed to load game");
         let mut save_store = DesktopSaveStore::for_loaded_archive(&self.game_path, &mut runner);
@@ -572,6 +585,10 @@ impl App {
 
     #[cfg(target_os = "macos")]
     fn sync_native_application_identity(&mut self) {
+        if !self.native_integrations {
+            return;
+        }
+
         // Icon discovery parses the application's resource fork and decodes
         // its BNDL/FREF/ICN# family. The launched path is the cache key and is
         // available without doing that work, so reject the normal unchanged-
@@ -595,7 +612,9 @@ impl App {
             return;
         };
 
-        self.native_menu.set_app_name(identity.name.clone());
+        if let Some(native_menu) = self.native_menu.as_mut() {
+            native_menu.set_app_name(identity.name.clone());
+        }
         native_application::set_application_icon(identity.icon.as_ref());
         if let Some(window) = &self.window {
             window.set_title(&identity.name);
@@ -1805,7 +1824,9 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
             #[cfg(target_os = "macos")]
-            native_application::set_application_icon(self.native_app_icon.as_ref());
+            if self.native_integrations {
+                native_application::set_application_icon(self.native_app_icon.as_ref());
+            }
             #[cfg(target_os = "macos")]
             let initial_size = self
                 .content_rect
@@ -1814,7 +1835,11 @@ impl ApplicationHandler for App {
             #[cfg(not(target_os = "macos"))]
             let initial_size = (INITIAL_SCREEN_WIDTH, INITIAL_SCREEN_HEIGHT);
             #[cfg(target_os = "macos")]
-            let window_title = self.native_app_name.as_str();
+            let window_title = if self.native_integrations {
+                self.native_app_name.as_str()
+            } else {
+                "Systemless - Macintosh Emulator"
+            };
             #[cfg(not(target_os = "macos"))]
             let window_title = "Systemless - Macintosh Emulator";
             let window_attrs = Window::default_attributes()
@@ -1972,9 +1997,11 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(next_target));
 
         #[cfg(target_os = "macos")]
-        if let Some(runner) = self.runner.as_mut() {
-            for (menu_id, item_number) in self.native_menu.drain_commands() {
-                runner.select_guest_menu_item(menu_id, item_number);
+        if let Some(native_menu) = self.native_menu.as_mut() {
+            if let Some(runner) = self.runner.as_mut() {
+                for (menu_id, item_number) in native_menu.drain_commands() {
+                    runner.select_guest_menu_item(menu_id, item_number);
+                }
             }
         }
 
@@ -1995,8 +2022,10 @@ impl ApplicationHandler for App {
         self.sync_native_application_identity();
 
         #[cfg(target_os = "macos")]
-        if let Some(snapshot) = self.runner.as_mut().map(FixtureRunner::guest_menu_snapshot) {
-            self.native_menu.sync(snapshot);
+        if let Some(native_menu) = self.native_menu.as_mut() {
+            if let Some(snapshot) = self.runner.as_mut().map(FixtureRunner::guest_menu_snapshot) {
+                native_menu.sync(snapshot);
+            }
         }
 
         // Check if screen mode changed
@@ -2022,7 +2051,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn run_gui(game_path: PathBuf, arrows_as_numpad: bool) {
+fn run_gui(game_path: PathBuf, arrows_as_numpad: bool, native_integrations: bool) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
         "[SYSTEMLESS] GUI arrow keys: {}",
@@ -2033,7 +2062,7 @@ fn run_gui(game_path: PathBuf, arrows_as_numpad: bool) {
         }
     );
 
-    let mut app = App::new(game_path, arrows_as_numpad);
+    let mut app = App::new(game_path, arrows_as_numpad, native_integrations);
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
     // entering the event loop so startup never exposes an empty host window.
@@ -2188,6 +2217,7 @@ fn main() {
         eprintln!("[SYSTEMLESS] Native PowerPC slice preferred");
     }
     let game_path = cli.game;
+    let native_integrations = !cli.no_native_integrations;
     let arrows_as_numpad = if cli.literal_arrows {
         false
     } else if cli.arrows_as_numpad {
@@ -2202,7 +2232,7 @@ fn main() {
     }
 
     #[cfg(target_os = "macos")]
-    if !cli.headless {
+    if !cli.headless && native_integrations {
         relaunch_with_native_guest_identity(&game_path);
     }
 
@@ -2212,7 +2242,7 @@ fn main() {
     if cli.headless {
         run_headless(&game_path, cli.max_instructions.unwrap_or(5_000_000));
     } else {
-        run_gui(game_path, arrows_as_numpad);
+        run_gui(game_path, arrows_as_numpad, native_integrations);
     }
 }
 
@@ -2500,6 +2530,7 @@ mod tests {
         let cli = Cli::try_parse_from([
             "systemless",
             "--headless",
+            "--no-native-integrations",
             "--arrows-as-numpad",
             "--prefer-powerpc",
             "--max-instructions",
@@ -2510,6 +2541,7 @@ mod tests {
 
         assert_eq!(cli.game, PathBuf::from("game.sit"));
         assert!(cli.headless);
+        assert!(cli.no_native_integrations);
         assert!(cli.arrows_as_numpad);
         assert!(!cli.literal_arrows);
         assert!(cli.prefer_powerpc);
@@ -2581,7 +2613,7 @@ mod tests {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
 
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         let mut runner = FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
@@ -2633,7 +2665,7 @@ mod tests {
 
     #[test]
     fn gui_defaults_to_literal_arrow_controls() {
-        let app = App::new(PathBuf::from("dummy"), DEFAULT_GUI_ARROWS_AS_NUMPAD);
+        let app = App::new(PathBuf::from("dummy"), DEFAULT_GUI_ARROWS_AS_NUMPAD, true);
 
         assert!(
             !app.arrows_as_numpad,
@@ -2910,7 +2942,7 @@ mod tests {
     fn step_frame_mixes_one_audio_frame_when_guest_tick_does_not_advance() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -2943,7 +2975,7 @@ mod tests {
         runner.bus_mut().write_long(0x016A, 0);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
 
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION);
         app.next_frame_time = Some(now + FRAME_DURATION * 4);
@@ -3041,7 +3073,7 @@ mod tests {
                 exhausted_buffer_index: 0,
             });
 
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(scheduled_frame_end);
         app.next_frame_time = Some(scheduled_frame_end);
@@ -3145,7 +3177,7 @@ mod tests {
         );
         runner.dispatcher_mut().sound_manager.channels.push(chan);
 
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3173,7 +3205,7 @@ mod tests {
     fn step_frame_recovers_audio_elapsed_during_a_dropped_video_frame() {
         let now = std::time::Instant::now();
         let (runner, queued) = gui_runner_with_counting_audio();
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(now);
         app.next_frame_time = Some(now);
@@ -3203,7 +3235,7 @@ mod tests {
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.set_instructions_per_tick(1);
 
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(runner);
         app.start_time = Some(now - FRAME_DURATION * 2);
         app.next_frame_time = Some(now + FRAME_DURATION);
@@ -3293,7 +3325,7 @@ mod tests {
 
     #[test]
     fn render_gate_waits_for_guest_tick_unless_forced() {
-        let mut app = App::new(PathBuf::from("dummy"), false);
+        let mut app = App::new(PathBuf::from("dummy"), false, true);
         app.runner = Some(FixtureRunner::new(
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
