@@ -1222,6 +1222,36 @@ impl super::TrapDispatcher {
             return;
         }
 
+        if pixel_size == 8 {
+            // Row-tiled: the pattern repeats every 8 pixels in x and 8 rows
+            // in y, so build the eight possible rows once (with the logical
+            // black/white indices resolved once, not per pixel) and write
+            // each scanline as one slice -- what fb_set_pixel writes per
+            // pixel, without the per-pixel bus round trips.
+            let black = Self::logical_black_pixel_index(bus);
+            let white = Self::logical_white_pixel_index(bus);
+            let width = (right - left) as usize;
+            let rows: Vec<Vec<u8>> = (0..8)
+                .map(|pattern_row| {
+                    let bits = pattern[pattern_row];
+                    (left..right)
+                        .map(|x| {
+                            if (bits >> (7 - x.rem_euclid(8))) & 1 != 0 {
+                                black
+                            } else {
+                                white
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            for y in top..bottom {
+                let addr = screen_base + (y as u32) * row_bytes + (left as u32);
+                bus.write_bytes(addr, &rows[y.rem_euclid(8) as usize][..width]);
+            }
+            return;
+        }
+
         for y in top..bottom {
             let row = pattern[y.rem_euclid(8) as usize];
             for x in left..right {
@@ -4668,8 +4698,7 @@ impl super::TrapDispatcher {
 
                 if let Some(ref popup) = tracking.active_popup {
                     self.draw_menu_dropdown(bus, popup.active_menu, popup.dropdown_rect);
-                    if self.ui_theme_id() == UiThemeId::ClassicSystem7
-                        && popup.highlighted_item > 0
+                    if self.ui_theme_id() == UiThemeId::ClassicSystem7 && popup.highlighted_item > 0
                     {
                         self.invert_dropdown_item_rect(
                             bus,
@@ -5214,6 +5243,49 @@ mod redraw_chrome_tests {
         assert_eq!(bus.read_byte(screen_base + 1), 0);
         assert_eq!(bus.read_byte(screen_base + 8), 0);
         assert_eq!(bus.read_byte(screen_base + 9), 255);
+    }
+
+    #[test]
+    fn fb_fill_pattern_rect_row_tiling_matches_per_pixel_semantics_at_odd_offsets() {
+        // A 24x12 8bpp screen, a rect (3,5)-(11,21) whose left edge is not
+        // 8-aligned and whose top is not a multiple of 8, and a pattern
+        // whose eight rows all differ: every pixel inside the rect must be
+        // black (255) where the pattern bit for (y mod 8, x mod 8) is set
+        // and white (0) otherwise, and nothing outside may change.
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(24 * 12);
+        disp.screen_mode = (screen_base, 24, 24, 12, 8);
+        for offset in 0..(24 * 12) as u32 {
+            bus.write_byte(screen_base + offset, 7);
+        }
+        let pattern = [0x81u8, 0x42, 0x24, 0x18, 0xF0, 0x0F, 0xAA, 0x01];
+        TrapDispatcher::fb_fill_pattern_rect(
+            &mut bus,
+            screen_base,
+            24,
+            8,
+            24,
+            12,
+            3,
+            5,
+            11,
+            21,
+            pattern,
+        );
+        for y in 0..12i16 {
+            for x in 0..24i16 {
+                let value = bus.read_byte(screen_base + (y as u32) * 24 + x as u32);
+                let inside = (3..11).contains(&y) && (5..21).contains(&x);
+                let expected = if !inside {
+                    7
+                } else if (pattern[y.rem_euclid(8) as usize] >> (7 - x.rem_euclid(8))) & 1 != 0 {
+                    255
+                } else {
+                    0
+                };
+                assert_eq!(value, expected, "pixel ({y}, {x})");
+            }
+        }
     }
 
     fn install_twilight_style_black_index(
