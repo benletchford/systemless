@@ -1645,6 +1645,11 @@ pub struct TrapDispatcher {
     /// before the physical release arrives. Keep ownership of that release
     /// even if the application disposes the dialog in the meantime.
     pub(crate) pending_modal_dialog_mouse_up: bool,
+    /// Event record for the ModalDialog-owned press. Some application-owned
+    /// handlers leave a copy of that mouseDown queued while disposing the
+    /// dialog, so retain its identity instead of discarding an arbitrary
+    /// earlier mouseDown.
+    pub(crate) pending_modal_dialog_mouse_down: Option<QueuedEvent>,
     /// One-shot update events recovered after FlushEvents drops queue entries
     /// while the Window Manager update region remains dirty.
     pub(crate) flushed_update_events: VecDeque<QueuedEvent>,
@@ -3095,6 +3100,7 @@ impl TrapDispatcher {
             input_trace_log: Vec::new(),
             event_queue: VecDeque::new(),
             pending_modal_dialog_mouse_up: false,
+            pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
             system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
@@ -4524,6 +4530,7 @@ impl TrapDispatcher {
         // ownership behind to swallow a later, unrelated click.
         if self.pending_modal_dialog_mouse_up {
             self.pending_modal_dialog_mouse_up = false;
+            self.pending_modal_dialog_mouse_down = None;
             return;
         }
         let modifiers = self.current_event_modifiers();
