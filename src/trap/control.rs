@@ -983,7 +983,21 @@ impl super::TrapDispatcher {
         let def_proc_handle = self.control_def_proc_handle(bus, proc_id);
         bus.write_long(ctrl_ptr + 24, def_proc_handle);
         let contrl_data = if Self::is_popup_menu_proc_id(proc_id) {
-            self.create_popup_control_private_data(bus, min)
+            // `max` is the title width only while the pop-up is being
+            // created. The standard CDEF then publishes the menu item count
+            // in contrlMax, so retain the pixel width as private CDEF state.
+            // Macintosh Toolbox Essentials 1992, pp. 5-25 to 5-27.
+            self.popup_control_title_widths.insert(ctrl_ptr, max);
+            let data = self.create_popup_control_private_data(bus, min);
+            let item_count = self
+                .menus
+                .iter()
+                .rev()
+                .find(|menu| menu.id == min)
+                .map_or(0, |menu| menu.items.len().min(i16::MAX as usize) as i16);
+            bus.write_word(ctrl_ptr + 20, 1);
+            bus.write_word(ctrl_ptr + 22, item_count as u16);
+            data
         } else {
             0
         };
@@ -1058,6 +1072,7 @@ impl super::TrapDispatcher {
             }
             self.release_control_aux_record(bus, ctrl_handle);
             self.control_proc_ids.remove(&ctrl_ptr);
+            self.popup_control_title_widths.remove(&ctrl_ptr);
             bus.free(ctrl_ptr);
         }
         bus.free(ctrl_handle);
@@ -1109,6 +1124,13 @@ impl super::TrapDispatcher {
             }
         }
         fallback_menu_id
+    }
+
+    pub(crate) fn popup_control_title_width(&self, ctrl_ptr: u32, fallback: i16) -> i16 {
+        self.popup_control_title_widths
+            .get(&ctrl_ptr)
+            .copied()
+            .unwrap_or(fallback)
     }
 
     /// Draw a single control based on its procID, using QuickDraw primitives
@@ -1315,8 +1337,16 @@ impl super::TrapDispatcher {
                 let menu_id = self.popup_control_menu_id(bus, ctrl_ptr, min);
                 let selected = value.max(1) as usize;
                 let item_title = self.popup_menu_item_title(bus, menu_id, selected);
+                let title_width = self.popup_control_title_width(ctrl_ptr, max);
                 let (draw_top, draw_left, draw_bottom, draw_right) = self.popup_control_box_rect(
-                    bus, abs_top, abs_left, abs_bottom, abs_right, menu_id, max, proc_id,
+                    bus,
+                    abs_top,
+                    abs_left,
+                    abs_bottom,
+                    abs_right,
+                    menu_id,
+                    title_width,
+                    proc_id,
                 );
                 self.draw_popup_control_label(
                     bus,
@@ -5184,6 +5214,87 @@ mod tests {
                 "inactive {label} title should use a visible palette blend without a gray ramp"
             );
         }
+    }
+
+    #[test]
+    fn inactive_popup_label_and_selected_title_use_live_device_palette() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(256 * 128);
+        let row_bytes = 256u32;
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 256, 128, 8);
+        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[255] = [0, 0, 0];
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(0x0828, row_bytes as u16);
+        for offset in 0..(row_bytes * 128) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+
+        let window_ptr = disp.current_port;
+        bus.write_word(window_ptr + 8, 0);
+        bus.write_word(window_ptr + 10, 0);
+        bus.write_word(window_ptr + 16, 0);
+        bus.write_word(window_ptr + 18, 0);
+        bus.write_word(window_ptr + 20, 128);
+        bus.write_word(window_ptr + 22, 256);
+        let menu_ptr = bus.alloc(256);
+        let menu_handle = bus.alloc(4);
+        bus.write_long(menu_handle, menu_ptr);
+        disp.menus.push(Menu {
+            id: 900,
+            title: "Files".to_string(),
+            items: vec![MenuItem {
+                text: "Demo Map".to_string(),
+                icon: 0,
+                key_equiv: 0,
+                mark: 0,
+                style: 0,
+                enabled: true,
+            }],
+            enabled: true,
+            handle: menu_handle,
+            in_menu_bar: false,
+            hierarchical: false,
+            visible_in_menu_bar: false,
+        });
+
+        for (top, hilite) in [(20, 255), (52, 0)] {
+            let (_handle, ctrl_ptr) = disp.create_control_record(
+                &mut bus,
+                window_ptr,
+                (top, 20, top + 20, 220),
+                b"Map:",
+                true,
+                1,
+                900,
+                60,
+                1009,
+                0,
+            );
+            assert_eq!(bus.read_word(ctrl_ptr + 20), 1);
+            assert_eq!(bus.read_word(ctrl_ptr + 22), 1);
+            bus.write_byte(ctrl_ptr + 17, hilite);
+            assert_eq!(disp.popup_control_title_width(ctrl_ptr, 1), 60);
+            disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+        }
+
+        assert!(
+            count_pixel_index(&bus, screen_base, row_bytes, 20, 20, 40, 80, 1) > 8,
+            "inactive popup label should use a visible palette blend"
+        );
+        assert!(
+            count_pixel_index(&bus, screen_base, row_bytes, 20, 90, 40, 170, 1) > 8,
+            "inactive popup selected title should use a visible palette blend"
+        );
+        assert!(
+            count_pixel_index(&bus, screen_base, row_bytes, 52, 20, 72, 80, 255) > 8,
+            "enabled popup label should retain active black ink"
+        );
+        assert!(
+            count_pixel_index(&bus, screen_base, row_bytes, 52, 90, 72, 170, 255) > 8,
+            "enabled popup selected title should retain active black ink"
+        );
     }
 
     /// An active push-button title must resolve its ink against the colour
