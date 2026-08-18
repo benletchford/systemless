@@ -202,32 +202,23 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-Systemless ships its own original bitmap fonts. Every glyph is authored for this
-project — hand-drawn as ASCII art in `src/quickdraw/fonts/pixel_font/` and
-lowered to static glyph tables by `const fn` at compile time; there is no
-external font file, no offline baker, and no third-party font data in the crate.
+Systemless bundles open-source TrueType faces from URW Core 35 and rasterizes
+them into cached glyph coverage when the built-in catalogue is first used.
+Application-provided classic `FONT`/`NFNT` resources and local font overrides
+still take precedence. The classic Mac names survive only as internal
+compatibility identifiers so applications requesting a family by name or ID
+resolve to an available substitute.
 
-The faces are named after Australian native plants. The classic Mac font names
-survive **only as internal compatibility identifiers** so that classic
-applications requesting a family by name or ID still resolve to a sensible face
-— this is nominative use, not branding.
+| Built-in face | Kind | Stands in for (compat family, font ID) |
+|---------------|------|----------------------------------------|
+| Nimbus Sans Bold | System / UI sans | Chicago (0) |
+| Nimbus Sans | Body sans | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
+| Nimbus Mono PS | Monospace | Monaco (4), Courier (22) |
+| Nimbus Roman | Serif | New York (2), Palatino (16), Times (20) |
 
-| systemless face | Kind                   | Stands in for (compat family, font ID) |
-|-----------------|------------------------|----------------------------------------|
-| **Jarrah**      | Heavy system / UI sans | Chicago (0) |
-| **Kurrajong**   | Humanist body sans     | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
-| **Mallee**    | Monospace              | Monaco (4), Courier (22) |
-| **Ironbark**    | Serif                  | New York (2), Palatino (16), Times (20) |
-
-Sizes: Jarrah 9/12; Kurrajong 9/10/12/14/18/24 (+ Application 12, Helvetica 12);
-Mallee 9/10/12; Ironbark 12/14/18 (with 2× scaling for 24).
-
-Every face is hand-drawn glyph by glyph in a consistent house style, with
-advances, side-bearings and x-height / cap height conformed to the original Mac
-strike so classic text lays out identically. Kurrajong 24 and Ironbark 18 are
-heavy display cuts matching their originals' bold weight. Venice (5), London (6)
-and Cairo (11) render as Kurrajong — the reference System has no strike for
-those families and substitutes the application font, which Systemless mirrors.
+The bundled faces cover ASCII and Mac Roman. Their antialiased coverage feeds
+the existing QuickDraw glyph renderer and is thresholded only when drawing to a
+1-bit destination.
 
 Render every face on white and black backgrounds for review with
 `cargo run --bin font_specimen` (output in `target/font_specimens/`).
@@ -242,19 +233,18 @@ Macintosh, Mac OS, QuickDraw, and the classic font family names (Chicago,
 Geneva, Monaco, New York, Venice, London, Cairo, etc.) are trademarks of Apple
 Inc. "Times" / "Helvetica" / "Courier" are trademarks of their respective
 owners. These names appear here solely as compatibility identifiers to
-interoperate with classic Macintosh software; the systemless faces themselves
-are original works, distributed under their own botanical names.
+interoperate with classic Macintosh software; the bundled substitutes retain
+their own URW names.
 
 ### Font license
 
-The systemless bitmap faces are original artwork and are licensed separately
-from the crate's GPL code. The glyph sources in
-`src/quickdraw/fonts/pixel_font/` are additionally available under the **SIL
-Open Font License 1.1** (see [OFL.txt](./OFL.txt)), with **"Systemless"** as
-the Reserved Font Name. This lets the faces be reused outside this project —
-including in software that is not GPL — while the emulator code itself stays
-GPL-3.0-or-later. Under the OFL, a modified font must not use the reserved
-name.
+The bundled URW Core 35 files are distributed under the **SIL Open Font License
+1.1**, without a Reserved Font Name clause. See
+[`src/quickdraw/fonts/urw/LICENSE.md`](src/quickdraw/fonts/urw/LICENSE.md) and
+[`src/quickdraw/fonts/urw/LICENSE.OFL`](src/quickdraw/fonts/urw/LICENSE.OFL).
+The small Systemless menu-symbol bitmap sources remain additionally available
+under the project's [OFL.txt](./OFL.txt), with "Systemless" as the Reserved Font
+Name. The emulator code remains GPL-3.0-or-later.
 
 ## Useful Environment Variables
 
@@ -309,7 +299,5 @@ Systemless intentionally diverges from it, and why.
 
 The emulator code is GPL-3.0-or-later. See [LICENSE](./LICENSE).
 
-The systemless bitmap fonts are original artwork authored for this project and
-are additionally available under the SIL Open Font License 1.1 (see
-[OFL.txt](./OFL.txt)), Reserved Font Name "Systemless" — see
-[Font license](#font-license). No third-party font data is bundled.
+Bundled URW Core 35 font files and Systemless's menu-symbol artwork are
+available under the SIL Open Font License 1.1; see [Font license](#font-license).

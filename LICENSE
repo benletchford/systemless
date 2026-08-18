@@ -2,9 +2,9 @@ systemless is licensed under the GNU General Public License v3.0 or later.
 
 Copyright (c) 2026 Ben Letchford
 
-This license covers the systemless emulator code. The bitmap font artwork in
-src/quickdraw/fonts/pixel_font/ is additionally available under the SIL Open
-Font License 1.1 — see OFL.txt.
+This license covers the systemless emulator code. Bundled font data is available
+under the SIL Open Font License 1.1; see OFL.txt and the license files under
+src/quickdraw/fonts/urw/.
 
 The full text of the GNU General Public License, Version 3, follows.
 

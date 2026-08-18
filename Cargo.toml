@@ -3,8 +3,7 @@ name = "systemless"
 version = "0.17.0"
 edition = "2021"
 rust-version = "1.93"
-# Emulator code is GPL-3.0-or-later; the bitmap font artwork in
-# src/quickdraw/fonts/pixel_font/ is additionally under OFL-1.1 (see OFL.txt).
+# Emulator code is GPL-3.0-or-later; bundled font data is under OFL-1.1.
 license = "GPL-3.0-or-later AND OFL-1.1"
 description = "High-Level Emulation for classic Macintosh applications"
 readme = "README.md"
@@ -37,6 +36,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
+fontdue = "0.9.3"
 
 [features]
 default = ["gui"]

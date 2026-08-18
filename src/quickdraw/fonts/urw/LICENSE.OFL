@@ -1,13 +1,9 @@
-Copyright (c) 2026, Ben Letchford (https://systemless.org),
-with Reserved Font Name "Systemless".
+Copyright (c) 2014,2015 by (URW)++ Design & Development
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
+http://scripts.sil.org/OFL
 
-This covers the bitmap symbol artwork in
-src/quickdraw/fonts/pixel_font/menu_symbols.rs. The
-rest of the systemless crate is licensed under GPL-3.0-or-later (see LICENSE).
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
