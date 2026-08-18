@@ -135,7 +135,7 @@ struct Cli {
     max_instructions: Option<usize>,
 
     /// Prefer a native PowerPC slice when a classic 68K slice is also available
-    #[arg(long)]
+    #[arg(long, visible_alias = "prefer-ppc")]
     prefer_powerpc: bool,
 
     /// Start with classic 24-bit guest address translation
@@ -2629,6 +2629,14 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_prefer_ppc_alias() {
+        let cli = Cli::try_parse_from(["systemless", "--prefer-ppc", "game.sit"])
+            .expect("PowerPC preference alias should parse");
+
+        assert!(cli.prefer_powerpc);
+    }
+
+    #[test]
     fn cli_generates_help_and_version() {
         let help =
             Cli::try_parse_from(["systemless", "--help"]).expect_err("--help should stop parsing");
@@ -2636,6 +2644,7 @@ mod tests {
             .expect_err("--version should stop parsing");
 
         assert_eq!(help.kind(), ErrorKind::DisplayHelp);
+        assert!(help.to_string().contains("[aliases: --prefer-ppc]"));
         assert_eq!(version.kind(), ErrorKind::DisplayVersion);
     }
 
