@@ -1393,11 +1393,11 @@ fn vfs_fork_hash(bytes: &[u8]) -> u64 {
 /// Default emulated CPU speed from the canonical machine profile.
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
     crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
-/// PowerPC clock exposed by the native 604 machine profile. The Power
-/// Macintosh 9500/120 paired a 120 MHz clock with the same 604 processor
-/// reported by the PPC Gestalt implementation.
-/// <https://support.apple.com/en-hk/112050>
-pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = 120.0;
+/// Realtime PPC instruction budget. Keep it aligned with the reference
+/// machine's sustainable interpreter throughput so native PPC applications
+/// receive a VBL every host frame instead of stalling during splash and load
+/// work while trying to emulate an unattainable raw clock rate.
+pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = DEFAULT_REALTIME_CPU_MHZ;
 /// Default 68K realtime CPU budget used by scripted realtime mode and by GUI
 /// sessions that do not load a PowerPC executable.
 pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_MHZ * 1_000_000.0;
@@ -10325,6 +10325,16 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
+
+    #[test]
+    fn realtime_ppc_budget_matches_the_sustainable_reference_profile() {
+        assert_eq!(DEFAULT_REALTIME_PPC_CPU_MHZ, DEFAULT_REALTIME_CPU_MHZ);
+        assert_eq!(
+            default_realtime_instructions_per_tick(true),
+            default_realtime_instructions_per_tick(false),
+            "desktop PPC pacing must not demand an interpreter clock that misses VBL deadlines"
+        );
+    }
 
     #[test]
     fn four_bit_runner_publishes_consistent_screen_metadata() {
