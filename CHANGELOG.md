@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/benletchford/systemless/compare/v0.16.1...v0.17.0) (2026-08-18)
+
+
+### Features
+
+* **cli:** add --prefer-ppc alias ([59b01b5](https://github.com/benletchford/systemless/commit/59b01b508c2ec6f201f27670fed38d2397dcad8f)), closes [#670](https://github.com/benletchford/systemless/issues/670)
+
 ## [0.16.1](https://github.com/benletchford/systemless/compare/v0.16.0...v0.16.1) (2026-08-17)
 
 
