@@ -26171,6 +26171,87 @@ mod tests {
         }
     }
 
+    /// Draw `ch` in srcOr on an 8bpp CGrafPort at pen (30, 20) and return
+    /// the set of pixels that changed from the background, together with the
+    /// pixels the glyph bitmap says must be painted (the per-pixel arm's
+    /// rule: coverage at or above MONO_COVERAGE_THRESHOLD, placed at
+    /// pen + glyph origin).
+    fn plain_glyph_footprint(ch: char) -> (Vec<(i16, i16)>, Vec<(i16, i16)>) {
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(64 * 40);
+        for offset in 0..(64 * 40) as u32 {
+            bus.write_byte(base + offset, 5);
+        }
+        let ctab = make_test_ctab_handle(
+            &mut bus,
+            &TrapDispatcher::standard_mac_8bpp_clut(),
+            0x1234,
+            0,
+        );
+        let pixmap_handle = bus.alloc(4);
+        let pixmap_ptr = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        write_pixmap_8(&mut bus, pixmap_ptr, base, 64, 40, ctab);
+        let port = bus.alloc(96);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, 40, 64);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 40, 64), &[]);
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, vis);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.fg_color = (0, 0, 0);
+        d.tx_font = 0;
+        d.tx_size = 12;
+        d.tx_face = 0;
+        d.tx_mode = 1; // srcOr: only glyph pixels may change
+        d.pn_loc = (20, 30);
+        d.draw_char(&mut cpu, &mut bus, ch);
+
+        let mut changed = Vec::new();
+        for y in 0..40i16 {
+            for x in 0..64i16 {
+                if bus.read_byte(base + (y as u32) * 64 + x as u32) != 5 {
+                    changed.push((y, x));
+                }
+            }
+        }
+        let mut expected = Vec::new();
+        if let Some((glyph, data)) = crate::quickdraw::text::get_glyph(0, 12, ch) {
+            for row in 0..glyph.height as i16 {
+                for col in 0..glyph.width as i16 {
+                    let index =
+                        glyph.data_offset + row as usize * glyph.width as usize + col as usize;
+                    if data[index] >= crate::quickdraw::fonts::MONO_COVERAGE_THRESHOLD {
+                        expected.push((
+                            20 + glyph.origin_y as i16 + row,
+                            30 + glyph.origin_x as i16 + col,
+                        ));
+                    }
+                }
+            }
+        }
+        expected.sort();
+        (changed, expected)
+    }
+
+    #[test]
+    fn plain_glyphs_paint_exactly_their_bitmap_pixels() {
+        // Covers the tightened plain-glyph rect: every bitmap pixel (first
+        // and last rows and columns included) must be painted and nothing
+        // else may change, for an ascender, a descender and a space.
+        for ch in ['A', 'g', 'y', '.', ' '] {
+            let (changed, expected) = plain_glyph_footprint(ch);
+            assert_eq!(
+                changed, expected,
+                "glyph {ch:?}: painted pixels must equal the bitmap"
+            );
+            if ch != ' ' {
+                assert!(!expected.is_empty(), "glyph {ch:?} must have pixels");
+            }
+        }
+    }
+
     #[test]
     fn drawrect_honors_complex_current_port_clip_region_on_8bpp_fast_fill() {
         let (mut d, mut cpu, mut bus) = setup();
