@@ -36,7 +36,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 # Pure-Rust math library for cross-platform deterministic transcendentals
 libm = "0.2"
-fontdue = "0.9.3"
+swash = "0.2.10"
 
 [features]
 default = ["gui"]

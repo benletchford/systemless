@@ -202,8 +202,9 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-Systemless bundles open-source TrueType faces from URW Core 35 and rasterizes
-them into cached glyph coverage when the built-in catalogue is first used.
+Systemless bundles open-source [Liberation Fonts 2.1.5](https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5)
+TrueType faces and rasterizes them into cached glyph coverage when the built-in
+catalogue is first used.
 Application-provided classic `FONT`/`NFNT` resources and local font overrides
 still take precedence. The classic Mac names survive only as internal
 compatibility identifiers so applications requesting a family by name or ID
@@ -211,10 +212,10 @@ resolve to an available substitute.
 
 | Built-in face | Kind | Stands in for (compat family, font ID) |
 |---------------|------|----------------------------------------|
-| Nimbus Sans Bold | System / UI sans | Chicago (0) |
-| Nimbus Sans | Body sans | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
-| Nimbus Mono PS | Monospace | Monaco (4), Courier (22) |
-| Nimbus Roman | Serif | New York (2), Palatino (16), Times (20) |
+| Liberation Sans Bold | System / UI sans | Chicago (0) |
+| Liberation Sans | Body sans | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
+| Liberation Mono | Monospace | Monaco (4), Courier (22) |
+| Liberation Serif | Serif | New York (2), Palatino (16), Times (20) |
 
 The bundled faces cover ASCII and Mac Roman. Their antialiased coverage feeds
 the existing QuickDraw glyph renderer and is thresholded only when drawing to a
@@ -234,14 +235,13 @@ Geneva, Monaco, New York, Venice, London, Cairo, etc.) are trademarks of Apple
 Inc. "Times" / "Helvetica" / "Courier" are trademarks of their respective
 owners. These names appear here solely as compatibility identifiers to
 interoperate with classic Macintosh software; the bundled substitutes retain
-their own URW names.
+their own Liberation names.
 
 ### Font license
 
-The bundled URW Core 35 files are distributed under the **SIL Open Font License
-1.1**, without a Reserved Font Name clause. See
-[`src/quickdraw/fonts/urw/LICENSE.md`](src/quickdraw/fonts/urw/LICENSE.md) and
-[`src/quickdraw/fonts/urw/LICENSE.OFL`](src/quickdraw/fonts/urw/LICENSE.OFL).
+The bundled Liberation files are distributed under the **SIL Open Font License
+1.1**. See
+[`src/quickdraw/fonts/liberation/LICENSE`](src/quickdraw/fonts/liberation/LICENSE).
 The small Systemless menu-symbol bitmap sources remain additionally available
 under the project's [OFL.txt](./OFL.txt), with "Systemless" as the Reserved Font
 Name. The emulator code remains GPL-3.0-or-later.
@@ -299,5 +299,5 @@ Systemless intentionally diverges from it, and why.
 
 The emulator code is GPL-3.0-or-later. See [LICENSE](./LICENSE).
 
-Bundled URW Core 35 font files and Systemless's menu-symbol artwork are
+Bundled Liberation font files and Systemless's menu-symbol artwork are
 available under the SIL Open Font License 1.1; see [Font license](#font-license).

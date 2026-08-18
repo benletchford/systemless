@@ -4,7 +4,7 @@ Copyright (c) 2026 Ben Letchford
 
 This license covers the systemless emulator code. Bundled font data is available
 under the SIL Open Font License 1.1; see OFL.txt and the license files under
-src/quickdraw/fonts/urw/.
+src/quickdraw/fonts/liberation/.
 
 The full text of the GNU General Public License, Version 3, follows.
 

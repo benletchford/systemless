@@ -1,16 +1,16 @@
 //! Open-source TrueType fonts + Mac font-family routing.
 //!
-//! Built-in faces are rasterized once from bundled, OFL-licensed URW Core 35
+//! Built-in faces are rasterized once from bundled, OFL-licensed Liberation
 //! TrueType files and then use the same cached coverage-bitmaps as application
 //! `FONT`/`NFNT` resources and local overrides. Classic Mac family names and
 //! IDs remain compatibility identifiers:
 //!
 //! | Mac font family (compat ID) | Built-in substitute |
 //! |-----------------------------|---------------------|
-//! | Chicago                     | Nimbus Sans Bold    |
-//! | Geneva / Application / Helvetica / decorative fallbacks | Nimbus Sans |
-//! | Monaco / Courier            | Nimbus Mono PS      |
-//! | New York / Palatino / Times | Nimbus Roman        |
+//! | Chicago                     | Liberation Sans Bold |
+//! | Geneva / Application / Helvetica / decorative fallbacks | Liberation Sans |
+//! | Monaco / Courier            | Liberation Mono     |
+//! | New York / Palatino / Times | Liberation Serif    |
 
 pub mod heuristics;
 pub mod override_format;
@@ -109,25 +109,25 @@ macro_rules! face {
 }
 
 const BUILTIN_FACES: &[BuiltinFace] = &[
-    face!(FONT_CHICAGO, 9, truetype::NIMBUS_SANS_BOLD),
-    face!(FONT_CHICAGO, 12, truetype::NIMBUS_SANS_BOLD),
-    face!(FONT_APPLICATION, 12, truetype::NIMBUS_SANS),
-    face!(FONT_NEWYORK, 12, truetype::NIMBUS_ROMAN),
-    face!(FONT_NEWYORK, 14, truetype::NIMBUS_ROMAN),
-    face!(FONT_NEWYORK, 18, truetype::NIMBUS_ROMAN),
-    face!(FONT_GENEVA, 9, truetype::NIMBUS_SANS),
-    face!(FONT_GENEVA, 10, truetype::NIMBUS_SANS),
-    face!(FONT_HELVETICA, 12, truetype::NIMBUS_SANS),
-    face!(FONT_GENEVA, 12, truetype::NIMBUS_SANS),
-    face!(FONT_GENEVA, 14, truetype::NIMBUS_SANS),
-    face!(FONT_GENEVA, 18, truetype::NIMBUS_SANS),
-    face!(FONT_GENEVA, 24, truetype::NIMBUS_SANS),
-    face!(FONT_MONACO, 9, truetype::NIMBUS_MONO),
-    face!(FONT_MONACO, 10, truetype::NIMBUS_MONO),
-    face!(FONT_MONACO, 12, truetype::NIMBUS_MONO),
-    face!(FONT_VENICE, 14, truetype::NIMBUS_SANS),
-    face!(FONT_LONDON, 18, truetype::NIMBUS_SANS),
-    face!(FONT_CAIRO, 18, truetype::NIMBUS_SANS),
+    face!(FONT_CHICAGO, 9, truetype::LIBERATION_SANS_BOLD),
+    face!(FONT_CHICAGO, 12, truetype::LIBERATION_SANS_BOLD),
+    face!(FONT_APPLICATION, 12, truetype::LIBERATION_SANS),
+    face!(FONT_NEWYORK, 12, truetype::LIBERATION_SERIF),
+    face!(FONT_NEWYORK, 14, truetype::LIBERATION_SERIF),
+    face!(FONT_NEWYORK, 18, truetype::LIBERATION_SERIF),
+    face!(FONT_GENEVA, 9, truetype::LIBERATION_SANS),
+    face!(FONT_GENEVA, 10, truetype::LIBERATION_SANS),
+    face!(FONT_HELVETICA, 12, truetype::LIBERATION_SANS),
+    face!(FONT_GENEVA, 12, truetype::LIBERATION_SANS),
+    face!(FONT_GENEVA, 14, truetype::LIBERATION_SANS),
+    face!(FONT_GENEVA, 18, truetype::LIBERATION_SANS),
+    face!(FONT_GENEVA, 24, truetype::LIBERATION_SANS),
+    face!(FONT_MONACO, 9, truetype::LIBERATION_MONO),
+    face!(FONT_MONACO, 10, truetype::LIBERATION_MONO),
+    face!(FONT_MONACO, 12, truetype::LIBERATION_MONO),
+    face!(FONT_VENICE, 14, truetype::LIBERATION_SANS),
+    face!(FONT_LONDON, 18, truetype::LIBERATION_SANS),
+    face!(FONT_CAIRO, 18, truetype::LIBERATION_SANS),
 ];
 
 static BUILTIN_CATALOGUE: LazyLock<(&'static [FontFace], &'static [MacRomanFace])> =
@@ -802,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn palatino_uses_the_nimbus_roman_serif_face() {
+    fn palatino_uses_the_liberation_serif_face() {
         assert_eq!(font_id_for_name("Palatino"), Some(FONT_PALATINO));
         assert_eq!(font_name_for_id(FONT_PALATINO), Some("Palatino"));
 
