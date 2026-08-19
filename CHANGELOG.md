@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/benletchford/systemless/compare/v0.17.1...v0.18.0) (2026-08-19)
+
+
+### Features
+
+* allow builds to use the portable 68K executor ([#682](https://github.com/benletchford/systemless/issues/682)) ([186112f](https://github.com/benletchford/systemless/commit/186112f2972465a86c0aabf9be77cfa8702368df))
+
 ## [0.17.1](https://github.com/benletchford/systemless/compare/v0.17.0...v0.17.1) (2026-08-19)
 
 
