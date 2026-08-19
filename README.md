@@ -18,26 +18,42 @@
   <a href="LICENSE"><img src="https://img.shields.io/crates/l/systemless.svg" alt="License"></a>
 </p>
 
-Written in Rust, Systemless executes classic 68K code with the
-[`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
-with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
-same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
-builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
-uses its portable trace executor. That lets packaged Mac applications run
-without a Mac ROM image, a full System install, or hardware emulation.
-
-## See it in action
-
-### Native on macOS
-
-macOS is a first-class Systemless target. Guest application menus are mirrored
-into the native menu bar, while the guest's application name and icon are
-integrated with the Dock. Classic applications keep their own identity and fit
-naturally into the macOS desktop.
-
 <p align="center">
   <img src=".github/assets/systemless-launch-macos.gif" alt="Launching Escape Velocity from Finder with native macOS menu and application icon integration">
 </p>
+
+Systemless reimplements the classic Mac Toolbox and operating-system APIs in
+Rust, allowing original 68K and PowerPC Macintosh software to run without a ROM
+image, a System installation, or hardware emulation. On macOS, classic
+applications keep their own identity: guest menus appear in the native menu bar,
+while the guest application name and icon integrate with the Dock.
+
+## Quick Start
+
+Install with Homebrew on macOS:
+
+```sh
+brew install benletchford/tap/systemless
+systemless path/to/app-or-game.sit
+```
+
+Or install from crates.io:
+
+```sh
+cargo install systemless
+systemless path/to/app-or-game.sit
+```
+
+Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
+Archives may contain multiple files; Systemless populates the in-memory VFS and
+selects an executable resource fork from the archive.
+
+Systemless does not ship applications, games, Mac ROMs, or Apple system software.
+Use legally obtained application archives.
+
+For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
+
+## Try it in your browser
 
 | [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
 | :---: | :---: |
@@ -45,6 +61,15 @@ naturally into the macOS desktop.
 
 Play these and more classic Macintosh games in your browser at
 [systemless.org](https://systemless.org/).
+
+## How it works
+
+Systemless executes classic 68K code with the
+[`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
+with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
+same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
+builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
+uses its portable trace executor.
 
 ## Status
 
@@ -70,21 +95,7 @@ It is not a bit-perfect Mac hardware emulator. Hardware-specific services such
 as slot interrupts, device queues, removable-media behavior, and multi-process
 system integration are modeled only where guest-visible behavior matters.
 
-## Quick Start
-
-Install with Homebrew on macOS:
-
-```sh
-brew install benletchford/tap/systemless
-systemless path/to/app-or-game.sit
-```
-
-Or install from crates.io:
-
-```sh
-cargo install systemless
-systemless path/to/app-or-game.sit
-```
+## Desktop Runner
 
 The installed `systemless` command opens a window, renders the guest framebuffer,
 maps keyboard and mouse input, and enables audio when a host backend is
@@ -102,20 +113,11 @@ guest menus are mirrored into the native menu bar and the guest's application
 name and icon are integrated with the Dock. Other platforms render the classic
 menu bar according to the guest application's own visibility state.
 
-Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
-Archives may contain multiple files; Systemless populates the in-memory VFS and
-selects an executable resource fork from the archive.
-
 Desktop saves are stored next to the launched archive under
 `.systemless/saves/<archive-name>/`. For example, launching
 `/Games/EV Override 1.0.1.sit` restores and persists saves under
 `/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
 resource forks and is kept separate from the original archive.
-
-Systemless does not ship applications, games, Mac ROMs, or Apple system software.
-Use legally obtained application archives.
-
-For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
 
 ## Library Use
 
