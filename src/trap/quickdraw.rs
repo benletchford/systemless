@@ -6621,13 +6621,9 @@ impl super::TrapDispatcher {
             }
 
             // GetCTable ($AA18)
-            // Returns a copy of the specified 'clut' resource as a ColorTable.
-            // For standard depth IDs (1,2,4,8), returns the system color table.
-            // For other IDs, loads the 'clut' resource with that ID.
+            // Returns a copy of a standard or resource-backed color table, or NIL if not found.
             // FUNCTION GetCTable(ctID: INTEGER): CTabHandle;
-            // Imaging With QuickDraw 1994, p. 4-96
-            // GetCTable ($AA18): Returns the standard depth-specific CLUT for
-            // depth IDs (1,2,4,8); loads a 'clut' resource for custom IDs.
+            // Imaging With QuickDraw 1994, p. 4-92
             (true, 0x218) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ct_id = bus.read_word(sp) as i16;
@@ -6667,7 +6663,9 @@ impl super::TrapDispatcher {
                 } else {
                     // Try to load 'clut' resource with this ID
                     let res_type = *b"clut";
-                    if let Some((_, found_ptr)) = self.find_resource_any(res_type, ct_id) {
+                    if let Some((_, found_ptr)) =
+                        self.find_or_load_resource_any(bus, res_type, ct_id)
+                    {
                         if trace_palette_enabled() {
                             let ct_size = usize::from(bus.read_word(found_ptr + 6))
                                 .saturating_add(1)
@@ -6733,14 +6731,7 @@ impl super::TrapDispatcher {
                         if trace_palette_enabled() {
                             eprintln!("[PALETTE] GetCTable id={} -> not found", ct_id);
                         }
-                        // Fallback: return empty color table
-                        let ct_ptr = bus.alloc(8);
-                        bus.write_long(ct_ptr, self.next_color_table_seed()); // ctSeed
-                        bus.write_word(ct_ptr + 4, 0); // ctFlags
-                        bus.write_word(ct_ptr + 6, 0); // ctSize = 0 (1 entry - but empty)
-                        let h = bus.alloc(4);
-                        bus.write_long(h, ct_ptr);
-                        h
+                        0
                     }
                 };
 
@@ -38346,7 +38337,7 @@ mod tests {
     #[test]
     fn test_get_ctable() {
         let (mut d, mut cpu, mut bus) = setup();
-        bus.write_word(TEST_SP, 0u16); // ct_id
+        bus.write_word(TEST_SP, 8u16); // standard 256-color table
         let result = d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
@@ -43519,6 +43510,52 @@ mod tests {
             8,
             "GetCTable(8) must return ctSeed=8 (depth convention)"
         );
+    }
+
+    #[test]
+    fn get_ctable_returns_nil_when_custom_resource_is_missing() {
+        let (mut d, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 1000);
+
+        let result = d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_long(TEST_SP + 2), 0);
+    }
+
+    #[test]
+    fn get_ctable_reloads_a_registered_custom_resource() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let mut resource = vec![0; 16];
+        resource[6..8].copy_from_slice(&0u16.to_be_bytes());
+        resource[8..10].copy_from_slice(&7u16.to_be_bytes());
+        resource[10..12].copy_from_slice(&0x1234u16.to_be_bytes());
+        resource[12..14].copy_from_slice(&0x5678u16.to_be_bytes());
+        resource[14..16].copy_from_slice(&0x9ABCu16.to_be_bytes());
+        let original = d.install_test_resource(&mut bus, *b"clut", 1000, &resource);
+        d.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .loaded
+            .insert((*b"clut", 1000), 0);
+        bus.free(original);
+        bus.write_word(TEST_SP, 1000);
+
+        let result = d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        let handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(handle, 0);
+        let table = bus.read_long(handle);
+        assert_eq!(bus.read_word(table + 6), 0);
+        assert_eq!(bus.read_word(table + 8), 7);
+        assert_eq!(bus.read_word(table + 10), 0x1234);
+        assert_eq!(bus.read_word(table + 12), 0x5678);
+        assert_eq!(bus.read_word(table + 14), 0x9ABC);
     }
 
     #[test]
