@@ -1813,19 +1813,19 @@ impl super::TrapDispatcher {
             (true, 0x08C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let str_ptr = bus.read_long(sp);
-                let (_face, scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-                let mut total_width = 0i16;
+                let mut total_base = 0i32;
                 let len = bus.read_byte(str_ptr) as u16;
                 let start_addr = str_ptr + 1;
                 for i in 0..len {
                     let ch = bus.read_byte(start_addr + i as u32) as char;
                     let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                        self.glyph_advance(g) * scale
+                        i32::from(self.glyph_advance(g))
                     } else {
-                        self.missing_glyph_advance() * scale
+                        i32::from(self.missing_glyph_advance())
                     };
-                    total_width += advance;
+                    total_base += advance;
                 }
+                let total_width = self.proportional_text_width(total_base);
                 let new_sp = sp + 4;
                 bus.write_word(new_sp, total_width as u16);
                 cpu.write_reg(Register::A7, new_sp);
@@ -1840,12 +1840,12 @@ impl super::TrapDispatcher {
             (true, 0x08D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ch = (bus.read_word(sp) & 0xFF) as u8 as char;
-                let (_face, cw_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
                 let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                    self.glyph_advance(g) * cw_scale
+                    i32::from(self.glyph_advance(g))
                 } else {
-                    self.missing_glyph_advance() * cw_scale
+                    i32::from(self.missing_glyph_advance())
                 };
+                let advance = self.proportional_text_width(advance);
                 bus.write_word(sp + 2, advance as u16);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -1861,18 +1861,18 @@ impl super::TrapDispatcher {
                 let byte_count = bus.read_word(sp) as i16;
                 let first_byte = bus.read_word(sp + 2) as i16;
                 let text_buf = bus.read_long(sp + 4);
-                let (_face, tw_scale) = get_font_face_scaled(self.tx_font, self.tx_size);
-                let mut total_width = 0i16;
+                let mut total_base = 0i32;
                 let start_addr = text_buf + first_byte as u32;
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start_addr + i as u32) as char;
                     let advance = if let Some((g, _)) = get_glyph(self.tx_font, self.tx_size, ch) {
-                        self.glyph_advance(g) * tw_scale
+                        i32::from(self.glyph_advance(g))
                     } else {
-                        self.missing_glyph_advance() * tw_scale
+                        i32::from(self.missing_glyph_advance())
                     };
-                    total_width += advance;
+                    total_base += advance;
                 }
+                let total_width = self.proportional_text_width(total_base);
                 let new_sp = sp + 8;
                 bus.write_word(new_sp, total_width as u16);
                 cpu.write_reg(Register::A7, new_sp);
