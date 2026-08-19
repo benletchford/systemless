@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/benletchford/systemless/compare/v0.17.0...v0.17.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **quickdraw:** reload custom color tables ([59a8970](https://github.com/benletchford/systemless/commit/59a89704bf8b8bfd5dd1de9ed8eea26093db89a0))
+
 ## [0.17.0](https://github.com/benletchford/systemless/compare/v0.16.1...v0.17.0) (2026-08-18)
 
 
