@@ -18,26 +18,64 @@
   <a href="LICENSE"><img src="https://img.shields.io/crates/l/systemless.svg" alt="License"></a>
 </p>
 
-Written in Rust, Systemless executes classic 68K code with the
-[`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
-with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
-same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
-builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
-uses its portable trace executor. That lets packaged Mac applications run
-without a Mac ROM image, a full System install, or hardware emulation.
-
-## See it in action
-
-### Native on macOS
-
-macOS is a first-class Systemless target. Guest application menus are mirrored
-into the native menu bar, while the guest's application name and icon are
-integrated with the Dock. Classic applications keep their own identity and fit
-naturally into the macOS desktop.
-
 <p align="center">
   <img src=".github/assets/systemless-launch-macos.gif" alt="Launching Escape Velocity from Finder with native macOS menu and application icon integration">
 </p>
+
+Systemless reimplements the classic Mac Toolbox and operating-system APIs in
+Rust, allowing original 68K and PowerPC Macintosh software to run without a ROM
+image, a System installation, or hardware emulation. On macOS, classic
+applications keep their own identity: guest menus appear in the native menu bar,
+while the guest application name and icon integrate with the Dock.
+
+## Quick Start
+
+Install with Homebrew on macOS:
+
+```sh
+brew install benletchford/tap/systemless
+systemless path/to/app-or-game.sit
+```
+
+Or install from crates.io:
+
+```sh
+cargo install systemless
+systemless path/to/app-or-game.sit
+```
+
+The installed `systemless` command opens a window, renders the guest framebuffer,
+maps keyboard and mouse input, and enables audio when a host backend is
+available.
+
+Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
+Archives may contain multiple files; Systemless populates the in-memory VFS and
+selects an executable resource fork from the archive.
+
+Systemless does not ship applications, games, Mac ROMs, or Apple system software.
+Use legally obtained application archives.
+
+Common runner options:
+
+```sh
+systemless --headless --max-instructions 5000000 path/to/app.sit
+systemless --arrows-as-numpad path/to/game.sit
+```
+
+The desktop runner uses the canonical machine profile automatically. On macOS,
+guest menus are mirrored into the native menu bar and the guest's application
+name and icon are integrated with the Dock. Other platforms render the classic
+menu bar according to the guest application's own visibility state.
+
+Desktop saves are stored next to the launched archive under
+`.systemless/saves/<archive-name>/`. For example, launching
+`/Games/EV Override 1.0.1.sit` restores and persists saves under
+`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
+resource forks and is kept separate from the original archive.
+
+For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
+
+## Try it in your browser
 
 | [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
 | :---: | :---: |
@@ -45,6 +83,15 @@ naturally into the macOS desktop.
 
 Play these and more classic Macintosh games in your browser at
 [systemless.org](https://systemless.org/).
+
+## How it works
+
+Systemless executes classic 68K code with the
+[`m68k`](https://crates.io/crates/m68k) crate and native 32-bit PowerPC code
+with the [`ppc`](https://crates.io/crates/ppc) crate. Both CPU runtimes call the
+same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
+builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
+uses its portable trace executor.
 
 ## Status
 
@@ -69,53 +116,6 @@ software:
 It is not a bit-perfect Mac hardware emulator. Hardware-specific services such
 as slot interrupts, device queues, removable-media behavior, and multi-process
 system integration are modeled only where guest-visible behavior matters.
-
-## Quick Start
-
-Install with Homebrew on macOS:
-
-```sh
-brew install benletchford/tap/systemless
-systemless path/to/app-or-game.sit
-```
-
-Or install from crates.io:
-
-```sh
-cargo install systemless
-systemless path/to/app-or-game.sit
-```
-
-The installed `systemless` command opens a window, renders the guest framebuffer,
-maps keyboard and mouse input, and enables audio when a host backend is
-available.
-
-Common runner options:
-
-```sh
-systemless --headless --max-instructions 5000000 path/to/app.sit
-systemless --arrows-as-numpad path/to/game.sit
-```
-
-The desktop runner uses the canonical machine profile automatically. On macOS,
-guest menus are mirrored into the native menu bar and the guest's application
-name and icon are integrated with the Dock. Other platforms render the classic
-menu bar according to the guest application's own visibility state.
-
-Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
-Archives may contain multiple files; Systemless populates the in-memory VFS and
-selects an executable resource fork from the archive.
-
-Desktop saves are stored next to the launched archive under
-`.systemless/saves/<archive-name>/`. For example, launching
-`/Games/EV Override 1.0.1.sit` restores and persists saves under
-`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
-resource forks and is kept separate from the original archive.
-
-Systemless does not ship applications, games, Mac ROMs, or Apple system software.
-Use legally obtained application archives.
-
-For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
 
 ## Library Use
 
@@ -209,7 +209,7 @@ package before running `cargo build --release`; for example:
 ```sh
 sudo apt install pkg-config libasound2-dev      # Debian/Ubuntu
 sudo dnf install pkgconf-pkg-config alsa-lib-devel  # Fedora/RHEL
-sudo pacman -S pkgconf alsa-lib                # Arch
+sudo pacman -S pkgconf alsa-lib                 # Arch
 ```
 
 ## Font Data
@@ -273,7 +273,7 @@ name.
 | Variable | Effect |
 | -------- | ------ |
 | `SYSTEMLESS_LOAD_EXECUTABLE` | Selects an executable from a multi-app archive by substring. |
-| `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs. |
+| `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs ahead of the built-in catalogue. |
 | `SYSTEMLESS_TRACE_LOAD` | Logs archive, VFS, resource, and startup loading diagnostics. |
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |
@@ -312,7 +312,7 @@ A short form without the year is fine for a repeated reference in the same area
 - **Apple Technical Notes** — by number, e.g. `Technical Note #108`.
 
 Cite only the source, never the test that checks it: comments should not name
-tests, fixtures, or tooling that live outside this crate.
+tests, fixtures, or tooling that live outside the crate.
 
 Prefer the narrowest source that settles the question, and always note when
 Systemless intentionally diverges from it, and why.
