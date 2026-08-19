@@ -1152,8 +1152,8 @@ impl super::TrapDispatcher {
     /// multiples; `get_font_face_scaled` reports scale 1 for every
     /// OTHER size, so integer-scaled measurement PLATEAUS across size
     /// changes. Guest text-fitting loops (`TextSize`; `StringWidth`
-    /// until it fits — SimCity 2000's founding-newspaper headline is
-    /// the canonical case) never converge on a plateau. Measurement
+    /// until it fits — a newspaper-headline fit loop in a commercial
+    /// game was the reproducer) never converge on a plateau. Measurement
     /// therefore scales linearly with the requested size:
     /// `base_total * tx_size / face_size` — monotone in `tx_size` and
     /// identical to the integer-scale answer at exact and 2x/3x sizes.
@@ -1161,8 +1161,7 @@ impl super::TrapDispatcher {
     /// differ slightly from its measured width at in-between sizes,
     /// which is the standard bitmap-font compromise.
     pub(super) fn proportional_text_width(&self, base_total: i32) -> i16 {
-        let face =
-            crate::quickdraw::fonts::get_font_face_or_default(self.tx_font, self.tx_size);
+        let face = crate::quickdraw::fonts::get_font_face_or_default(self.tx_font, self.tx_size);
         let denom = i32::from(face.size.max(1));
         let size = i32::from(self.tx_size.max(1));
         ((base_total * size + denom / 2) / denom) as i16
