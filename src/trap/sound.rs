@@ -2171,7 +2171,7 @@ impl super::TrapDispatcher {
         async_flag: i16,
     ) -> i16 {
         if f_ref_num == 0 && res_num != 0 {
-            if let Some((_, snd_ptr)) = self.find_resource_any(*b"snd ", res_num) {
+            if let Some((_, snd_ptr)) = self.find_or_load_resource_any(bus, *b"snd ", res_num) {
                 if trace_sound_enabled() {
                     eprintln!(
                         "[SOUND] SndStartFilePlay using 'snd ' resource id={} ptr=${:08X}",
@@ -2951,6 +2951,7 @@ mod tests {
         SOUND_MANAGER_3_SYNTH_VERSION,
     };
     use crate::cpu::{CpuOps, Register};
+    use crate::managers::resource::ResourceFork;
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::sound::{
         cmd, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind, SndChannel, SndCommand,
@@ -3239,6 +3240,34 @@ mod tests {
         ssnd_overflow.extend_from_slice(&u32::MAX.to_be_bytes());
         ssnd_overflow.extend_from_slice(&0u32.to_be_bytes());
         assert!(parse_aiff_samples(&ssnd_overflow).is_none());
+    }
+
+    #[test]
+    fn sndstartfileplay_loads_non_preloaded_sound_resource() {
+        // OpenResFile loads only resPreload resources, while resource-returning
+        // operations normally materialize requested data on demand.
+        // Inside Macintosh Volume I (1985), I-115 and I-118;
+        // Inside Macintosh: Sound (1994), 2-138 to 2-140.
+        let (mut disp, _cpu, mut bus) = setup();
+        let fork = ResourceFork::from_test_resources(vec![(
+            *b"snd ",
+            30_000,
+            vec![0x00, 0x02, 0x00, 0x00, 0x00, 0x00],
+        )]);
+        disp.load_resources(&fork, &mut bus);
+        assert!(disp.find_resource_any(*b"snd ", 30_000).is_none());
+
+        let chan_ptr = 0x250000;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+
+        assert_eq!(
+            disp.snd_start_file_play(&mut bus, chan_ptr, 0, 30_000, 0, 0, 1),
+            0
+        );
+        assert!(disp.find_resource_any(*b"snd ", 30_000).is_some());
+        assert_eq!(disp.sound_manager.debug_file_play_count, 1);
     }
 
     /// Locks in the Apple-SANE extended-80 → f64 conversion used by
