@@ -28,6 +28,17 @@ without a Mac ROM image, a full System install, or hardware emulation.
 
 ## See it in action
 
+### Native on macOS
+
+macOS is a first-class Systemless target. Guest application menus are mirrored
+into the native menu bar, while the guest's application name and icon are
+integrated with the Dock. Classic applications keep their own identity and fit
+naturally into the macOS desktop.
+
+<p align="center">
+  <img src=".github/assets/systemless-launch-macos.gif" alt="Launching Escape Velocity from Finder with native macOS menu and application icon integration">
+</p>
+
 | [Marathon](https://systemless.org/marathon) | [Escape Velocity](https://systemless.org/escape-velocity) |
 | :---: | :---: |
 | [![Marathon running in Systemless](.github/assets/marathon-gameplay.png)](https://systemless.org/marathon) | [![Escape Velocity running in Systemless](.github/assets/escape-velocity-gameplay.png)](https://systemless.org/escape-velocity) |
@@ -87,8 +98,9 @@ systemless --arrows-as-numpad path/to/game.sit
 ```
 
 The desktop runner uses the canonical machine profile automatically. On macOS,
-guest menus are mirrored into the native menu bar; other platforms render the
-classic menu bar according to the guest application's own visibility state.
+guest menus are mirrored into the native menu bar and the guest's application
+name and icon are integrated with the Dock. Other platforms render the classic
+menu bar according to the guest application's own visibility state.
 
 Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
 Archives may contain multiple files; Systemless populates the in-memory VFS and
