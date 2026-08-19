@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/benletchford/systemless/compare/v0.18.0...v0.18.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **sound:** load disk-backed sound resources on demand ([#685](https://github.com/benletchford/systemless/issues/685)) ([bd45aa8](https://github.com/benletchford/systemless/commit/bd45aa8a1b4466f7431ea8d66d515a3199784504))
+
 ## [0.18.0](https://github.com/benletchford/systemless/compare/v0.17.1...v0.18.0) (2026-08-19)
 
 
