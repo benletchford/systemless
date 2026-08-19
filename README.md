@@ -211,7 +211,7 @@ package before running `cargo build --release`; for example:
 ```sh
 sudo apt install pkg-config libasound2-dev      # Debian/Ubuntu
 sudo dnf install pkgconf-pkg-config alsa-lib-devel  # Fedora/RHEL
-sudo pacman -S pkgconf alsa-lib                 # Arch
+sudo pacman -S pkgconf alsa-lib                # Arch
 ```
 
 ## Font Data
@@ -275,7 +275,7 @@ name.
 | Variable | Effect |
 | -------- | ------ |
 | `SYSTEMLESS_LOAD_EXECUTABLE` | Selects an executable from a multi-app archive by substring. |
-| `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs ahead of the built-in catalogue. |
+| `SYSTEMLESS_ORIGINAL_FONTS_DIR` | Loads optional runtime font override blobs. |
 | `SYSTEMLESS_TRACE_LOAD` | Logs archive, VFS, resource, and startup loading diagnostics. |
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |
@@ -314,7 +314,7 @@ A short form without the year is fine for a repeated reference in the same area
 - **Apple Technical Notes** — by number, e.g. `Technical Note #108`.
 
 Cite only the source, never the test that checks it: comments should not name
-tests, fixtures, or tooling that live outside the crate.
+tests, fixtures, or tooling that live outside this crate.
 
 Prefer the narrowest source that settles the question, and always note when
 Systemless intentionally diverges from it, and why.
