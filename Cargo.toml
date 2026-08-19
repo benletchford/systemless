@@ -17,7 +17,7 @@ default-run = "systemless"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-m68k = { version = "0.7.1", features = ["jit"] }
+m68k = { version = "0.7.1" }
 ppc = "0.4.0"
 thiserror = "2"
 tracing = "0.1"
@@ -39,7 +39,7 @@ zip = { version = "8.6", default-features = false, features = ["deflate"] }
 libm = "0.2"
 
 [features]
-default = ["gui"]
+default = ["gui", "jit"]
 gui = [
     "winit",
     "softbuffer",
@@ -50,6 +50,9 @@ gui = [
     "dep:objc2-metal",
     "dep:objc2-quartz-core",
 ]
+# Compile hot 68K traces to native code. Embeddings constrained by executable-
+# memory policy can omit this feature and use m68k's portable trace executor.
+jit = ["m68k/jit"]
 # Exposes `scripted_traces`, deterministic trap-replay test scaffolding.
 # Off by default so it stays out of the published public API and docs.
 test-support = []
