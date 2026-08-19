@@ -44,34 +44,12 @@ cargo install systemless
 systemless path/to/app-or-game.sit
 ```
 
-The installed `systemless` command opens a window, renders the guest framebuffer,
-maps keyboard and mouse input, and enables audio when a host backend is
-available.
-
 Systemless accepts StuffIt archives, MacBinary files, and raw/macOS resource forks.
 Archives may contain multiple files; Systemless populates the in-memory VFS and
 selects an executable resource fork from the archive.
 
 Systemless does not ship applications, games, Mac ROMs, or Apple system software.
 Use legally obtained application archives.
-
-Common runner options:
-
-```sh
-systemless --headless --max-instructions 5000000 path/to/app.sit
-systemless --arrows-as-numpad path/to/game.sit
-```
-
-The desktop runner uses the canonical machine profile automatically. On macOS,
-guest menus are mirrored into the native menu bar and the guest's application
-name and icon are integrated with the Dock. Other platforms render the classic
-menu bar according to the guest application's own visibility state.
-
-Desktop saves are stored next to the launched archive under
-`.systemless/saves/<archive-name>/`. For example, launching
-`/Games/EV Override 1.0.1.sit` restores and persists saves under
-`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
-resource forks and is kept separate from the original archive.
 
 For a local checkout, use `cargo run --release -- path/to/app-or-game.sit`.
 
@@ -116,6 +94,30 @@ software:
 It is not a bit-perfect Mac hardware emulator. Hardware-specific services such
 as slot interrupts, device queues, removable-media behavior, and multi-process
 system integration are modeled only where guest-visible behavior matters.
+
+## Desktop Runner
+
+The installed `systemless` command opens a window, renders the guest framebuffer,
+maps keyboard and mouse input, and enables audio when a host backend is
+available.
+
+Common runner options:
+
+```sh
+systemless --headless --max-instructions 5000000 path/to/app.sit
+systemless --arrows-as-numpad path/to/game.sit
+```
+
+The desktop runner uses the canonical machine profile automatically. On macOS,
+guest menus are mirrored into the native menu bar and the guest's application
+name and icon are integrated with the Dock. Other platforms render the classic
+menu bar according to the guest application's own visibility state.
+
+Desktop saves are stored next to the launched archive under
+`.systemless/saves/<archive-name>/`. For example, launching
+`/Games/EV Override 1.0.1.sit` restores and persists saves under
+`/Games/.systemless/saves/EV Override 1.0.1/`. The store preserves Mac data and
+resource forks and is kept separate from the original archive.
 
 ## Library Use
 
