@@ -3255,7 +3255,7 @@ mod tests {
             vec![0x00, 0x02, 0x00, 0x00, 0x00, 0x00],
         )]);
         disp.load_resources(&fork, &mut bus);
-        assert!(disp.find_resource_any(*b"snd ", 30_000).is_none());
+        assert!(disp.find_loaded_resource_any(*b"snd ", 30_000).is_none());
 
         let chan_ptr = 0x250000;
         disp.sound_manager
@@ -3266,7 +3266,7 @@ mod tests {
             disp.snd_start_file_play(&mut bus, chan_ptr, 0, 30_000, 0, 0, 1),
             0
         );
-        assert!(disp.find_resource_any(*b"snd ", 30_000).is_some());
+        assert!(disp.find_loaded_resource_any(*b"snd ", 30_000).is_some());
         assert_eq!(disp.sound_manager.debug_file_play_count, 1);
     }
 

@@ -4770,7 +4770,7 @@ mod tests {
         assert!(!dispatcher.loaded_handles.contains_key(&handle));
         assert!(!dispatcher.resource_handle_files.contains_key(&handle));
         assert_eq!(
-            dispatcher.find_resource_any(*b"RSRC", 7),
+            dispatcher.find_loaded_resource_any(*b"RSRC", 7),
             Some((0, data_ptr)),
             "Resource Manager map should still point at live backing data"
         );

@@ -308,7 +308,7 @@ impl super::TrapDispatcher {
     }
 
     fn dialog_template_res_err(&self, dialog_id: i16) -> i16 {
-        if self.find_resource_any(*b"DLOG", dialog_id).is_some() {
+        if self.find_loaded_resource_any(*b"DLOG", dialog_id).is_some() {
             0
         } else {
             0
@@ -363,7 +363,7 @@ impl super::TrapDispatcher {
         let (refnum, ptr) = if load_if_missing {
             self.find_or_load_resource_any(bus, res_type, res_id)?
         } else {
-            self.find_resource_any(res_type, res_id)?
+            self.find_loaded_resource_any(res_type, res_id)?
         };
         let handle = if load_if_missing {
             let handle =

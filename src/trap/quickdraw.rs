@@ -4518,7 +4518,7 @@ impl super::TrapDispatcher {
             (true, 0x20C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let pat_id = bus.read_word(sp) as i16;
-                let handle = match self.find_resource_any(*b"ppat", pat_id) {
+                let handle = match self.find_or_load_resource_any(bus, *b"ppat", pat_id) {
                     Some((_, data_ptr)) => {
                         self.get_or_create_resource_handle(bus, *b"ppat", pat_id, data_ptr)
                     }
@@ -8940,7 +8940,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let icon_id = bus.read_word(sp) as i16;
                 let handle = if let Some((_, resource_ptr)) =
-                    self.find_resource_any(*b"cicn", icon_id)
+                    self.find_or_load_resource_any(bus, *b"cicn", icon_id)
                 {
                     let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0);
                     if resource_size == 0 {
@@ -13697,7 +13697,7 @@ impl super::TrapDispatcher {
             (true, 0x21B) => {
                 let sp = cpu.read_reg(Register::A7);
                 let crsr_id = bus.read_word(sp) as i16;
-                let handle = match self.find_resource_any(*b"crsr", crsr_id) {
+                let handle = match self.find_or_load_resource_any(bus, *b"crsr", crsr_id) {
                     Some((_, data_ptr)) => self
                         .promote_compiled_crsr_resource(bus, data_ptr)
                         .unwrap_or_else(|| {
@@ -16613,14 +16613,23 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn copy_palette_resource(&mut self, bus: &mut MacMemoryBus, palette_id: i16) -> u32 {
+        // Load-on-demand, not find-only: since lazy resource seeding, a
+        // 'pltt' that no one has touched yet sits in the map with a NULL
+        // pointer (an IM-style empty handle), and the find-only lookup
+        // reports it missing. An application that probes its palette
+        // during launch gets NIL and exits. Same conversion GetCTable
+        // ('clut') and the Sound Manager already received.
         let resource_ptr = self
-            .find_resource_any(*b"pltt", palette_id)
+            .find_or_load_resource_any(bus, *b"pltt", palette_id)
+            .map(|(_, ptr)| ptr)
             .or_else(|| {
                 (palette_id != 0)
-                    .then(|| self.find_resource_any(*b"pltt", 0))
+                    .then(|| {
+                        self.find_or_load_resource_any(bus, *b"pltt", 0)
+                            .map(|(_, ptr)| ptr)
+                    })
                     .flatten()
             })
-            .map(|(_, ptr)| ptr)
             .unwrap_or(0);
         self.copy_palette_resource_from_ptr(bus, palette_id, resource_ptr)
     }
@@ -16631,7 +16640,7 @@ impl super::TrapDispatcher {
         palette_id: i16,
     ) -> u32 {
         let resource_ptr = self
-            .find_resource_any(*b"pltt", palette_id)
+            .find_or_load_resource_any(bus, *b"pltt", palette_id)
             .map(|(_, ptr)| ptr)
             .unwrap_or(0);
         self.copy_palette_resource_from_ptr(bus, palette_id, resource_ptr)
@@ -43556,6 +43565,46 @@ mod tests {
         assert_eq!(bus.read_word(table + 10), 0x1234);
         assert_eq!(bus.read_word(table + 12), 0x5678);
         assert_eq!(bus.read_word(table + 14), 0x9ABC);
+    }
+
+    #[test]
+    fn get_new_palette_reloads_a_lazily_seeded_pltt_resource() {
+        // Lazy resource seeding leaves never-touched resources in the map
+        // as IM-style empty handles: entry present, pointer NULL (IM: More
+        // Macintosh Toolbox 1-84 -- SetResLoad / empty handles). Toolbox
+        // getters emulate GetResource with ResLoad TRUE, which "reads the
+        // resource into memory if it's not already in memory" (IM:MMT
+        // 1-17), so GetNewPalette must fault the data in rather than
+        // report the palette missing. An application that checks its
+        // palette at launch exits when GetNewPalette(0) returns NIL for
+        // its lazily-seeded 'pltt'.
+        let (mut d, mut cpu, mut bus) = setup();
+        let mut resource = vec![0u8; 32];
+        resource[6..8].copy_from_slice(&1u16.to_be_bytes()); // pmEntries = 1
+        resource[16..18].copy_from_slice(&0x1234u16.to_be_bytes());
+        resource[18..20].copy_from_slice(&0x5678u16.to_be_bytes());
+        resource[20..22].copy_from_slice(&0x9ABCu16.to_be_bytes());
+        let original = d.install_test_resource(&mut bus, *b"pltt", 700, &resource);
+        d.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .loaded
+            .insert((*b"pltt", 700), 0);
+        bus.free(original);
+        bus.write_word(TEST_SP, 700);
+
+        let result = d.dispatch_quickdraw(true, 0x292, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_ne!(
+            bus.read_long(TEST_SP + 2),
+            0,
+            "GetNewPalette must reload an empty-handle 'pltt' resource"
+        );
     }
 
     #[test]

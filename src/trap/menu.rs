@@ -708,7 +708,7 @@ impl super::TrapDispatcher {
             .and_then(|menu| menu.items.get(selected - 1))
             .map(|item| item.text.clone())
             .or_else(|| {
-                let (_, menu_ptr) = self.find_resource_any(*b"MENU", menu_id)?;
+                let (_, menu_ptr) = self.find_loaded_resource_any(*b"MENU", menu_id)?;
                 Self::popup_menu_item_title_from_resource(bus, menu_ptr, selected)
             })
     }
@@ -1033,7 +1033,7 @@ impl super::TrapDispatcher {
         bus.write_long(handle, menu_ptr);
         self.ptr_to_handle.insert(menu_ptr, handle);
 
-        let menu = if let Some((_, res_ptr)) = self.find_resource_any(*b"MENU", menu_id) {
+        let menu = if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
             let res_size = menu_resource_size(bus, res_ptr);
             for i in 0..res_size.min(256) {
                 bus.write_byte(menu_ptr + i as u32, bus.read_byte(res_ptr + i as u32));
@@ -1106,7 +1106,7 @@ impl super::TrapDispatcher {
     }
 
     fn load_menu_color_resource(&mut self, bus: &mut MacMemoryBus, resource_id: i16) {
-        let Some((_, resource_ptr)) = self.find_resource_any(*b"mctb", resource_id) else {
+        let Some((_, resource_ptr)) = self.find_or_load_resource_any(bus, *b"mctb", resource_id) else {
             return;
         };
         let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0) as usize;
@@ -1568,7 +1568,7 @@ impl super::TrapDispatcher {
                             // raw guest MENU handle). Parse any MENU resource
                             // by menu ID, else fall back to title-only memory.
                             let menu_id = bus.read_word(menu_ptr) as i16;
-                            if let Some((_, res_ptr)) = self.find_resource_any(*b"MENU", menu_id) {
+                            if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
                                 let mut menu = parse_menu_resource(bus, res_ptr, menu_handle);
                                 eprintln!(
                                     "[MENU] InsertMenu: ID={} title=\"{}\" items={}",
@@ -1710,7 +1710,7 @@ impl super::TrapDispatcher {
             (true, 0x1C0) => {
                 let sp = cpu.read_reg(Register::A7);
                 let mbar_id = bus.read_word(sp) as i16;
-                let handle = if let Some((_, mbar_ptr)) = self.find_resource_any(*b"MBAR", mbar_id)
+                let handle = if let Some((_, mbar_ptr)) = self.find_or_load_resource_any(bus, *b"MBAR", mbar_id)
                 {
                     let menu_count = bus.read_word(mbar_ptr) as usize;
                     let mut snapshot = Vec::new();
@@ -1718,7 +1718,7 @@ impl super::TrapDispatcher {
 
                     for i in 0..menu_count {
                         let menu_id = bus.read_word(mbar_ptr + 2 + (i as u32) * 2) as i16;
-                        let Some((_, menu_res_ptr)) = self.find_resource_any(*b"MENU", menu_id)
+                        let Some((_, menu_res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id)
                         else {
                             continue;
                         };
@@ -3975,11 +3975,37 @@ impl super::TrapDispatcher {
         self.cicn_menu_icon_resource_ptr(item).is_some()
     }
 
+    /// Materialize a menu's item-icon resources (cicn/ICON/SICN at
+    /// icon-number + 256, MTE 1992 pp. 3-46, 3-137..3-138) before the
+    /// dropdown draws. The draw path reads icons through `&self` helpers
+    /// deep in borrow chains that cannot load on demand, so lazily-seeded
+    /// icon resources (IM-style empty handles) are faulted in here at the
+    /// one mutable moment the flow guarantees -- without this, an
+    /// application whose first icon touch happens at draw time shows
+    /// empty slots for icons that are present in the fork.
+    fn preload_menu_item_icon_resources(&mut self, bus: &mut MacMemoryBus, menu_idx: usize) {
+        let icon_ids: Vec<i16> = self
+            .menus
+            .get(menu_idx)
+            .map(|menu| {
+                menu.items
+                    .iter()
+                    .filter_map(Self::menu_item_icon_resource_id)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for icon_resource_id in icon_ids {
+            for res_type in [*b"cicn", *b"ICON", *b"SICN"] {
+                let _ = self.find_or_load_resource_any(bus, res_type, icon_resource_id);
+            }
+        }
+    }
+
     fn cicn_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
         let Some(icon_resource_id) = Self::menu_item_icon_resource_id(item) else {
             return None;
         };
-        self.find_resource_any(*b"cicn", icon_resource_id)
+        self.find_loaded_resource_any(*b"cicn", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
@@ -3992,7 +4018,7 @@ impl super::TrapDispatcher {
         // 1992 pp. 3-137 to 3-138 specify the Menu Manager adds 256
         // to obtain the ICON resource ID for the reduced-icon case.
         let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
-        self.find_resource_any(*b"ICON", icon_resource_id)
+        self.find_loaded_resource_any(*b"ICON", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
@@ -4005,7 +4031,7 @@ impl super::TrapDispatcher {
         // cicn is used, the Menu Manager looks for an SICN resource at
         // icon-number+256 and plots it in a 16-by-16 rectangle.
         let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
-        self.find_resource_any(*b"SICN", icon_resource_id)
+        self.find_loaded_resource_any(*b"SICN", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
@@ -4018,7 +4044,7 @@ impl super::TrapDispatcher {
         // 256 as an ICON or cicn resource ID; this path implements the
         // monochrome ICON case and leaves cicn-specific drawing open.
         let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
-        self.find_resource_any(*b"ICON", icon_resource_id)
+        self.find_loaded_resource_any(*b"ICON", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
@@ -4315,6 +4341,9 @@ impl super::TrapDispatcher {
 
     /// Open a menu dropdown and start tracking.
     fn open_menu_dropdown(&mut self, bus: &mut MacMemoryBus, menu_idx: usize, stack_ptr: u32) {
+        // Fault in this menu's icon resources while `self` is still
+        // mutable; the draw path below reads them through `&self` only.
+        self.preload_menu_item_icon_resources(bus, menu_idx);
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
 

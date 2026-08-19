@@ -198,7 +198,7 @@ impl super::TrapDispatcher {
         }
 
         let cdef_id = proc_id >> 4;
-        self.find_resource_any(*b"CDEF", cdef_id)
+        self.find_or_load_resource_any(bus, *b"CDEF", cdef_id)
             .map(|(_, ptr)| ptr)
             .map(|ptr| self.get_or_create_resource_handle(bus, *b"CDEF", cdef_id, ptr))
             .unwrap_or(0)
@@ -1421,10 +1421,10 @@ impl super::TrapDispatcher {
         let Some((off_id, on_id)) = Self::picture_ids_from_control_title(title_bytes) else {
             return false;
         };
-        let Some((_, off_pic_ptr)) = self.find_resource_any(*b"PICT", off_id) else {
+        let Some((_, off_pic_ptr)) = self.find_or_load_resource_any(bus, *b"PICT", off_id) else {
             return false;
         };
-        let Some((_, on_pic_ptr)) = self.find_resource_any(*b"PICT", on_id) else {
+        let Some((_, on_pic_ptr)) = self.find_or_load_resource_any(bus, *b"PICT", on_id) else {
             return false;
         };
 
@@ -3516,7 +3516,7 @@ impl super::TrapDispatcher {
 
                 // IM:I I-321: if the CNTL template cannot be read, return NIL.
                 let cntl_data = self
-                    .find_resource_any(*b"CNTL", ctrl_id)
+                    .find_or_load_resource_any(bus, *b"CNTL", ctrl_id)
                     .map(|(_, ptr)| ptr);
 
                 let Some(rsrc_addr) = cntl_data else {
