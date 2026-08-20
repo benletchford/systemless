@@ -1,7 +1,7 @@
 //! Stable on-disk schema for runtime font overrides.
 //!
-//! `systemless` ships with open-source TrueType glyphs. For authentic classic
-//! bitmap rendering an opt-in runtime override
+//! `systemless` ships with its own original bitmap glyphs in the
+//! `pixel_font` modules. For higher-fidelity rendering an opt-in runtime override
 //! path lets a host substitute authentic Mac bitmap fonts (Chicago,
 //! Geneva, Monaco, …) without committing Apple-copyrighted data into
 //! this repo. The override directory is one `.bin` per

@@ -1,6 +1,6 @@
 //! Font specimen generator — renders every registered systemless face
 //! (all families, every size) as a labelled specimen row on both a white
-//! and a black background, so the built-in rasterized faces can be
+//! and a black background, so the hand-authored bitmap faces can be
 //! audited directly with the eye instead of by hunting through game
 //! screenshots.
 //!
