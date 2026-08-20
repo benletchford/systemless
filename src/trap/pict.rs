@@ -5418,10 +5418,13 @@ fn can_blit_8bpp_src_copy_rows_fast(
     scrn_ps: u16,
     clip_region: Option<&PictureRegion>,
 ) -> bool {
+    // A PackBitsRgn / BitsRgn mask region does not disqualify the row path:
+    // it is applied per row as span intersections, exactly like the port's
+    // dst_clip regions. (Unused here beyond that; kept for the signature.)
+    let _ = clip_region;
     if mode_base != 0
         || (scrn_ps != 8 && scrn_ps != 1)
         || pm.cmp_count != 1
-        || clip_region.is_some()
         || scale_x != 1.0
         || scale_y != 1.0
     {
@@ -5576,15 +5579,26 @@ fn try_blit_row_8bpp_src_copy_fast(
             true
         };
 
-        match dst_clip_simple_row_span(dst_clip, y, dst_x, dst_x + run_len) {
-            RowClipSpan::Empty => return true,
-            RowClipSpan::Single(span_left, span_right) => {
-                return write_span_1bpp(bus, span_left, span_right);
+        if clip_region.is_none() {
+            match dst_clip_simple_row_span(dst_clip, y, dst_x, dst_x + run_len) {
+                RowClipSpan::Empty => return true,
+                RowClipSpan::Single(span_left, span_right) => {
+                    return write_span_1bpp(bus, span_left, span_right);
+                }
+                RowClipSpan::Complex => {}
             }
-            RowClipSpan::Complex => {}
         }
 
-        for (span_left, span_right) in dst_clip_row_spans(dst_clip, y, dst_x, dst_x + run_len) {
+        let mut spans = dst_clip_row_spans(dst_clip, y, dst_x, dst_x + run_len);
+        if let Some(region) = clip_region {
+            intersect_spans_with_picture_region_row(
+                &mut spans,
+                region,
+                pic_y,
+                i32::from(dst_left) - i32::from(frame_left),
+            );
+        }
+        for (span_left, span_right) in spans {
             if !write_span_1bpp(bus, span_left, span_right) {
                 return false;
             }
@@ -5614,20 +5628,87 @@ fn try_blit_row_8bpp_src_copy_fast(
         true
     };
 
-    match dst_clip_simple_row_span(dst_clip, y, dst_x, dst_x + run_len) {
-        RowClipSpan::Empty => return true,
-        RowClipSpan::Single(span_left, span_right) => {
-            return write_span(bus, span_left, span_right)
+    if clip_region.is_none() {
+        match dst_clip_simple_row_span(dst_clip, y, dst_x, dst_x + run_len) {
+            RowClipSpan::Empty => return true,
+            RowClipSpan::Single(span_left, span_right) => {
+                return write_span(bus, span_left, span_right)
+            }
+            RowClipSpan::Complex => {}
         }
-        RowClipSpan::Complex => {}
     }
 
-    for (span_left, span_right) in dst_clip_row_spans(dst_clip, y, dst_x, dst_x + run_len) {
+    let mut spans = dst_clip_row_spans(dst_clip, y, dst_x, dst_x + run_len);
+    if let Some(region) = clip_region {
+        intersect_spans_with_picture_region_row(
+            &mut spans,
+            region,
+            pic_y,
+            i32::from(dst_left) - i32::from(frame_left),
+        );
+    }
+    for (span_left, span_right) in spans {
         if !write_span(bus, span_left, span_right) {
             return false;
         }
     }
     true
+}
+
+/// Intersect destination-x `spans` on picture row `pic_y` with a PICT op's
+/// own mask region (PackBitsRgn / BitsRgn), whose edges are in picture
+/// coordinates: destination x = picture x + `dx`. Mirrors
+/// `PictureRegion::contains`, which the per-pixel path consults: outside the
+/// bounding box is out; an empty edge list is the whole box; otherwise the
+/// row's edges toggle membership, a trailing unpaired edge running to the
+/// box's right.
+fn intersect_spans_with_picture_region_row(
+    spans: &mut Vec<(i32, i32)>,
+    region: &PictureRegion,
+    pic_y: i32,
+    dx: i32,
+) {
+    let (top, left, bottom, right) = (
+        i32::from(region.top),
+        i32::from(region.left),
+        i32::from(region.bottom),
+        i32::from(region.right),
+    );
+    if pic_y < top || pic_y >= bottom {
+        spans.clear();
+        return;
+    }
+    intersect_spans_with_range(spans, left + dx, right + dx);
+    if region.rows.is_empty() || spans.is_empty() {
+        return;
+    }
+    let Some(edges) = region.rows.get((pic_y - top) as usize) else {
+        spans.clear();
+        return;
+    };
+    let mut row_spans = Vec::with_capacity(edges.len() / 2 + 1);
+    let mut index = 0;
+    while index < edges.len() {
+        let span_left = i32::from(edges[index]).max(left);
+        let span_right = edges
+            .get(index + 1)
+            .map_or(right, |&edge| i32::from(edge).min(right));
+        if span_right > span_left {
+            row_spans.push((span_left + dx, span_right + dx));
+        }
+        index += 2;
+    }
+    let mut clipped = Vec::new();
+    for &(span_left, span_right) in spans.iter() {
+        for &(row_left, row_right) in &row_spans {
+            let left = span_left.max(row_left);
+            let right = span_right.min(row_right);
+            if right > left {
+                clipped.push((left, right));
+            }
+        }
+    }
+    *spans = clipped;
 }
 
 fn packbits_row_data_bounds(
@@ -5697,10 +5778,12 @@ fn try_blit_packbits_8bpp_src_copy_fast(
     {
         return None;
     }
-    if dst_clip
-        .map(|clip| clip.regions.iter().any(|region| region.rows.is_some()))
-        .unwrap_or(false)
+    if clip_region.is_some()
+        || dst_clip
+            .map(|clip| clip.regions.iter().any(|region| region.rows.is_some()))
+            .unwrap_or(false)
     {
+        // Region-masked rows are multi-span; the per-row path handles them.
         return None;
     }
 
@@ -6298,7 +6381,7 @@ mod tests {
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
         dst_clip_row_spans, peek_initial_packbits_clut, picture_stream_len, read_color_table,
         try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
-        DstClipRegion, PictIndexedTransfer, PixMapInfo,
+        DstClipRegion, PictIndexedTransfer, PictureRegion, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
@@ -6672,6 +6755,246 @@ mod tests {
             bus.read_bytes(screen_base, 15),
             vec![1, 1, 2, 3, 3, 4, 4, 5, 6, 6, 4, 4, 5, 6, 6]
         );
+    }
+
+    /// Draw a 12x4 8-bit source through `blit_row` under a PICT op mask
+    /// region (PackBitsRgn), returning the destination rows. The picture
+    /// frame is offset from the screen so picture-to-screen translation is
+    /// exercised: picture x = screen x + 3, picture y = screen y + 5.
+    fn draw_region_masked_rows(
+        region: Option<&PictureRegion>,
+        dst_clip: Option<&DstClip>,
+        scrn_ps: u16,
+    ) -> Vec<u8> {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_rb = if scrn_ps == 8 { 16 } else { 2 };
+        bus.write_bytes(screen_base, &[0u8; 16 * 4]);
+        let pm = PixMapInfo {
+            row_bytes: 12,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 4,
+            bounds_right: 12,
+            pixel_size: 8,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        // Distinct non-zero pixels; on a 1-bit screen every non-zero index
+        // is "black" (bit set) via the identity map + threshold.
+        let rows: Vec<Vec<u8>> = (0..4u8)
+            .map(|y| (0..12u8).map(|x| 1 + y * 12 + x).collect())
+            .collect();
+        let src_to_dst = std::array::from_fn(|index| index as u8);
+        let indexed_transfer = std::array::from_fn(|index| PictIndexedTransfer::Write(index as u8));
+        let device_clut = [[0u16; 3]; 256];
+        let mut scratch = Vec::new();
+        for (row, pixels) in rows.iter().enumerate() {
+            blit_row(
+                &mut bus,
+                pixels,
+                0,
+                &pm,
+                &device_clut,
+                &src_to_dst,
+                true,
+                &indexed_transfer,
+                row as u32,
+                0,
+                0,
+                4,
+                12,
+                0,  // dst_top
+                0,  // dst_left
+                5,  // frame_top
+                3,  // frame_left
+                5,  // pic_dst_top
+                3,  // pic_dst_left
+                9,  // pic_dst_bottom
+                15, // pic_dst_right
+                1.0,
+                1.0,
+                screen_base,
+                screen_rb,
+                16,
+                4,
+                scrn_ps,
+                255,
+                0,
+                region,
+                dst_clip,
+                &mut scratch,
+            );
+        }
+        bus.read_bytes(screen_base, (screen_rb * 4) as usize)
+    }
+
+    /// Reference: what the per-pixel path writes for `draw_region_masked_rows`
+    /// on an 8-bit screen, using the very predicate it consults.
+    fn expected_region_masked_rows(region: Option<&PictureRegion>) -> Vec<u8> {
+        let mut expected = vec![0u8; 16 * 4];
+        for y in 0..4i32 {
+            for x in 0..12i32 {
+                let (pic_y, pic_x) = (y + 5, x + 3);
+                if region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
+                    continue;
+                }
+                expected[(y * 16 + x) as usize] = 1 + (y * 12 + x) as u8;
+            }
+        }
+        expected
+    }
+
+    #[test]
+    fn region_masked_8bpp_rows_take_the_span_fast_path_and_match_the_pixel_predicate() {
+        // A notched region in picture coordinates: rows 5-6 cover picture
+        // columns 4..13, row 7 covers 3..6 and 9..15 (a hole), row 8 is
+        // empty. Row 5's edges also leave a trailing unpaired edge, which
+        // `contains` reads as "to the right edge of the box".
+        let notched = PictureRegion {
+            top: 5,
+            left: 3,
+            bottom: 8,
+            right: 15,
+            rows: vec![vec![4, 13], vec![4], vec![3, 6, 9]],
+        };
+        assert_eq!(
+            draw_region_masked_rows(Some(&notched), None, 8),
+            expected_region_masked_rows(Some(&notched)),
+            "notched op region: fast path must match the per-pixel predicate"
+        );
+        // A rectangular region (no rows) is its bounding box.
+        let boxed = PictureRegion {
+            top: 6,
+            left: 5,
+            bottom: 8,
+            right: 11,
+            rows: Vec::new(),
+        };
+        assert_eq!(
+            draw_region_masked_rows(Some(&boxed), None, 8),
+            expected_region_masked_rows(Some(&boxed))
+        );
+        // Combined with a complex port dst_clip: both intersect.
+        let dst_clip = DstClip::new(
+            (0, 0, 4, 16),
+            vec![DstClipRegion::complex(
+                0,
+                0,
+                4,
+                16,
+                vec![vec![0, 16], vec![2, 8], vec![0, 16], vec![0, 16]],
+            )],
+        );
+        let both = draw_region_masked_rows(Some(&notched), Some(&dst_clip), 8);
+        let mut expected = expected_region_masked_rows(Some(&notched));
+        for x in (0..2).chain(8..16) {
+            expected[16 + x] = 0;
+        }
+        assert_eq!(both, expected, "op region and dst_clip must both apply");
+        // Non-vacuous: something was drawn and something was masked.
+        assert!(both.iter().any(|&b| b != 0));
+        assert!(expected_region_masked_rows(None) != expected_region_masked_rows(Some(&notched)));
+    }
+
+    #[test]
+    fn region_masked_rows_are_admitted_to_the_row_fast_path() {
+        // The eligibility gate used to refuse any op region, sending every
+        // PackBitsRgn frame (EV Override's intro is a zoom sequence of them)
+        // through the per-pixel loop. It must now be accepted, and it must
+        // stay refused for scaling and non-srcCopy modes.
+        let region = PictureRegion {
+            top: 0,
+            left: 0,
+            bottom: 4,
+            right: 12,
+            rows: vec![vec![1, 5], vec![0, 12], vec![2, 3], vec![]],
+        };
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pm = PixMapInfo {
+            row_bytes: 12,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 4,
+            bounds_right: 12,
+            pixel_size: 8,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let src_to_dst = std::array::from_fn(|index| index as u8);
+        let row = [7u8; 12];
+        let mut scratch = Vec::new();
+        let taken = |bus: &mut MacMemoryBus, mode: u16, scale: f64, scratch: &mut Vec<u8>| {
+            try_blit_row_8bpp_src_copy_fast(
+                bus,
+                &row,
+                mode,
+                &pm,
+                &src_to_dst,
+                true,
+                1,
+                0,
+                0,
+                4,
+                12,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                4,
+                12,
+                scale,
+                scale,
+                0x08_0000,
+                16,
+                16,
+                4,
+                8,
+                Some(&region),
+                None,
+                scratch,
+            )
+        };
+        assert!(
+            taken(&mut bus, 0, 1.0, &mut scratch),
+            "srcCopy + region takes the row path"
+        );
+        assert!(
+            !taken(&mut bus, 1, 1.0, &mut scratch),
+            "srcOr still goes per-pixel"
+        );
+        assert!(
+            !taken(&mut bus, 0, 2.0, &mut scratch),
+            "scaling still goes per-pixel"
+        );
+        // Row 1 of the region is 0..12: whole row written; row 3 is empty.
+        assert_eq!(bus.read_bytes(0x08_0000 + 16, 12), vec![7u8; 12]);
+    }
+
+    #[test]
+    fn one_bit_screen_region_masked_rows_match_the_pixel_predicate() {
+        let notched = PictureRegion {
+            top: 5,
+            left: 3,
+            bottom: 9,
+            right: 15,
+            rows: vec![vec![4, 13], vec![4], vec![3, 6, 9], vec![]],
+        };
+        let bits = draw_region_masked_rows(Some(&notched), None, 1);
+        let expected = expected_region_masked_rows(Some(&notched));
+        for y in 0..4usize {
+            for x in 0..16usize {
+                let bit = (bits[y * 2 + x / 8] >> (7 - (x % 8))) & 1;
+                let inside = expected[y * 16 + x] != 0;
+                assert_eq!(
+                    bit == 1,
+                    inside,
+                    "1-bit pixel ({y}, {x}) must follow the region"
+                );
+            }
+        }
     }
 
     #[test]
