@@ -198,7 +198,7 @@ impl super::TrapDispatcher {
         table_id: i16,
     ) -> Option<u32> {
         let resource_ptr = self
-            .find_resource_any(resource_type, table_id)
+            .find_or_load_resource_any(bus, resource_type, table_id)
             .map(|(_, ptr)| ptr)?;
 
         if bus.get_alloc_size(resource_ptr).unwrap_or(0) < 8 {
@@ -487,7 +487,7 @@ impl super::TrapDispatcher {
         let wdef_id = Self::window_def_resource_id(proc_id);
         if Self::is_application_window_def_proc_id(proc_id) {
             return self
-                .find_resource_any(*b"WDEF", wdef_id)
+                .find_or_load_resource_any(bus, *b"WDEF", wdef_id)
                 .map(|(_, ptr)| ptr)
                 .map(|ptr| self.get_or_create_resource_handle(bus, *b"WDEF", wdef_id, ptr))
                 .unwrap_or(0);

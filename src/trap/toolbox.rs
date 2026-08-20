@@ -5513,7 +5513,7 @@ impl super::TrapDispatcher {
                 let res_type = *b"STR#";
                 let mut res_found = false;
                 let found_str: Option<Vec<u8>> =
-                    if let Some((_, data_ptr)) = self.find_resource_any(res_type, str_list_id) {
+                    if let Some((_, data_ptr)) = self.find_or_load_resource_any(bus, res_type, str_list_id) {
                         res_found = true;
                         // STR# format: 2-byte count, then Pascal strings (1-byte len + chars)
                         // Inside Macintosh Volume I, I-476
@@ -10684,7 +10684,7 @@ impl super::TrapDispatcher {
                         let cells_handle = bus.alloc(4);
 
                         let list_def_proc_handle = self
-                            .find_resource_any(*b"LDEF", proc_id)
+                            .find_or_load_resource_any(bus, *b"LDEF", proc_id)
                             .map(|(_, ptr)| {
                                 self.get_or_create_resource_handle(bus, *b"LDEF", proc_id, ptr)
                             })
@@ -11746,7 +11746,7 @@ impl super::TrapDispatcher {
                         let cells_handle = bus.alloc(4);
 
                         let list_def_proc_handle = self
-                            .find_resource_any(*b"LDEF", proc_id)
+                            .find_or_load_resource_any(bus, *b"LDEF", proc_id)
                             .map(|(_, ptr)| {
                                 self.get_or_create_resource_handle(bus, *b"LDEF", proc_id, ptr)
                             })
