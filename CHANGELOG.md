@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.3](https://github.com/benletchford/systemless/compare/v0.18.2...v0.18.3) (2026-08-20)
+
+
+### Bug Fixes
+
+* **input:** return PowerPC mouse positions in local coordinates ([#700](https://github.com/benletchford/systemless/issues/700)) ([0c6c535](https://github.com/benletchford/systemless/commit/0c6c53585986e2d8e7656410fa91a9c557f0e6cc))
+
 ## [0.18.2](https://github.com/benletchford/systemless/compare/v0.18.1...v0.18.2) (2026-08-20)
 
 
