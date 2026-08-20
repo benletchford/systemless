@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.4](https://github.com/benletchford/systemless/compare/v0.18.3...v0.18.4) (2026-08-20)
+
+
+### Bug Fixes
+
+* **desktop:** preserve short mouse clicks ([deee36f](https://github.com/benletchford/systemless/commit/deee36f27a6347eb6e3aa10721010a61c9b46e94))
+* **pict:** preserve exact indexed colors ([#705](https://github.com/benletchford/systemless/issues/705)) ([5e50397](https://github.com/benletchford/systemless/commit/5e503972ad8db4d3cd0637e9326563a6bb7171d3))
+
 ## [0.18.3](https://github.com/benletchford/systemless/compare/v0.18.2...v0.18.3) (2026-08-20)
 
 
