@@ -1986,6 +1986,8 @@ fn isp_action_binding_name(binding: PpcInputSprocketActionBinding) -> &'static s
     match binding {
         PpcInputSprocketActionBinding::AxisYaw => "axis/yaw",
         PpcInputSprocketActionBinding::AxisPitch => "axis/pitch",
+        PpcInputSprocketActionBinding::AxisHorizontal => "axis/horizontal",
+        PpcInputSprocketActionBinding::AxisVertical => "axis/vertical",
         PpcInputSprocketActionBinding::AxisDirectional => "axis/directional",
         PpcInputSprocketActionBinding::ButtonLeft => "button/left",
         PpcInputSprocketActionBinding::ButtonRight => "button/right",
@@ -3765,6 +3767,8 @@ pub struct PpcInputSprocketState {
 pub enum PpcInputSprocketActionBinding {
     AxisYaw,
     AxisPitch,
+    AxisHorizontal,
+    AxisVertical,
     AxisDirectional,
     ButtonLeft,
     ButtonRight,
@@ -46558,6 +46562,10 @@ fn ppc_isp_action_binding(kind: u32, need_name: Option<&str>) -> PpcInputSprocke
                 PpcInputSprocketActionBinding::AxisPitch
             } else if ppc_isp_need_name_matches(need_name, &["yaw", "turn"]) {
                 PpcInputSprocketActionBinding::AxisYaw
+            } else if ppc_isp_need_name_matches(need_name, &["walk", "horizontal"]) {
+                PpcInputSprocketActionBinding::AxisHorizontal
+            } else if ppc_isp_need_name_matches(need_name, &["climb", "vertical"]) {
+                PpcInputSprocketActionBinding::AxisVertical
             } else {
                 PpcInputSprocketActionBinding::AxisDirectional
             }
@@ -46650,33 +46658,40 @@ fn ppc_isp_input_simple_state(
             if !input_sprocket.keyboard_active {
                 return fallback_state;
             }
-            let (low_keys, high_keys): (&[u8], &[u8]) =
-                if action_binding == PpcInputSprocketActionBinding::AxisYaw {
-                    (
-                        &[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT],
-                        &[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT],
-                    )
-                } else if action_binding == PpcInputSprocketActionBinding::AxisPitch {
-                    (
-                        &[PPC_KEY_UP, PPC_KEY_NUMPAD_UP],
-                        &[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN],
-                    )
-                } else {
-                    (
-                        &[
-                            PPC_KEY_LEFT,
-                            PPC_KEY_NUMPAD_LEFT,
-                            PPC_KEY_UP,
-                            PPC_KEY_NUMPAD_UP,
-                        ],
-                        &[
-                            PPC_KEY_RIGHT,
-                            PPC_KEY_NUMPAD_RIGHT,
-                            PPC_KEY_DOWN,
-                            PPC_KEY_NUMPAD_DOWN,
-                        ],
-                    )
-                };
+            let (low_keys, high_keys): (&[u8], &[u8]) = if matches!(
+                action_binding,
+                PpcInputSprocketActionBinding::AxisYaw
+                    | PpcInputSprocketActionBinding::AxisHorizontal
+            ) {
+                (
+                    &[PPC_KEY_LEFT, PPC_KEY_NUMPAD_LEFT],
+                    &[PPC_KEY_RIGHT, PPC_KEY_NUMPAD_RIGHT],
+                )
+            } else if matches!(
+                action_binding,
+                PpcInputSprocketActionBinding::AxisPitch
+                    | PpcInputSprocketActionBinding::AxisVertical
+            ) {
+                (
+                    &[PPC_KEY_UP, PPC_KEY_NUMPAD_UP],
+                    &[PPC_KEY_DOWN, PPC_KEY_NUMPAD_DOWN],
+                )
+            } else {
+                (
+                    &[
+                        PPC_KEY_LEFT,
+                        PPC_KEY_NUMPAD_LEFT,
+                        PPC_KEY_UP,
+                        PPC_KEY_NUMPAD_UP,
+                    ],
+                    &[
+                        PPC_KEY_RIGHT,
+                        PPC_KEY_NUMPAD_RIGHT,
+                        PPC_KEY_DOWN,
+                        PPC_KEY_NUMPAD_DOWN,
+                    ],
+                )
+            };
             let low = input.any_key_down(low_keys);
             let high = input.any_key_down(high_keys);
             match (low, high) {
@@ -112359,6 +112374,67 @@ mod tests {
         assert_eq!(
             loaded.memory.read_u32_be(state_ptr),
             Some((12i32 * 0x0001_0000) as u32)
+        );
+    }
+
+    #[test]
+    fn input_sprocket_maps_walk_and_climb_axes_independently() {
+        let active = PpcInputSprocketState {
+            initialized: true,
+            suspended: false,
+            keyboard_active: true,
+            mouse_active: false,
+            ..PpcInputSprocketState::default()
+        };
+        let snapshot = |key: u8| {
+            let mut input = PpcInputSnapshot::default();
+            input.key_map[(key / 8) as usize] |= 1u8 << (key % 8);
+            input
+        };
+        let walk = ppc_isp_action_binding(PPC_ISP_ELEMENT_KIND_AXIS, Some("Walk"));
+        let climb = ppc_isp_action_binding(PPC_ISP_ELEMENT_KIND_AXIS, Some("Climb"));
+
+        assert_eq!(walk, PpcInputSprocketActionBinding::AxisHorizontal);
+        assert_eq!(climb, PpcInputSprocketActionBinding::AxisVertical);
+        assert_eq!(
+            ppc_isp_input_simple_state(
+                PPC_ISP_ELEMENT_KIND_AXIS,
+                PPC_ISP_AXIS_MIDDLE,
+                snapshot(PPC_KEY_RIGHT),
+                active,
+                walk,
+            ),
+            PPC_ISP_AXIS_HIGH
+        );
+        assert_eq!(
+            ppc_isp_input_simple_state(
+                PPC_ISP_ELEMENT_KIND_AXIS,
+                PPC_ISP_AXIS_MIDDLE,
+                snapshot(PPC_KEY_RIGHT),
+                active,
+                climb,
+            ),
+            PPC_ISP_AXIS_MIDDLE
+        );
+        assert_eq!(
+            ppc_isp_input_simple_state(
+                PPC_ISP_ELEMENT_KIND_AXIS,
+                PPC_ISP_AXIS_MIDDLE,
+                snapshot(PPC_KEY_UP),
+                active,
+                walk,
+            ),
+            PPC_ISP_AXIS_MIDDLE
+        );
+        assert_eq!(
+            ppc_isp_input_simple_state(
+                PPC_ISP_ELEMENT_KIND_AXIS,
+                PPC_ISP_AXIS_MIDDLE,
+                snapshot(PPC_KEY_UP),
+                active,
+                climb,
+            ),
+            PPC_ISP_AXIS_LOW
         );
     }
 
