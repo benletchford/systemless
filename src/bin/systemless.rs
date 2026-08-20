@@ -316,35 +316,45 @@ impl Drop for CoreAnimationTransaction {
 
 /// Keeps a host press/release pair from collapsing before the guest executes.
 /// Winit can deliver both button events in one event-loop batch. Polling Mac
-/// applications must still observe the button down for at least one guest
-/// tick, just as they would for a physical ADB mouse.
+/// applications must still execute with the button down before they observe
+/// the release, just as they would for a physical ADB mouse.
 #[derive(Default)]
 struct HostMouseReleaseLatch {
-    pressed_guest_tick: Option<u32>,
+    pressed: bool,
+    guest_observed_press: bool,
     pending_release: Option<(i16, i16)>,
 }
 
 impl HostMouseReleaseLatch {
-    fn press(&mut self, guest_tick: u32) {
-        self.pressed_guest_tick = Some(guest_tick);
+    fn press(&mut self) {
+        self.pressed = true;
+        self.guest_observed_press = false;
         self.pending_release = None;
     }
 
-    fn release(&mut self, guest_tick: u32, position: (i16, i16)) -> Option<(i16, i16)> {
-        if self.pressed_guest_tick == Some(guest_tick) {
+    fn release(&mut self, position: (i16, i16)) -> Option<(i16, i16)> {
+        if self.pressed && !self.guest_observed_press {
             self.pending_release = Some(position);
             None
         } else {
-            self.pressed_guest_tick = None;
+            self.pressed = false;
+            self.guest_observed_press = false;
             Some(position)
         }
     }
 
-    fn take_ready_release(&mut self, guest_tick: u32) -> Option<(i16, i16)> {
-        if self.pressed_guest_tick == Some(guest_tick) {
+    fn observe_guest_progress(&mut self) {
+        if self.pressed {
+            self.guest_observed_press = true;
+        }
+    }
+
+    fn take_ready_release(&mut self) -> Option<(i16, i16)> {
+        if !self.guest_observed_press {
             return None;
         }
-        self.pressed_guest_tick = None;
+        self.pressed = false;
+        self.guest_observed_press = false;
         self.pending_release.take()
     }
 }
@@ -778,6 +788,15 @@ impl App {
         }
     }
 
+    fn flush_ready_mouse_release(&mut self) {
+        let Some((v, h)) = self.mouse_release_latch.take_ready_release() else {
+            return;
+        };
+        if let Some(runner) = self.runner.as_mut() {
+            runner.push_mouse_up(v, h);
+        }
+    }
+
     fn step_frame(&mut self) {
         let Some(runner) = self.runner.as_ref() else {
             return;
@@ -954,6 +973,9 @@ impl App {
         }
 
         self.total_instructions += total_steps as u64;
+        if foreground_steps > 0 {
+            self.mouse_release_latch.observe_guest_progress();
+        }
         if foreground_steps > 0 && runner.guest_tick() == current_tick {
             // Loading and animation code can draw substantial work before the
             // next VBL tick. Present that progress instead of batching it into
@@ -1972,12 +1994,11 @@ impl ApplicationHandler for App {
                     match state {
                         ElementState::Pressed => {
                             runner.push_mouse_down(v, h);
-                            self.mouse_release_latch.press(runner.guest_tick());
+                            self.mouse_release_latch.press();
                         }
                         ElementState::Released => {
-                            if let Some((release_v, release_h)) = self
-                                .mouse_release_latch
-                                .release(runner.guest_tick(), (v, h))
+                            if let Some((release_v, release_h)) =
+                                self.mouse_release_latch.release((v, h))
                             {
                                 runner.push_mouse_up(release_v, release_h);
                             }
@@ -2081,14 +2102,7 @@ impl ApplicationHandler for App {
 
         // Step emulation, then render
         self.step_frame();
-        if let Some(runner) = self.runner.as_mut() {
-            if let Some((v, h)) = self
-                .mouse_release_latch
-                .take_ready_release(runner.guest_tick())
-            {
-                runner.push_mouse_up(v, h);
-            }
-        }
+        self.flush_ready_mouse_release();
         if self.guest_requested_exit() {
             self.sync_save_files(true);
             eprintln!(
@@ -3139,6 +3153,46 @@ mod tests {
     }
 
     #[test]
+    fn step_frame_flushes_click_release_after_same_tick_foreground_progress() {
+        use systemless::cpu::Register;
+        use systemless::memory::MemoryBus;
+
+        let now = std::time::Instant::now();
+        let mut runner = FixtureRunner::new(
+            8 * 1024 * 1024,
+            systemless::runner::FixtureRunnerConfig::default(),
+        );
+        let pc = runner.bus_mut().alloc(256 * 1024);
+        for offset in (0..256 * 1024).step_by(2) {
+            runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu_mut().write_reg(Register::PC, pc);
+        runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
+        runner.bus_mut().write_long(0x016A, 0);
+        runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
+        runner.push_mouse_down(350, 580);
+
+        let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
+        app.runner = Some(runner);
+        app.start_time = Some(now - FRAME_DURATION);
+        app.next_frame_time = Some(now + FRAME_DURATION * 4);
+        app.mouse_release_latch.press();
+        assert_eq!(app.mouse_release_latch.release((350, 580)), None);
+
+        app.step_frame();
+
+        let runner = app.runner.as_ref().unwrap();
+        assert!(app.total_instructions > 0);
+        assert_eq!(runner.guest_tick(), 0);
+        assert_eq!(runner.bus().read_byte(0x0172), 0x00);
+
+        app.flush_ready_mouse_release();
+
+        let runner = app.runner.as_ref().unwrap();
+        assert_eq!(runner.bus().read_byte(0x0172), 0x80);
+    }
+
+    #[test]
     fn step_frame_services_pending_sound_before_late_same_tick_audio_mix() {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
@@ -3678,23 +3732,25 @@ mod tests {
     }
 
     #[test]
-    fn host_click_release_waits_until_the_guest_observes_one_tick() {
+    fn host_click_release_waits_until_the_guest_executes() {
         let mut latch = HostMouseReleaseLatch::default();
-        latch.press(380);
+        latch.press();
 
-        assert_eq!(latch.release(380, (350, 580)), None);
-        assert_eq!(latch.take_ready_release(380), None);
-        assert_eq!(latch.take_ready_release(381), Some((350, 580)));
-        assert_eq!(latch.take_ready_release(382), None);
+        assert_eq!(latch.release((350, 580)), None);
+        assert_eq!(latch.take_ready_release(), None);
+        latch.observe_guest_progress();
+        assert_eq!(latch.take_ready_release(), Some((350, 580)));
+        assert_eq!(latch.take_ready_release(), None);
     }
 
     #[test]
     fn host_release_after_guest_progress_is_not_delayed() {
         let mut latch = HostMouseReleaseLatch::default();
-        latch.press(380);
+        latch.press();
+        latch.observe_guest_progress();
 
-        assert_eq!(latch.release(381, (350, 580)), Some((350, 580)));
-        assert_eq!(latch.take_ready_release(382), None);
+        assert_eq!(latch.release((350, 580)), Some((350, 580)));
+        assert_eq!(latch.take_ready_release(), None);
     }
 
     #[cfg(target_os = "macos")]
