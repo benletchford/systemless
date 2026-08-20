@@ -12834,18 +12834,19 @@ mod tests {
         let classic = popupmenuselect_theme_snapshot(UiThemeId::ClassicSystem7);
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
-        // Width comes from the widest item "Three" measured in the bundled
-        // Nimbus Sans Bold 12 face. Its 33px advance plus the standard 26px
-        // menu padding makes the box 59px wide. The clamped case pins that box
-        // against the 240px screen edge.
-        assert_eq!(classic.rect, (25, 29, 91, 88));
+        // Width comes from the widest item "Three" measured in Chicago 12.
+        // Our strike now reproduces the original per-glyph advances exactly
+        // (T6 h8 r6 e8 e8 = 36), so the box is 36 + 26 = 62 wide: right =
+        // left(29) + 62 = 91. The clamped case pins the box against the
+        // 240px screen edge, so its left is 240 - 62 = 178.
+        assert_eq!(classic.rect, (25, 29, 91, 91));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
         assert_eq!(classic.first_stack_after, TEST_SP);
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (94, 181, 160, 240));
+        assert_eq!(classic.clamped_rect, (94, 178, 160, 240));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);

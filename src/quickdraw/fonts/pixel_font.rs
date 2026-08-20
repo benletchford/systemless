@@ -1,7 +1,10 @@
-//! Hand-authored bitmap symbols, decoded at compile time.
+//! Hand-authored bitmap fonts, decoded at compile time.
 //!
-//! This remains for the small QuickDraw menu-symbol set. Built-in typefaces
-//! are rasterized from the bundled TrueType files in the sibling module.
+//! A face is a slice of [`GlyphSrc`] — one entry per ASCII code
+//! `0x20..=0x7E` — where each glyph is written as ASCII art: `'#'` is
+//! an inked pixel, `'.'` is empty. This is the *source of truth* for
+//! the glyph; it lives directly in this crate as readable Rust, with
+//! no external font file and no offline baker.
 //!
 //! [`decode_glyphs`] / [`decode_data`] are `const fn`s, so a face
 //! lowers to the exact same static `[Glyph; 95]` + coverage-byte
@@ -16,7 +19,25 @@
 
 use super::{FontMetrics, Glyph};
 
+pub mod application12;
+pub mod cairo18;
+pub mod chicago12;
+pub mod chicago9;
+pub mod geneva10;
+pub mod geneva12;
+pub mod geneva14;
+pub mod geneva18;
+pub mod geneva24;
+pub mod geneva9;
+pub mod london18;
 pub mod menu_symbols;
+pub mod monaco10;
+pub mod monaco12;
+pub mod monaco9;
+pub mod newyork12;
+pub mod newyork14;
+pub mod newyork18;
+pub mod venice14;
 
 /// Readable source for one glyph. `rows` is the ASCII-art bitmap:
 /// every row must be the same length (the glyph width); `'#'` inks a

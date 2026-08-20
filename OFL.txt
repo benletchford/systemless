@@ -5,8 +5,7 @@ This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 https://openfontlicense.org
 
-This covers the bitmap symbol artwork in
-src/quickdraw/fonts/pixel_font/menu_symbols.rs. The
+This covers the bitmap font artwork in src/quickdraw/fonts/pixel_font/. The
 rest of the systemless crate is licensed under GPL-3.0-or-later (see LICENSE).
 
 -----------------------------------------------------------
