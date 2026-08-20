@@ -314,6 +314,41 @@ impl Drop for CoreAnimationTransaction {
     }
 }
 
+/// Keeps a host press/release pair from collapsing before the guest executes.
+/// Winit can deliver both button events in one event-loop batch. Polling Mac
+/// applications must still observe the button down for at least one guest
+/// tick, just as they would for a physical ADB mouse.
+#[derive(Default)]
+struct HostMouseReleaseLatch {
+    pressed_guest_tick: Option<u32>,
+    pending_release: Option<(i16, i16)>,
+}
+
+impl HostMouseReleaseLatch {
+    fn press(&mut self, guest_tick: u32) {
+        self.pressed_guest_tick = Some(guest_tick);
+        self.pending_release = None;
+    }
+
+    fn release(&mut self, guest_tick: u32, position: (i16, i16)) -> Option<(i16, i16)> {
+        if self.pressed_guest_tick == Some(guest_tick) {
+            self.pending_release = Some(position);
+            None
+        } else {
+            self.pressed_guest_tick = None;
+            Some(position)
+        }
+    }
+
+    fn take_ready_release(&mut self, guest_tick: u32) -> Option<(i16, i16)> {
+        if self.pressed_guest_tick == Some(guest_tick) {
+            return None;
+        }
+        self.pressed_guest_tick = None;
+        self.pending_release.take()
+    }
+}
+
 struct App {
     window: Option<Rc<Window>>,
     #[cfg(target_os = "macos")]
@@ -377,6 +412,7 @@ struct App {
     last_audio_mix_time: Option<std::time::Instant>,
     /// Current mouse position in physical window pixels
     mouse_physical: (f64, f64),
+    mouse_release_latch: HostMouseReleaseLatch,
     /// Current game screen dimensions (tracks screen_mode changes)
     current_screen_width: u32,
     current_screen_height: u32,
@@ -488,6 +524,7 @@ impl App {
             audio_sample_remainder: 0.0,
             last_audio_mix_time: None,
             mouse_physical: (0.0, 0.0),
+            mouse_release_latch: HostMouseReleaseLatch::default(),
             current_screen_width: INITIAL_SCREEN_WIDTH,
             current_screen_height: INITIAL_SCREEN_HEIGHT,
             frame_count: 0,
@@ -1935,9 +1972,15 @@ impl ApplicationHandler for App {
                     match state {
                         ElementState::Pressed => {
                             runner.push_mouse_down(v, h);
+                            self.mouse_release_latch.press(runner.guest_tick());
                         }
                         ElementState::Released => {
-                            runner.push_mouse_up(v, h);
+                            if let Some((release_v, release_h)) = self
+                                .mouse_release_latch
+                                .release(runner.guest_tick(), (v, h))
+                            {
+                                runner.push_mouse_up(release_v, release_h);
+                            }
                         }
                     }
                 }
@@ -2038,6 +2081,14 @@ impl ApplicationHandler for App {
 
         // Step emulation, then render
         self.step_frame();
+        if let Some(runner) = self.runner.as_mut() {
+            if let Some((v, h)) = self
+                .mouse_release_latch
+                .take_ready_release(runner.guest_tick())
+            {
+                runner.push_mouse_up(v, h);
+            }
+        }
         if self.guest_requested_exit() {
             self.sync_save_files(true);
             eprintln!(
@@ -3624,6 +3675,26 @@ mod tests {
             (60, 80),
             "left letterbox pixels clamp to the cropped guest edge"
         );
+    }
+
+    #[test]
+    fn host_click_release_waits_until_the_guest_observes_one_tick() {
+        let mut latch = HostMouseReleaseLatch::default();
+        latch.press(380);
+
+        assert_eq!(latch.release(380, (350, 580)), None);
+        assert_eq!(latch.take_ready_release(380), None);
+        assert_eq!(latch.take_ready_release(381), Some((350, 580)));
+        assert_eq!(latch.take_ready_release(382), None);
+    }
+
+    #[test]
+    fn host_release_after_guest_progress_is_not_delayed() {
+        let mut latch = HostMouseReleaseLatch::default();
+        latch.press(380);
+
+        assert_eq!(latch.release(381, (350, 580)), Some((350, 580)));
+        assert_eq!(latch.take_ready_release(382), None);
     }
 
     #[cfg(target_os = "macos")]
