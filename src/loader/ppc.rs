@@ -16371,11 +16371,21 @@ fn dispatch_supported_import(
             if point_ptr != 0 && ppc_memory_can_write_bytes(memory, point_ptr, 4) {
                 let _ = memory.write_u16_be(point_ptr, input.mouse_v as u16);
                 let _ = memory.write_u16_be(point_ptr + 2, input.mouse_h as u16);
+                // GetMouse reports the position in the current graphics port's
+                // local coordinate system. EventRecord.where remains global.
+                // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-25.
+                let _ = ppc_transform_port_point(memory, *current_gworld, point_ptr, false);
             }
             if crate::trap::dispatch::trace_input_enabled() {
+                let local_v = memory
+                    .read_u16_be(point_ptr)
+                    .unwrap_or(input.mouse_v as u16) as i16;
+                let local_h = memory
+                    .read_u16_be(point_ptr.saturating_add(2))
+                    .unwrap_or(input.mouse_h as u16) as i16;
                 eprintln!(
                     "[INPUT] PPC GetMouse ptr=${point_ptr:08X} -> ({}, {})",
-                    input.mouse_v, input.mouse_h
+                    local_v, local_h
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -108920,6 +108930,28 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+    }
+
+    #[test]
+    fn get_mouse_returns_current_port_local_coordinates() {
+        let pef = synthetic_pef_with_import(b"GetMouse");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let point_ptr = PPC_DATA_BASE + 0x1120;
+        loaded.memory.add_region(point_ptr, vec![0xaa; 4]);
+        ppc_write_rect(&mut loaded.memory, PPC_MAIN_PIXMAP + 6, -60, -80, 540, 720).unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_v: 360,
+            mouse_h: 580,
+            ..PpcInputSnapshot::default()
+        });
+        loaded.cpu.gpr[3] = point_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(point_ptr), Some(300));
+        assert_eq!(loaded.memory.read_u16_be(point_ptr + 2), Some(500));
     }
 
     #[test]
