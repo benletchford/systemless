@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.6](https://github.com/benletchford/systemless/compare/v0.18.5...v0.18.6) (2026-08-20)
+
+
+### Bug Fixes
+
+* **input:** separate horizontal and vertical axes ([#714](https://github.com/benletchford/systemless/issues/714)) ([7c2d8a6](https://github.com/benletchford/systemless/commit/7c2d8a61bfa8a6fc7d2b927c7fb2f91d60946549))
+* **sound:** allow longer PowerPC doubleback callbacks ([#716](https://github.com/benletchford/systemless/issues/716)) ([303f1b1](https://github.com/benletchford/systemless/commit/303f1b1ecfae36c82705629f64670f6b63e8b25f))
+
 ## [0.18.5](https://github.com/benletchford/systemless/compare/v0.18.4...v0.18.5) (2026-08-20)
 
 
