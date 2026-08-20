@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.18.2](https://github.com/benletchford/systemless/compare/v0.18.1...v0.18.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* launch extended VISE PowerPC games ([4443f1c](https://github.com/benletchford/systemless/commit/4443f1c2e6d83cdc2bace789ecdcf980662c202b))
+* **palette:** install explicit-tolerant palette colors ([25e6aeb](https://github.com/benletchford/systemless/commit/25e6aebc93502fa23907b47c7a24477084cadd57)), closes [#695](https://github.com/benletchford/systemless/issues/695)
+* **quickdraw:** scale text width with the requested size ([dcc9d6d](https://github.com/benletchford/systemless/commit/dcc9d6d36cc7f1da595857d3b0aab0033f76ab16))
+* **resource:** load lazily seeded resources on demand ([e48963c](https://github.com/benletchford/systemless/commit/e48963c4ab5caa2d0d8b0397c4dc3db13131a43a)), closes [#692](https://github.com/benletchford/systemless/issues/692)
+
+
+### Performance Improvements
+
+* decompress StuffIt forks on every core ([1546406](https://github.com/benletchford/systemless/commit/15464063d1c3039058a066f6baad5fe849408db3))
+* **framebuffer:** tile the desktop pattern fill by row on 8-bit screens ([a26ed7c](https://github.com/benletchford/systemless/commit/a26ed7c01a98d15e697c21db55e26e497e5f8c2b))
+* **memory:** scribble uninitialized allocations with one bulk fill ([b3bf752](https://github.com/benletchford/systemless/commit/b3bf752fdc9a6c68962c0b598bb15b6ef4492110))
+* **pict:** blit region-masked 8-bit PICT rows as spans ([7497bfc](https://github.com/benletchford/systemless/commit/7497bfc37a4f51250b3da2057462566b4a6ffdde))
+* **pict:** draw 1-bit srcCopy source rows through the 8-bit row path ([caffe97](https://github.com/benletchford/systemless/commit/caffe979b6fb786d66273974b6f6af7f03741889))
+* **runner:** budget idle-cycle probes per site and tick; cap the journal ([5d29448](https://github.com/benletchford/systemless/commit/5d2944851ed98ee02b9cf6434ce61036607036b3))
+* **shapes:** fill, erase and invert rectangles a row at a time on 1-bit and 8-bit ports ([9453af4](https://github.com/benletchford/systemless/commit/9453af41ca0fb815ac955edd5638f4959bf4571a))
+* **text:** stop re-scanning the colour table per glyph; iterate only the glyph box ([4a09a78](https://github.com/benletchford/systemless/commit/4a09a78df6fb3326732108d9c9409ecb7150293e))
+
 ## [0.18.1](https://github.com/benletchford/systemless/compare/v0.18.0...v0.18.1) (2026-08-19)
 
 
