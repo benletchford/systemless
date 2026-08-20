@@ -322,6 +322,7 @@ impl Drop for CoreAnimationTransaction {
 struct HostMouseReleaseLatch {
     pressed: bool,
     guest_observed_press: bool,
+    guest_needs_release_observation: bool,
     pending_release: Option<(i16, i16)>,
 }
 
@@ -329,6 +330,7 @@ impl HostMouseReleaseLatch {
     fn press(&mut self) {
         self.pressed = true;
         self.guest_observed_press = false;
+        self.guest_needs_release_observation = false;
         self.pending_release = None;
     }
 
@@ -337,24 +339,33 @@ impl HostMouseReleaseLatch {
             self.pending_release = Some(position);
             None
         } else {
+            let had_press = self.pressed;
             self.pressed = false;
             self.guest_observed_press = false;
+            self.guest_needs_release_observation = had_press;
             Some(position)
         }
     }
 
     fn observe_guest_progress(&mut self) {
-        if self.pressed {
+        if self.pressed && !self.guest_observed_press {
             self.guest_observed_press = true;
+        } else if self.guest_needs_release_observation {
+            self.guest_needs_release_observation = false;
         }
     }
 
+    fn requires_guest_progress(&self) -> bool {
+        (self.pressed && !self.guest_observed_press) || self.guest_needs_release_observation
+    }
+
     fn take_ready_release(&mut self) -> Option<(i16, i16)> {
-        if !self.guest_observed_press {
+        if !self.guest_observed_press || self.pending_release.is_none() {
             return None;
         }
         self.pressed = false;
         self.guest_observed_press = false;
+        self.guest_needs_release_observation = true;
         self.pending_release.take()
     }
 }
@@ -840,7 +851,12 @@ impl App {
                 ),
             );
         }
-        let effective_target = current_tick.saturating_add(ticks_behind.min(2));
+        // Host input wakes the foreground application even when its TickCount
+        // is ahead of the wall-clock target. Give each mouse transition one
+        // bounded guest slice so a polling loop cannot be starved by pacing.
+        let input_progress_ticks = u32::from(self.mouse_release_latch.requires_guest_progress());
+        let effective_target =
+            current_tick.saturating_add(ticks_behind.min(2).max(input_progress_ticks));
 
         // CPU budget: wall-clock time left in this frame, minus render headroom.
         // The CPU runs in small batches, checking the clock between batches.
@@ -3153,7 +3169,7 @@ mod tests {
     }
 
     #[test]
-    fn step_frame_flushes_click_release_after_same_tick_foreground_progress() {
+    fn step_frame_drives_click_transitions_when_guest_tick_is_ahead() {
         use systemless::cpu::Register;
         use systemless::memory::MemoryBus;
 
@@ -3162,34 +3178,46 @@ mod tests {
             8 * 1024 * 1024,
             systemless::runner::FixtureRunnerConfig::default(),
         );
-        let pc = runner.bus_mut().alloc(256 * 1024);
-        for offset in (0..256 * 1024).step_by(2) {
-            runner.bus_mut().write_word(pc + offset, 0x4E71); // NOP
-        }
+        let pc = runner.bus_mut().alloc(2);
+        runner.bus_mut().write_word(pc, 0x60FE); // BRA.S *
         runner.cpu_mut().write_reg(Register::PC, pc);
         runner.cpu_mut().write_reg(Register::A7, 0x0008_0000);
         runner.bus_mut().write_long(0x016A, 0);
+        runner.set_instructions_per_tick(1);
+        let (steps, running) = runner.run_steps(10, None);
+        assert_eq!(steps, 10);
+        assert!(running);
+        let input_tick = runner.guest_tick();
+        assert!(input_tick >= 10);
         runner.set_instructions_per_tick((game::MAX_INSTRUCTIONS_PER_FRAME * 2) as u32);
         runner.push_mouse_down(350, 580);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);
-        app.start_time = Some(now - FRAME_DURATION);
-        app.next_frame_time = Some(now + FRAME_DURATION * 4);
+        app.start_time = Some(now + FRAME_DURATION * 240);
+        app.next_frame_time = Some(now + FRAME_DURATION * 120);
         app.mouse_release_latch.press();
         assert_eq!(app.mouse_release_latch.release((350, 580)), None);
+        assert!(app.mouse_release_latch.requires_guest_progress());
 
         app.step_frame();
 
         let runner = app.runner.as_ref().unwrap();
         assert!(app.total_instructions > 0);
-        assert_eq!(runner.guest_tick(), 0);
+        assert_eq!(runner.guest_tick(), input_tick);
         assert_eq!(runner.bus().read_byte(0x0172), 0x00);
 
         app.flush_ready_mouse_release();
 
         let runner = app.runner.as_ref().unwrap();
         assert_eq!(runner.bus().read_byte(0x0172), 0x80);
+        assert!(app.mouse_release_latch.requires_guest_progress());
+
+        let instructions_after_press = app.total_instructions;
+        app.step_frame();
+
+        assert!(app.total_instructions > instructions_after_press);
+        assert!(!app.mouse_release_latch.requires_guest_progress());
     }
 
     #[test]
@@ -3737,10 +3765,15 @@ mod tests {
         latch.press();
 
         assert_eq!(latch.release((350, 580)), None);
+        assert!(latch.requires_guest_progress());
         assert_eq!(latch.take_ready_release(), None);
         latch.observe_guest_progress();
+        assert!(!latch.requires_guest_progress());
         assert_eq!(latch.take_ready_release(), Some((350, 580)));
+        assert!(latch.requires_guest_progress());
         assert_eq!(latch.take_ready_release(), None);
+        latch.observe_guest_progress();
+        assert!(!latch.requires_guest_progress());
     }
 
     #[test]
@@ -3750,7 +3783,10 @@ mod tests {
         latch.observe_guest_progress();
 
         assert_eq!(latch.release((350, 580)), Some((350, 580)));
+        assert!(latch.requires_guest_progress());
         assert_eq!(latch.take_ready_release(), None);
+        latch.observe_guest_progress();
+        assert!(!latch.requires_guest_progress());
     }
 
     #[cfg(target_os = "macos")]
