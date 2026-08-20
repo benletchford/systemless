@@ -25932,6 +25932,221 @@ mod tests {
         );
     }
 
+    /// InvertRect on an 8bpp port: a 16x6 buffer of distinct pixels, the
+    /// rect (1,2)-(5,14), and either a rectangular clipRgn (3,4)-(5,10)
+    /// (row path) or the same box notched at row 4, columns 6-7 (per-pixel
+    /// path). Returns the buffer after the call.
+    fn invert_rect_8bpp(notched_clip: bool) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(16 * 6);
+        for offset in 0..(16 * 6) as u32 {
+            bus.write_byte(base + offset, (offset * 7 + 3) as u8);
+        }
+        let ctab = make_test_ctab_handle(
+            &mut bus,
+            &TrapDispatcher::standard_mac_8bpp_clut(),
+            0x1234,
+            0,
+        );
+        let pixmap_handle = bus.alloc(4);
+        let pixmap_ptr = bus.alloc(50);
+        bus.write_long(pixmap_handle, pixmap_ptr);
+        write_pixmap_8(&mut bus, pixmap_ptr, base, 16, 6, ctab);
+
+        let port = bus.alloc(96);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(&mut bus, port + 16, 0, 0, 6, 16);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 6, 16), &[]);
+        let clip = if notched_clip {
+            make_complex_rgn(
+                &mut bus,
+                (3, 4, 5, 10),
+                &[
+                    3,
+                    4,
+                    10,
+                    super::REGION_STOP,
+                    4,
+                    6,
+                    8,
+                    super::REGION_STOP,
+                    super::REGION_STOP,
+                ],
+            )
+        } else {
+            make_complex_rgn(&mut bus, (3, 4, 5, 10), &[])
+        };
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+
+        let rect = Rect {
+            top: 1,
+            left: 2,
+            bottom: 5,
+            right: 14,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, ShapeOp::Invert);
+        bus.read_bytes(base, 16 * 6)
+    }
+
+    #[test]
+    fn invertrect_8bpp_rows_invert_exactly_inside_the_clip_and_match_the_pixel_path() {
+        let original: Vec<u8> = (0..(16 * 6) as u32).map(|o| (o * 7 + 3) as u8).collect();
+        let rows = invert_rect_8bpp(false);
+        for y in 0..6usize {
+            for x in 0..16usize {
+                let inside = (3..5).contains(&y) && (4..10).contains(&x);
+                let expected = if inside {
+                    255 - original[y * 16 + x]
+                } else {
+                    original[y * 16 + x]
+                };
+                assert_eq!(rows[y * 16 + x], expected, "row path: pixel ({y}, {x})");
+            }
+        }
+        // The notched clip forces the per-pixel path; outside the notch the
+        // two paths must agree, and the notch must be left alone.
+        let pixels = invert_rect_8bpp(true);
+        for y in 0..6usize {
+            for x in 0..16usize {
+                let notch = y == 4 && (6..8).contains(&x);
+                let expected = if notch {
+                    original[y * 16 + x]
+                } else {
+                    rows[y * 16 + x]
+                };
+                assert_eq!(pixels[y * 16 + x], expected, "pixel path: pixel ({y}, {x})");
+            }
+        }
+    }
+
+    /// A basic (1bpp) GrafPort over a 40x6 bitmap (5 bytes per row) filled
+    /// with a distinct pattern; draws `op` on rect (1,3)-(5,29) -- partial
+    /// bytes at both ends and whole bytes between -- under a rectangular
+    /// clipRgn (2,5)-(5,27) (row path) or the same box notched at row 3,
+    /// columns 12-13 (per-pixel path; region rows are XOR deltas, so the
+    /// second [12,14] at row 4 closes the notch again). `pattern` sets
+    /// pnPat/bkPat.
+    fn draw_rect_1bpp(op: ShapeOp, pattern: [u8; 8], notched_clip: bool) -> Vec<u8> {
+        let (mut d, mut cpu, mut bus) = setup();
+        let base = bus.alloc(5 * 6);
+        for offset in 0..30u32 {
+            bus.write_byte(base + offset, (offset * 37 + 11) as u8);
+        }
+        let port = bus.alloc(96);
+        write_bitmap_1bpp(&mut bus, port + 2, base, 5, (0, 0, 6, 40));
+        write_rect(&mut bus, port + 16, 0, 0, 6, 40);
+        let vis = make_complex_rgn(&mut bus, (0, 0, 6, 40), &[]);
+        let clip = if notched_clip {
+            make_complex_rgn(
+                &mut bus,
+                (2, 5, 5, 27),
+                &[
+                    2,
+                    5,
+                    27,
+                    super::REGION_STOP,
+                    3,
+                    12,
+                    14,
+                    super::REGION_STOP,
+                    4,
+                    12,
+                    14,
+                    super::REGION_STOP,
+                    super::REGION_STOP,
+                ],
+            )
+        } else {
+            make_complex_rgn(&mut bus, (2, 5, 5, 27), &[])
+        };
+        bus.write_long(port + 24, vis);
+        bus.write_long(port + 28, clip);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+        d.pn_pat = pattern;
+        d.bk_pat = pattern;
+        d.pn_mode = 8; // srcCopy
+
+        let rect = Rect {
+            top: 1,
+            left: 3,
+            bottom: 5,
+            right: 29,
+        };
+        d.draw_rect(&mut cpu, &mut bus, &rect, op);
+        bus.read_bytes(base, 30)
+    }
+
+    fn bit_at(bits: &[u8], y: usize, x: usize) -> bool {
+        bits[y * 5 + x / 8] & (0x80 >> (x % 8)) != 0
+    }
+
+    #[test]
+    fn one_bit_rect_ops_run_by_row_exactly_inside_the_clip_and_match_the_pixel_path() {
+        let original: Vec<u8> = (0..30u32).map(|o| (o * 37 + 11) as u8).collect();
+        // (op, pattern, expected bit inside the clip as a function of the old bit)
+        type BitRule = fn(bool) -> bool;
+        let cases: [(&str, ShapeOp, [u8; 8], BitRule); 5] = [
+            ("invert", ShapeOp::Invert, [0xAA; 8], |old| !old),
+            ("erase black", ShapeOp::Erase, [0xFF; 8], |_| true),
+            ("erase white", ShapeOp::Erase, [0x00; 8], |_| false),
+            ("paint black", ShapeOp::Paint, [0xFF; 8], |_| true),
+            ("fill white", ShapeOp::Fill([0x00; 8]), [0x00; 8], |_| false),
+        ];
+        for (label, op, pattern, expected_bit) in cases {
+            let rows = draw_rect_1bpp(op, pattern, false);
+            for y in 0..6usize {
+                for x in 0..40usize {
+                    let inside = (2..5).contains(&y) && (5..27).contains(&x);
+                    let old = bit_at(&original, y, x);
+                    let expected = if inside { expected_bit(old) } else { old };
+                    assert_eq!(
+                        bit_at(&rows, y, x),
+                        expected,
+                        "{label} row path: pixel ({y}, {x})"
+                    );
+                }
+            }
+            // The notched clip forces the per-pixel arm; outside the notch
+            // the two paths must agree, and the notch stays as it was.
+            let pixels = draw_rect_1bpp(op, pattern, true);
+            for y in 0..6usize {
+                for x in 0..40usize {
+                    let notch = y == 3 && (12..14).contains(&x);
+                    let expected = if notch {
+                        bit_at(&original, y, x)
+                    } else {
+                        bit_at(&rows, y, x)
+                    };
+                    assert_eq!(
+                        bit_at(&pixels, y, x),
+                        expected,
+                        "{label} pixel path: pixel ({y}, {x})"
+                    );
+                }
+            }
+        }
+        // A dithered pattern is not a row op: erase must leave the row path
+        // and reproduce the pattern per pixel (bit set where the pattern is).
+        let dithered = draw_rect_1bpp(
+            ShapeOp::Erase,
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            false,
+        );
+        for y in 2..5usize {
+            for x in 5..27usize {
+                let pattern_bit = [0xAAu8, 0x55][y % 2] & (0x80 >> (x % 8)) != 0;
+                assert_eq!(
+                    bit_at(&dithered, y, x),
+                    pattern_bit,
+                    "dithered erase: pixel ({y}, {x})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn drawrect_honors_complex_current_port_clip_region_on_8bpp_fast_fill() {
         let (mut d, mut cpu, mut bus) = setup();
