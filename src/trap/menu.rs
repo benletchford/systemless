@@ -12806,7 +12806,7 @@ mod tests {
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
         // Width comes from the widest item "Three" measured in the bundled
-        // Liberation Sans Bold 12 face. Its 33px advance plus the standard 26px
+        // Nimbus Sans Bold 12 face. Its 33px advance plus the standard 26px
         // menu padding makes the box 59px wide. The clamped case pins that box
         // against the 240px screen edge.
         assert_eq!(classic.rect, (25, 29, 91, 88));

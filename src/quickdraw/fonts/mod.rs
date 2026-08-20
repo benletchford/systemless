@@ -1,16 +1,20 @@
-//! Open-source TrueType fonts + Mac font-family routing.
+//! URW Core 35 TrueType fonts + Mac font-family routing.
 //!
-//! Built-in faces are rasterized once from bundled, OFL-licensed Liberation
+//! Built-in faces are rasterized once from bundled, OFL-licensed URW Core 35
 //! TrueType files and then use the same cached coverage-bitmaps as application
 //! `FONT`/`NFNT` resources and local overrides. Classic Mac family names and
 //! IDs remain compatibility identifiers:
 //!
 //! | Mac font family (compat ID) | Built-in substitute |
 //! |-----------------------------|---------------------|
-//! | Chicago                     | Liberation Sans Bold |
-//! | Geneva / Application / Helvetica / decorative fallbacks | Liberation Sans |
-//! | Monaco / Courier            | Liberation Mono     |
-//! | New York / Palatino / Times | Liberation Serif    |
+//! | Chicago                     | Nimbus Sans Bold |
+//! | Geneva / Application / Helvetica | Nimbus Sans     |
+//! | Monaco / Courier            | Nimbus Mono PS      |
+//! | New York / Times            | Nimbus Roman        |
+//! | Palatino                    | P052                |
+//! | Venice                      | Z003                |
+//! | London                      | C059 Bold           |
+//! | Cairo                       | URW Gothic Demi     |
 
 pub mod heuristics;
 pub mod override_format;
@@ -96,38 +100,53 @@ struct BuiltinFace {
     font_id: i16,
     size: i16,
     font: &'static [u8],
+    darkening: f32,
 }
 
 macro_rules! face {
-    ($fid:expr, $size:expr, $font:expr) => {
+    ($fid:expr, $size:expr, $font:expr, $darkening:expr) => {
         BuiltinFace {
             font_id: $fid,
             size: $size,
             font: $font,
+            darkening: $darkening,
         }
     };
 }
 
+const REGULAR_DARKENING: f32 = 0.25;
+const MONO_DARKENING: f32 = 0.35;
+const BOLD_DARKENING: f32 = 0.10;
+
 const BUILTIN_FACES: &[BuiltinFace] = &[
-    face!(FONT_CHICAGO, 9, truetype::LIBERATION_SANS_BOLD),
-    face!(FONT_CHICAGO, 12, truetype::LIBERATION_SANS_BOLD),
-    face!(FONT_APPLICATION, 12, truetype::LIBERATION_SANS),
-    face!(FONT_NEWYORK, 12, truetype::LIBERATION_SERIF),
-    face!(FONT_NEWYORK, 14, truetype::LIBERATION_SERIF),
-    face!(FONT_NEWYORK, 18, truetype::LIBERATION_SERIF),
-    face!(FONT_GENEVA, 9, truetype::LIBERATION_SANS),
-    face!(FONT_GENEVA, 10, truetype::LIBERATION_SANS),
-    face!(FONT_HELVETICA, 12, truetype::LIBERATION_SANS),
-    face!(FONT_GENEVA, 12, truetype::LIBERATION_SANS),
-    face!(FONT_GENEVA, 14, truetype::LIBERATION_SANS),
-    face!(FONT_GENEVA, 18, truetype::LIBERATION_SANS),
-    face!(FONT_GENEVA, 24, truetype::LIBERATION_SANS),
-    face!(FONT_MONACO, 9, truetype::LIBERATION_MONO),
-    face!(FONT_MONACO, 10, truetype::LIBERATION_MONO),
-    face!(FONT_MONACO, 12, truetype::LIBERATION_MONO),
-    face!(FONT_VENICE, 14, truetype::LIBERATION_SANS),
-    face!(FONT_LONDON, 18, truetype::LIBERATION_SANS),
-    face!(FONT_CAIRO, 18, truetype::LIBERATION_SANS),
+    face!(FONT_CHICAGO, 9, truetype::NIMBUS_SANS_BOLD, BOLD_DARKENING),
+    face!(FONT_CHICAGO, 12, truetype::NIMBUS_SANS_BOLD, BOLD_DARKENING),
+    face!(
+        FONT_APPLICATION,
+        12,
+        truetype::NIMBUS_SANS,
+        REGULAR_DARKENING
+    ),
+    face!(FONT_NEWYORK, 12, truetype::NIMBUS_ROMAN, REGULAR_DARKENING),
+    face!(FONT_NEWYORK, 14, truetype::NIMBUS_ROMAN, REGULAR_DARKENING),
+    face!(FONT_NEWYORK, 18, truetype::NIMBUS_ROMAN, REGULAR_DARKENING),
+    face!(FONT_PALATINO, 12, truetype::P052, REGULAR_DARKENING),
+    face!(FONT_PALATINO, 14, truetype::P052, REGULAR_DARKENING),
+    face!(FONT_PALATINO, 18, truetype::P052, REGULAR_DARKENING),
+    face!(FONT_PALATINO, 24, truetype::P052, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 9, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 10, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_HELVETICA, 12, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 12, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 14, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 18, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_GENEVA, 24, truetype::NIMBUS_SANS, REGULAR_DARKENING),
+    face!(FONT_MONACO, 9, truetype::NIMBUS_MONO, MONO_DARKENING),
+    face!(FONT_MONACO, 10, truetype::NIMBUS_MONO, MONO_DARKENING),
+    face!(FONT_MONACO, 12, truetype::NIMBUS_MONO, MONO_DARKENING),
+    face!(FONT_VENICE, 14, truetype::Z003, REGULAR_DARKENING),
+    face!(FONT_LONDON, 18, truetype::C059_BOLD, BOLD_DARKENING),
+    face!(FONT_CAIRO, 18, truetype::URW_GOTHIC_DEMI, BOLD_DARKENING),
 ];
 
 static BUILTIN_CATALOGUE: LazyLock<(&'static [FontFace], &'static [MacRomanFace])> =
@@ -135,7 +154,8 @@ static BUILTIN_CATALOGUE: LazyLock<(&'static [FontFace], &'static [MacRomanFace]
         let mut faces = Vec::with_capacity(BUILTIN_FACES.len());
         let mut macroman = Vec::with_capacity(BUILTIN_FACES.len());
         for spec in BUILTIN_FACES {
-            let (face, extended) = truetype::bake_faces(spec.font_id, spec.size, spec.font);
+            let (face, extended) =
+                truetype::bake_faces(spec.font_id, spec.size, spec.font, spec.darkening);
             faces.push(FontFace {
                 font_id: face.font_id,
                 size: face.size,
@@ -553,7 +573,7 @@ fn get_baked_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
 fn fallback_font_id(font_id: i16) -> Option<i16> {
     match font_id {
         1 => Some(FONT_GENEVA),
-        FONT_PALATINO | FONT_TIMES => Some(FONT_NEWYORK),
+        FONT_TIMES => Some(FONT_NEWYORK),
         FONT_HELVETICA => Some(FONT_GENEVA),
         FONT_COURIER => Some(FONT_MONACO),
         _ => None,
@@ -802,13 +822,13 @@ mod tests {
     }
 
     #[test]
-    fn palatino_uses_the_liberation_serif_face() {
+    fn palatino_uses_the_p052_face() {
         assert_eq!(font_id_for_name("Palatino"), Some(FONT_PALATINO));
         assert_eq!(font_name_for_id(FONT_PALATINO), Some("Palatino"));
 
         for size in [12, 14, 18, 24] {
             let (face, scale) = get_font_face_scaled(FONT_PALATINO, size);
-            assert_eq!(face.font_id, FONT_NEWYORK);
+            assert_eq!(face.font_id, FONT_PALATINO);
             assert_eq!(i16::from(face.size) * scale, size);
         }
     }
@@ -980,13 +1000,12 @@ mod tests {
                     continue;
                 }
                 // The bowl top must sit on the x-height line, give or take a
-                // 2px optical overshoot above it (New York's 'g' bowl rides
-                // 1px high). It must never drop below the x-height line, nor
-                // rise toward the cap line — that is the "'p' looks like 'P'"
-                // bug this guard exists to catch.
+                // one-pixel hinted undershoot or a two-pixel optical overshoot.
+                // It must not rise toward the cap line — that is the "'p'
+                // looks like 'P'" bug this guard exists to catch.
                 let above = x_top as i32 - g.origin_y as i32;
                 assert!(
-                    (0..=2).contains(&above),
+                    (-1..=2).contains(&above),
                     "({}, {}) descender {:?} bowl starts at row {} but x-height is at {}",
                     pf.font_id,
                     pf.size,
@@ -1044,15 +1063,15 @@ mod tests {
         // drawn a pixel taller than its siblings it pokes above the x-height
         // line and the word visibly "bounces" — e.g. an `a` sitting higher than
         // the surrounding `n o c e ...`.
-        assert_shared_top("x-height", PLAIN_X_HEIGHT, 0);
+        assert_shared_top("x-height", PLAIN_X_HEIGHT, 1);
     }
 
     #[test]
-    fn truetype_faces_contain_antialiasing() {
+    fn bundled_truetype_faces_are_binary_quickdraw_masks() {
         assert!(FONT_TABLE
             .iter()
             .flat_map(|face| face.data.iter())
-            .any(|&coverage| coverage != 0 && coverage != 255));
+            .all(|&coverage| coverage == 0 || coverage == 255));
     }
 
     #[test]

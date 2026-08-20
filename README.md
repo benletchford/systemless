@@ -202,9 +202,10 @@ sudo pacman -S pkgconf alsa-lib                # Arch
 
 ## Font Data
 
-Systemless bundles open-source [Liberation Fonts 2.1.5](https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5)
-TrueType faces and rasterizes them into cached glyph coverage when the built-in
-catalogue is first used.
+Systemless bundles unmodified TrueType files from
+[URW Core 35 version 2.0](https://github.com/twardoch/urw-core35-fonts) and
+rasterizes them into cached binary glyph masks when the built-in catalogue is
+first used.
 Application-provided classic `FONT`/`NFNT` resources and local font overrides
 still take precedence. The classic Mac names survive only as internal
 compatibility identifiers so applications requesting a family by name or ID
@@ -212,14 +213,24 @@ resolve to an available substitute.
 
 | Built-in face | Kind | Stands in for (compat family, font ID) |
 |---------------|------|----------------------------------------|
-| Liberation Sans Bold | System / UI sans | Chicago (0) |
-| Liberation Sans | Body sans | Geneva (3), Application (1), Helvetica (21); Venice (5), London (6), Cairo (11) |
-| Liberation Mono | Monospace | Monaco (4), Courier (22) |
-| Liberation Serif | Serif | New York (2), Palatino (16), Times (20) |
+| Nimbus Sans Bold | System / UI sans | Chicago (0) |
+| Nimbus Sans | Body sans | Geneva (3), Application (1), Helvetica (21) |
+| Nimbus Mono PS | Monospace | Monaco (4), Courier (22) |
+| Nimbus Roman | Serif | New York (2), Times (20) |
+| P052 | Humanist serif | Palatino (16) |
+| Z003 | Chancery script | Venice (5) |
+| C059 Bold | Display serif | London (6) |
+| URW Gothic Demi | Geometric display sans | Cairo (11) |
 
-The bundled faces cover ASCII and Mac Roman. Their antialiased coverage feeds
-the existing QuickDraw glyph renderer and is thresholded only when drawing to a
-1-bit destination.
+Nimbus Sans, Nimbus Roman, Nimbus Mono PS, and P052 are direct Core 35
+counterparts for Helvetica, Times, Courier, and Palatino. Core 35 has no
+blackletter or pictorial Latin family, so C059 Bold and URW Gothic Demi are the
+closest available substitutes for London and Cairo rather than exact matches.
+
+The bundled faces cover ASCII and Mac Roman. Hinted outline coverage receives
+light, weight-aware stem darkening and is collapsed to a binary mask while each
+strike is baked. This matches classic QuickDraw's crisp text masks at every
+pixel depth.
 
 Render every face on white and black backgrounds for review with
 `cargo run --bin font_specimen` (output in `target/font_specimens/`).
@@ -235,13 +246,14 @@ Geneva, Monaco, New York, Venice, London, Cairo, etc.) are trademarks of Apple
 Inc. "Times" / "Helvetica" / "Courier" are trademarks of their respective
 owners. These names appear here solely as compatibility identifiers to
 interoperate with classic Macintosh software; the bundled substitutes retain
-their own Liberation names.
+their own URW names.
 
 ### Font license
 
-The bundled Liberation files are distributed under the **SIL Open Font License
+The bundled URW Core 35 files are distributed under the **SIL Open Font License
 1.1**. See
-[`src/quickdraw/fonts/liberation/LICENSE`](src/quickdraw/fonts/liberation/LICENSE).
+[`src/quickdraw/fonts/urw-core35/LICENSE.OFL`](src/quickdraw/fonts/urw-core35/LICENSE.OFL)
+and the accompanying [source record](src/quickdraw/fonts/urw-core35/SOURCE.md).
 The small Systemless menu-symbol bitmap sources remain additionally available
 under the project's [OFL.txt](./OFL.txt), with "Systemless" as the Reserved Font
 Name. The emulator code remains GPL-3.0-or-later.
@@ -299,5 +311,5 @@ Systemless intentionally diverges from it, and why.
 
 The emulator code is GPL-3.0-or-later. See [LICENSE](./LICENSE).
 
-Bundled Liberation font files and Systemless's menu-symbol artwork are
+Bundled URW Core 35 font files and Systemless's menu-symbol artwork are
 available under the SIL Open Font License 1.1; see [Font license](#font-license).
