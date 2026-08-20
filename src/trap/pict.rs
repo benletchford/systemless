@@ -4093,6 +4093,16 @@ fn build_src_to_dst_table_uncached(
             }
             table[i] = if *entry == device_clut[i] {
                 i as u8
+            } else if let Some(index) = device_clut
+                .iter()
+                .position(|destination| destination == entry)
+            {
+                // Color2Index returns an exact CTable entry before consulting
+                // the quantized inverse-table cell. This matters when source
+                // and device palettes contain the same colors at different
+                // indices: a lower-index color in the same 4-bit cell must not
+                // replace an exact match.
+                index as u8
             } else {
                 let qr = (entry[0] >> 12) as u32;
                 let qg = (entry[1] >> 12) as u32;
@@ -6552,6 +6562,19 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 71);
+    }
+
+    #[test]
+    fn exact_palette_entry_at_another_index_wins_over_inverse_cell_seed() {
+        let mut src = [[0u16; 3]; 256];
+        let mut dst = [[0u16; 3]; 256];
+        dst[5] = [0x2000, 0x0000, 0x3000];
+        dst[12] = [0x2E2E, 0x0202, 0x3333];
+        src[71] = dst[12];
+
+        let table = build_src_to_dst_table(&src, &dst);
+
+        assert_eq!(table[71], 12);
     }
 
     #[test]
