@@ -4921,6 +4921,18 @@ fn parse_indexed_bits_rect(
     (pos, if pm.pixel_size == 8 { colors16 } else { None })
 }
 
+/// Identity source-to-destination index map, for rows that already hold
+/// destination indices.
+static IDENTITY_INDEX_MAP: [u8; 256] = {
+    let mut map = [0u8; 256];
+    let mut index = 0;
+    while index < 256 {
+        map[index] = index as u8;
+        index += 1;
+    }
+    map
+};
+
 /// Blit a decompressed row of pixel data to the screen.
 fn blit_row(
     bus: &mut MacMemoryBus,
@@ -4958,6 +4970,59 @@ fn blit_row(
     scratch: &mut Vec<u8>,
 ) {
     let width = (pm.bounds_right - pm.bounds_left).max(0) as u32;
+    // A 1-bit srcCopy source onto an 8-bit screen is the 8-bit row path in
+    // disguise: expand the row's bits to the destination indices they map to
+    // (set -> fg, clear -> bg, exactly the per-pixel arm's choice) and let
+    // that path place them, region and dst_clip spans included. EV
+    // Override's intro draws a zoom sequence of region-masked 1-bit frames.
+    if !trace_pict_enabled() && pm.pixel_size == 1 && mode_base == 0 && scrn_ps == 8 {
+        let expanded: Vec<u8> = row_data
+            .iter()
+            .flat_map(|&byte| {
+                (0..8).map(move |bit| {
+                    if byte & (0x80 >> bit) != 0 {
+                        fg_idx
+                    } else {
+                        bg_idx
+                    }
+                })
+            })
+            .take(width as usize)
+            .collect();
+        if try_blit_row_8bpp_src_copy_fast(
+            bus,
+            &expanded,
+            mode_base,
+            pm,
+            &IDENTITY_INDEX_MAP,
+            true,
+            row,
+            src_top,
+            src_left,
+            src_bottom,
+            src_right,
+            dst_top,
+            dst_left,
+            frame_top,
+            frame_left,
+            pic_dst_top,
+            pic_dst_left,
+            pic_dst_bottom,
+            pic_dst_right,
+            scale_x,
+            scale_y,
+            screen_base,
+            screen_rb,
+            screen_w,
+            screen_h,
+            scrn_ps,
+            clip_region,
+            dst_clip,
+            scratch,
+        ) {
+            return;
+        }
+    }
     if !trace_pict_enabled()
         && pm.pixel_size == 8
         && try_blit_row_8bpp_src_copy_fast(
@@ -6995,6 +7060,130 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Draw a 20x4 1-bit source (bits from a fixed pattern, 3 bytes per
+    /// row) through `blit_row` onto an 8-bit 24x4 screen with fg 200 /
+    /// bg 30, in `mode`, under an optional op region; picture (x, y) =
+    /// screen (x + 3, y + 5) as in the 8-bit tests. Returns the screen.
+    fn draw_one_bit_source_rows(mode: u16, region: Option<&PictureRegion>) -> Vec<u8> {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[9u8; 24 * 4]);
+        let pm = PixMapInfo {
+            row_bytes: 3,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 4,
+            bounds_right: 20,
+            pixel_size: 1,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let rows: [[u8; 3]; 4] = [
+            [0b1010_1100, 0b0011_1100, 0b1111_0000],
+            [0b0101_0011, 0b1100_0011, 0b0000_1111],
+            [0b1111_1111, 0b0000_0000, 0b1010_1010],
+            [0b1000_0001, 0b0111_1110, 0b0101_0101],
+        ];
+        let src_to_dst = std::array::from_fn(|index| index as u8);
+        let indexed_transfer = std::array::from_fn(|index| PictIndexedTransfer::Write(index as u8));
+        let device_clut = [[0u16; 3]; 256];
+        let mut scratch = Vec::new();
+        for (row, bits) in rows.iter().enumerate() {
+            blit_row(
+                &mut bus,
+                bits,
+                mode,
+                &pm,
+                &device_clut,
+                &src_to_dst,
+                true,
+                &indexed_transfer,
+                row as u32,
+                0,
+                0,
+                4,
+                20,
+                0,
+                0,
+                5,
+                3,
+                5,
+                3,
+                9,
+                23,
+                1.0,
+                1.0,
+                screen_base,
+                24,
+                24,
+                4,
+                8,
+                200,
+                30,
+                region,
+                None,
+                &mut scratch,
+            );
+        }
+        bus.read_bytes(screen_base, 24 * 4)
+    }
+
+    /// The per-pixel arm's answer for `draw_one_bit_source_rows`.
+    fn expected_one_bit_source_rows(mode: u16, region: Option<&PictureRegion>) -> Vec<u8> {
+        let rows: [[u8; 3]; 4] = [
+            [0b1010_1100, 0b0011_1100, 0b1111_0000],
+            [0b0101_0011, 0b1100_0011, 0b0000_1111],
+            [0b1111_1111, 0b0000_0000, 0b1010_1010],
+            [0b1000_0001, 0b0111_1110, 0b0101_0101],
+        ];
+        let mut screen = vec![9u8; 24 * 4];
+        for y in 0..4i32 {
+            for x in 0..20i32 {
+                let set = rows[y as usize][(x / 8) as usize] & (0x80 >> (x % 8)) != 0;
+                let index = if set {
+                    200
+                } else if mode == 0 {
+                    30
+                } else {
+                    continue;
+                };
+                if region.is_some_and(|clip| !clip.contains(y + 5, x + 3)) {
+                    continue;
+                }
+                screen[(y * 24 + x) as usize] = index;
+            }
+        }
+        screen
+    }
+
+    #[test]
+    fn one_bit_srccopy_source_rows_take_the_row_path_and_match_the_pixel_predicate() {
+        let notched = PictureRegion {
+            top: 5,
+            left: 3,
+            bottom: 9,
+            right: 23,
+            rows: vec![vec![4, 21], vec![6], vec![3, 9, 15], vec![]],
+        };
+        for region in [None, Some(&notched)] {
+            assert_eq!(
+                draw_one_bit_source_rows(0, region),
+                expected_one_bit_source_rows(0, region),
+                "srcCopy 1-bit rows (region {:?}) must match the per-pixel arm",
+                region.is_some()
+            );
+        }
+        // Non-srcCopy stays on the per-pixel arm (clear bits are skipped)
+        // and must still be right.
+        assert_eq!(
+            draw_one_bit_source_rows(1, Some(&notched)),
+            expected_one_bit_source_rows(1, Some(&notched))
+        );
+        // Non-vacuous: something was drawn with both indices.
+        let drawn = draw_one_bit_source_rows(0, None);
+        assert!(drawn.contains(&200) && drawn.contains(&30));
     }
 
     #[test]
