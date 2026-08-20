@@ -82,7 +82,10 @@ const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
 const HFS_VCB_SIZE: u32 = 178;
-const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 50_000;
+// Sound 1994, pp. 2-146–2-148: a doubleback routine refills an exhausted
+// buffer before returning. Keep a bounded safety limit, but allow callbacks
+// that do substantially more work than a normal foreground interpreter batch.
+const PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES: u64 = 250_000;
 
 fn trace_dialog_filter_enabled() -> bool {
     *TRACE_DIALOG_FILTER
@@ -11590,6 +11593,56 @@ mod tests {
             event_queue: VecDeque::new(),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
+    }
+
+    #[test]
+    fn ppc_sound_doubleback_can_refill_for_more_than_fifty_thousand_cycles() {
+        const CALLBACK_CYCLES: usize = 60_000;
+        const CHANNEL: u32 = 0x0300_1000;
+        const HEADER: u32 = 0x0300_2000;
+        const BUFFER: u32 = 0x0300_3000;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+
+        let sound = PpcSoundState {
+            pending_doublebacks: vec![PpcSoundDoubleBackRecord {
+                channel: CHANNEL,
+                header: HEADER,
+                exhausted_buffer: BUFFER,
+                exhausted_buffer_index: 0,
+                callback: CALLBACK,
+                tick: 1,
+                instruction_count: 1,
+            }],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        let mut callback = Vec::with_capacity((CALLBACK_CYCLES + 1) * 4);
+        for _ in 0..CALLBACK_CYCLES {
+            callback.extend_from_slice(&0x6000_0000u32.to_be_bytes()); // nop
+        }
+        callback.extend_from_slice(&0x4e80_0020u32.to_be_bytes()); // blr
+        ppc_app.memory.add_region(CALLBACK, callback);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.fire_pending_ppc_sound_doublebacks();
+
+        assert!(!runner.is_halted());
+        let sound = &runner.ppc_app.as_ref().expect("PPC app").sound;
+        assert!(sound.pending_doublebacks.is_empty());
+        let invocation = sound
+            .completion_invocations
+            .last()
+            .expect("doubleback invocation");
+        assert!(invocation.cycles > 50_000);
+        assert_eq!(
+            invocation.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                cycles: (CALLBACK_CYCLES + 1) as u64,
+            }
+        );
     }
 
     #[test]
