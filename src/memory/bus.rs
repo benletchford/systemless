@@ -496,7 +496,21 @@ pub struct MacMemoryBus {
     /// An out-of-range write makes the probe unverifiable even though the
     /// normal bus retains its legacy warn-and-ignore behavior.
     write_probe_invalid: bool,
+    /// The journal outgrew [`WRITE_PROBE_MAX_ENTRIES`] and was dropped: the
+    /// probed cycle was doing work, not waiting. Sticky until the runner
+    /// takes it, so the verdict survives the journal's disappearance.
+    write_probe_overflowed: bool,
 }
+
+/// An exact-state probe journals the bytes an idle cycle writes: a spilled
+/// register or two, an event record, a saved keymap -- tens of bytes, a few
+/// hundred at most. A journal past this many distinct addresses is not
+/// watching a wait; it is watching real work, and while it stays open every
+/// guest store pays a hash insert and fastmem is suspended for the whole
+/// core. Past the cap the probe is voided on the spot so normal fast paths
+/// resume immediately, and the runner backs off from that site for the rest
+/// of the tick.
+pub(crate) const WRITE_PROBE_MAX_ENTRIES: usize = 4096;
 
 /// RAM storage - either owned vector or borrowed slice
 enum RamStorage {
@@ -881,6 +895,7 @@ impl MacMemoryBus {
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
             write_probe_invalid: false,
+            write_probe_overflowed: false,
         };
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
 
@@ -973,6 +988,7 @@ impl MacMemoryBus {
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
             write_probe_invalid: false,
+            write_probe_overflowed: false,
         }
     }
 
@@ -981,12 +997,20 @@ impl MacMemoryBus {
     pub(crate) fn begin_write_probe(&mut self) {
         self.write_probe_original = Some(HashMap::new());
         self.write_probe_invalid = false;
+        self.write_probe_overflowed = false;
     }
 
     /// Discard an incomplete write probe and restore normal fast-memory use.
     pub(crate) fn cancel_write_probe(&mut self) {
         self.write_probe_original = None;
         self.write_probe_invalid = false;
+        self.write_probe_overflowed = false;
+    }
+
+    /// Report -- and clear -- whether the most recent probe's journal
+    /// overflowed [`WRITE_PROBE_MAX_ENTRIES`] and was dropped.
+    pub(crate) fn take_write_probe_overflow(&mut self) -> bool {
+        std::mem::take(&mut self.write_probe_overflowed)
     }
 
     /// Finish a write probe and report whether guest RAM is byte-for-byte
@@ -1000,6 +1024,7 @@ impl MacMemoryBus {
                 .into_iter()
                 .all(|(address, value)| self.ram.get_in_bounds(address as usize) == value);
         self.write_probe_invalid = false;
+        self.write_probe_overflowed = false;
         unchanged
     }
 
@@ -1013,11 +1038,17 @@ impl MacMemoryBus {
             return;
         }
         let original = self.ram.get_in_bounds(address as usize);
-        self.write_probe_original
+        let journal = self
+            .write_probe_original
             .as_mut()
-            .expect("write probe checked above")
-            .entry(address)
-            .or_insert(original);
+            .expect("write probe checked above");
+        journal.entry(address).or_insert(original);
+        if journal.len() > WRITE_PROBE_MAX_ENTRIES {
+            // Too much written for a wait cycle: void the probe now so the
+            // fast paths (and fastmem) come back for the work in progress.
+            self.write_probe_original = None;
+            self.write_probe_overflowed = true;
+        }
     }
 
     /// Allocate memory from heap.
@@ -1977,6 +2008,42 @@ mod tests {
         bus.write_byte(0x102, 0xCC);
 
         assert!(!bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn write_probe_overflow_voids_the_journal_and_restores_fast_paths() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+
+        bus.begin_write_probe();
+        assert!(bus.fast_mem_window().is_none());
+        // Restore-perfect writes to as many distinct addresses as the cap
+        // admits keep the probe alive and verifiable...
+        for address in 0..WRITE_PROBE_MAX_ENTRIES as u32 {
+            bus.write_byte(0x1000 + address, 0);
+        }
+        assert!(bus.fast_mem_window().is_none());
+        assert!(!bus.take_write_probe_overflow());
+        // ...one more distinct address is more than a wait cycle writes:
+        // the journal is dropped on the spot, the fast paths (and fastmem)
+        // return, and the probe can no longer verify.
+        bus.write_byte(0x1000 + WRITE_PROBE_MAX_ENTRIES as u32, 0);
+        assert!(bus.fast_mem_window().is_some());
+        assert!(!bus.finish_write_probe_unchanged());
+        assert!(bus.take_write_probe_overflow());
+        assert!(
+            !bus.take_write_probe_overflow(),
+            "the overflow verdict is consumed once"
+        );
+
+        // Rewriting one address many times is one journal entry, not many.
+        bus.begin_write_probe();
+        for _ in 0..(4 * WRITE_PROBE_MAX_ENTRIES) {
+            bus.write_long(0x2000, 0x1234_5678);
+        }
+        assert!(bus.fast_mem_window().is_none());
+        bus.write_long(0x2000, 0);
+        assert!(bus.finish_write_probe_unchanged());
+        assert!(!bus.take_write_probe_overflow());
     }
 
     #[test]

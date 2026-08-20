@@ -927,6 +927,7 @@ static WS_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP: AtomicU64 = AtomicU64::new(0);
 static WS_PARKED: AtomicU64 = AtomicU64::new(0);
 static WS_PERIOD_STEPS: AtomicU64 = AtomicU64::new(0);
+static WS_PROBE_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
     std::sync::Mutex::new(None);
 
@@ -949,9 +950,10 @@ pub fn dump_wait_stats() {
         return;
     }
     eprintln!(
-        "[WAIT-STATS] anchor_calls={} probe_starts={} exact_repeats={} parked={} period_steps={} fail_tick={} fail_cpu={} fail_mem={} cancel_trap={}",
+        "[WAIT-STATS] anchor_calls={} probe_starts={} probe_overflows={} exact_repeats={} parked={} period_steps={} fail_tick={} fail_cpu={} fail_mem={} cancel_trap={}",
         WS_ANCHOR_CALLS.load(AtomicOrdering::Relaxed),
         WS_PROBE_STARTS.load(AtomicOrdering::Relaxed),
+        WS_PROBE_OVERFLOWS.load(AtomicOrdering::Relaxed),
         WS_EXACT_REPEATS.load(AtomicOrdering::Relaxed),
         WS_PARKED.load(AtomicOrdering::Relaxed),
         WS_PERIOD_STEPS.load(AtomicOrdering::Relaxed),
@@ -1298,6 +1300,17 @@ struct IdleCycleProbe {
 /// covers the measured EV Override crawl; 4 leaves headroom without
 /// letting genuinely progressing loops hold a write journal open long.
 const IDLE_CYCLE_MAX_PERIOD: u8 = 4;
+
+/// Probes the prover will start at one poll site within one tick. A genuine
+/// wait proves on its first probe (or its second, when the loop's first
+/// iteration still carries setup); a site whose probes keep failing on
+/// changed memory or CPU state is polling while it works. Without a budget
+/// such a site re-arms a fresh write journal on every arrival -- EV
+/// Override's boot started 928,781 probes in 17 s, 926,295 of them failing
+/// on memory -- and each journal costs a hash insert per store plus fastmem
+/// withdrawn for the whole core. Past the budget the site is left alone
+/// until the tick changes.
+const IDLE_CYCLE_MAX_PROBES_PER_TICK: u8 = 2;
 
 /// Host-side Event Manager inputs that are not stored in guest RAM. A proven
 /// idle cycle may remain parked across frontend calls only while these inputs
@@ -1709,6 +1722,12 @@ pub struct FixtureRunner {
     /// direct fast-memory stores until this call site repeats or the proof is
     /// canceled by a non-quiescent trap.
     idle_cycle_probe: Option<IdleCycleProbe>,
+    /// Probes started at (site, tick) so far; one past
+    /// [`IDLE_CYCLE_MAX_PROBES_PER_TICK`] means the site was refused a probe
+    /// (or overflowed a journal): it is polling while it works (EV
+    /// Override's boot and speed calibration poll TickCount between bursts
+    /// of computation) and is not re-probed until the tick moves on.
+    idle_cycle_site_probes: Option<(u32, u32, u8)>,
     /// Proven null-event cycle parked at its post-trap boundary. Unlike an
     /// in-progress proof, this may cross frontend slices: a second write
     /// journal plus CPU/input/event checks revoke it before any reuse.
@@ -1903,6 +1922,7 @@ impl FixtureRunner {
             tick_budget: INSTRUCTIONS_PER_TICK as i32,
             idle_cycle_last_seen: None,
             idle_cycle_probe: None,
+            idle_cycle_site_probes: None,
             idle_cycle_sleep: None,
             frozen_ticks: None,
             timer_trampoline: 0,
@@ -4074,7 +4094,34 @@ impl FixtureRunner {
         self.idle_cycle_sleep = None;
     }
 
+    /// True once (site, tick) has been refused a probe -- or overflowed a
+    /// journal -- this tick: the count sits one past the budget.
+    fn idle_cycle_site_is_busy(&self, trap_pc: u32, tick: u32) -> bool {
+        matches!(
+            self.idle_cycle_site_probes,
+            Some((site, site_tick, probes))
+                if site == trap_pc && site_tick == tick && probes > IDLE_CYCLE_MAX_PROBES_PER_TICK
+        )
+    }
+
+    /// Mark (site, tick) busy for the rest of the tick: it works between polls.
+    fn mark_idle_cycle_site_busy(&mut self, trap_pc: u32, tick: u32) {
+        self.idle_cycle_site_probes = Some((trap_pc, tick, IDLE_CYCLE_MAX_PROBES_PER_TICK + 1));
+        self.idle_cycle_last_seen = None;
+    }
+
     fn begin_idle_cycle_probe(&mut self, trap_pc: u32, tick: u32, cpu: CpuArchitecturalSnapshot) {
+        let probes = match self.idle_cycle_site_probes {
+            Some((site, site_tick, probes)) if site == trap_pc && site_tick == tick => probes,
+            _ => 0,
+        };
+        if probes >= IDLE_CYCLE_MAX_PROBES_PER_TICK {
+            // Budget spent: this site keeps failing to prove within the
+            // tick, so it is working, not waiting. No journal.
+            self.mark_idle_cycle_site_busy(trap_pc, tick);
+            return;
+        }
+        self.idle_cycle_site_probes = Some((trap_pc, tick, probes + 1));
         if wait_stats_enabled() {
             WS_PROBE_STARTS.fetch_add(1, AtomicOrdering::Relaxed);
         }
@@ -4207,9 +4254,25 @@ impl FixtureRunner {
         tick_cap: Option<u32>,
     ) -> bool {
         let tick = self.dispatcher.tick_count;
+        if self.idle_cycle_site_is_busy(trap_pc, tick) {
+            // This site spent its probe budget (or overflowed a journal)
+            // this tick: it is working between polls, not waiting.
+            return false;
+        }
         let cpu = CpuArchitecturalSnapshot::capture(&self.cpu.core);
 
         if let Some(probe) = self.idle_cycle_probe.take() {
+            if self.bus.take_write_probe_overflow() {
+                // The journal blew past its cap since the probe began, so
+                // this cycle did real work. The bus already dropped the
+                // journal and restored its fast paths; drop the observation
+                // too and back off from the site until the tick changes.
+                if wait_stats_enabled() {
+                    WS_PROBE_OVERFLOWS.fetch_add(1, AtomicOrdering::Relaxed);
+                }
+                self.mark_idle_cycle_site_busy(probe.trap_pc, probe.tick);
+                return false;
+            }
             let same_site_tick = probe.trap_pc == trap_pc && probe.tick == tick;
             if same_site_tick && probe.cpu == cpu {
                 // A cycle of whatever small period closed on its origin
@@ -16151,6 +16214,107 @@ mod tests {
         assert_eq!(runner.dispatcher.tick_count, 110);
         assert!(runner.idle_cycle_sleep.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
+    }
+
+    #[test]
+    fn busy_poller_overflows_one_journal_then_backs_off_for_the_tick() {
+        // EV Override's boot and speed calibration poll TickCount between
+        // bursts of real work. Such a site must cost at most one capped
+        // journal per tick, never a journal that grows with the work.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let work = 0x0030_0000u32;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.dispatcher.tick_count = 100;
+
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        assert!(runner.bus.fast_mem_window().is_none());
+
+        // The "cycle" writes far more than a wait ever does.
+        for offset in 0..(2 * crate::memory::bus::WRITE_PROBE_MAX_ENTRIES as u32) {
+            runner.bus.write_byte(work + offset, 0xAA);
+        }
+        assert!(
+            runner.bus.fast_mem_window().is_some(),
+            "the bus voids an overflowing journal immediately, without waiting for the runner"
+        );
+
+        // Back at the site: the observation is dropped and the site is
+        // marked busy for this tick, so later same-tick arrivals do not
+        // re-arm a journal that would only overflow again.
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.idle_cycle_site_is_busy(trap_pc, 100));
+        for _ in 0..4 {
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_none());
+            assert!(runner.bus.fast_mem_window().is_some());
+        }
+        assert_eq!(
+            runner.dispatcher.tick_count, 100,
+            "a busy site is never fast-forwarded"
+        );
+
+        // A new tick lifts the back-off: the site is observed afresh.
+        runner.dispatcher.tick_count = 101;
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        assert!(runner.bus.fast_mem_window().is_none());
+    }
+
+    #[test]
+    fn a_site_that_keeps_failing_gets_two_probes_per_tick_then_none() {
+        // The boot storm: EV Override started 928,781 probes in 17 s of
+        // boot, 926,295 failing on changed memory, because a failed probe
+        // was re-armed on the very next same-tick arrival. Now a site gets
+        // a first probe and one retry per tick, then nothing until the
+        // tick changes -- and every arrival in between costs no journal.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0002_0000u32;
+        let scratch = 0x0020_0000u32;
+        runner.cpu.write_reg(Register::A7, 0x0010_0000);
+        runner.dispatcher.tick_count = 100;
+
+        // Arrival 1: baseline. Arrival 2: probe #1 armed.
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        // Work that does not restore memory; arrival 3 fails on memory and
+        // re-arms once (probe #2).
+        runner.bus.write_long(scratch, 0x1111_1111);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some(), "one retry is allowed");
+        assert!(runner.bus.fast_mem_window().is_none());
+        // More work; arrival 4 fails again: budget spent, no journal, and
+        // every later same-tick arrival is a plain return.
+        runner.bus.write_long(scratch, 0x2222_2222);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_none());
+        assert!(runner.bus.fast_mem_window().is_some());
+        for _ in 0..8 {
+            runner.bus.write_long(scratch, 0x3333_3333);
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_none());
+            assert!(runner.bus.fast_mem_window().is_some());
+        }
+        assert_eq!(runner.dispatcher.tick_count, 100);
+
+        // Next tick: the site is observed afresh, and a cycle that now
+        // restores its writes proves and parks exactly as before.
+        runner.dispatcher.tick_count = 101;
+        runner.bus.write_long(0x016A, 101);
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert!(runner.idle_cycle_probe.is_some());
+        runner.bus.write_long(scratch, 0xAAAA_AAAA);
+        runner.bus.write_long(scratch, 0x3333_3333);
+        runner.note_idle_cycle_trap_result(0xA971);
+        assert!(runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+        assert_eq!(runner.dispatcher.tick_count, 105);
+        assert!(runner.idle_cycle_sleep.is_some());
     }
 
     #[test]
