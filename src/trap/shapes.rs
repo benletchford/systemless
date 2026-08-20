@@ -139,7 +139,19 @@ fn indexed_shape_color_index(
     }
 }
 
+/// The RGB of the ColorSpec whose `value` field is `wanted_value`, if the
+/// table has one: the entry at that ordinal is tried first (index-addressed
+/// tables), then the table is scanned (device tables carry client IDs in
+/// `value`). The table is fetched into a local buffer with one bulk read;
+/// the scan used to issue a bus read per entry, and it runs for every shape.
 fn ctab_rgb_for_value(bus: &MacMemoryBus, ctab_handle: u32, wanted_value: u8) -> Option<[u16; 3]> {
+    let entries = ctab_entries(bus, ctab_handle)?;
+    ctab_entries_rgb_for_value(&entries, wanted_value)
+}
+
+/// The ColorSpec entries of a color table (8 bytes each: value, r, g, b),
+/// read in one bulk transfer.
+fn ctab_entries(bus: &MacMemoryBus, ctab_handle: u32) -> Option<Vec<u8>> {
     if ctab_handle == 0 {
         return None;
     }
@@ -147,34 +159,40 @@ fn ctab_rgb_for_value(bus: &MacMemoryBus, ctab_handle: u32, wanted_value: u8) ->
     if ctab == 0 {
         return None;
     }
-    let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
-    let ordinal = u32::from(wanted_value);
-    if ordinal < count {
-        let entry = ctab + 8 + ordinal * 8;
-        if bus.read_word(entry) == u16::from(wanted_value) {
-            return Some([
-                bus.read_word(entry + 2),
-                bus.read_word(entry + 4),
-                bus.read_word(entry + 6),
-            ]);
+    let count = usize::from(bus.read_word(ctab + 6).min(255)) + 1;
+    let mut entries = vec![0u8; count * 8];
+    bus.read_bytes_into(ctab + 8, &mut entries);
+    Some(entries)
+}
+
+fn ctab_entries_rgb_for_value(entries: &[u8], wanted_value: u8) -> Option<[u16; 3]> {
+    let rgb = |entry: &[u8]| {
+        [
+            u16::from_be_bytes([entry[2], entry[3]]),
+            u16::from_be_bytes([entry[4], entry[5]]),
+            u16::from_be_bytes([entry[6], entry[7]]),
+        ]
+    };
+    let matches =
+        |entry: &[u8]| u16::from_be_bytes([entry[0], entry[1]]) == u16::from(wanted_value);
+    let ordinal = usize::from(wanted_value);
+    if let Some(entry) = entries.chunks_exact(8).nth(ordinal) {
+        if matches(entry) {
+            return Some(rgb(entry));
         }
     }
-    for ordinal in 0..count {
-        let entry = ctab + 8 + ordinal * 8;
-        if bus.read_word(entry) == u16::from(wanted_value) {
-            return Some([
-                bus.read_word(entry + 2),
-                bus.read_word(entry + 4),
-                bus.read_word(entry + 6),
-            ]);
-        }
-    }
-    None
+    entries
+        .chunks_exact(8)
+        .find(|entry| matches(entry))
+        .map(rgb)
 }
 
 fn ctab_uses_noncanonical_black(bus: &MacMemoryBus, ctab_handle: u32) -> bool {
-    ctab_rgb_for_value(bus, ctab_handle, 1) == Some([0, 0, 0])
-        && ctab_rgb_for_value(bus, ctab_handle, 255) != Some([0, 0, 0])
+    let Some(entries) = ctab_entries(bus, ctab_handle) else {
+        return false;
+    };
+    ctab_entries_rgb_for_value(&entries, 1) == Some([0, 0, 0])
+        && ctab_entries_rgb_for_value(&entries, 255) != Some([0, 0, 0])
 }
 
 fn trace_menu_probe_points() -> [(&'static str, i16, i16); 2] {
@@ -1929,10 +1947,85 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, fg_bg_low_contrast,
-        indexed_shape_color_index, lighten_stem_alpha, normalize_boolean_transfer_mode,
-        shape_palette_index_for_rgb,
+        apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, ctab_rgb_for_value,
+        ctab_uses_noncanonical_black, fg_bg_low_contrast, indexed_shape_color_index,
+        lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
     };
+    use crate::memory::{MacMemoryBus, MemoryBus};
+
+    /// Write a ColorTable at `ctab` (handle at `handle`) with the given
+    /// (value, rgb) ColorSpecs; `device` sets ctFlags' device bit.
+    fn write_ctab(
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        ctab: u32,
+        device: bool,
+        specs: &[(u16, [u16; 3])],
+    ) {
+        bus.write_long(handle, ctab);
+        bus.write_long(ctab, 0x1234_5678); // ctSeed
+        bus.write_word(ctab + 4, if device { 0x8000 } else { 0 });
+        bus.write_word(ctab + 6, (specs.len() - 1) as u16);
+        for (i, (value, rgb)) in specs.iter().enumerate() {
+            let entry = ctab + 8 + i as u32 * 8;
+            bus.write_word(entry, *value);
+            bus.write_word(entry + 2, rgb[0]);
+            bus.write_word(entry + 4, rgb[1]);
+            bus.write_word(entry + 6, rgb[2]);
+        }
+    }
+
+    #[test]
+    fn ctab_lookups_find_values_by_ordinal_and_by_scan_and_detect_noncanonical_black() {
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        // Index-addressed table: value == position, black at 255 (canonical).
+        let specs: Vec<(u16, [u16; 3])> = (0..=255u16)
+            .map(|v| {
+                (
+                    v,
+                    if v == 255 {
+                        [0, 0, 0]
+                    } else {
+                        [v * 100, 0x1000, 0x2000]
+                    },
+                )
+            })
+            .collect();
+        write_ctab(&mut bus, 0x1000, 0x2000, false, &specs);
+        assert_eq!(
+            ctab_rgb_for_value(&bus, 0x1000, 7),
+            Some([700, 0x1000, 0x2000])
+        );
+        assert_eq!(ctab_rgb_for_value(&bus, 0x1000, 255), Some([0, 0, 0]));
+        assert!(!ctab_uses_noncanonical_black(&bus, 0x1000));
+
+        // Device table with client IDs in `value` (out of order): the ordinal
+        // shortcut misses and the scan must find them; black lives at value 1.
+        let specs = [
+            (5u16, [0x0100u16, 0x0200, 0x0300]),
+            (1, [0, 0, 0]),
+            (255, [0xFFFF, 0xFFFF, 0xFFFF]),
+            (2, [0x0400, 0x0500, 0x0600]),
+        ];
+        write_ctab(&mut bus, 0x3000, 0x4000, true, &specs);
+        assert_eq!(
+            ctab_rgb_for_value(&bus, 0x3000, 2),
+            Some([0x0400, 0x0500, 0x0600])
+        );
+        assert_eq!(ctab_rgb_for_value(&bus, 0x3000, 1), Some([0, 0, 0]));
+        assert_eq!(
+            ctab_rgb_for_value(&bus, 0x3000, 255),
+            Some([0xFFFF, 0xFFFF, 0xFFFF])
+        );
+        assert_eq!(ctab_rgb_for_value(&bus, 0x3000, 9), None);
+        assert!(ctab_uses_noncanonical_black(&bus, 0x3000));
+
+        // Null handle / null table pointer.
+        assert_eq!(ctab_rgb_for_value(&bus, 0, 1), None);
+        bus.write_long(0x5000, 0);
+        assert_eq!(ctab_rgb_for_value(&bus, 0x5000, 1), None);
+        assert!(!ctab_uses_noncanonical_black(&bus, 0x5000));
+    }
 
     #[test]
     fn standard_4bit_gworld_shape_colors_use_the_rom_inverse_table() {

@@ -780,11 +780,26 @@ impl super::TrapDispatcher {
                 bottom + style_pad
             };
 
-            let r = Rect {
-                top: draw_top,
-                left: draw_left,
-                bottom: draw_bottom,
-                right: draw_right,
+            let plain = !is_italic && !is_bold && !is_underline && !is_outline && !is_shadow;
+            let r = if plain {
+                // With no style effects the coverage closure below is
+                // non-zero only inside the glyph's own box; iterating the
+                // conservative advance/ascent rect visits the same painted
+                // pixels through several times as many zero-coverage
+                // evaluations (and a space glyph costs nothing).
+                Rect {
+                    top: glyph_visual_top,
+                    left,
+                    bottom: glyph_visual_bottom,
+                    right,
+                }
+            } else {
+                Rect {
+                    top: draw_top,
+                    left: draw_left,
+                    bottom: draw_bottom,
+                    right: draw_right,
+                }
             };
 
             if trace_dialog_text_enabled()
