@@ -16684,11 +16684,26 @@ impl super::TrapDispatcher {
         for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
-            // pmExplicit makes ciRGB an index into the device ColorTable, so
-            // it does not modify that index's current RGB value. Additional
-            // usage flags do not change the entry's explicit classification.
-            // Inside Macintosh: Advanced Color Imaging (1995), pp. 1-12--1-13.
-            if usage & PM_EXPLICIT != 0 {
+            // Usage decides how a palette entry claims its device slot
+            // (IM: Advanced Color Imaging 1995, pp. 1-12..1-14):
+            //
+            // - PURE pmExplicit names device slot `index` WITHOUT
+            //   requesting a color: the entry means "whatever that slot
+            //   currently holds", so activation must leave the slot's RGB
+            //   alone.
+            // - pmExplicit combined with pmTolerant (or pmAnimated) pins
+            //   the palette's color AT that exact slot: "slot `index`,
+            //   holding this RGB". Full-screen applications install a
+            //   complete custom palette this way -- 256 explicit-tolerant
+            //   entries, entry i claiming slot i -- so their pre-indexed
+            //   artwork displays through their own table. Skipping those
+            //   entries leaves the device on the standard table, and
+            //   every pixel drawn with the application's indices shows
+            //   the wrong colors.
+            //
+            // Only the pure-explicit case keeps the device value; the
+            // combined cases fall through to the ordinary install below.
+            if usage & PM_EXPLICIT != 0 && usage & (PM_TOLERANT | PM_ANIMATED) == 0 {
                 *rgb = current_clut[index];
                 continue;
             }
@@ -36521,10 +36536,16 @@ mod tests {
     }
 
     #[test]
-    fn activatepalette_preserves_device_rgb_for_mixed_explicit_entries() {
-        // pmExplicit identifies a device ColorTable index rather than an RGB
-        // request, even when another usage flag is also present.
-        // Inside Macintosh: Advanced Color Imaging (1995), pp. 1-12--1-13.
+    fn activatepalette_installs_explicit_tolerant_entries_at_their_index() {
+        // PURE pmExplicit identifies a device ColorTable slot without an
+        // RGB request, but pmExplicit COMBINED with pmTolerant pins the
+        // palette's color AT that exact slot -- the combination
+        // full-screen applications use to install a whole custom palette
+        // in known positions (verified against real system software:
+        // the 256 explicit-tolerant entries land on the device; skipping
+        // them leaves the standard table and pre-indexed artwork
+        // displays through the wrong colors).
+        // Inside Macintosh: Advanced Color Imaging (1995), pp. 1-12--1-14.
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4160u32;
         let usage = super::PM_TOLERANT | super::PM_EXPLICIT;
@@ -36546,8 +36567,9 @@ mod tests {
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(d.device_clut, before);
-        assert_eq!(d.color_manager_clut, before);
+        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut[1..], before[1..]);
     }
 
     #[test]
@@ -36625,8 +36647,16 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
-        assert_eq!(d.device_clut[0], before[0]);
-        assert_eq!(d.device_clut[2], before[2]);
+        // Un-animated explicit-animated entries reactivate to their OWN
+        // palette colors (explicit+animated installs at the exact index,
+        // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
+        let (rgb0, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 0).unwrap();
+        let (rgb2, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 2).unwrap();
+        assert_eq!(d.device_clut[0], rgb0);
+        assert_eq!(d.device_clut[2], rgb2);
+        assert_ne!(d.device_clut[0], animated_rgb);
+        assert_ne!(d.device_clut[2], animated_rgb);
+        let _ = before;
     }
 
     // ==================== ScrollRect ====================
@@ -37890,8 +37920,16 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 14);
         assert_eq!(d.device_clut[1], animated_rgb);
         assert_eq!(d.color_manager_clut[1], animated_rgb);
-        assert_eq!(d.device_clut[0], before[0]);
-        assert_eq!(d.device_clut[2], before[2]);
+        // Un-animated explicit-animated entries reactivate to their OWN
+        // palette colors (explicit+animated installs at the exact index,
+        // IM:ACI 1995 pp. 1-12..1-14), not the animated value.
+        let (rgb0, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 0).unwrap();
+        let (rgb2, _, _) = TrapDispatcher::read_palette_color_info(&bus, palette, 2).unwrap();
+        assert_eq!(d.device_clut[0], rgb0);
+        assert_eq!(d.device_clut[2], rgb2);
+        assert_ne!(d.device_clut[0], animated_rgb);
+        assert_ne!(d.device_clut[2], animated_rgb);
+        let _ = before;
         assert_eq!(
             TrapDispatcher::read_palette_color_info(&bus, palette, 1),
             Some((animated_rgb, usage, 0))
