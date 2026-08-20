@@ -2339,6 +2339,7 @@ fn maybe_select_executable_with_override(
         priority: executable_priority,
         creator,
         is_installer: is_installer_executable(name, creator),
+        is_documentation: is_documentation_executable(name),
         is_demo: executable_name_has_role(name, "demo"),
         version: executable_version(rsrc),
     };
@@ -2389,16 +2390,18 @@ struct ExecutableCandidate {
     priority: u8,
     creator: [u8; 4],
     is_installer: bool,
+    is_documentation: bool,
     is_demo: bool,
     version: Option<u32>,
 }
 
 impl ExecutableCandidate {
-    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, usize) {
+    fn selection_key(&self) -> (u8, bool, bool, bool, bool, bool, bool, bool, usize) {
         (
             self.priority,
             self.is_appl,
             !self.is_installer,
+            !self.is_documentation,
             !self.is_demo,
             !is_system_folder_path(&self.name),
             self.kind.is_powerpc(),
@@ -2484,6 +2487,20 @@ fn is_installer_executable(name: &str, creator: [u8; 4]) -> bool {
     ]
     .into_iter()
     .any(|role| executable_name_has_role(name, role))
+}
+
+fn is_documentation_executable(name: &str) -> bool {
+    let file_name = name.rsplit('/').next().unwrap_or(name).to_ascii_lowercase();
+    let words = file_name
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    words.iter().any(|word| {
+        matches!(
+            *word,
+            "documentation" | "docs" | "help" | "manual" | "readme"
+        )
+    }) || words.windows(2).any(|words| words == ["read", "me"])
 }
 
 fn executable_name_has_role(name: &str, role: &str) -> bool {
@@ -3330,6 +3347,44 @@ mod tests {
     }
 
     #[test]
+    fn executable_selection_prefers_demo_game_over_documentation_app() {
+        let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let docs_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
+
+        for docs_first in [false, true] {
+            let mut selected = None;
+            let mut candidates = [
+                ("Game Folder/Game Demo", &game_rsrc, 300_000usize),
+                (
+                    "Game Folder/Game Demo Documentation",
+                    &docs_rsrc,
+                    600_000usize,
+                ),
+            ];
+            if docs_first {
+                candidates.reverse();
+            }
+            for (name, rsrc, data_len) in candidates {
+                maybe_select_executable(
+                    &mut selected,
+                    name,
+                    &[0],
+                    rsrc,
+                    true,
+                    data_len,
+                    *b"GAME",
+                    1,
+                );
+            }
+
+            assert_eq!(
+                selected.expect("expected an executable candidate").name,
+                "Game Folder/Game Demo"
+            );
+        }
+    }
+
+    #[test]
     fn executable_selection_prefers_user_app_over_system_folder_utility() {
         let utility_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 256]);
         let game_rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
@@ -3635,6 +3690,7 @@ mod tests {
             priority: 1,
             creator: *b"ABCD",
             is_installer: false,
+            is_documentation: false,
             is_demo: false,
             version: None,
         };
@@ -3670,6 +3726,7 @@ mod tests {
             priority: 1,
             creator: *b"ABCD",
             is_installer: false,
+            is_documentation: false,
             is_demo: false,
             version: None,
         };
@@ -3702,6 +3759,7 @@ mod tests {
             priority: 1,
             creator: *b"ABCD",
             is_installer: false,
+            is_documentation: false,
             is_demo: false,
             version: None,
         };

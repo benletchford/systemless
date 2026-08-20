@@ -262,6 +262,8 @@ const PPC_MAIN_VIS_RGN_HANDLE: u32 = 0x02f0_0b00;
 const PPC_MAIN_VIS_RGN: u32 = 0x02f0_0c00;
 const PPC_MAIN_CLIP_RGN_HANDLE: u32 = 0x02f0_0d00;
 const PPC_MAIN_CLIP_RGN: u32 = 0x02f0_0e00;
+const PPC_MAIN_GAMMA_TABLE: u32 = 0x02f0_1000;
+const PPC_MAIN_GAMMA_TABLE_SIZE: u32 = 12 + 256;
 const PPC_PORT_LIST_HANDLE: u32 = 0x02f0_1300;
 const PPC_PORT_LIST: u32 = 0x02f0_1400;
 const PPC_PORT_LIST_ADDR: u32 = 0x0d66;
@@ -12324,6 +12326,17 @@ pub fn load_pef_application_with_config(
     memory.add_region(PPC_MAIN_VIS_RGN, vec![0u8; 10]);
     memory.add_region(PPC_MAIN_CLIP_RGN_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_MAIN_CLIP_RGN, vec![0u8; 10]);
+    // Universal Interfaces 3.4 Video.h defines GammaTbl as a six-word
+    // header followed by formula bytes and channel data. The main display's
+    // device-owned table is the standard one-channel, 8-bit linear ramp.
+    let mut gamma_table = vec![0u8; PPC_MAIN_GAMMA_TABLE_SIZE as usize];
+    gamma_table[6..8].copy_from_slice(&1u16.to_be_bytes()); // gChanCnt
+    gamma_table[8..10].copy_from_slice(&256u16.to_be_bytes()); // gDataCnt
+    gamma_table[10..12].copy_from_slice(&8u16.to_be_bytes()); // gDataWidth
+    for (value, output) in gamma_table[12..].iter_mut().enumerate() {
+        *output = value as u8;
+    }
+    memory.add_readonly_region(PPC_MAIN_GAMMA_TABLE, gamma_table);
     memory.add_region(PPC_PORT_LIST_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_PORT_LIST, vec![0u8; 2]);
     // PortList is a QuickDraw-owned handle whose first word is the number of
@@ -17085,26 +17098,9 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::PBControl => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_control(cpu, memory, *current_gdevice, screen_clut, toolbox_startup),
         ))),
-        PpcImportDispatcherTarget::PBStatus => {
-            // Inside Macintosh: Devices (1994), 1-79 through 1-80: PBStatus
-            // mirrors the driver result into CntrlParam.ioResult at offset 16.
-            let pb = cpu.gpr[3];
-            let result = if pb == 0 {
-                PPC_NO_ERR
-            } else if let Some(ref_num) = memory.read_u16_be(pb + 24) {
-                if ref_num == 0 {
-                    PPC_NO_ERR
-                } else {
-                    -21 // badUnitErr: no matching Device Manager driver.
-                }
-            } else {
-                PPC_PARAM_ERR
-            };
-            if pb != 0 {
-                let _ = memory.write_u16_be(pb + 16, result as u16);
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
+        PpcImportDispatcherTarget::PBStatus => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_pb_status(cpu, memory),
+        ))),
         PpcImportDispatcherTarget::Gestalt => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_gestalt(cpu, memory),
         ))),
@@ -51058,6 +51054,49 @@ fn ppc_pb_control(
     result
 }
 
+fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    const STATUS_ERR: i16 = -18;
+
+    let parameter_block = cpu.gpr[3];
+    let result = (|| {
+        let ref_num = memory.read_u16_be(parameter_block.checked_add(24)?)? as i16;
+        if ref_num != 0 {
+            return Some(-21); // badUnitErr: no matching Device Manager driver.
+        }
+        let cs_code = memory.read_u16_be(parameter_block.checked_add(26)?)? as i16;
+        let cs_param = parameter_block.checked_add(28)?;
+
+        // Inside Macintosh: Devices (1994), pp. 1-65 and 1-83: PBStatus
+        // uses CntrlParam.csCode/csParam, and selector 1 is handled by the
+        // Device Manager itself by returning the driver's DCE handle.
+        match cs_code {
+            1 => memory
+                .write_u32_be(cs_param, PPC_MAIN_DCE_HANDLE)
+                .map(|()| PPC_NO_ERR),
+            // Universal Interfaces 3.4 Video.h defines cscGetGamma (8) as a
+            // status request whose csParam contains a VDGammaRecord pointer;
+            // the driver stores its device-owned GammaTbl pointer there.
+            8 => {
+                let vd_gamma = memory.read_u32_be(cs_param)?;
+                memory
+                    .write_u32_be(vd_gamma, PPC_MAIN_GAMMA_TABLE)
+                    .map(|()| PPC_NO_ERR)
+            }
+            // Inside Macintosh: Devices (1994), p. 1-47: a driver must
+            // return statusErr for status selectors that it does not support.
+            _ => Some(STATUS_ERR),
+        }
+    })()
+    .unwrap_or(PPC_PARAM_ERR);
+
+    if parameter_block != 0 {
+        if let Some(result_addr) = parameter_block.checked_add(16) {
+            let _ = memory.write_u16_be(result_addr, result as u16);
+        }
+    }
+    result
+}
+
 fn ppc_get_ctable(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -63704,6 +63743,45 @@ mod tests {
         );
         assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
         assert_eq!(memory.read_u16_be(parameter_block + 16), Some(0));
+    }
+
+    #[test]
+    fn video_status_returns_device_owned_linear_gamma_table() {
+        let pef = synthetic_pef_with_import(b"PBStatusSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let parameter_block = PPC_DATA_BASE + 0x1000;
+        let vd_gamma = parameter_block + 64;
+        loaded.memory.add_region(parameter_block, vec![0; 128]);
+        loaded.memory.write_u16_be(parameter_block + 24, 0).unwrap();
+        loaded.memory.write_u16_be(parameter_block + 26, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(parameter_block + 28, vd_gamma)
+            .unwrap();
+        loaded.cpu.gpr[3] = parameter_block;
+
+        assert_eq!(ppc_pb_status(&loaded.cpu, &mut loaded.memory), PPC_NO_ERR);
+        assert_eq!(loaded.memory.read_u16_be(parameter_block + 16), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(vd_gamma),
+            Some(PPC_MAIN_GAMMA_TABLE)
+        );
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 6), Some(1));
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 8),
+            Some(256)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_MAIN_GAMMA_TABLE + 10),
+            Some(8)
+        );
+        for value in 0..256u32 {
+            assert_eq!(
+                loaded.memory.read_u8(PPC_MAIN_GAMMA_TABLE + 12 + value),
+                Some(value as u8)
+            );
+        }
     }
 
     #[test]

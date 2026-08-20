@@ -17,8 +17,12 @@ const VISE_HEADER_LEN: usize = 44;
 const VISE_CATALOG_HEADER_LEN: usize = 20;
 const VISE_VERSION_35_LITE: u32 = 0x8001_0202;
 const VISE_VERSION_36_LITE: u32 = 0x8001_0300;
+const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
 const VISE_DIRECTORY_RECORD_LEN: usize = 78;
 const VISE_FILE_RECORD_LEN: usize = 120;
+const VISE_EXTENDED_CATALOG_PREFIX_LEN: usize = 80;
+const VISE_EXTENDED_DIRECTORY_SUFFIX_LEN: usize = 66;
+const VISE_EXTENDED_FILE_SUFFIX_LEN: usize = 62;
 
 // Installer VISE 3 archive layout and transform reference:
 // ScummVM `common/compression/vise.cpp`, GPL-3.0-or-later, as of
@@ -77,7 +81,10 @@ pub fn parse_vise(data: &[u8]) -> Option<Result<ViseArchive<'_>, String>> {
 fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
     let header = range(data, 0, VISE_HEADER_LEN, "header")?;
     let version = read_u32(header, 16, "archive version")?;
-    if !matches!(version, VISE_VERSION_35_LITE | VISE_VERSION_36_LITE) {
+    if !matches!(
+        version,
+        VISE_VERSION_35_LITE | VISE_VERSION_36_LITE | VISE_VERSION_EXTENDED_CATALOG
+    ) {
         return Err(format!("unsupported archive version 0x{version:08X}"));
     }
 
@@ -95,6 +102,18 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
     }
     let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
     let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
+    if version == VISE_VERSION_EXTENDED_CATALOG {
+        let prefix = range(
+            data,
+            cursor,
+            VISE_EXTENDED_CATALOG_PREFIX_LEN,
+            "extended catalog prefix",
+        )?;
+        if !prefix.starts_with(b"PACK") {
+            return Err("extended catalog is missing PACK prefix".to_string());
+        }
+        cursor += VISE_EXTENDED_CATALOG_PREFIX_LEN;
+    }
     let mut dirs = Vec::<ViseDirectory>::new();
     let mut entries = Vec::<ViseEntry<'_>>::new();
 
@@ -122,6 +141,14 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 if version == VISE_VERSION_36_LITE {
                     range(data, cursor, 6, "VISE 3.6 directory extension")?;
                     cursor += 6;
+                } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                    range(
+                        data,
+                        cursor,
+                        VISE_EXTENDED_DIRECTORY_SUFFIX_LEN,
+                        "extended directory suffix",
+                    )?;
+                    cursor += VISE_EXTENDED_DIRECTORY_SUFFIX_LEN;
                 }
                 let name = decode_catalog_name(data, &mut cursor, name_len, "directory name")?;
                 let path = child_path(&dirs, parent, &name, "directory")?;
@@ -147,6 +174,15 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 file_type.copy_from_slice(&record[40..44]);
                 let mut creator = [0; 4];
                 creator.copy_from_slice(&record[44..48]);
+                if version == VISE_VERSION_EXTENDED_CATALOG {
+                    range(
+                        data,
+                        cursor,
+                        VISE_EXTENDED_FILE_SUFFIX_LEN,
+                        "extended file suffix",
+                    )?;
+                    cursor += VISE_EXTENDED_FILE_SUFFIX_LEN;
+                }
                 let name = decode_catalog_name(data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
                 let data_packed = range(
@@ -172,7 +208,13 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                     rsrc_packed,
                     data_packed_offset: packed_offset,
                     rsrc_packed_offset: rsrc_offset,
-                    unpacked_offset,
+                    unpacked_offset: if version == VISE_VERSION_EXTENDED_CATALOG
+                        && unpacked_offset >= data_unpacked_len
+                    {
+                        0
+                    } else {
+                        unpacked_offset
+                    },
                     data_unpacked_len,
                     rsrc_unpacked_len,
                 });
@@ -696,6 +738,59 @@ mod tests {
         assert_eq!(
             decode_vise_fork(entry.rsrc_packed, entry.rsrc_unpacked_len).unwrap(),
             resource_fork
+        );
+    }
+
+    #[test]
+    fn parses_extended_catalog_records() {
+        let data_fork = b"extended catalog payload";
+        let packed_data = encode_vise_fork(data_fork);
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + packed_data.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_EXTENDED_CATALOG.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed_data);
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        let mut prefix = [0u8; VISE_EXTENDED_CATALOG_PREFIX_LEN];
+        prefix[0..4].copy_from_slice(b"PACK");
+        archive.extend_from_slice(&prefix);
+
+        archive.extend_from_slice(b"DVCT");
+        let mut directory = [0u8; VISE_DIRECTORY_RECORD_LEN];
+        directory[76] = 4;
+        archive.extend_from_slice(&directory);
+        archive.extend_from_slice(&[0u8; VISE_EXTENDED_DIRECTORY_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Game");
+
+        archive.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[40..44].copy_from_slice(b"APPL");
+        file[44..48].copy_from_slice(b"TEST");
+        file[64..68].copy_from_slice(&(packed_data.len() as u32).to_be_bytes());
+        file[68..72].copy_from_slice(&(data_fork.len() as u32).to_be_bytes());
+        file[92..94].copy_from_slice(&1u16.to_be_bytes());
+        file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file[100..104].copy_from_slice(&0xfffc_0000u32.to_be_bytes());
+        file[118] = 7;
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(&[0u8; VISE_EXTENDED_FILE_SUFFIX_LEN]);
+        archive.extend_from_slice(b"Runtime");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.dirs, ["Game"]);
+        assert_eq!(parsed.entries.len(), 1);
+        let entry = &parsed.entries[0];
+        assert_eq!(entry.path, "Game/Runtime");
+        assert_eq!(entry.unpacked_offset, 0);
+        assert_eq!(
+            decode_vise_fork(entry.data_packed, entry.data_unpacked_len).unwrap(),
+            data_fork
         );
     }
 
