@@ -7355,22 +7355,10 @@ impl FixtureRunner {
         let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
             return;
         };
-        let composition_surface = if primary_buffer.depth == 8
-            && ppc_app.draw_sprocket.active_context.is_none()
-            && ppc_app.draw_sprocket.swap_count == 0
-        {
-            Self::ppc_indexed_composition_surface(
-                &ppc_app.gworlds,
-                ppc_app.draw_sprocket.back_buffer_gworld,
-                primary_buffer,
-                &mut ppc_app.memory,
-            )
-        } else {
-            None
-        };
         if primary_buffer.depth == 8 {
             self.dispatcher.device_clut = ppc_app.screen_clut;
             self.dispatcher.color_manager_clut = ppc_app.color_manager_clut;
+            self.dispatcher.device_gamma = ppc_app.device_gamma;
         }
         let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(primary_buffer);
         let bytes_per_pixel = match primary_buffer.depth {
@@ -7421,32 +7409,6 @@ impl FixtureRunner {
         ) {
             return;
         }
-        if let Some(surface) = composition_surface {
-            let destination_x = primary_destination_x
-                .saturating_add(primary_buffer.width.saturating_sub(surface.width) / 2);
-            let frame_height = surface
-                .width
-                .saturating_mul(3)
-                .checked_div(4)
-                .unwrap_or(surface.height)
-                .min(primary_buffer.height);
-            let is_gameplay_surface = surface.height <= frame_height.saturating_sub(64);
-            let surface_offset_y = if is_gameplay_surface {
-                primary_buffer.height.saturating_sub(frame_height) / 2
-            } else {
-                primary_buffer.height.saturating_sub(surface.height) / 2
-            };
-            let destination_y = primary_destination_y.saturating_add(surface_offset_y);
-            let _ = Self::copy_ppc_front_buffer_rows_to_host(
-                &mut self.bus,
-                ppc_app,
-                surface,
-                host_base,
-                canvas_row_bytes,
-                destination_x,
-                destination_y,
-            );
-        }
     }
 
     fn ppc_host_canvas_dimensions(front_buffer: PpcFrontBuffer) -> (u32, u32) {
@@ -7462,96 +7424,6 @@ impl FixtureRunner {
         } else {
             (front_buffer.width, front_buffer.height)
         }
-    }
-
-    fn ppc_indexed_composition_surface(
-        gworlds: &[PpcGWorldRecord],
-        back_buffer_gworld: u32,
-        main: PpcFrontBuffer,
-        memory: &mut PpcSectionMem,
-    ) -> Option<PpcFrontBuffer> {
-        if main.depth != 8 || main.width == 0 || main.height < 128 {
-            return None;
-        }
-        let candidates = gworlds
-            .iter()
-            .copied()
-            .filter(|record| {
-                record.port != back_buffer_gworld
-                    && record.base_addr != main.base_addr
-                    && record.depth == main.depth
-                    && record.width <= main.width
-            })
-            .filter(|record| Self::ppc_indexed_surface_has_rendered_pixels(memory, *record))
-            .collect::<Vec<_>>();
-        let gameplay_surface = candidates
-            .iter()
-            .copied()
-            .filter(|record| {
-                let frame_height = record
-                    .width
-                    .saturating_mul(3)
-                    .checked_div(4)
-                    .unwrap_or(record.height)
-                    .min(main.height);
-                record.height >= frame_height / 2
-                    && record.height <= frame_height.saturating_sub(64)
-            })
-            .max_by_key(|record| record.height);
-        let selected = gameplay_surface.or_else(|| {
-            candidates
-                .iter()
-                .copied()
-                .filter(|record| {
-                    let frame_height = record
-                        .width
-                        .saturating_mul(3)
-                        .checked_div(4)
-                        .unwrap_or(record.height)
-                        .min(main.height);
-                    record.height >= frame_height.saturating_sub(32)
-                        && record.height <= frame_height
-                })
-                .max_by_key(|record| record.height)
-        })?;
-        Some(PpcFrontBuffer {
-            base_addr: selected.base_addr,
-            row_bytes: selected.row_bytes,
-            width: selected.width,
-            height: selected.height,
-            depth: selected.depth,
-        })
-    }
-
-    fn ppc_indexed_surface_has_rendered_pixels(
-        memory: &mut PpcSectionMem,
-        surface: PpcGWorldRecord,
-    ) -> bool {
-        let row_len = surface.width.min(surface.row_bytes);
-        if row_len == 0 || surface.height == 0 {
-            return false;
-        }
-        let mut row = vec![0; row_len as usize];
-        let mut first_pixel = None;
-        for y in 0..surface.height {
-            let Some(row_addr) = surface
-                .base_addr
-                .checked_add(y.saturating_mul(surface.row_bytes))
-            else {
-                return false;
-            };
-            if memory.read_bytes_into(row_addr, &mut row).is_none() {
-                return false;
-            }
-            for pixel in &row {
-                match first_pixel {
-                    Some(first) if first != *pixel => return true,
-                    None => first_pixel = Some(*pixel),
-                    _ => {}
-                }
-            }
-        }
-        false
     }
 
     fn copy_ppc_front_buffer_rows_to_host(
@@ -11634,6 +11506,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
@@ -11761,6 +11634,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
@@ -12586,6 +12460,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
@@ -12742,6 +12617,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
@@ -13131,6 +13007,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: vec![
@@ -13317,76 +13194,6 @@ mod tests {
     }
 
     #[test]
-    fn ppc_indexed_composition_prefers_gameplay_over_complete_menu_surface() {
-        const MAIN_SCREEN_BASE: u32 = 0x02f1_0000;
-        let record = |port, base_addr, height| PpcGWorldRecord {
-            port,
-            pixmap_handle: 0,
-            pixmap: 0,
-            base_addr,
-            gdevice: PPC_MAIN_GDEVICE,
-            width: 640,
-            height,
-            depth: 8,
-            row_bytes: 640,
-            pixels_locked: false,
-            pixels_no_purge: false,
-        };
-        let main = PpcFrontBuffer {
-            base_addr: MAIN_SCREEN_BASE,
-            row_bytes: 640,
-            width: 640,
-            height: 480,
-            depth: 8,
-        };
-        let mut gworlds = vec![
-            record(PPC_MAIN_GWORLD, MAIN_SCREEN_BASE, 480),
-            record(0x0300_1000, 0x0310_0000, 460),
-            record(0x0300_2000, 0x0320_0000, 461),
-        ];
-        let mut memory = PpcSectionMem::new();
-        let mut menu_460 = vec![0; 640 * 460];
-        menu_460[1] = 1;
-        memory.add_region(0x0310_0000, menu_460);
-        let mut menu_461 = vec![0; 640 * 461];
-        menu_461[1] = 1;
-        memory.add_region(0x0320_0000, menu_461);
-
-        let menu = FixtureRunner::ppc_indexed_composition_surface(
-            &gworlds,
-            PPC_DSP_BACK_GWORLD,
-            main,
-            &mut memory,
-        )
-        .unwrap();
-        assert_eq!((menu.base_addr, menu.height), (0x0320_0000, 461));
-
-        gworlds.push(record(0x0300_3000, 0x0330_0000, 325));
-        memory.add_region(0x0330_0000, vec![0; 640 * 325]);
-        let still_menu = FixtureRunner::ppc_indexed_composition_surface(
-            &gworlds,
-            PPC_DSP_BACK_GWORLD,
-            main,
-            &mut memory,
-        )
-        .unwrap();
-        assert_eq!(
-            (still_menu.base_addr, still_menu.height),
-            (0x0320_0000, 461)
-        );
-
-        let _ = memory.write_u8(0x0330_0001, 1);
-        let gameplay = FixtureRunner::ppc_indexed_composition_surface(
-            &gworlds,
-            PPC_DSP_BACK_GWORLD,
-            main,
-            &mut memory,
-        )
-        .unwrap();
-        assert_eq!((gameplay.base_addr, gameplay.height), (0x0330_0000, 325));
-    }
-
-    #[test]
     fn ppc_completed_q3_frame_renders_before_host_front_buffer_sync() {
         const TRIMESH_NUM_TRIANGLES_OFFSET: u32 = 4;
         const TRIMESH_TRIANGLES_OFFSET: u32 = 8;
@@ -13476,6 +13283,7 @@ mod tests {
             handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            device_gamma: crate::display::default_display_gamma(),
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: vec![PpcGWorldRecord {
