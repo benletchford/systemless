@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.5](https://github.com/benletchford/systemless/compare/v0.18.4...v0.18.5) (2026-08-20)
+
+
+### Bug Fixes
+
+* **desktop:** drive guest progress for mouse input ([#712](https://github.com/benletchford/systemless/issues/712)) ([3c87f8a](https://github.com/benletchford/systemless/commit/3c87f8a73dd1254f10b525c3b7d0d0144c149579))
+* **desktop:** release clicks after guest execution ([#709](https://github.com/benletchford/systemless/issues/709)) ([6ca70cf](https://github.com/benletchford/systemless/commit/6ca70cf033d687ed46b42a4c083431acabb2580b))
+* preserve PPC display palettes and front buffers ([#707](https://github.com/benletchford/systemless/issues/707)) ([cec8047](https://github.com/benletchford/systemless/commit/cec8047e6287304886f04a5a2379a564819fba51))
+
 ## [0.18.4](https://github.com/benletchford/systemless/compare/v0.18.3...v0.18.4) (2026-08-20)
 
 
