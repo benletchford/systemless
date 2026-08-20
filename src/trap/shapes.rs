@@ -1132,7 +1132,7 @@ impl super::TrapDispatcher {
     ///
     /// Non-text shape callers should return 0 or 255 — their geometry
     /// is binary by nature. Only the text-render path exercises the
-    /// full 8-bit gradient produced by fontdue's hinted rasteriser.
+    /// full 8-bit gradient produced by the hinted TrueType rasteriser.
     pub(super) fn draw_generic_shape<C: CpuOps, F>(
         &mut self,
         cpu: &mut C,
