@@ -416,7 +416,12 @@ impl ResourceFork {
                     attrs: stored_attrs,
                 };
 
-                fork.resources.insert((res_type, id), resource);
+                // More Macintosh Toolbox (1993), p. 1-5: the Resource
+                // Manager searches resource types and IDs linearly. Preserve
+                // the first matching reference in map order instead of
+                // giving later duplicate keys HashMap last-write-wins
+                // behavior.
+                fork.resources.entry((res_type, id)).or_insert(resource);
             }
         }
 
@@ -741,5 +746,31 @@ mod tests {
 
         assert!(!ResourceFork::has_valid_layout(&fork));
         assert!(!ResourceFork::contains_code(&fork, 0));
+    }
+
+    #[test]
+    fn parse_preserves_first_duplicate_resource_reference() {
+        let fork = serialize_resource_fork(&[
+            ResourceForkEntry {
+                res_type: *b"ZERO",
+                id: 0,
+                name: Vec::new(),
+                data: vec![1, 2, 3, 4],
+                attrs: 0,
+            },
+            ResourceForkEntry {
+                res_type: *b"ZERO",
+                id: 0,
+                name: Vec::new(),
+                data: vec![5, 6],
+                attrs: 0,
+            },
+        ])
+        .expect("serialize duplicate resource references");
+
+        let parsed = ResourceFork::parse(&fork).expect("parse resource fork");
+
+        assert_eq!(parsed.resources().len(), 1);
+        assert_eq!(parsed.get(*b"ZERO", 0).unwrap().data, [1, 2, 3, 4]);
     }
 }
