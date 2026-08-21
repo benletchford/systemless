@@ -460,13 +460,11 @@ fn looks_like_menu_handle(bus: &MacMemoryBus, handle: u32) -> bool {
     looks_like_menu_ptr(bus, bus.read_long(handle))
 }
 
-/// Live menu-color table entry size in guest memory.
+/// Menu-color table entry size in compiled resources and guest memory.
 ///
-/// The compiled `'mctb'` resource entries are 28 bytes, but the in-memory
-/// `MCEntry` record adds the trailing reserved word, so live table entries are
-/// 30 bytes each.
+/// Apple's `MenuCRsrc` stores an array of complete `MCEntry` records, including
+/// the trailing reserved word.
 const MC_ENTRY_SIZE: usize = 30;
-const MC_RESOURCE_ENTRY_SIZE: usize = 28;
 const MC_ALL_ITEMS: i16 = -98;
 const MC_LAST_ID_INDIC: i16 = -99;
 
@@ -1106,7 +1104,8 @@ impl super::TrapDispatcher {
     }
 
     fn load_menu_color_resource(&mut self, bus: &mut MacMemoryBus, resource_id: i16) {
-        let Some((_, resource_ptr)) = self.find_or_load_resource_any(bus, *b"mctb", resource_id) else {
+        let Some((_, resource_ptr)) = self.find_or_load_resource_any(bus, *b"mctb", resource_id)
+        else {
             return;
         };
         let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0) as usize;
@@ -1119,22 +1118,21 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let available_entries = (resource_size - 2) / MC_RESOURCE_ENTRY_SIZE;
+        let available_entries = (resource_size - 2) / MC_ENTRY_SIZE;
         let entry_count = (declared_count as usize).min(available_entries);
         let mut entries = Vec::with_capacity(entry_count * MC_ENTRY_SIZE);
         for index in 0..entry_count {
-            let entry_ptr = resource_ptr + 2 + (index * MC_RESOURCE_ENTRY_SIZE) as u32;
+            let entry_ptr = resource_ptr + 2 + (index * MC_ENTRY_SIZE) as u32;
             let menu_id = bus.read_word(entry_ptr) as i16;
             if menu_id == MC_LAST_ID_INDIC {
                 continue;
             }
-            entries.extend_from_slice(&bus.read_bytes(entry_ptr, MC_RESOURCE_ENTRY_SIZE));
-            entries.extend_from_slice(&0u16.to_be_bytes());
+            entries.extend_from_slice(&bus.read_bytes(entry_ptr, MC_ENTRY_SIZE));
         }
 
         // IM:V 1986 p. V-234 and MTE 1992 p. 3-156 define compiled
-        // 'mctb' resources as a count-prefixed array of 28-byte color
-        // entries; the live MCEntry table has the extra reserved word.
+        // 'mctb' resources as a count-prefixed array of complete MCEntry
+        // records, including mctReserved.
         self.merge_menu_color_entries(bus, &entries);
     }
 
@@ -5598,7 +5596,7 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
         count_menu_items_from_memory, parse_appendmenu_items, parse_menu_resource, Menu, MenuItem,
-        MenuTrackingState, MC_ENTRY_SIZE, MC_RESOURCE_ENTRY_SIZE, MENU_KEY_REDUCED_ICON,
+        MenuTrackingState, MC_ENTRY_SIZE, MENU_KEY_REDUCED_ICON,
         MENU_KEY_SMALL_ICON, MENU_ROW_HEIGHT,
     };
     use crate::cpu::{CpuOps, Register};
@@ -5958,10 +5956,10 @@ mod tests {
     }
 
     fn compiled_mctb_resource(entries: &[(i16, i16, u16)]) -> Vec<u8> {
-        let mut data = vec![0u8; 2 + entries.len() * MC_RESOURCE_ENTRY_SIZE];
+        let mut data = vec![0u8; 2 + entries.len() * MC_ENTRY_SIZE];
         write_be_word(&mut data, 0, entries.len() as u16);
         for (idx, &(menu_id, item, seed)) in entries.iter().enumerate() {
-            let base = 2 + idx * MC_RESOURCE_ENTRY_SIZE;
+            let base = 2 + idx * MC_ENTRY_SIZE;
             write_be_word(&mut data, base, menu_id as u16);
             write_be_word(&mut data, base + 2, item as u16);
             write_rgb_bytes(
@@ -5996,6 +5994,7 @@ mod tests {
                     seed.wrapping_add(11),
                 ),
             );
+            write_be_word(&mut data, base + 28, seed.wrapping_add(12));
         }
         data
     }
@@ -7084,8 +7083,8 @@ mod tests {
         );
         assert_eq!(
             bus.read_word(bar_entry + 28),
-            0,
-            "compiled 28-byte mctb entries should gain a zero reserved word"
+            0x110C,
+            "compiled mctb entries should preserve their reserved word"
         );
         assert_ne!(
             get_mc_entry_ptr_for_test(&mut disp, &mut cpu, &mut bus, 601, 0),
