@@ -1827,16 +1827,18 @@ impl super::TrapDispatcher {
             (guest_ptr, true)
         };
 
+        let commands_end = snd_ptr + offset + (num_commands as u32) * 8;
         for i in 0..num_commands {
             let cmd_offset = offset + (i as u32) * 8;
             let mut cmd_word = bus.read_word(snd_ptr + cmd_offset);
             let param1 = bus.read_word(snd_ptr + cmd_offset + 2) as i16;
             let mut param2 = bus.read_long(snd_ptr + cmd_offset + 4);
+            let was_data_offset = cmd_word & 0x8000 != 0;
 
             // dataOffsetFlag: if bit 15 of cmd is set, param2 is an offset
             // from the start of the resource data, not an absolute pointer.
             // Reference: executor sound.cpp lines 368-372
-            if cmd_word & 0x8000 != 0 {
+            if was_data_offset {
                 param2 += snd_ptr;
                 cmd_word &= !0x8000;
             }
@@ -1845,6 +1847,11 @@ impl super::TrapDispatcher {
             // Reference: executor sound.cpp lines 375-378
             if format == 2 && i == 0 && cmd_word == sound::cmd::SOUND {
                 cmd_word = sound::cmd::BUFFER;
+                if was_data_offset {
+                    param2 = self
+                        .resolve_format2_sound_header(bus, snd_ptr, commands_end, param2)
+                        .unwrap_or(param2);
+                }
             }
 
             let cmd = SndCommand {
@@ -1893,6 +1900,49 @@ impl super::TrapDispatcher {
         }
 
         0
+    }
+
+    fn resolve_format2_sound_header(
+        &self,
+        bus: &mut MacMemoryBus,
+        snd_ptr: u32,
+        commands_end: u32,
+        declared_header: u32,
+    ) -> Option<u32> {
+        let header_is_valid = |header: u32| {
+            let Some(header_offset) = header.checked_sub(snd_ptr) else {
+                return false;
+            };
+            let encode = bus.read_byte(header + 20);
+            let minimum_size = if encode == 0 { 22 } else { 64 };
+            let header_fits = bus
+                .get_alloc_size(snd_ptr)
+                .is_none_or(|size| header_offset.saturating_add(minimum_size) <= size);
+            let standard_data_fits = encode != 0
+                || bus.read_long(header) != 0
+                || bus.get_alloc_size(snd_ptr).is_none_or(|size| {
+                    header_offset
+                        .saturating_add(22)
+                        .saturating_add(bus.read_long(header + 4))
+                        <= size
+                });
+            header_fits
+                && standard_data_fits
+                && bus.read_long(header + 8) != 0
+                && matches!(encode, 0x00 | 0xFE | 0xFF)
+        };
+        if header_is_valid(declared_header) {
+            return Some(declared_header);
+        }
+
+        // SndPlay turns the first soundCmd in an obsolete format-2 resource
+        // into buffer playback. Legacy sampled-voice resources can point six
+        // bytes into the standard header even though the header itself begins
+        // immediately after the command list. Accept that alternate pointer
+        // only when the complete documented SoundHeader validates there.
+        // Inside Macintosh: Sound (1994), pp. 2-80–2-81, 2-104.
+        (declared_header == commands_end.checked_add(6)? && header_is_valid(commands_end))
+            .then_some(commands_end)
     }
 
     fn sound_header_offset_from_resource(bus: &MacMemoryBus, snd_ptr: u32) -> Option<u32> {
@@ -3378,6 +3428,45 @@ mod tests {
             .find_channel_mut(chan_ptr)
             .expect("channel exists")
             .is_playing());
+        assert_eq!(
+            disp.sound_manager.mix_frame(4),
+            vec![0x40, 0x80, 0xC0, 0xFF]
+        );
+    }
+
+    #[test]
+    fn sndplay_resolves_legacy_format2_sampled_voice_header() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let chan_ptr = 0x250200;
+        disp.sound_manager
+            .channels
+            .push(SndChannel::new(chan_ptr, false));
+
+        let (snd_handle, snd_ptr) = alloc_minimal_format2_snd_handle(&mut bus, 2, 80);
+        let compact = snd_ptr + 14;
+        bus.write_word(snd_ptr + 4, 1);
+        bus.write_word(snd_ptr + 6, 0x8000 | cmd::SOUND);
+        bus.write_word(snd_ptr + 8, 0);
+        bus.write_long(snd_ptr + 10, 20); // legacy soundCmd points six bytes into header
+        bus.write_long(compact, 0); // inline samples
+        bus.write_long(compact + 4, 4);
+        bus.write_long(compact + 8, crate::sound::OUTPUT_RATE << 16);
+        bus.write_long(compact + 12, 0);
+        bus.write_long(compact + 16, 0);
+        bus.write_byte(compact + 20, 0);
+        bus.write_byte(compact + 21, 60);
+        bus.write_bytes(compact + 22, &[0x40, 0x80, 0xC0, 0xFF]);
+
+        bus.write_word(sp, 1);
+        bus.write_long(sp + 2, snd_handle);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xFFFF);
+
+        let result = disp.dispatch_sound(true, 0x005, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(sp + 10), 0);
         assert_eq!(
             disp.sound_manager.mix_frame(4),
             vec![0x40, 0x80, 0xC0, 0xFF]
