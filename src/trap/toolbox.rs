@@ -15906,7 +15906,28 @@ impl super::TrapDispatcher {
                 } else {
                     8
                 };
-                match raw_selector {
+                match selector {
+                    // PlotCIconHandle. The Icon Utilities glue passes, in
+                    // reverse Pascal order, the CIconHandle, transform and
+                    // alignment words, and destination Rect pointer. PlotCIcon
+                    // supplies the shared color-icon decode and masked blit;
+                    // an icon-sized destination with atNone requires no
+                    // additional alignment.
+                    // More Macintosh Toolbox (1993), pp. 5-26 to 5-27 and
+                    // 5-72; selector table p. A-34 ($1F06).
+                    0x1F06 => {
+                        let sp = cpu.read_reg(Register::A7);
+                        let transform = bus.read_word(sp + 4) as i16;
+                        let rect_ptr = bus.read_long(sp + 8);
+                        bus.write_long(sp + 4, rect_ptr);
+                        let previous_transform = self.icon_transform_override;
+                        self.icon_transform_override = transform;
+                        let result = self.dispatch_quickdraw(true, 0x21F, cpu, bus);
+                        self.icon_transform_override = previous_transform;
+                        bus.write_word(sp + pop_bytes, 0);
+                        cpu.write_reg(Register::A7, sp + pop_bytes);
+                        result.unwrap_or(Ok(()))
+                    }
                     0 => return_noerr_and_pop(cpu, pop_bytes),
                     _ => return_error_and_pop(cpu, pop_bytes, -50),
                 }
@@ -25196,6 +25217,25 @@ mod tests {
             assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + pop_bytes);
         }
+    }
+
+    #[test]
+    fn icondispatch_plotciconhandle_routes_to_legacy_renderer_and_returns_noerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_061F); // byte-swapped $1F06 selector
+        bus.write_long(sp, 0); // NIL CIconHandle is a safe no-op
+        bus.write_word(sp + 4, 0x4000); // transform
+        bus.write_word(sp + 6, 0); // alignment
+        bus.write_long(sp + 8, 0); // destination Rect pointer
+        bus.write_word(sp + 12, 0x7FFF); // reserved Pascal function result
+
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0);
     }
 
     #[test]
