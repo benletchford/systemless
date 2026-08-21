@@ -15,6 +15,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  licenses:
+    name: dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: "1.93"
+          command: check licenses
+
   test:
     name: build & test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

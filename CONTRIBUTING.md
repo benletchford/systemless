@@ -3,6 +3,21 @@
 Thanks for helping improve Systemless. These guidelines apply to every
 contribution, whether it is prepared manually or with automated tools.
 
+## Contributor terms
+
+Systemless has some short [contributor terms](./CLA.md).
+
+You keep ownership of your work and Systemless remains GPL-licensed. The terms
+also allow contributions to be included in separately licensed paid releases,
+such as a Mac App Store app, which can help support continued development of
+the project.
+
+Existing GPL rights remain unaffected.
+
+If you are not comfortable with those terms, that's completely fine. Please
+open an issue instead and we can discuss the change without accepting
+contributed code.
+
 ## Before making changes
 
 - Read the project context and build instructions in `README.md`.
