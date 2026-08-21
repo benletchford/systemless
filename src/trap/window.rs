@@ -384,6 +384,39 @@ impl super::TrapDispatcher {
         aux_handle
     }
 
+    pub(crate) fn set_window_dialog_item_color_table(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        item_color_table: u32,
+    ) {
+        let aux_handle = self
+            .window_aux_records
+            .get(&window_ptr)
+            .copied()
+            .unwrap_or_else(|| self.ensure_window_aux_record(bus, window_ptr, 0));
+        let aux_ptr = bus.read_long(aux_handle);
+        if aux_ptr != 0 {
+            bus.write_long(
+                aux_ptr + Self::AUX_WIN_DIALOG_CITEM_OFFSET,
+                item_color_table,
+            );
+        }
+    }
+
+    pub(crate) fn window_dialog_item_color_table(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> u32 {
+        self.window_aux_records
+            .get(&window_ptr)
+            .map(|handle| bus.read_long(*handle))
+            .filter(|ptr| *ptr != 0)
+            .map(|ptr| bus.read_long(ptr + Self::AUX_WIN_DIALOG_CITEM_OFFSET))
+            .unwrap_or(0)
+    }
+
     pub(crate) fn rect_intersection(
         a: (i16, i16, i16, i16),
         b: (i16, i16, i16, i16),
@@ -6976,6 +7009,7 @@ mod tests {
             let (mut disp, mut cpu, mut bus) = setup();
             let screen_base = bus.alloc((800 * 600) as u32);
             bus.write_long(0x0824, screen_base);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
             disp.screen_mode = (screen_base, 800, 800, 600, 8);
             install_positioned_wind_resource(
                 &mut disp,
@@ -7003,8 +7037,8 @@ mod tests {
             assert_ne!(window_ptr, 0);
             assert_eq!(
                 disp.window_global_port_rect(&bus, window_ptr),
-                (103, 152, 497, 647),
-                "trap ${trap_num:03X} should center the WIND content bounds"
+                (121, 152, 515, 647),
+                "trap ${trap_num:03X} should center the complete WIND structure below the menu bar"
             );
         }
     }
