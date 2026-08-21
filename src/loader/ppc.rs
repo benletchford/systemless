@@ -1092,6 +1092,7 @@ pub enum PpcImportDispatcherTarget {
     FSpCreateResFile,
     HCreateResFile,
     FSpOpenDF,
+    PBOpen,
     PBHOpenDF,
     HOpen,
     FSOpen,
@@ -1234,6 +1235,9 @@ pub enum PpcImportDispatcherTarget {
     AESetInteractionAllowed,
     AEGetInteractionAllowed,
     LMGetCurDirStore,
+    LMSetCurDirStore,
+    LMGetRndSeed,
+    LMSetRndSeed,
     SetCurrentA5,
     SetA5,
     SVersion,
@@ -8289,6 +8293,9 @@ impl PpcLoadedApp {
             .unwrap_or(PPC_ROOT_DIR_ID);
         self.vfs_directories = directories;
         self.default_dir_id = default_dir_id;
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, default_dir_id);
         self.next_vfs_dir_id = next_dir_id
             .max(max_seeded_dir_id.saturating_add(1))
             .max(PPC_FIRST_DYNAMIC_DIR_ID);
@@ -13909,6 +13916,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FSpOpenDF") => PpcImportDispatcherTarget::FSpOpenDF,
         ("InterfaceLib", "HOpen") | ("InterfaceLib", "HOpenDF") => PpcImportDispatcherTarget::HOpen,
         ("InterfaceLib", "FSOpen") => PpcImportDispatcherTarget::FSOpen,
+        ("InterfaceLib", "PBOpen")
+        | ("InterfaceLib", "PBOpenSync")
+        | ("InterfaceLib", "PBOpenAsync") => PpcImportDispatcherTarget::PBOpen,
         ("InterfaceLib", "PBHOpenDF")
         | ("InterfaceLib", "PBHOpenDFSync")
         | ("InterfaceLib", "PBHOpenDFAsync")
@@ -14095,6 +14105,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
         ("InterfaceLib", "LMGetTime") => PpcImportDispatcherTarget::LMGetTime,
         ("InterfaceLib", "LMGetCurDirStore") => PpcImportDispatcherTarget::LMGetCurDirStore,
+        ("InterfaceLib", "LMSetCurDirStore") => PpcImportDispatcherTarget::LMSetCurDirStore,
+        ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
+        ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
         ("InterfaceLib", "SetA5") => PpcImportDispatcherTarget::SetA5,
         ("InterfaceLib", "SecondsToDate") | ("InterfaceLib", "Secs2Date") => {
@@ -17807,6 +17820,17 @@ fn dispatch_supported_import(
                 next_file_ref_num,
             ))))
         }
+        PpcImportDispatcherTarget::PBOpen => {
+            Some(PpcImportAction::Return(ppc_i16_result(ppc_pb_open(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_files,
+                files,
+                next_file_ref_num,
+                default_dir_id,
+            ))))
+        }
         PpcImportDispatcherTarget::GetDialogItem => {
             ppc_get_dialog_item(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
@@ -17989,6 +18013,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::InitGraf => {
             toolbox_startup.init_graf_count = toolbox_startup.init_graf_count.saturating_add(1);
             toolbox_startup.init_graf_global_ptr = cpu.gpr[3];
+            ppc_init_graf_globals(memory, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InitFonts => {
@@ -19008,9 +19033,28 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(PPC_FIXED_MAC_TIME))
         }
         PpcImportDispatcherTarget::LMGetCurDirStore => {
-            // Inside Macintosh: PowerPC System Software (1994), 1-57:
+            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
             // LMGetCurDirStore returns the CurDirStore directory ID at $0398.
-            Some(PpcImportAction::Return(default_dir_id))
+            Some(PpcImportAction::Return(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
+                    .unwrap_or(default_dir_id),
+            ))
+        }
+        PpcImportDispatcherTarget::LMSetCurDirStore => {
+            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
+            // LMSetCurDirStore sets the CurDirStore directory ID at $0398.
+            let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
+            memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
+        )),
+        PpcImportDispatcherTarget::LMSetRndSeed => {
+            // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
+            // 32-bit random-number seed low-memory global at $0156.
+            let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetCurrentA5 => {
             // Inside Macintosh: Memory (1992), 4-25 and PowerPC System
@@ -43181,6 +43225,46 @@ fn ppc_remap_gworld_8bpp_pixels(
     true
 }
 
+fn ppc_init_graf_globals(memory: &mut PpcSectionMem, global_ptr: u32) {
+    let Some(rand_seed_ptr) = global_ptr.checked_sub(126) else {
+        return;
+    };
+    if !ppc_memory_can_write_bytes(memory, rand_seed_ptr, 130) {
+        return;
+    }
+
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-36--2-37:
+    // InitGraf receives @thePort and initializes the reverse-ordered
+    // QuickDraw globals, including randSeed and the main-screen BitMap.
+    let screen_bits = global_ptr - 122;
+    let _ = memory.write_u32_be(rand_seed_ptr, 1);
+    let _ = memory.write_u32_be(screen_bits, PPC_MAIN_SCREEN_BASE);
+    let _ = memory.write_u16_be(screen_bits + 4, PPC_MAIN_SCREEN_WIDTH as u16);
+    let _ = ppc_write_rect(
+        memory,
+        screen_bits + 6,
+        0,
+        0,
+        PPC_MAIN_SCREEN_HEIGHT as i16,
+        PPC_MAIN_SCREEN_WIDTH as i16,
+    );
+    let _ = memory.write_bytes(
+        global_ptr - 40,
+        &[0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd, 0x77, 0xdd],
+    );
+    let _ = memory.write_bytes(
+        global_ptr - 32,
+        &[0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22],
+    );
+    let _ = memory.write_bytes(
+        global_ptr - 24,
+        &[0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55, 0xaa, 0x55],
+    );
+    let _ = memory.write_bytes(global_ptr - 16, &[0xff; 8]);
+    let _ = memory.write_bytes(global_ptr - 8, &[0x00; 8]);
+    let _ = memory.write_u32_be(global_ptr, 0);
+}
+
 fn ppc_new_gworld(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -60289,6 +60373,45 @@ fn ppc_pbh_open_df(
     ppc_complete_pb(memory, pb, PPC_NO_ERR)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_pb_open(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    files: &mut Vec<PpcFileRecord>,
+    next_file_ref_num: &mut i16,
+    default_dir_id: u32,
+) -> i16 {
+    let pb = cpu.gpr[3];
+    if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 26) {
+        return PPC_PARAM_ERR;
+    }
+    let Some(name_ptr) = memory.read_u32_be(pb + 18) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+    let Some(vref) = memory.read_u16_be(pb + 22).map(|value| value as i16) else {
+        return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
+    };
+
+    // Inside Macintosh: Files (1992), pp. 2-120 and 2-240: basic low-level
+    // File Manager calls use a ParamBlockRec; PBOpen opens the named data fork
+    // relative to ioVRefNum and returns its access path in ioRefNum.
+    let result = ppc_open_data_fork_by_name(
+        memory,
+        vfs_directories,
+        vfs_files,
+        files,
+        next_file_ref_num,
+        default_dir_id,
+        vref,
+        0,
+        name_ptr,
+        pb + 24,
+    );
+    ppc_complete_pb(memory, pb, result)
+}
+
 fn ppc_fs_close(cpu: &mut PpcCpu, files: &mut Vec<PpcFileRecord>) -> i16 {
     let ref_num = ppc_ref_num_from_gpr(cpu.gpr[3]);
     files.retain(|file| file.ref_num != ref_num);
@@ -69887,6 +70010,40 @@ mod tests {
             loaded.toolbox_startup.last_disposed_dialog,
             PPC_HEAP_BASE + 0x80
         );
+    }
+
+    #[test]
+    fn hle_import_runner_init_graf_seeds_native_quickdraw_globals() {
+        let pef = synthetic_pef_with_import(b"InitGraf");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let global_ptr = PPC_DATA_BASE + 0x1080;
+        loaded.memory.add_region(global_ptr - 126, vec![0xaa; 130]);
+        loaded.cpu.gpr[3] = global_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(global_ptr - 126), Some(1));
+        let screen_bits = global_ptr - 122;
+        assert_eq!(
+            loaded.memory.read_u32_be(screen_bits),
+            Some(PPC_MAIN_SCREEN_BASE)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(screen_bits + 4),
+            Some(PPC_MAIN_SCREEN_WIDTH as u16)
+        );
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, screen_bits + 6),
+            Some((
+                0,
+                0,
+                PPC_MAIN_SCREEN_HEIGHT as i16,
+                PPC_MAIN_SCREEN_WIDTH as i16,
+            ))
+        );
+        assert_eq!(loaded.memory.read_u32_be(global_ptr), Some(0));
     }
 
     #[test]
@@ -102069,6 +102226,52 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_pb_open_sync_uses_default_directory() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "PBOpenSync"),
+            PpcImportDispatcherTarget::PBOpen
+        );
+        let pef = synthetic_pef_with_import(b"PBOpenSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let pb = scratch;
+        let name_ptr = scratch + 64;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+        loaded
+            .memory
+            .write_bytes(name_ptr, b"\x0eTest App Prefs")
+            .unwrap();
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "System Folder/Preferences/Test App Prefs".to_string(),
+            data: b"prefs".to_vec(),
+            creator: u32::from_be_bytes(*b"NanO"),
+            file_type: u32::from_be_bytes(*b"pref"),
+            finder_flags: 0x0200,
+            dirty: false,
+        });
+        loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(pb + 16), Some(PPC_NO_ERR as u16));
+        assert_eq!(
+            loaded.memory.read_u16_be(pb + 24),
+            Some(PPC_FIRST_FILE_REF_NUM as u16)
+        );
+        assert_eq!(loaded.files.len(), 1);
+        assert_eq!(
+            loaded.files[0].path,
+            "System Folder/Preferences/Test App Prefs"
+        );
+    }
+
+    #[test]
     fn hle_import_runner_fsp_open_df_resolves_unique_archive_suffix_path() {
         let pef = synthetic_pef_with_import(b"FSpOpenDF");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -107051,6 +107254,76 @@ mod tests {
                 .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
             Some(1)
         );
+    }
+
+    #[test]
+    fn hle_import_runner_gets_and_sets_cur_dir_store_low_memory_global() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetCurDirStore"),
+            PpcImportDispatcherTarget::LMSetCurDirStore
+        );
+
+        let pef = synthetic_pef_with_import(b"LMSetCurDirStore");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_vfs_directories(initial_ppc_vfs_directories(), 0x1122_3344, 18);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(0x1122_3344)
+        );
+
+        loaded.cpu.gpr[3] = 0x5566_7788;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(0x5566_7788)
+        );
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LMGetCurDirStore;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x5566_7788);
+    }
+
+    #[test]
+    fn hle_import_runner_gets_and_sets_random_seed_low_memory_global() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetRndSeed"),
+            PpcImportDispatcherTarget::LMSetRndSeed
+        );
+        let pef = synthetic_pef_with_import(b"LMSetRndSeed");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+            Some(0x1234_5678)
+        );
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LMGetRndSeed;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
     }
 
     #[test]
