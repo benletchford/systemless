@@ -4145,8 +4145,8 @@ fn clear_src_to_dst_table_cache_for_tests() {
 /// Build a 4-bit-per-channel inverse table (16 × 16 × 16 = 4096 cells)
 /// against the given `device_clut`. QuickDraw seeds the quantized cube in
 /// ascending ColorTable order, then performs a multi-source flood fill over
-/// the six axis-adjacent cells. Seed order resolves equidistant cells, so the
-/// result is an approximation rather than an independent RGB-distance search.
+/// the six axis-adjacent cells. A nonblack shade displaces a black seed in the
+/// darkest cell; exact black is resolved separately before ITable lookup.
 /// The cell index is `qr<<8 | qg<<4 | qb`.
 ///
 /// Cost is linear in the 4096 cells. Called once per
@@ -4168,6 +4168,8 @@ fn build_device_itable(device_clut: &[[u16; 3]; 256]) -> [u8; 4096] {
             filled[cell] = true;
             table[cell] = index as u8;
             queue.push_back(cell);
+        } else if cell == 0 && device_clut[table[cell] as usize] == [0; 3] && color != [0; 3] {
+            table[cell] = index as u8;
         }
     }
 
@@ -4344,6 +4346,10 @@ fn map_src_pixel_span(
     dst_start: i16,
     scale: f64,
 ) -> Option<(i32, i32, i32)> {
+    // CopyBits scales every source pixel to cover its corresponding area in
+    // the destination rectangle; mapping only the pixel origin leaves holes
+    // whenever an indexed PICT is enlarged.
+    // Imaging With QuickDraw (1994), pp. 3-113, 3-116
     let src_span = i32::from(src_end) - i32::from(src_start);
     let pic_dst_span = i32::from(pic_dst_end) - i32::from(pic_dst_start);
     let rel = src_coord - i32::from(src_start);
@@ -5166,6 +5172,18 @@ fn blit_row(
             }
         }
         4 => {
+            let Some((pic_y, y_start, y_end)) = map_src_pixel_span(
+                src_y,
+                src_top,
+                src_bottom,
+                pic_dst_top,
+                pic_dst_bottom,
+                frame_top,
+                dst_top,
+                scale_y,
+            ) else {
+                return;
+            };
             for px in 0..width {
                 let byte_idx = (px / 2) as usize;
                 let shift = if px % 2 == 0 { 4 } else { 0 };
@@ -5174,41 +5192,53 @@ fn blit_row(
                     if mode_base == 36 && ci == 0 {
                         continue;
                     }
-                    let Some(pic_x) = map_x(px) else {
+                    let src_x = i32::from(pm.bounds_left) + px as i32;
+                    let Some((pic_x, x_start, x_end)) = map_src_pixel_span(
+                        src_x,
+                        src_left,
+                        src_right,
+                        pic_dst_left,
+                        pic_dst_right,
+                        frame_left,
+                        dst_left,
+                        scale_x,
+                    ) else {
                         continue;
                     };
                     if clip_region.is_some_and(|clip| !clip.contains(pic_y, pic_x)) {
                         continue;
                     }
-                    let x =
-                        ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
-                    let Some(pixel) = pict_indexed_transfer_pixel(
-                        bus,
-                        ci,
-                        indexed_transfer,
-                        screen_base,
-                        screen_rb,
-                        x,
-                        base_y,
-                        screen_w,
-                        screen_h,
-                        scrn_ps,
-                        device_clut,
-                    ) else {
-                        continue;
-                    };
-                    write_pixel_clipped(
-                        bus,
-                        screen_base,
-                        screen_rb,
-                        x,
-                        base_y,
-                        pixel,
-                        screen_w,
-                        screen_h,
-                        scrn_ps,
-                        dst_clip,
-                    );
+                    for y in y_start..y_end {
+                        for x in x_start..x_end {
+                            let Some(pixel) = pict_indexed_transfer_pixel(
+                                bus,
+                                ci,
+                                indexed_transfer,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                device_clut,
+                            ) else {
+                                continue;
+                            };
+                            write_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                pixel,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                dst_clip,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -6474,6 +6504,18 @@ mod tests {
     }
 
     #[test]
+    fn device_itable_keeps_a_dark_shade_available_beside_exact_black() {
+        let mut clut = [[0xFFFF; 3]; 256];
+        clut[1] = [0x0000, 0x0000, 0x0000];
+        clut[104] = [0x0F0F, 0x0A0A, 0x0F0F];
+
+        let table = build_device_itable(&clut);
+
+        assert_eq!(table[0x000], 104);
+        assert_eq!(table[0x010], 104);
+    }
+
+    #[test]
     fn color_table_uses_sparse_colorspec_values_as_source_indexes() {
         let mut bus = MacMemoryBus::new(1024);
         let mut pos = 0x100;
@@ -7410,6 +7452,78 @@ mod tests {
         assert_eq!(table[0], PictIndexedTransfer::Write(255));
         assert_eq!(table[42], PictIndexedTransfer::Write(213));
         assert_eq!(table[255], PictIndexedTransfer::Write(0));
+    }
+
+    #[test]
+    fn four_bit_indexed_rows_fill_enlarged_destination_pixels() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        bus.write_bytes(screen_base, &[0xEE; 16]);
+
+        let pm = PixMapInfo {
+            row_bytes: 1,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 2,
+            bounds_right: 2,
+            pixel_size: 4,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let device_clut = [[0u16; 3]; 256];
+        let mut src_to_dst = [0u8; 256];
+        src_to_dst[1] = 10;
+        src_to_dst[2] = 20;
+        let transfer = build_pict_indexed_transfer_table(0, &[], &src_to_dst, &device_clut, 0, 0);
+        let mut scratch = Vec::new();
+
+        for (row, packed_pixels) in [(0, 0x12), (1, 0x21)] {
+            blit_row(
+                &mut bus,
+                &[packed_pixels],
+                0,
+                &pm,
+                &device_clut,
+                &src_to_dst,
+                false,
+                &transfer,
+                row,
+                0,
+                0,
+                2,
+                2,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+                2,
+                2.0,
+                2.0,
+                screen_base,
+                4,
+                4,
+                4,
+                8,
+                0,
+                0,
+                None,
+                None,
+                &mut scratch,
+            );
+        }
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 16),
+            vec![
+                10, 10, 20, 20, //
+                10, 10, 20, 20, //
+                20, 20, 10, 10, //
+                20, 20, 10, 10,
+            ]
+        );
     }
 
     #[test]
