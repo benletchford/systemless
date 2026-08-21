@@ -4259,9 +4259,8 @@ impl super::TrapDispatcher {
 
         self.set_current_port_state(bus, cpu, state.port, None);
         let list_port_state = self.qd_state_snapshot();
-        let list_port_color_state = ((bus.read_word(state.port.wrapping_add(6)) & 0xC000)
-            == 0xC000)
-            .then(|| {
+        let list_port_color_state =
+            ((bus.read_word(state.port.wrapping_add(6)) & 0xC000) == 0xC000).then(|| {
                 (
                     bus.read_long(state.port.wrapping_add(80)),
                     bus.read_long(state.port.wrapping_add(84)),
@@ -5512,31 +5511,32 @@ impl super::TrapDispatcher {
 
                 let res_type = *b"STR#";
                 let mut res_found = false;
-                let found_str: Option<Vec<u8>> =
-                    if let Some((_, data_ptr)) = self.find_or_load_resource_any(bus, res_type, str_list_id) {
-                        res_found = true;
-                        // STR# format: 2-byte count, then Pascal strings (1-byte len + chars)
-                        // Inside Macintosh Volume I, I-476
-                        let count = bus.read_word(data_ptr) as usize;
-                        if index >= 1 && index <= count {
-                            let mut offset = 2u32;
-                            let mut found = None;
-                            for i in 1..=count {
-                                let len = bus.read_byte(data_ptr + offset) as usize;
-                                offset += 1;
-                                if i == index {
-                                    found = Some(bus.read_bytes(data_ptr + offset, len));
-                                    break;
-                                }
-                                offset += len as u32;
+                let found_str: Option<Vec<u8>> = if let Some((_, data_ptr)) =
+                    self.find_or_load_resource_any(bus, res_type, str_list_id)
+                {
+                    res_found = true;
+                    // STR# format: 2-byte count, then Pascal strings (1-byte len + chars)
+                    // Inside Macintosh Volume I, I-476
+                    let count = bus.read_word(data_ptr) as usize;
+                    if index >= 1 && index <= count {
+                        let mut offset = 2u32;
+                        let mut found = None;
+                        for i in 1..=count {
+                            let len = bus.read_byte(data_ptr + offset) as usize;
+                            offset += 1;
+                            if i == index {
+                                found = Some(bus.read_bytes(data_ptr + offset, len));
+                                break;
                             }
-                            found
-                        } else {
-                            None
+                            offset += len as u32;
                         }
+                        found
                     } else {
                         None
-                    };
+                    }
+                } else {
+                    None
+                };
 
                 // IM:I I-468 documents GetIndString as calling
                 // GetResource('STR#', strListID) "if necessary". On
@@ -24123,11 +24123,7 @@ mod tests {
                 view_rect_ptr,
                 (10, 10, 48, 100),
             );
-            super::super::TrapDispatcher::write_rect_words(
-                &mut bus,
-                data_bounds_ptr,
-                (0, 0, 4, 1),
-            );
+            super::super::TrapDispatcher::write_rect_words(&mut bus, data_bounds_ptr, (0, 0, 4, 1));
             cpu.write_reg(Register::A7, sp);
             bus.write_word(sp, 0x0044); // LNew
             bus.write_word(sp + 2, 0);
@@ -24203,14 +24199,17 @@ mod tests {
             // The owner starts at global (20,30), so local rView (10,10)
             // begins at screen (30,40). Every row must retain its own text
             // witness instead of collapsing at the view's lower edge.
-            for (row, (top, bottom)) in
-                [(30u32, 42u32), (42, 54), (54, 66)].into_iter().enumerate()
+            for (row, (top, bottom)) in [(30u32, 42u32), (42, 54), (54, 66)].into_iter().enumerate()
             {
                 let witness_pixels = (top..bottom)
                     .flat_map(|y| (40u32..130).map(move |x| (y, x)))
                     .filter(|&(y, x)| {
                         let pixel = bus.read_byte(screen_base + y * row_bytes + x);
-                        if row == 0 { pixel != 255 } else { pixel == 0 }
+                        if row == 0 {
+                            pixel != 255
+                        } else {
+                            pixel == 0
+                        }
                     })
                     .count();
                 assert!(witness_pixels > 0, "trap ${trap:03X} lost row at y={top}");
@@ -24228,8 +24227,9 @@ mod tests {
                 disp.resolved_port_color_fields.get(&owner_port),
                 Some(&0x03)
             );
-            assert!((68u32..72).all(|y| (40u32..130)
-                .all(|x| bus.read_byte(screen_base + y * row_bytes + x) == 255)));
+            assert!((68u32..72).all(
+                |y| (40u32..130).all(|x| bus.read_byte(screen_base + y * row_bytes + x) == 255)
+            ));
 
             // LClick receives the same owner-local coordinate basis as rView.
             cpu.write_reg(Register::A7, sp);
@@ -24244,11 +24244,7 @@ mod tests {
                 .unwrap();
             assert_eq!(bus.read_word(sp + 12), 0);
 
-            super::super::TrapDispatcher::write_point_words(
-                &mut bus,
-                query_cell_ptr,
-                (1, 0),
-            );
+            super::super::TrapDispatcher::write_point_words(&mut bus, query_cell_ptr, (1, 0));
             cpu.write_reg(Register::A7, sp);
             bus.write_word(sp, 0x003C); // LGetSelect(FALSE, row 1)
             bus.write_long(sp + 2, list_handle);
@@ -29810,17 +29806,10 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let key_ptr = bus.alloc(16);
-        let (base_handle, substitution_handle) =
-            replace_text_handles(&mut bus, b"A^0B^0", b"LONG");
+        let (base_handle, substitution_handle) = replace_text_handles(&mut bus, b"A^0B^0", b"LONG");
         let original_ptr = bus.read_long(base_handle);
         bus.write_pstring(key_ptr, b"^0");
-        write_replace_text_frame(
-            &mut bus,
-            sp,
-            base_handle,
-            substitution_handle,
-            key_ptr,
-        );
+        write_replace_text_frame(&mut bus, sp, base_handle, substitution_handle, key_ptr);
 
         disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
             .expect("ScriptUtil dispatch")
@@ -29842,17 +29831,10 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         let key_ptr = bus.alloc(16);
-        let (base_handle, substitution_handle) =
-            replace_text_handles(&mut bus, b"aaaa", b"a");
+        let (base_handle, substitution_handle) = replace_text_handles(&mut bus, b"aaaa", b"a");
         let original_ptr = bus.read_long(base_handle);
         bus.write_pstring(key_ptr, b"aa");
-        write_replace_text_frame(
-            &mut bus,
-            sp,
-            base_handle,
-            substitution_handle,
-            key_ptr,
-        );
+        write_replace_text_frame(&mut bus, sp, base_handle, substitution_handle, key_ptr);
 
         disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
             .expect("ScriptUtil dispatch")
@@ -29875,13 +29857,7 @@ mod tests {
             replace_text_handles(&mut bus, b"unchanged", b"replacement");
         let original_ptr = bus.read_long(base_handle);
         bus.write_pstring(key_ptr, b"missing");
-        write_replace_text_frame(
-            &mut bus,
-            sp,
-            base_handle,
-            substitution_handle,
-            key_ptr,
-        );
+        write_replace_text_frame(&mut bus, sp, base_handle, substitution_handle, key_ptr);
 
         disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
             .expect("ScriptUtil dispatch")
@@ -29901,13 +29877,7 @@ mod tests {
             replace_text_handles(&mut bus, &[0x81, 0x40, 0x40], b"X");
         disp.tx_font = 0x4000; // first Japanese font-family ID
         bus.write_pstring(key_ptr, &[0x40]);
-        write_replace_text_frame(
-            &mut bus,
-            sp,
-            base_handle,
-            substitution_handle,
-            key_ptr,
-        );
+        write_replace_text_frame(&mut bus, sp, base_handle, substitution_handle, key_ptr);
 
         disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus)
             .expect("ScriptUtil dispatch")

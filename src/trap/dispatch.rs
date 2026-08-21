@@ -5475,7 +5475,11 @@ impl TrapDispatcher {
         })
     }
 
-    pub(crate) fn find_loaded_resource_any(&self, res_type: [u8; 4], res_id: i16) -> Option<(u16, u32)> {
+    pub(crate) fn find_loaded_resource_any(
+        &self,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) -> Option<(u16, u32)> {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         for refnum in self.resource_search_order() {
