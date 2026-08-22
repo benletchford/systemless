@@ -1272,6 +1272,9 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Window Manager to call a guest WDEF procedure.
     pub(crate) window_def_trampoline: u32,
+    /// Return PCs of the private CalcVis calls inserted between a custom
+    /// WDEF's wCalcRgns and wDraw callbacks.
+    pub(crate) window_def_calcvis_return_pcs: HashSet<u32>,
     /// Address of the lazily-allocated trampoline template used by the
     /// Control Manager to call a guest CDEF procedure.
     pub(crate) control_def_trampoline: u32,
@@ -3024,6 +3027,7 @@ impl TrapDispatcher {
             device_loop_trampoline: 0,
             list_def_trampoline: 0,
             window_def_trampoline: 0,
+            window_def_calcvis_return_pcs: HashSet::new(),
             control_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
@@ -5578,9 +5582,9 @@ impl TrapDispatcher {
     /// window definition functions. The Window Manager HLE implements their
     /// drawing and hit-testing behavior for built-in procIDs. A direct guest
     /// call still has to honor the Pascal WDEF ABI, however: four parameters
-    /// occupy 12 bytes and the caller reserves a 4-byte result. The shim
-    /// discards those parameters, clears the result to the documented default
-    /// of zero, and returns through the saved JSR address. Macintosh Toolbox
+    /// occupy 12 bytes and the caller reserves a 4-byte result. The shim enters
+    /// the HLE through its private Debugger marker, returns D0 through the
+    /// result slot, and resumes through the saved JSR address. Macintosh Toolbox
     /// Essentials (1992), pp. 4-145..4-146; Inside Macintosh Volume V,
     /// V-31..V-32.
     pub(crate) fn synthesize_system_wdef(
@@ -5595,12 +5599,13 @@ impl TrapDispatcher {
             return None;
         }
 
-        let ptr = bus.alloc(10);
-        bus.write_word(ptr, 0x205F); // MOVEA.L (SP)+,A0 — recover JSR return PC.
-        bus.write_word(ptr + 2, 0xDEFC); // ADDA.W #12,SP — discard WDEF parameters.
-        bus.write_word(ptr + 4, 12);
-        bus.write_word(ptr + 6, 0x4297); // CLR.L (SP) — LongInt function result.
-        bus.write_word(ptr + 8, 0x4ED0); // JMP (A0).
+        let ptr = bus.alloc(12);
+        bus.write_word(ptr, 0xA9FF); // _Debugger — private direct-WDEF callback marker.
+        bus.write_word(ptr + 2, 0x205F); // MOVEA.L (SP)+,A0 — recover JSR return PC.
+        bus.write_word(ptr + 4, 0xDEFC); // ADDA.W #12,SP — discard WDEF parameters.
+        bus.write_word(ptr + 6, 12);
+        bus.write_word(ptr + 8, 0x2E80); // MOVE.L D0,(SP) — LongInt function result.
+        bus.write_word(ptr + 10, 0x4ED0); // JMP (A0).
         self.system_wdef_cache.insert(res_id, ptr);
         Some(ptr)
     }
