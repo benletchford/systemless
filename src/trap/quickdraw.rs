@@ -22489,38 +22489,6 @@ impl super::TrapDispatcher {
         // substitutes a scaled `color_manager_clut`.
         //
         self.apply_set_entries_to_device_clut_unchecked(bus, table_ptr, start, count);
-        // Uniform sequence-mode ColorSpec.value fields are client IDs after
-        // Color Manager processing, not physical CLUT indices. Preserve the
-        // independently valid physical mapping while updating the logical
-        // GDevice table; treating the latter as a physical palette
-        // reinterprets already indexed artwork through unrelated colors.
-        // Inside Macintosh Volume V (1986), pp. V-142..V-143.
-        if target_is_screen && sequence_uses_client_ids {
-            if previous_frame_was_dimmed {
-                self.device_clut = self.color_manager_clut;
-            } else {
-                let gdh = self.set_entries_target_gdevice_handle(bus);
-                let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
-                if ctab != 0 {
-                    for index in 0..256u32 {
-                        let value = bus.read_word(ctab + 8 + index * 8);
-                        if (value & ((PM_EXPLICIT as u16) << 8)) != 0 {
-                            self.device_clut[index as usize] =
-                                physical_clut_before_update[index as usize];
-                        }
-                    }
-                }
-            }
-            for index in 0..256u32 {
-                let entry = table_ptr + index * 8;
-                self.color_manager_clut[index as usize] = [
-                    bus.read_word(entry + 2),
-                    bus.read_word(entry + 4),
-                    bus.read_word(entry + 6),
-                ];
-            }
-        }
-
         // Publish `device_clut → color_manager_clut` only on a full-replace
         // SetEntries (start=0, count=255) that represents a fresh palette
         // install. Static dark scene palettes still need to publish so
@@ -22552,6 +22520,38 @@ impl super::TrapDispatcher {
                         table_ptr,
                         &self.color_manager_clut,
                     )));
+
+        // Uniform sequence-mode ColorSpec.value fields are client IDs after
+        // Color Manager processing, not physical CLUT indices. Preserve the
+        // independently valid physical mapping while updating the logical
+        // GDevice table; treating the latter as a physical palette
+        // reinterprets already indexed artwork through unrelated colors.
+        // Inside Macintosh Volume V (1986), pp. V-142..V-143.
+        if target_is_screen && sequence_uses_client_ids && !transient_fade_table {
+            if previous_frame_was_dimmed {
+                self.device_clut = self.color_manager_clut;
+            } else {
+                let gdh = self.set_entries_target_gdevice_handle(bus);
+                let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
+                if ctab != 0 {
+                    for index in 0..256u32 {
+                        let value = bus.read_word(ctab + 8 + index * 8);
+                        if (value & ((PM_EXPLICIT as u16) << 8)) != 0 {
+                            self.device_clut[index as usize] =
+                                physical_clut_before_update[index as usize];
+                        }
+                    }
+                }
+            }
+            for index in 0..256u32 {
+                let entry = table_ptr + index * 8;
+                self.color_manager_clut[index as usize] = [
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ];
+            }
+        }
 
         if target_is_screen && is_full_replace && !transient_fade_table && !sequence_uses_client_ids
         {
@@ -42244,6 +42244,42 @@ mod tests {
         assert_eq!(bus.read_word(entry_42 + 2), 0x2A00);
         assert_eq!(bus.read_word(entry_42 + 4), 0xD500);
         assert_eq!(bus.read_word(entry_42 + 6), 0x5500);
+    }
+
+    #[test]
+    fn test_setentries_sequence_mode_fade_down_does_not_collapse_color_manager_clut() {
+        // When games perform a smooth fade-down to black using SetEntries sequence mode
+        // (start=0, count=255, with uninitialized/zero ColorSpec.value fields), each
+        // step must dim the physical DAC (device_clut) without overwriting or collapsing
+        // the stable Color Manager baseline (color_manager_clut).
+        let (mut d, _cpu, mut bus) = setup_with_port();
+        d.ensure_main_gdevice(&mut bus);
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut = baseline;
+        d.device_clut = baseline;
+        let table_ptr = 0x336E00u32;
+
+        // Perform a 4-step fade down to 0%
+        for scale in [0.75, 0.50, 0.25, 0.0] {
+            for index in 0..256u32 {
+                let entry = table_ptr + index * 8;
+                bus.write_word(entry, 0); // zero value field in sequence mode
+                for (ch, &val) in baseline[index as usize].iter().enumerate() {
+                    let scaled = (f64::from(val) * scale).round() as u16;
+                    bus.write_word(entry + 2 + (ch as u32) * 2, scaled);
+                }
+            }
+            d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
+        }
+
+        // Hardware CLUT is now black (0)
+        assert_eq!(d.device_clut[0], [0, 0, 0]);
+        assert_eq!(d.device_clut[128], [0, 0, 0]);
+        // Color Manager CLUT remains the full baseline palette
+        assert_eq!(
+            d.color_manager_clut, baseline,
+            "color_manager_clut must remain the baseline palette during hardware fade-down"
+        );
     }
 
     #[test]
