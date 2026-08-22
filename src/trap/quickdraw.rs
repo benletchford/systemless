@@ -5781,7 +5781,7 @@ impl super::TrapDispatcher {
                             );
                         }
                         if matched {
-                            0xFFFFu16
+                            0x0100u16
                         } else {
                             0u16
                         }
@@ -37458,7 +37458,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         // bit 13 (screenDevice) should be set
-        assert_eq!(bus.read_word(TEST_SP + 6), 0xFFFF);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0x0100);
     }
 
     #[test]
@@ -37531,7 +37531,7 @@ mod tests {
         let set_check_result = d.dispatch_quickdraw(true, 0x22C, &mut cpu, &mut bus);
         assert!(set_check_result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
-        assert_eq!(bus.read_word(TEST_SP + 6), 0xFFFF);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0x0100);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 31u16);
@@ -37555,7 +37555,7 @@ mod tests {
         let screen_active_result = d.dispatch_quickdraw(true, 0x22C, &mut cpu, &mut bus);
         assert!(screen_active_result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
-        assert_eq!(bus.read_word(TEST_SP + 6), 0xFFFF);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0x0100);
     }
 
     #[test]
