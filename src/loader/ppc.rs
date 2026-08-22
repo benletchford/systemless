@@ -856,6 +856,7 @@ pub enum PpcImportDispatcherTarget {
     BackColor,
     RGBForeColor,
     RGBBackColor,
+    PmForeColor,
     Color2Index,
     Index2Color,
     RGB2HSL,
@@ -4401,6 +4402,7 @@ pub struct PpcLoadedApp {
     pub screen_clut: [[u16; 3]; 256],
     pub color_manager_clut: [[u16; 3]; 256],
     pub device_gamma: crate::display::DisplayGamma,
+    pub device_gamma_explicit: bool,
     pub quickdraw_fore_color: PpcRgbColor,
     pub quickdraw_back_color: PpcRgbColor,
     pub quickdraw_pen_h: i16,
@@ -7486,6 +7488,7 @@ impl PpcLoadedApp {
         let mut screen_clut = self.screen_clut;
         let mut color_manager_clut = self.color_manager_clut;
         let mut device_gamma = self.device_gamma;
+        let mut device_gamma_explicit = self.device_gamma_explicit;
         let mut quickdraw_fore_color = self.quickdraw_fore_color;
         let mut quickdraw_back_color = self.quickdraw_back_color;
         let mut quickdraw_pen_h = self.quickdraw_pen_h;
@@ -7954,6 +7957,7 @@ impl PpcLoadedApp {
                         &mut screen_clut,
                         &mut color_manager_clut,
                         &mut device_gamma,
+                        &mut device_gamma_explicit,
                         &mut quickdraw_fore_color,
                         &mut quickdraw_back_color,
                         &mut quickdraw_pen_h,
@@ -8232,6 +8236,7 @@ impl PpcLoadedApp {
         self.screen_clut = screen_clut;
         self.color_manager_clut = color_manager_clut;
         self.device_gamma = device_gamma;
+        self.device_gamma_explicit = device_gamma_explicit;
         self.quickdraw_fore_color = quickdraw_fore_color;
         self.quickdraw_back_color = quickdraw_back_color;
         self.quickdraw_pen_h = quickdraw_pen_h;
@@ -12534,6 +12539,7 @@ pub fn load_pef_application_with_config(
         screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
         color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
         device_gamma: crate::display::default_display_gamma(),
+        device_gamma_explicit: false,
         quickdraw_fore_color: PPC_RGB_BLACK,
         quickdraw_back_color: PPC_RGB_WHITE,
         quickdraw_pen_h: 0,
@@ -13603,6 +13609,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "BackColor") => PpcImportDispatcherTarget::BackColor,
         ("InterfaceLib", "RGBForeColor") => PpcImportDispatcherTarget::RGBForeColor,
         ("InterfaceLib", "RGBBackColor") => PpcImportDispatcherTarget::RGBBackColor,
+        ("InterfaceLib", "PmForeColor") => PpcImportDispatcherTarget::PmForeColor,
         ("InterfaceLib", "Color2Index") => PpcImportDispatcherTarget::Color2Index,
         ("InterfaceLib", "Index2Color") => PpcImportDispatcherTarget::Index2Color,
         ("InterfaceLib", "RGB2HSL") => PpcImportDispatcherTarget::RGB2HSL,
@@ -14487,6 +14494,7 @@ fn dispatch_supported_import(
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
+    device_gamma_explicit: &mut bool,
     quickdraw_fore_color: &mut PpcRgbColor,
     quickdraw_back_color: &mut PpcRgbColor,
     quickdraw_pen_h: &mut i16,
@@ -15567,6 +15575,27 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::PmForeColor => {
+            // Inside Macintosh Volume VI 1991, p. 20-21: courteous and
+            // tolerant entries select their palette RGB, while explicit
+            // entries select the corresponding device-table index.
+            let entry = cpu.gpr[3] as u16 as i16;
+            let palette_handle = memory
+                .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
+                .unwrap_or(0);
+            if entry >= 0 {
+                if let Some((color, explicit)) =
+                    ppc_palette_entry_color(memory, palette_handle, entry as u16)
+                {
+                    *quickdraw_fore_color = if explicit {
+                        ppc_index_to_color(memory, *current_gdevice, screen_clut, entry as u32)
+                    } else {
+                        color
+                    };
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::Color2Index => {
             let pixel = ppc_read_rgb_color(memory, cpu.gpr[3])
                 .map(|color| ppc_color_to_index(memory, *current_gdevice, screen_clut, color))
@@ -16430,6 +16459,9 @@ fn dispatch_supported_import(
             let applied_to_device = ppc_apply_palette(memory, palette_handle, screen_clut);
             let applied = applied_to_manager && applied_to_device;
             if applied {
+                if !*device_gamma_explicit {
+                    *device_gamma = crate::display::linear_display_gamma();
+                }
                 ppc_write_device_color_table(
                     memory,
                     *current_gdevice,
@@ -16452,6 +16484,9 @@ fn dispatch_supported_import(
             let window_ptr = cpu.gpr[3];
             let palette_handle = cpu.gpr[4];
             let updates = cpu.gpr[5] as u16;
+            let previous_palette_handle = memory
+                .read_u32_be(window_ptr.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
+                .unwrap_or(0);
             if window_ptr != 0
                 && ppc_memory_can_write_bytes(
                     memory,
@@ -16468,6 +16503,7 @@ fn dispatch_supported_import(
                     updates,
                 );
             }
+            let previous_device_colors = *screen_clut;
             let applied =
                 window_ptr != 0 && (window_ptr == *current_gworld || window_ptr == u32::MAX) && {
                     let applied_to_manager =
@@ -16475,6 +16511,9 @@ fn dispatch_supported_import(
                     let applied_to_device = ppc_apply_palette(memory, palette_handle, screen_clut);
                     let applied = applied_to_manager && applied_to_device;
                     if applied {
+                        if !*device_gamma_explicit {
+                            *device_gamma = crate::display::linear_display_gamma();
+                        }
                         ppc_write_device_color_table(
                             memory,
                             *current_gdevice,
@@ -16484,6 +16523,18 @@ fn dispatch_supported_import(
                     }
                     applied
                 };
+            if applied
+                && *screen_clut != previous_device_colors
+                && previous_palette_handle != 0
+                && previous_palette_handle != palette_handle
+                && updates != 0
+                && window_ptr != u32::MAX
+            {
+                // Inside Macintosh Volume VI (1991), pp. 20-20--20-21:
+                // activating a changed color environment invalidates windows
+                // whose SetPalette/NSetPalette update policy requests it.
+                ppc_enqueue_window_update_event(event_queue, window_ptr, input);
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] NSetPalette window=${window_ptr:08X} palette=${palette_handle:08X} updates=${updates:04X} applied={applied}"
@@ -17143,6 +17194,7 @@ fn dispatch_supported_import(
                 *current_gdevice,
                 screen_clut,
                 device_gamma,
+                device_gamma_explicit,
                 toolbox_startup,
             ))))
         }
@@ -17153,6 +17205,7 @@ fn dispatch_supported_import(
                 *current_gdevice,
                 screen_clut,
                 device_gamma,
+                device_gamma_explicit,
                 toolbox_startup,
             ))))
         }
@@ -22595,6 +22648,30 @@ fn ppc_dispatch_quickdraw_compatibility(
             } else {
                 PPC_NO_ERR
             };
+            if let Some(palette_ptr) = (handle != 0)
+                .then(|| memory.read_u32_be(handle))
+                .flatten()
+                .filter(|ptr| *ptr != 0)
+            {
+                let _ = memory.write_u16_be(palette_ptr, entry_count as u16);
+                let src_ctab = memory.read_u32_be(cpu.gpr[4]).filter(|ptr| *ptr != 0);
+                let src_entries = src_ctab
+                    .and_then(|ptr| memory.read_u16_be(ptr + 6))
+                    .map_or(0, |last| u32::from(last) + 1);
+                for entry in 0..entry_count {
+                    let info_ptr = palette_ptr + 16 + entry * 16;
+                    if let Some(ctab_ptr) = src_ctab.filter(|_| entry < src_entries) {
+                        let spec_ptr = ctab_ptr + 8 + entry * 8;
+                        for offset in [0, 2, 4] {
+                            if let Some(component) = memory.read_u16_be(spec_ptr + 2 + offset) {
+                                let _ = memory.write_u16_be(info_ptr + offset, component);
+                            }
+                        }
+                    }
+                    let _ = memory.write_u16_be(info_ptr + 6, cpu.gpr[5] as u16);
+                    let _ = memory.write_u16_be(info_ptr + 8, cpu.gpr[6] as u16);
+                }
+            }
             PpcImportAction::Return(handle)
         }
         "NewGDevice" => {
@@ -22686,8 +22763,61 @@ fn ppc_dispatch_quickdraw_compatibility(
             let _ = ppc_copy_mask(cpu, memory, gworlds, color_manager_clut);
             PpcImportAction::ReturnPreserve
         }
-        "AnimatePalette" | "SetEntryUsage" | "SetStdCProcs" | "SetStdProcs" | "BackPat"
-        | "BackPixPat" | "Exp1to3" | "Exp1to6" | "PenPat" => {
+        "SetEntryColor" => {
+            // PaletteHandle, entry index, and RGBColor pointer. Inside Macintosh
+            // Volume VI 1991, p. 20-25.
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            let rgb_ptr = cpu.gpr[5];
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        if let (Some(red), Some(green), Some(blue)) = (
+                            memory.read_u16_be(rgb_ptr),
+                            memory.read_u16_be(rgb_ptr + 2),
+                            memory.read_u16_be(rgb_ptr + 4),
+                        ) {
+                            let _ = memory.write_u16_be(info_ptr, red);
+                            let _ = memory.write_u16_be(info_ptr + 2, green);
+                            let _ = memory.write_u16_be(info_ptr + 4, blue);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        "SetEntryUsage" => {
+            // Inside Macintosh Volume VI 1991, pp. 20-24--20-25.
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        let _ = memory.write_u16_be(info_ptr + 6, cpu.gpr[5] as u16);
+                        let _ = memory.write_u16_be(info_ptr + 8, cpu.gpr[6] as u16);
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
+        "AnimatePalette" | "SetStdCProcs" | "SetStdProcs" | "BackPat" | "BackPixPat"
+        | "Exp1to3" | "Exp1to6" | "PenPat" => {
             let _ = color_manager_clut;
             PpcImportAction::ReturnPreserve
         }
@@ -52193,6 +52323,7 @@ fn ppc_driver_control(
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
+    device_gamma_explicit: &mut bool,
     toolbox_startup: &mut PpcToolboxStartupState,
     cs_code: i16,
     cs_param: u32,
@@ -52236,6 +52367,14 @@ fn ppc_driver_control(
                         toolbox_startup,
                     ) =>
                 {
+                    // Designing Cards and Drivers, 3rd ed. (1992), pp. 245–248:
+                    // cscSetEntries supplies values directly to the video
+                    // device. Preserve a guest-installed gamma table, but do
+                    // not apply the Color Manager compatibility transfer to
+                    // presentation-ready driver entries.
+                    if !*device_gamma_explicit {
+                        *device_gamma = crate::display::linear_display_gamma();
+                    }
                     PPC_NO_ERR
                 }
                 _ => PPC_PARAM_ERR,
@@ -52243,7 +52382,13 @@ fn ppc_driver_control(
         }
         4 => memory
             .read_u32_be(cs_param)
-            .map(|vd_gamma| ppc_install_device_gamma(memory, vd_gamma, device_gamma))
+            .map(|vd_gamma| {
+                let result = ppc_install_device_gamma(memory, vd_gamma, device_gamma);
+                if result == PPC_NO_ERR {
+                    *device_gamma_explicit = true;
+                }
+                result
+            })
             .unwrap_or(PPC_PARAM_ERR),
         _ => CONTROL_ERR,
     }
@@ -52255,6 +52400,7 @@ fn ppc_control(
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
+    device_gamma_explicit: &mut bool,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> i16 {
     let ref_num = cpu.gpr[3] as u16 as i16;
@@ -52269,6 +52415,7 @@ fn ppc_control(
         current_gdevice,
         screen_clut,
         device_gamma,
+        device_gamma_explicit,
         toolbox_startup,
         cpu.gpr[4] as u16 as i16,
         cpu.gpr[5],
@@ -52281,6 +52428,7 @@ fn ppc_pb_control(
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     device_gamma: &mut crate::display::DisplayGamma,
+    device_gamma_explicit: &mut bool,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> i16 {
     let parameter_block = cpu.gpr[3];
@@ -52303,6 +52451,7 @@ fn ppc_pb_control(
         current_gdevice,
         screen_clut,
         device_gamma,
+        device_gamma_explicit,
         toolbox_startup,
         cs_code,
         cs_param,
@@ -64994,6 +65143,7 @@ mod tests {
         memory.write_u16_be(table + 6, 0x3333).unwrap();
         let mut screen_clut = [[0; 3]; 256];
         let mut device_gamma = crate::display::default_display_gamma();
+        let mut device_gamma_explicit = false;
         let mut startup = PpcToolboxStartupState::default();
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -65005,12 +65155,31 @@ mod tests {
                 0,
                 &mut screen_clut,
                 &mut device_gamma,
+                &mut device_gamma_explicit,
                 &mut startup,
             ),
             PPC_NO_ERR
         );
         assert_eq!(screen_clut[7], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(device_gamma, crate::display::linear_display_gamma());
         assert_eq!(memory.read_u16_be(parameter_block + 16), Some(0));
+
+        let installed_gamma = [[42; 256]; 3];
+        device_gamma = installed_gamma;
+        device_gamma_explicit = true;
+        assert_eq!(
+            ppc_pb_control(
+                &cpu,
+                &mut memory,
+                0,
+                &mut screen_clut,
+                &mut device_gamma,
+                &mut device_gamma_explicit,
+                &mut startup,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(device_gamma, installed_gamma);
     }
 
     #[test]
@@ -65086,6 +65255,7 @@ mod tests {
             .unwrap();
         let mut screen_clut = [[0; 3]; 256];
         let mut device_gamma = crate::display::default_display_gamma();
+        let mut device_gamma_explicit = false;
         let mut startup = PpcToolboxStartupState::default();
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -65097,6 +65267,7 @@ mod tests {
                 0,
                 &mut screen_clut,
                 &mut device_gamma,
+                &mut device_gamma_explicit,
                 &mut startup,
             ),
             PPC_NO_ERR
@@ -65106,6 +65277,7 @@ mod tests {
         assert_eq!(device_gamma[0][255], 30);
         assert_eq!(device_gamma[1][64], 11);
         assert_eq!(device_gamma[2][255], 32);
+        assert!(device_gamma_explicit);
     }
 
     #[test]
@@ -65139,6 +65311,7 @@ mod tests {
         .unwrap();
         let mut screen_clut = loaded.screen_clut;
         let mut device_gamma = loaded.device_gamma;
+        let mut device_gamma_explicit = loaded.device_gamma_explicit;
         let mut startup = loaded.toolbox_startup;
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = parameter_block;
@@ -65150,6 +65323,7 @@ mod tests {
                 loaded.current_gdevice,
                 &mut screen_clut,
                 &mut device_gamma,
+                &mut device_gamma_explicit,
                 &mut startup,
             ),
             PPC_NO_ERR
@@ -100285,6 +100459,123 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_palette_replacement_queues_requested_update() {
+        let pef = synthetic_pef_with_import(b"NSetPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 48]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 2).unwrap();
+        for (index, rgb) in [[0x1234, 0x5678, 0x9abc], [0xdef0, 0x1357, 0x2468]]
+            .into_iter()
+            .enumerate()
+        {
+            let info = palette_ptr + 16 + index as u32 * 16;
+            loaded.memory.write_u16_be(info, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(info + 2, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(info + 4, rgb[2]).unwrap();
+            loaded.memory.write_u16_be(info + 6, 0x0002).unwrap();
+        }
+        loaded
+            .memory
+            .write_u32_be(
+                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
+                0x1234,
+            )
+            .unwrap();
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = palette_handle;
+        loaded.cpu.gpr[5] = 1;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.screen_clut[0], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(loaded.device_gamma, crate::display::linear_display_gamma());
+        assert!(loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == PPC_MAIN_GWORLD));
+    }
+
+    #[test]
+    fn hle_import_runner_pm_fore_color_resolves_palette_usage() {
+        for (usage, palette_rgb, expected) in [
+            (
+                0x0002,
+                PpcRgbColor {
+                    red: 0x1234,
+                    green: 0x5678,
+                    blue: 0x9abc,
+                },
+                PpcRgbColor {
+                    red: 0x1234,
+                    green: 0x5678,
+                    blue: 0x9abc,
+                },
+            ),
+            (
+                0x0008,
+                PpcRgbColor {
+                    red: 0x1234,
+                    green: 0x5678,
+                    blue: 0x9abc,
+                },
+                PpcRgbColor {
+                    red: 0xffff,
+                    green: 0xffff,
+                    blue: 0xcccc,
+                },
+            ),
+        ] {
+            let pef = synthetic_pef_with_import(b"PmForeColor");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let palette_handle = PPC_DATA_BASE + 0x1000;
+            let palette_ptr = PPC_DATA_BASE + 0x2000;
+            loaded.memory.add_region(palette_handle, vec![0; 4]);
+            loaded.memory.add_region(palette_ptr, vec![0; 48]);
+            loaded
+                .memory
+                .write_u32_be(palette_handle, palette_ptr)
+                .unwrap();
+            loaded.memory.write_u16_be(palette_ptr, 2).unwrap();
+            let info_ptr = palette_ptr + 32;
+            loaded
+                .memory
+                .write_u16_be(info_ptr, palette_rgb.red)
+                .unwrap();
+            loaded
+                .memory
+                .write_u16_be(info_ptr + 2, palette_rgb.green)
+                .unwrap();
+            loaded
+                .memory
+                .write_u16_be(info_ptr + 4, palette_rgb.blue)
+                .unwrap();
+            loaded.memory.write_u16_be(info_ptr + 6, usage).unwrap();
+            loaded
+                .memory
+                .write_u32_be(
+                    PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
+                    palette_handle,
+                )
+                .unwrap();
+            loaded.cpu.gpr[3] = 1;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.quickdraw_fore_color, expected);
+        }
+    }
+
+    #[test]
     fn hle_import_runner_activates_associated_palette_colors() {
         let pef = synthetic_pef_with_import(b"ActivatePalette");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -100326,6 +100617,7 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[0], [0x1234, 0x5678, 0x9abc]);
         assert_eq!(loaded.screen_clut[1], [0xdef0, 0x1357, 0x2468]);
+        assert_eq!(loaded.device_gamma, crate::display::linear_display_gamma());
         let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 10), Some(0x1234));
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 12), Some(0x5678));
