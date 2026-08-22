@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.18.11](https://github.com/benletchford/systemless/compare/v0.18.10...v0.18.11) (2026-08-22)
+
+
+### Bug Fixes
+
+* complete Capitalism native PowerPC compatibility ([#737](https://github.com/benletchford/systemless/issues/737)) ([156639a](https://github.com/benletchford/systemless/commit/156639ab92076bbac8089d8f6888b8c0e2d3c09d))
+* **quickdraw:** resolve clip port fallbacks and prevent TEUpdate background erasure ([#760](https://github.com/benletchford/systemless/issues/760)) ([da0aacf](https://github.com/benletchford/systemless/commit/da0aacf3ee4de6454dbc66294bb7759a8b171c6b))
+* run Blue's ABC Time Activities ([#748](https://github.com/benletchford/systemless/issues/748)) ([0158eb3](https://github.com/benletchford/systemless/commit/0158eb33afcb7f9316e35220c33c671d30af471c))
+* support Battle Girl PowerPC compatibility ([#753](https://github.com/benletchford/systemless/issues/753)) ([c31d1ed](https://github.com/benletchford/systemless/commit/c31d1ed72d187c68105e8a709ee0e363263d2e87))
+
 ## [0.18.10](https://github.com/benletchford/systemless/compare/v0.18.9...v0.18.10) (2026-08-22)
 
 
