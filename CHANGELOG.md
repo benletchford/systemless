@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.10](https://github.com/benletchford/systemless/compare/v0.18.9...v0.18.10) (2026-08-22)
+
+
+### Bug Fixes
+
+* restore classic key map bit ordering ([#749](https://github.com/benletchford/systemless/issues/749)) ([73e30c0](https://github.com/benletchford/systemless/commit/73e30c0d6022f0b1f059f239b089937e09033d20))
+
 ## [0.18.9](https://github.com/benletchford/systemless/compare/v0.18.8...v0.18.9) (2026-08-22)
 
 
