@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.8](https://github.com/benletchford/systemless/compare/v0.18.7...v0.18.8) (2026-08-22)
+
+
+### Bug Fixes
+
+* complete Dynasty League Baseball compatibility ([#733](https://github.com/benletchford/systemless/issues/733)) ([9da653e](https://github.com/benletchford/systemless/commit/9da653e4642b4ab6e0f49c5be734f5fd5e7554d5))
+* resolve dialog picture items against logical palette during hardware fades ([#740](https://github.com/benletchford/systemless/issues/740)) ([0e6a446](https://github.com/benletchford/systemless/commit/0e6a4463175f6fc5721caca5eabddcd375c45f70))
+
 ## [0.18.7](https://github.com/benletchford/systemless/compare/v0.18.6...v0.18.7) (2026-08-21)
 
 
