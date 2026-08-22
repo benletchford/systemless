@@ -2561,7 +2561,7 @@ impl PpcInputSnapshot {
             return false;
         }
         let idx = (key_code / 8) as usize;
-        let bit = 1u8 << (key_code % 8);
+        let bit = 0x80u8 >> (key_code % 8);
         self.key_map[idx] & bit != 0
     }
 
@@ -79842,7 +79842,7 @@ mod tests {
         loaded.set_input_snapshot(PpcInputSnapshot {
             key_map: {
                 let mut key_map = [0; 16];
-                key_map[(PPC_KEY_SPACE / 8) as usize] |= 1u8 << (PPC_KEY_SPACE % 8);
+                key_map[(PPC_KEY_SPACE / 8) as usize] |= 0x80u8 >> (PPC_KEY_SPACE % 8);
                 key_map
             },
             ..PpcInputSnapshot::default()
@@ -107080,7 +107080,7 @@ mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let key_map_ptr = PPC_DATA_BASE + 0x1000;
         let mut input = PpcInputSnapshot::default();
-        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 0x80u8 >> (PPC_KEY_LEFT % 8);
         loaded.set_input_snapshot(input);
         loaded
             .memory
@@ -107096,7 +107096,7 @@ mod tests {
                 .memory
                 .read_u8(key_map_ptr + u32::from(PPC_KEY_LEFT / 8))
                 .unwrap()
-                & (1u8 << (PPC_KEY_LEFT % 8)),
+                & (0x80u8 >> (PPC_KEY_LEFT % 8)),
             0
         );
 
@@ -109364,7 +109364,7 @@ mod tests {
         }
 
         let mut input = PpcInputSnapshot::default();
-        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 0x80u8 >> (PPC_KEY_LEFT % 8);
         let action =
             dispatch_getkeys_import(&mut cpu, &mut memory, input, Some(&mut idle_poll_counts));
         assert_eq!(action, PpcImportAction::ReturnPreserve);
@@ -109477,7 +109477,7 @@ mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let key_map_ptr = PPC_DATA_BASE + 0x1000;
         let mut input = PpcInputSnapshot::default();
-        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 0x80u8 >> (PPC_KEY_LEFT % 8);
         loaded.set_input_snapshot(input);
         loaded.memory.add_region(key_map_ptr, vec![0xcc; 4]);
         loaded.cpu.gpr[3] = key_map_ptr;
@@ -112075,7 +112075,7 @@ mod tests {
             b"Primary Trigger",
         );
         let mut input = PpcInputSnapshot::default();
-        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 0x80u8 >> (PPC_KEY_LEFT % 8);
         loaded.set_input_snapshot(input);
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ISpElementGetSimpleState;
@@ -112306,7 +112306,7 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let element = loaded.memory.read_u32_be(elements_out_ptr).unwrap();
         let mut input = PpcInputSnapshot::default();
-        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
+        input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 0x80u8 >> (PPC_KEY_LEFT % 8);
         loaded.set_input_snapshot(input);
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ISpElementGetSimpleState;
@@ -112388,7 +112388,7 @@ mod tests {
         };
         let snapshot = |key: u8| {
             let mut input = PpcInputSnapshot::default();
-            input.key_map[(key / 8) as usize] |= 1u8 << (key % 8);
+            input.key_map[(key / 8) as usize] |= 0x80u8 >> (key % 8);
             input
         };
         let walk = ppc_isp_action_binding(PPC_ISP_ELEMENT_KIND_AXIS, Some("Walk"));
@@ -112450,7 +112450,7 @@ mod tests {
         let snapshot = |keys: &[u8]| {
             let mut input = PpcInputSnapshot::default();
             for &key in keys {
-                input.key_map[(key / 8) as usize] |= 1u8 << (key % 8);
+                input.key_map[(key / 8) as usize] |= 0x80u8 >> (key % 8);
             }
             input
         };
@@ -112606,7 +112606,7 @@ mod tests {
             ..PpcInputSprocketState::default()
         };
         let mut space = PpcInputSnapshot::default();
-        space.key_map[(PPC_KEY_SPACE / 8) as usize] |= 1u8 << (PPC_KEY_SPACE % 8);
+        space.key_map[(PPC_KEY_SPACE / 8) as usize] |= 0x80u8 >> (PPC_KEY_SPACE % 8);
         assert_eq!(
             ppc_isp_input_simple_state(
                 PPC_ISP_ELEMENT_KIND_BUTTON,

@@ -185,7 +185,10 @@ fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if byte_idx >= 16 {
         return None;
     }
-    let mask = 1u8 << (key_code & 0x07);
+    // `KeyMap` is a Pascal `PACKED ARRAY[0..127] OF Boolean`, whose
+    // elements occupy each byte from its most-significant bit downward.
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-109.
+    let mask = 0x80u8 >> (key_code & 0x07);
     Some((byte_idx, mask))
 }
 
@@ -5732,8 +5735,9 @@ impl TrapDispatcher {
     /// Allocate (and cache) the standard keycode-map resource (`'KMAP'` ID
     /// 0). Its four-byte ID/version header is followed by the 128-entry
     /// hardware-to-virtual-key map and a zero exception-array count. The
-    /// standard ADB map is identity-valued; exceptional keyboards describe
-    /// their remapping in the optional records. Macintosh Technical Note 160.
+    /// standard map translates Control and the four cursor keys between the
+    /// original and ADB virtual-key assignments; all other entries are
+    /// identity-valued. Inside Macintosh: Text (1993), pp. C-11..C-15.
     pub(crate) fn synthesize_system_kmap(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5752,6 +5756,19 @@ impl TrapDispatcher {
         let mut body = vec![0u8; LEN];
         for keycode in 0..MAP_SIZE {
             body[HEADER_SIZE + keycode] = keycode as u8;
+        }
+        for (raw, virtual_key) in [
+            (0x36usize, 0x3Bu8),
+            (0x3B, 0x7B),
+            (0x3C, 0x7C),
+            (0x3D, 0x7D),
+            (0x3E, 0x7E),
+            (0x7B, 0x3C),
+            (0x7C, 0x3D),
+            (0x7D, 0x3E),
+            (0x7E, 0x36),
+        ] {
+            body[HEADER_SIZE + raw] = virtual_key;
         }
 
         let ptr = bus.alloc(body.len() as u32);

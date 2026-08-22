@@ -9186,7 +9186,7 @@ mod tests {
     }
 
     #[test]
-    fn get_resource_synthesizes_standard_identity_kmap_id_zero() {
+    fn get_resource_synthesizes_standard_adb_kmap_id_zero() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let sp = TEST_SP;
@@ -9201,11 +9201,26 @@ mod tests {
         assert_eq!(bus.get_alloc_size(kmap), Some(4 + 128 + 2));
         assert_eq!(bus.read_word(kmap), 0, "KMAP identifier");
         assert_eq!(bus.read_word(kmap + 2), 0, "KMAP version");
+        let remapped = [
+            (0x36u32, 0x3Bu8),
+            (0x3B, 0x7B),
+            (0x3C, 0x7C),
+            (0x3D, 0x7D),
+            (0x3E, 0x7E),
+            (0x7B, 0x3C),
+            (0x7C, 0x3D),
+            (0x7D, 0x3E),
+            (0x7E, 0x36),
+        ];
         for keycode in 0..128u32 {
+            let expected = remapped
+                .iter()
+                .find_map(|&(raw, virtual_key)| (raw == keycode).then_some(virtual_key))
+                .unwrap_or(keycode as u8);
             assert_eq!(
                 bus.read_byte(kmap + 4 + keycode),
-                keycode as u8,
-                "standard keycode {keycode} should map to itself"
+                expected,
+                "standard raw keycode {keycode:#04X} should use its ADB virtual-key mapping"
             );
         }
         assert_eq!(bus.read_word(kmap + 4 + 128), 0, "KMAP exception count");
