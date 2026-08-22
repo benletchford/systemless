@@ -1356,6 +1356,10 @@ pub struct TrapDispatcher {
     /// U.S. Roman keyboard-layout resource ID 0 is present in every
     /// System file and is used directly by apps that call KeyTranslate.
     pub(crate) system_kchr_cache: HashMap<i16, u32>,
+    /// Cache of the synthetic standard `'KMAP'` ID 0 resource. Classic apps
+    /// may read its 128-byte hardware-to-virtual-key map directly when
+    /// implementing configurable controls.
+    pub(crate) system_kmap_cache: HashMap<i16, u32>,
     /// Cache of synthetic ROM `'WDEF'` resource pointers. WDEF IDs 0 and 1
     /// are the standard document and rounded-window definition functions.
     /// Their behavior is implemented by the Window Manager HLE, but callers
@@ -3040,6 +3044,7 @@ impl TrapDispatcher {
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
+            system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
@@ -5626,8 +5631,9 @@ impl TrapDispatcher {
 
     /// Allocate (and cache) the standard U.S. Roman keyboard-layout
     /// resource (`'KCHR'` ID 0). Inside Macintosh: Text 1993, C-18..C-19
-    /// defines the resource as a version byte, a 256-byte table-selection
-    /// index, and 128-byte character-mapping tables keyed by virtual key code.
+    /// defines the resource as a version word, a 256-byte table-selection
+    /// index, a table-count word, 128-byte character-mapping tables keyed by
+    /// virtual key code, and a dead-key-count word.
     pub(crate) fn synthesize_system_kchr(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5641,12 +5647,16 @@ impl TrapDispatcher {
         }
 
         const TABLES: usize = 2;
-        const TABLE_BASE: usize = 1 + 256;
-        const LEN: usize = TABLE_BASE + TABLES * 128;
+        const TABLE_COUNT_OFFSET: usize = 2 + 256;
+        const TABLE_BASE: usize = TABLE_COUNT_OFFSET + 2;
+        const DEAD_KEY_COUNT_OFFSET: usize = TABLE_BASE + TABLES * 128;
+        const LEN: usize = DEAD_KEY_COUNT_OFFSET + 2;
         let mut body = vec![0u8; LEN];
         for modifier in 0..=255usize {
-            body[1 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
+            body[2 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
         }
+        body[TABLE_COUNT_OFFSET..TABLE_COUNT_OFFSET + 2]
+            .copy_from_slice(&(TABLES as u16).to_be_bytes());
 
         let normal = TABLE_BASE;
         let shifted = TABLE_BASE + 128;
@@ -5700,6 +5710,10 @@ impl TrapDispatcher {
             (0x2F, b'.', b'>'),
             (0x31, b' ', b' '),
             (0x32, b'`', b'~'),
+            (0x7B, 0x1C, 0x1C),
+            (0x7C, 0x1D, 0x1D),
+            (0x7D, 0x1F, 0x1F),
+            (0x7E, 0x1E, 0x1E),
         ];
         for &(vk, unshifted, shifted_char) in keys {
             body[normal + vk] = unshifted;
@@ -5712,6 +5726,40 @@ impl TrapDispatcher {
         }
         bus.write_bytes(ptr, &body);
         self.system_kchr_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) the standard keycode-map resource (`'KMAP'` ID
+    /// 0). Its four-byte ID/version header is followed by the 128-entry
+    /// hardware-to-virtual-key map and a zero exception-array count. The
+    /// standard ADB map is identity-valued; exceptional keyboards describe
+    /// their remapping in the optional records. Macintosh Technical Note 160.
+    pub(crate) fn synthesize_system_kmap(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_kmap_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if res_id != 0 {
+            return None;
+        }
+
+        const HEADER_SIZE: usize = 4;
+        const MAP_SIZE: usize = 128;
+        const LEN: usize = HEADER_SIZE + MAP_SIZE + 2;
+        let mut body = vec![0u8; LEN];
+        for keycode in 0..MAP_SIZE {
+            body[HEADER_SIZE + keycode] = keycode as u8;
+        }
+
+        let ptr = bus.alloc(body.len() as u32);
+        if ptr == 0 {
+            return None;
+        }
+        bus.write_bytes(ptr, &body);
+        self.system_kmap_cache.insert(res_id, ptr);
         Some(ptr)
     }
 
