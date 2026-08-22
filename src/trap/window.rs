@@ -10890,9 +10890,8 @@ mod tests {
             super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
             "the back visRgn must expose the front window's former location"
         );
-        let back_update = bus.read_long(
-            back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET,
-        );
+        let back_update =
+            bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
         assert!(
             super::super::TrapDispatcher::region_contains_point(&bus, back_update, 80, 100),
             "the newly exposed back content must be invalidated"

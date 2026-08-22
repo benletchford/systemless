@@ -1034,31 +1034,32 @@ impl super::TrapDispatcher {
         bus.write_long(handle, menu_ptr);
         self.ptr_to_handle.insert(menu_ptr, handle);
 
-        let menu = if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
-            let res_size = menu_resource_size(bus, res_ptr);
-            for i in 0..res_size.min(256) {
-                bus.write_byte(menu_ptr + i as u32, bus.read_byte(res_ptr + i as u32));
-            }
-            parse_menu_resource(bus, menu_ptr, handle)
-        } else {
-            bus.write_word(menu_ptr, menu_id as u16);
-            bus.write_word(menu_ptr + 2, 0);
-            bus.write_word(menu_ptr + 4, 0);
-            bus.write_long(menu_ptr + 6, 0);
-            bus.write_long(menu_ptr + 10, 0xFFFF_FFFF);
-            bus.write_byte(menu_ptr + 14, 0);
-            bus.write_byte(menu_ptr + 15, 0);
-            Menu {
-                id: menu_id,
-                title: String::new(),
-                items: Vec::new(),
-                enabled: true,
-                handle,
-                in_menu_bar: false,
-                hierarchical: false,
-                visible_in_menu_bar: false,
-            }
-        };
+        let menu =
+            if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
+                let res_size = menu_resource_size(bus, res_ptr);
+                for i in 0..res_size.min(256) {
+                    bus.write_byte(menu_ptr + i as u32, bus.read_byte(res_ptr + i as u32));
+                }
+                parse_menu_resource(bus, menu_ptr, handle)
+            } else {
+                bus.write_word(menu_ptr, menu_id as u16);
+                bus.write_word(menu_ptr + 2, 0);
+                bus.write_word(menu_ptr + 4, 0);
+                bus.write_long(menu_ptr + 6, 0);
+                bus.write_long(menu_ptr + 10, 0xFFFF_FFFF);
+                bus.write_byte(menu_ptr + 14, 0);
+                bus.write_byte(menu_ptr + 15, 0);
+                Menu {
+                    id: menu_id,
+                    title: String::new(),
+                    items: Vec::new(),
+                    enabled: true,
+                    handle,
+                    in_menu_bar: false,
+                    hierarchical: false,
+                    visible_in_menu_bar: false,
+                }
+            };
 
         self.menus.push(menu);
         self.load_menu_color_resource(bus, menu_id);
@@ -1521,18 +1522,17 @@ impl super::TrapDispatcher {
                             .push(parse_menu_resource(bus, menu_ptr, menu_handle));
                     }
                 }
-                let menu_copy = if let Some(menu) =
-                    self.menus.iter_mut().find(|m| m.handle == menu_handle)
-                {
-                    refresh_menu_from_memory(bus, menu);
-                    for item in parsed {
-                        menu.items.push(item);
-                    }
-                    sync_enable_flags(bus, menu);
-                    Some(menu.clone())
-                } else {
-                    None
-                };
+                let menu_copy =
+                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                        refresh_menu_from_memory(bus, menu);
+                        for item in parsed {
+                            menu.items.push(item);
+                        }
+                        sync_enable_flags(bus, menu);
+                        Some(menu.clone())
+                    } else {
+                        None
+                    };
                 // Also serialise items into the guest-memory MENU record so
                 // CountMItems / CalcMenuSize (which parse guest memory to stay
                 // compatible with GetMenu-loaded menus) see the AppendMenu'd
@@ -1569,7 +1569,9 @@ impl super::TrapDispatcher {
                             // raw guest MENU handle). Parse any MENU resource
                             // by menu ID, else fall back to title-only memory.
                             let menu_id = bus.read_word(menu_ptr) as i16;
-                            if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
+                            if let Some((_, res_ptr)) =
+                                self.find_or_load_resource_any(bus, *b"MENU", menu_id)
+                            {
                                 let mut menu = parse_menu_resource(bus, res_ptr, menu_handle);
                                 eprintln!(
                                     "[MENU] InsertMenu: ID={} title=\"{}\" items={}",
@@ -1711,7 +1713,8 @@ impl super::TrapDispatcher {
             (true, 0x1C0) => {
                 let sp = cpu.read_reg(Register::A7);
                 let mbar_id = bus.read_word(sp) as i16;
-                let handle = if let Some((_, mbar_ptr)) = self.find_or_load_resource_any(bus, *b"MBAR", mbar_id)
+                let handle = if let Some((_, mbar_ptr)) =
+                    self.find_or_load_resource_any(bus, *b"MBAR", mbar_id)
                 {
                     let menu_count = bus.read_word(mbar_ptr) as usize;
                     let mut snapshot = Vec::new();
@@ -1719,7 +1722,8 @@ impl super::TrapDispatcher {
 
                     for i in 0..menu_count {
                         let menu_id = bus.read_word(mbar_ptr + 2 + (i as u32) * 2) as i16;
-                        let Some((_, menu_res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id)
+                        let Some((_, menu_res_ptr)) =
+                            self.find_or_load_resource_any(bus, *b"MENU", menu_id)
                         else {
                             continue;
                         };
@@ -2413,18 +2417,17 @@ impl super::TrapDispatcher {
                 let menu_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
 
-                let touched = if let Some(menu) =
-                    self.menus.iter_mut().find(|m| m.handle == menu_handle)
-                {
-                    if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                        mi.mark = if checked { 0x12 } else { 0 }; // 0x12 = checkmark char
-                        Some(menu.clone())
+                let touched =
+                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
+                            mi.mark = if checked { 0x12 } else { 0 }; // 0x12 = checkmark char
+                            Some(menu.clone())
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 // The Menu Manager record is public guest state. Preserve the
                 // mark in its item record so a later mutation that refreshes
                 // the cached menu cannot resurrect the previous value.
@@ -2614,19 +2617,18 @@ impl super::TrapDispatcher {
                 let icon = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched = if let Some(menu) =
-                    self.menus.iter_mut().find(|m| m.handle == menu_handle)
-                {
-                    refresh_menu_from_memory(bus, menu);
-                    if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                        mi.icon = icon;
-                        Some(menu.clone())
+                let touched =
+                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                        refresh_menu_from_memory(bus, menu);
+                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
+                            mi.icon = icon;
+                            Some(menu.clone())
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 if let Some(menu) = touched {
                     self.serialise_menu_items_to_memory(bus, &menu);
                 }
@@ -2671,19 +2673,18 @@ impl super::TrapDispatcher {
                 let style = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched = if let Some(menu) =
-                    self.menus.iter_mut().find(|m| m.handle == menu_handle)
-                {
-                    refresh_menu_from_memory(bus, menu);
-                    if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                        mi.style = style;
-                        Some(menu.clone())
+                let touched =
+                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                        refresh_menu_from_memory(bus, menu);
+                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
+                            mi.style = style;
+                            Some(menu.clone())
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 if let Some(menu) = touched {
                     self.serialise_menu_items_to_memory(bus, &menu);
                 }
@@ -2725,19 +2726,18 @@ impl super::TrapDispatcher {
                 let mark_char = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched = if let Some(menu) =
-                    self.menus.iter_mut().find(|m| m.handle == menu_handle)
-                {
-                    refresh_menu_from_memory(bus, menu);
-                    if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                        mi.mark = mark_char;
-                        Some(menu.clone())
+                let touched =
+                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+                        refresh_menu_from_memory(bus, menu);
+                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
+                            mi.mark = mark_char;
+                            Some(menu.clone())
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                };
+                    };
                 if let Some(menu) = touched {
                     self.serialise_menu_items_to_memory(bus, &menu);
                 }
@@ -4528,14 +4528,19 @@ impl super::TrapDispatcher {
         parent_depth: Option<usize>,
         parent_item: i16,
     ) {
-        let Some((parent_menu_idx, parent_rect, child_depth)) = self.menu_tracking.as_ref().and_then(|tracking| {
-            parent_depth.map_or_else(
-                || Some((tracking.active_menu, tracking.dropdown_rect, 0)),
-                |depth| tracking.submenus.get(depth).map(|submenu| {
-                    (submenu.menu, submenu.dropdown_rect, depth + 1)
-                }),
-            )
-        }) else {
+        let Some((parent_menu_idx, parent_rect, child_depth)) =
+            self.menu_tracking.as_ref().and_then(|tracking| {
+                parent_depth.map_or_else(
+                    || Some((tracking.active_menu, tracking.dropdown_rect, 0)),
+                    |depth| {
+                        tracking
+                            .submenus
+                            .get(depth)
+                            .map(|submenu| (submenu.menu, submenu.dropdown_rect, depth + 1))
+                    },
+                )
+            })
+        else {
             return;
         };
         let Some(submenu_idx) =
@@ -4561,8 +4566,7 @@ impl super::TrapDispatcher {
             parent_rect,
             submenu_idx,
             parent_item,
-        )
-        else {
+        ) else {
             self.close_submenus_from(bus, child_depth);
             return;
         };
@@ -4608,12 +4612,7 @@ impl super::TrapDispatcher {
         Some(0)
     }
 
-    fn update_submenu_highlight(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        depth: usize,
-        new_item: i16,
-    ) {
+    fn update_submenu_highlight(&mut self, bus: &mut MacMemoryBus, depth: usize, new_item: i16) {
         let Some((menu_idx, old_item, rect)) = self
             .menu_tracking
             .as_ref()
@@ -4707,9 +4706,7 @@ impl super::TrapDispatcher {
             .map(|tracking| tracking.submenus.len())
             .unwrap_or(0);
         for depth in (0..submenu_count).rev() {
-            if let Some(submenu_item) =
-                self.submenu_item_at_point(bus, depth, mouse_x, mouse_y)
-            {
+            if let Some(submenu_item) = self.submenu_item_at_point(bus, depth, mouse_x, mouse_y) {
                 self.update_submenu_highlight(bus, depth, submenu_item);
                 return;
             }
@@ -4935,9 +4932,7 @@ impl super::TrapDispatcher {
                     tracking
                         .submenus
                         .iter()
-                        .find(|submenu| {
-                            submenu.menu == menu_idx && submenu.dropdown_rect == rect
-                        })
+                        .find(|submenu| submenu.menu == menu_idx && submenu.dropdown_rect == rect)
                         .map(|submenu| submenu.highlighted_item)
                 }
             })
@@ -4953,9 +4948,7 @@ impl super::TrapDispatcher {
                 self.dialog_tracking
                     .as_ref()
                     .and_then(|tracking| tracking.active_popup.as_ref())
-                    .filter(|popup| {
-                        popup.active_menu == menu_idx && popup.dropdown_rect == rect
-                    })
+                    .filter(|popup| popup.active_menu == menu_idx && popup.dropdown_rect == rect)
                     .map(|popup| popup.highlighted_item)
             })
             .unwrap_or(0);
@@ -5674,8 +5667,8 @@ mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
         count_menu_items_from_memory, parse_appendmenu_items, parse_menu_resource, Menu, MenuItem,
-        MenuTrackingState, MC_ENTRY_SIZE, MENU_KEY_REDUCED_ICON,
-        MENU_KEY_SMALL_ICON, MENU_ROW_HEIGHT,
+        MenuTrackingState, MC_ENTRY_SIZE, MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON,
+        MENU_ROW_HEIGHT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -8113,14 +8106,7 @@ mod tests {
     fn long_menu_mutations_preserve_trailing_item_and_refresh_guest_edits() {
         let (mut disp, mut cpu, mut bus) = setup();
         let menu_id = 447;
-        let handle = new_menu_with_title(
-            &mut disp,
-            &mut cpu,
-            &mut bus,
-            menu_id,
-            0x303800,
-            "Long",
-        );
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x303800, "Long");
 
         let mut data = vec!["A/A"; 39];
         data.push("Tail/Z");
@@ -8140,7 +8126,10 @@ mod tests {
             "AppendMenu must grow MENU records beyond the legacy 256-byte buffer"
         );
         assert_eq!(count_menu_items_from_memory(&bus, handle), 40);
-        assert_eq!(get_item_cmd(&mut disp, &mut cpu, &mut bus, handle, 40), b'Z');
+        assert_eq!(
+            get_item_cmd(&mut disp, &mut cpu, &mut bus, handle, 40),
+            b'Z'
+        );
 
         let replacement = "Expanded first item that forces another complete record resize";
         write_pstring(&mut bus, 0x303A00, replacement);
@@ -8158,7 +8147,10 @@ mod tests {
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(TEST_SP, 1);
             bus.write_long(TEST_SP + 2, handle);
-            assert!(disp.dispatch_menu(true, trap, &mut cpu, &mut bus).unwrap().is_ok());
+            assert!(disp
+                .dispatch_menu(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok());
         }
         let (height, width) = calc_menu_size_for_test(&mut disp, &mut cpu, &mut bus, handle);
         assert!(height > 0 && width > 0);
@@ -10202,13 +10194,7 @@ mod tests {
             (command_pixel, "command key"),
         ] {
             assert!(
-                screen_pixel_is_set(
-                    &themed_bus,
-                    themed_base,
-                    themed_row_bytes,
-                    pixel.0,
-                    pixel.1
-                ),
+                screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
                 "final themed chrome composition should preserve the highlighted {label}"
             );
         }
@@ -10249,13 +10235,7 @@ mod tests {
             (command_pixel, "popup command key"),
         ] {
             assert!(
-                screen_pixel_is_set(
-                    &themed_bus,
-                    themed_base,
-                    themed_row_bytes,
-                    pixel.0,
-                    pixel.1
-                ),
+                screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, pixel.0, pixel.1),
                 "final themed popup composition should preserve the highlighted {label}"
             );
         }
@@ -13180,11 +13160,9 @@ mod tests {
 
         let game = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x310000, "Game");
         append_menu_data(&mut disp, &mut cpu, &mut bus, game, 0x310040, "Options");
-        let options =
-            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 138, 0x310200, "Options");
+        let options = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 138, 0x310200, "Options");
         append_menu_data(&mut disp, &mut cpu, &mut bus, options, 0x310240, "Speed");
-        let speed =
-            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 139, 0x310400, "Speed");
+        let speed = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 139, 0x310400, "Speed");
         append_menu_data(
             &mut disp,
             &mut cpu,
