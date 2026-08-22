@@ -5888,7 +5888,33 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), p. 3-23.
             // Debugger ($A9FF): No debugger installed on Systemless,
             // so this is a no-op that returns to the caller.
-            (true, 0x1FF) => Ok(()),
+            (true, 0x1FF) => {
+                let pc = cpu.read_reg(Register::PC);
+                let direct_wdef = self
+                    .system_wdef_cache
+                    .iter()
+                    .find_map(|(&resource_id, &ptr)| (pc == ptr + 2).then_some(resource_id));
+                if let Some(resource_id) = direct_wdef {
+                    // A custom WDEF may delegate to a standard System-file
+                    // WDEF by loading and calling its resource directly. The
+                    // synthetic resource enters here before its ABI cleanup.
+                    let sp = cpu.read_reg(Register::A7);
+                    let param = bus.read_long(sp + 4);
+                    let message = bus.read_word(sp + 8) as i16;
+                    let window_ptr = bus.read_long(sp + 10);
+                    let variant = bus.read_word(sp + 14) as i16;
+                    let result = self.dispatch_direct_system_wdef(
+                        bus,
+                        resource_id,
+                        variant,
+                        window_ptr,
+                        message,
+                        param,
+                    );
+                    cpu.write_reg(Register::D0, result);
+                }
+                Ok(())
+            }
 
             // _Shutdown ($A895) — Shutdown Manager dispatch
             // Inside Macintosh Volume V, V-589..V-590.
@@ -20556,6 +20582,52 @@ mod tests {
         assert!(result.is_some(), "Debugger should be handled");
         assert!(result.unwrap().is_ok(), "Debugger should return");
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn synthetic_system_wdef_debugger_marker_recalculates_document_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            40,
+            2,
+            490,
+            798,
+            "Document",
+            8,
+            true,
+            false,
+            false,
+            0,
+        );
+        let wdef = disp.synthesize_system_wdef(&mut bus, 0).unwrap();
+        let structure = bus.read_long(window + 108);
+        let structure_ptr = bus.read_long(structure);
+        bus.write_word(structure_ptr + 2, 40);
+        bus.write_word(structure_ptr + 4, 2);
+        bus.write_word(structure_ptr + 6, 490);
+        bus.write_word(structure_ptr + 8, 798);
+
+        let sp = cpu.read_reg(Register::A7) - 20;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, wdef + 2);
+        bus.write_long(sp + 4, 0); // param
+        bus.write_word(sp + 8, 2); // wCalcRgns
+        bus.write_long(sp + 10, window);
+        bus.write_word(sp + 14, 8); // zoomDocProc variant
+
+        let result = disp.dispatch_toolbox(true, 0x1FF, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            disp.window_structure_rect(&bus, window),
+            Some((21, 1, 492, 800)),
+            "direct standard WDEF delegation should calculate document chrome"
+        );
     }
 
     #[test]

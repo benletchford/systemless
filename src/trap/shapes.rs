@@ -308,6 +308,16 @@ fn invert_indexed_pixel(old: u8) -> u8 {
     255 - old
 }
 
+fn hilite_indexed_pixel(old: u8, background: u8, hilite: u8) -> u8 {
+    if old == background {
+        hilite
+    } else if old == hilite {
+        background
+    } else {
+        old
+    }
+}
+
 fn apply_boolean_transfer_1(old: bool, mode: i16, source_is_black: bool) -> bool {
     match normalize_boolean_transfer_mode(mode) {
         0 => source_is_black,
@@ -1500,6 +1510,30 @@ impl super::TrapDispatcher {
             bg_idx = 0;
         }
 
+        // Clearing pHiliteBit makes the next XOR-style drawing operation use
+        // Color QuickDraw's one-shot hilite mode. Unlike indexed inversion,
+        // highlighting exchanges only the port background and HiliteRGB;
+        // every other color remains unchanged.
+        let hilite_indexes = if pixel_size == 8
+            && is_color
+            && matches!(op, ShapeOp::Invert)
+            && bus.read_byte(0x0938) & 1 == 0
+        {
+            let port_clut = indexed_clut.as_ref().expect("8bpp color port CLUT");
+            let hilite = shape_palette_index_for_rgb(
+                [
+                    self.hilite_color.0,
+                    self.hilite_color.1,
+                    self.hilite_color.2,
+                ],
+                pixel_size,
+                port_clut,
+            );
+            Some((bg_idx, hilite))
+        } else {
+            None
+        };
+
         let installed_raw_pixpat = if pixel_size == 8 && is_color {
             let handle = match op {
                 ShapeOp::Paint | ShapeOp::Frame => bus.read_long(port.wrapping_add(58)),
@@ -1544,7 +1578,11 @@ impl super::TrapDispatcher {
                             if invert_rows {
                                 bus.read_bytes_into(addr, &mut row);
                                 for pixel in row.iter_mut() {
-                                    *pixel = invert_indexed_pixel(*pixel);
+                                    *pixel = if let Some((background, hilite)) = hilite_indexes {
+                                        hilite_indexed_pixel(*pixel, background, hilite)
+                                    } else {
+                                        invert_indexed_pixel(*pixel)
+                                    };
                                 }
                             }
                             bus.write_bytes(addr, &row);
@@ -1766,7 +1804,13 @@ impl super::TrapDispatcher {
                             bus.write_byte(addr, new);
                         }
                         ShapeOp::Invert => {
-                            bus.write_byte(addr, invert_indexed_pixel(bus.read_byte(addr)))
+                            let old = bus.read_byte(addr);
+                            let new = if let Some((background, hilite)) = hilite_indexes {
+                                hilite_indexed_pixel(old, background, hilite)
+                            } else {
+                                invert_indexed_pixel(old)
+                            };
+                            bus.write_byte(addr, new)
                         }
                     }
                 } else if matches!(pixel_size, 2 | 4) {
@@ -1948,8 +1992,9 @@ impl super::TrapDispatcher {
 mod tests {
     use super::{
         apply_boolean_transfer_1, apply_boolean_transfer_8, blend_rgb, ctab_rgb_for_value,
-        ctab_uses_noncanonical_black, fg_bg_low_contrast, indexed_shape_color_index,
-        lighten_stem_alpha, normalize_boolean_transfer_mode, shape_palette_index_for_rgb,
+        ctab_uses_noncanonical_black, fg_bg_low_contrast, hilite_indexed_pixel,
+        indexed_shape_color_index, lighten_stem_alpha, normalize_boolean_transfer_mode,
+        shape_palette_index_for_rgb,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
 
@@ -2085,6 +2130,13 @@ mod tests {
     fn apply_boolean_transfer_1_src_xor_inverts_only_black_source_pixels() {
         assert!(!apply_boolean_transfer_1(true, 2, true));
         assert!(apply_boolean_transfer_1(true, 2, false));
+    }
+
+    #[test]
+    fn color_hilite_exchanges_only_background_and_hilite_pixels() {
+        assert_eq!(hilite_indexed_pixel(0, 0, 255), 255);
+        assert_eq!(hilite_indexed_pixel(255, 0, 255), 0);
+        assert_eq!(hilite_indexed_pixel(42, 0, 255), 42);
     }
 
     // Lock the anti-aliased glyph blend contract. Partial glyph coverage

@@ -64,7 +64,7 @@ impl super::TrapDispatcher {
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
     const WDEF_FIRST_APPLICATION_RESOURCE_ID: i16 = 128;
-    const WDEF_TRAMPOLINE_SIZE: u32 = 68;
+    const WDEF_TRAMPOLINE_SIZE: u32 = 80;
     const AUX_WIN_NEXT_OFFSET: u32 = 0;
     const AUX_WIN_OWNER_OFFSET: u32 = 4;
     pub(crate) const AUX_WIN_CTABLE_OFFSET: u32 = 8;
@@ -593,6 +593,7 @@ impl super::TrapDispatcher {
         proc_addr: u32,
         return_slot: u32,
         next_trampoline: Option<u32>,
+        restore_port: u32,
         restore_cgraf_fields: Option<(u32, u32)>,
     ) {
         bus.write_word(tramp, 0x48E7);
@@ -615,23 +616,42 @@ impl super::TrapDispatcher {
         bus.write_word(tramp + 44, 0x0F0F);
         match next_trampoline {
             Some(next) => {
-                bus.write_word(tramp + 46, 0x4EF9); // JMP abs.L
-                bus.write_long(tramp + 48, next);
+                if message == Self::WDEF_WCALC_RGNS_MSG {
+                    // The WDEF owns strucRgn and contRgn, but must not alter
+                    // visRgn. Recalculate visibility after wCalcRgns and
+                    // before wDraw so the resized frame and subsequent
+                    // application drawing use the new content geometry.
+                    // Macintosh Toolbox Essentials 1992, pp. 4-122..4-123.
+                    bus.write_word(tramp + 46, 0x2F3C); // MOVE.L #window,-(SP)
+                    bus.write_long(tramp + 48, window_ptr);
+                    bus.write_word(tramp + 52, 0xA909); // _CalcVis
+                    bus.write_word(tramp + 54, 0x4EF9); // JMP abs.L
+                    bus.write_long(tramp + 56, next);
+                } else {
+                    bus.write_word(tramp + 46, 0x4EF9); // JMP abs.L
+                    bus.write_long(tramp + 48, next);
+                }
             }
             None => {
+                // Window Manager callbacks run in WMgrPort, but the Window
+                // Manager preserves the application's current port across the
+                // call. Restore it before returning to guest code so a
+                // following LocalToGlobal still uses the caller's window.
+                bus.write_word(tramp + 46, 0x2F3C); // MOVE.L #savedPort,-(SP)
+                bus.write_long(tramp + 48, restore_port);
+                bus.write_word(tramp + 52, 0xA873); // _SetPort
                 if let Some((graf_vars, color_fields)) = restore_cgraf_fields {
                     // MOVE.L #grafVars,window+8
-                    bus.write_word(tramp + 46, 0x23FC);
-                    bus.write_long(tramp + 48, graf_vars);
-                    bus.write_long(tramp + 52, window_ptr + 8);
+                    bus.write_word(tramp + 54, 0x23FC);
+                    bus.write_long(tramp + 56, graf_vars);
+                    bus.write_long(tramp + 60, window_ptr + 8);
                     // MOVE.L #chExtra/pnLocHFrac,window+12
-                    bus.write_word(tramp + 56, 0x23FC);
-                    bus.write_long(tramp + 58, color_fields);
-                    bus.write_long(tramp + 62, window_ptr + 12);
-                    bus.write_word(tramp + 66, 0x4E75); // RTS
+                    bus.write_word(tramp + 64, 0x23FC);
+                    bus.write_long(tramp + 66, color_fields);
+                    bus.write_long(tramp + 70, window_ptr + 12);
+                    bus.write_word(tramp + 74, 0x4E75); // RTS
                 } else {
-                    bus.write_word(tramp + 46, 0x4E75); // RTS
-                    bus.write_long(tramp + 48, 0);
+                    bus.write_word(tramp + 54, 0x4E75); // RTS
                 }
             }
         }
@@ -655,6 +675,23 @@ impl super::TrapDispatcher {
             return false;
         }
 
+        if messages
+            .iter()
+            .any(|&(message, _)| message == Self::WDEF_WCALC_RGNS_MSG)
+        {
+            // The Window Manager supplies the content rectangle as the seed
+            // structure for wCalcRgns. Custom WDEFs then expand or reshape
+            // strucRgn in place; leaving the previous frame there makes a
+            // resized window retain its old hit-test bounds.
+            // Macintosh Toolbox Essentials 1992, pp. 4-120..4-123.
+            let content = self.window_content_global_rect(bus, window_ptr);
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+                content,
+            );
+        }
+
         // Window definition functions are Pascal functions:
         // FUNCTION MyWindow(varCode: Integer; theWindow: WindowPtr;
         //                   message: Integer; param: LongInt): LongInt;
@@ -662,6 +699,7 @@ impl super::TrapDispatcher {
         // low four bits of the window definition ID, and draw wDraw in the
         // Window Manager port. Macintosh Toolbox Essentials 1992, pp. 4-120
         // through 4-127; Inside Macintosh Volume I 1985, pp. I-282, I-304.
+        let restore_port = self.current_port;
         let wmgr_port = self.ensure_color_window_manager_port(bus);
         self.set_current_port_state(bus, cpu, wmgr_port, None);
 
@@ -721,8 +759,13 @@ impl super::TrapDispatcher {
                 proc_addr,
                 return_slot,
                 next,
+                restore_port,
                 final_restore,
             );
+            if message == Self::WDEF_WCALC_RGNS_MSG && next.is_some() {
+                self.window_def_calcvis_return_pcs
+                    .insert(trampolines[idx] + 54);
+            }
         }
 
         bus.write_long(return_slot, return_pc);
@@ -1164,6 +1207,66 @@ impl super::TrapDispatcher {
         self.window_structure_global_rect_for_proc(bus, content_rect, proc_id)
     }
 
+    pub(crate) fn dispatch_direct_system_wdef(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        resource_id: i16,
+        variant: i16,
+        window_ptr: u32,
+        message: i16,
+        param: u32,
+    ) -> u32 {
+        if window_ptr == 0 {
+            return 0;
+        }
+        let standard_proc_id = resource_id.saturating_mul(16).saturating_add(variant);
+        match message {
+            0 => {
+                let hilited = bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) != 0;
+                let custom_proc_id = self.window_proc_ids.insert(window_ptr, standard_proc_id);
+                self.draw_single_window_chrome_inline(bus, window_ptr, hilited);
+                if let Some(custom_proc_id) = custom_proc_id {
+                    self.window_proc_ids.insert(window_ptr, custom_proc_id);
+                }
+                0
+            }
+            1 => {
+                let point_v = (param >> 16) as i16;
+                let point_h = param as i16;
+                if Self::point_in_rect(
+                    point_v,
+                    point_h,
+                    self.window_content_global_rect(bus, window_ptr)
+                        .unwrap_or((0, 0, 0, 0)),
+                ) {
+                    3
+                } else if Self::point_in_rect(
+                    point_v,
+                    point_h,
+                    self.window_structure_rect(bus, window_ptr)
+                        .unwrap_or((0, 0, 0, 0)),
+                ) {
+                    4
+                } else {
+                    0
+                }
+            }
+            2 => {
+                if let Some(content) = self.window_content_global_rect(bus, window_ptr) {
+                    let structure =
+                        self.window_structure_global_rect_for_proc(bus, content, standard_proc_id);
+                    Self::write_region_handle_rect(
+                        bus,
+                        bus.read_long(window_ptr + Self::WINDOW_STRUC_RGN_OFFSET),
+                        Some(structure),
+                    );
+                }
+                0
+            }
+            _ => 0,
+        }
+    }
+
     pub(super) fn window_structure_rect(
         &self,
         bus: &MacMemoryBus,
@@ -1363,7 +1466,14 @@ impl super::TrapDispatcher {
     }
 
     fn window_uses_save_under(&self, proc_id: i16) -> bool {
-        !Self::window_is_document_proc(proc_id)
+        // A custom WDEF ID says nothing about whether the application is
+        // implementing a transient dialog or a persistent document/utility
+        // window. Treating every application WDEF as save-under captures an
+        // arbitrary old framebuffer and later restores stale windows when the
+        // application hides its interface. Restrict this HLE optimization to
+        // the standard dialog-box WDEF variants whose lifetime semantics are
+        // known; custom windows are exposed and invalidated normally.
+        !Self::is_application_window_def_proc_id(proc_id) && !Self::window_is_document_proc(proc_id)
     }
 
     fn save_window_under_pixels_for_proc(
@@ -1471,11 +1581,14 @@ impl super::TrapDispatcher {
 
         let (_, _, screen_w, screen_h, _) = self.screen_mode;
         let old_port_rect = self.window_global_port_rect(bus, the_window);
+        let custom_wdef = self.window_uses_custom_def_proc(bus, the_window);
+        let old_structure_rect = self.window_structure_rect(bus, the_window);
         let old_structure = if self.window_visible(bus, the_window) {
-            self.window_structure_rect(bus, the_window)
+            old_structure_rect
         } else {
             None
         };
+        let old_content_global = self.window_content_global_rect(bus, the_window);
         let local_content_rect = self
             .window_content_rect(bus, the_window)
             .unwrap_or_else(|| self.window_port_rect(bus, the_window));
@@ -1506,19 +1619,44 @@ impl super::TrapDispatcher {
         }
 
         // portRect, visRgn, clipRgn stay in local coords — no update needed.
-        let global_content = self.window_local_rect_to_global(bus, the_window, local_content_rect);
-        let global_structure =
-            self.window_structure_global_rect_for_window(bus, the_window, global_content);
-        Self::write_region_handle_rect(
-            bus,
-            bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
-            Some(global_content),
-        );
-        Self::write_region_handle_rect(
-            bus,
-            bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
-            Some(global_structure),
-        );
+        if custom_wdef {
+            // Preserve the WDEF's shapes while translating them to the new
+            // port origin. The trap handler follows this move by asking a
+            // visible custom WDEF to recalculate and draw its frame.
+            let offset_rect = |rect: (i16, i16, i16, i16)| {
+                (
+                    rect.0.wrapping_add(delta_v),
+                    rect.1.wrapping_add(delta_h),
+                    rect.2.wrapping_add(delta_v),
+                    rect.3.wrapping_add(delta_h),
+                )
+            };
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+                old_content_global.map(offset_rect),
+            );
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
+                old_structure_rect.map(offset_rect),
+            );
+        } else {
+            let global_content =
+                self.window_local_rect_to_global(bus, the_window, local_content_rect);
+            let global_structure =
+                self.window_structure_global_rect_for_window(bus, the_window, global_content);
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+                Some(global_content),
+            );
+            Self::write_region_handle_rect(
+                bus,
+                bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
+                Some(global_structure),
+            );
+        }
         if let Some(update_rect) = old_update_rect {
             Self::write_region_handle_rect(
                 bus,
@@ -1587,7 +1725,7 @@ impl super::TrapDispatcher {
             );
         }
 
-        if self.window_visible(bus, the_window) {
+        if self.window_visible(bus, the_window) && !custom_wdef {
             let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
             self.draw_single_window_chrome_inline(bus, the_window, hilited);
         }
@@ -3735,18 +3873,25 @@ impl super::TrapDispatcher {
                     bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0x00);
                     self.set_window_vis_from_content(bus, the_window, false);
                     self.clear_queued_update_events(the_window);
-                    if !self.restore_window_under_pixels(bus, the_window) {
+                    let restored_save_under = self.restore_window_under_pixels(bus, the_window);
+                    if !restored_save_under {
                         // Restore the exposed structure area from the desktop
                         // background. A full Window Manager would also repaint
                         // uncovered windows behind; this keeps desktop exposure
                         // mode-correct when no save-under snapshot exists.
                         let (_, _, screen_width, screen_height, _) = self.get_screen_params();
-                        self.erase_exposed_desktop_rect(
-                            bus,
+                        let erase_rect = exposed_rect.unwrap_or((
                             (wind_top - 19).max(0),
                             (wind_left - 1).max(0),
                             (wind_bottom + 2).min(screen_height),
                             (wind_right + 2).min(screen_width),
+                        ));
+                        self.erase_exposed_desktop_rect(
+                            bus,
+                            erase_rect.0,
+                            erase_rect.1,
+                            erase_rect.2,
+                            erase_rect.3,
                         );
                     }
                     if self.front_window == the_window {
@@ -3769,6 +3914,16 @@ impl super::TrapDispatcher {
                             self.activate_as_front_window(bus, new_front);
                         } else {
                             self.front_window = 0;
+                            self.sync_cached_front_window_render_state(bus);
+                            // Hiding the final visible window exposes the
+                            // Window Manager desktop. Repaint the entire gray
+                            // region so pixels drawn outside an application's
+                            // declared custom strucRgn cannot survive as
+                            // orphaned frame fragments.
+                            if !restored_save_under {
+                                let (top, left, bottom, right) = self.desktop_gray_region_rect(bus);
+                                self.erase_exposed_desktop_rect(bus, top, left, bottom, right);
+                            }
                         }
                         if self.current_port == the_window {
                             self.current_port = new_front;
@@ -3971,9 +4126,14 @@ impl super::TrapDispatcher {
                 let h_global = bus.read_word(sp + 4) as i16;
                 let the_window = bus.read_long(sp + 6);
 
+                let arm_custom_wdef_draw = self.window_visible(bus, the_window)
+                    && self.window_uses_custom_def_proc(bus, the_window);
                 self.move_window_to_global(bus, the_window, h_global, v_global, front_flag);
 
                 cpu.write_reg(Register::A7, sp + 10);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -3996,6 +4156,7 @@ impl super::TrapDispatcher {
                 let h = bus.read_word(sp + 2) as i16;
                 let w = bus.read_word(sp + 4) as i16;
                 let the_window = bus.read_long(sp + 6);
+                let mut arm_custom_wdef_draw = false;
 
                 if the_window != 0 {
                     // Capture the old content rect before we resize so
@@ -4009,23 +4170,42 @@ impl super::TrapDispatcher {
                     bus.write_word(the_window + 22, w as u16);
                     let content_top = old_content_rect.map(|rect| rect.0).unwrap_or(0);
                     let content_rect = (content_top, 0, h, w);
-                    let global_content =
-                        self.window_local_rect_to_global(bus, the_window, content_rect);
-                    let global_structure = self.window_structure_global_rect_for_window(
-                        bus,
-                        the_window,
-                        global_content,
-                    );
-                    Self::write_region_handle_rect(
-                        bus,
-                        bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
-                        Some(global_content),
-                    );
-                    Self::write_region_handle_rect(
-                        bus,
-                        bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
-                        Some(global_structure),
-                    );
+                    let custom_wdef = self.window_uses_custom_def_proc(bus, the_window);
+                    if custom_wdef {
+                        // SizeWindow establishes the rectangular content region
+                        // from the resized port before wCalcRgns. The custom WDEF
+                        // then derives its nonstandard structure from that region;
+                        // replacing the structure with a document frame here
+                        // changes both hit testing and visible geometry.
+                        // Macintosh Toolbox Essentials 1992, pp. 4-100,
+                        // 4-120 through 4-123.
+                        let global_content =
+                            self.window_local_rect_to_global(bus, the_window, (0, 0, h, w));
+                        Self::write_region_handle_rect(
+                            bus,
+                            bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+                            Some(global_content),
+                        );
+                        arm_custom_wdef_draw = self.window_visible(bus, the_window);
+                    } else {
+                        let global_content =
+                            self.window_local_rect_to_global(bus, the_window, content_rect);
+                        let global_structure = self.window_structure_global_rect_for_window(
+                            bus,
+                            the_window,
+                            global_content,
+                        );
+                        Self::write_region_handle_rect(
+                            bus,
+                            bus.read_long(the_window + Self::WINDOW_CONT_RGN_OFFSET),
+                            Some(global_content),
+                        );
+                        Self::write_region_handle_rect(
+                            bus,
+                            bus.read_long(the_window + Self::WINDOW_STRUC_RGN_OFFSET),
+                            Some(global_structure),
+                        );
+                    }
 
                     // Update visRgn in local coords
                     let vis_rgn_handle = bus.read_long(the_window + 24);
@@ -4055,7 +4235,9 @@ impl super::TrapDispatcher {
                     // behind it. Rebuild visRgn data instead of editing only
                     // its bounding words, which leaves stale complex runs.
                     // Inside Macintosh Volume I, I-287 and I-297.
-                    self.recalculate_window_vis_regions(bus);
+                    if !custom_wdef {
+                        self.recalculate_window_vis_regions(bus);
+                    }
 
                     // Derive screen origin from pixmap bounds to update hit-test bounds.
                     if the_window == self.front_window {
@@ -4089,6 +4271,9 @@ impl super::TrapDispatcher {
                 }
 
                 cpu.write_reg(Register::A7, sp + 10);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -4183,6 +4368,7 @@ impl super::TrapDispatcher {
                 let start_v = bus.read_word(sp + 4) as i16;
                 let start_h = bus.read_word(sp + 6) as i16;
                 let the_window = bus.read_long(sp + 8);
+                let mut arm_custom_wdef_draw = false;
 
                 if the_window != 0 && bounds_rect_ptr != 0 {
                     let bounds_rect = (
@@ -4213,6 +4399,8 @@ impl super::TrapDispatcher {
                         let new_v = top.wrapping_add(release_v.wrapping_sub(start_v));
                         let new_h = left.wrapping_add(release_h.wrapping_sub(start_h));
                         let front_flag = !self.key_is_down(0x37);
+                        arm_custom_wdef_draw = self.window_visible(bus, the_window)
+                            && self.window_uses_custom_def_proc(bus, the_window);
                         self.move_window_to_global(bus, the_window, new_h, new_v, front_flag);
                         if trace_dragwindow_enabled() {
                             eprintln!(
@@ -4225,6 +4413,9 @@ impl super::TrapDispatcher {
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 12);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -4302,11 +4493,13 @@ impl super::TrapDispatcher {
                 // Pascal BOOLEAN in high byte (MPW C convention).
                 let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
+                let mut arm_custom_wdef_draw = false;
                 if the_window != 0 {
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
                     }
-                    let exposed_rect = (!show_flag && self.window_visible(bus, the_window))
+                    let was_visible = self.window_visible(bus, the_window);
+                    let exposed_rect = (!show_flag && was_visible)
                         .then(|| self.window_structure_rect(bus, the_window))
                         .flatten();
                     let windows_behind = if exposed_rect.is_some() {
@@ -4314,27 +4507,54 @@ impl super::TrapDispatcher {
                     } else {
                         Vec::new()
                     };
-                    bus.write_byte(
-                        the_window + Self::WINDOW_VISIBLE_OFFSET,
-                        if show_flag { 0xFF } else { 0x00 },
-                    );
-                    self.set_window_vis_from_content(bus, the_window, show_flag);
                     if show_flag {
-                        if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
-                        {
-                            Self::write_region_handle_rect(
-                                bus,
-                                bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
-                                Some(content_rect),
-                            );
-                            self.queue_window_update_event(the_window);
+                        bus.write_byte(the_window + Self::WINDOW_VISIBLE_OFFSET, 0xFF);
+                        self.set_window_vis_from_content(bus, the_window, true);
+                        if !was_visible {
+                            self.save_window_under_pixels(bus, the_window);
+                            if let Some(content_rect) =
+                                self.window_content_global_rect(bus, the_window)
+                            {
+                                Self::write_region_handle_rect(
+                                    bus,
+                                    bus.read_long(the_window + Self::WINDOW_UPDATE_RGN_OFFSET),
+                                    Some(content_rect),
+                                );
+                                self.queue_window_update_event(the_window);
+                            }
+
+                            // ShowHide differs from ShowWindow only in window-list
+                            // ordering and activation; the Window Manager still
+                            // reveals the structure and asks a custom WDEF to draw
+                            // it. Macintosh Toolbox Essentials (1992), pp. 4-84
+                            // and 4-100.
+                            if self.dialog_items.contains_key(&the_window) {
+                                self.redraw_dialog_window_contents(bus, the_window);
+                                if !self.modeless_dialog_cdef_draw_queue.contains(&the_window) {
+                                    self.modeless_dialog_cdef_draw_queue.push_back(the_window);
+                                }
+                            } else if self.window_uses_custom_def_proc(bus, the_window) {
+                                arm_custom_wdef_draw = true;
+                            } else {
+                                let hilited =
+                                    bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
+                                self.draw_single_window_chrome_inline(bus, the_window, hilited);
+                            }
                         }
                     } else {
+                        // ShowHide(FALSE) removes the window from the screen even
+                        // though it deliberately leaves the window-list order and
+                        // activation state alone. Merely clearing `visible` leaves
+                        // the old frame and content pixels behind.
+                        self.erase_window_for_removal(bus, the_window);
                         self.clear_queued_update_events(the_window);
                         self.invalidate_exposed_windows(bus, &windows_behind, exposed_rect);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 6);
+                if arm_custom_wdef_draw {
+                    self.arm_window_def_draw(cpu, bus, the_window);
+                }
                 Ok(())
             }
 
@@ -4348,6 +4568,13 @@ impl super::TrapDispatcher {
             (true, 0x109) => {
                 let sp = cpu.read_reg(Register::A7);
                 let _the_window = bus.read_long(sp);
+
+                if self
+                    .window_def_calcvis_return_pcs
+                    .contains(&cpu.read_reg(Register::PC))
+                {
+                    self.recalculate_window_vis_regions(bus);
+                }
 
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -5783,6 +6010,10 @@ mod tests {
             disp.window_uses_custom_def_proc(&bus, window_addr),
             "custom WDEF window should be classified from procID + windowDefProc"
         );
+        assert!(
+            !disp.window_saved_under_pixels.contains_key(&window_addr),
+            "an application WDEF must not be guessed to have transient save-under semantics"
+        );
     }
 
     #[test]
@@ -5913,11 +6144,19 @@ mod tests {
         assert_eq!(bus.read_long(calc_tramp + 38), (sp + 6).wrapping_sub(32));
         assert_eq!(
             bus.read_word(calc_tramp + 46),
-            0x4EF9,
-            "wCalcRgns should chain to wDraw"
+            0x2F3C,
+            "wCalcRgns should pass the window to CalcVis"
+        );
+        assert_eq!(bus.read_long(calc_tramp + 48), window_ptr);
+        assert_eq!(bus.read_word(calc_tramp + 52), 0xA909);
+        assert_eq!(bus.read_word(calc_tramp + 54), 0x4EF9);
+        assert!(
+            disp.window_def_calcvis_return_pcs
+                .contains(&(calc_tramp + 54)),
+            "only the WDEF trampoline's private CalcVis return PC should enable recomputation"
         );
 
-        let draw_tramp = bus.read_long(calc_tramp + 48);
+        let draw_tramp = bus.read_long(calc_tramp + 56);
         assert_ne!(draw_tramp, 0);
         assert_eq!(bus.read_word(draw_tramp + 12), 3);
         assert_eq!(bus.read_long(draw_tramp + 16), window_ptr);
@@ -5928,25 +6167,219 @@ mod tests {
         assert_eq!(bus.read_long(draw_tramp + 26), 0);
         assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
         assert_eq!(bus.read_long(draw_tramp + 38), (sp + 6).wrapping_sub(32));
-        assert_eq!(bus.read_word(draw_tramp + 46), 0x23FC);
+        assert_eq!(bus.read_word(draw_tramp + 46), 0x2F3C);
+        assert_eq!(bus.read_long(draw_tramp + 48), window_ptr);
+        assert_eq!(bus.read_word(draw_tramp + 52), 0xA873);
+        assert_eq!(bus.read_word(draw_tramp + 54), 0x23FC);
         assert_eq!(
-            bus.read_long(draw_tramp + 48),
+            bus.read_long(draw_tramp + 56),
             0,
             "final callback should restore grafVars"
         );
-        assert_eq!(bus.read_long(draw_tramp + 52), window_ptr + 8);
-        assert_eq!(bus.read_word(draw_tramp + 56), 0x23FC);
+        assert_eq!(bus.read_long(draw_tramp + 60), window_ptr + 8);
+        assert_eq!(bus.read_word(draw_tramp + 64), 0x23FC);
         assert_eq!(
-            bus.read_long(draw_tramp + 58),
+            bus.read_long(draw_tramp + 66),
             0,
             "final callback should restore chExtra and pnLocHFrac"
         );
-        assert_eq!(bus.read_long(draw_tramp + 62), window_ptr + 12);
-        assert_eq!(bus.read_word(draw_tramp + 66), 0x4E75);
+        assert_eq!(bus.read_long(draw_tramp + 70), window_ptr + 12);
+        assert_eq!(bus.read_word(draw_tramp + 74), 0x4E75);
         assert_eq!(
             disp.current_port, disp.window_manager_cport,
             "wDraw should run in the color Window Manager port"
         );
+    }
+
+    #[test]
+    fn sizewindow_asks_visible_custom_wdef_to_recalculate_and_draw() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+        let window_ptr = bus.alloc(256);
+        let proc_id = (200i16 << 4) | 3;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_ptr,
+            disp.screen_mode.0,
+            40,
+            50,
+            120,
+            180,
+            "",
+            proc_id,
+            true,
+            false,
+            false,
+            0,
+        );
+        let old_structure = (31, 41, 129, 189);
+        let old_content = (40, 50, 120, 180);
+        let structure_handle =
+            bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET);
+        let content_handle =
+            bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET);
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            structure_handle,
+            Some(old_structure),
+        );
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            content_handle,
+            Some(old_content),
+        );
+
+        let sp = TEST_SP - 10;
+        let return_pc = 0x1234_5678;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_byte(sp, 0xFF); // fUpdate
+        bus.write_word(sp + 2, 160); // h
+        bus.write_word(sp + 4, 300); // w
+        bus.write_long(sp + 6, window_ptr);
+
+        let result = dispatch(&mut disp, 0x11D, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(window_ptr + 20), 160);
+        assert_eq!(bus.read_word(window_ptr + 22), 300);
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_ptr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET,
+            ),
+            (40, 50, 200, 350),
+            "wCalcRgns must receive the resized content rectangle as its structure seed"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_ptr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET,
+            ),
+            (40, 50, 200, 350),
+            "SizeWindow must expose the resized content geometry to the WDEF"
+        );
+
+        let calc_tramp = disp.window_def_trampoline;
+        assert_ne!(calc_tramp, 0);
+        assert_eq!(cpu.read_reg(Register::PC), calc_tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_long(sp + 6), return_pc);
+        assert_eq!(bus.read_word(calc_tramp + 12), 3);
+        assert_eq!(bus.read_long(calc_tramp + 16), window_ptr);
+        assert_eq!(
+            bus.read_word(calc_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG as u16,
+        );
+        assert_eq!(bus.read_long(calc_tramp + 32), wdef_proc);
+
+        assert_eq!(bus.read_long(calc_tramp + 48), window_ptr);
+        assert_eq!(bus.read_word(calc_tramp + 52), 0xA909);
+        let draw_tramp = bus.read_long(calc_tramp + 56);
+        assert_ne!(draw_tramp, 0);
+        assert_eq!(bus.read_long(draw_tramp + 16), window_ptr);
+        assert_eq!(
+            bus.read_word(draw_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WDRAW_MSG as u16,
+        );
+        assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
+        assert_eq!(
+            disp.current_port, disp.window_manager_cport,
+            "custom resize drawing must run in the color Window Manager port"
+        );
+    }
+
+    #[test]
+    fn movewindow_translates_custom_regions_then_asks_wdef_to_recalculate() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let wdef_proc = install_wdef_resource(&mut disp, &mut bus, 200);
+        let window_ptr = bus.alloc(256);
+        let proc_id = (200i16 << 4) | 3;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window_ptr,
+            disp.screen_mode.0,
+            40,
+            50,
+            120,
+            180,
+            "",
+            proc_id,
+            true,
+            false,
+            false,
+            0,
+        );
+        let structure_handle =
+            bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET);
+        let content_handle =
+            bus.read_long(window_ptr + super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET);
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            structure_handle,
+            Some((31, 41, 129, 189)),
+        );
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            content_handle,
+            Some((40, 50, 120, 180)),
+        );
+
+        let sp = TEST_SP - 10;
+        let return_pc = 0x1234_5678;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_byte(sp, 0); // front
+        bus.write_word(sp + 2, 70); // vGlobal
+        bus.write_word(sp + 4, 90); // hGlobal
+        bus.write_long(sp + 6, window_ptr);
+
+        let result = dispatch(&mut disp, 0x11B, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_ptr,
+                super::super::TrapDispatcher::WINDOW_STRUC_RGN_OFFSET,
+            ),
+            (70, 90, 150, 220),
+            "wCalcRgns must receive the moved content rectangle as its structure seed"
+        );
+        assert_eq!(
+            read_window_region_rect(
+                &bus,
+                window_ptr,
+                super::super::TrapDispatcher::WINDOW_CONT_RGN_OFFSET,
+            ),
+            (70, 90, 150, 220),
+            "MoveWindow must translate the custom content instead of replacing it"
+        );
+
+        let calc_tramp = disp.window_def_trampoline;
+        assert_ne!(calc_tramp, 0);
+        assert_eq!(cpu.read_reg(Register::PC), calc_tramp);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_long(sp + 6), return_pc);
+        assert_eq!(
+            bus.read_word(calc_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG as u16,
+        );
+        assert_eq!(bus.read_long(calc_tramp + 32), wdef_proc);
+        assert_eq!(bus.read_long(calc_tramp + 48), window_ptr);
+        assert_eq!(bus.read_word(calc_tramp + 52), 0xA909);
+        let draw_tramp = bus.read_long(calc_tramp + 56);
+        assert_eq!(
+            bus.read_word(draw_tramp + 22),
+            super::super::TrapDispatcher::WDEF_WDRAW_MSG as u16,
+        );
+        assert_eq!(bus.read_long(draw_tramp + 32), wdef_proc);
     }
 
     // ---------------------------------------------------------------
@@ -8146,6 +8579,58 @@ mod tests {
     }
 
     #[test]
+    fn hide_last_visible_window_repaints_the_entire_desktop() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            screen_base,
+            80,
+            100,
+            220,
+            420,
+            "Only Window",
+            0,
+            true,
+            true,
+            false,
+            0,
+        );
+        disp.front_window = window;
+        let desktop_probe = screen_base + 550 * 800 + 700;
+        let injected = [0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47];
+        for (offset, value) in injected.iter().copied().enumerate() {
+            bus.write_byte(desktop_probe + offset as u32, value);
+        }
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+        dispatch(&mut disp, 0x116, &mut cpu, &mut bus)
+            .expect("HideWindow dispatch")
+            .expect("HideWindow");
+
+        assert_eq!(disp.front_window, 0);
+        assert_eq!(disp.window_bounds, (0, 0, 0, 0));
+        assert!(
+            injected
+                .iter()
+                .copied()
+                .enumerate()
+                .any(|(offset, value)| { bus.read_byte(desktop_probe + offset as u32) != value }),
+            "hiding the final window must repaint desktop pixels outside that window's strucRgn"
+        );
+    }
+
+    #[test]
     fn hide_window_invalidates_visible_content_behind_it() {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc(800 * 600);
@@ -8328,6 +8813,64 @@ mod tests {
             bus.read_byte(probe),
             0xCC,
             "HideWindow should restore the pixels saved under non-document windows"
+        );
+    }
+
+    #[test]
+    fn hide_window_erases_custom_wdef_structure_outside_port_rect() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(0x0824, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+        install_wdef_resource(&mut disp, &mut bus, 200);
+
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            screen_base,
+            40,
+            40,
+            200,
+            300,
+            "",
+            200i16 << 4,
+            true,
+            true,
+            false,
+            0,
+        );
+        let structure = bus.read_long(window + 114);
+        super::super::TrapDispatcher::write_region_handle_rect(
+            &mut bus,
+            structure,
+            Some((20, 30, 220, 320)),
+        );
+        assert_eq!(
+            disp.window_structure_rect(&bus, window),
+            Some((20, 30, 220, 320))
+        );
+        assert!(disp.window_visible(&bus, window));
+        assert!(!disp.window_saved_under_pixels.contains_key(&window));
+        let outside_port = screen_base + 210 * 800 + 304;
+        let injected = [0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47];
+        for (offset, value) in injected.iter().copied().enumerate() {
+            bus.write_byte(outside_port + offset as u32, value);
+        }
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+        dispatch(&mut disp, 0x116, &mut cpu, &mut bus)
+            .expect("HideWindow dispatch")
+            .expect("HideWindow");
+
+        assert!(
+            injected.iter().copied().enumerate().any(|(offset, value)| {
+                bus.read_byte(outside_port + offset as u32) != value
+            }),
+            "HideWindow must erase the full custom strucRgn, including frame pixels outside portRect"
         );
     }
 
@@ -8569,6 +9112,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn showhide_true_asks_custom_wdef_to_recalculate_and_draw() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        let proc_id = 200i16 << 4;
+        install_wdef_resource(&mut disp, &mut bus, 200);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            40,
+            40,
+            200,
+            300,
+            "",
+            proc_id,
+            false,
+            false,
+            false,
+            0,
+        );
+
+        let sp = TEST_SP - 6;
+        let return_pc = 0x1234_5678;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, window);
+
+        dispatch(&mut disp, 0x108, &mut cpu, &mut bus)
+            .expect("ShowHide dispatch")
+            .expect("ShowHide");
+
+        let tramp = disp.window_def_trampoline;
+        assert_ne!(tramp, 0);
+        assert_eq!(cpu.read_reg(Register::PC), tramp);
+        assert_eq!(
+            bus.read_word(tramp + 22) as i16,
+            super::super::TrapDispatcher::WDEF_WCALC_RGNS_MSG,
+            "first message is wCalcRgns"
+        );
+        assert_eq!(bus.read_long(sp + 2), return_pc);
+    }
+
     // IM:I I-285: ShowHide(FALSE) makes the target window invisible but does
     // not reorder windows or generate activate events.
     #[test]
@@ -8681,6 +9269,8 @@ mod tests {
         let update_handle = bus.read_long(back + 122);
         super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
         disp.clear_queued_update_events(back);
+        let covered_pixel = screen_base + 100 * 800 + 150;
+        bus.write_byte(covered_pixel, 0xEE);
 
         let sp = TEST_SP - 6;
         cpu.write_reg(Register::A7, sp);
@@ -8695,6 +9285,11 @@ mod tests {
             .iter()
             .any(|event| { event.what == 6 && event.message == back }));
         assert!(!disp.dialog_visible_snapshots.contains_key(&target));
+        assert_ne!(
+            bus.read_byte(covered_pixel),
+            0xEE,
+            "ShowHide(FALSE) must remove the hidden window's pixels from the screen"
+        );
     }
 
     // ---------------------------------------------------------------

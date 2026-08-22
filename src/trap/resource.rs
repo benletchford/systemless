@@ -9113,16 +9113,21 @@ mod tests {
         assert_ne!(wdef, 0, "synthetic WDEF handle must be loaded");
         assert_eq!(
             bus.read_word(wdef),
+            0xA9FF,
+            "standard WDEF shim should enter the private HLE marker"
+        );
+        assert_eq!(
+            bus.read_word(wdef + 2),
             0x205F,
             "standard WDEF shim should first recover the JSR return address"
         );
         assert_eq!(
-            bus.read_word(wdef + 2),
+            bus.read_word(wdef + 4),
             0xDEFC,
             "standard WDEF shim should discard its 12-byte Pascal parameter block"
         );
         assert_eq!(
-            bus.read_word(wdef + 8),
+            bus.read_word(wdef + 10),
             0x4ED0,
             "standard WDEF shim should return through the recovered address"
         );

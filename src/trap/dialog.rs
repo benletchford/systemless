@@ -7232,6 +7232,29 @@ impl super::TrapDispatcher {
             self.dialog_visible_snapshots
                 .insert(port, PersistentDialogSnapshot { bounds, pixels });
         }
+
+        // ModalDialog restores `rendered_pixels` between guest callbacks and
+        // UI slices. Fold incremental QuickDraw operations (not only bulk
+        // CopyBits/DrawPicture calls) into that active snapshot, otherwise a
+        // custom CDEF that builds its control from DrawString/FrameRect calls
+        // loses each operation before the callback has finished.
+        let tracking_bounds = self
+            .dialog_tracking
+            .as_ref()
+            .filter(|tracking| tracking.dialog_ptr == port)
+            .map(|tracking| tracking.bounds);
+        if let Some(bounds) = tracking_bounds {
+            let screen_params = self.get_screen_params();
+            if let Some(tracking) = self.dialog_tracking.as_mut() {
+                Self::refresh_saved_pixel_buffer_after_screen_draw(
+                    bus,
+                    screen_params,
+                    bounds,
+                    screen_rect,
+                    &mut tracking.rendered_pixels,
+                );
+            }
+        }
     }
 
     pub(crate) fn refresh_visible_dialog_snapshot_after_bulk_port_draw(
@@ -7345,24 +7368,26 @@ impl super::TrapDispatcher {
         let dialog_ptr = tracking.dialog_ptr;
         let popup_draws = tracking.popup_draws.clone();
         let game_managed = tracking.game_managed;
+        let cdef_draw_pending_snapshot = self.dialog_cdef_draw_pending_snapshot.remove(&dialog_ptr);
 
         if !game_managed {
             if self.front_window == dialog_ptr {
                 self.blit_window_to_screen(bus);
             }
-            self.redraw_standard_dialog_items(
-                bus,
-                bounds,
-                &items,
-                default_item,
-                &edit_text,
-                edit_item,
-                dialog_ptr,
-            );
+            if !cdef_draw_pending_snapshot {
+                self.redraw_standard_dialog_items(
+                    bus,
+                    bounds,
+                    &items,
+                    default_item,
+                    &edit_text,
+                    edit_item,
+                    dialog_ptr,
+                );
+            }
         }
         self.redraw_dialog_popup_controls(bus, &popup_draws);
         let rendered = self.save_dialog_pixels(bus, bounds);
-
         if let Some(tracking) = self.dialog_tracking.as_mut() {
             tracking.rendered_pixels = rendered;
             tracking.rendered_pixels_final = true;
@@ -10232,6 +10257,14 @@ impl super::TrapDispatcher {
         Self::rects_intersect(Self::dialog_item_screen_rect(bounds, item.rect), bounds)
     }
 
+    fn dialog_user_item_proc_is_callable(bus: &MacMemoryBus, proc_ptr: u32) -> bool {
+        proc_ptr != 0
+            && matches!(
+                bus.read_word(proc_ptr),
+                0x4E56 | 0x48E7 | 0x4EF9 | 0x4EFA | 0x4FEF
+            )
+    }
+
     fn dialog_is_game_managed(bounds: (i16, i16, i16, i16), items: &[DialogItem]) -> bool {
         let mut has_visible_item = false;
         for item in items {
@@ -13059,6 +13092,7 @@ impl super::TrapDispatcher {
                             .filter(|(i, item)| {
                                 let item_no = (*i + 1) as i16;
                                 (item.item_type & 0x7F) == 0
+                                    && !Self::dialog_user_item_proc_is_callable(bus, item.proc_ptr)
                                     && !self
                                         .dialog_item_popup_menus
                                         .contains_key(&(dialog_ptr, item_no))
@@ -13091,7 +13125,9 @@ impl super::TrapDispatcher {
                             .enumerate()
                             .filter_map(|(i, item)| {
                                 let item_no = (i + 1) as i16;
-                                if (item.item_type & 0x7F) != 0 {
+                                if (item.item_type & 0x7F) != 0
+                                    || Self::dialog_user_item_proc_is_callable(bus, item.proc_ptr)
+                                {
                                     return None;
                                 }
                                 let key = (dialog_ptr, item_no);
@@ -13206,20 +13242,22 @@ impl super::TrapDispatcher {
                             active_button: None,
                             active_user_item: None,
                         });
-                        // ModalDialog is a re-fire trap. Run application CDEF
-                        // draws after the HLE shell becomes visible, then
-                        // resume at the trap instruction so the next pass can
-                        // snapshot the guest-owned pixels before event
-                        // handling continues.
+                        // ModalDialog is a re-fire trap. Custom userItem draw
+                        // procedures are part of the dialog update pass and
+                        // run before Control Manager CDEF drawing. When there
+                        // are no userItems, run CDEFs immediately; otherwise
+                        // the runner arms them after the final userItem returns.
                         let after_trap_pc = cpu.read_reg(Register::PC);
-                        cpu.write_reg(Register::PC, after_trap_pc.wrapping_sub(2));
-                        if self.arm_dialog_control_def_draws(cpu, bus, dialog_ptr) {
-                            self.dialog_cdef_draw_pending_snapshot.insert(dialog_ptr);
-                            if let Some(tracking) = self.dialog_tracking.as_mut() {
-                                tracking.rendered_pixels_final = false;
+                        if !has_draw_procs {
+                            cpu.write_reg(Register::PC, after_trap_pc.wrapping_sub(2));
+                            if self.arm_dialog_control_def_draws(cpu, bus, dialog_ptr) {
+                                self.dialog_cdef_draw_pending_snapshot.insert(dialog_ptr);
+                                if let Some(tracking) = self.dialog_tracking.as_mut() {
+                                    tracking.rendered_pixels_final = false;
+                                }
+                            } else {
+                                cpu.write_reg(Register::PC, after_trap_pc);
                             }
-                        } else {
-                            cpu.write_reg(Register::PC, after_trap_pc);
                         }
                         self.record_modal_dialog_input_trace(
                             "start",
@@ -16934,6 +16972,18 @@ mod tests {
     use crate::trap::TrapDispatcher;
     use crate::ui_theme::UiThemeId;
     use std::collections::VecDeque;
+
+    #[test]
+    fn callable_user_item_proc_includes_stack_adjust_entry() {
+        let (_, _, mut bus) = setup();
+        let proc_ptr = bus.alloc(4);
+        bus.write_word(proc_ptr, 0x4FEF); // LEA d16(SP),SP
+        bus.write_word(proc_ptr + 2, 0xFFF0);
+
+        assert!(TrapDispatcher::dialog_user_item_proc_is_callable(
+            &bus, proc_ptr
+        ));
+    }
 
     fn screen_pixel_is_set(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> bool {
         let byte = bus.read_byte(base + (y as u32 * row_bytes) + ((x as u32) / 8));
@@ -26733,6 +26783,14 @@ mod tests {
         let later_probe = screen_base + 16 * 64 + 16;
         bus.write_byte(later_probe, 0x77);
         disp.refresh_visible_dialog_snapshot_region_for_port(&bus, dialog_ptr, (16, 16, 17, 17));
+        let later_index = (16 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
+            * snapshot_width
+            + (16 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
+        assert_eq!(
+            disp.dialog_tracking.as_ref().unwrap().rendered_pixels[later_index],
+            0x77,
+            "incremental guest drawing must immediately update the active modal snapshot"
+        );
         disp.dialog_tracking.as_mut().unwrap().last_filter_event = None;
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -26745,9 +26803,6 @@ mod tests {
         let bulk_index = (15 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
             * snapshot_width
             + (15 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
-        let later_index = (16 - bounds.0 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize
-            * snapshot_width
-            + (16 - bounds.1 + TrapDispatcher::DBOX_FRAME_MARGIN) as usize;
         assert_eq!(tracking.rendered_pixels[bulk_index], 0x44);
         assert_eq!(tracking.rendered_pixels[later_index], 0x77);
     }
@@ -31374,9 +31429,11 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
+        disp.dialog_cdef_draw_pending_snapshot.insert(dialog_ptr);
 
         disp.finalize_dialog_draw_procs_if_idle(&mut bus);
 
+        assert!(!disp.dialog_cdef_draw_pending_snapshot.contains(&dialog_ptr));
         let tracking = disp.dialog_tracking.as_ref().unwrap();
         assert!(tracking.draw_procs_done);
         assert!(tracking.rendered_pixels_final);

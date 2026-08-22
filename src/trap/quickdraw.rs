@@ -1743,6 +1743,10 @@ impl super::TrapDispatcher {
                 self.tx_font = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0003);
+                    Self::push_pict_word(commands, self.tx_font as u16);
+                }
                 Ok(())
             }
 
@@ -1756,6 +1760,10 @@ impl super::TrapDispatcher {
                 self.tx_face = decode_text_face_style(bus.read_word(sp));
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0004);
+                    Self::push_pict_word(commands, self.tx_face as u16);
+                }
                 Ok(())
             }
 
@@ -1769,6 +1777,10 @@ impl super::TrapDispatcher {
                 self.tx_mode = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0005);
+                    Self::push_pict_word(commands, self.tx_mode as u16);
+                }
                 Ok(())
             }
 
@@ -1782,6 +1794,10 @@ impl super::TrapDispatcher {
                 self.tx_size = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x000D);
+                    Self::push_pict_word(commands, self.tx_size as u16);
+                }
                 Ok(())
             }
 
@@ -1966,6 +1982,9 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                let len = bus.read_byte(str_ptr) as usize;
+                let text = bus.read_bytes(str_ptr + 1, len);
+                self.record_picture_long_text(self.pn_loc.0, self.pn_loc.1, &text);
                 self.draw_string(cpu, bus, str_ptr);
                 self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
@@ -2006,6 +2025,9 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                let safe_count = byte_count.max(0) as usize;
+                let text = bus.read_bytes(start, safe_count);
+                self.record_picture_long_text(self.pn_loc.0, self.pn_loc.1, &text);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
@@ -2580,7 +2602,11 @@ impl super::TrapDispatcher {
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
+                let hilite_mode = bus.read_byte(0x0938);
                 self.draw_rect(cpu, bus, &r, ShapeOp::Invert);
+                if hilite_mode & 1 == 0 {
+                    bus.write_byte(0x0938, hilite_mode | 1);
+                }
                 Ok(())
             }
 
@@ -2644,7 +2670,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                if self.extend_recording_region_oval(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Frame);
@@ -2660,7 +2686,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                if self.extend_recording_region_oval(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Paint);
@@ -2676,7 +2702,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                if self.extend_recording_region_oval(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Erase);
@@ -2692,7 +2718,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                if self.extend_recording_region_oval(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Invert);
@@ -2709,7 +2735,7 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                if self.extend_recording_region_oval(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
                 let mut pat = [0u8; 8];
@@ -3757,7 +3783,7 @@ impl super::TrapDispatcher {
                                 let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
                                 let dst_rgb = dst_clut[usize::from(dst_pixel)];
                                 let effective_mode = if mode_base == 36 { 0 } else { mode_base };
-                                let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
+                                let Some(result_rgb) = self.copy_bits_direct_source_mode_rgb(
                                     src_rgb,
                                     dst_rgb,
                                     effective_mode,
@@ -7596,7 +7622,11 @@ impl super::TrapDispatcher {
                     // QuickDraw Reference (Carbon) p. 307;
                     // QDOffscreen.h declaration.
                     0x0014 => {
-                        let version = 1u32;
+                        // OffscreenVersion uses the classic packed version
+                        // format: $0100 means version 1.0. Returning the
+                        // integer 1 makes clients mistake an available
+                        // Color QuickDraw implementation for a pre-1.0 one.
+                        let version = 0x0100u32;
                         bus.write_long(sp, version);
                         cpu.write_reg(Register::D0, version);
                     }
@@ -8173,7 +8203,6 @@ impl super::TrapDispatcher {
                         port_w,
                         port_h,
                     );
-
                     let picture_info = self.loaded_handles.get(&pic_handle).copied();
                     if trace_title_diag_enabled() && self.tick_count >= 80 && self.tick_count <= 110
                     {
@@ -15773,6 +15802,38 @@ impl super::TrapDispatcher {
         }
     }
 
+    pub(crate) fn extend_recording_region_oval(
+        &mut self,
+        top: i16,
+        left: i16,
+        bottom: i16,
+        right: i16,
+    ) -> bool {
+        if self.recording_region.is_none() {
+            return false;
+        }
+        let width = right.saturating_sub(left);
+        let height = bottom.saturating_sub(top);
+        if width <= 0 || height <= 0 {
+            return true;
+        }
+        let rows = self
+            .compute_oval_spans(width, height)
+            .into_iter()
+            .map(|(span_left, span_right)| {
+                let span_left = left.saturating_add(span_left);
+                let span_right = left.saturating_add(span_right);
+                if span_left < span_right {
+                    vec![span_left, span_right]
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect::<Vec<_>>();
+        Self::add_recording_rows(self.recording_region.as_mut().unwrap(), top, &rows);
+        true
+    }
+
     pub(crate) fn record_region_line(&mut self, v0: i16, h0: i16, v1: i16, h1: i16) -> bool {
         if let Some(recording) = self.recording_region.as_mut() {
             recording.outline_segments.push(((v0, h0), (v1, h1)));
@@ -19863,7 +19924,7 @@ impl super::TrapDispatcher {
                         let dst_clut = dst_clut.as_ref().expect("indexed destination CLUT");
                         let dst_rgb = dst_clut[usize::from(dst_pixel)];
                         let effective_mode = if mode_base == 36 { 0 } else { mode_base };
-                        let Some(result_rgb) = Self::copy_bits_direct_source_mode_rgb(
+                        let Some(result_rgb) = self.copy_bits_direct_source_mode_rgb(
                             src_rgb,
                             dst_rgb,
                             effective_mode,
@@ -20352,6 +20413,21 @@ impl super::TrapDispatcher {
 
     fn push_pict_long(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn record_picture_long_text(&mut self, v: i16, h: i16, text: &[u8]) {
+        let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() else {
+            return;
+        };
+        let len = text.len().min(255);
+        Self::push_pict_word(commands, 0x0028);
+        Self::push_pict_word(commands, v as u16);
+        Self::push_pict_word(commands, h as u16);
+        commands.push(len as u8);
+        commands.extend_from_slice(&text[..len]);
+        if !(1 + len).is_multiple_of(2) {
+            commands.push(0);
+        }
     }
 
     fn push_packbits_literal_row(bytes: &mut Vec<u8>, row: &[u8]) {
@@ -21928,6 +22004,33 @@ impl super::TrapDispatcher {
         Self::colorize_src_copy_rgb(src_rgb, dst_rgb, fg_rgb)
     }
 
+    fn blend_rgb(src_rgb: [u16; 3], dst_rgb: [u16; 3], weight_rgb: [u16; 3]) -> [u16; 3] {
+        let mut out = [0u16; 3];
+        for component in 0..3 {
+            let source = u64::from(src_rgb[component]);
+            let destination = u64::from(dst_rgb[component]);
+            let weight = u64::from(weight_rgb[component]);
+            out[component] = ((source * weight
+                + destination * (u64::from(u16::MAX) - weight)
+                + u64::from(u16::MAX) / 2)
+                / u64::from(u16::MAX)) as u16;
+        }
+        out
+    }
+
+    fn arithmetic_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
+        // Color QuickDraw maps arithmetic-transfer results through the
+        // current GDevice's 4-bit inverse table. A full-precision nearest
+        // search chooses different indices near cell boundaries, which is
+        // especially visible when blend is used to matte indexed sprites.
+        // Imaging With QuickDraw (1994), pp. 4-39 and 4-82.
+        if Self::uses_canonical_system_8bpp_clut(clut) {
+            Self::standard_itable_lookup(rgb[0], rgb[1], rgb[2])
+        } else {
+            Self::nearest_palette_index(clut, rgb)
+        }
+    }
+
     fn copy_bits_color_source_mode_pixel(
         &self,
         bus: &MacMemoryBus,
@@ -21982,6 +22085,14 @@ impl super::TrapDispatcher {
             6 => is_white.then(|| Self::inverted_palette_index(dst_clut, dst_pixel)),
             7 => (!is_black)
                 .then(|| map_rgb(Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb))),
+            32 => Some(Self::arithmetic_palette_index(
+                dst_clut,
+                Self::blend_rgb(
+                    src_rgb,
+                    dst_rgb,
+                    [self.op_color.0, self.op_color.1, self.op_color.2],
+                ),
+            )),
             _ => Some(raw_source()),
         }
     }
@@ -22039,6 +22150,7 @@ impl super::TrapDispatcher {
     }
 
     fn copy_bits_direct_source_mode_rgb(
+        &self,
         src_rgb: [u16; 3],
         dst_rgb: [u16; 3],
         mode_base: u16,
@@ -22068,6 +22180,11 @@ impl super::TrapDispatcher {
                 ]
             }),
             7 => (!is_black).then(|| Self::colorize_not_src_or_rgb(src_rgb, bg_rgb, dst_rgb)),
+            32 => Some(Self::blend_rgb(
+                src_rgb,
+                dst_rgb,
+                [self.op_color.0, self.op_color.1, self.op_color.2],
+            )),
             _ => Some(src_rgb),
         }
     }
@@ -26131,6 +26248,7 @@ mod tests {
     /// path). Returns the buffer after the call.
     fn invert_rect_8bpp(notched_clip: bool) -> Vec<u8> {
         let (mut d, mut cpu, mut bus) = setup();
+        bus.write_byte(0x0938, 1);
         let base = bus.alloc(16 * 6);
         for offset in 0..(16 * 6) as u32 {
             bus.write_byte(base + offset, (offset * 7 + 3) as u8);
@@ -27699,6 +27817,35 @@ mod tests {
             "gap between recorded loops must remain outside the region"
         );
         assert!(TrapDispatcher::region_contains_point(&bus, dst, 1, 9));
+    }
+
+    #[test]
+    fn closergn_preserves_a_recorded_oval_instead_of_its_bounding_box() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let dst_ptr = bus.alloc(10);
+        let dst = bus.alloc(4);
+        make_rgn(&mut bus, dst_ptr, dst, 0, 0, 0, 0);
+        let oval_rect = bus.alloc(8);
+        write_rect(&mut bus, oval_rect, 10, 20, 66, 76);
+
+        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, oval_rect);
+        d.dispatch_quickdraw(true, 0x0B8, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dst);
+        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(read_rgn_bbox(&bus, dst), (10, 20, 66, 76));
+        assert!(bus.read_word(bus.read_long(dst)) > super::REGION_HEADER_SIZE as u16);
+        assert!(TrapDispatcher::region_contains_point(&bus, dst, 38, 48));
+        assert!(!TrapDispatcher::region_contains_point(&bus, dst, 10, 20));
     }
 
     #[test]
@@ -30612,10 +30759,12 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
         write_rect(&mut bus, rect_ptr, 10, 10, 20, 20);
+        bus.write_byte(0x0938, 0);
         bus.write_long(TEST_SP, rect_ptr);
         let result = d.dispatch_quickdraw(true, 0x0A4, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_byte(0x0938), 1, "hilite mode is one-shot");
     }
 
     #[test]
@@ -33585,6 +33734,31 @@ mod tests {
                 [0x8000, 0x8000, 0x8000],
             ),
             [0x4000, 0x4000, 0x4000]
+        );
+    }
+
+    #[test]
+    fn blend_rgb_weights_each_component_with_opcolor() {
+        // Imaging With QuickDraw (1994), pp. 4-38..4-40: blend uses each
+        // OpColor component as the source weight and its complement as the
+        // destination weight.
+        assert_eq!(
+            TrapDispatcher::blend_rgb(
+                [0xFFFF, 0xFFFF, 0x0000],
+                [0x0000, 0x8000, 0xFFFF],
+                [0xFFFF, 0x8000, 0x0000],
+            ),
+            [0xFFFF, 0xC000, 0xFFFF]
+        );
+    }
+
+    #[test]
+    fn arithmetic_transfer_uses_the_standard_inverse_table() {
+        let clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let rgb = [0x27FF, 0x37FF, 0x47FF];
+        assert_eq!(
+            TrapDispatcher::arithmetic_palette_index(&clut, rgb),
+            TrapDispatcher::standard_itable_lookup(rgb[0], rgb[1], rgb[2]),
         );
     }
 
@@ -40486,8 +40660,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_ne!(bus.read_long(TEST_SP), 0);
-        assert_ne!(bus.read_long(TEST_SP), 0xDEAD_BEEFu32);
+        assert_eq!(bus.read_long(TEST_SP), 0x0100);
     }
 
     // $AB1C is not documented as SetGWorld (SetGWorld uses _QDExtensions
@@ -43026,6 +43199,43 @@ mod tests {
         assert_ne!(bus.read_byte(screen_base + 1 + 8), 0);
         assert_ne!(bus.read_byte(screen_base + 2 + 2 * 8), 0);
         assert_eq!(bus.read_byte(screen_base + 4 + 4 * 8), 0);
+    }
+
+    #[test]
+    fn closepicture_replays_recorded_long_text_commands() {
+        let (mut d, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc(64 * 32);
+        bus.fill_zeros(screen_base, 64 * 32);
+        d.screen_mode = (screen_base, 64, 64, 32, 8);
+        d.recording_picture = Some((1, 0, 0, 32, 64, Vec::new()));
+
+        d.record_picture_long_text(16, 4, b"Picture text");
+        let (_, _, _, _, _, commands) = d.recording_picture.take().unwrap();
+        assert_eq!(&commands[..2], &[0x00, 0x28]);
+        let picture = TrapDispatcher::encode_recorded_picture_pict(0, 0, 32, 64, commands);
+        let pic_ptr = bus.alloc(picture.len() as u32);
+        bus.write_bytes(pic_ptr, &picture);
+
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            32,
+            64,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert!(
+            bus.read_bytes(screen_base, 64 * 32)
+                .iter()
+                .any(|&pixel| pixel != 0),
+            "recorded text must render when the generated picture is replayed"
+        );
     }
 
     #[test]

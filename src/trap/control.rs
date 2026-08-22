@@ -429,6 +429,7 @@ impl super::TrapDispatcher {
         if dialog_ptr == 0 {
             return false;
         }
+        let dialog_visible = self.window_visible(bus, dialog_ptr);
         let vis_rgn = bus.read_long(dialog_ptr + 24);
         if Self::region_handle_rect(bus, vis_rgn).is_none() {
             return false;
@@ -463,7 +464,7 @@ impl super::TrapDispatcher {
         // composition cannot restore the pre-CDEF shell over the artwork.
         self.refresh_visible_dialog_snapshot_for_port(bus, dialog_ptr);
         let armed = self.arm_control_def_call_chain(cpu, bus, &calls);
-        if armed {
+        if armed && dialog_visible {
             self.dialog_cdefs_initially_drawn.insert(dialog_ptr);
         }
         armed
@@ -4358,6 +4359,7 @@ mod tests {
         let title_ptr = bus.alloc(16);
         let proc_id = (160i16 << 4) | 5;
         let cdef_proc = disp.install_test_resource(&mut bus, *b"CDEF", 160, &[0x4E, 0x56, 0, 0]);
+        bus.write_byte(window_ptr + 110, 0xFF);
 
         for (offset, value) in [10i16, 20, 40, 100].into_iter().enumerate() {
             bus.write_word(bounds_ptr + offset as u32 * 2, value as u16);
