@@ -1448,7 +1448,7 @@ impl super::TrapDispatcher {
             abs_bottom,
             abs_right,
             self.screen_mode,
-            &self.device_clut,
+            &self.color_manager_clut,
             device_ct_seed,
             None,
         );

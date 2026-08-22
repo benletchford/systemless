@@ -6512,7 +6512,34 @@ impl super::TrapDispatcher {
                         if let Some((_, pic_ptr)) =
                             self.find_or_load_resource_any(bus, *b"PICT", item.resource_id)
                         {
-                            // Draw PICT into the item's display rectangle
+                            // Draw PICT into the item's display rectangle.
+                            // DrawPicture must map against the port's logical
+                            // ColorTable (or stable color_manager_clut), NOT
+                            // the transient hardware CLUT state (device_clut),
+                            // which may be faded down to black mid-transition.
+                            // Imaging With QuickDraw 1994, p. 7-11, 7-14.
+                            let dialog_clut = if dialog_ptr != 0 {
+                                let port_version = bus.read_word(dialog_ptr + 6);
+                                let is_cgraf_port = (port_version & 0xC000) == 0xC000;
+                                let ctab_handle = if is_cgraf_port {
+                                    let pm_handle = bus.read_long(dialog_ptr + 2);
+                                    if pm_handle != 0 {
+                                        let pm_ptr = bus.read_long(pm_handle);
+                                        if pm_ptr != 0 {
+                                            bus.read_long(pm_ptr + 42)
+                                        } else {
+                                            0
+                                        }
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
+                                self.read_port_clut(bus, ctab_handle)
+                            } else {
+                                self.color_manager_clut
+                            };
                             let device_ct_seed =
                                 Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
                                     .unwrap_or(0);
@@ -6524,7 +6551,7 @@ impl super::TrapDispatcher {
                                 abs_bottom,
                                 abs_right,
                                 self.screen_mode,
-                                &self.device_clut,
+                                &dialog_clut,
                                 device_ct_seed,
                                 None,
                             );
@@ -24851,6 +24878,69 @@ mod tests {
         assert_eq!(
             themed, classic,
             "systemless-default must not change DrawDialog PICT item pixels"
+        );
+    }
+
+    #[test]
+    fn drawdialog_picture_item_maps_against_logical_port_palette_during_hardware_fade() {
+        // Imaging With QuickDraw 1994, pp. 7-11..7-14: DrawPicture maps against
+        // the destination port's logical ColorTable (or stable Color Manager
+        // baseline), not the transient video DAC CLUT (device_clut), which
+        // games may fade down to black before opening a dialog.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let (screen_base, row_bytes, _w, _h, pixel_size) = disp.screen_mode;
+        assert_eq!(pixel_size, 8);
+
+        // Hardware CLUT is faded completely black
+        disp.device_clut = [[0u16; 3]; 256];
+
+        bus.write_word(dialog_ptr + 8, 0);
+        bus.write_word(dialog_ptr + 10, 0);
+        bus.write_word(dialog_ptr + 16, 0);
+        bus.write_word(dialog_ptr + 18, 0);
+        bus.write_word(dialog_ptr + 20, 48);
+        bus.write_word(dialog_ptr + 22, 80);
+        disp.install_test_resource(&mut bus, *b"PICT", 420, &solid_fill_pict_resource(16, 16));
+        disp.dialog_items.insert(
+            dialog_ptr,
+            vec![
+                DialogItem {
+                    item_type: 64, // picture item
+                    rect: (8, 8, 24, 24),
+                    text: String::new(),
+                    resource_id: 420,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+                DialogItem {
+                    item_type: 4,
+                    rect: (30, 8, 42, 40),
+                    text: "OK".to_string(),
+                    resource_id: 0,
+                    proc_ptr: 0,
+                    sel_start: 0,
+                    sel_end: 0,
+                },
+            ],
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, dialog_ptr);
+        bus.write_long(TEST_SP + 4, 0xCAFE_BABE);
+
+        disp.dispatch_dialog(true, 0x181, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        // 0xFF is black in the standard system palette, which solid_fill_pict_resource
+        // filled the rectangle with. If DrawPicture mapped against the all-zero device_clut,
+        // it would have collapsed to index 0 (white).
+        assert_eq!(
+            bus.read_byte(screen_base + 16 * row_bytes + 16),
+            0xFF,
+            "DrawDialog PICT item must map against logical palette even when device_clut is dark"
         );
     }
 
