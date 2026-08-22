@@ -144,6 +144,7 @@ fn indexed_shape_color_index(
 /// tables), then the table is scanned (device tables carry client IDs in
 /// `value`). The table is fetched into a local buffer with one bulk read;
 /// the scan used to issue a bus read per entry, and it runs for every shape.
+#[allow(dead_code)]
 fn ctab_rgb_for_value(bus: &MacMemoryBus, ctab_handle: u32, wanted_value: u8) -> Option<[u16; 3]> {
     let entries = ctab_entries(bus, ctab_handle)?;
     ctab_entries_rgb_for_value(&entries, wanted_value)

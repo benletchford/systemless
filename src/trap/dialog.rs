@@ -1392,7 +1392,7 @@ impl super::TrapDispatcher {
         dest_rect.2 = dest_rect.2.saturating_add(dv);
         dest_rect.3 = dest_rect.3.saturating_add(dh);
         Self::te_write_rect_words(bus, te_ptr + Self::TE_DEST_RECT_OFFSET, dest_rect);
-        self.draw_te_contents(cpu, bus, te_handle);
+        self.draw_te_contents(cpu, bus, te_handle, true);
         // Refresh rendered_pixels so redraw_chrome restores the scrolled state rather
         // than the pre-scroll snapshot captured at dialog creation.
         // Text 1993, 2-89 (TEScroll/TEPinScroll modify destRect and redraw).
@@ -2701,7 +2701,7 @@ impl super::TrapDispatcher {
             if caret_state == 0 { 1 } else { 0 },
         );
         bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
-        self.draw_te_contents(cpu, bus, te_handle);
+        self.draw_te_contents(cpu, bus, te_handle, true);
     }
 
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
@@ -2988,7 +2988,13 @@ impl super::TrapDispatcher {
         base != 0 && row_bytes != 0 && top < bottom && left < right
     }
 
-    fn draw_te_contents(&mut self, cpu: &mut impl CpuOps, bus: &mut MacMemoryBus, te_handle: u32) {
+    fn draw_te_contents(
+        &mut self,
+        cpu: &mut impl CpuOps,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        erase_background: bool,
+    ) {
         let te_ptr = Self::te_record_ptr(bus, te_handle);
         if te_ptr == 0 {
             return;
@@ -3161,17 +3167,19 @@ impl super::TrapDispatcher {
         let clip_right = view_rect.3;
         let box_width = (dest_rect.3 - dest_rect.1).max(0);
 
-        self.draw_rect(
-            cpu,
-            bus,
-            &Rect {
-                top: clip_top,
-                left: clip_left,
-                bottom: clip_bottom,
-                right: clip_right,
-            },
-            ShapeOp::Erase,
-        );
+        if erase_background {
+            self.draw_rect(
+                cpu,
+                bus,
+                &Rect {
+                    top: clip_top,
+                    left: clip_left,
+                    bottom: clip_bottom,
+                    right: clip_right,
+                },
+                ShapeOp::Erase,
+            );
+        }
         let lines = if text_bytes.is_empty() {
             vec![(0usize, 0usize)]
         } else if uses_styled_runs {
@@ -5052,7 +5060,7 @@ impl super::TrapDispatcher {
         bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
         bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
         bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
-        self.draw_te_contents(cpu, bus, text_handle);
+        self.draw_te_contents(cpu, bus, text_handle, true);
         true
     }
 
@@ -14169,7 +14177,7 @@ impl super::TrapDispatcher {
                                     ) && redraw
                                     {
                                         self.te_recalculate_layout(bus, te_handle);
-                                        self.draw_te_contents(cpu, bus, te_handle);
+                                        self.draw_te_contents(cpu, bus, te_handle, true);
                                     }
                                 } else {
                                     let style_handle = Self::te_style_handle(bus, te_handle);
@@ -14546,7 +14554,7 @@ impl super::TrapDispatcher {
                             ) {
                                 self.te_recalculate_layout(bus, te_handle);
                             }
-                            self.draw_te_contents(cpu, bus, te_handle);
+                            self.draw_te_contents(cpu, bus, te_handle, true);
                         } else if text_ptr != 0 && bus.read_byte(text_ptr) == 0 {
                             // The ROM styled-TextEdit path leaves an exhausted
                             // NUL-terminated insertion with no continuation.
@@ -14916,7 +14924,7 @@ impl super::TrapDispatcher {
                         ) {
                             self.te_recalculate_layout(bus, te_handle);
                             if redraw {
-                                self.draw_te_contents(cpu, bus, te_handle);
+                                self.draw_te_contents(cpu, bus, te_handle, true);
                             }
                         }
                         cpu.write_reg(Register::A7, sp + 20);
@@ -15534,7 +15542,7 @@ impl super::TrapDispatcher {
                             view_rect.3
                         );
                     }
-                    self.draw_te_contents(cpu, bus, te_handle);
+                    self.draw_te_contents(cpu, bus, te_handle, false);
                     let te_port = bus.read_long(te_ptr + Self::TE_IN_PORT_OFFSET);
                     self.refresh_visible_dialog_snapshot_for_port(bus, te_port);
                 }
@@ -15790,7 +15798,7 @@ impl super::TrapDispatcher {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 1);
                     bus.write_long(te_ptr + Self::TE_CARET_TIME_OFFSET, self.tick_count);
                     bus.write_word(te_ptr + Self::TE_CARET_STATE_OFFSET, 0);
-                    self.draw_te_contents(cpu, bus, te_handle);
+                    self.draw_te_contents(cpu, bus, te_handle, true);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -15814,7 +15822,7 @@ impl super::TrapDispatcher {
                 let te_ptr = Self::te_record_ptr(bus, te_handle);
                 if te_ptr != 0 {
                     bus.write_word(te_ptr + Self::TE_ACTIVE_OFFSET, 0);
-                    self.draw_te_contents(cpu, bus, te_handle);
+                    self.draw_te_contents(cpu, bus, te_handle, true);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())

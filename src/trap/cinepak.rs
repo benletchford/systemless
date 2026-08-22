@@ -47,10 +47,12 @@ impl CinepakDecoder {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn width(&self) -> usize {
         self.width
     }
 
+    #[allow(dead_code)]
     pub(crate) fn height(&self) -> usize {
         self.height
     }
@@ -122,8 +124,8 @@ impl CinepakDecoder {
         right: usize,
     ) -> Result<(), &'static str> {
         // Current 4×4 block cursor.
-        let mut x = left;
-        let mut y = s_top;
+        let mut x;
+        let mut y;
 
         while pos + 4 <= strip_end {
             let chunk_id = ((data[pos] as usize) << 8) | data[pos + 1] as usize;

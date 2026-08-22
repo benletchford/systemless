@@ -125,6 +125,7 @@ fn trace_buffer_enabled() -> bool {
     *TRACE_BUFFER_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_BUFFER").is_some())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
 #[cfg(not(target_arch = "wasm32"))]
 static TRACE_PC_RANGE_TICKS: OnceLock<Option<(Option<u32>, Option<u32>)>> = OnceLock::new();

@@ -2674,10 +2674,13 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let src_y_offset = wr_top.max(0) as u32;
-        let src_x_offset = wr_left.max(0) as u32;
-        let dst_y = src_y_offset;
-        let dst_x = src_x_offset;
+        let (global_top, global_left, _, _) = self.window_global_port_rect(bus, port);
+        let (pb_top, pb_left, pb_bottom, pb_right) = self.port_bounds_rect(bus, port);
+
+        let src_y_offset = (wr_top.wrapping_sub(pb_top)).max(0) as u32;
+        let src_x_offset = (wr_left.wrapping_sub(pb_left)).max(0) as u32;
+        let dst_y = global_top.max(0) as u32;
+        let dst_x = global_left.max(0) as u32;
 
         // 1bpp source → 8bpp screen via per-pixel bit extraction.
         // For each source bit, resolve logical white/black through the
@@ -2688,14 +2691,9 @@ impl super::TrapDispatcher {
             // Games may set portRect MUCH larger than the actual BitMap
             // bounds (e.g. StuntCopter: portRect=(0,0..567,791) but
             // BitMap=(0,0..261,426)). Clamp source reads to the BitMap
-            // bounds (portBits.bounds at port + 8..15) so we don't walk
-            // past valid source data into adjacent rows. Without this,
-            // the per-row stride bug produces horizontally-doubled or
-            // tiled content.
-            let pb_top = bus.read_word(port + 8) as i16;
-            let pb_left = bus.read_word(port + 10) as i16;
-            let pb_bottom = bus.read_word(port + 12) as i16;
-            let pb_right = bus.read_word(port + 14) as i16;
+            // bounds so we don't walk past valid source data into adjacent
+            // rows. Without this, the per-row stride bug produces
+            // horizontally-doubled or tiled content.
             let bitmap_w = (pb_right - pb_left).max(0) as u32;
             let bitmap_h = (pb_bottom - pb_top).max(0) as u32;
             let row_count = h.min((screen_h as u32).saturating_sub(dst_y)).min(bitmap_h);
@@ -4118,30 +4116,9 @@ impl super::TrapDispatcher {
         // no title bar; dispatch to draw_window_frame rather than
         // draw_window_chrome (which paints title-bar chrome).
         let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
-        let port_version = bus.read_word(window_ptr + 6);
-        let (pmap_top, pmap_left) = if (port_version & 0xC000) == 0xC000 {
-            let pm_handle = bus.read_long(window_ptr + 2);
-            let pm_ptr = bus.read_long(pm_handle);
-            (
-                bus.read_word(pm_ptr + 6) as i16,
-                bus.read_word(pm_ptr + 8) as i16,
-            )
-        } else {
-            (
-                bus.read_word(window_ptr + 8) as i16,
-                bus.read_word(window_ptr + 10) as i16,
-            )
-        };
-        // wrapping_neg / wrapping_add match 68k Mac OS i16 wrap-
-        // around — guards against debug-build panics on windows
-        // whose pixmap.bounds.topLeft is i16::MIN or whose total
-        // width/height exceeds i16 range.
-        let wind_top = pmap_top.wrapping_neg();
-        let wind_left = pmap_left.wrapping_neg();
-        let port_bottom = bus.read_word(window_ptr + 20) as i16;
-        let port_right = bus.read_word(window_ptr + 22) as i16;
-        let wind_bottom = wind_top.wrapping_add(port_bottom);
-        let wind_right = wind_left.wrapping_add(port_right);
+        let (wind_top, wind_left, wind_bottom, wind_right) = self
+            .window_content_global_rect(bus, window_ptr)
+            .unwrap_or_else(|| self.window_global_port_rect(bus, window_ptr));
         if wind_bottom <= wind_top || wind_right <= wind_left {
             return;
         }
