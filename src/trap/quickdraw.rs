@@ -731,9 +731,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let port_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port = bus.read_long(global_ptr);
+                let port = self.effective_the_port(bus, cpu.read_reg(Register::A5));
                 if port_ptr != port {
                     bus.write_long(port_ptr, port);
                 }
@@ -782,9 +780,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let bits_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
+                let port_ptr = self.effective_the_port(bus, cpu.read_reg(Register::A5));
                 let is_cgraf_port = (bus.read_word(port_ptr + 6) & 0xC000) == 0xC000;
                 if is_cgraf_port {
                     bus.write_long(port_ptr + 2, bits_ptr);
@@ -801,14 +797,9 @@ impl super::TrapDispatcher {
                             port_ptr, bits_ptr
                         );
                     } else {
-                        let row_bytes = bus.read_word(bits_ptr + 4);
-                        let top = bus.read_word(bits_ptr + 6) as i16;
-                        let left = bus.read_word(bits_ptr + 8) as i16;
-                        let bottom = bus.read_word(bits_ptr + 10) as i16;
-                        let right = bus.read_word(bits_ptr + 12) as i16;
                         eprintln!(
-                            "[DIALOG-PORT] SetPortBits port=${:08X} bits=${:08X} rowBytes=${:04X} bounds=({},{},{},{})",
-                            port_ptr, bits_ptr, row_bytes, top, left, bottom, right
+                            "[DIALOG-PORT] SetPortBits port=${:08X} bits_ptr=${:08X}",
+                            port_ptr, bits_ptr
                         );
                     }
                 }
@@ -816,7 +807,7 @@ impl super::TrapDispatcher {
             }
 
             // PortSize ($A876)
-            // Sets portRect width and height; top-left corner unchanged.
+            // Changes the size of the current grafPort's portRect.
             // PROCEDURE PortSize (width,height: INTEGER);
             // Inside Macintosh Volume I, I-165
             //
@@ -828,9 +819,7 @@ impl super::TrapDispatcher {
                 let height = bus.read_word(sp) as i16;
                 let width = bus.read_word(sp + 2) as i16;
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
+                let port_ptr = self.effective_the_port(bus, cpu.read_reg(Register::A5));
                 let top = bus.read_word(port_ptr + 16) as i16;
                 let left = bus.read_word(port_ptr + 18) as i16;
                 bus.write_word(port_ptr + 20, (top + height) as u16);
@@ -902,9 +891,7 @@ impl super::TrapDispatcher {
                 let top_global = bus.read_word(sp) as i16;
                 let left_global = bus.read_word(sp + 2) as i16;
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
+                let port_ptr = self.effective_the_port(bus, cpu.read_reg(Register::A5));
 
                 // IM:I I-166: shift portBits.bounds so that
                 //   portRect.topLeft - bits.bounds.topLeft = (leftGlobal, topGlobal).
@@ -968,9 +955,7 @@ impl super::TrapDispatcher {
                 let v = bus.read_word(sp) as i16;
                 let h = bus.read_word(sp + 2) as i16;
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
+                let port_ptr = self.effective_the_port(bus, cpu.read_reg(Register::A5));
                 let hidden_window_regions =
                     self.hidden_window_local_regions_for_origin_change(bus, port_ptr);
                 let top = bus.read_word(port_ptr + 16) as i16;
@@ -1063,10 +1048,22 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let src_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
-                let dst_handle = bus.read_long(port_ptr + 28);
+                let port_ptr = if self.current_port != 0 {
+                    self.current_port
+                } else {
+                    let a5 = cpu.read_reg(Register::A5);
+                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
+                    if global_ptr != 0 {
+                        bus.read_long(global_ptr)
+                    } else {
+                        bus.read_long(0x2A6)
+                    }
+                };
+                let dst_handle = if port_ptr != 0 {
+                    bus.read_long(port_ptr + 28)
+                } else {
+                    0
+                };
                 if src_handle != 0 && dst_handle != 0 {
                     let src_ptr = bus.read_long(src_handle);
                     if src_ptr != 0 {
@@ -1108,10 +1105,22 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rgn_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
-                let clip_rgn = bus.read_long(port_ptr + 28);
+                let port_ptr = if self.current_port != 0 {
+                    self.current_port
+                } else {
+                    let a5 = cpu.read_reg(Register::A5);
+                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
+                    if global_ptr != 0 {
+                        bus.read_long(global_ptr)
+                    } else {
+                        bus.read_long(0x2A6)
+                    }
+                };
+                let clip_rgn = if port_ptr != 0 {
+                    bus.read_long(port_ptr + 28)
+                } else {
+                    0
+                };
                 if rgn_handle != 0 && clip_rgn != 0 {
                     let clip_rgn_ptr = bus.read_long(clip_rgn);
                     if clip_rgn_ptr != 0 {
@@ -1147,24 +1156,40 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let a5 = cpu.read_reg(Register::A5);
-                let global_ptr = bus.read_long(a5);
-                let port_ptr = bus.read_long(global_ptr);
-                let clip_rgn_handle = bus.read_long(port_ptr + 28);
-                let clip_rgn_ptr = bus.read_long(clip_rgn_handle);
-                bus.write_word(clip_rgn_ptr, 10);
-                for i in 0..8u32 {
-                    bus.write_byte(clip_rgn_ptr + 2 + i, bus.read_byte(rect_ptr + i));
-                }
-                if trace_dialog_ports_enabled() {
-                    let top = bus.read_word(rect_ptr) as i16;
-                    let left = bus.read_word(rect_ptr + 2) as i16;
-                    let bottom = bus.read_word(rect_ptr + 4) as i16;
-                    let right = bus.read_word(rect_ptr + 6) as i16;
-                    eprintln!(
-                        "[DIALOG-PORT] ClipRect port=${:08X} rect=({},{},{},{})",
-                        port_ptr, top, left, bottom, right
-                    );
+                let port_ptr = if self.current_port != 0 {
+                    self.current_port
+                } else {
+                    let a5 = cpu.read_reg(Register::A5);
+                    let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
+                    if global_ptr != 0 {
+                        bus.read_long(global_ptr)
+                    } else {
+                        bus.read_long(0x2A6)
+                    }
+                };
+                let clip_rgn_handle = if port_ptr != 0 {
+                    bus.read_long(port_ptr + 28)
+                } else {
+                    0
+                };
+                if clip_rgn_handle != 0 {
+                    let clip_rgn_ptr = bus.read_long(clip_rgn_handle);
+                    if clip_rgn_ptr != 0 {
+                        bus.write_word(clip_rgn_ptr, 10);
+                        for i in 0..8u32 {
+                            bus.write_byte(clip_rgn_ptr + 2 + i, bus.read_byte(rect_ptr + i));
+                        }
+                        if trace_dialog_ports_enabled() {
+                            let top = bus.read_word(rect_ptr) as i16;
+                            let left = bus.read_word(rect_ptr + 2) as i16;
+                            let bottom = bus.read_word(rect_ptr + 4) as i16;
+                            let right = bus.read_word(rect_ptr + 6) as i16;
+                            eprintln!(
+                                "[DIALOG-PORT] ClipRect port=${:08X} rect=({},{},{},{})",
+                                port_ptr, top, left, bottom, right
+                            );
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -20329,20 +20354,27 @@ impl super::TrapDispatcher {
         // screen.  Treat it as the actual screen pixel depth so CopyBits
         // reads the pixel data correctly instead of interpreting 8bpp bytes
         // as 1bpp packed bits.
-        let pixel_size = if base == screen_base && screen_ps > 1 {
-            screen_ps as u32
+        let raw_row_bytes = (raw_word & 0x3FFF) as u32;
+        let (pixel_size, ctab_handle) = if base == screen_base
+            && raw_row_bytes == self.screen_mode.1
+            && screen_ps > 1
+        {
+            (
+                screen_ps as u32,
+                Self::gdevice_ctab_handle(bus, self.main_gdevice_handle),
+            )
         } else {
-            1
+            (1, 0)
         };
         CopyBitmapInfo {
             base,
-            row_bytes: (raw_word & 0x3FFF) as u32,
+            row_bytes: raw_row_bytes,
             bounds_top: bus.read_word(bits_ptr + 6) as i16,
             bounds_left: bus.read_word(bits_ptr + 8) as i16,
             bounds_bottom: bus.read_word(bits_ptr + 10) as i16,
             bounds_right: bus.read_word(bits_ptr + 12) as i16,
             pixel_size,
-            ctab_handle: 0,
+            ctab_handle,
         }
     }
 
@@ -23682,6 +23714,53 @@ impl super::TrapDispatcher {
                 bus.read_word(port + 8) as i16,
                 bus.read_word(port + 10) as i16,
             )
+        }
+    }
+
+    pub(crate) fn port_bounds_rect(&self, bus: &MacMemoryBus, port: u32) -> (i16, i16, i16, i16) {
+        if port == 0 {
+            return (0, 0, 0, 0);
+        }
+        let port_version = bus.read_word(port + 6);
+        let is_color = (port_version & 0xC000) != 0;
+        if is_color {
+            let pm_handle = bus.read_long(port + 2);
+            if pm_handle != 0 {
+                let pm_ptr = bus.read_long(pm_handle);
+                if pm_ptr != 0 {
+                    return (
+                        bus.read_word(pm_ptr + 6) as i16,
+                        bus.read_word(pm_ptr + 8) as i16,
+                        bus.read_word(pm_ptr + 10) as i16,
+                        bus.read_word(pm_ptr + 12) as i16,
+                    );
+                }
+            }
+            (0, 0, 0, 0)
+        } else {
+            (
+                bus.read_word(port + 8) as i16,
+                bus.read_word(port + 10) as i16,
+                bus.read_word(port + 12) as i16,
+                bus.read_word(port + 14) as i16,
+            )
+        }
+    }
+
+    pub(crate) fn effective_the_port(&self, bus: &MacMemoryBus, a5: u32) -> u32 {
+        if a5 != 0 {
+            let global_ptr = bus.read_long(a5);
+            if global_ptr != 0 {
+                let app_port = bus.read_long(global_ptr);
+                if app_port != 0 {
+                    return app_port;
+                }
+            }
+        }
+        if self.current_port != 0 {
+            self.current_port
+        } else {
+            bus.read_long(0x2A6)
         }
     }
 

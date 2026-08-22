@@ -998,7 +998,11 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn window_global_port_rect(&self, bus: &MacMemoryBus, window_ptr: u32) -> (i16, i16, i16, i16) {
+    pub(crate) fn window_global_port_rect(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> (i16, i16, i16, i16) {
         let (top, left, bottom, right) = self.window_port_rect(bus, window_ptr);
         let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, window_ptr);
         (
