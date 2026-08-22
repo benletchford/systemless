@@ -3999,15 +3999,6 @@ impl super::TrapDispatcher {
         // Macintosh Toolbox Essentials (1992), pp. 4-29, 4-31, 4-55,
         // and 4-124 to 4-126.
         let main_screen = (menu_bar_height, 0, screen_h, screen_w);
-        let place_at_alert_position = |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
-            let dialog_w = bounds.3 - bounds.1;
-            let dialog_h = bounds.2 - bounds.0;
-            let target_w = target.3 - target.1;
-            let target_h = target.2 - target.0;
-            let new_left = target.1 + (target_w - dialog_w) / 2;
-            let new_top = target.0 + (target_h - dialog_h) / 5;
-            (new_top, new_left, new_top + dialog_h, new_left + dialog_w)
-        };
         // Parent-relative placement positions the complete dialog structure,
         // then converts the result back to the content bounds used by NewWindow.
         // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126 and 6-62 to 6-63
@@ -4050,7 +4041,7 @@ impl super::TrapDispatcher {
             // alertPositionMainScreen / ParentWindowScreen
             // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
             0x300A | 0x700A => {
-                bounds = place_at_alert_position(main_screen);
+                bounds = place_structure_at_alert_position(main_screen);
             }
             // alertPositionParentWindow uses the content rectangle of the
             // window in which the user was last working.
@@ -11196,6 +11187,13 @@ impl super::TrapDispatcher {
 
                 let target_dialog = self.dialog_from_window_event(what, message);
                 if let Some(dialog_ptr) = target_dialog {
+                    // System 7 leaves the affected dialog in theDialog while
+                    // handling update and activate events even though the
+                    // Boolean result is FALSE. Macintosh Toolbox Essentials
+                    // (1992), pp. 6-139 through 6-141.
+                    if matches!(what, 6 | 8) && dialog_out_ptr != 0 {
+                        bus.write_long(dialog_out_ptr, dialog_ptr);
+                    }
                     let bounds = Self::dialog_screen_bounds(bus, dialog_ptr);
                     trace_detail = format!(
                         "bounds=({},{},{},{}) outcome=no_item",
@@ -18237,6 +18235,18 @@ mod tests {
     }
 
     #[test]
+    fn alert_position_places_the_complete_movable_dialog_structure() {
+        let (mut disp, _cpu, bus) = setup();
+        disp.screen_mode = (0, 800, 800, 600, 8);
+        disp.menu_bar_hidden = true;
+
+        assert_eq!(
+            disp.positioned_window_bounds(&bus, (120, 120, 215, 520), 0x700A, 5),
+            (115, 199, 210, 599)
+        );
+    }
+
+    #[test]
     fn get_new_dialog_uses_parent_window_for_alert_position() {
         // MTE 1992 pp. 4-125 to 4-126: alertPositionParentWindow places the
         // new window in the alert position of the window last used.
@@ -20308,6 +20318,39 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
         assert_eq!(bus.read_byte(TEST_SP + 12), 0);
+    }
+
+    #[test]
+    fn dialog_select_update_returns_affected_dialog_while_false() {
+        // MTE 1992 pp. 6-139..6-141: DialogSelect handles an update event
+        // and returns FALSE. System 7 also leaves the affected DialogPtr in
+        // theDialog, which movable-modal event loops may retain afterward.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let dialog_ptr = bus.alloc(170);
+        let event_ptr = 0x300000u32;
+        let dialog_out_ptr = 0x300100u32;
+        let item_hit_ptr = 0x300104u32;
+
+        disp.front_window = dialog_ptr;
+        bus.write_byte(dialog_ptr + 109, 0xFF);
+        bus.write_word(dialog_ptr + 16, 10);
+        bus.write_word(dialog_ptr + 18, 20);
+        bus.write_word(dialog_ptr + 20, 110);
+        bus.write_word(dialog_ptr + 22, 180);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        bus.write_word(event_ptr, 6); // updateEvt
+        bus.write_long(event_ptr + 2, dialog_ptr);
+        bus.write_long(TEST_SP, item_hit_ptr);
+        bus.write_long(TEST_SP + 4, dialog_out_ptr);
+        bus.write_long(TEST_SP + 8, event_ptr);
+        bus.write_long(dialog_out_ptr, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_dialog(true, 0x180, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_byte(TEST_SP + 12), 0);
+        assert_eq!(bus.read_long(dialog_out_ptr), dialog_ptr);
     }
 
     #[test]
@@ -23966,8 +24009,8 @@ mod tests {
     #[test]
     fn systemless_theme_does_not_change_dialogselect_window_events() {
         // MTE 1992 p. 6-139 and IM:I I-417: activate/update events for a
-        // dialog window are handled by DialogSelect and return FALSE rather
-        // than reporting an enabled item through theDialog/itemHit.
+        // dialog window are handled by DialogSelect and return FALSE while
+        // identifying the affected window through theDialog, without an itemHit.
         // MTE 1992 pp. 6-141 and 6-143 plus IM:I I-291: update handling
         // brackets the redraw with BeginUpdate/EndUpdate, uses the dialog
         // port, redraws the dialog, and leaves app-owned userItem drawing
@@ -23978,7 +24021,7 @@ mod tests {
         let themed = dialog_select_window_event_results_for_theme(UiThemeId::SystemlessDefault);
 
         assert_eq!(classic.update_result, 0);
-        assert_eq!(classic.update_dialog_out, 0xDEAD_BEEF);
+        assert_eq!(classic.update_dialog_out, classic.dialog_ptr);
         assert_eq!(classic.update_item_hit, 0xCAFE);
         assert_eq!(classic.update_stack_after, TEST_SP + 12);
         assert!(!classic.update_deferred_after);
@@ -23996,7 +24039,7 @@ mod tests {
         );
         assert_eq!(classic.update_item_count_after, 3);
         assert_eq!(classic.activate_result, 0);
-        assert_eq!(classic.activate_dialog_out, 0xDEAD_BEEF);
+        assert_eq!(classic.activate_dialog_out, classic.dialog_ptr);
         assert_eq!(classic.activate_item_hit, 0xCAFE);
         assert_eq!(classic.activate_stack_after, TEST_SP + 12);
         assert_eq!(
