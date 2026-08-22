@@ -1262,6 +1262,30 @@ mod tests {
     }
 
     #[test]
+    fn keys_use_classic_keymap_bit_order() {
+        let (mut disp, _, _) = setup();
+
+        for (key_code, expected_byte_index, expected_mask) in [
+            (0x00, 0, 0x01),  // A
+            (0x31, 6, 0x02),  // Space
+            (0x37, 6, 0x80),  // Command
+            (0x7B, 15, 0x08), // Left Arrow
+            (0x7C, 15, 0x10), // Right Arrow
+            (0x7D, 15, 0x20), // Down Arrow
+            (0x7E, 15, 0x40), // Up Arrow
+        ] {
+            disp.push_key_down(key_code, 0);
+            assert_eq!(
+                disp.key_map_bytes()[expected_byte_index],
+                expected_mask,
+                "wrong KeyMap bit for key code {key_code:#04X}"
+            );
+            disp.push_key_up(key_code, 0);
+            assert_eq!(disp.key_map_bytes()[expected_byte_index], 0);
+        }
+    }
+
+    #[test]
     fn repeated_host_keydown_does_not_duplicate_keydown_or_restart_autokey() {
         // Browsers emit repeated keydown callbacks for a held key. Classic
         // Event Manager emits one keyDown followed by timed autoKey records.

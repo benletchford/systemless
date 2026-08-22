@@ -18004,14 +18004,14 @@ mod tests {
         assert!(disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x7E));
         assert!(!disp.key_is_down(0x2E), "J must not alias the M key");
-        assert_eq!(bus.read_byte(keys_ptr + 4), 0x02, "J key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 4), 0x40, "J key byte");
         assert_eq!(
             bus.read_byte(keys_ptr + 5),
             0,
             "M key byte should stay clear when J is down"
         );
-        assert_eq!(bus.read_byte(keys_ptr + 6), 0x40, "space key byte");
-        assert_eq!(bus.read_byte(keys_ptr + 15), 0x12, "left/up arrow key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 6), 0x02, "space key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x48, "left/up arrow key byte");
         assert_eq!(
             bus.read_byte(keys_ptr + 14),
             0,
@@ -18028,7 +18028,7 @@ mod tests {
         assert!(disp.key_is_down(0x31));
         assert!(disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x7E));
-        assert_eq!(bus.read_byte(keys_ptr + 15), 0x02, "only up remains");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x40, "only up remains");
 
         // J ($26) and M ($2E) differ only by KeyMap byte. This catches the
         // byte-pair swap that makes EV/Marathon direct pollers invert them.
@@ -18041,7 +18041,7 @@ mod tests {
         assert!(!disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x2E));
         assert_eq!(bus.read_byte(keys_ptr + 4), 0, "J byte should be clear");
-        assert_eq!(bus.read_byte(keys_ptr + 5), 0x02, "M key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 5), 0x40, "M key byte");
     }
 
     // GetMouse ($A972)
