@@ -1,6 +1,7 @@
 //! Window Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::quickdraw::RegionBooleanOp;
@@ -93,8 +94,7 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let title =
-            String::from_utf8_lossy(&bus.read_bytes(ptr + 19, title_len as usize)).into_owned();
+        let title = decode_mac_roman(&bus.read_bytes(ptr + 19, title_len as usize));
         Some(WindTemplate {
             bounds: Self::read_rect(bus, ptr),
             proc_id: bus.read_word(ptr + 8) as i16,
@@ -382,6 +382,39 @@ impl super::TrapDispatcher {
         bus.write_long(aux_ptr + Self::AUX_WIN_REFCON_OFFSET, 0);
         self.window_aux_records.insert(window_ptr, aux_handle);
         aux_handle
+    }
+
+    pub(crate) fn set_window_dialog_item_color_table(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        window_ptr: u32,
+        item_color_table: u32,
+    ) {
+        let aux_handle = self
+            .window_aux_records
+            .get(&window_ptr)
+            .copied()
+            .unwrap_or_else(|| self.ensure_window_aux_record(bus, window_ptr, 0));
+        let aux_ptr = bus.read_long(aux_handle);
+        if aux_ptr != 0 {
+            bus.write_long(
+                aux_ptr + Self::AUX_WIN_DIALOG_CITEM_OFFSET,
+                item_color_table,
+            );
+        }
+    }
+
+    pub(crate) fn window_dialog_item_color_table(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> u32 {
+        self.window_aux_records
+            .get(&window_ptr)
+            .map(|handle| bus.read_long(*handle))
+            .filter(|ptr| *ptr != 0)
+            .map(|ptr| bus.read_long(ptr + Self::AUX_WIN_DIALOG_CITEM_OFFSET))
+            .unwrap_or(0)
     }
 
     pub(crate) fn rect_intersection(
@@ -2374,7 +2407,7 @@ impl super::TrapDispatcher {
         self.window_title = if title_handle != 0 {
             let title_ptr = bus.read_long(title_handle);
             if title_ptr != 0 {
-                String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                decode_mac_roman(&bus.read_pstring(title_ptr))
             } else {
                 String::new()
             }
@@ -2777,7 +2810,7 @@ impl super::TrapDispatcher {
 
         // Allocate a StringHandle for the title and store it in the window record.
         // Inside Macintosh Volume I, I-276: titleHandle is a StringHandle.
-        Self::set_title_handle(bus, window_ptr, wind_title.as_bytes());
+        Self::set_title_handle(bus, window_ptr, &encode_mac_roman_lossy(wind_title));
 
         // Window creation initializes the port as the current drawing target.
         // Individual NewWindow/NewCWindow callers restore the previous port
@@ -3045,7 +3078,7 @@ impl super::TrapDispatcher {
 
                 // Read title Pascal string
                 let title = if title_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -3257,7 +3290,7 @@ impl super::TrapDispatcher {
                 let storage_ptr = bus.read_long(sp + 22);
 
                 let wind_title = if title_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -3762,7 +3795,7 @@ impl super::TrapDispatcher {
                     let bytes = bus.read_pstring(title_ptr);
                     Self::set_title_handle(bus, the_window, &bytes);
                     if the_window == self.front_window {
-                        self.window_title = String::from_utf8_lossy(&bytes).into_owned();
+                        self.window_title = decode_mac_roman(&bytes);
                     }
                     if self.window_visible(bus, the_window) {
                         let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
@@ -6971,11 +7004,24 @@ mod tests {
     }
 
     #[test]
+    fn wind_template_preserves_mac_roman_title_bytes() {
+        let (_disp, _cpu, mut bus) = setup();
+        let wind_ptr = bus.alloc(24);
+        bus.write_byte(wind_ptr + 18, 4);
+        bus.write_bytes(wind_ptr + 19, b"DLB\xAA");
+
+        let template = super::super::TrapDispatcher::parse_wind_template(&bus, wind_ptr, 23)
+            .expect("WIND template with Mac Roman title");
+        assert_eq!(template.title, "DLB™");
+    }
+
+    #[test]
     fn get_new_window_constructors_apply_center_main_screen_positioning() {
         for trap_num in [0x1BD, 0x246] {
             let (mut disp, mut cpu, mut bus) = setup();
             let screen_base = bus.alloc((800 * 600) as u32);
             bus.write_long(0x0824, screen_base);
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
             disp.screen_mode = (screen_base, 800, 800, 600, 8);
             install_positioned_wind_resource(
                 &mut disp,
@@ -7003,8 +7049,8 @@ mod tests {
             assert_ne!(window_ptr, 0);
             assert_eq!(
                 disp.window_global_port_rect(&bus, window_ptr),
-                (103, 152, 497, 647),
-                "trap ${trap_num:03X} should center the WIND content bounds"
+                (121, 152, 515, 647),
+                "trap ${trap_num:03X} should center the complete WIND structure below the menu bar"
             );
         }
     }
@@ -8667,6 +8713,28 @@ mod tests {
         let result = dispatch(&mut disp, 0x11A, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn setwtitle_decodes_mac_roman_for_window_chrome() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.front_window = window;
+        let title = bus.alloc(8);
+        bus.write_pstring(title, b"DLB\xAA");
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, title);
+        bus.write_long(sp + 4, window);
+
+        dispatch(&mut disp, 0x11A, &mut cpu, &mut bus)
+            .expect("SetWTitle dispatch")
+            .expect("SetWTitle");
+
+        assert_eq!(disp.window_title, "DLB™");
+        let handle =
+            bus.read_long(window + super::super::TrapDispatcher::WINDOW_TITLE_HANDLE_OFFSET);
+        assert_eq!(bus.read_pstring(bus.read_long(handle)), b"DLB\xAA");
     }
 
     #[test]
@@ -10822,9 +10890,8 @@ mod tests {
             super::super::TrapDispatcher::region_contains_point(&bus, back_vis, 80, 100),
             "the back visRgn must expose the front window's former location"
         );
-        let back_update = bus.read_long(
-            back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET,
-        );
+        let back_update =
+            bus.read_long(back + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
         assert!(
             super::super::TrapDispatcher::region_contains_point(&bus, back_update, 80, 100),
             "the newly exposed back content must be invalidated"

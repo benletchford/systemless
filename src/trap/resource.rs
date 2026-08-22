@@ -1824,6 +1824,18 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"KMAP" {
+                    if let Some(ptr) = self.synthesize_system_kmap(bus, res_id) {
+                        let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 cpu.write_reg(Register::A0, 0);
                 cpu.write_reg(Register::D0, 0);
                 bus.write_word(0x0A60, 0);
@@ -9136,30 +9148,82 @@ mod tests {
 
         let kchr = bus.read_long(handle);
         assert_ne!(kchr, 0, "synthetic KCHR handle must be loaded");
-        assert_eq!(bus.get_alloc_size(kchr), Some(1 + 256 + 128 * 2));
-        assert_eq!(bus.read_byte(kchr), 0, "KCHR version byte");
+        assert_eq!(bus.get_alloc_size(kchr), Some(2 + 256 + 2 + 128 * 2 + 2));
+        assert_eq!(bus.read_word(kchr), 0, "KCHR version word");
         assert_eq!(
-            bus.read_byte(kchr + 1),
+            bus.read_byte(kchr + 2),
             0,
             "modifier byte 0 should select the unshifted table"
         );
         assert_eq!(
-            bus.read_byte(kchr + 2),
+            bus.read_byte(kchr + 3),
             0,
             "modifier byte 1 is Command-only and should stay unshifted"
         );
         assert_eq!(
-            bus.read_byte(kchr + 3),
+            bus.read_byte(kchr + 4),
             1,
             "modifier byte 2 should select the shifted table"
         );
 
-        let table0 = kchr + 1 + 256;
+        assert_eq!(bus.read_word(kchr + 2 + 256), 2, "KCHR table count");
+        let table0 = kchr + 2 + 256 + 2;
         let table1 = table0 + 128;
         assert_eq!(bus.read_byte(table0), b'a');
         assert_eq!(bus.read_byte(table1), b'A');
         assert_eq!(bus.read_byte(table0 + 0x0C), b'q');
         assert_eq!(bus.read_byte(table1 + 0x0C), b'Q');
+        assert_eq!(bus.read_byte(table0 + 0x7B), 0x1C, "left arrow");
+        assert_eq!(bus.read_byte(table0 + 0x7C), 0x1D, "right arrow");
+        assert_eq!(bus.read_byte(table0 + 0x7D), 0x1F, "down arrow");
+        assert_eq!(bus.read_byte(table0 + 0x7E), 0x1E, "up arrow");
+        assert_eq!(
+            bus.read_bytes(table1 + 0x7B, 4),
+            vec![0x1C, 0x1D, 0x1F, 0x1E],
+            "shifted arrow translations should remain navigation characters"
+        );
+        assert_eq!(bus.read_word(table1 + 128), 0, "KCHR dead-key count");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_adb_kmap_id_zero() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let sp = TEST_SP;
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, u32::from_be_bytes(*b"KMAP"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0, "synthetic KMAP must return a handle");
+        let kmap = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(kmap), Some(4 + 128 + 2));
+        assert_eq!(bus.read_word(kmap), 0, "KMAP identifier");
+        assert_eq!(bus.read_word(kmap + 2), 0, "KMAP version");
+        let remapped = [
+            (0x36u32, 0x3Bu8),
+            (0x3B, 0x7B),
+            (0x3C, 0x7C),
+            (0x3D, 0x7D),
+            (0x3E, 0x7E),
+            (0x7B, 0x3C),
+            (0x7C, 0x3D),
+            (0x7D, 0x3E),
+            (0x7E, 0x36),
+        ];
+        for keycode in 0..128u32 {
+            let expected = remapped
+                .iter()
+                .find_map(|&(raw, virtual_key)| (raw == keycode).then_some(virtual_key))
+                .unwrap_or(keycode as u8);
+            assert_eq!(
+                bus.read_byte(kmap + 4 + keycode),
+                expected,
+                "standard raw keycode {keycode:#04X} should use its ADB virtual-key mapping"
+            );
+        }
+        assert_eq!(bus.read_word(kmap + 4 + 128), 0, "KMAP exception count");
     }
 
     #[test]

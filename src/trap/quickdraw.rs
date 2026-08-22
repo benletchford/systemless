@@ -76,6 +76,26 @@ const PM_EXPLICIT: i16 = 0x0008;
 const PM_NO_UPDATES: i16 = -0x8000;
 const PM_BK_UPDATES: i16 = -0x6000;
 const PM_FG_UPDATES: i16 = -0x4000;
+// Classic Color QuickDraw's 8-bit color-arbitration order. The Palette
+// Manager walks this spread when a tolerant request has no in-tolerance
+// match, preserving the protected white/black endpoints while distributing
+// replacements across the device table. This is deliberately not numerical
+// CLUT order or nearest-RGB order.
+const PM_8BPP_ALLOCATION_ORDER: [u8; 256] = [
+    0, 255, 16, 18, 20, 22, 24, 63, 47, 95, 79, 127, 111, 159, 143, 31, 15, 254, 238, 222, 206,
+    190, 174, 62, 46, 94, 78, 126, 110, 158, 142, 26, 14, 253, 237, 221, 205, 189, 173, 61, 45, 93,
+    77, 125, 109, 157, 141, 29, 13, 252, 236, 220, 204, 188, 172, 156, 44, 124, 76, 92, 108, 60,
+    140, 28, 12, 251, 235, 219, 203, 187, 171, 155, 43, 123, 75, 91, 107, 59, 139, 27, 11, 250,
+    234, 218, 202, 186, 170, 154, 42, 122, 74, 90, 106, 58, 138, 30, 10, 249, 233, 217, 201, 185,
+    169, 153, 41, 121, 73, 89, 105, 57, 137, 25, 9, 248, 232, 216, 200, 184, 168, 152, 40, 120, 72,
+    88, 104, 56, 136, 175, 8, 247, 231, 215, 199, 183, 167, 151, 39, 119, 71, 87, 103, 55, 135, 23,
+    7, 246, 230, 214, 198, 182, 166, 150, 38, 118, 70, 86, 102, 54, 134, 191, 6, 245, 229, 213,
+    197, 181, 165, 149, 37, 117, 69, 85, 101, 53, 133, 21, 5, 244, 228, 212, 196, 180, 164, 148,
+    36, 116, 68, 84, 100, 52, 132, 207, 4, 243, 227, 211, 195, 179, 163, 147, 35, 115, 67, 83, 99,
+    51, 131, 19, 3, 242, 226, 210, 194, 178, 162, 146, 34, 114, 66, 82, 98, 50, 130, 223, 2, 241,
+    225, 209, 193, 177, 161, 49, 33, 81, 65, 113, 97, 145, 129, 17, 1, 240, 224, 208, 192, 176,
+    160, 48, 32, 80, 64, 112, 96, 144, 128, 239,
+];
 
 /// `dstWindow` value that addresses the default palette rather than a window.
 /// `SetPalette`/`NSetPalette` take a WindowPtr, and `(WindowPtr)-1` is the
@@ -1655,7 +1675,10 @@ impl super::TrapDispatcher {
             }
 
             // RectRgn ($A8DF)
-            // RectRgn ($A8DF): Sets region to bounding rect
+            // Destroys the previous region structure and replaces it with the
+            // supplied rectangle.
+            // PROCEDURE RectRgn(rgn: RgnHandle; r: Rect);
+            // Imaging With QuickDraw (1994), p. 3-92
             (true, 0x0DF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
@@ -9325,12 +9348,23 @@ impl super::TrapDispatcher {
                     ];
                 }
 
-                let dst_clut = if dst_ctab_handle != 0 {
-                    self.read_port_clut(bus, dst_ctab_handle)
+                // Screen-backed color ports retain their own PixMap color
+                // table, but the pixels are interpreted by the live screen
+                // device table. Palette activation can therefore make the
+                // port's table stale. Use the same screen-destination rule as
+                // CopyBits so PlotCIcon maps colors through the live device.
+                // Imaging With QuickDraw (1994), pp. 4-55 to 4-59 and 5-28.
+                let effective_dst_ctab = self.effective_destination_ctab_handle(
+                    dst_base,
+                    dst_row_bytes,
+                    dst_pixel_size,
+                    dst_ctab_handle,
+                );
+                let dst_clut = if effective_dst_ctab != 0 {
+                    self.read_port_clut(bus, effective_dst_ctab)
                 } else {
                     self.device_clut
                 };
-
                 for dst_y_local in dst_top..dst_bottom {
                     let Some(sy) =
                         Self::scale_coord(pm_top, pm_bottom, dst_top, dst_bottom, dst_y_local)
@@ -9403,13 +9437,29 @@ impl super::TrapDispatcher {
                                 ) else {
                                     continue;
                                 };
-                                let rgb = icon_clut
+                                let mut rgb = icon_clut
                                     .get(src_index as usize)
                                     .copied()
                                     .unwrap_or(self.device_clut[src_index as usize]);
-                                let dst_index = super::pict::closest_clut_index(
-                                    rgb[0], rgb[1], rgb[2], &dst_clut,
-                                );
+                                if (self.icon_transform_override & 0x4000) != 0 {
+                                    // ttSelected darkens the standard color
+                                    // icon before mapping it to the active
+                                    // device. This is the selection mechanism
+                                    // used by Finder-style icon controls.
+                                    // More Macintosh Toolbox (1993), pp. 5-20
+                                    // to 5-21 and 5-37; Macintosh Human
+                                    // Interface Guidelines (1992), p. 241.
+                                    for component in &mut rgb {
+                                        *component /= 2;
+                                    }
+                                }
+                                // PlotCIcon performs ordinary Color Manager
+                                // inverse mapping. Do not apply the PICT-only
+                                // grayscale-ramp preference here: a standard
+                                // icon table drawn under an application
+                                // palette must be allowed to select the
+                                // nearest tinted device color.
+                                let dst_index = Self::nearest_palette_index(&dst_clut, rgb);
                                 bus.write_byte(dst_base + dst_y * dst_row_bytes + dst_x, dst_index);
                             }
                             1 => {
@@ -16681,7 +16731,22 @@ impl super::TrapDispatcher {
         // already drawn by visible background windows, even though their
         // palettes did not request or receive a redraw.
         let mut updated_clut = current_clut;
-        for (index, rgb) in updated_clut.iter_mut().enumerate().take(palette_entries) {
+        self.palette_device_indices
+            .retain(|(palette, _), _| *palette != palette_handle);
+        let mut claimed = [false; 256];
+        // Color QuickDraw keeps the white and black endpoints available for
+        // its standard drawing operations. Tolerant white and black entries
+        // may share those exact cells; other tolerant colors may not consume
+        // them. Inside Macintosh Volume V (1986), V-162.
+        claimed[0] = true;
+        claimed[255] = true;
+
+        // Preserve the existing behavior for explicit and animated entries,
+        // which either name or reserve a device index. Record those claims
+        // before allocating ordinary tolerant colors so a tolerant entry
+        // cannot displace a fixed-index request that appears later in the
+        // palette.
+        for index in 0..palette_entries {
             let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
             let usage = bus.read_word(color_info + 6) as i16;
             // Usage decides how a palette entry claims its device slot
@@ -16704,14 +16769,71 @@ impl super::TrapDispatcher {
             // Only the pure-explicit case keeps the device value; the
             // combined cases fall through to the ordinary install below.
             if usage & PM_EXPLICIT != 0 && usage & (PM_TOLERANT | PM_ANIMATED) == 0 {
-                *rgb = current_clut[index];
                 continue;
             }
-            *rgb = [
+            if usage & PM_EXPLICIT == 0 && usage & PM_TOLERANT != 0 {
+                continue;
+            }
+            let device_index = index & 0xFF;
+            updated_clut[device_index] = [
                 bus.read_word(color_info),
                 bus.read_word(color_info + 2),
                 bus.read_word(color_info + 4),
             ];
+            claimed[device_index] = true;
+            self.palette_device_indices
+                .insert((palette_handle, index as u16), device_index as u8);
+        }
+
+        // Tolerant colors are allocated unique device indices in palette
+        // order. Their palette positions are logical entry numbers, not CLUT
+        // indices. The selected cell changes only when its current color is
+        // farther away than the entry tolerance. Inside Macintosh Volume V
+        // (1986), V-160..V-162; Volume VI (1991), 20-9 and 20-15.
+        for index in 0..palette_entries {
+            let color_info = Self::palette_color_info_ptr(palette_ptr, index as u32);
+            let usage = bus.read_word(color_info + 6) as i16;
+            if usage & PM_TOLERANT == 0 || usage & PM_EXPLICIT != 0 {
+                continue;
+            }
+            let requested = [
+                bus.read_word(color_info),
+                bus.read_word(color_info + 2),
+                bus.read_word(color_info + 4),
+            ];
+            let tolerance = bus.read_word(color_info + 8);
+
+            let endpoint = if requested == [0xFFFF; 3] && current_clut[0] == requested {
+                Some(0usize)
+            } else if requested == [0; 3] && current_clut[255] == requested {
+                Some(255usize)
+            } else {
+                None
+            };
+            let device_index = endpoint.or_else(|| {
+                PM_8BPP_ALLOCATION_ORDER
+                    .iter()
+                    .map(|&candidate| usize::from(candidate))
+                    .find(|&candidate| !claimed[candidate])
+            });
+            let Some(device_index) = device_index else {
+                // Unsatisfied requests fall back to courteous matching.
+                continue;
+            };
+            claimed[device_index] = true;
+            self.palette_device_indices
+                .insert((palette_handle, index as u16), device_index as u8);
+
+            let present = current_clut[device_index];
+            let difference = requested
+                .into_iter()
+                .zip(present)
+                .map(|(wanted, have)| wanted.abs_diff(have))
+                .max()
+                .unwrap_or(0);
+            if difference > tolerance {
+                updated_clut[device_index] = requested;
+            }
         }
         let color_environment_changed = updated_clut != current_clut;
         self.device_clut = updated_clut;
@@ -16822,6 +16944,8 @@ impl super::TrapDispatcher {
             return;
         }
         self.palette_updates.remove(&palette);
+        self.palette_device_indices
+            .retain(|(handle, _), _| *handle != palette);
         self.window_palettes
             .retain(|_, (handle, _)| *handle != palette);
     }
@@ -16920,10 +17044,17 @@ impl super::TrapDispatcher {
             return 0;
         }
 
-        if let Some((_palette, rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry)
-        {
+        if let Some((palette, rgb, usage)) = self.palette_entry_rgb_for_current_window(bus, entry) {
             if (usage & PM_EXPLICIT) != 0 {
                 return u32::from((entry as u16) & 0x00FF);
+            }
+
+            if let Some(index) = self
+                .palette_device_indices
+                .get(&(palette, entry as u16))
+                .copied()
+            {
+                return u32::from(index);
             }
 
             return u32::from(super::pict::closest_clut_index(
@@ -20751,6 +20882,11 @@ impl super::TrapDispatcher {
             return None;
         }
         bus.write_long(rgn_handle, new_ptr);
+        // Regions are relocatable blocks. QuickDraw region operations may
+        // move their backing storage, while the handle remains stable
+        // (Imaging With QuickDraw, 1994, pp. 3-91–3-92). Once the master
+        // pointer names the replacement, release the superseded allocation.
+        bus.free(current_ptr);
         Some(new_ptr)
     }
 
@@ -21691,7 +21827,7 @@ impl super::TrapDispatcher {
         Some(i32::from(src_start) + (rel * src_span) / dst_span)
     }
 
-    fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
+    pub(crate) fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
         // QuickDraw's inverse tables reserve exact white/black for the first
         // and last CLUT entries when the endpoints are white/black, rather
         // than returning an arbitrary duplicate color-cube entry. During
@@ -23805,6 +23941,39 @@ mod tests {
             bus.read_word(addr + 4) as i16,
             bus.read_word(addr + 6) as i16,
         )
+    }
+
+    #[test]
+    fn growing_region_releases_each_superseded_backing_allocation() {
+        let (_d, _cpu, mut bus) = setup();
+        let handle = bus.alloc(4);
+        let initial_ptr = bus.alloc(super::REGION_HEADER_SIZE);
+        bus.write_long(handle, initial_ptr);
+        bus.write_word(initial_ptr, super::REGION_HEADER_SIZE as u16);
+
+        let mut previous_ptr = initial_ptr;
+        for edge_count in 2..64 {
+            let data_words = (0..edge_count).map(|edge| edge as i16).collect::<Vec<_>>();
+            assert!(TrapDispatcher::write_region(
+                &mut bus,
+                handle,
+                Some((0, 0, 1, edge_count as i16)),
+                &data_words,
+            ));
+
+            let current_ptr = bus.read_long(handle);
+            assert_ne!(current_ptr, previous_ptr);
+            assert_eq!(
+                bus.get_alloc_size(previous_ptr),
+                None,
+                "relocating a growing region must release its old storage"
+            );
+            assert_eq!(
+                bus.get_alloc_size(current_ptr),
+                Some(super::REGION_HEADER_SIZE + edge_count * 2)
+            );
+            previous_ptr = current_ptr;
+        }
     }
 
     fn centered_640x480_copybits_rect() -> ScreenCopyBitsRect {
@@ -35433,6 +35602,104 @@ mod tests {
     }
 
     #[test]
+    fn plotcicon_screen_backed_port_uses_live_device_clut() {
+        // A screen-backed CGrafPort's private PixMap table can predate a
+        // Palette Manager activation. The screen device's live table must
+        // control inverse mapping, just as it does for other screen drawing.
+        // Imaging With QuickDraw (1994), pp. 4-55 to 4-59 and 5-28.
+        let (mut d, mut cpu, mut bus) = setup();
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        d.device_clut[1] = [0x1010, 0x1010, 0x1010];
+        d.device_clut[7] = [0x4040, 0x4545, 0x4545];
+
+        let (screen_base, screen_row_bytes, screen_w, screen_h, _) = d.screen_mode;
+        let stale_ctab = make_test_ctab_handle(&mut bus, &[[0x4444, 0x4444, 0x4444]], 1, 0);
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        bus.write_long(pm_ptr, screen_base);
+        bus.write_word(pm_ptr + 4, 0x8000 | screen_row_bytes as u16);
+        write_rect(&mut bus, pm_ptr + 6, 0, 0, screen_h as i16, screen_w as i16);
+        bus.write_word(pm_ptr + 32, 8);
+        bus.write_long(pm_ptr + 42, stale_ctab);
+
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        let a5 = cpu.read_reg(Register::A5);
+        let globals_ptr = bus.read_long(a5);
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = [0x4444, 0x4444, 0x4444];
+        let cicn_data = make_test_cicn_resource_4bpp([0x11, 0x11], &icon_entries);
+        d.install_test_resource(&mut bus, *b"cicn", 130, &cicn_data);
+
+        bus.write_word(TEST_SP, 130);
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        let rect_ptr = 0x300180u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+
+        assert!(plot.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn plotcicon_selected_transform_reduces_icon_brightness() {
+        // ttSelected makes the Apple icon colors darker before inverse
+        // mapping them to the destination device. Macintosh Human Interface
+        // Guidelines (1992), p. 241; More Macintosh Toolbox (1993), p. 5-37.
+        let (mut d, mut cpu, mut bus) = setup();
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[8] = [0x2222, 0x2222, 0x2222];
+
+        let dst_base = bus.alloc(8);
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        write_pixmap_8(&mut bus, pm_ptr, dst_base, 4, 1, 0);
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = [0x4444, 0x4444, 0x4444];
+        let cicn_data = make_test_cicn_resource_4bpp([0x11, 0x11], &icon_entries);
+        d.install_test_resource(&mut bus, *b"cicn", 131, &cicn_data);
+        bus.write_word(TEST_SP, 131);
+        d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        let rect_ptr = 0x3001A0u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        d.icon_transform_override = 0x4000;
+
+        d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![8, 8, 8, 8]);
+    }
+
+    #[test]
     fn plotcicon_nil_rect_is_harmless_noop() {
         // More Macintosh Toolbox (1993), p. 5-25: PlotCIcon takes a
         // Rect pointer, but a NIL pointer should not trash unrelated
@@ -36505,13 +36772,21 @@ mod tests {
     fn activatepalette_preserves_device_cells_not_claimed_by_the_palette() {
         let (mut d, mut cpu, mut bus) = setup();
         let window = 0x0020_4120u32;
-        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_TOLERANT, 0);
+        let palette = d.create_palette_from_ctab(&mut bus, 2, 0, super::PM_TOLERANT, 0);
         let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
         TrapDispatcher::write_palette_color_info(
             &mut bus,
             palette_ptr,
             0,
             [0x1234, 0x5678, 0x9ABC],
+            super::PM_TOLERANT,
+            0,
+        );
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            1,
+            [0x2468, 0xACE0, 0x1357],
             super::PM_TOLERANT,
             0,
         );
@@ -36526,7 +36801,12 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
 
         assert!(result.unwrap().is_ok());
-        assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.palette_device_indices[&(palette, 0)], 16);
+        assert_eq!(d.palette_device_indices[&(palette, 1)], 18);
+        assert_eq!(d.device_clut[16], [0x1234, 0x5678, 0x9ABC]);
+        assert_eq!(d.device_clut[18], [0x2468, 0xACE0, 0x1357]);
+        assert_eq!(d.device_clut[0], [0xFFFF; 3]);
+        assert_eq!(d.device_clut[255], [0; 3]);
         assert_eq!(d.device_clut[200], background_color);
         assert_eq!(d.color_manager_clut[200], background_color);
     }

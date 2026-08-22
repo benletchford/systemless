@@ -185,7 +185,10 @@ fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if byte_idx >= 16 {
         return None;
     }
-    let mask = 1u8 << (key_code & 0x07);
+    // `KeyMap` is a Pascal `PACKED ARRAY[0..127] OF Boolean`, whose
+    // elements occupy each byte from its most-significant bit downward.
+    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-109.
+    let mask = 0x80u8 >> (key_code & 0x07);
     Some((byte_idx, mask))
 }
 
@@ -1356,6 +1359,10 @@ pub struct TrapDispatcher {
     /// U.S. Roman keyboard-layout resource ID 0 is present in every
     /// System file and is used directly by apps that call KeyTranslate.
     pub(crate) system_kchr_cache: HashMap<i16, u32>,
+    /// Cache of the synthetic standard `'KMAP'` ID 0 resource. Classic apps
+    /// may read its 128-byte hardware-to-virtual-key map directly when
+    /// implementing configurable controls.
+    pub(crate) system_kmap_cache: HashMap<i16, u32>,
     /// Cache of synthetic ROM `'WDEF'` resource pointers. WDEF IDs 0 and 1
     /// are the standard document and rounded-window definition functions.
     /// Their behavior is implemented by the Window Manager HLE, but callers
@@ -1896,10 +1903,18 @@ pub struct TrapDispatcher {
     pub(crate) window_palettes: HashMap<u32, (u32, i16)>,
     /// Palette update flags keyed by PaletteHandle.
     pub(crate) palette_updates: HashMap<u32, i16>,
+    /// Device indices assigned to palette entries by the most recent
+    /// activation. Ordinary tolerant entries are not tied to their palette
+    /// positions, so Entry2Index must consult this allocation rather than
+    /// treating the entry number as a pixel value.
+    pub(crate) palette_device_indices: HashMap<(u32, u16), u8>,
     /// Color tables produced from palettes whose entries are all pmExplicit.
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
     pub(crate) explicit_palette_ctabs: HashSet<u32>,
+    /// Transform supplied by an Icon Utilities handle call while it routes
+    /// through the legacy icon renderer. Zero for ordinary PlotCIcon calls.
+    pub(crate) icon_transform_override: i16,
     /// Printing Manager error code surfaced by `PrError` and set by
     /// `PrSetError`. Inside Macintosh Volume II 1985, p. II-161;
     /// Inside Macintosh Volume V 1986, p. V-408.
@@ -3032,6 +3047,7 @@ impl TrapDispatcher {
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
+            system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
@@ -3227,7 +3243,9 @@ impl TrapDispatcher {
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
+            palette_device_indices: HashMap::new(),
             explicit_palette_ctabs: HashSet::new(),
+            icon_transform_override: 0,
             printing_error: 0,
             next_ct_seed: 1,
             fill_black_override: None,
@@ -5471,7 +5489,11 @@ impl TrapDispatcher {
         })
     }
 
-    pub(crate) fn find_loaded_resource_any(&self, res_type: [u8; 4], res_id: i16) -> Option<(u16, u32)> {
+    pub(crate) fn find_loaded_resource_any(
+        &self,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) -> Option<(u16, u32)> {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         for refnum in self.resource_search_order() {
@@ -5612,8 +5634,9 @@ impl TrapDispatcher {
 
     /// Allocate (and cache) the standard U.S. Roman keyboard-layout
     /// resource (`'KCHR'` ID 0). Inside Macintosh: Text 1993, C-18..C-19
-    /// defines the resource as a version byte, a 256-byte table-selection
-    /// index, and 128-byte character-mapping tables keyed by virtual key code.
+    /// defines the resource as a version word, a 256-byte table-selection
+    /// index, a table-count word, 128-byte character-mapping tables keyed by
+    /// virtual key code, and a dead-key-count word.
     pub(crate) fn synthesize_system_kchr(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5627,12 +5650,16 @@ impl TrapDispatcher {
         }
 
         const TABLES: usize = 2;
-        const TABLE_BASE: usize = 1 + 256;
-        const LEN: usize = TABLE_BASE + TABLES * 128;
+        const TABLE_COUNT_OFFSET: usize = 2 + 256;
+        const TABLE_BASE: usize = TABLE_COUNT_OFFSET + 2;
+        const DEAD_KEY_COUNT_OFFSET: usize = TABLE_BASE + TABLES * 128;
+        const LEN: usize = DEAD_KEY_COUNT_OFFSET + 2;
         let mut body = vec![0u8; LEN];
         for modifier in 0..=255usize {
-            body[1 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
+            body[2 + modifier] = if (modifier & 0x22) != 0 { 1 } else { 0 };
         }
+        body[TABLE_COUNT_OFFSET..TABLE_COUNT_OFFSET + 2]
+            .copy_from_slice(&(TABLES as u16).to_be_bytes());
 
         let normal = TABLE_BASE;
         let shifted = TABLE_BASE + 128;
@@ -5686,6 +5713,10 @@ impl TrapDispatcher {
             (0x2F, b'.', b'>'),
             (0x31, b' ', b' '),
             (0x32, b'`', b'~'),
+            (0x7B, 0x1C, 0x1C),
+            (0x7C, 0x1D, 0x1D),
+            (0x7D, 0x1F, 0x1F),
+            (0x7E, 0x1E, 0x1E),
         ];
         for &(vk, unshifted, shifted_char) in keys {
             body[normal + vk] = unshifted;
@@ -5698,6 +5729,54 @@ impl TrapDispatcher {
         }
         bus.write_bytes(ptr, &body);
         self.system_kchr_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) the standard keycode-map resource (`'KMAP'` ID
+    /// 0). Its four-byte ID/version header is followed by the 128-entry
+    /// hardware-to-virtual-key map and a zero exception-array count. The
+    /// standard map translates Control and the four cursor keys between the
+    /// original and ADB virtual-key assignments; all other entries are
+    /// identity-valued. Inside Macintosh: Text (1993), pp. C-11..C-15.
+    pub(crate) fn synthesize_system_kmap(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_kmap_cache.get(&res_id) {
+            return Some(ptr);
+        }
+        if res_id != 0 {
+            return None;
+        }
+
+        const HEADER_SIZE: usize = 4;
+        const MAP_SIZE: usize = 128;
+        const LEN: usize = HEADER_SIZE + MAP_SIZE + 2;
+        let mut body = vec![0u8; LEN];
+        for keycode in 0..MAP_SIZE {
+            body[HEADER_SIZE + keycode] = keycode as u8;
+        }
+        for (raw, virtual_key) in [
+            (0x36usize, 0x3Bu8),
+            (0x3B, 0x7B),
+            (0x3C, 0x7C),
+            (0x3D, 0x7D),
+            (0x3E, 0x7E),
+            (0x7B, 0x3C),
+            (0x7C, 0x3D),
+            (0x7D, 0x3E),
+            (0x7E, 0x36),
+        ] {
+            body[HEADER_SIZE + raw] = virtual_key;
+        }
+
+        let ptr = bus.alloc(body.len() as u32);
+        if ptr == 0 {
+            return None;
+        }
+        bus.write_bytes(ptr, &body);
+        self.system_kmap_cache.insert(res_id, ptr);
         Some(ptr)
     }
 
@@ -6794,7 +6873,7 @@ mod tests {
             highlighted_item: 0,
             saved_pixels: Vec::new(),
             dropdown_rect: (0, 0, 0, 0),
-            submenu: None,
+            submenus: Vec::new(),
             stack_ptr: 0,
             flash_remaining: 0,
             flash_delay: 0,
