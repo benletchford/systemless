@@ -86,6 +86,7 @@ const PPC_SM_NO_MORE_SRSRCS_ERR: i16 = -344;
 const PPC_NO_MPP_ERR: i16 = -3102;
 const PPC_ERR_AE_DESC_NOT_FOUND: i16 = -1701;
 const PPC_ERR_AE_EVENT_NOT_HANDLED: i16 = -1708;
+const PPC_HM_HELP_MANAGER_NOT_INITED: i16 = -855;
 const PPC_HIGH_LEVEL_EVENT_MASK: u16 = 0x0400;
 const PPC_HIGH_LEVEL_EVENT: u16 = 23;
 const PPC_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
@@ -971,6 +972,7 @@ pub enum PpcImportDispatcherTarget {
     GetMainDevice,
     GetMaxDevice,
     GetSysFont,
+    GetAppFont,
     GetDefFontSize,
     GetFontName,
     GetMBarHeight,
@@ -1007,6 +1009,7 @@ pub enum PpcImportDispatcherTarget {
     SetMenuBar,
     GetMenuHandle,
     DrawMenuBar,
+    HMGetHelpMenuHandle,
     MenuNoop,
     MenuKey,
     MenuSelect,
@@ -1258,6 +1261,7 @@ pub enum PpcImportDispatcherTarget {
     StringWidth,
     CharWidth,
     GetFontInfo,
+    FontMetrics,
     GetFNum,
     GetIntlResource,
     AESetInteractionAllowed,
@@ -13763,6 +13767,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
         ("InterfaceLib", "DrawMenuBar") => PpcImportDispatcherTarget::DrawMenuBar,
+        ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HiliteMenu")
         | ("InterfaceLib", "InvalMenuBar")
         | ("InterfaceLib", "AppendResMenu")
@@ -13871,6 +13876,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMainDevice") => PpcImportDispatcherTarget::GetMainDevice,
         ("InterfaceLib", "GetMaxDevice") => PpcImportDispatcherTarget::GetMaxDevice,
         ("InterfaceLib", "GetSysFont") => PpcImportDispatcherTarget::GetSysFont,
+        ("InterfaceLib", "GetAppFont") => PpcImportDispatcherTarget::GetAppFont,
         ("InterfaceLib", "GetDefFontSize") => PpcImportDispatcherTarget::GetDefFontSize,
         ("InterfaceLib", "GetFontName") => PpcImportDispatcherTarget::GetFontName,
         ("InterfaceLib", "GetMBarHeight") | ("InterfaceLib", "LMGetMBarHeight") => {
@@ -14231,6 +14237,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "StringWidth") => PpcImportDispatcherTarget::StringWidth,
         ("InterfaceLib", "CharWidth") => PpcImportDispatcherTarget::CharWidth,
         ("InterfaceLib", "GetFontInfo") => PpcImportDispatcherTarget::GetFontInfo,
+        ("InterfaceLib", "FontMetrics") => PpcImportDispatcherTarget::FontMetrics,
         ("InterfaceLib", "GetFNum") => PpcImportDispatcherTarget::GetFNum,
         ("InterfaceLib", "GetIntlResource") => PpcImportDispatcherTarget::GetIntlResource,
         ("InterfaceLib", "AESetInteractionAllowed") => {
@@ -15361,6 +15368,17 @@ fn dispatch_supported_import(
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
             let _ = ppc_draw_menu_bar(memory, gworlds, toolbox_startup.current_menu_bar);
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::HMGetHelpMenuHandle => {
+            // Systemless does not expose Balloon Help. Match the established
+            // 68k Pack14 fallback: clear the output MenuHandle and report that
+            // the Help Manager has not been initialized.
+            if cpu.gpr[3] != 0 {
+                let _ = memory.write_u32_be(cpu.gpr[3], 0);
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(
+                PPC_HM_HELP_MANAGER_NOT_INITED,
+            )))
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::MenuKey => {
@@ -16819,6 +16837,9 @@ fn dispatch_supported_import(
         // Inside Macintosh: Text (1993), p. 4-53: GetSysFont returns the
         // system font ID. Systemless models the standard systemFont value.
         PpcImportDispatcherTarget::GetSysFont => Some(PpcImportAction::Return(0)),
+        // Inside Macintosh: Text (1993), p. 4-54: GetAppFont returns ApFontID.
+        // The standard Roman application font is Geneva (family ID 3).
+        PpcImportDispatcherTarget::GetAppFont => Some(PpcImportAction::Return(3)),
         // The same reference specifies that GetDefFontSize returns
         // SysFontSize, using 12 points when that low-memory value is zero.
         // Systemless currently models the default system font at 12 points.
@@ -19431,6 +19452,11 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetFontInfo => {
             let text_font = ppc_current_text_font(memory, *current_gworld);
             ppc_get_font_info(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FontMetrics => {
+            let text_font = ppc_current_text_font(memory, *current_gworld);
+            ppc_font_metrics(memory, cpu.gpr[3], text_font, *quickdraw_text_size);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetFNum => {
@@ -55521,6 +55547,33 @@ fn ppc_get_font_info(memory: &mut PpcSectionMem, info_ptr: u32, text_font: i16, 
     let _ = memory.write_u16_be(info_ptr + 6, metrics.leading.saturating_mul(scale) as u16);
 }
 
+fn ppc_font_metrics(memory: &mut PpcSectionMem, metrics_ptr: u32, text_font: i16, text_size: i16) {
+    if metrics_ptr == 0 || !ppc_memory_can_write_bytes(memory, metrics_ptr, 20) {
+        return;
+    }
+    // Inside Macintosh: Text (1993), pp. 4-54--4-55: FMetricRec stores
+    // ascent, descent, leading, and maximum width as Fixed values, followed
+    // by a handle to the global width table. Systemless does not model that
+    // table, matching the 68k HLE by returning NIL for its handle.
+    let (face, scale) = get_font_face_scaled(text_font, text_size);
+    let metrics = face.metrics;
+    let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
+    let _ = memory.write_u32_be(metrics_ptr, to_fixed(metrics.ascent.saturating_mul(scale)));
+    let _ = memory.write_u32_be(
+        metrics_ptr + 4,
+        to_fixed(metrics.descent.saturating_mul(scale)),
+    );
+    let _ = memory.write_u32_be(
+        metrics_ptr + 8,
+        to_fixed(metrics.leading.saturating_mul(scale)),
+    );
+    let _ = memory.write_u32_be(
+        metrics_ptr + 12,
+        to_fixed(metrics.wid_max.saturating_mul(scale)),
+    );
+    let _ = memory.write_u32_be(metrics_ptr + 16, 0);
+}
+
 fn ppc_dm_new_display_mode_list(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -66265,6 +66318,42 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
             PpcImportDispatcherTarget::MenuNoop
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "HMGetHelpMenuHandle"),
+            PpcImportDispatcherTarget::HMGetHelpMenuHandle
+        );
+    }
+
+    #[test]
+    fn hm_get_help_menu_handle_clears_output_and_returns_not_initialized() {
+        let pef = synthetic_pef_with_import(b"HMGetHelpMenuHandle");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu_handle_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(menu_handle_ptr, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = menu_handle_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(menu_handle_ptr), Some(0));
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(PPC_HM_HELP_MANAGER_NOT_INITED)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(PPC_HM_HELP_MANAGER_NOT_INITED)
         );
     }
 
@@ -114630,6 +114719,54 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+
+    #[test]
+    fn hle_import_runner_handles_get_app_font() {
+        let pef = synthetic_pef_with_import(b"GetAppFont");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 3);
+    }
+
+    #[test]
+    fn hle_import_runner_handles_font_metrics() {
+        let pef = synthetic_pef_with_import(b"FontMetrics");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let metrics_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(metrics_ptr, vec![0xaa; 20]);
+        loaded.cpu.gpr[3] = metrics_ptr;
+        let text_font = ppc_current_text_font(&mut loaded.memory, loaded.current_gworld);
+        let (face, scale) = get_font_face_scaled(text_font, loaded.quickdraw_text_size);
+        let metrics = face.metrics;
+        let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(metrics_ptr),
+            Some(to_fixed(metrics.ascent.saturating_mul(scale)))
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(metrics_ptr + 4),
+            Some(to_fixed(metrics.descent.saturating_mul(scale)))
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(metrics_ptr + 8),
+            Some(to_fixed(metrics.leading.saturating_mul(scale)))
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(metrics_ptr + 12),
+            Some(to_fixed(metrics.wid_max.saturating_mul(scale)))
+        );
+        assert_eq!(loaded.memory.read_u32_be(metrics_ptr + 16), Some(0));
+        assert_eq!(loaded.cpu.gpr[3], metrics_ptr);
     }
 
     #[test]
