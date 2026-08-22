@@ -14277,10 +14277,11 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility,
         (
             "InterfaceLib",
-            "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask" | "DisposeGDevice" | "Exp1to3"
-            | "Exp1to6" | "GetCPixel" | "GetItemIcon" | "GetNewPalette" | "NewGDevice"
-            | "NewPalette" | "OpenPicture" | "PenPat" | "PlotIcon" | "ScrollRect" | "SetEntryUsage"
-            | "SetStdCProcs" | "SetStdProcs",
+            "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask" | "DisposeGDevice"
+            | "DisposePalette" | "Exp1to3" | "Exp1to6" | "GetCPixel" | "GetItemIcon"
+            | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture" | "PenPat" | "PlotIcon"
+            | "Palette2CTab" | "ScrollRect" | "SetEntryColor" | "SetEntryUsage" | "SetStdCProcs"
+            | "SetStdProcs",
         ) => PpcImportDispatcherTarget::QuickDrawCompatibility,
         (
             "InterfaceLib",
@@ -14389,7 +14390,7 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::InputSprocketCompatibility,
         (
             "MathLib",
-            "dec2num" | "dec2str" | "feclearexcept" | "fetestexcept" | "modf" | "num2dec"
+            "dec2num" | "dec2str" | "feclearexcept" | "fetestexcept" | "floor" | "modf" | "num2dec"
             | "str2dec",
         ) => PpcImportDispatcherTarget::MathCompatibility,
         ("StdCLib", "qsort" | "sscanf" | "strftime" | "vsprintf") => {
@@ -16210,6 +16211,8 @@ fn dispatch_supported_import(
                 handles,
                 gworlds,
                 *current_gdevice,
+                vfs_resources,
+                *current_resource_refnum,
             );
             if window != 0 {
                 *current_gworld = window;
@@ -16426,6 +16429,18 @@ fn dispatch_supported_import(
             let applied_to_manager = ppc_apply_palette(memory, palette_handle, color_manager_clut);
             let applied_to_device = ppc_apply_palette(memory, palette_handle, screen_clut);
             let applied = applied_to_manager && applied_to_device;
+            if applied {
+                ppc_write_device_color_table(
+                    memory,
+                    *current_gdevice,
+                    screen_clut,
+                    toolbox_startup,
+                );
+                // Inside Macintosh Volume VI 1991, p. 20-20: changing the
+                // active color environment generates update events for
+                // windows that need to redraw under the new palette.
+                ppc_enqueue_window_update_event(event_queue, window_ptr, input);
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] ActivatePalette window=${window_ptr:08X} palette=${palette_handle:08X} applied={applied}"
@@ -16458,7 +16473,16 @@ fn dispatch_supported_import(
                     let applied_to_manager =
                         ppc_apply_palette(memory, palette_handle, color_manager_clut);
                     let applied_to_device = ppc_apply_palette(memory, palette_handle, screen_clut);
-                    applied_to_manager && applied_to_device
+                    let applied = applied_to_manager && applied_to_device;
+                    if applied {
+                        ppc_write_device_color_table(
+                            memory,
+                            *current_gdevice,
+                            screen_clut,
+                            toolbox_startup,
+                        );
+                    }
+                    applied
                 };
             if ppc_hle_trace_enabled() {
                 eprintln!(
@@ -21713,7 +21737,15 @@ fn dispatch_supported_import(
             )))
         }
         PpcImportDispatcherTarget::QtNewMovieFromFile => {
-            let error = ppc_qt_new_movie_from_file(cpu, memory, quicktime, sound);
+            let error = ppc_qt_new_movie_from_file(
+                cpu,
+                memory,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
+                quicktime,
+                sound,
+            );
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_qt_record_error(quicktime, error),
             )))
@@ -21973,6 +22005,8 @@ fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 handle_states,
+                vfs_resources,
+                *current_resource_refnum,
                 gworlds,
                 *current_gworld,
                 *current_gdevice,
@@ -21980,6 +22014,7 @@ fn dispatch_supported_import(
                 color_manager_clut,
                 *quickdraw_fore_color,
                 *quickdraw_back_color,
+                toolbox_startup,
             ))
         }
         PpcImportDispatcherTarget::SystemCompatibility => Some(ppc_dispatch_system_compatibility(
@@ -22444,6 +22479,8 @@ fn ppc_dispatch_quickdraw_compatibility(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     _current_gdevice: u32,
@@ -22451,6 +22488,7 @@ fn ppc_dispatch_quickdraw_compatibility(
     color_manager_clut: &[[u16; 3]; 256],
     fore_color: PpcRgbColor,
     back_color: PpcRgbColor,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
         "GetCPixel" => {
@@ -22572,7 +22610,46 @@ fn ppc_dispatch_quickdraw_compatibility(
             let _ = ppc_dispose_tracked_handle(cpu.gpr[3], memory, handles, handle_states);
             PpcImportAction::ReturnPreserve
         }
-        "GetNewPalette" => PpcImportAction::Return(0),
+        "DisposePalette" => {
+            // Inside Macintosh Volume VI 1991, p. 20-24: DisposePalette
+            // releases the relocatable Palette record and its master pointer.
+            let _ = ppc_dispose_tracked_handle(cpu.gpr[3], memory, handles, handle_states);
+            PpcImportAction::ReturnPreserve
+        }
+        "Palette2CTab" => {
+            ppc_palette_to_ctab(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                toolbox_startup,
+                cpu.gpr[3],
+                cpu.gpr[4],
+            );
+            PpcImportAction::ReturnPreserve
+        }
+        "GetNewPalette" => {
+            let palette = ppc_copy_palette_resource(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                vfs_resources,
+                current_resource_refnum,
+                cpu.gpr[3] as u16 as i16,
+            );
+            if palette != 0 && current_gworld != 0 {
+                let _ = memory.write_u32_be(
+                    current_gworld + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
+                    palette,
+                );
+                let _ =
+                    memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+            }
+            PpcImportAction::Return(palette)
+        }
         "ScrollRect" => {
             let rect = ppc_read_rect(memory, cpu.gpr[3]);
             let surface = ppc_live_quickdraw_surface(memory, gworlds, current_gworld);
@@ -23248,6 +23325,13 @@ fn ppc_dispatch_math_compatibility(
     memory: &mut PpcSectionMem,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
+        "floor" => {
+            // floor returns the nearest integer not greater than its argument,
+            // preserving signed zero, NaN, and infinities.
+            // PowerPC Numerics (1994), pp. 9-7--9-8.
+            cpu.fpr[1] = f64::from_bits(cpu.fpr[1]).floor().to_bits();
+            PpcImportAction::ReturnPreserve
+        }
         "modf" => {
             let value = f64::from_bits(cpu.fpr[1]);
             let integer = if value.is_nan() { value } else { value.trunc() };
@@ -38863,6 +38947,25 @@ struct PpcQuickTimeAudioDecodeInfo {
 }
 
 #[derive(Default)]
+struct PpcQuickTimeMusicDecodeInfo {
+    handler_subtype: u32,
+    media_time_scale: u32,
+    media_duration: u64,
+    sample_durations: Vec<u32>,
+    sample_sizes: Vec<u32>,
+    stsc_entries: Vec<PpcQuickTimeStscEntry>,
+    chunk_offsets: Vec<u64>,
+    sample_descriptions: Vec<Vec<PpcQuickTimeMusicPart>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcQuickTimeMusicPart {
+    part: u16,
+    instrument_number: u32,
+    gm_number: u32,
+}
+
+#[derive(Default)]
 struct PpcQuickTimeVideoSampleTableInfo {
     handler_subtype: u32,
     media_time_scale: u32,
@@ -38893,6 +38996,18 @@ impl PpcQuickTimeAudioDecodeInfo {
             && self.codec != 0
             && self.channel_count != 0
             && self.sample_rate_fixed != 0
+            && !self.stsc_entries.is_empty()
+            && !self.chunk_offsets.is_empty()
+    }
+}
+
+impl PpcQuickTimeMusicDecodeInfo {
+    fn is_complete(&self) -> bool {
+        self.handler_subtype == u32::from_be_bytes(*b"musi")
+            && self.media_time_scale != 0
+            && self.media_duration != 0
+            && self.sample_durations.len() == self.sample_sizes.len()
+            && !self.sample_sizes.is_empty()
             && !self.stsc_entries.is_empty()
             && !self.chunk_offsets.is_empty()
     }
@@ -39046,6 +39161,42 @@ fn ppc_qt_parse_audio_track(
 
 fn ppc_qt_movie_audio_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
     ppc_qt_scan_movie_audio_samples(data, 0, data.len(), 0)
+        .or_else(|| ppc_qt_scan_movie_music_samples(data, 0, data.len(), 0))
+}
+
+fn ppc_qt_scan_movie_music_samples(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    depth: u8,
+) -> Option<PpcDecodedAiffData> {
+    if depth > 8 || start >= end || end > data.len() {
+        return None;
+    }
+
+    let mut offset = start;
+    while offset.checked_add(8)? <= end {
+        let (atom_type, content_start, atom_end) = ppc_qt_atom_range(data, offset, end)?;
+        if atom_type == b"trak" {
+            let mut info = PpcQuickTimeMusicDecodeInfo::default();
+            ppc_qt_collect_music_decode_info(data, content_start, atom_end, depth + 1, &mut info)?;
+            if info.is_complete() {
+                return ppc_qt_synthesize_music_track(data, &info);
+            }
+        } else if ppc_qt_is_container_atom(atom_type) {
+            if let Some(samples) =
+                ppc_qt_scan_movie_music_samples(data, content_start, atom_end, depth + 1)
+            {
+                return Some(samples);
+            }
+        }
+
+        if atom_end == end {
+            break;
+        }
+        offset = atom_end;
+    }
+    None
 }
 
 fn ppc_qt_scan_movie_audio_samples(
@@ -39346,6 +39497,132 @@ fn ppc_qt_collect_audio_decode_info(
     Some(())
 }
 
+fn ppc_qt_collect_music_decode_info(
+    data: &[u8],
+    start: usize,
+    end: usize,
+    depth: u8,
+    info: &mut PpcQuickTimeMusicDecodeInfo,
+) -> Option<()> {
+    if depth > 8 || start >= end || end > data.len() {
+        return Some(());
+    }
+
+    let mut offset = start;
+    while offset.checked_add(8)? <= end {
+        let (atom_type, content_start, atom_end) = ppc_qt_atom_range(data, offset, end)?;
+        if atom_type == b"hdlr" {
+            if let Some(subtype) = ppc_qt_hdlr_subtype(data, content_start, atom_end) {
+                if subtype == u32::from_be_bytes(*b"musi") {
+                    info.handler_subtype = subtype;
+                }
+            }
+        } else if atom_type == b"mdhd" {
+            if let Some((time_scale, duration)) =
+                ppc_qt_mvhd_duration(data, content_start, atom_end)
+            {
+                info.media_time_scale = time_scale;
+                info.media_duration = duration;
+            }
+        } else if atom_type == b"stsd" {
+            if let Some(sample_descriptions) =
+                ppc_qt_music_sample_descriptions(data, content_start, atom_end)
+            {
+                info.sample_descriptions = sample_descriptions;
+            }
+        } else if atom_type == b"stts" {
+            if let Some(sample_durations) =
+                ppc_qt_stts_sample_durations(data, content_start, atom_end)
+            {
+                info.sample_durations = sample_durations;
+            }
+        } else if atom_type == b"stsz" {
+            if let Some(sample_sizes) = ppc_qt_stsz_sample_sizes(data, content_start, atom_end) {
+                info.sample_sizes = sample_sizes;
+            }
+        } else if atom_type == b"stsc" {
+            if let Some(entries) = ppc_qt_stsc_entries(data, content_start, atom_end) {
+                info.stsc_entries = entries;
+            }
+        } else if atom_type == b"stco" {
+            if let Some(offsets) = ppc_qt_stco_offsets(data, content_start, atom_end) {
+                info.chunk_offsets = offsets;
+            }
+        } else if atom_type == b"co64" {
+            if let Some(offsets) = ppc_qt_co64_offsets(data, content_start, atom_end) {
+                info.chunk_offsets = offsets;
+            }
+        } else if ppc_qt_is_container_atom(atom_type) {
+            ppc_qt_collect_music_decode_info(data, content_start, atom_end, depth + 1, info)?;
+        }
+
+        if atom_end == end {
+            break;
+        }
+        offset = atom_end;
+    }
+    Some(())
+}
+
+fn ppc_qt_music_sample_descriptions(
+    data: &[u8],
+    content_start: usize,
+    atom_end: usize,
+) -> Option<Vec<Vec<PpcQuickTimeMusicPart>>> {
+    let entry_count = usize::try_from(ppc_read_be_u32_from_slice(data, content_start + 4)?).ok()?;
+    let maximum_entries = atom_end.checked_sub(content_start.checked_add(8)?)? / 16;
+    if entry_count > maximum_entries {
+        return None;
+    }
+    let mut entry_offset = content_start.checked_add(8)?;
+    let mut sample_descriptions = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let entry_size = usize::try_from(ppc_read_be_u32_from_slice(data, entry_offset)?).ok()?;
+        let entry_end = entry_offset.checked_add(entry_size)?;
+        if entry_size < 20 || entry_end > atom_end {
+            return None;
+        }
+        if data.get(entry_offset + 4..entry_offset + 8)? != b"musi" {
+            return None;
+        }
+        let mut parts = Vec::new();
+        let mut event_offset = entry_offset + 20;
+        while event_offset.checked_add(8)? <= entry_end {
+            let head = ppc_read_be_u32_from_slice(data, event_offset)?;
+            if head == 0 {
+                event_offset += 4;
+                continue;
+            }
+            if head >> 28 != 15 {
+                break;
+            }
+            let word_count = usize::try_from(head & 0xffff).ok()?;
+            let byte_count = word_count.checked_mul(4)?;
+            let event_end = event_offset.checked_add(byte_count)?;
+            if word_count < 2 || event_end > entry_end {
+                return None;
+            }
+            let tail = ppc_read_be_u32_from_slice(data, event_end - 4)?;
+            if tail >> 30 != 3 || tail & 0xffff != head & 0xffff {
+                return None;
+            }
+            let subtype = (tail >> 16) & 0x0fff;
+            if subtype == 1 && word_count >= 23 {
+                let request = event_offset + 4;
+                parts.push(PpcQuickTimeMusicPart {
+                    part: ((head >> 16) & 0x0fff) as u16,
+                    instrument_number: ppc_read_be_u32_from_slice(data, request + 76)?,
+                    gm_number: ppc_read_be_u32_from_slice(data, request + 80)?,
+                });
+            }
+            event_offset = event_end;
+        }
+        sample_descriptions.push(parts);
+        entry_offset = entry_end;
+    }
+    Some(sample_descriptions)
+}
+
 fn ppc_qt_is_container_atom(atom_type: &[u8]) -> bool {
     atom_type == b"moov"
         || atom_type == b"trak"
@@ -39530,7 +39807,7 @@ fn ppc_qt_stsc_entries(
         return None;
     }
 
-    let mut entries = Vec::with_capacity(entry_count);
+    let mut entries: Vec<PpcQuickTimeStscEntry> = Vec::with_capacity(entry_count);
     for entry in 0..entry_count {
         let entry_start = table_start + entry * 12;
         let first_chunk =
@@ -39545,7 +39822,13 @@ fn ppc_qt_stsc_entries(
                 .try_into()
                 .ok()?,
         );
-        if first_chunk == 0 || samples_per_chunk == 0 || sample_description_id == 0 {
+        if first_chunk == 0
+            || samples_per_chunk == 0
+            || sample_description_id == 0
+            || entries
+                .last()
+                .is_some_and(|previous| previous.first_chunk >= first_chunk)
+        {
             return None;
         }
         entries.push(PpcQuickTimeStscEntry {
@@ -39901,6 +40184,9 @@ fn ppc_qt_draw_pict_source_to_16bpp(
 fn ppc_qt_new_movie_from_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
     quicktime: &mut PpcQuickTimeState,
     sound: &mut PpcSoundState,
 ) -> i16 {
@@ -39918,18 +40204,40 @@ fn ppc_qt_new_movie_from_file(
     {
         return PPC_PARAM_ERR;
     }
-    if memory.write_u32_be(movie_out_ptr, PPC_QT_MOVIE).is_none() {
-        return PPC_PARAM_ERR;
-    }
+    let requested_res_id = if res_id_ptr == 0 {
+        None
+    } else {
+        Some(memory.read_u16_be(res_id_ptr).unwrap_or(0) as i16)
+    };
     if res_id_ptr != 0 && memory.write_u16_be(res_id_ptr, 0).is_none() {
-        return PPC_PARAM_ERR;
-    }
-    if data_ref_was_changed_ptr != 0 && memory.write_u8(data_ref_was_changed_ptr, 0).is_none() {
         return PPC_PARAM_ERR;
     }
     ppc_qt_stop_movie_audio(sound);
     let ref_num = cpu.gpr[4] as i16;
     if ref_num != 0 && ref_num == quicktime.movie_file_ref_num {
+        let mut selected_data = vfs_files
+            .iter()
+            .find(|file| file.path.eq_ignore_ascii_case(&quicktime.movie_file_path))
+            .map(|file| file.data.clone())
+            .unwrap_or_else(|| quicktime.movie_file_data.clone());
+        let Some(selected_res_id) = ppc_qt_append_movie_resource(
+            &mut selected_data,
+            vfs_resource_files,
+            vfs_resources,
+            &quicktime.movie_file_path,
+            requested_res_id,
+        ) else {
+            return PPC_RES_NOT_FOUND_ERR;
+        };
+        quicktime.movie_file_data = selected_data;
+        ppc_qt_refresh_open_movie_metadata(quicktime);
+        if res_id_ptr != 0
+            && memory
+                .write_u16_be(res_id_ptr, selected_res_id as u16)
+                .is_none()
+        {
+            return PPC_PARAM_ERR;
+        }
         if let Some(bounds) = quicktime.movie_file_bounds {
             quicktime.movie_box = bounds;
         }
@@ -39942,6 +40250,12 @@ fn ppc_qt_new_movie_from_file(
         quicktime.movie_video_track = None;
         quicktime.movie_video_samples = None;
         quicktime.movie_audio_track = None;
+    }
+    if memory.write_u32_be(movie_out_ptr, PPC_QT_MOVIE).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    if data_ref_was_changed_ptr != 0 && memory.write_u8(data_ref_was_changed_ptr, 0).is_none() {
+        return PPC_PARAM_ERR;
     }
     quicktime.movie_started = false;
     quicktime.movie_task_count = 0;
@@ -40041,6 +40355,93 @@ fn ppc_qt_open_movie_file(
     PPC_NO_ERR
 }
 
+fn ppc_qt_append_movie_resource(
+    movie_file_data: &mut Vec<u8>,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    path: &str,
+    requested_res_id: Option<i16>,
+) -> Option<i16> {
+    // Inside Macintosh: QuickTime (1993), pp. 4-3–4-6.
+    if ppc_qt_top_level_atom(movie_file_data, b"moov").is_some() {
+        return requested_res_id
+            .map_or(true, |res_id| res_id == 0 || res_id == -1)
+            .then_some(-1);
+    }
+    if requested_res_id == Some(-1) {
+        return None;
+    }
+    let moov_type = u32::from_be_bytes(*b"moov");
+    let resource = vfs_resources
+        .iter()
+        .filter(|resource| {
+            resource.path.eq_ignore_ascii_case(path) && resource.res_type == moov_type
+        })
+        .find(|resource| requested_res_id.map_or(true, |id| id == 0 || resource.res_id == id))
+        .map(|resource| (resource.res_id, resource.data.clone()))
+        .or_else(|| {
+            let raw_data = vfs_resource_files
+                .iter()
+                .find(|file| file.path.eq_ignore_ascii_case(path))?
+                .raw_data
+                .as_ref()?;
+            let fork = ResourceFork::parse(raw_data)?;
+            fork.resources()
+                .values()
+                .filter(|resource| resource.res_type == *b"moov")
+                .filter(|resource| requested_res_id.map_or(true, |id| id == 0 || resource.id == id))
+                .min_by_key(|resource| resource.id)
+                .map(|resource| (resource.id, resource.data.clone()))
+        });
+    let Some((res_id, resource_data)) = resource else {
+        return None;
+    };
+
+    if let Some((atom_type, _, atom_end)) =
+        ppc_qt_atom_range(&resource_data, 0, resource_data.len())
+    {
+        if atom_type == b"moov" && atom_end == resource_data.len() {
+            movie_file_data.extend_from_slice(&resource_data);
+            return Some(res_id);
+        }
+    }
+    None
+}
+
+fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
+    quicktime.movie_file_bounds = None;
+    quicktime.movie_file_time_scale = 0;
+    quicktime.movie_file_duration = 0;
+    quicktime.movie_file_tasks_until_done = PPC_QT_FALLBACK_MOVIE_TASKS_UNTIL_DONE;
+    quicktime.movie_file_video_track = None;
+    quicktime.movie_file_video_samples = None;
+    quicktime.movie_file_audio_track = None;
+    quicktime.movie_file_bounds = ppc_qt_movie_bounds(&quicktime.movie_file_data);
+    quicktime.movie_file_video_track = ppc_qt_movie_first_video_track(&quicktime.movie_file_data);
+    quicktime.movie_file_video_samples = ppc_qt_movie_video_samples(&quicktime.movie_file_data);
+    quicktime.movie_file_audio_track = ppc_qt_movie_first_audio_track(&quicktime.movie_file_data);
+    if let Some((time_scale, duration)) = ppc_qt_movie_duration(&quicktime.movie_file_data) {
+        quicktime.movie_file_time_scale = time_scale;
+        quicktime.movie_file_duration = duration;
+        quicktime.movie_file_tasks_until_done = ppc_qt_movie_tasks_until_done(time_scale, duration);
+    }
+}
+
+fn ppc_qt_top_level_atom<'a>(data: &'a [u8], expected_type: &[u8; 4]) -> Option<&'a [u8]> {
+    let mut offset = 0usize;
+    while offset.checked_add(8)? <= data.len() {
+        let (atom_type, _, atom_end) = ppc_qt_atom_range(data, offset, data.len())?;
+        if atom_type == expected_type {
+            return data.get(offset..atom_end);
+        }
+        if atom_end == data.len() {
+            break;
+        }
+        offset = atom_end;
+    }
+    None
+}
+
 fn ppc_qt_close_movie_file(cpu: &mut PpcCpu, quicktime: &mut PpcQuickTimeState) -> i16 {
     let ref_num = cpu.gpr[3] as i16;
     if ref_num == 0 {
@@ -40128,7 +40529,7 @@ fn ppc_qt_start_movie(
     }
     quicktime.movie_started = true;
     quicktime.movie_at_beginning = false;
-    ppc_qt_start_movie_audio(quicktime, sound);
+    let audio_started = ppc_qt_start_movie_audio(quicktime, sound);
     let cache_before = quicktime
         .movie_video_decode_cache
         .as_ref()
@@ -40140,11 +40541,12 @@ fn ppc_qt_start_movie(
             .as_ref()
             .map(|cache| cache.sample_index);
         eprintln!(
-            "[QT-TRACE] StartMovie path='{}' task_count={} drawn={} decoded={} cache_before={:?} cache_after={:?}",
+            "[QT-TRACE] StartMovie path='{}' task_count={} drawn={} decoded={} audio={} cache_before={:?} cache_after={:?}",
             quicktime.movie_file_path,
             quicktime.movie_task_count,
             drawn,
             cache_after.is_some() && cache_after != cache_before,
+            audio_started,
             cache_before,
             cache_after
         );
@@ -40257,6 +40659,19 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
 
     let summary = decoded_sound.summary;
     let samples = decoded_sound.samples;
+    if qt_trace_enabled() {
+        let non_silent = samples.iter().filter(|sample| **sample != 0x80).count();
+        let first_non_silent = samples.iter().position(|sample| *sample != 0x80);
+        let last_non_silent = samples.iter().rposition(|sample| *sample != 0x80);
+        eprintln!(
+            "[QT-TRACE] MovieAudio samples={} non_silent={} first={:?} last={:?} rate={}",
+            samples.len(),
+            non_silent,
+            first_non_silent,
+            last_non_silent,
+            summary.sample_rate_fixed
+        );
+    }
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
@@ -40444,6 +40859,398 @@ fn ppc_qt_decode_audio_chunks(
         return None;
     }
     ppc_decoded_sound_data(samples, info.sample_rate_fixed)
+}
+
+fn ppc_qt_synthesize_music_track(
+    data: &[u8],
+    info: &PpcQuickTimeMusicDecodeInfo,
+) -> Option<PpcDecodedAiffData> {
+    const SAMPLE_RATE: u32 = 22_050;
+    const MAX_MUSIC_SECONDS: u64 = 600;
+
+    let total_samples = info
+        .media_duration
+        .checked_mul(u64::from(SAMPLE_RATE))?
+        .checked_div(u64::from(info.media_time_scale))?
+        .min(u64::from(SAMPLE_RATE) * MAX_MUSIC_SECONDS);
+    let mut mixed = vec![0i32; usize::try_from(total_samples).ok()?];
+    let mut sample_index = 0usize;
+    let mut sample_start_time = 0u64;
+    let mut parts = Vec::<PpcQuickTimeMusicPartState>::new();
+
+    for (chunk_index, chunk_offset) in info.chunk_offsets.iter().copied().enumerate() {
+        if sample_index >= info.sample_sizes.len() {
+            break;
+        }
+        let chunk_number = u32::try_from(chunk_index).ok()?.saturating_add(1);
+        let chunk_description = ppc_qt_stsc_entry_for_chunk(&info.stsc_entries, chunk_number)?;
+        let samples_per_chunk = usize::try_from(chunk_description.samples_per_chunk).ok()?;
+        if let Some(description_index) = usize::try_from(chunk_description.sample_description_id)
+            .ok()?
+            .checked_sub(1)
+        {
+            let description = info.sample_descriptions.get(description_index)?;
+            for requested in description {
+                ppc_qt_music_part_state(&mut parts, requested.part).instrument =
+                    ppc_qt_music_instrument(*requested);
+            }
+        }
+        let mut sample_offset = usize::try_from(chunk_offset).ok()?;
+        for _ in 0..samples_per_chunk {
+            let sample_size = usize::try_from(*info.sample_sizes.get(sample_index)?).ok()?;
+            let sample_end = sample_offset.checked_add(sample_size)?;
+            let sample = data.get(sample_offset..sample_end)?;
+            ppc_qt_synthesize_music_events(
+                sample,
+                info.media_time_scale,
+                sample_start_time,
+                &mut mixed,
+                SAMPLE_RATE,
+                &mut parts,
+            )?;
+            sample_offset = sample_end;
+            sample_start_time = sample_start_time
+                .checked_add(u64::from(*info.sample_durations.get(sample_index)?))?;
+            sample_index += 1;
+            if sample_index >= info.sample_sizes.len() {
+                break;
+            }
+        }
+    }
+    if sample_index != info.sample_sizes.len() {
+        return None;
+    }
+    if !mixed.iter().any(|sample| *sample != 0) {
+        return None;
+    }
+
+    let samples = mixed
+        .into_iter()
+        .map(|sample| (sample + 128).clamp(0, 255) as u8)
+        .collect::<Vec<_>>();
+    ppc_decoded_sound_data(samples, SAMPLE_RATE << 16)
+}
+
+fn ppc_qt_synthesize_music_events(
+    data: &[u8],
+    media_time_scale: u32,
+    sample_start_time: u64,
+    mixed: &mut [i32],
+    sample_rate: u32,
+    parts: &mut Vec<PpcQuickTimeMusicPartState>,
+) -> Option<()> {
+    // QuickTime Music Architecture (1997), pp. 19-30.
+    let mut offset = 0usize;
+    let mut local_time = 0u64;
+    while offset.checked_add(4)? <= data.len() {
+        let word = u32::from_be_bytes(data.get(offset..offset + 4)?.try_into().ok()?);
+        let short_type = (word >> 29) & 0x7;
+        match short_type {
+            0 => {
+                local_time = local_time.checked_add(u64::from(word & 0x00ff_ffff))?;
+                offset += 4;
+            }
+            1 => {
+                let part = (word >> 24) & 0x1f;
+                let pitch = ((word >> 18) & 0x3f) + 32;
+                let velocity = (word >> 11) & 0x7f;
+                let duration = word & 0x7ff;
+                let state = *ppc_qt_music_part_state(parts, part as u16);
+                ppc_qt_mix_music_note(
+                    mixed,
+                    sample_start_time.checked_add(local_time)?,
+                    duration,
+                    pitch as f64,
+                    velocity,
+                    state,
+                    media_time_scale,
+                    sample_rate,
+                )?;
+                offset += 4;
+            }
+            2 => {
+                let part = ((word >> 24) & 0x1f) as u16;
+                let controller = ((word >> 16) & 0xff) as u16;
+                let value = word as u16 as i16;
+                ppc_qt_apply_music_controller(
+                    ppc_qt_music_part_state(parts, part),
+                    controller,
+                    value,
+                );
+                offset += 4;
+            }
+            3 => {
+                offset += 4;
+                if ((word >> 16) & 0xff) == 0 {
+                    return Some(());
+                }
+            }
+            _ => {
+                let extended_type = word >> 28;
+                if extended_type == 9 {
+                    let tail =
+                        u32::from_be_bytes(data.get(offset + 4..offset + 8)?.try_into().ok()?);
+                    if tail >> 30 != 2 {
+                        return None;
+                    }
+                    let part = (word >> 16) & 0x0fff;
+                    let pitch_bits = word & 0xffff;
+                    let pitch = if pitch_bits < 128 {
+                        f64::from(pitch_bits)
+                    } else {
+                        f64::from(pitch_bits) / 256.0
+                    };
+                    let velocity = (tail >> 22) & 0x7f;
+                    let duration = tail & 0x003f_ffff;
+                    let state = *ppc_qt_music_part_state(parts, part as u16);
+                    ppc_qt_mix_music_note(
+                        mixed,
+                        sample_start_time.checked_add(local_time)?,
+                        duration,
+                        pitch,
+                        velocity,
+                        state,
+                        media_time_scale,
+                        sample_rate,
+                    )?;
+                    offset += 8;
+                } else if extended_type == 10 {
+                    let tail =
+                        u32::from_be_bytes(data.get(offset + 4..offset + 8)?.try_into().ok()?);
+                    if tail >> 30 != 2 {
+                        return None;
+                    }
+                    let part = ((word >> 16) & 0x0fff) as u16;
+                    ppc_qt_apply_music_controller(
+                        ppc_qt_music_part_state(parts, part),
+                        (word & 0xffff) as u16,
+                        tail as u16 as i16,
+                    );
+                    offset += 8;
+                } else if extended_type == 15 {
+                    let word_count = usize::try_from(word & 0xffff).ok()?;
+                    if word_count < 2 {
+                        return None;
+                    }
+                    let event_end = offset.checked_add(word_count.checked_mul(4)?)?;
+                    let tail = u32::from_be_bytes(
+                        data.get(event_end.checked_sub(4)?..event_end)?
+                            .try_into()
+                            .ok()?,
+                    );
+                    if tail >> 30 != 3 || tail & 0xffff != word & 0xffff {
+                        return None;
+                    }
+                    offset = event_end;
+                } else {
+                    let tail =
+                        u32::from_be_bytes(data.get(offset + 4..offset + 8)?.try_into().ok()?);
+                    if tail >> 30 != 2 {
+                        return None;
+                    }
+                    offset += 8;
+                }
+            }
+        }
+    }
+    (offset == data.len()).then_some(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PpcQuickTimeMusicPartState {
+    part: u16,
+    instrument: u32,
+    volume: i16,
+    pitch_bend: i16,
+    sustain: bool,
+}
+
+fn ppc_qt_music_part_state(
+    parts: &mut Vec<PpcQuickTimeMusicPartState>,
+    part: u16,
+) -> &mut PpcQuickTimeMusicPartState {
+    if let Some(index) = parts.iter().position(|state| state.part == part) {
+        return &mut parts[index];
+    }
+    parts.push(PpcQuickTimeMusicPartState {
+        part,
+        instrument: 1,
+        volume: i16::MAX,
+        pitch_bend: 0,
+        sustain: false,
+    });
+    parts.last_mut().unwrap()
+}
+
+fn ppc_qt_music_instrument(part: PpcQuickTimeMusicPart) -> u32 {
+    if (1..=128).contains(&part.instrument_number)
+        || (16_384..=16_512).contains(&part.instrument_number)
+    {
+        part.instrument_number
+    } else if (1..=128).contains(&part.gm_number) || (16_384..=16_512).contains(&part.gm_number) {
+        part.gm_number
+    } else {
+        1
+    }
+}
+
+fn ppc_qt_apply_music_controller(
+    state: &mut PpcQuickTimeMusicPartState,
+    controller: u16,
+    value: i16,
+) {
+    match controller {
+        7 => state.volume = value.max(0),
+        32 => state.pitch_bend = value,
+        64 => state.sustain = value > 0,
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_qt_mix_music_note(
+    mixed: &mut [i32],
+    start_time: u64,
+    duration: u32,
+    pitch: f64,
+    velocity: u32,
+    state: PpcQuickTimeMusicPartState,
+    media_time_scale: u32,
+    sample_rate: u32,
+) -> Option<()> {
+    if duration == 0 || velocity == 0 || media_time_scale == 0 {
+        return Some(());
+    }
+    let start = start_time
+        .checked_mul(u64::from(sample_rate))?
+        .checked_div(u64::from(media_time_scale))?;
+    let length = u64::from(duration)
+        .checked_mul(u64::from(sample_rate))?
+        .checked_div(u64::from(media_time_scale))?
+        .max(1);
+    let start = usize::try_from(start).ok()?.min(mixed.len());
+    let end = usize::try_from(u64::try_from(start).ok()?.checked_add(length)?)
+        .ok()?
+        .min(mixed.len());
+    if !pitch.is_finite() {
+        return Some(());
+    }
+    let pitch_fixed = (pitch * 256.0) as i32 + i32::from(state.pitch_bend);
+    let phase_step = ppc_qt_music_phase_step(pitch_fixed, sample_rate)?;
+    let note_len = end.saturating_sub(start);
+    let mut phase = 0u32;
+    let instrument = state.instrument;
+    let drum = (16_384..=16_512).contains(&instrument);
+    let family = instrument.saturating_sub(1).min(127) / 8;
+    let mut noise = (start_time as u32)
+        .wrapping_mul(0x9e37_79b9)
+        .wrapping_add((pitch_fixed as u32).rotate_left(13))
+        .wrapping_add(instrument);
+    for (index, destination) in mixed[start..end].iter_mut().enumerate() {
+        let position = (phase >> 16) as i32;
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        let triangle = if position < 32_768 {
+            position * 2 - 32_768
+        } else {
+            98_303 - position * 2
+        };
+        let saw = position - 32_768;
+        let square = if position < 32_768 { 24_576 } else { -24_576 };
+        let random = (noise >> 16) as i16 as i32;
+        let waveform = if drum {
+            match pitch.round() as i32 {
+                35 | 36 => triangle * 3 / 4 + square / 4,
+                38 | 40 => random * 3 / 4 + triangle / 4,
+                42 | 44 | 46 | 49 | 51 | 52 | 55 | 57 | 59 => random,
+                _ => random / 2 + triangle / 2,
+            }
+        } else {
+            match family {
+                0 => triangle * 3 / 4 + saw / 4,
+                1 => triangle / 2 + square / 2,
+                2 => square * 3 / 4 + triangle / 4,
+                3 => saw / 2 + triangle / 2,
+                4 => square / 2 + saw / 2,
+                5 | 6 => triangle * 3 / 4 + square / 4,
+                7 | 8 => saw * 3 / 4 + square / 4,
+                9 => triangle,
+                10 => saw,
+                11 => triangle * 3 / 4 + saw / 4,
+                12 => saw / 2 + random / 2,
+                13 => triangle / 2 + saw / 2,
+                14 => random / 2 + square / 2,
+                _ => random,
+            }
+        };
+        let edge_envelope = index.min(note_len.saturating_sub(index + 1)).min(63) as i32 + 1;
+        let decay_envelope = match family {
+            0 | 1 | 3 | 14 => i32::try_from(note_len.saturating_sub(index)).unwrap_or(i32::MAX),
+            _ => i32::try_from(note_len).unwrap_or(i32::MAX),
+        }
+        .max(1);
+        let volume = i32::from(state.volume).clamp(0, i32::from(i16::MAX));
+        let amplitude = waveform * velocity as i32 * edge_envelope / (127 * 64 * 4096) * volume
+            / i32::from(i16::MAX)
+            * decay_envelope
+            / i32::try_from(note_len.max(1)).unwrap_or(i32::MAX);
+        *destination = destination.saturating_add(amplitude);
+        phase = phase.wrapping_add(phase_step);
+    }
+    Some(())
+}
+
+fn ppc_qt_music_phase_step(pitch_fixed: i32, sample_rate: u32) -> Option<u32> {
+    const STEPS_22_050: [u32; 128] = [
+        1592507, 1687203, 1787529, 1893821, 2006434, 2125742, 2252146, 2386065, 2527948, 2678268,
+        2837526, 3006254, 3185015, 3374406, 3575058, 3787642, 4012867, 4251485, 4504291, 4772130,
+        5055896, 5356535, 5675051, 6012507, 6370030, 6748811, 7150117, 7575285, 8025735, 8502970,
+        9008582, 9544261, 10111792, 10713070, 11350103, 12025015, 12740059, 13497623, 14300233,
+        15150569, 16051469, 17005939, 18017165, 19088521, 20223584, 21426141, 22700205, 24050030,
+        25480119, 26995246, 28600467, 30301139, 32102938, 34011878, 36034330, 38177043, 40447168,
+        42852281, 45400411, 48100060, 50960238, 53990491, 57200933, 60602278, 64205876, 68023757,
+        72068660, 76354085, 80894335, 85704563, 90800821, 96200119, 101920476, 107980983,
+        114401866, 121204555, 128411753, 136047513, 144137319, 152708170, 161788671, 171409126,
+        181601643, 192400238, 203840952, 215961966, 228803732, 242409110, 256823506, 272095026,
+        288274639, 305416341, 323577341, 342818251, 363203285, 384800477, 407681904, 431923931,
+        457607465, 484818220, 513647012, 544190053, 576549277, 610832681, 647154683, 685636503,
+        726406571, 769600953, 815363807, 863847862, 915214929, 969636441, 1027294024, 1088380105,
+        1153098554, 1221665363, 1294309365, 1371273005, 1452813141, 1539201906, 1630727614,
+        1727695724, 1830429858, 1939272882, 2054588048, 2176760211, 2306197109, 2443330725,
+    ];
+
+    if sample_rate == 0 {
+        return None;
+    }
+    let pitch_fixed = pitch_fixed.clamp(0, 127 * 256);
+    let note = usize::try_from(pitch_fixed / 256).ok()?;
+    let fraction = u64::try_from(pitch_fixed % 256).ok()?;
+    let first = u64::from(STEPS_22_050[note]);
+    let second = u64::from(*STEPS_22_050.get(note + 1).unwrap_or(&STEPS_22_050[note]));
+    let interpolated = first.checked_add(second.saturating_sub(first) * fraction / 256)?;
+    u32::try_from(
+        interpolated
+            .checked_mul(22_050)?
+            .checked_div(u64::from(sample_rate))?,
+    )
+    .ok()
+}
+
+fn ppc_qt_stsc_entry_for_chunk(
+    entries: &[PpcQuickTimeStscEntry],
+    chunk_number: u32,
+) -> Option<PpcQuickTimeStscEntry> {
+    for (index, entry) in entries.iter().copied().enumerate() {
+        let next_first_chunk = entries
+            .get(index + 1)
+            .map(|next| next.first_chunk)
+            .unwrap_or(u32::MAX);
+        if chunk_number >= entry.first_chunk && chunk_number < next_first_chunk {
+            return Some(entry);
+        }
+    }
+    None
 }
 
 fn ppc_qt_samples_per_chunk_for_chunk(
@@ -42617,7 +43424,10 @@ fn ppc_get_new_cwindow(
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
 ) -> u32 {
+    let window_id = cpu.gpr[3] as u16 as i16;
     let storage_ptr = cpu.gpr[4];
     let behind = cpu.gpr[5];
     let bounds_ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, 8, false);
@@ -42647,7 +43457,7 @@ fn ppc_get_new_cwindow(
     window_cpu.gpr[8] = behind;
     window_cpu.gpr[9] = 0;
     window_cpu.gpr[10] = cpu.gpr[3];
-    ppc_new_cwindow(
+    let window = ppc_new_cwindow(
         &window_cpu,
         memory,
         heap_cursor,
@@ -42656,7 +43466,45 @@ fn ppc_get_new_cwindow(
         handles,
         gworlds,
         current_gdevice,
-    )
+    );
+    if window == 0 {
+        return 0;
+    }
+
+    // GetNewCWindow calls GetNewPalette with the window resource ID and
+    // associates the resulting palette with the new window. If that palette
+    // is absent, the application palette ('pltt' 0) is the default.
+    // Inside Macintosh Volume VI (1991), pp. 20-18--20-19.
+    let palette = ppc_copy_palette_resource(
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        vfs_resources,
+        current_resource_refnum,
+        window_id,
+    );
+    let palette = if palette == 0 && window_id != 0 {
+        ppc_copy_palette_resource(
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            vfs_resources,
+            current_resource_refnum,
+            0,
+        )
+    } else {
+        palette
+    };
+    if palette != 0 {
+        let _ = memory.write_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET, palette);
+        let _ = memory.write_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET, 1);
+    }
+    *last_mem_error = PPC_NO_ERR;
+    window
 }
 
 fn ppc_size_window(
@@ -47720,6 +48568,63 @@ fn ppc_alloc_handle_with_bytes(
     handle
 }
 
+fn ppc_copy_palette_resource(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    palette_id: i16,
+) -> u32 {
+    let Some(index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"pltt"),
+        palette_id,
+        false,
+    ) else {
+        return 0;
+    };
+    let resource = &vfs_resources[index].data;
+    let Some(entries) = resource
+        .get(..2)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+    else {
+        return 0;
+    };
+    let byte_count = 16usize.saturating_add(usize::from(entries).saturating_mul(16));
+    if resource.len() < byte_count {
+        return 0;
+    }
+    let handle = ppc_alloc_handle_with_bytes(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        &resource[..byte_count],
+    );
+    if handle == 0 {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
+    if let Some(palette) = memory.read_u32_be(handle) {
+        // GetNewPalette initializes the private fields in the copied Palette
+        // record; only pmEntries and the ColorInfo array come from 'pltt'.
+        // Inside Macintosh Volume VI (1991), pp. 20-16, 20-19.
+        for offset in (2..16).step_by(2) {
+            let _ = memory.write_u16_be(palette + offset, 0);
+        }
+        for entry in 0..u32::from(entries) {
+            let private = palette + 16 + entry * 16 + 10;
+            let _ = memory.write_bytes(private, &[0; 6]);
+        }
+    }
+    *last_mem_error = PPC_NO_ERR;
+    handle
+}
+
 fn ppc_alloc_recyclable_handle_with_bytes(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -50473,6 +51378,106 @@ fn ppc_select_dialog_item_text(
     let _ = memory.write_u32_be(te_ptr + PPC_TE_CARET_TIME_OFFSET, tick_count);
 }
 
+fn ppc_palette_entry_color(
+    memory: &mut PpcSectionMem,
+    palette_handle: u32,
+    entry: u16,
+) -> Option<(PpcRgbColor, bool)> {
+    let palette_ptr = memory.read_u32_be(palette_handle)?;
+    let entry_count = memory.read_u16_be(palette_ptr)?;
+    if palette_ptr == 0 || entry >= entry_count {
+        return None;
+    }
+    let info_ptr = palette_ptr
+        .checked_add(16)?
+        .checked_add(u32::from(entry).checked_mul(16)?)?;
+    Some((
+        PpcRgbColor {
+            red: memory.read_u16_be(info_ptr)?,
+            green: memory.read_u16_be(info_ptr + 2)?,
+            blue: memory.read_u16_be(info_ptr + 4)?,
+        },
+        memory.read_u16_be(info_ptr + 6)? & 0x0008 != 0,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_palette_to_ctab(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut [PpcHandleRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    palette_handle: u32,
+    ctable_handle: u32,
+) {
+    // Inside Macintosh Volume VI (1991), p. 20-24: Palette2CTab copies
+    // every palette color and resizes the destination ColorTable to match.
+    // A NIL source or destination is explicitly a no-op.
+    let Some(palette_ptr) = (palette_handle != 0)
+        .then(|| memory.read_u32_be(palette_handle))
+        .flatten()
+        .filter(|ptr| *ptr != 0)
+    else {
+        return;
+    };
+    let Some(entry_count) = memory.read_u16_be(palette_ptr).map(u32::from) else {
+        return;
+    };
+    if entry_count == 0 || ctable_handle == 0 {
+        return;
+    }
+    let Some(byte_count) = entry_count
+        .checked_mul(8)
+        .and_then(|entries| entries.checked_add(8))
+    else {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return;
+    };
+    let resize_result = ppc_set_handle_size(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        ctable_handle,
+        byte_count,
+    );
+    if resize_result != PPC_NO_ERR {
+        *last_mem_error = resize_result;
+        return;
+    }
+    let Some(ctable_ptr) = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0) else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return;
+    };
+    let seed = ppc_next_ct_seed(toolbox_startup);
+    let header_written = memory.write_u32_be(ctable_ptr, seed).is_some()
+        && memory.write_u16_be(ctable_ptr + 4, 0).is_some()
+        && memory
+            .write_u16_be(ctable_ptr + 6, entry_count.saturating_sub(1) as u16)
+            .is_some();
+    let colors_written = (0..entry_count).all(|entry| {
+        let info_ptr = palette_ptr + 16 + entry * 16;
+        let spec_ptr = ctable_ptr + 8 + entry * 8;
+        let (Some(red), Some(green), Some(blue)) = (
+            memory.read_u16_be(info_ptr),
+            memory.read_u16_be(info_ptr + 2),
+            memory.read_u16_be(info_ptr + 4),
+        ) else {
+            return false;
+        };
+        memory.write_u16_be(spec_ptr, entry as u16).is_some()
+            && memory.write_u16_be(spec_ptr + 2, red).is_some()
+            && memory.write_u16_be(spec_ptr + 4, green).is_some()
+            && memory.write_u16_be(spec_ptr + 6, blue).is_some()
+    });
+    *last_mem_error = if header_written && colors_written {
+        PPC_NO_ERR
+    } else {
+        PPC_PARAM_ERR
+    };
+}
 fn ppc_apply_palette(
     memory: &mut PpcSectionMem,
     palette_handle: u32,
@@ -50523,6 +51528,45 @@ fn ppc_apply_palette(
     }
     *screen_clut = updated_clut;
     true
+}
+
+fn ppc_write_device_color_table(
+    memory: &mut PpcSectionMem,
+    gdevice_handle: u32,
+    clut: &[[u16; 3]; 256],
+    toolbox_startup: &mut PpcToolboxStartupState,
+) {
+    // On an indexed device, ActivatePalette asks the Color Manager to modify
+    // the device entries needed by the active palette. The device PixMap's
+    // ColorTable therefore describes the same logical colors as the hardware
+    // CLUT used to display its pixel indexes.
+    // Inside Macintosh Volume VI (1991), pp. 20-15, 20-20.
+    let color_table = memory
+        .read_u32_be(gdevice_handle)
+        .filter(|device| *device != 0)
+        .and_then(|device| memory.read_u32_be(device + 22))
+        .filter(|pixmap_handle| *pixmap_handle != 0)
+        .and_then(|pixmap_handle| memory.read_u32_be(pixmap_handle))
+        .filter(|pixmap| *pixmap != 0)
+        .and_then(|pixmap| memory.read_u32_be(pixmap + 42))
+        .filter(|table_handle| *table_handle != 0)
+        .and_then(|table_handle| memory.read_u32_be(table_handle))
+        .filter(|table| *table != 0);
+    let Some(color_table) = color_table else {
+        return;
+    };
+    let entry_count = usize::from(memory.read_u16_be(color_table + 6).unwrap_or(255))
+        .saturating_add(1)
+        .min(clut.len());
+    for (index, [red, green, blue]) in clut.iter().copied().take(entry_count).enumerate() {
+        let entry = color_table + 8 + index as u32 * 8;
+        let _ = memory.write_u16_be(entry, index as u16);
+        let _ = memory.write_u16_be(entry + 2, red);
+        let _ = memory.write_u16_be(entry + 4, green);
+        let _ = memory.write_u16_be(entry + 6, blue);
+    }
+    let seed = ppc_next_ct_seed(toolbox_startup);
+    let _ = memory.write_u32_be(color_table, seed);
 }
 
 fn ppc_next_ct_seed(toolbox_startup: &mut PpcToolboxStartupState) -> u32 {
@@ -95857,6 +96901,166 @@ mod tests {
     }
 
     #[test]
+    fn quicktime_open_movie_file_combines_data_and_movie_resource_forks() {
+        let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"OpenMovieFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let ref_num_out_ptr = PPC_DATA_BASE + 0x1000;
+        let movie_spec_ptr = PPC_DATA_BASE + 0x1020;
+        let movie_out_ptr = PPC_DATA_BASE + 0x1080;
+        let res_id_ptr = PPC_DATA_BASE + 0x1090;
+        let changed_ptr = PPC_DATA_BASE + 0x1092;
+        loaded.memory.add_region(ref_num_out_ptr, vec![0; 2]);
+        loaded.memory.add_region(movie_spec_ptr, vec![0; 80]);
+        loaded.memory.add_region(movie_out_ptr, vec![0; 4]);
+        loaded.memory.add_region(res_id_ptr, vec![0; 2]);
+        loaded.memory.add_region(changed_ptr, vec![0; 1]);
+
+        let complete_movie = test_quicktime_tkhd_movie(320, 240);
+        let movie_resource = ppc_qt_top_level_atom(&complete_movie, b"moov")
+            .expect("synthetic movie has a movie atom")
+            .to_vec();
+        let data_fork_len = complete_movie.len() - movie_resource.len();
+        let data_fork = complete_movie[..data_fork_len].to_vec();
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Music/Theme".to_string(),
+            data: data_fork,
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"MooV"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        let resource_fork = serialize_resource_fork(&[ResourceForkEntry {
+            res_type: *b"moov",
+            id: 128,
+            name: Vec::new(),
+            data: movie_resource,
+            attrs: 0,
+        }])
+        .unwrap();
+        loaded.vfs_resource_files.push(PpcVfsResourceFileRecord {
+            path: "music/theme".to_string(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"MooV"),
+            finder_flags: 0,
+            resource_len: u32::try_from(resource_fork.len()).unwrap(),
+            raw_data: Some(resource_fork),
+            map_attrs: 0,
+            dirty: false,
+        });
+        write_ppc_fsspec(
+            &mut loaded.memory,
+            movie_spec_ptr,
+            PPC_BOOT_VOLUME_REF_NUM,
+            PPC_ROOT_DIR_ID,
+            b"Music:Theme",
+        );
+        loaded.cpu.gpr[3] = movie_spec_ptr;
+        loaded.cpu.gpr[4] = ref_num_out_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.quicktime.movie_file_data,
+            complete_movie[..data_fork_len]
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::QtNewMovieFromFile;
+        loaded.cpu.gpr[3] = movie_out_ptr;
+        loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u32;
+        loaded.cpu.gpr[5] = res_id_ptr;
+        loaded.cpu.gpr[8] = changed_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(res_id_ptr), Some(128));
+        assert_eq!(loaded.quicktime.movie_file_data, complete_movie);
+        assert_eq!(loaded.quicktime.movie_file_bounds, Some((0, 0, 240, 320)));
+        assert_eq!(loaded.quicktime.movie_file_time_scale, 60);
+        assert_eq!(loaded.quicktime.movie_file_duration, 120);
+        assert!(loaded.quicktime.movie_file_video_track.is_some());
+        assert!(loaded.quicktime.movie_file_audio_track.is_some());
+    }
+
+    #[test]
+    fn quicktime_movie_resource_selection_honors_requested_id() {
+        let first_movie = test_quicktime_tkhd_movie(320, 240);
+        let second_movie = test_quicktime_tkhd_movie(640, 480);
+        let first_moov = ppc_qt_top_level_atom(&first_movie, b"moov").unwrap();
+        let second_moov = ppc_qt_top_level_atom(&second_movie, b"moov").unwrap();
+        let data_fork = first_movie[..first_movie.len() - first_moov.len()].to_vec();
+        let resource_fork = serialize_resource_fork(&[
+            ResourceForkEntry {
+                res_type: *b"moov",
+                id: 128,
+                name: Vec::new(),
+                data: first_moov.to_vec(),
+                attrs: 0,
+            },
+            ResourceForkEntry {
+                res_type: *b"moov",
+                id: 129,
+                name: Vec::new(),
+                data: second_moov.to_vec(),
+                attrs: 0,
+            },
+        ])
+        .unwrap();
+        let resource_files = [PpcVfsResourceFileRecord {
+            path: "Music/Theme".to_string(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"MooV"),
+            finder_flags: 0,
+            resource_len: u32::try_from(resource_fork.len()).unwrap(),
+            raw_data: Some(resource_fork),
+            map_attrs: 0,
+            dirty: false,
+        }];
+
+        let mut selected = data_fork.clone();
+        assert_eq!(
+            ppc_qt_append_movie_resource(
+                &mut selected,
+                &resource_files,
+                &[],
+                "music/theme",
+                Some(129),
+            ),
+            Some(129)
+        );
+        assert_eq!(ppc_qt_movie_bounds(&selected), Some((0, 0, 480, 640)));
+        selected = data_fork.clone();
+        assert_eq!(
+            ppc_qt_append_movie_resource(
+                &mut selected,
+                &resource_files,
+                &[],
+                "Music/Theme",
+                Some(128),
+            ),
+            Some(128)
+        );
+        assert_eq!(ppc_qt_movie_bounds(&selected), Some((0, 0, 240, 320)));
+        selected = data_fork;
+        assert_eq!(
+            ppc_qt_append_movie_resource(
+                &mut selected,
+                &resource_files,
+                &[],
+                "Music/Theme",
+                Some(-1),
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn quicktime_movie_audio_decoder_downmixes_twos_16_bit_first_chunk() {
         let mut movie_file_data = vec![0; 12];
         movie_file_data.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 0xc0, 0x00]);
@@ -95894,6 +97098,229 @@ mod tests {
                 preview: [0x80, 0xc0, 0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             }
         );
+    }
+
+    #[test]
+    fn quicktime_music_track_synthesizes_note_events() {
+        fn push_u32(bytes: &mut Vec<u8>, value: u32) {
+            bytes.extend_from_slice(&value.to_be_bytes());
+        }
+
+        let note = (1u32 << 29) | (28 << 18) | (127 << 11) | 300;
+        let mut movie_file_data = Vec::new();
+        push_quicktime_atom(&mut movie_file_data, b"mdat", &note.to_be_bytes());
+
+        let mut mdhd_payload = vec![0; 24];
+        mdhd_payload[12..16].copy_from_slice(&600u32.to_be_bytes());
+        mdhd_payload[16..20].copy_from_slice(&300u32.to_be_bytes());
+        let mut hdlr_payload = vec![0; 24];
+        hdlr_payload[4..8].copy_from_slice(b"mhlr");
+        hdlr_payload[8..12].copy_from_slice(b"musi");
+        let mut stsc_payload = Vec::new();
+        push_u32(&mut stsc_payload, 0);
+        push_u32(&mut stsc_payload, 1);
+        push_u32(&mut stsc_payload, 1);
+        push_u32(&mut stsc_payload, 1);
+        let mut stts_payload = Vec::new();
+        push_u32(&mut stts_payload, 0);
+        push_u32(&mut stts_payload, 1);
+        push_u32(&mut stts_payload, 1);
+        push_u32(&mut stts_payload, 300);
+        push_u32(&mut stsc_payload, 1);
+        let mut stsd_payload = Vec::new();
+        push_u32(&mut stsd_payload, 0);
+        push_u32(&mut stsd_payload, 1);
+        push_u32(&mut stsd_payload, 20);
+        stsd_payload.extend_from_slice(b"musi");
+        stsd_payload.extend_from_slice(&[0; 12]);
+        let mut stsz_payload = Vec::new();
+        push_u32(&mut stsz_payload, 0);
+        push_u32(&mut stsz_payload, 4);
+        push_u32(&mut stsz_payload, 1);
+        let mut stco_payload = Vec::new();
+        push_u32(&mut stco_payload, 0);
+        push_u32(&mut stco_payload, 1);
+        push_u32(&mut stco_payload, 8);
+        let mut stbl_payload = Vec::new();
+        push_quicktime_atom(&mut stbl_payload, b"stsd", &stsd_payload);
+        push_quicktime_atom(&mut stbl_payload, b"stts", &stts_payload);
+        push_quicktime_atom(&mut stbl_payload, b"stsc", &stsc_payload);
+        push_quicktime_atom(&mut stbl_payload, b"stsz", &stsz_payload);
+        push_quicktime_atom(&mut stbl_payload, b"stco", &stco_payload);
+        let mut minf_payload = Vec::new();
+        push_quicktime_atom(&mut minf_payload, b"stbl", &stbl_payload);
+        let mut mdia_payload = Vec::new();
+        push_quicktime_atom(&mut mdia_payload, b"mdhd", &mdhd_payload);
+        push_quicktime_atom(&mut mdia_payload, b"hdlr", &hdlr_payload);
+        push_quicktime_atom(&mut mdia_payload, b"minf", &minf_payload);
+        let mut trak_payload = Vec::new();
+        push_quicktime_atom(&mut trak_payload, b"mdia", &mdia_payload);
+        let mut moov_payload = Vec::new();
+        push_quicktime_atom(&mut moov_payload, b"trak", &trak_payload);
+        push_quicktime_atom(&mut movie_file_data, b"moov", &moov_payload);
+
+        let decoded = ppc_qt_movie_audio_samples(&movie_file_data).expect("music track decodes");
+
+        assert_eq!(decoded.summary.sample_rate_fixed, 22_050u32 << 16);
+        assert_eq!(decoded.samples.len(), 11_025);
+        assert!(decoded.samples.iter().any(|sample| *sample != 0x80));
+    }
+
+    #[test]
+    fn quicktime_music_sample_description_maps_parts_to_gm_instruments() {
+        let mut note_request = vec![0; 84];
+        note_request[76..80].copy_from_slice(&40u32.to_be_bytes());
+        note_request[80..84].copy_from_slice(&82u32.to_be_bytes());
+        let mut entry = Vec::new();
+        entry.extend_from_slice(&112u32.to_be_bytes());
+        entry.extend_from_slice(b"musi");
+        entry.extend_from_slice(&[0; 6]);
+        entry.extend_from_slice(&1u16.to_be_bytes());
+        entry.extend_from_slice(&0u32.to_be_bytes());
+        entry.extend_from_slice(&0xf005_0017u32.to_be_bytes());
+        entry.extend_from_slice(&note_request);
+        entry.extend_from_slice(&0xc001_0017u32.to_be_bytes());
+        let mut stsd = vec![0; 4];
+        stsd.extend_from_slice(&1u32.to_be_bytes());
+        stsd.extend_from_slice(&entry);
+
+        let descriptions = ppc_qt_music_sample_descriptions(&stsd, 0, stsd.len()).unwrap();
+
+        assert_eq!(
+            descriptions,
+            vec![vec![PpcQuickTimeMusicPart {
+                part: 5,
+                instrument_number: 40,
+                gm_number: 82,
+            }]]
+        );
+        let last = stsd.len() - 4;
+        stsd[last..].copy_from_slice(&0xc001_0016u32.to_be_bytes());
+        assert!(ppc_qt_music_sample_descriptions(&stsd, 0, stsd.len()).is_none());
+        stsd[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert!(ppc_qt_music_sample_descriptions(&stsd, 0, stsd.len()).is_none());
+        stsd[4..8].copy_from_slice(&1u32.to_be_bytes());
+        stsd[12..16].copy_from_slice(b"soun");
+        assert!(ppc_qt_music_sample_descriptions(&stsd, 0, stsd.len()).is_none());
+    }
+
+    #[test]
+    fn quicktime_music_uses_stts_sample_starts_and_controller_volume() {
+        let note = (1u32 << 29) | (28 << 18) | (127 << 11) | 10;
+        let data = [note.to_be_bytes(), note.to_be_bytes()].concat();
+        let mut info = PpcQuickTimeMusicDecodeInfo {
+            handler_subtype: u32::from_be_bytes(*b"musi"),
+            media_time_scale: 100,
+            media_duration: 200,
+            sample_durations: vec![100, 100],
+            sample_sizes: vec![4, 4],
+            stsc_entries: vec![PpcQuickTimeStscEntry {
+                first_chunk: 1,
+                samples_per_chunk: 2,
+                sample_description_id: 1,
+            }],
+            chunk_offsets: vec![0],
+            sample_descriptions: vec![vec![PpcQuickTimeMusicPart {
+                part: 0,
+                instrument_number: 40,
+                gm_number: 40,
+            }]],
+        };
+
+        let decoded = ppc_qt_synthesize_music_track(&data, &info).unwrap();
+
+        assert!(decoded.samples[..2_205]
+            .iter()
+            .any(|sample| *sample != 0x80));
+        assert!(decoded.samples[2_205..22_050]
+            .iter()
+            .all(|sample| *sample == 0x80));
+        assert!(decoded.samples[22_050..24_255]
+            .iter()
+            .any(|sample| *sample != 0x80));
+
+        let mute = (2u32 << 29) | (7 << 16);
+        let mut mixed = vec![0; 4_000];
+        let mut parts = vec![PpcQuickTimeMusicPartState {
+            part: 0,
+            instrument: 40,
+            volume: i16::MAX,
+            pitch_bend: 0,
+            sustain: false,
+        }];
+        let events = [mute.to_be_bytes(), note.to_be_bytes()].concat();
+        assert!(
+            ppc_qt_synthesize_music_events(&events, 600, 0, &mut mixed, 22_050, &mut parts,)
+                .is_some()
+        );
+        assert!(mixed.iter().all(|sample| *sample == 0));
+
+        let malformed_extended_note = [0x9000_003cu32.to_be_bytes(), 0u32.to_be_bytes()].concat();
+        assert!(ppc_qt_synthesize_music_events(
+            &malformed_extended_note,
+            600,
+            0,
+            &mut mixed,
+            22_050,
+            &mut parts,
+        )
+        .is_none());
+
+        info.stsc_entries[0].sample_description_id = 2;
+        assert!(ppc_qt_synthesize_music_track(&data, &info).is_none());
+
+        let invalid_stsc = [
+            0u32, 2, // version/flags, entry count
+            1, 1, 1, // first entry
+            1, 1, 1, // non-increasing second entry
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>();
+        assert!(ppc_qt_stsc_entries(&invalid_stsc, 0, invalid_stsc.len()).is_none());
+    }
+
+    #[test]
+    fn quicktime_music_timbre_follows_instrument_not_part_number() {
+        let mut first = vec![0; 2_000];
+        let mut same = vec![0; 2_000];
+        let mut different = vec![0; 2_000];
+        let state = PpcQuickTimeMusicPartState {
+            part: 0,
+            instrument: 40,
+            volume: i16::MAX,
+            pitch_bend: 0,
+            sustain: false,
+        };
+        ppc_qt_mix_music_note(&mut first, 0, 30, 60.0, 100, state, 600, 22_050).unwrap();
+        ppc_qt_mix_music_note(
+            &mut same,
+            0,
+            30,
+            60.0,
+            100,
+            PpcQuickTimeMusicPartState { part: 5, ..state },
+            600,
+            22_050,
+        )
+        .unwrap();
+        ppc_qt_mix_music_note(
+            &mut different,
+            0,
+            30,
+            60.0,
+            100,
+            PpcQuickTimeMusicPartState {
+                instrument: 82,
+                ..state
+            },
+            600,
+            22_050,
+        )
+        .unwrap();
+
+        assert_eq!(first, same);
+        assert_ne!(first, different);
     }
 
     #[test]
@@ -98221,6 +99648,55 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_get_new_cwindow_associates_matching_palette() {
+        let pef = synthetic_pef_with_import(b"GetNewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let storage_ptr = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(storage_ptr, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        let mut palette_resource = vec![0xaa; 48];
+        palette_resource[..2].copy_from_slice(&2u16.to_be_bytes());
+        palette_resource[16..22].copy_from_slice(&[0x11, 0x11, 0x22, 0x22, 0x33, 0x33]);
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: loaded.current_resource_refnum,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"pltt"),
+            res_id: 1000,
+            name: Vec::new(),
+            data: palette_resource,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        loaded.cpu.gpr[3] = 1000;
+        loaded.cpu.gpr[4] = storage_ptr;
+        loaded.cpu.gpr[5] = u32::MAX;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let palette_handle = loaded
+            .memory
+            .read_u32_be(storage_ptr + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET)
+            .unwrap();
+        assert_ne!(palette_handle, 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(storage_ptr + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
+            Some(1)
+        );
+        let palette = loaded.memory.read_u32_be(palette_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(palette), Some(2));
+        assert_eq!(loaded.memory.read_u16_be(palette + 2), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(palette + 16), Some(0x1111));
+        assert_eq!(loaded.memory.read_u16_be(palette + 18), Some(0x2222));
+        assert_eq!(loaded.memory.read_u16_be(palette + 20), Some(0x3333));
+    }
+
+    #[test]
     fn hle_import_runner_handles_set_w_ref_con() {
         let pef = synthetic_pef_with_import(b"SetWRefCon");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -98480,6 +99956,174 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_new_palette_initializes_entries_from_color_table() {
+        let pef = synthetic_pef_with_import(b"NewPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let ctab_handle = PPC_DATA_BASE + 0x1000;
+        let ctab_ptr = PPC_DATA_BASE + 0x2000;
+        loaded.memory.add_region(ctab_handle, vec![0; 4]);
+        loaded.memory.add_region(ctab_ptr, vec![0; 24]);
+        loaded.memory.write_u32_be(ctab_handle, ctab_ptr).unwrap();
+        loaded.memory.write_u16_be(ctab_ptr + 6, 1).unwrap();
+        for (entry, rgb) in [[0x1111, 0x2222, 0x3333], [0xaaaa, 0xbbbb, 0xcccc]]
+            .into_iter()
+            .enumerate()
+        {
+            let spec_ptr = ctab_ptr + 8 + entry as u32 * 8;
+            loaded.memory.write_u16_be(spec_ptr, entry as u16).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 2, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 4, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 6, rgb[2]).unwrap();
+        }
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = ctab_handle;
+        loaded.cpu.gpr[5] = 0x0002;
+        loaded.cpu.gpr[6] = 0x3456;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let palette_handle = loaded.cpu.gpr[3];
+        let palette_ptr = loaded.memory.read_u32_be(palette_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr), Some(3));
+        for (entry, rgb) in [[0x1111, 0x2222, 0x3333], [0xaaaa, 0xbbbb, 0xcccc]]
+            .into_iter()
+            .enumerate()
+        {
+            let info_ptr = palette_ptr + 16 + entry as u32 * 16;
+            assert_eq!(loaded.memory.read_u16_be(info_ptr), Some(rgb[0]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 2), Some(rgb[1]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 4), Some(rgb[2]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 6), Some(0x0002));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 8), Some(0x3456));
+        }
+        let third_info = palette_ptr + 16 + 2 * 16;
+        assert_eq!(loaded.memory.read_u16_be(third_info), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(third_info + 6), Some(0x0002));
+        assert_eq!(loaded.memory.read_u16_be(third_info + 8), Some(0x3456));
+    }
+
+    #[test]
+    fn hle_import_runner_get_new_palette_returns_initialized_resource_copy() {
+        let pef = synthetic_pef_with_import(b"GetNewPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let window = PPC_DATA_BASE + 0x3000;
+        loaded
+            .memory
+            .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        loaded.current_gworld = window;
+        let mut palette_resource = vec![0xbb; 32];
+        palette_resource[..2].copy_from_slice(&1u16.to_be_bytes());
+        palette_resource[16..22].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: loaded.current_resource_refnum,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"pltt"),
+            res_id: 700,
+            name: Vec::new(),
+            data: palette_resource,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        loaded.cpu.gpr[3] = 700;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let palette_handle = loaded.cpu.gpr[3];
+        assert_ne!(palette_handle, 0);
+        let palette = loaded.memory.read_u32_be(palette_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(palette), Some(1));
+        for offset in (2..16).step_by(2) {
+            assert_eq!(loaded.memory.read_u16_be(palette + offset), Some(0));
+        }
+        assert_eq!(loaded.memory.read_u16_be(palette + 16), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(palette + 18), Some(0x5678));
+        assert_eq!(loaded.memory.read_u16_be(palette + 20), Some(0x9abc));
+        for offset in 26..32 {
+            assert_eq!(loaded.memory.read_u8(palette + offset), Some(0));
+        }
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET),
+            Some(palette_handle)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_palette_to_ctab_resizes_and_copies_colors() {
+        let pef = synthetic_pef_with_import(b"Palette2CTab");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 64]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 3).unwrap();
+        let colors = [
+            [0x1111, 0x2222, 0x3333],
+            [0x4444, 0x5555, 0x6666],
+            [0xaaaa, 0xbbbb, 0xcccc],
+        ];
+        for (entry, rgb) in colors.into_iter().enumerate() {
+            let info_ptr = palette_ptr + 16 + entry as u32 * 16;
+            loaded.memory.write_u16_be(info_ptr, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(info_ptr + 2, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(info_ptr + 4, rgb[2]).unwrap();
+            loaded.memory.write_u16_be(info_ptr + 6, 0x0002).unwrap();
+            loaded.memory.write_u16_be(info_ptr + 8, 0x1234).unwrap();
+        }
+        let ctable_handle = ppc_alloc_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            16,
+            true,
+        );
+        assert_ne!(ctable_handle, 0);
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = ctable_handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctable_ptr = loaded.memory.read_u32_be(ctable_handle).unwrap();
+        assert!(loaded.memory.read_u32_be(ctable_ptr).unwrap() >= 1024);
+        assert_eq!(loaded.memory.read_u16_be(ctable_ptr + 4), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(ctable_ptr + 6), Some(2));
+        for (entry, rgb) in colors.into_iter().enumerate() {
+            let spec_ptr = ctable_ptr + 8 + entry as u32 * 8;
+            assert_eq!(loaded.memory.read_u16_be(spec_ptr), Some(entry as u16));
+            assert_eq!(loaded.memory.read_u16_be(spec_ptr + 2), Some(rgb[0]));
+            assert_eq!(loaded.memory.read_u16_be(spec_ptr + 4), Some(rgb[1]));
+            assert_eq!(loaded.memory.read_u16_be(spec_ptr + 6), Some(rgb[2]));
+        }
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == ctable_handle)
+                .map(|record| record.size),
+            Some(32)
+        );
+    }
+
+    #[test]
     fn hle_import_runner_handles_palette_association() {
         let pef = synthetic_pef_with_import(b"NSetPalette");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -98572,6 +100216,141 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[0], [0x1234, 0x5678, 0x9abc]);
         assert_eq!(loaded.screen_clut[1], [0xdef0, 0x1357, 0x2468]);
+        let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(device_ctable + 10), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(device_ctable + 12), Some(0x5678));
+        assert_eq!(loaded.memory.read_u16_be(device_ctable + 14), Some(0x9abc));
+        assert!(loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == window_ptr));
+    }
+
+    #[test]
+    fn hle_import_runner_set_entry_color_preserves_usage_and_tolerance() {
+        let pef = synthetic_pef_with_import(b"SetEntryColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        let rgb_ptr = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 48]);
+        loaded.memory.add_region(rgb_ptr, vec![0; 6]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 2).unwrap();
+        let info_ptr = palette_ptr + 32;
+        for (offset, value) in [
+            (0, 0x1111),
+            (2, 0x2222),
+            (4, 0x3333),
+            (6, 0x0008),
+            (8, 0x1234),
+            (10, 0xaaaa),
+            (12, 0xbbbb),
+            (14, 0xcccc),
+        ] {
+            loaded
+                .memory
+                .write_u16_be(info_ptr + offset, value)
+                .unwrap();
+        }
+        for (offset, value) in [(0, 0x4567), (2, 0x89ab), (4, 0xcdef)] {
+            loaded.memory.write_u16_be(rgb_ptr + offset, value).unwrap();
+        }
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = rgb_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(info_ptr), Some(0x4567));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 2), Some(0x89ab));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 4), Some(0xcdef));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 6), Some(0x0008));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 8), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 10), Some(0xaaaa));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 12), Some(0xbbbb));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 14), Some(0xcccc));
+    }
+
+    #[test]
+    fn hle_import_runner_set_entry_color_ignores_out_of_range_entry() {
+        let pef = synthetic_pef_with_import(b"SetEntryColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 32]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0xffff_fffc;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr + 16), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_set_entry_usage_updates_only_usage_fields() {
+        let pef = synthetic_pef_with_import(b"SetEntryUsage");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 32]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        let info_ptr = palette_ptr + 16;
+        loaded.memory.write_u16_be(info_ptr, 0x1234).unwrap();
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0x0008;
+        loaded.cpu.gpr[6] = 0x4567;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(info_ptr), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 6), Some(0x0008));
+        assert_eq!(loaded.memory.read_u16_be(info_ptr + 8), Some(0x4567));
+    }
+
+    #[test]
+    fn hle_import_runner_dispose_palette_releases_handle() {
+        let pef = synthetic_pef_with_import(b"DisposePalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &[0; 16],
+        );
+        assert_ne!(handle, 0);
+        loaded.cpu.gpr[3] = handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(loaded.handles.iter().all(|record| record.handle != handle));
+        assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
     }
 
     #[test]
@@ -114753,6 +116532,30 @@ mod tests {
             | u64::from(memory.read_u32_be(0x1104).unwrap());
         assert_eq!(f64::from_bits(integer_bits), -12.0);
         assert_eq!(f64::from_bits(cpu.fpr[1]), -0.75);
+    }
+
+    #[test]
+    fn native_ppc_math_floor_rounds_down_and_preserves_special_values() {
+        let mut memory = PpcSectionMem::new();
+        let mut cpu = PpcCpu::new();
+        let binding = compatibility_binding(
+            "MathLib",
+            "floor",
+            PpcImportDispatcherTarget::MathCompatibility,
+        );
+        for (input, expected) in [(-300.1f64, -301.0f64), (300.1, 300.0)] {
+            cpu.fpr[1] = input.to_bits();
+            assert_eq!(
+                ppc_dispatch_math_compatibility(&binding, &mut cpu, &mut memory),
+                PpcImportAction::ReturnPreserve
+            );
+            assert_eq!(f64::from_bits(cpu.fpr[1]), expected);
+        }
+        for input in [-0.0f64, f64::INFINITY, f64::NEG_INFINITY] {
+            cpu.fpr[1] = input.to_bits();
+            let _ = ppc_dispatch_math_compatibility(&binding, &mut cpu, &mut memory);
+            assert_eq!(cpu.fpr[1], input.to_bits());
+        }
     }
 
     #[test]
