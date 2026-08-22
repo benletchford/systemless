@@ -4103,6 +4103,17 @@ fn build_src_to_dst_table_uncached(
                 // indices: a lower-index color in the same 4-bit cell must not
                 // replace an exact match.
                 index as u8
+            } else if let Some(index) = device_clut.iter().position(|destination| {
+                destination[0] >> 8 == entry[0] >> 8
+                    && destination[1] >> 8 == entry[1] >> 8
+                    && destination[2] >> 8 == entry[2] >> 8
+            }) {
+                // Indexed 8-bit video exposes the most-significant byte of
+                // each 16-bit RGB component. Some classic PICT generators
+                // leave bookkeeping values in the low bytes, so colors that
+                // are identical on the device must match before the coarser
+                // inverse-table lookup. Imaging With QuickDraw 1994, p. 4-13.
+                index as u8
             } else {
                 let qr = (entry[0] >> 12) as u32;
                 let qg = (entry[1] >> 12) as u32;
@@ -6617,6 +6628,21 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[71], 12);
+    }
+
+    #[test]
+    fn eight_bit_device_matching_ignores_pict_rgb_low_bytes() {
+        let mut src = [[0u16; 3]; 256];
+        let mut dst = [[0u16; 3]; 256];
+        src[14] = [0xFF0E, 0x2D0E, 0x890E];
+        dst[73] = [0xFFFF, 0x2D2D, 0x8989];
+        // A competing entry occupies the same 4-bit inverse-table cell but
+        // does not display the requested 8-bit RGB value.
+        dst[12] = [0xF000, 0x2000, 0x8000];
+
+        let table = build_src_to_dst_table(&src, &dst);
+
+        assert_eq!(table[14], 73);
     }
 
     #[test]
