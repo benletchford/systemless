@@ -2212,6 +2212,12 @@ impl super::TrapDispatcher {
                 } else {
                     // First call: read params and open popup dropdown
                     let sp = cpu.read_reg(Register::A7);
+                    // If the mouse button is not down when PopUpMenuSelect is called,
+                    // return 0 immediately without tracking or drawing dropdown per IM:Toolbox Essentials 3-120.
+                    if !self.menu_tracking_button_down(bus) {
+                        self.finish_menu_no_hit(bus, cpu, sp, 10);
+                        return Some(Ok(()));
+                    }
                     let popup_item = bus.read_word(sp) as i16;
                     let left = bus.read_word(sp + 2) as i16;
                     let top = bus.read_word(sp + 4) as i16;
@@ -2229,7 +2235,7 @@ impl super::TrapDispatcher {
                     if let Some(menu_idx) = self
                         .menus
                         .iter()
-                        .position(|m| m.id == menu_id && m.in_menu_bar)
+                        .position(|m| m.handle == menu_handle || m.id == menu_id)
                     {
                         let (dd_rect, highlighted_item) =
                             self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item);
@@ -11452,6 +11458,49 @@ mod tests {
         assert!(
             disp.menu_tracking.is_none(),
             "uninserted pop-up menus should not seed tracking"
+        );
+    }
+
+    #[test]
+    fn popupmenuselect_with_mouse_button_up_returns_zero_immediately() {
+        // IM: Toolbox Essentials 1992, p. 3-120:
+        // "If the user releases the mouse button without choosing an item,
+        // or if the mouse button was not down when PopUpMenuSelect was called,
+        // PopUpMenuSelect returns 0."
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        disp.mouse_button = false;
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80); // button up
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 402, 0x302000, "Pop");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302040, "First;Second;Third");
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
+
+        let sp = TEST_SP;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // popUpItem
+        bus.write_word(sp + 2, 100); // left
+        bus.write_word(sp + 4, 50); // top
+        bus.write_long(sp + 6, menu);
+        bus.write_long(sp + 10, 0xDEAD_BEEF); // result placeholder
+
+        let result = disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus);
+        assert!(result.is_some(), "PopUpMenuSelect should be handled");
+        assert!(result.unwrap().is_ok(), "PopUpMenuSelect should return");
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 10,
+            "PopUpMenuSelect should consume the 10-byte argument frame"
+        );
+        assert_eq!(
+            bus.read_long(sp + 10),
+            0,
+            "PopUpMenuSelect must return 0 when called with mouse button up"
+        );
+        assert!(
+            disp.menu_tracking.is_none(),
+            "PopUpMenuSelect must not start menu tracking when button is up"
         );
     }
 
