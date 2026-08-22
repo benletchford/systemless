@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.7](https://github.com/benletchford/systemless/compare/v0.18.6...v0.18.7) (2026-08-21)
+
+
+### Bug Fixes
+
+* complete PowerMonger compatibility ([#720](https://github.com/benletchford/systemless/issues/720)) ([8d0716a](https://github.com/benletchford/systemless/commit/8d0716ae7eacb014bfbd06239585bb5c7b9b7e9f))
+* render Operation Crusader menu items ([#722](https://github.com/benletchford/systemless/issues/722)) ([8f5c30b](https://github.com/benletchford/systemless/commit/8f5c30bcb0e58692d7f099f6b891270a1d8dbe71))
+
 ## [0.18.6](https://github.com/benletchford/systemless/compare/v0.18.5...v0.18.6) (2026-08-20)
 
 
