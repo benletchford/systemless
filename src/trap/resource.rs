@@ -5729,16 +5729,21 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, nsverr as u32);
                     return Some(Ok(()));
                 }
-                let mut target_volume_ref_num = named_volume
-                    .map(|(volume_ref_num, _)| volume_ref_num)
+                // PBSetVol makes the encoded directory and its containing volume
+                // the defaults when ioVRefNum is a working-directory refnum.
+                // Inside Macintosh: Files (1992), p. 2-151.
+                let requested_working_directory =
+                    self.working_directories.get(&requested_vref).copied();
+                let mut target_volume_ref_num = requested_working_directory
+                    .map(|working_directory| working_directory.volume_ref_num)
+                    .or_else(|| named_volume.map(|(volume_ref_num, _)| volume_ref_num))
                     .unwrap_or_else(|| self.resolve_volume_ref_num(requested_vref));
-                let mut target_dir_id = if let Some((_, root_dir_id)) = named_volume {
-                    root_dir_id
-                } else if let Some(working_directory) =
-                    self.working_directories.get(&requested_vref)
+                let mut target_dir_id = if let Some(working_directory) = requested_working_directory
                 {
                     target_volume_ref_num = working_directory.volume_ref_num;
                     working_directory.dir_id
+                } else if let Some((_, root_dir_id)) = named_volume {
+                    root_dir_id
                 } else if is_hfs_set_vol
                     && requested_dir_id != 0
                     && self.directory_entry_for_id(requested_dir_id).is_some()
@@ -16651,6 +16656,30 @@ mod tests {
             super::super::dispatch::BOOT_VOLUME_REF_NUM
         );
         assert_eq!(bus.read_long(addr::CUR_DIR_STORE), 2);
+    }
+
+    #[test]
+    fn pbsetvol_named_volume_preserves_working_directory_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let app_dir_id = disp.ensure_vfs_directory("Applications/Example Game");
+        let wd_ref_num = disp
+            .open_working_directory(super::super::dispatch::BOOT_VOLUME_REF_NUM, app_dir_id, 0)
+            .expect("working-directory refnum");
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        write_pstring(&mut bus, name_buf, b"MacintoshHD");
+        bus.write_word(pb + 22, wd_ref_num as u16);
+
+        call_trap_word(&mut disp, 0xA015, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.default_dir_id, app_dir_id);
+        assert_eq!(disp.app_wd_refnum, wd_ref_num);
+        assert_eq!(bus.read_long(addr::CUR_DIR_STORE), app_dir_id);
     }
 
     #[test]
