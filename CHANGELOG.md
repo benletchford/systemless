@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.12](https://github.com/benletchford/systemless/compare/v0.18.11...v0.18.12) (2026-08-22)
+
+
+### Bug Fixes
+
+* return 0x0100 for pascal boolean true in testdeviceattribute ([#762](https://github.com/benletchford/systemless/issues/762)) ([54b6b16](https://github.com/benletchford/systemless/commit/54b6b16e28688a2c67dbee9bf5dc1231ba986ce3))
+
 ## [0.18.11](https://github.com/benletchford/systemless/compare/v0.18.10...v0.18.11) (2026-08-22)
 
 
