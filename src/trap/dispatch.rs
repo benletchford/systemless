@@ -185,10 +185,10 @@ fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if byte_idx >= 16 {
         return None;
     }
-    // `KeyMap` is a Pascal `PACKED ARRAY[0..127] OF Boolean`, whose
-    // elements occupy each byte from its most-significant bit downward.
-    // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 2-109.
-    let mask = 0x80u8 >> (key_code & 0x07);
+    // The classic C ABI exposes KeyMap as four longs, and games commonly
+    // inspect its bytes directly. Inside Macintosh: Macintosh Toolbox
+    // Essentials (1992), pp. 2-109..2-110.
+    let mask = 1u8 << (key_code & 0x07);
     Some((byte_idx, mask))
 }
 

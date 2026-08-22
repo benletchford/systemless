@@ -12619,7 +12619,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app should stay loaded");
         let left_key = 0x7bu8;
         let left_byte = key_map_ptr + u32::from(left_key / 8);
-        let left_bit = 0x80u8 >> (left_key % 8);
+        let left_bit = 1u8 << (left_key % 8);
         assert_ne!(ppc_app.memory.read_u8(left_byte).unwrap() & left_bit, 0);
     }
 
@@ -13533,7 +13533,7 @@ mod tests {
 
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 4),
-            0x02,
+            0x40,
             "J key should be visible to byte/bit KeyMap readers"
         );
         assert_eq!(
@@ -13543,7 +13543,7 @@ mod tests {
         );
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 15),
-            0x02,
+            0x40,
             "up arrow should be visible to byte/bit KeyMap readers"
         );
         assert_eq!(
@@ -13566,7 +13566,7 @@ mod tests {
         );
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 15),
-            0x02,
+            0x40,
             "unrelated byte/bit down keys should remain mirrored"
         );
         assert_eq!(
@@ -13584,18 +13584,18 @@ mod tests {
         let caps_lock_byte = addr::KEY_MAP_LM + 7;
 
         runner.push_key_down(0x39, 0);
-        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x40, 0x40);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0x02);
         runner.push_key_up(0x39, 0);
         assert_eq!(
-            runner.bus.read_byte(caps_lock_byte) & 0x40,
-            0x40,
+            runner.bus.read_byte(caps_lock_byte) & 0x02,
+            0x02,
             "physical release must keep the low-memory Caps Lock bit latched"
         );
 
         runner.push_key_down(0x39, 0);
-        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x40, 0);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0);
         runner.push_key_up(0x39, 0);
-        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x40, 0);
+        assert_eq!(runner.bus.read_byte(caps_lock_byte) & 0x02, 0);
     }
 
     #[test]
