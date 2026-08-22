@@ -1774,6 +1774,18 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"wctb" {
+                    if let Some(ptr) = self.synthesize_system_wctb(bus, res_id) {
+                        let handle = self.get_or_create_resource_handle(bus, res_type, res_id, ptr);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"WDEF" {
                     if let Some(ptr) = self.synthesize_system_wdef(bus, res_id) {
                         let handle = self
@@ -4253,52 +4265,46 @@ impl super::TrapDispatcher {
                         0u16,
                     ))
                 };
+                let volume_by_name = |name: &str| {
+                    // A full pathname names its volume before the first colon.
+                    // Files 1992, 2-6 and 2-145.
+                    let name = name.split(':').next().unwrap_or(name);
+                    if name.eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name()) {
+                        boot_volume()
+                    } else {
+                        self.vfs_volume_by_name(name)
+                            .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
+                    }
+                };
+                let volume_by_ref = |requested_vref: i16| {
+                    let volume_ref_num = if requested_vref
+                        == super::TrapDispatcher::boot_volume_ref_num()
+                        || self.vfs_volumes.contains_key(&requested_vref)
+                    {
+                        Some(requested_vref)
+                    } else {
+                        self.working_directories
+                            .get(&requested_vref)
+                            .map(|working_directory| working_directory.volume_ref_num)
+                    }?;
+                    if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
+                        boot_volume()
+                    } else {
+                        self.vfs_volume_for_ref_num(volume_ref_num)
+                            .map(|volume| (volume.name.clone(), volume.ref_num, volume.attributes))
+                    }
+                };
                 let volume_info = if volume_index == 0 {
                     // Files 1992, 2-145: ioVolIndex == 0 selects a volume by
                     // ioNamePtr or ioVRefNum instead of enumerating the VCB
                     // queue. Do not silently turn an unknown vRefNum into the
                     // boot volume; callers use nsvErr to detect a bad volume.
                     if requested_vref != 0 {
-                        let volume_ref_num = if requested_vref
-                            == super::TrapDispatcher::boot_volume_ref_num()
-                            || self.vfs_volumes.contains_key(&requested_vref)
-                        {
-                            Some(requested_vref)
-                        } else {
-                            self.working_directories
-                                .get(&requested_vref)
-                                .map(|working_directory| working_directory.volume_ref_num)
-                        };
-                        volume_ref_num.and_then(|volume_ref_num| {
-                            if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
-                                boot_volume()
-                            } else {
-                                self.vfs_volume_for_ref_num(volume_ref_num).map(|volume| {
-                                    (volume.name.clone(), volume.ref_num, volume.attributes)
-                                })
-                            }
-                        })
+                        volume_by_ref(requested_vref)
                     } else if !requested_name.is_empty() {
-                        if requested_name
-                            .eq_ignore_ascii_case(super::TrapDispatcher::boot_volume_name())
-                        {
-                            boot_volume()
-                        } else {
-                            self.vfs_volume_by_name(&requested_name).map(|volume| {
-                                (volume.name.clone(), volume.ref_num, volume.attributes)
-                            })
-                        }
+                        volume_by_name(&requested_name)
                     } else {
-                        let volume_ref_num = Some(self.resolve_volume_ref_num(self.app_wd_refnum));
-                        volume_ref_num.and_then(|volume_ref_num| {
-                            if volume_ref_num == super::TrapDispatcher::boot_volume_ref_num() {
-                                boot_volume()
-                            } else {
-                                self.vfs_volume_for_ref_num(volume_ref_num).map(|volume| {
-                                    (volume.name.clone(), volume.ref_num, volume.attributes)
-                                })
-                            }
-                        })
+                        volume_by_ref(self.app_wd_refnum)
                     }
                 } else if volume_index > 0 {
                     let mut mounted = self
@@ -4315,7 +4321,19 @@ impl super::TrapDispatcher {
                     volumes.extend(mounted);
                     volumes.get((volume_index - 1) as usize).cloned()
                 } else {
-                    None
+                    // Files 1992, 2-145: a negative ioVolIndex selects the
+                    // volume by ioNamePtr and ioVRefNum in the standard way.
+                    // A full pathname's volume name takes precedence; otherwise
+                    // a nonzero volume or working-directory reference is used.
+                    if requested_name.contains(':') {
+                        volume_by_name(&requested_name)
+                    } else if requested_vref != 0 {
+                        volume_by_ref(requested_vref)
+                    } else if !requested_name.is_empty() {
+                        volume_by_name(&requested_name)
+                    } else {
+                        volume_by_ref(self.app_wd_refnum)
+                    }
                 };
                 let Some((volume_name, volume_ref_num, volume_attributes)) = volume_info else {
                     // Files 1992, 2-145: positive ioVolIndex values walk the
@@ -9087,6 +9105,41 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_system_window_color_table() {
+        // IM:V pp. V-201..V-203: InitWindows falls back to the System-file
+        // or ROM `'wctb'` ID 0 when the application does not provide one.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"wctb"));
+
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(cpu.read_reg(Register::A0), handle);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(bus.read_word(0x0A60), 0);
+
+        let table = bus.read_long(handle);
+        assert_ne!(table, 0);
+        assert_eq!(bus.get_alloc_size(table), Some(112));
+        assert_eq!(bus.read_long(table), 0);
+        assert_eq!(bus.read_word(table + 4), 0);
+        assert_eq!(bus.read_word(table + 6), 12);
+        assert_eq!(bus.read_word(table + 8), 0); // wContentColor
+        assert_eq!(bus.read_word(table + 10), 0xFFFF);
+        assert_eq!(bus.read_word(table + 12), 0xFFFF);
+        assert_eq!(bus.read_word(table + 14), 0xFFFF);
+        assert_eq!(bus.read_word(table + 16), 1); // wFrameColor
+        assert_eq!(bus.read_word(table + 18), 0);
+        assert_eq!(bus.read_word(table + 104), 12); // wTingeDark
+        assert_eq!(bus.read_word(table + 106), 0x3333);
+        assert_eq!(bus.read_word(table + 108), 0x3333);
+        assert_eq!(bus.read_word(table + 110), 0x6666);
     }
 
     #[test]
@@ -15104,6 +15157,54 @@ mod tests {
         assert_eq!(bus.read_word(pb + 22), volume_ref as u16);
         assert_eq!(bus.read_pstring(name_buf), b"Legend CD");
         assert_eq!(bus.read_word(pb + 38), 0x8080, "ioVAtrb");
+    }
+
+    #[test]
+    fn pb_hget_vinfo_negative_index_selects_volume_from_full_path() {
+        // Inside Macintosh: Files (1992), 2-145: negative ioVolIndex uses
+        // ioNamePtr and ioVRefNum in the standard way. A full pathname names
+        // its volume before the first colon.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_pstring(name_buf, b"MacintoshHD:Games:Demo");
+        bus.write_word(pb + 22, 0);
+        bus.write_word(pb + 28, (-1i16) as u16);
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0, "ioResult");
+        assert_eq!(
+            bus.read_word(pb + 22),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            "ioVRefNum"
+        );
+        assert_eq!(bus.read_pstring(name_buf), b"MacintoshHD");
+    }
+
+    #[test]
+    fn pb_hget_vinfo_negative_index_resolves_working_directory_reference() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, 0);
+        bus.write_word(pb + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb + 28, (-1i16) as u16);
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0, "ioResult");
+        assert_eq!(
+            bus.read_word(pb + 22),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            "ioVRefNum"
+        );
     }
 
     #[test]
