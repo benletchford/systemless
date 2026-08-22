@@ -92,6 +92,8 @@ struct PlayingBuffer {
     position: u64,
     /// Resampling step: source_rate / output_rate in fixed-point 32.32.
     step: u64,
+    /// Repeat the waveform until quietCmd stops the channel.
+    looping: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -308,6 +310,12 @@ impl SndChannel {
         self.play_stereo_buffer(samples, sample_rate_fixed, kind, file_completion_addr);
     }
 
+    /// Start a synthesizer waveform which repeats until the channel is quieted.
+    pub(crate) fn play_looping_buffer(&mut self, samples: Vec<u8>, sample_rate_fixed: u32) {
+        let samples = samples.into_iter().map(StereoSample::mono).collect();
+        self.play_stereo_buffer_inner(samples, sample_rate_fixed, PlaybackKind::Buffer, 0, true);
+    }
+
     /// Start playing a buffer of unsigned 8-bit stereo frames.
     pub(crate) fn play_stereo_buffer(
         &mut self,
@@ -316,12 +324,30 @@ impl SndChannel {
         kind: PlaybackKind,
         file_completion_addr: u32,
     ) {
+        self.play_stereo_buffer_inner(
+            samples,
+            sample_rate_fixed,
+            kind,
+            file_completion_addr,
+            false,
+        );
+    }
+
+    fn play_stereo_buffer_inner(
+        &mut self,
+        samples: Vec<StereoSample>,
+        sample_rate_fixed: u32,
+        kind: PlaybackKind,
+        file_completion_addr: u32,
+        looping: bool,
+    ) {
         self.rate_fixed = UNITY_RATE_FIXED;
         self.playing = Some(PlayingBuffer {
             samples,
             sample_rate_fixed,
             position: 0,
             step: fixed_div(sample_rate_fixed as u64, (OUTPUT_RATE as u64) << 16),
+            looping,
         });
         self.playback_kind = Some(kind);
         self.file_completion_addr = file_completion_addr;
@@ -600,6 +626,10 @@ impl SoundManager {
             if let Some(ref mut buf) = chan.playing {
                 any_active = true;
                 for slot in output.iter_mut().take(num_samples) {
+                    let end = (buf.samples.len() as u64) << 32;
+                    if buf.looping && end != 0 && buf.position >= end {
+                        buf.position %= end;
+                    }
                     let Some(source_sample) =
                         resampled_sample(&buf.samples, buf.position, buf.step)
                     else {
@@ -613,7 +643,7 @@ impl SoundManager {
                     buf.position += buf.step;
                 }
                 let final_idx = (buf.position >> 32) as usize;
-                if final_idx >= buf.samples.len() {
+                if final_idx >= buf.samples.len() && !buf.looping {
                     let playback_kind = chan.playback_kind;
                     let callback_addr = chan.callback_addr;
                     let chan_ptr = chan.guest_ptr;
@@ -688,6 +718,9 @@ impl SoundManager {
             .iter()
             .filter_map(|chan| {
                 let playing = chan.playing.as_ref()?;
+                if playing.looping {
+                    return None;
+                }
                 if playing.step == 0 {
                     return None;
                 }
@@ -1214,6 +1247,7 @@ mod tests {
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: fixed_div(22050 << 16, (OUTPUT_RATE as u64) << 16),
+            looping: false,
         });
         let original_step = chan.playing.as_ref().unwrap().step;
 
@@ -1330,6 +1364,7 @@ mod tests {
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
+            looping: false,
         });
         assert!(chan.is_playing(), "active buffer: is_playing = true");
         assert!(
@@ -1384,6 +1419,7 @@ mod tests {
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
+            looping: false,
         });
         chan.playback_kind = Some(PlaybackKind::Buffer);
         chan.file_completion_addr = 0xABCD_1234;
@@ -1451,6 +1487,7 @@ mod tests {
             sample_rate_fixed: 22050 << 16,
             position: 0,
             step: 0x0001_0000,
+            looping: false,
         });
         chan.playback_kind = Some(PlaybackKind::File);
         chan.file_completion_addr = 0xABCD_1234;
@@ -2605,5 +2642,23 @@ mod tests {
         let guest_alloc = SndChannel::new(0xDEAD_0000, false);
         assert_eq!(guest_alloc.guest_ptr, 0xDEAD_0000);
         assert!(!guest_alloc.allocated, "allocated=false must propagate");
+    }
+
+    #[test]
+    fn looping_synthesizer_buffer_repeats_until_quiet() {
+        let mut manager = SoundManager::new();
+        let mut channel = SndChannel::new(0x1234_0000, false);
+        channel.play_looping_buffer(vec![0x70, 0x90], OUTPUT_RATE << 16);
+        manager.channels.push(channel);
+
+        assert_eq!(
+            manager.mix_frame(6),
+            vec![0x70, 0x90, 0x70, 0x90, 0x70, 0x90]
+        );
+        assert!(manager.channels[0].is_playing());
+        assert_eq!(manager.samples_until_next_exhaustion(), None);
+
+        manager.channels[0].quiet();
+        assert!(manager.mix_frame(2).is_empty());
     }
 }

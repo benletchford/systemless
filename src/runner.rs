@@ -6475,8 +6475,24 @@ impl FixtureRunner {
 
     fn sync_ppc_sound_to_dispatcher(&mut self, ppc_app: &mut PpcLoadedApp) {
         let decoded_buffer_commands = std::mem::take(&mut ppc_app.sound.decoded_buffer_commands);
-        for decoded in decoded_buffer_commands {
-            self.play_ppc_decoded_buffer_command(decoded);
+        let host_events = std::mem::take(&mut ppc_app.sound.host_events);
+        if host_events.is_empty() {
+            // Preserve the direct decoded-buffer handoff used by embedders and
+            // older serialized state which predates ordered host events.
+            for decoded in decoded_buffer_commands {
+                self.play_ppc_decoded_buffer_command(decoded);
+            }
+        } else {
+            for event in host_events {
+                match event {
+                    crate::loader::ppc::PpcSoundHostEvent::Command(command) => {
+                        self.apply_ppc_sound_channel_command(command);
+                    }
+                    crate::loader::ppc::PpcSoundHostEvent::Buffer(decoded) => {
+                        self.play_ppc_decoded_buffer_command(decoded);
+                    }
+                }
+            }
         }
         self.sync_ppc_double_buffer_playbacks(ppc_app);
 
@@ -6591,12 +6607,17 @@ impl FixtureRunner {
                     .push(crate::sound::SndChannel::new(channel, false));
                 self.dispatcher.sound_manager.channels.len() - 1
             });
-        self.dispatcher.sound_manager.channels[chan_index].play_buffer(
-            decoded.samples,
-            decoded.sample_rate_fixed,
-            crate::sound::PlaybackKind::Buffer,
-            0,
-        );
+        if decoded.looping {
+            self.dispatcher.sound_manager.channels[chan_index]
+                .play_looping_buffer(decoded.samples, decoded.sample_rate_fixed);
+        } else {
+            self.dispatcher.sound_manager.channels[chan_index].play_buffer(
+                decoded.samples,
+                decoded.sample_rate_fixed,
+                crate::sound::PlaybackKind::Buffer,
+                0,
+            );
+        }
         self.dispatcher.sound_manager.debug_cmd_count = self
             .dispatcher
             .sound_manager
@@ -6617,6 +6638,33 @@ impl FixtureRunner {
                 .sound_manager
                 .debug_cmd_codes_seen
                 .push(crate::sound::cmd::BUFFER);
+        }
+    }
+
+    fn apply_ppc_sound_channel_command(
+        &mut self,
+        command: crate::loader::ppc::PpcSndCommandRecord,
+    ) {
+        let Some(channel) = self
+            .dispatcher
+            .sound_manager
+            .find_channel_mut(command.channel)
+        else {
+            return;
+        };
+        match command.command {
+            crate::sound::cmd::QUIET => channel.quiet(),
+            crate::sound::cmd::FLUSH => channel.flush(),
+            crate::sound::cmd::REST => {
+                // ampCmd shares command 43 with the historical sequence
+                // synthesizer rest command. Sampled synthesizers interpret
+                // param1 as a mono 0..255 amplitude.
+                let volume = command.param1.clamp(0, 255) as u32;
+                channel.set_volume((volume << 16) | volume);
+            }
+            crate::sound::cmd::VOLUME => channel.set_volume(command.param2),
+            crate::sound::cmd::RATE => channel.set_rate(command.param2),
+            _ => {}
         }
     }
 
@@ -12014,6 +12062,7 @@ mod tests {
                 channel,
                 sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
                 samples: samples.clone(),
+                looping: false,
             }],
             ..PpcSoundState::default()
         };
@@ -12039,6 +12088,54 @@ mod tests {
     }
 
     #[test]
+    fn ppc_sound_host_events_preserve_synthesizer_command_order() {
+        let channel = 0x0500_1000;
+        let first = PpcDecodedBufferCommandRecord {
+            channel,
+            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+            samples: vec![0x80],
+            looping: true,
+        };
+        let second = PpcDecodedBufferCommandRecord {
+            channel,
+            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+            samples: vec![0x70, 0x90],
+            looping: true,
+        };
+        let sound = PpcSoundState {
+            decoded_buffer_commands: vec![first.clone(), second.clone()],
+            host_events: vec![
+                PpcSoundHostEvent::Buffer(first),
+                PpcSoundHostEvent::Command(PpcSndCommandRecord {
+                    channel,
+                    command: crate::sound::cmd::QUIET,
+                    param1: 0,
+                    param2: 0,
+                }),
+                PpcSoundHostEvent::Buffer(second),
+                PpcSoundHostEvent::Command(PpcSndCommandRecord {
+                    channel,
+                    command: crate::sound::cmd::REST,
+                    param1: 255,
+                    param2: 0,
+                }),
+            ],
+            ..PpcSoundState::default()
+        };
+        let app = halted_ppc_app_with_sound(sound);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (_, running) = runner.run_steps_with_audio(8, None, 6);
+        let audio = runner.drain_audio();
+
+        assert!(!running);
+        assert_eq!(audio.len(), 6);
+        assert!(audio.iter().any(|sample| *sample != 0x80));
+        assert!(runner.dispatcher().sound_manager.channels[0].is_playing());
+    }
+
+    #[test]
     fn ppc_decoded_file_playback_feeds_host_audio_buffer() {
         let channel = 0x0500_1000;
         let callback_entry = PPC_CODE_BASE + 0x40;
@@ -12050,6 +12147,7 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
+            host_events: Vec::new(),
             decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
@@ -12194,6 +12292,7 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
+            host_events: Vec::new(),
             decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
@@ -12330,6 +12429,7 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
+            host_events: Vec::new(),
             decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
