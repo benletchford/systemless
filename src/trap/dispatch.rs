@@ -1609,6 +1609,11 @@ pub struct TrapDispatcher {
     /// Guest-controlled runners default to `false`; explicit frontend policy
     /// may set it while leaving `fullscreen_locked` to model guest state.
     pub menu_bar_hidden: bool,
+    /// Raw framebuffer pixels covered by the host-rendered menu bar. The real
+    /// Window Manager owns a separate visual layer; the HLE renderer restores
+    /// this snapshot when the guest hides the bar so stale chrome does not
+    /// remain in full-screen modes.
+    pub(crate) menu_bar_saved_under_pixels: Option<(u32, u32, u16, Vec<u8>)>,
     /// Sound Manager state (channels, playback buffers).
     pub sound_manager: crate::sound::SoundManager,
     /// Menus loaded from MENU resources, in order of insertion
@@ -3133,6 +3138,7 @@ impl TrapDispatcher {
             menu_bar_policy: crate::runner::MenuBarPolicy::GuestControlled,
             initial_kiosk_guest_hide_observed: false,
             menu_bar_hidden: false,
+            menu_bar_saved_under_pixels: None,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             saved_menu_bars: HashMap::new(),

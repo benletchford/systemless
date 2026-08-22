@@ -1418,6 +1418,35 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn fill_black_outside_rect(&self, bus: &mut MacMemoryBus, excluded_rect: (i16, i16, i16, i16)) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let top = excluded_rect.0.max(0).min(screen_height);
+        let left = excluded_rect.1.max(0).min(screen_width);
+        let bottom = excluded_rect.2.max(0).min(screen_height);
+        let right = excluded_rect.3.max(0).min(screen_width);
+        for (rt, rl, rb, rr) in [
+            (0, 0, top, screen_width),
+            (bottom, 0, screen_height, screen_width),
+            (top, 0, bottom, left),
+            (top, right, bottom, screen_width),
+        ] {
+            Self::fb_fill_rect(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                rt,
+                rl,
+                rb,
+                rr,
+                true,
+            );
+        }
+    }
+
     fn refresh_saved_under_with_desktop_pattern(&mut self, bus: &MacMemoryBus, window: u32) {
         let (_, _, _, _, pixel_size) = self.get_screen_params();
         let black = Self::logical_black_pixel_index(bus);
@@ -2203,7 +2232,7 @@ impl super::TrapDispatcher {
     /// Draw the menu bar at the top of the screen.
     /// Height is read from the MBarHeight low-memory global ($0BAA).
     /// If MBarHeight is 0, the menu bar is hidden (full-screen mode).
-    pub(crate) fn draw_menu_bar_to_fb(&self, bus: &mut MacMemoryBus) {
+    pub(crate) fn draw_menu_bar_to_fb(&mut self, bus: &mut MacMemoryBus) {
         if self.fullscreen_locked || self.menu_bar_hidden {
             return;
         }
@@ -2212,6 +2241,14 @@ impl super::TrapDispatcher {
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
         if menu_bar_height <= 0 {
             return;
+        }
+        if self.menu_bar_saved_under_pixels.is_none() {
+            let saved_height = (menu_bar_height as u16).min(screen_height as u16);
+            let byte_len = row_bytes.saturating_mul(u32::from(saved_height));
+            let pixels = (0..byte_len)
+                .map(|offset| bus.read_byte(screen_base + offset))
+                .collect();
+            self.menu_bar_saved_under_pixels = Some((screen_base, row_bytes, saved_height, pixels));
         }
         let menu_bar_bg_index = self.menu_bar_background_pixel_index(bus, pixel_size);
 
@@ -4405,6 +4442,26 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn restore_hidden_menu_bar_pixels(&mut self, bus: &mut MacMemoryBus) {
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        if menu_bar_height > 0 && !self.fullscreen_locked && !self.menu_bar_hidden {
+            return;
+        }
+        let Some((saved_base, saved_row_bytes, saved_height, pixels)) =
+            self.menu_bar_saved_under_pixels.take()
+        else {
+            return;
+        };
+        let (screen_base, row_bytes, _, screen_height, _) = self.get_screen_params();
+        if saved_base != screen_base
+            || saved_row_bytes != row_bytes
+            || saved_height > screen_height as u16
+        {
+            return;
+        }
+        bus.write_bytes(screen_base, &pixels);
+    }
+
     /// Redraw the menu bar and window chrome into the framebuffer.
     ///
     /// On a real Mac, the Window Manager maintains these UI elements and redraws
@@ -4413,6 +4470,7 @@ impl super::TrapDispatcher {
     /// the chrome and should be called after each frame of emulation.
     pub fn redraw_chrome(&mut self, bus: &mut MacMemoryBus) {
         self.refresh_menu_bar_policy_from_guest(bus);
+        self.restore_hidden_menu_bar_pixels(bus);
 
         // Blit front window's port pixels to screen framebuffer if they differ.
         // On real Mac OS the Window Manager composites windows to the screen.
@@ -4455,6 +4513,17 @@ impl super::TrapDispatcher {
             && menu_bar_height <= 0
         {
             self.fullscreen_locked = true;
+        }
+
+        // A full-screen presentation can place a smaller game window over a
+        // screen-sized backdrop. Once the guest has hidden the menu bar and
+        // entered that mode, the exposed area is a black matte rather than
+        // stale desktop or host-rendered menu pixels.
+        if self.fullscreen_locked && self.front_window != 0 {
+            let presentation_rect = self
+                .window_structure_rect(bus, self.front_window)
+                .unwrap_or(self.window_bounds);
+            self.fill_black_outside_rect(bus, presentation_rect);
         }
 
         self.restore_kiosk_dialog_desktop_background(bus);
@@ -5647,6 +5716,69 @@ mod redraw_chrome_tests {
     }
 
     /// Counterpart to the kiosk-mode test above: when `menu_bar_hidden
+    #[test]
+    fn hidden_menu_bar_restores_pixels_saved_before_host_chrome() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+        bus.fill_bytes(screen_base, 64 * 64, 0xE1);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menus.push(super::super::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+        assert_ne!(bus.read_byte(screen_base + 10 * 64 + 32), 0xE1);
+
+        // Repainting while visible must retain the original saved-under
+        // pixels, not snapshot the already-rendered menu bar.
+        disp.draw_menu_bar_to_fb(&mut bus);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
+        disp.redraw_chrome(&mut bus);
+
+        for y in 0..20u32 {
+            for x in 0..64u32 {
+                assert_eq!(
+                    bus.read_byte(screen_base + y * 64 + x),
+                    0xE1,
+                    "hidden menu bar should reveal saved pixel at ({x},{y})"
+                );
+            }
+        }
+        assert!(disp.menu_bar_saved_under_pixels.is_none());
+    }
+
+    #[test]
+    fn fullscreen_matte_clears_exposed_pixels_around_centered_window() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(64 * 64);
+        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        bus.write_long(0x0824, screen_base);
+        bus.fill_bytes(screen_base, 64 * 64, 0x7E);
+        disp.fill_black_outside_rect(&mut bus, (10, 12, 50, 52));
+
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        assert_eq!(bus.read_byte(screen_base + 5 * 64 + 32), black);
+        assert_eq!(bus.read_byte(screen_base + 30 * 64 + 5), black);
+        assert_eq!(bus.read_byte(screen_base + 30 * 64 + 58), black);
+        assert_eq!(bus.read_byte(screen_base + 58 * 64 + 32), black);
+        assert_eq!(
+            bus.read_byte(screen_base + 30 * 64 + 32),
+            0x7E,
+            "the centered presentation rectangle must remain untouched"
+        );
+    }
+
     /// = false` (guest-controlled hosting), `redraw_chrome` MUST paint
     /// the menu bar so menus are reachable.
     #[test]
