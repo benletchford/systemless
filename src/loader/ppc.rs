@@ -38,6 +38,7 @@ pub const PPC_IMPORT_TRAP_BASE: u32 = 0x01f0_0000;
 const PPC_IMPORT_DATA_BASE: u32 = 0x01d0_0000;
 const PPC_IMPORT_DATA_SIZE: usize = 0x1000;
 const PPC_IMPORT_CTYPE_POINTER: u32 = PPC_IMPORT_DATA_BASE + 0x40c;
+const PPC_IMPORT_MATH_PI: u32 = PPC_IMPORT_DATA_BASE + 0x410;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 pub const PPC_CFM_MAIN_STUB_BASE: u32 = 0x01d8_0000;
@@ -200,6 +201,7 @@ const PPC_CALL_UNIVERSAL_PROC_REGISTER_VARARGS: usize = 6;
 const PPC_NATIVE_PARAMETER_GPR_COUNT: usize = 8;
 const PPC_MAX_STACK_SIZE: u32 = PPC_STACK_TOP - PPC_HEAP_BASE;
 const PPC_RAND_SEED_ADDR: u32 = 0x0000_0156;
+const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
 const PPC_MBAR_HEIGHT_ADDR: u32 = 0x0000_0baa;
 const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
@@ -266,6 +268,9 @@ const PPC_MAIN_GAMMA_TABLE: u32 = 0x02f0_1000;
 const PPC_MAIN_GAMMA_TABLE_SIZE: u32 = 12 + 256;
 const PPC_PORT_LIST_HANDLE: u32 = 0x02f0_1300;
 const PPC_PORT_LIST: u32 = 0x02f0_1400;
+const PPC_UNIT_TABLE: u32 = 0x02f0_1500;
+const PPC_SOUND_DCE_HANDLE: u32 = 0x02f0_1600;
+const PPC_SOUND_DCE: u32 = 0x02f0_1700;
 const PPC_PORT_LIST_ADDR: u32 = 0x0d66;
 const PPC_APPLICATION_ZONE: u32 = 0x02f0_2000;
 const PPC_SYSTEM_ZONE: u32 = 0x02f0_2100;
@@ -368,6 +373,7 @@ const PPC_CWINDOW_TITLE_WIDTH_OFFSET: u32 = 138;
 const PPC_CGRAF_PORT_WINDOW_REF_CON_OFFSET: u32 = 152;
 const PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET: u32 = 156;
 const PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET: u32 = 160;
+const PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET: u32 = 164;
 const PPC_GRAF_PORT_SIZE: u32 = 108;
 const PPC_DM_MODE_LIST_SIZE: u32 = 256;
 const PPC_DM_MODE_LIST_MAGIC: u32 = u32::from_be_bytes(*b"DML1");
@@ -608,9 +614,18 @@ const PPC_QA_ENGINE_NAME: &[u8] = b"Apple Software Renderer";
 const PPC_ISP_DEVICE_COUNT: u32 = 2;
 const PPC_ISP_KEYBOARD_DEVICE: u32 = 0x0500_2000;
 const PPC_ISP_MOUSE_DEVICE: u32 = 0x0500_2010;
+const PPC_ISP_KEYBOARD_ELEMENT: u32 = 0x0500_2020;
+const PPC_ISP_MOUSE_X_ELEMENT: u32 = 0x0500_2030;
+const PPC_ISP_MOUSE_Y_ELEMENT: u32 = 0x0500_2040;
+const PPC_ISP_MOUSE_BUTTON_ELEMENT: u32 = 0x0500_2050;
 const PPC_ISP_DEVICE_DEFINITION_SIZE: u32 = 92;
+const PPC_ISP_ELEMENT_INFO_SIZE: u32 = 80;
 const PPC_ISP_DEVICE_CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyd");
 const PPC_ISP_DEVICE_CLASS_MOUSE: u32 = u32::from_be_bytes(*b"mous");
+const PPC_ISP_ELEMENT_LABEL_NONE: u32 = u32::from_be_bytes(*b"none");
+const PPC_ISP_ELEMENT_LABEL_CURSOR_X: u32 = u32::from_be_bytes(*b"curx");
+const PPC_ISP_ELEMENT_LABEL_CURSOR_Y: u32 = u32::from_be_bytes(*b"cury");
+const PPC_ISP_ELEMENT_LABEL_MOUSE_ONE: u32 = u32::from_be_bytes(*b"mou1");
 const PPC_ISP_NEED_SIZE: u32 = 92;
 const PPC_ISP_NEED_KIND_OFFSET: u32 = 68;
 const PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE: u32 = 16 + PPC_ISP_NEED_SIZE;
@@ -777,6 +792,7 @@ pub enum PpcImportDispatcherTarget {
     TickCount,
     GetZone,
     SetZone,
+    InitZone,
     SystemZone,
     ApplicationZone,
     MaxApplZone,
@@ -937,6 +953,7 @@ pub enum PpcImportDispatcherTarget {
     CloseWindow,
     SelectWindow,
     FrontWindow,
+    SetWinColor,
     PaintOne,
     PaintBehind,
     CalcVisBehind,
@@ -1036,7 +1053,9 @@ pub enum PpcImportDispatcherTarget {
     InsetRect,
     FindWindow,
     GetGrayRgn,
+    LMSetGrayRgn,
     GetDCtlEntry,
+    GetADBInfo,
     OpenDriver,
     Control,
     PBControl,
@@ -1068,6 +1087,8 @@ pub enum PpcImportDispatcherTarget {
     ZeroScrap,
     LoadScrap,
     SndSoundManagerVersion,
+    UnsignedFixedMulDiv,
+    GetSoundOutputInfo,
     GetSoundVol,
     SetSoundVol,
     GetDefaultOutputVolume,
@@ -1075,6 +1096,7 @@ pub enum PpcImportDispatcherTarget {
     GetVol,
     GetWDInfo,
     HGetVol,
+    HSetVol,
     FlushVol,
     PBFlushVol,
     SndNewChannel,
@@ -1223,6 +1245,7 @@ pub enum PpcImportDispatcherTarget {
     Delay,
     GetDblTime,
     LMGetTime,
+    LMGetUTableBase,
     SecondsToDate,
     Microseconds,
     SysEnvirons,
@@ -1235,6 +1258,9 @@ pub enum PpcImportDispatcherTarget {
     AESetInteractionAllowed,
     AEGetInteractionAllowed,
     LMGetCurDirStore,
+    LMSetCurDirStore,
+    LMGetRndSeed,
+    LMSetRndSeed,
     SetCurrentA5,
     SetA5,
     SVersion,
@@ -1279,6 +1305,7 @@ pub enum PpcImportDispatcherTarget {
     ParamText,
     AlertReturnDefault,
     ExitToShell,
+    MathCeil,
     MathSqrt,
     MathSin,
     MathCos,
@@ -1287,6 +1314,7 @@ pub enum PpcImportDispatcherTarget {
     MathAtan,
     MathAtan2,
     MathPow,
+    MathFmod,
     MathLog,
     MathLog10,
     MathDtox80,
@@ -1496,7 +1524,11 @@ pub enum PpcImportDispatcherTarget {
     QAEngineGestalt,
     ISpElementNewVirtualFromNeeds,
     ISpDevicesExtract,
+    ISpDevicesExtractByClass,
     ISpDeviceGetDefinition,
+    ISpDeviceGetElementList,
+    ISpElementListExtract,
+    ISpElementGetInfo,
     ISpElementGetSimpleState,
     ISpGetVersion,
     ISpStartup,
@@ -2105,7 +2137,8 @@ fn ppc_import_action_with_extra_cycles(
 fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64 {
     match target {
         PpcImportDispatcherTarget::Q3ViewEndRendering => 0,
-        PpcImportDispatcherTarget::MathSqrt
+        PpcImportDispatcherTarget::MathCeil
+        | PpcImportDispatcherTarget::MathSqrt
         | PpcImportDispatcherTarget::MathSin
         | PpcImportDispatcherTarget::MathCos
         | PpcImportDispatcherTarget::MathAsin
@@ -2113,6 +2146,7 @@ fn ppc_import_extra_cycles_for_target(target: &PpcImportDispatcherTarget) -> u64
         | PpcImportDispatcherTarget::MathAtan
         | PpcImportDispatcherTarget::MathAtan2
         | PpcImportDispatcherTarget::MathPow
+        | PpcImportDispatcherTarget::MathFmod
         | PpcImportDispatcherTarget::MathLog
         | PpcImportDispatcherTarget::MathLog10 => PPC_MATH_HOT_IMPORT_EXTRA_CYCLES,
         _ => 0,
@@ -7498,7 +7532,7 @@ impl PpcLoadedApp {
         let mut quickdraw_cursor_level = self.quickdraw_cursor_level;
         let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
         let mut next_vfs_dir_id = self.next_vfs_dir_id;
-        let default_dir_id = self.default_dir_id;
+        let mut default_dir_id = self.default_dir_id;
         let mut default_output_volume = self.default_output_volume;
         let mut param_text = std::mem::take(&mut self.param_text);
         let mut scrap = std::mem::take(&mut self.scrap);
@@ -7979,6 +8013,10 @@ impl PpcLoadedApp {
                     )
                 };
 
+                default_dir_id = memory
+                    .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
+                    .unwrap_or(default_dir_id);
+
                 match action {
                     Some(action) => {
                         let action = ppc_import_action_with_extra_cycles(
@@ -8246,6 +8284,7 @@ impl PpcLoadedApp {
         self.quickdraw_cursor_level = quickdraw_cursor_level;
         self.vfs_directories = vfs_directories;
         self.next_vfs_dir_id = next_vfs_dir_id;
+        self.default_dir_id = default_dir_id;
         self.default_output_volume = default_output_volume;
         self.param_text = param_text;
         self.scrap = scrap;
@@ -8294,6 +8333,9 @@ impl PpcLoadedApp {
             .unwrap_or(PPC_ROOT_DIR_ID);
         self.vfs_directories = directories;
         self.default_dir_id = default_dir_id;
+        let _ = self
+            .memory
+            .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, default_dir_id);
         self.next_vfs_dir_id = next_dir_id
             .max(max_seeded_dir_id.saturating_add(1))
             .max(PPC_FIRST_DYNAMIC_DIR_ID);
@@ -12352,12 +12394,18 @@ pub fn load_pef_application_with_config(
     memory.add_readonly_region(PPC_MAIN_GAMMA_TABLE, gamma_table);
     memory.add_region(PPC_PORT_LIST_HANDLE, vec![0u8; 4]);
     memory.add_region(PPC_PORT_LIST, vec![0u8; 2]);
+    memory.add_region(PPC_UNIT_TABLE, vec![0u8; 64 * 4]);
+    memory.add_region(PPC_SOUND_DCE_HANDLE, vec![0u8; 4]);
+    memory.add_region(PPC_SOUND_DCE, vec![0u8; 52]);
     // PortList is a QuickDraw-owned handle whose first word is the number of
     // registered ports. Keep a valid empty list even though native clients
     // normally reach it through the Window Manager instead of low memory.
     let _ = memory.write_u32_be(PPC_PORT_LIST_ADDR, PPC_PORT_LIST_HANDLE);
     let _ = memory.write_u32_be(PPC_PORT_LIST_HANDLE, PPC_PORT_LIST);
     let _ = memory.write_u16_be(PPC_PORT_LIST, 0);
+    let _ = memory.write_u32_be(PPC_SOUND_DCE_HANDLE, PPC_SOUND_DCE);
+    let _ = memory.write_u16_be(PPC_SOUND_DCE + 24, (-4i16) as u16);
+    let _ = memory.write_u32_be(PPC_UNIT_TABLE + 3 * 4, PPC_SOUND_DCE_HANDLE);
     memory.add_region(PPC_APPLICATION_ZONE, vec![0u8; PPC_ZONE_STORAGE_SIZE]);
     memory.add_region(PPC_SYSTEM_ZONE, vec![0u8; PPC_ZONE_STORAGE_SIZE]);
     ppc_seed_zone_header(
@@ -12668,11 +12716,15 @@ fn bind_imports_at_base(
         // calls fall through to Systemless's unsupported-import halt.
         let unresolved_weak =
             import.weak && dispatcher_target == PpcImportDispatcherTarget::Unsupported;
+        let import_data_address =
+            import_data_address_for(&import.library_name, &import.symbol_name);
         let address = if unresolved_weak {
             dispatcher_target = PpcImportDispatcherTarget::UnresolvedWeak;
             0
+        } else if let Some(address) = import_data_address {
+            address
         } else if import.class == 1 {
-            import_data_address_for(&import.library_name, &import.symbol_name).unwrap_or(0)
+            0
         } else {
             import_address_for(symbol_index, import.class)?
         };
@@ -12684,7 +12736,10 @@ fn bind_imports_at_base(
             class: import.class,
             weak: import.weak,
             address,
-            tvector_address: if import.class == 2 && !unresolved_weak {
+            tvector_address: if import.class == 2
+                && !unresolved_weak
+                && import_data_address.is_none()
+            {
                 Some(address)
             } else {
                 None
@@ -13372,6 +13427,7 @@ fn dispatcher_target_for_import(
         (library_name, "QAEngineGestalt") if is_quickdraw_3d_accelerator_library(library_name) => {
             PpcImportDispatcherTarget::QAEngineGestalt
         }
+        ("MathLib", "ceil") => PpcImportDispatcherTarget::MathCeil,
         ("MathLib", "sqrt") => PpcImportDispatcherTarget::MathSqrt,
         ("MathLib", "sin") => PpcImportDispatcherTarget::MathSin,
         ("MathLib", "cos") => PpcImportDispatcherTarget::MathCos,
@@ -13380,9 +13436,11 @@ fn dispatcher_target_for_import(
         ("MathLib", "atan") => PpcImportDispatcherTarget::MathAtan,
         ("MathLib", "atan2") => PpcImportDispatcherTarget::MathAtan2,
         ("MathLib", "pow") => PpcImportDispatcherTarget::MathPow,
+        ("MathLib", "fmod") => PpcImportDispatcherTarget::MathFmod,
         ("MathLib", "log") => PpcImportDispatcherTarget::MathLog,
         ("MathLib", "log10") => PpcImportDispatcherTarget::MathLog10,
         ("MathLib", "dtox80") => PpcImportDispatcherTarget::MathDtox80,
+        ("MathLib", "pi") => PpcImportDispatcherTarget::NoOpPreserve,
         // ISO/IEC 9899:1990 §4.6.1.1: setjmp returns zero when invoked
         // directly. The supported callers import __setjmp without longjmp,
         // so they do not require restoration of the saved environment.
@@ -13464,9 +13522,19 @@ fn dispatcher_target_for_import(
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
         ("InputSprocketLib", "ISpDevices_Extract") => PpcImportDispatcherTarget::ISpDevicesExtract,
+        ("InputSprocketLib", "ISpDevices_ExtractByClass") => {
+            PpcImportDispatcherTarget::ISpDevicesExtractByClass
+        }
         ("InputSprocketLib", "ISpDevice_GetDefinition") => {
             PpcImportDispatcherTarget::ISpDeviceGetDefinition
         }
+        ("InputSprocketLib", "ISpDevice_GetElementList") => {
+            PpcImportDispatcherTarget::ISpDeviceGetElementList
+        }
+        ("InputSprocketLib", "ISpElementList_Extract") => {
+            PpcImportDispatcherTarget::ISpElementListExtract
+        }
+        ("InputSprocketLib", "ISpElement_GetInfo") => PpcImportDispatcherTarget::ISpElementGetInfo,
         ("InputSprocketLib", "ISpElement_GetSimpleState") => {
             PpcImportDispatcherTarget::ISpElementGetSimpleState
         }
@@ -13516,6 +13584,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "TickCount") => PpcImportDispatcherTarget::TickCount,
         ("InterfaceLib", "GetZone") => PpcImportDispatcherTarget::GetZone,
         ("InterfaceLib", "SetZone") => PpcImportDispatcherTarget::SetZone,
+        ("InterfaceLib", "InitZone") => PpcImportDispatcherTarget::InitZone,
         ("InterfaceLib", "SystemZone") => PpcImportDispatcherTarget::SystemZone,
         ("InterfaceLib", "ApplicZone") | ("InterfaceLib", "ApplicationZone") => {
             PpcImportDispatcherTarget::ApplicationZone
@@ -13742,6 +13811,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CloseWindow") => PpcImportDispatcherTarget::CloseWindow,
         ("InterfaceLib", "SelectWindow") => PpcImportDispatcherTarget::SelectWindow,
         ("InterfaceLib", "FrontWindow") => PpcImportDispatcherTarget::FrontWindow,
+        ("InterfaceLib", "SetWinColor") => PpcImportDispatcherTarget::SetWinColor,
         ("InterfaceLib", "PaintOne") => PpcImportDispatcherTarget::PaintOne,
         ("InterfaceLib", "PaintBehind") => PpcImportDispatcherTarget::PaintBehind,
         ("InterfaceLib", "CalcVisBehind") => PpcImportDispatcherTarget::CalcVisBehind,
@@ -13860,7 +13930,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetGrayRgn") | ("InterfaceLib", "LMGetGrayRgn") => {
             PpcImportDispatcherTarget::GetGrayRgn
         }
+        ("InterfaceLib", "LMSetGrayRgn") => PpcImportDispatcherTarget::LMSetGrayRgn,
         ("InterfaceLib", "GetDCtlEntry") => PpcImportDispatcherTarget::GetDCtlEntry,
+        ("InterfaceLib", "GetADBInfo") => PpcImportDispatcherTarget::GetADBInfo,
         ("InterfaceLib", "OpenDriver") => PpcImportDispatcherTarget::OpenDriver,
         ("InterfaceLib", "Control") => PpcImportDispatcherTarget::Control,
         ("InterfaceLib", "PBControl")
@@ -14101,7 +14173,11 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "Delay") => PpcImportDispatcherTarget::Delay,
         ("InterfaceLib", "GetDblTime") => PpcImportDispatcherTarget::GetDblTime,
         ("InterfaceLib", "LMGetTime") => PpcImportDispatcherTarget::LMGetTime,
+        ("InterfaceLib", "LMGetUTableBase") => PpcImportDispatcherTarget::LMGetUTableBase,
         ("InterfaceLib", "LMGetCurDirStore") => PpcImportDispatcherTarget::LMGetCurDirStore,
+        ("InterfaceLib", "LMSetCurDirStore") => PpcImportDispatcherTarget::LMSetCurDirStore,
+        ("InterfaceLib", "LMGetRndSeed") => PpcImportDispatcherTarget::LMGetRndSeed,
+        ("InterfaceLib", "LMSetRndSeed") => PpcImportDispatcherTarget::LMSetRndSeed,
         ("InterfaceLib", "SetCurrentA5") => PpcImportDispatcherTarget::SetCurrentA5,
         ("InterfaceLib", "SetA5") => PpcImportDispatcherTarget::SetA5,
         ("InterfaceLib", "SecondsToDate") | ("InterfaceLib", "Secs2Date") => {
@@ -14147,6 +14223,12 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SndSoundManagerVersion") => {
             PpcImportDispatcherTarget::SndSoundManagerVersion
         }
+        ("SoundLib" | "InterfaceLib", "UnsignedFixedMulDiv" | "UnsignedFixMulDiv") => {
+            PpcImportDispatcherTarget::UnsignedFixedMulDiv
+        }
+        ("SoundLib" | "InterfaceLib", "GetSoundOutputInfo") => {
+            PpcImportDispatcherTarget::GetSoundOutputInfo
+        }
         ("InterfaceLib", "GetSoundVol") => PpcImportDispatcherTarget::GetSoundVol,
         ("InterfaceLib", "SetSoundVol") => PpcImportDispatcherTarget::SetSoundVol,
         ("InterfaceLib", "GetDefaultOutputVolume") => {
@@ -14158,6 +14240,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetVol") => PpcImportDispatcherTarget::GetVol,
         ("InterfaceLib", "GetWDInfo") => PpcImportDispatcherTarget::GetWDInfo,
         ("InterfaceLib", "HGetVol") => PpcImportDispatcherTarget::HGetVol,
+        ("InterfaceLib", "HSetVol") => PpcImportDispatcherTarget::HSetVol,
         ("InterfaceLib", "FlushVol") => PpcImportDispatcherTarget::FlushVol,
         ("InterfaceLib", "PBFlushVol")
         | ("InterfaceLib", "PBFlushVolSync")
@@ -14284,11 +14367,11 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::DialogCompatibility,
         (
             "InterfaceLib",
-            "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask" | "DisposeGDevice"
-            | "DisposePalette" | "Exp1to3" | "Exp1to6" | "GetCPixel" | "GetItemIcon"
-            | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture" | "PenPat" | "PlotIcon"
-            | "Palette2CTab" | "ScrollRect" | "SetEntryColor" | "SetEntryUsage" | "SetStdCProcs"
-            | "SetStdProcs",
+            "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask" | "CopyPalette"
+            | "CTab2Palette" | "DisposeGDevice" | "DisposePalette" | "Exp1to3" | "Exp1to6"
+            | "GetCPixel" | "GetEntryUsage" | "GetItemIcon" | "GetNewPalette" | "NewGDevice"
+            | "NewPalette" | "OpenPicture" | "PenPat" | "PlotIcon" | "Palette2CTab" | "ScrollRect"
+            | "SetEntryColor" | "SetEntryUsage" | "SetStdCProcs" | "SetStdProcs",
         ) => PpcImportDispatcherTarget::QuickDrawCompatibility,
         (
             "InterfaceLib",
@@ -14713,6 +14796,20 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::SetZone => {
             let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InitZone => {
+            // Inside Macintosh: Memory (1992), pp. 2-86--2-87. The native
+            // PowerPC ABI passes pGrowZone, cMoreMasters, limitPtr, and
+            // startPtr in r3-r6. Initialize the caller-visible Zone header
+            // even though allocations continue to use Systemless's flat heap.
+            ppc_init_zone_header(
+                memory,
+                cpu.gpr[6],
+                cpu.gpr[5],
+                cpu.gpr[4] as u16,
+                cpu.gpr[3],
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetHandleSize => {
@@ -16369,6 +16466,29 @@ fn dispatch_supported_import(
             };
             Some(PpcImportAction::Return(window))
         }
+        PpcImportDispatcherTarget::SetWinColor => {
+            // Macintosh Toolbox Essentials (1992), pp. 4-114--4-115:
+            // SetWinColor records the table, applies its content background,
+            // and invalidates the window so its new colors are redrawn.
+            let window = cpu.gpr[3];
+            let color_table = cpu.gpr[4];
+            if color_table != 0 {
+                let storage = if window == 0 { PPC_MAIN_GWORLD } else { window };
+                let _ = memory.write_u32_be(
+                    storage.wrapping_add(PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
+                    color_table,
+                );
+                if window != 0 {
+                    if let Some(content_color) = ppc_window_content_color(memory, color_table) {
+                        if window == *current_gworld {
+                            *quickdraw_back_color = content_color;
+                        }
+                    }
+                    ppc_enqueue_window_update_event(event_queue, window, input);
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PaintOne => {
             ppc_paint_one(
                 memory,
@@ -16878,6 +16998,10 @@ fn dispatch_supported_import(
             } else {
                 ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE)
             };
+            if let Some((h, v)) = ppc_gworld_pen(memory, *current_gworld) {
+                *quickdraw_pen_h = h;
+                *quickdraw_pen_v = v;
+            }
             if ppc_gworld_trace_enabled() {
                 eprintln!(
                     "[PPC-GWORLD-TRACE] SetGWorld port=${:08X} requested_gdevice=${:08X} gdevice=${:08X}",
@@ -17163,13 +17287,47 @@ fn dispatch_supported_import(
                 0
             }))
         }
-        PpcImportDispatcherTarget::GetGrayRgn => Some(PpcImportAction::Return(PPC_GRAY_RGN_HANDLE)),
+        PpcImportDispatcherTarget::GetGrayRgn => Some(PpcImportAction::Return(
+            memory
+                .read_u32_be(PPC_GRAY_RGN_ADDR)
+                .unwrap_or(PPC_GRAY_RGN_HANDLE),
+        )),
+        PpcImportDispatcherTarget::LMSetGrayRgn => {
+            // Macintosh Toolbox Essentials (1992), p. 4-113: GrayRgn is the
+            // low-memory handle to the current desktop region.
+            let _ = memory.write_u32_be(PPC_GRAY_RGN_ADDR, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetDCtlEntry => {
             Some(PpcImportAction::Return(if cpu.gpr[3] as u16 as i16 == 0 {
                 PPC_MAIN_DCE_HANDLE
             } else {
                 0
             }))
+        }
+        PpcImportDispatcherTarget::GetADBInfo => {
+            // Inside Macintosh: Devices (1994), pp. 5-37 and 5-43--5-44:
+            // the standard ADB table exposes the keyboard at address 2 and
+            // mouse at address 3 through a packed ten-byte ADBDataBlock.
+            let info_ptr = cpu.gpr[3];
+            let address = cpu.gpr[4] as u8;
+            let device = match address {
+                2 => Some((2u8, 2u8)),
+                3 => Some((1u8, 3u8)),
+                _ => None,
+            };
+            let result = if let Some((handler_id, original_address)) = device {
+                if info_ptr != 0 && ppc_memory_can_write_bytes(memory, info_ptr, 10) {
+                    let _ = memory.write_u8(info_ptr, handler_id);
+                    let _ = memory.write_u8(info_ptr + 1, original_address);
+                    let _ = memory.write_u32_be(info_ptr + 2, 0);
+                    let _ = memory.write_u32_be(info_ptr + 6, 0);
+                }
+                PPC_NO_ERR
+            } else {
+                -1
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::OpenDriver => {
             let name = ppc_read_pstring_bytes(memory, cpu.gpr[3])
@@ -19084,10 +19242,35 @@ fn dispatch_supported_import(
             // accessor for the UInt32 Time low-memory global at $020C.
             Some(PpcImportAction::Return(PPC_FIXED_MAC_TIME))
         }
+        PpcImportDispatcherTarget::LMGetUTableBase => {
+            // Inside Macintosh: Devices (1994), pp. 1-8--1-9: UTableBase
+            // points to an array of DCE handles, with the Sound Driver at
+            // unit 3 (reference number -4).
+            Some(PpcImportAction::Return(PPC_UNIT_TABLE))
+        }
         PpcImportDispatcherTarget::LMGetCurDirStore => {
-            // Inside Macintosh: PowerPC System Software (1994), 1-57:
+            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
             // LMGetCurDirStore returns the CurDirStore directory ID at $0398.
-            Some(PpcImportAction::Return(default_dir_id))
+            Some(PpcImportAction::Return(
+                memory
+                    .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
+                    .unwrap_or(default_dir_id),
+            ))
+        }
+        PpcImportDispatcherTarget::LMSetCurDirStore => {
+            // Inside Macintosh: PowerPC System Software (1994), p. 1-57:
+            // LMSetCurDirStore sets the CurDirStore directory ID at $0398.
+            let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::LMGetRndSeed => Some(PpcImportAction::Return(
+            memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1),
+        )),
+        PpcImportDispatcherTarget::LMSetRndSeed => {
+            // Inside Macintosh: Memory (1992), pp. 2-6--2-8: RndSeed is the
+            // 32-bit random-number seed low-memory global at $0156.
+            let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, cpu.gpr[3]);
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetCurrentA5 => {
             // Inside Macintosh: Memory (1992), 4-25 and PowerPC System
@@ -19511,6 +19694,35 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::UnsignedFixedMulDiv => {
+            // Inside Macintosh: Sound (1994), pp. 2-151--2-152. Unsigned
+            // 16.16 values keep the same binary scale through (a*b)/c, so a
+            // 64-bit intermediate avoids losing precision or overflowing.
+            let divisor = cpu.gpr[5];
+            let result = if divisor == 0 {
+                u32::MAX
+            } else {
+                ((u64::from(cpu.gpr[3]) * u64::from(cpu.gpr[4])) / u64::from(divisor))
+                    .min(u64::from(u32::MAX)) as u32
+            };
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::GetSoundOutputInfo => {
+            // Sound Manager 3.1 GetSoundOutputInfo accepts NIL for the
+            // default output device. Inside Macintosh: Sound (1994),
+            // pp. 5-22--5-25 defines siSampleRate's UnsignedFixed result.
+            const SI_SAMPLE_RATE: u32 = u32::from_be_bytes(*b"srat");
+            let result = if cpu.gpr[4] == SI_SAMPLE_RATE
+                && cpu.gpr[5] != 0
+                && ppc_memory_can_write_bytes(memory, cpu.gpr[5], 4)
+            {
+                let _ = memory.write_u32_be(cpu.gpr[5], crate::sound::OUTPUT_RATE << 16);
+                PPC_NO_ERR
+            } else {
+                PPC_PARAM_ERR
+            };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
+        }
         PpcImportDispatcherTarget::GetSoundVol => {
             // Inside Macintosh Volume II (1985), pp. II-232--II-233:
             // GetSoundVol returns the low three bits of SdVolume as an Integer.
@@ -19557,6 +19769,9 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_hget_vol(cpu, memory, default_dir_id),
+        ))),
+        PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_hset_vol(cpu, memory, vfs_directories, default_dir_id),
         ))),
         PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_flush_vol(cpu, memory),
@@ -19627,6 +19842,10 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::Return(1))
         }
+        PpcImportDispatcherTarget::MathCeil => {
+            ppc_math_ceil(cpu);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathSqrt => {
             let value = f64::from_bits(cpu.fpr[1]);
             cpu.fpr[1] = value.sqrt().to_bits();
@@ -19672,6 +19891,10 @@ fn dispatch_supported_import(
             let base = f64::from_bits(cpu.fpr[1]);
             let exponent = f64::from_bits(cpu.fpr[2]);
             cpu.fpr[1] = base.powf(exponent).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MathFmod => {
+            ppc_math_fmod(cpu);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MathLog => {
@@ -21692,8 +21915,20 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ISpDevicesExtract => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_devices_extract(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::ISpDevicesExtractByClass => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_devices_extract_by_class(cpu, memory)),
+        )),
         PpcImportDispatcherTarget::ISpDeviceGetDefinition => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_device_get_definition(cpu, memory)),
+        )),
+        PpcImportDispatcherTarget::ISpDeviceGetElementList => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_device_get_element_list(cpu, memory)),
+        )),
+        PpcImportDispatcherTarget::ISpElementListExtract => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_element_list_extract(cpu, memory)),
+        )),
+        PpcImportDispatcherTarget::ISpElementGetInfo => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_element_get_info(cpu, memory)),
         )),
         PpcImportDispatcherTarget::ISpElementGetSimpleState => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_get_simple_state(
@@ -21705,9 +21940,15 @@ fn dispatch_supported_import(
             )),
         )),
         // Apple InputSprocket.h 1.7 (QuickTime 6.0.2 SDK) declares
-        // ISpGetVersion as returning NumVersion and ISpStartup/ISpShutdown as
-        // parameterless OSStatus calls. NumVersion 1.7 final is 01 70 80 00.
-        PpcImportDispatcherTarget::ISpGetVersion => Some(PpcImportAction::Return(0x0170_8000)),
+        // ISpGetVersion as returning the four-byte NumVersion structure.
+        // The CFM PowerPC structure-result pointer is passed in r3, matching
+        // SndSoundManagerVersion above. NumVersion 1.7 final is 01 70 80 00.
+        PpcImportDispatcherTarget::ISpGetVersion => {
+            if cpu.gpr[3] != 0 && ppc_memory_can_write_bytes(memory, cpu.gpr[3], 4) {
+                let _ = memory.write_u32_be(cpu.gpr[3], 0x0170_8000);
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::ISpStartup => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_isp_init(input_sprocket),
         ))),
@@ -22537,8 +22778,8 @@ fn ppc_dispatch_quickdraw_compatibility(
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     _current_gdevice: u32,
-    _screen_clut: &[[u16; 3]; 256],
-    color_manager_clut: &[[u16; 3]; 256],
+    screen_clut: &mut [[u16; 3]; 256],
+    color_manager_clut: &mut [[u16; 3]; 256],
     fore_color: PpcRgbColor,
     back_color: PpcRgbColor,
     toolbox_startup: &mut PpcToolboxStartupState,
@@ -22638,6 +22879,78 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
+        "CopyPalette" => {
+            let src_palette = cpu.gpr[3];
+            let dst_palette = cpu.gpr[4];
+            let src_entry = cpu.gpr[5] as u16 as i16;
+            let dst_entry = cpu.gpr[6] as u16 as i16;
+            let dst_length = cpu.gpr[7] as u16 as i16;
+            if src_palette == 0
+                || dst_palette == 0
+                || src_entry < 0
+                || dst_entry < 0
+                || dst_length <= 0
+            {
+                return PpcImportAction::ReturnPreserve;
+            }
+
+            let Some(src_ptr) = memory.read_u32_be(src_palette).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let src_count = u32::from(memory.read_u16_be(src_ptr).unwrap_or(0));
+            let src_entry = u32::from(src_entry as u16);
+            let dst_entry = u32::from(dst_entry as u16);
+            let dst_length = u32::from(dst_length as u16);
+            let mut entries = Vec::new();
+            for offset in 0..dst_length {
+                let source = src_entry.saturating_add(offset);
+                if source >= src_count {
+                    break;
+                }
+                let Some(info) = ppc_memory_read_bytes(memory, src_ptr + 16 + source * 16, 10)
+                else {
+                    break;
+                };
+                entries.push(info);
+            }
+
+            let required_entries = dst_entry.saturating_add(dst_length);
+            let Some(mut dst_ptr) = memory.read_u32_be(dst_palette).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let dst_count = u32::from(memory.read_u16_be(dst_ptr).unwrap_or(0));
+            if required_entries > dst_count && required_entries <= i16::MAX as u32 {
+                let size = 16u32.saturating_add(required_entries.saturating_mul(16));
+                let result = ppc_set_handle_size(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    dst_palette,
+                    size,
+                );
+                *last_mem_error = result;
+                if result != PPC_NO_ERR {
+                    return PpcImportAction::ReturnPreserve;
+                }
+                let Some(resized_ptr) = memory.read_u32_be(dst_palette).filter(|ptr| *ptr != 0)
+                else {
+                    return PpcImportAction::ReturnPreserve;
+                };
+                dst_ptr = resized_ptr;
+                let _ = memory.write_u16_be(dst_ptr, required_entries as u16);
+            }
+
+            let dst_count = u32::from(memory.read_u16_be(dst_ptr).unwrap_or(0));
+            for (offset, info) in entries.into_iter().enumerate() {
+                let destination = dst_entry.saturating_add(offset as u32);
+                if destination >= dst_count {
+                    break;
+                }
+                let _ = memory.write_bytes(dst_ptr + 16 + destination * 16, &info);
+            }
+            PpcImportAction::ReturnPreserve
+        }
         "NewPalette" => {
             let entry_count = u32::from(cpu.gpr[3] as u16);
             let byte_count = 16u32.saturating_add(entry_count.saturating_mul(16));
@@ -22704,6 +23017,52 @@ fn ppc_dispatch_quickdraw_compatibility(
                 cpu.gpr[3],
                 cpu.gpr[4],
             );
+            PpcImportAction::ReturnPreserve
+        }
+        "CTab2Palette" => {
+            let ctable_handle = cpu.gpr[3];
+            let palette_handle = cpu.gpr[4];
+            let usage = cpu.gpr[5] as u16;
+            let tolerance = cpu.gpr[6] as u16;
+            let Some(ctable_ptr) = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0) else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            if palette_handle == 0 || memory.read_u32_be(palette_handle).unwrap_or(0) == 0 {
+                return PpcImportAction::ReturnPreserve;
+            }
+            let entry_count = memory
+                .read_u16_be(ctable_ptr + 6)
+                .map_or(0, |last| u32::from(last) + 1)
+                .min(256);
+            let size = 16u32.saturating_add(entry_count.saturating_mul(16));
+            let result = ppc_set_handle_size(
+                memory,
+                heap_cursor,
+                heap_limit,
+                handles,
+                palette_handle,
+                size,
+            );
+            *last_mem_error = result;
+            if result != PPC_NO_ERR {
+                return PpcImportAction::ReturnPreserve;
+            }
+            let Some(palette_ptr) = memory.read_u32_be(palette_handle).filter(|ptr| *ptr != 0)
+            else {
+                return PpcImportAction::ReturnPreserve;
+            };
+            let _ = memory.write_u16_be(palette_ptr, entry_count as u16);
+            for entry in 0..entry_count {
+                let spec_ptr = ctable_ptr + 8 + entry * 8;
+                let info_ptr = palette_ptr + 16 + entry * 16;
+                for offset in [0, 2, 4] {
+                    if let Some(component) = memory.read_u16_be(spec_ptr + 2 + offset) {
+                        let _ = memory.write_u16_be(info_ptr + offset, component);
+                    }
+                }
+                let _ = memory.write_u16_be(info_ptr + 6, usage);
+                let _ = memory.write_u16_be(info_ptr + 8, tolerance);
+            }
             PpcImportAction::ReturnPreserve
         }
         "GetNewPalette" => {
@@ -22794,6 +23153,31 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
+        "GetEntryUsage" => {
+            let palette_handle = cpu.gpr[3];
+            let entry = cpu.gpr[4] as u16 as i16;
+            if entry >= 0 {
+                if let Some(palette_ptr) = memory
+                    .read_u32_be(palette_handle)
+                    .filter(|palette_ptr| *palette_ptr != 0)
+                {
+                    let entry = entry as u32;
+                    if memory
+                        .read_u16_be(palette_ptr)
+                        .is_some_and(|count| entry < u32::from(count))
+                    {
+                        let info_ptr = palette_ptr + 16 + entry * 16;
+                        if let Some(usage) = memory.read_u16_be(info_ptr + 6) {
+                            let _ = memory.write_u16_be(cpu.gpr[5], usage);
+                        }
+                        if let Some(tolerance) = memory.read_u16_be(info_ptr + 8) {
+                            let _ = memory.write_u16_be(cpu.gpr[6], tolerance);
+                        }
+                    }
+                }
+            }
+            PpcImportAction::ReturnPreserve
+        }
         "SetEntryUsage" => {
             // Inside Macintosh Volume VI 1991, pp. 20-24--20-25.
             let palette_handle = cpu.gpr[3];
@@ -22816,11 +23200,48 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             PpcImportAction::ReturnPreserve
         }
-        "AnimatePalette" | "SetStdCProcs" | "SetStdProcs" | "BackPat" | "BackPixPat"
-        | "Exp1to3" | "Exp1to6" | "PenPat" => {
-            let _ = color_manager_clut;
+        "AnimatePalette" => {
+            // Inside Macintosh Volume VI (1991), pp. 20-22--20-23:
+            // copy a source ColorTable range into animated destination
+            // palette entries and immediately update their device indexes.
+            let window = cpu.gpr[3];
+            let ctable_handle = cpu.gpr[4];
+            let src_index = u32::from(cpu.gpr[5] as u16);
+            let dst_entry = u32::from(cpu.gpr[6] as u16);
+            let dst_length = u32::from(cpu.gpr[7] as u16);
+            let palette_handle = memory
+                .read_u32_be(window + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET)
+                .unwrap_or(0);
+            let palette_ptr = memory.read_u32_be(palette_handle).unwrap_or(0);
+            let ctable_ptr = memory.read_u32_be(ctable_handle).unwrap_or(0);
+            let palette_count = u32::from(memory.read_u16_be(palette_ptr).unwrap_or(0));
+            let source_count = memory
+                .read_u16_be(ctable_ptr + 6)
+                .map_or(0, |last| u32::from(last) + 1);
+            for offset in 0..dst_length {
+                let source = src_index + offset;
+                let destination = dst_entry + offset;
+                if source >= source_count || destination >= palette_count || destination >= 256 {
+                    break;
+                }
+                let spec_ptr = ctable_ptr + 8 + source * 8;
+                let info_ptr = palette_ptr + 16 + destination * 16;
+                let usage = memory.read_u16_be(info_ptr + 6).unwrap_or(0);
+                if usage & 0x0004 == 0 {
+                    continue;
+                }
+                let Some(color) = ppc_read_rgb_color(memory, spec_ptr + 2) else {
+                    break;
+                };
+                let _ = ppc_write_rgb_color(memory, info_ptr, color);
+                let rgb = [color.red, color.green, color.blue];
+                screen_clut[destination as usize] = rgb;
+                color_manager_clut[destination as usize] = rgb;
+            }
             PpcImportAction::ReturnPreserve
         }
+        "SetStdCProcs" | "SetStdProcs" | "BackPat" | "BackPixPat" | "Exp1to3" | "Exp1to6"
+        | "PenPat" => PpcImportAction::ReturnPreserve,
         _ => PpcImportAction::ReturnPreserve,
     }
 }
@@ -23543,6 +23964,40 @@ fn ppc_dispatch_math_compatibility(
         "fetestexcept" => PpcImportAction::Return(0),
         _ => PpcImportAction::ReturnPreserve,
     }
+}
+
+fn ppc_math_ceil(cpu: &mut PpcCpu) {
+    // Inside Macintosh: PowerPC Numerics (1994), pp. 9-7--9-8:
+    // ceil rounds upward without an inexact exception and preserves signed
+    // zero, infinities, and quiet NaNs. A signaling NaN raises invalid and
+    // returns the corresponding quiet NaN.
+    const EXPONENT_MASK: u64 = 0x7ff0_0000_0000_0000;
+    const FRACTION_MASK: u64 = 0x000f_ffff_ffff_ffff;
+    const QUIET_NAN_BIT: u64 = 0x0008_0000_0000_0000;
+    let bits = cpu.fpr[1];
+    let signaling_nan = bits & EXPONENT_MASK == EXPONENT_MASK
+        && bits & FRACTION_MASK != 0
+        && bits & QUIET_NAN_BIT == 0;
+    if signaling_nan {
+        cpu.fpr[1] = bits | QUIET_NAN_BIT;
+        cpu.set_fpscr_bit(0, true);
+        cpu.set_fpscr_bit(2, true);
+        cpu.set_fpscr_bit(7, true);
+        if cpu.fpscr_bit(24) {
+            cpu.set_fpscr_bit(1, true);
+        }
+    } else {
+        cpu.fpr[1] = f64::from_bits(bits).ceil().to_bits();
+    }
+}
+
+fn ppc_math_fmod(cpu: &mut PpcCpu) {
+    // The PowerPC C ABI passes the two double arguments in f1/f2 and returns
+    // the remainder in f1. Rust's floating remainder has C fmod semantics:
+    // its magnitude is less than the divisor and its sign follows the dividend.
+    let dividend = f64::from_bits(cpu.fpr[1]);
+    let divisor = f64::from_bits(cpu.fpr[2]);
+    cpu.fpr[1] = (dividend % divisor).to_bits();
 }
 
 fn ppc_dispatch_stdc_compatibility(
@@ -35416,6 +35871,10 @@ fn dispatch_simple_hot_import_fast(
             ppc_write_microseconds_value(cpu, memory, microseconds);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::MathCeil => {
+            ppc_math_ceil(cpu);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::MathSqrt => {
             let value = f64::from_bits(cpu.fpr[1]);
             cpu.fpr[1] = value.sqrt().to_bits();
@@ -35456,6 +35915,10 @@ fn dispatch_simple_hot_import_fast(
             let base = f64::from_bits(cpu.fpr[1]);
             let exponent = f64::from_bits(cpu.fpr[2]);
             cpu.fpr[1] = base.powf(exponent).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::MathFmod => {
+            ppc_math_fmod(cpu);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MathLog => {
@@ -42899,6 +43362,7 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
     let row_bytes = ppc_main_screen_row_bytes();
     let _ = ppc_seed_main_color_table(memory);
     let _ = memory.write_u32_be(PPC_GRAY_RGN_HANDLE, PPC_GRAY_RGN);
+    let _ = memory.write_u32_be(PPC_GRAY_RGN_ADDR, PPC_GRAY_RGN_HANDLE);
     let _ = memory.write_u16_be(PPC_GRAY_RGN, 10);
     // Macintosh Toolbox Essentials (1992), p. 4-16: GrayRgn is the desktop
     // area, which excludes the main screen's menu bar.
@@ -44208,7 +44672,7 @@ fn ppc_new_gworld(
     let bounds_ptr = cpu.gpr[5];
     let requested_ctab = cpu.gpr[6];
     let requested_gdevice = cpu.gpr[7];
-    let _flags = cpu.gpr[8];
+    let flags = cpu.gpr[8];
     if gworld_out_ptr == 0 || bounds_ptr == 0 {
         return PPC_PARAM_ERR;
     }
@@ -44224,8 +44688,28 @@ fn ppc_new_gworld(
         requested_bottom,
         requested_right,
     );
-    let depth = if requested_depth <= 0 {
-        PPC_MAIN_PIXEL_DEPTH
+    const NO_NEW_DEVICE: u32 = 1 << 1;
+    let uses_explicit_gdevice = flags & NO_NEW_DEVICE != 0 && requested_gdevice != 0;
+    let selected_gdevice = if uses_explicit_gdevice {
+        requested_gdevice
+    } else {
+        current_gdevice
+    };
+    let device_pixmap = ppc_current_gdevice_record(memory, selected_gdevice)
+        .and_then(|device| memory.read_u32_be(device.checked_add(22)?))
+        .filter(|handle| *handle != 0)
+        .and_then(|handle| memory.read_u32_be(handle))
+        .filter(|pixmap| *pixmap != 0);
+    if uses_explicit_gdevice && device_pixmap.is_none() {
+        *last_mem_error = PPC_PARAM_ERR;
+        return PPC_PARAM_ERR;
+    }
+    let device_depth = device_pixmap
+        .and_then(|pixmap| memory.read_u16_be(pixmap + 32))
+        .map(u32::from)
+        .filter(|depth| *depth != 0);
+    let depth = if uses_explicit_gdevice || requested_depth <= 0 {
+        device_depth.unwrap_or(PPC_MAIN_PIXEL_DEPTH)
     } else {
         requested_depth as u32
     };
@@ -44242,9 +44726,12 @@ fn ppc_new_gworld(
     let Some(pixel_allocation_size) = buffer_size.checked_add(row_bytes.max(64)) else {
         return PPC_PARAM_ERR;
     };
-    let ctable_bytes = if depth <= 8 {
+    let shared_ctable_handle = (depth <= 8 && uses_explicit_gdevice)
+        .then(|| ppc_gdevice_ctable_handle(memory, selected_gdevice))
+        .flatten();
+    let ctable_bytes = if depth <= 8 && shared_ctable_handle.is_none() {
         let source_ctable = if requested_depth <= 0 {
-            ppc_gdevice_ctable_handle(memory, current_gdevice)
+            ppc_gdevice_ctable_handle(memory, selected_gdevice)
         } else {
             (requested_ctab != 0).then_some(requested_ctab)
         };
@@ -44254,7 +44741,7 @@ fn ppc_new_gworld(
     } else {
         None
     };
-    if depth <= 8 && ctable_bytes.is_none() {
+    if depth <= 8 && ctable_bytes.is_none() && shared_ctable_handle.is_none() {
         *last_mem_error = PPC_PARAM_ERR;
         return PPC_PARAM_ERR;
     }
@@ -44294,15 +44781,19 @@ fn ppc_new_gworld(
     let base_addr = ppc_heap_alloc(memory, heap_cursor, heap_limit, pixel_allocation_size, true);
     let pixmap = ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_PIXMAP_SIZE, true);
     let pixmap_handle = ppc_heap_alloc(memory, heap_cursor, heap_limit, 4, true);
-    let ctable_handle = ctable_bytes
-        .as_deref()
-        .map(|bytes| ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, bytes))
-        .unwrap_or(0);
+    let ctable_handle = shared_ctable_handle.unwrap_or_else(|| {
+        ctable_bytes
+            .as_deref()
+            .map(|bytes| {
+                ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, bytes)
+            })
+            .unwrap_or(0)
+    });
     let port = ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_CGRAF_PORT_SIZE, true);
     if base_addr == 0
         || pixmap == 0
         || pixmap_handle == 0
-        || (ctable_bytes.is_some() && ctable_handle == 0)
+        || (depth <= 8 && ctable_handle == 0)
         || port == 0
     {
         *last_mem_error = PPC_MEM_FULL_ERR;
@@ -44328,7 +44819,7 @@ fn ppc_new_gworld(
         pixmap_handle,
         pixmap,
         base_addr,
-        gdevice: if requested_gdevice != 0 {
+        gdevice: if uses_explicit_gdevice {
             requested_gdevice
         } else {
             current_gdevice
@@ -44352,7 +44843,7 @@ fn ppc_new_gworld(
             requested_depth,
             requested_ctab,
             requested_gdevice,
-            if requested_gdevice != 0 {
+            if uses_explicit_gdevice {
                 requested_gdevice
             } else {
                 current_gdevice
@@ -44974,6 +45465,16 @@ fn ppc_sync_gworld_pen(memory: &mut PpcSectionMem, current_gworld: u32, h: i16, 
     let _ = memory.write_u16_be(current_gworld + PPC_CGRAF_PORT_PN_LOC_OFFSET + 2, h as u16);
 }
 
+fn ppc_gworld_pen(memory: &mut PpcSectionMem, current_gworld: u32) -> Option<(i16, i16)> {
+    let v = memory.read_u16_be(current_gworld.checked_add(PPC_CGRAF_PORT_PN_LOC_OFFSET)?)? as i16;
+    let h = memory.read_u16_be(
+        current_gworld
+            .checked_add(PPC_CGRAF_PORT_PN_LOC_OFFSET)?
+            .checked_add(2)?,
+    )? as i16;
+    Some((h, v))
+}
+
 fn ppc_set_pen_size(cpu: &PpcCpu, memory: &mut PpcSectionMem, current_gworld: u32) {
     if current_gworld == 0
         || !ppc_memory_can_write_bytes(memory, current_gworld + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 4)
@@ -45075,6 +45576,12 @@ fn ppc_line_to(
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
+    if memory
+        .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_VIS_OFFSET))
+        .is_some_and(|visibility| (visibility as i16) < 0)
+    {
+        return false;
+    }
     let front_buffer = surface.front_buffer;
     if front_buffer.depth != 8 && front_buffer.depth != 16 {
         return false;
@@ -45082,6 +45589,12 @@ fn ppc_line_to(
     let Some(color_pixel) = ppc_quickdraw_surface_color_pixel(memory, surface, color) else {
         return false;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
 
     let (mut x0, mut y0) = surface.local_point((i32::from(from.0), i32::from(from.1)));
     let (x1, y1) = surface.local_point((i32::from(to.0), i32::from(to.1)));
@@ -45093,7 +45606,22 @@ fn ppc_line_to(
     let mut wrote = false;
 
     loop {
-        wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x0, y0), color_pixel);
+        let port_h = x0 + i32::from(surface.left);
+        let port_v = y0 + i32::from(surface.top);
+        let port_point = i16::try_from(port_h).ok().zip(i16::try_from(port_v).ok());
+        // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is
+        // constrained by the intersection of a port's visRgn and clipRgn.
+        let inside_regions = port_point.is_some_and(|(h, v)| {
+            vis_storage
+                .as_ref()
+                .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+                && clip_storage
+                    .as_ref()
+                    .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+        });
+        if inside_regions {
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x0, y0), color_pixel);
+        }
         if x0 == x1 && y0 == y1 {
             break;
         }
@@ -45985,6 +46513,25 @@ fn ppc_copy_bits_clut(
     ppc_read_ctable_clut(memory, ctable_handle, color_manager_clut).unwrap_or(*color_manager_clut)
 }
 
+fn ppc_copy_bits_palette_index_map(
+    memory: &mut PpcSectionMem,
+    ctable_handle: u32,
+) -> Option<[u8; 256]> {
+    let ctable = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0)?;
+    let flags = memory.read_u16_be(ctable + 4)?;
+    if flags & 0x4000 == 0 {
+        return None;
+    }
+    let entry_count = usize::from(memory.read_u16_be(ctable + 6)?)
+        .saturating_add(1)
+        .min(256);
+    let mut map = std::array::from_fn(|index| index as u8);
+    for (slot, mapped) in map.iter_mut().enumerate().take(entry_count) {
+        *mapped = memory.read_u16_be(ctable + 8 + slot as u32 * 8)? as u8;
+    }
+    Some(map)
+}
+
 fn ppc_copy_bits(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -46020,12 +46567,17 @@ fn ppc_copy_bits(
             let dst_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, dst_bits_ptr);
             match (src_ctable, dst_ctable) {
                 (Some(src_ctable), Some(dst_ctable)) if src_ctable != dst_ctable => {
+                    // Inside Macintosh Volume VI (1991), pp. 20-16--20-17:
+                    // ctFlags bit 14 makes each ColorSpec.value a palette
+                    // entry for the corresponding source pixel value.
                     let src_clut = ppc_copy_bits_clut(memory, src_ctable, color_manager_clut);
                     let dst_clut = ppc_copy_bits_clut(memory, dst_ctable, color_manager_clut);
                     (src_clut != dst_clut).then(|| {
-                        std::array::from_fn::<u8, 256, _>(|index| {
-                            let [red, green, blue] = src_clut[index];
-                            pict::closest_clut_index(red, green, blue, &dst_clut)
+                        ppc_copy_bits_palette_index_map(memory, src_ctable).unwrap_or_else(|| {
+                            std::array::from_fn::<u8, 256, _>(|index| {
+                                let [red, green, blue] = src_clut[index];
+                                pict::closest_clut_index(red, green, blue, &dst_clut)
+                            })
                         })
                     })
                 }
@@ -46085,6 +46637,16 @@ fn ppc_copy_bits(
         // unscaled copy row-based so an 8-bit full-screen blit remains native
         // host memory bandwidth rather than 307,200 scalar HLE writes.
         if src_width == dst_width && src_height == dst_height {
+            let x_delta = i32::from(src_left) - i32::from(dst_left);
+            let y_delta = i32::from(src_top) - i32::from(dst_top);
+            let copy_left = copy_left.max(i32::from(src_bits.left) - x_delta);
+            let copy_top = copy_top.max(i32::from(src_bits.top) - y_delta);
+            let copy_right = copy_right.min(i32::from(src_bits.right) - x_delta);
+            let copy_bottom = copy_bottom.min(i32::from(src_bits.bottom) - y_delta);
+            if copy_left >= copy_right || copy_top >= copy_bottom {
+                reason = "clipped-empty";
+                return None;
+            }
             let bytes_per_pixel = src_bits.depth / 8;
             let copy_width = u32::try_from(copy_right - copy_left).ok()?;
             let row_len = usize::try_from(copy_width.checked_mul(bytes_per_pixel)?).ok()?;
@@ -48052,6 +48614,114 @@ fn ppc_isp_device_get_definition(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i1
     PPC_NO_ERR
 }
 
+fn ppc_isp_device_get_element_list(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let device = cpu.gpr[3];
+    let out_element_list_ptr = cpu.gpr[4];
+    if !ppc_isp_known_device(device)
+        || out_element_list_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, out_element_list_ptr, 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+
+    // InputSprocket element-list references are opaque. Keep the synthetic
+    // device reference as the corresponding list identity so later list APIs
+    // can distinguish the keyboard and mouse without exposing guest memory.
+    memory
+        .write_u32_be(out_element_list_ptr, device)
+        .expect("element-list output pointer was prevalidated");
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_extract(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let element_list = cpu.gpr[3];
+    let buffer_count = cpu.gpr[4];
+    let out_count_ptr = cpu.gpr[5];
+    let buffer_ptr = cpu.gpr[6];
+    let elements: &[u32] = match element_list {
+        PPC_ISP_KEYBOARD_DEVICE => &[PPC_ISP_KEYBOARD_ELEMENT],
+        PPC_ISP_MOUSE_DEVICE => &[
+            PPC_ISP_MOUSE_X_ELEMENT,
+            PPC_ISP_MOUSE_Y_ELEMENT,
+            PPC_ISP_MOUSE_BUTTON_ELEMENT,
+        ],
+        _ => return PPC_PARAM_ERR,
+    };
+    if out_count_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, out_count_ptr, 4)
+        || (buffer_count > 0 && buffer_ptr == 0)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let copy_count = buffer_count.min(elements.len() as u32);
+    let Some(output_size) = copy_count.checked_mul(4) else {
+        return PPC_PARAM_ERR;
+    };
+    if copy_count > 0 && !ppc_memory_can_write_bytes(memory, buffer_ptr, output_size) {
+        return PPC_PARAM_ERR;
+    }
+
+    memory
+        .write_u32_be(out_count_ptr, elements.len() as u32)
+        .expect("element-list count pointer was prevalidated");
+    for (index, element) in elements
+        .iter()
+        .copied()
+        .take(copy_count as usize)
+        .enumerate()
+    {
+        memory
+            .write_u32_be(buffer_ptr + index as u32 * 4, element)
+            .expect("element-list buffer was prevalidated");
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let element = cpu.gpr[3];
+    let info_ptr = cpu.gpr[4];
+    let (label, kind, name) = match element {
+        PPC_ISP_KEYBOARD_ELEMENT => (
+            PPC_ISP_ELEMENT_LABEL_NONE,
+            PPC_ISP_ELEMENT_KIND_BUTTON,
+            b"Keyboard Key".as_slice(),
+        ),
+        PPC_ISP_MOUSE_X_ELEMENT => (
+            PPC_ISP_ELEMENT_LABEL_CURSOR_X,
+            PPC_ISP_ELEMENT_KIND_DELTA,
+            b"Mouse X Delta".as_slice(),
+        ),
+        PPC_ISP_MOUSE_Y_ELEMENT => (
+            PPC_ISP_ELEMENT_LABEL_CURSOR_Y,
+            PPC_ISP_ELEMENT_KIND_DELTA,
+            b"Mouse Y Delta".as_slice(),
+        ),
+        PPC_ISP_MOUSE_BUTTON_ELEMENT => (
+            PPC_ISP_ELEMENT_LABEL_MOUSE_ONE,
+            PPC_ISP_ELEMENT_KIND_BUTTON,
+            b"Mouse Button".as_slice(),
+        ),
+        _ => return PPC_PARAM_ERR,
+    };
+    if info_ptr == 0 || !ppc_memory_can_write_bytes(memory, info_ptr, PPC_ISP_ELEMENT_INFO_SIZE) {
+        return PPC_PARAM_ERR;
+    }
+
+    // ISpElementInfo is two OSTypes, a Str63, and two reserved UInt32s.
+    for offset in 0..PPC_ISP_ELEMENT_INFO_SIZE {
+        memory
+            .write_u8(info_ptr + offset, 0)
+            .expect("element info pointer was prevalidated");
+    }
+    memory.write_u32_be(info_ptr, label).unwrap();
+    memory.write_u32_be(info_ptr + 4, kind).unwrap();
+    memory.write_u8(info_ptr + 8, name.len() as u8).unwrap();
+    for (offset, byte) in name.iter().copied().enumerate() {
+        memory.write_u8(info_ptr + 9 + offset as u32, byte).unwrap();
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_isp_devices_extract(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let buffer_count = cpu.gpr[3];
     let out_count_ptr = cpu.gpr[4];
@@ -48083,6 +48753,46 @@ fn ppc_isp_devices_extract(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 
         {
             return PPC_PARAM_ERR;
         }
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_devices_extract_by_class(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let device_class = cpu.gpr[3];
+    let buffer_count = cpu.gpr[4];
+    let out_count_ptr = cpu.gpr[5];
+    let buffer_ptr = cpu.gpr[6];
+    if out_count_ptr == 0 || (buffer_count > 0 && buffer_ptr == 0) {
+        return PPC_PARAM_ERR;
+    }
+    if !ppc_memory_can_write_bytes(memory, out_count_ptr, 4) {
+        return PPC_PARAM_ERR;
+    }
+
+    let device = match device_class {
+        PPC_ISP_DEVICE_CLASS_KEYBOARD => Some(PPC_ISP_KEYBOARD_DEVICE),
+        PPC_ISP_DEVICE_CLASS_MOUSE => Some(PPC_ISP_MOUSE_DEVICE),
+        _ => None,
+    };
+    let device_count = u32::from(device.is_some());
+    let copy_count = buffer_count.min(device_count);
+    let Some(output_size) = copy_count.checked_mul(4) else {
+        return PPC_PARAM_ERR;
+    };
+    if copy_count > 0 && !ppc_memory_can_write_bytes(memory, buffer_ptr, output_size) {
+        return PPC_PARAM_ERR;
+    }
+
+    memory.write_u32_be(out_count_ptr, device_count).unwrap();
+    if copy_count > 0
+        && memory
+            .write_u32_be(
+                buffer_ptr,
+                device.expect("device exists when copy count is nonzero"),
+            )
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
     }
     PPC_NO_ERR
 }
@@ -49078,7 +49788,10 @@ fn ppc_get_resource(
         res_id,
         current_only,
     ) else {
-        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        // Classic Resource Manager lookups can return NIL without reporting
+        // an error. Mac OS 8 does so for missing IDs with both GetResource
+        // and Get1Resource; callers must test the returned handle.
+        *last_resource_error = PPC_NO_ERR;
         if ppc_hle_trace_enabled() {
             eprintln!(
                 "[PPC-TRACE] {}Resource('{}', {}) current_ref={} -> NULL err={}",
@@ -49086,7 +49799,7 @@ fn ppc_get_resource(
                 ppc_res_type_text(res_type),
                 res_id,
                 current_resource_refnum,
-                PPC_RES_NOT_FOUND_ERR
+                PPC_NO_ERR
             );
         }
         return 0;
@@ -49571,6 +50284,28 @@ fn ppc_read_packed_bitmap_index(
         8 => memory.read_u8(row.checked_add(x)?),
         _ => None,
     }
+}
+
+fn ppc_window_content_color(
+    memory: &mut PpcSectionMem,
+    color_table_handle: u32,
+) -> Option<PpcRgbColor> {
+    let color_table = memory.read_u32_be(color_table_handle)?;
+    let last_entry = memory.read_u16_be(color_table + 6)? as i16;
+    if last_entry < 0 {
+        return None;
+    }
+    for entry_index in 0..=u32::from(last_entry as u16).min(4095) {
+        let entry = color_table.checked_add(8 + entry_index * 8)?;
+        if memory.read_u16_be(entry)? == 0 {
+            return Some(PpcRgbColor {
+                red: memory.read_u16_be(entry + 2)?,
+                green: memory.read_u16_be(entry + 4)?,
+                blue: memory.read_u16_be(entry + 6)?,
+            });
+        }
+    }
+    None
 }
 
 fn ppc_cicon_color(
@@ -51684,7 +52419,7 @@ fn ppc_apply_palette(
         // Inside Macintosh Volume V, V-157 through V-160: a purely
         // explicit entry preserves its device index; tolerant entries are
         // eligible for installation using their requested RGB value.
-        if usage & PM_EXPLICIT != 0 && usage & PM_TOLERANT == 0 {
+        if usage & PM_EXPLICIT != 0 && usage & (PM_TOLERANT | 0x0004) == 0 {
             updated_clut[index] = previous_clut[index];
             continue;
         }
@@ -57689,6 +58424,59 @@ fn ppc_hget_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, default_dir_id: u3
     PPC_NO_ERR
 }
 
+fn ppc_hset_vol(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_directories: &[PpcVfsDirectory],
+    default_dir_id: u32,
+) -> i16 {
+    // Inside Macintosh: Files (1992), pp. 2-136--2-137. HSetVol accepts an
+    // optional Pascal pathname plus a volume or working-directory reference
+    // and directory ID, then changes the process-wide default directory.
+    let name_ptr = cpu.gpr[3];
+    let requested_vref = cpu.gpr[4] as u16 as i16;
+    let requested_dir_id = cpu.gpr[5];
+    if requested_vref != 0 && requested_vref != PPC_BOOT_VOLUME_REF_NUM {
+        return PPC_NSV_ERR;
+    }
+    let name = if name_ptr == 0 {
+        String::new()
+    } else {
+        let Some(bytes) = ppc_read_pstring_bytes(memory, name_ptr) else {
+            return PPC_PARAM_ERR;
+        };
+        decode_mac_roman(&bytes)
+    };
+
+    let base_dir_id = ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id);
+    let target_dir_id = if name.is_empty() {
+        base_dir_id
+    } else {
+        let boot_volume = crate::trap::TrapDispatcher::boot_volume_name();
+        let normalized = ppc_normalize_vfs_path(&name);
+        if normalized.eq_ignore_ascii_case(boot_volume) {
+            PPC_ROOT_DIR_ID
+        } else {
+            let relative = normalized
+                .strip_prefix(boot_volume)
+                .and_then(|suffix| suffix.strip_prefix('/'))
+                .unwrap_or(&normalized);
+            let Some(base_path) = ppc_directory_path_for_id(vfs_directories, base_dir_id) else {
+                return PPC_FNF_ERR;
+            };
+            let joined = ppc_join_vfs_path(base_path, relative);
+            ppc_directory_id_for_path(vfs_directories, &joined)
+                .or_else(|| ppc_directory_id_for_path(vfs_directories, relative))
+                .unwrap_or(0)
+        }
+    };
+    if ppc_directory_path_for_id(vfs_directories, target_dir_id).is_none() {
+        return PPC_FNF_ERR;
+    }
+    let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, target_dir_id);
+    PPC_NO_ERR
+}
+
 fn ppc_get_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let name_ptr = cpu.gpr[3];
     let vref_ptr = cpu.gpr[4];
@@ -58644,11 +59432,18 @@ fn ppc_point_in_region(memory: &mut PpcSectionMem, rgn_handle: u32, v: i16, h: i
     let Some(storage) = ppc_region_storage(memory, rgn_handle) else {
         return false;
     };
+    ppc_point_in_region_storage(&storage, v, h)
+}
+
+fn ppc_point_in_region_storage(storage: &[u8], v: i16, h: i16) -> bool {
     let Some((top, left, bottom, right)) = ppc_region_storage_bbox(&storage) else {
         return false;
     };
     if v < top || v >= bottom || h < left || h >= right {
         return false;
+    }
+    if storage.len() == 10 {
+        return true;
     }
     ppc_region_rows_for_band(&storage, v, v.saturating_add(1)).is_some_and(|rows| {
         rows.first().is_some_and(|row| {
@@ -64277,6 +65072,52 @@ fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -
     true
 }
 
+fn ppc_init_zone_header(
+    memory: &mut PpcSectionMem,
+    start: u32,
+    limit: u32,
+    more_masters_raw: u16,
+    grow_zone: u32,
+) {
+    const ZONE_HEADER_SIZE: u32 = 52;
+
+    let Some(header_end) = start.checked_add(ZONE_HEADER_SIZE) else {
+        return;
+    };
+    if limit < header_end || !ppc_memory_can_write_bytes(memory, start, ZONE_HEADER_SIZE) {
+        return;
+    }
+
+    let more_masters = i16::from_be_bytes(more_masters_raw.to_be_bytes()).max(0) as u32;
+    let free_bytes = limit
+        .saturating_sub(start)
+        .saturating_sub(72 + (4 * more_masters));
+    let first_master_ptr = if more_masters == 0 {
+        0
+    } else {
+        start.wrapping_add(60)
+    };
+
+    let _ = memory.write_u32_be(start, limit); // bkLim
+    let _ = memory.write_u32_be(start + 4, 0); // purgePtr
+    let _ = memory.write_u32_be(start + 8, first_master_ptr); // hFstFree
+    let _ = memory.write_u32_be(start + 12, free_bytes); // zcbFree
+    let _ = memory.write_u32_be(start + 16, grow_zone); // gzProc
+    let _ = memory.write_u16_be(start + 20, more_masters_raw); // moreMast
+    let _ = memory.write_u16_be(start + 22, 0); // flags
+    let _ = memory.write_u16_be(start + 24, 0); // cntRel
+    let _ = memory.write_u16_be(start + 26, 0); // maxRel
+    let _ = memory.write_u16_be(start + 28, 0); // cntNRel
+    let _ = memory.write_u16_be(start + 30, 0); // maxNRel
+    let _ = memory.write_u16_be(start + 32, 0); // cntEmpty
+    let _ = memory.write_u16_be(start + 34, 0); // cntHandles
+    let _ = memory.write_u32_be(start + 36, free_bytes); // minCBFree
+    let _ = memory.write_u32_be(start + 40, 0); // purgeProc
+    let _ = memory.write_u32_be(start + 44, 0); // sparePtr
+    let _ = memory.write_u32_be(start + 48, start + ZONE_HEADER_SIZE); // allocPtr
+    let _ = memory.write_u32_be(PPC_THE_ZONE_ADDR, start);
+}
+
 fn dispatch_getkeys_import(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
@@ -64643,6 +65484,11 @@ fn import_data_address_for(library_name: &str, symbol_name: &str) -> Option<u32>
         ("StdCLib", "__target_for_exit") => Some(PPC_IMPORT_DATA_BASE + 0x404),
         ("StdCLib", "_exit_status") => Some(PPC_IMPORT_DATA_BASE + 0x408),
         ("StdCLib", "__p_CType") => Some(PPC_IMPORT_CTYPE_POINTER),
+        // PowerPC Numerics exposes `pi` as an addressable MathLib export.
+        // Some CFM clients label the import as a transition-vector symbol but
+        // dereference it directly as a double, so bind the known export to
+        // stable data storage regardless of the PEF class tag.
+        ("MathLib", "pi") => Some(PPC_IMPORT_MATH_PI),
         _ => None,
     }
 }
@@ -64652,6 +65498,7 @@ fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
     // callable entry points. Give them stable writable storage and point the
     // ctype indirection at a complete 256-entry classification table.
     let _ = memory.write_u32_be(PPC_IMPORT_CTYPE_POINTER, PPC_IMPORT_CTYPE_TABLE);
+    let _ = memory.write_u64_be(PPC_IMPORT_MATH_PI, std::f64::consts::PI.to_bits());
     for byte in 0u16..=255 {
         let value = byte as u8;
         let mut flags = 0u16;
@@ -67739,6 +68586,10 @@ mod tests {
     #[test]
     fn import_bindings_classify_mathlib_imports() {
         assert_eq!(
+            dispatcher_target_for_import("MathLib", "ceil"),
+            PpcImportDispatcherTarget::MathCeil
+        );
+        assert_eq!(
             dispatcher_target_for_import("MathLib", "sqrt"),
             PpcImportDispatcherTarget::MathSqrt
         );
@@ -67753,6 +68604,10 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("MathLib", "atan2"),
             PpcImportDispatcherTarget::MathAtan2
+        );
+        assert_eq!(
+            dispatcher_target_for_import("MathLib", "fmod"),
+            PpcImportDispatcherTarget::MathFmod
         );
         assert_eq!(
             dispatcher_target_for_import("MathLib", "log10"),
@@ -67889,6 +68744,10 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "SelectWindow"),
             PpcImportDispatcherTarget::SelectWindow
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetWinColor"),
+            PpcImportDispatcherTarget::SetWinColor
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "CalcVisBehind"),
@@ -68249,6 +69108,10 @@ mod tests {
             PpcImportDispatcherTarget::SetZone
         );
         assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "InitZone"),
+            PpcImportDispatcherTarget::InitZone
+        );
+        assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "SystemZone"),
             PpcImportDispatcherTarget::SystemZone
         );
@@ -68390,6 +69253,14 @@ mod tests {
     #[test]
     fn import_bindings_classify_sound_manager_volume_imports() {
         assert_eq!(
+            dispatcher_target_for_import("SoundLib", "UnsignedFixedMulDiv"),
+            PpcImportDispatcherTarget::UnsignedFixedMulDiv
+        );
+        assert_eq!(
+            dispatcher_target_for_import("SoundLib", "GetSoundOutputInfo"),
+            PpcImportDispatcherTarget::GetSoundOutputInfo
+        );
+        assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "SysBeep"),
             PpcImportDispatcherTarget::SysBeep
         );
@@ -68508,6 +69379,10 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "GetVol"),
             PpcImportDispatcherTarget::GetVol
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "HSetVol"),
+            PpcImportDispatcherTarget::HSetVol
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "HGetVol"),
@@ -68953,6 +69828,22 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InputSprocketLib", "ISpDevices_Extract"),
             PpcImportDispatcherTarget::ISpDevicesExtract
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InputSprocketLib", "ISpDevices_ExtractByClass"),
+            PpcImportDispatcherTarget::ISpDevicesExtractByClass
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InputSprocketLib", "ISpDevice_GetElementList"),
+            PpcImportDispatcherTarget::ISpDeviceGetElementList
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InputSprocketLib", "ISpElementList_Extract"),
+            PpcImportDispatcherTarget::ISpElementListExtract
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InputSprocketLib", "ISpElement_GetInfo"),
+            PpcImportDispatcherTarget::ISpElementGetInfo
         );
         assert_eq!(
             dispatcher_target_for_import("InputSprocketLib", "ISpElement_GetSimpleState"),
@@ -71007,6 +71898,33 @@ mod tests {
             loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
             Some(loaded.heap_limit - loaded.heap_base)
         );
+    }
+
+    #[test]
+    fn hle_import_runner_init_zone_initializes_header_and_current_zone() {
+        let pef = synthetic_pef_with_import(b"InitZone");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let start = 0x0308_0000;
+        let limit = start + 0x400;
+        loaded.memory.add_region(start, vec![0xaa; 0x400]);
+        loaded.cpu.gpr[3] = 0x0012_3456;
+        loaded.cpu.gpr[4] = 4;
+        loaded.cpu.gpr[5] = limit;
+        loaded.cpu.gpr[6] = start;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u32_be(start), Some(limit));
+        assert_eq!(loaded.memory.read_u32_be(start + 4), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(start + 8), Some(start + 60));
+        assert_eq!(loaded.memory.read_u32_be(start + 12), Some(0x3a8));
+        assert_eq!(loaded.memory.read_u32_be(start + 16), Some(0x0012_3456));
+        assert_eq!(loaded.memory.read_u16_be(start + 20), Some(4));
+        assert_eq!(loaded.memory.read_u32_be(start + 36), Some(0x3a8));
+        assert_eq!(loaded.memory.read_u32_be(start + 48), Some(start + 52));
+        assert_eq!(loaded.memory.read_u32_be(PPC_THE_ZONE_ADDR), Some(start));
     }
 
     #[test]
@@ -99015,6 +99933,62 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_handles_mathlib_ceil_in_fpr1() {
+        let pef = synthetic_pef_with_library_import(b"MathLib", b"ceil");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0xfeed_face;
+        loaded.cpu.fpr[1] = (-300.1f64).to_bits();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
+        assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), -300.0);
+    }
+
+    #[test]
+    fn mathlib_pi_tvector_import_binds_to_addressable_double_data() {
+        let pef = synthetic_pef_with_library_import(b"MathLib", b"pi");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        assert_eq!(loaded.imports[0].class, 2);
+        assert_eq!(loaded.imports[0].address, PPC_IMPORT_MATH_PI);
+        assert_eq!(loaded.imports[0].tvector_address, None);
+        assert_eq!(
+            loaded.memory.read_u64_be(PPC_IMPORT_MATH_PI),
+            Some(std::f64::consts::PI.to_bits())
+        );
+    }
+
+    #[test]
+    fn native_ppc_math_ceil_preserves_special_values_and_reports_signaling_nan() {
+        let mut cpu = PpcCpu::new();
+        cpu.fpscr = 3;
+        for input in [-0.0f64, f64::INFINITY, f64::NEG_INFINITY] {
+            cpu.fpr[1] = input.to_bits();
+            ppc_math_ceil(&mut cpu);
+            assert_eq!(cpu.fpr[1], input.to_bits());
+            assert_eq!(cpu.fpscr, 3);
+        }
+
+        let quiet_nan = 0x7ff8_0000_0000_0042;
+        cpu.fpr[1] = quiet_nan;
+        ppc_math_ceil(&mut cpu);
+        assert_eq!(cpu.fpr[1], quiet_nan);
+        assert_eq!(cpu.fpscr, 3);
+
+        let signaling_nan = 0xfff0_0000_0000_0042;
+        cpu.fpr[1] = signaling_nan;
+        cpu.set_fpscr_bit(24, true);
+        ppc_math_ceil(&mut cpu);
+        assert_eq!(cpu.fpr[1], signaling_nan | 0x0008_0000_0000_0000);
+        for bit in [0, 1, 2, 7, 24] {
+            assert!(cpu.fpscr_bit(bit));
+        }
+    }
+
+    #[test]
     fn hle_import_runner_handles_mathlib_sqrt_in_fpr1() {
         let pef = synthetic_pef_with_library_import(b"MathLib", b"sqrt");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -99042,6 +100016,27 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let result = f64::from_bits(loaded.cpu.fpr[1]);
         assert!((result - std::f64::consts::FRAC_PI_4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hle_import_runner_handles_mathlib_fmod_in_fprs() {
+        let pef = synthetic_pef_with_library_import(b"MathLib", b"fmod");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0xfeed_face;
+        loaded.cpu.fpr[1] = (-5.5f64).to_bits();
+        loaded.cpu.fpr[2] = 2.0f64.to_bits();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
+        assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), -1.5);
+
+        loaded.cpu.fpr[1] = (-0.0f64).to_bits();
+        loaded.cpu.fpr[2] = 3.0f64.to_bits();
+        ppc_math_fmod(&mut loaded.cpu);
+        assert_eq!(loaded.cpu.fpr[1], (-0.0f64).to_bits());
     }
 
     #[test]
@@ -99599,6 +100594,14 @@ mod tests {
     fn hle_import_runner_handles_set_gworld_state() {
         let pef = synthetic_pef_with_import(b"SetGWorld");
         let mut loaded = load_pef_application(&pef).unwrap();
+        loaded
+            .memory
+            .write_u16_be(PPC_HEAP_BASE + PPC_CGRAF_PORT_PN_LOC_OFFSET, 23)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(PPC_HEAP_BASE + PPC_CGRAF_PORT_PN_LOC_OFFSET + 2, 17)
+            .unwrap();
         loaded.cpu.gpr[3] = PPC_HEAP_BASE;
         loaded.cpu.gpr[4] = PPC_HEAP_BASE + 4;
 
@@ -99609,6 +100612,8 @@ mod tests {
         assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
         assert_eq!(loaded.current_gworld, PPC_HEAP_BASE);
         assert_eq!(loaded.current_gdevice, PPC_HEAP_BASE + 4);
+        assert_eq!(loaded.quickdraw_pen_h, 17);
+        assert_eq!(loaded.quickdraw_pen_v, 23);
     }
 
     #[test]
@@ -99725,6 +100730,51 @@ mod tests {
                 depth: record.depth,
             })
         );
+    }
+
+    #[test]
+    fn hle_import_runner_set_win_color_applies_content_color_and_queues_update() {
+        let pef = synthetic_pef_with_import(b"SetWinColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let table = [
+            0, 0, 0, 1, // reserved seed
+            0, 0, // reserved flags
+            0, 0, // one entry
+            0, 0, // wContentColor
+            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+        ];
+        let table_handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &table,
+        );
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = table_handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(PPC_MAIN_GWORLD + PPC_CWINDOW_COLOR_TABLE_HANDLE_OFFSET),
+            Some(table_handle)
+        );
+        assert_eq!(
+            loaded.quickdraw_back_color,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            }
+        );
+        assert!(loaded
+            .event_queue
+            .iter()
+            .any(|event| event.what == 6 && event.message == PPC_MAIN_GWORLD));
     }
 
     #[test]
@@ -100270,6 +101320,66 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_copy_palette_resizes_and_copies_color_info() {
+        let pef = synthetic_pef_with_import(b"CopyPalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let src_palette = ppc_alloc_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            48,
+            true,
+        );
+        let dst_palette = ppc_alloc_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            32,
+            true,
+        );
+        let src_ptr = loaded.memory.read_u32_be(src_palette).unwrap();
+        let dst_ptr = loaded.memory.read_u32_be(dst_palette).unwrap();
+        loaded.memory.write_u16_be(src_ptr, 2).unwrap();
+        loaded.memory.write_u16_be(dst_ptr, 1).unwrap();
+        let source_info = src_ptr + 32;
+        loaded
+            .memory
+            .write_bytes(
+                source_info,
+                &[0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x00, 0x02, 0x44, 0x44],
+            )
+            .unwrap();
+        loaded.cpu.gpr[3] = src_palette;
+        loaded.cpu.gpr[4] = dst_palette;
+        loaded.cpu.gpr[5] = 1;
+        loaded.cpu.gpr[6] = 2;
+        loaded.cpu.gpr[7] = 1;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let dst_ptr = loaded.memory.read_u32_be(dst_palette).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(dst_ptr), Some(3));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, dst_ptr + 48, 10),
+            Some(vec![
+                0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x00, 0x02, 0x44, 0x44
+            ])
+        );
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == dst_palette)
+                .map(|record| record.size),
+            Some(64)
+        );
+    }
+
+    #[test]
     fn hle_import_runner_get_new_palette_returns_initialized_resource_copy() {
         let pef = synthetic_pef_with_import(b"GetNewPalette");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -100323,6 +101433,64 @@ mod tests {
                 .read_u16_be(window + PPC_CGRAF_PORT_PALETTE_UPDATES_OFFSET),
             Some(1)
         );
+    }
+
+    #[test]
+    fn hle_import_runner_ctab_to_palette_resizes_and_copies_entries() {
+        let pef = synthetic_pef_with_import(b"CTab2Palette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let ctable_handle = ppc_alloc_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            24,
+            true,
+        );
+        let palette_handle = ppc_alloc_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            32,
+            true,
+        );
+        let ctable_ptr = loaded.memory.read_u32_be(ctable_handle).unwrap();
+        let palette_ptr = loaded.memory.read_u32_be(palette_handle).unwrap();
+        loaded.memory.write_u16_be(ctable_ptr + 6, 1).unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        for (entry, rgb) in [[0x1111, 0x2222, 0x3333], [0xaaaa, 0xbbbb, 0xcccc]]
+            .into_iter()
+            .enumerate()
+        {
+            let spec_ptr = ctable_ptr + 8 + entry as u32 * 8;
+            loaded.memory.write_u16_be(spec_ptr, entry as u16).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 2, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 4, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(spec_ptr + 6, rgb[2]).unwrap();
+        }
+        loaded.cpu.gpr[3] = ctable_handle;
+        loaded.cpu.gpr[4] = palette_handle;
+        loaded.cpu.gpr[5] = 0x0002;
+        loaded.cpu.gpr[6] = 0x4567;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let palette_ptr = loaded.memory.read_u32_be(palette_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr), Some(2));
+        for (entry, rgb) in [[0x1111, 0x2222, 0x3333], [0xaaaa, 0xbbbb, 0xcccc]]
+            .into_iter()
+            .enumerate()
+        {
+            let info_ptr = palette_ptr + 16 + entry as u32 * 16;
+            assert_eq!(loaded.memory.read_u16_be(info_ptr), Some(rgb[0]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 2), Some(rgb[1]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 4), Some(rgb[2]));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 6), Some(0x0002));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 8), Some(0x4567));
+        }
     }
 
     #[test]
@@ -100629,6 +101797,71 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_animates_explicit_palette_range_from_color_table() {
+        let pef = synthetic_pef_with_import(b"AnimatePalette");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        let ctable_handle = PPC_DATA_BASE + 0x3000;
+        let ctable_ptr = PPC_DATA_BASE + 0x4000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 48]);
+        loaded.memory.add_region(ctable_handle, vec![0; 4]);
+        loaded.memory.add_region(ctable_ptr, vec![0; 24]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 2).unwrap();
+        loaded
+            .memory
+            .write_u16_be(palette_ptr + 16 + 6, 0x000c)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(palette_ptr + 32 + 6, 0x000c)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(ctable_handle, ctable_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(ctable_ptr + 6, 1).unwrap();
+        for (entry, rgb) in [[0x1234u16, 0x5678, 0x9abc], [0xdef0u16, 0x1357, 0x2468]]
+            .into_iter()
+            .enumerate()
+        {
+            let spec = ctable_ptr + 8 + entry as u32 * 8;
+            loaded.memory.write_u16_be(spec, entry as u16).unwrap();
+            loaded.memory.write_u16_be(spec + 2, rgb[0]).unwrap();
+            loaded.memory.write_u16_be(spec + 4, rgb[1]).unwrap();
+            loaded.memory.write_u16_be(spec + 6, rgb[2]).unwrap();
+        }
+        loaded
+            .memory
+            .write_u32_be(
+                PPC_MAIN_GWORLD + PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET,
+                palette_handle,
+            )
+            .unwrap();
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.cpu.gpr[4] = ctable_handle;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = 2;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.screen_clut[0], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(loaded.screen_clut[1], [0xdef0, 0x1357, 0x2468]);
+        assert_eq!(loaded.color_manager_clut[0], [0x1234, 0x5678, 0x9abc]);
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr), Some(2));
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr + 16), Some(0x1234));
+        assert_eq!(loaded.memory.read_u16_be(palette_ptr + 32), Some(0xdef0));
+    }
+
+    #[test]
     fn hle_import_runner_set_entry_color_preserves_usage_and_tolerance() {
         let pef = synthetic_pef_with_import(b"SetEntryColor");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -100731,6 +101964,42 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(info_ptr), Some(0x1234));
         assert_eq!(loaded.memory.read_u16_be(info_ptr + 6), Some(0x0008));
         assert_eq!(loaded.memory.read_u16_be(info_ptr + 8), Some(0x4567));
+    }
+
+    #[test]
+    fn hle_import_runner_get_entry_usage_reads_usage_fields() {
+        let pef = synthetic_pef_with_import(b"GetEntryUsage");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let palette_handle = PPC_DATA_BASE + 0x1000;
+        let palette_ptr = PPC_DATA_BASE + 0x2000;
+        let outputs = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(palette_handle, vec![0; 4]);
+        loaded.memory.add_region(palette_ptr, vec![0; 32]);
+        loaded.memory.add_region(outputs, vec![0; 4]);
+        loaded
+            .memory
+            .write_u32_be(palette_handle, palette_ptr)
+            .unwrap();
+        loaded.memory.write_u16_be(palette_ptr, 1).unwrap();
+        loaded
+            .memory
+            .write_u16_be(palette_ptr + 16 + 6, 0x0008)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(palette_ptr + 16 + 8, 0x4567)
+            .unwrap();
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = outputs;
+        loaded.cpu.gpr[6] = outputs + 2;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(outputs), Some(0x0008));
+        assert_eq!(loaded.memory.read_u16_be(outputs + 2), Some(0x4567));
     }
 
     #[test]
@@ -100965,6 +102234,40 @@ mod tests {
         assert_ne!(
             loaded.memory.read_u16_be(private_ptr + 10),
             loaded.memory.read_u16_be(main_ptr + 10)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_new_gworld_uses_explicit_device_color_table() {
+        let pef = synthetic_pef_with_import(b"NewGWorld");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 16]);
+        ppc_write_rect(&mut loaded.memory, scratch, 0, 0, 16, 16).unwrap();
+        let main_table = ppc_copy_color_table_bytes(&mut loaded.memory, PPC_MAIN_CTABLE_HANDLE)
+            .expect("main device ColorTable");
+        loaded.cpu.gpr[3] = scratch + 8;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = scratch;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[8] = 1 << 1;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        let port = loaded.memory.read_u32_be(scratch + 8).unwrap();
+        let record = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == port)
+            .unwrap();
+        let ctable = loaded.memory.read_u32_be(record.pixmap + 42).unwrap();
+        assert_eq!(ctable, PPC_MAIN_CTABLE_HANDLE);
+        assert_eq!(
+            ppc_copy_color_table_bytes(&mut loaded.memory, ctable),
+            Some(main_table)
         );
     }
 
@@ -101465,6 +102768,47 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_copybits_clips_unscaled_copy_to_source_bounds() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x12a00;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rects = scratch + 0xc0;
+        loaded.memory.add_region(scratch, vec![0; 0xe0]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 4, 0, 0, 3, 4, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 4, 2, 0, 6, 4, 8).unwrap();
+        loaded
+            .memory
+            .write_bytes(src_pixels, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+            .unwrap();
+        loaded.memory.write_bytes(dst_pixels, &[42; 16]).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 4, 4).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 2, 0, 6, 4).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 16];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(
+            copied,
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 42, 42, 42, 42]
+        );
+    }
+
+    #[test]
     fn hle_import_runner_copybits_matches_colors_between_indexed_pixmaps() {
         let pef = synthetic_pef_with_import(b"CopyBits");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -101523,6 +102867,77 @@ mod tests {
                 &loaded.color_manager_clut,
             ))
         );
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_honors_palette_index_color_tables() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x13500;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 0x10;
+        let src_pixmap = scratch + 0x20;
+        let dst_pixmap = scratch + 0x60;
+        let src_ctable_handle = scratch + 0xa0;
+        let src_ctable = scratch + 0xb0;
+        let rect = scratch + 0xd0;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 1, 0, 0, 1, 1, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 1, 0, 0, 1, 1, 8).unwrap();
+        loaded
+            .memory
+            .write_u32_be(src_pixmap + 42, src_ctable_handle)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dst_pixmap + 42, PPC_MAIN_CTABLE_HANDLE)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(src_ctable_handle, src_ctable)
+            .unwrap();
+        loaded.memory.write_u16_be(src_ctable + 4, 0x4000).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 6, 1).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 8, 67).unwrap();
+        loaded.memory.write_u16_be(src_ctable + 16, 68).unwrap();
+        loaded.memory.write_u8(src_pixels, 1).unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u8(dst_pixels), Some(68));
+
+        let dst_ctable_handle = scratch + 0xe0;
+        let dst_ctable = scratch + 0xe4;
+        let ctable_bytes = ppc_memory_read_bytes(&mut loaded.memory, src_ctable, 24).unwrap();
+        loaded
+            .memory
+            .write_u32_be(dst_ctable_handle, dst_ctable)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(dst_ctable, &ctable_bytes)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(dst_pixmap + 42, dst_ctable_handle)
+            .unwrap();
+        loaded.memory.write_u8(dst_pixels, 0).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u8(dst_pixels), Some(1));
     }
 
     #[test]
@@ -103784,6 +105199,28 @@ mod tests {
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
         assert_eq!(
             loaded.memory.read_u32_be(dir_id_ptr),
+            Some(PPC_PREFERENCES_DIR_ID)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_hset_vol_updates_default_directory() {
+        let pef = synthetic_pef_with_import(b"HSetVol");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        loaded.cpu.gpr[5] = PPC_PREFERENCES_DIR_ID;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.default_dir_id, PPC_PREFERENCES_DIR_ID);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
             Some(PPC_PREFERENCES_DIR_ID)
         );
     }
@@ -106860,6 +108297,7 @@ mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1Resource;
         loaded.current_resource_refnum = 9;
+        loaded.last_resource_error = PPC_RES_NOT_FOUND_ERR;
         loaded.cpu.gpr[3] = u32::from_be_bytes(*b"pref");
         loaded.cpu.gpr[4] = 100;
 
@@ -106868,7 +108306,7 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResource;
@@ -109235,6 +110673,168 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_gets_and_sets_cur_dir_store_low_memory_global() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetCurDirStore"),
+            PpcImportDispatcherTarget::LMSetCurDirStore
+        );
+
+        let pef = synthetic_pef_with_import(b"LMSetCurDirStore");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_vfs_directories(initial_ppc_vfs_directories(), 0x1122_3344, 18);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(0x1122_3344)
+        );
+
+        loaded.cpu.gpr[3] = 0x5566_7788;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE),
+            Some(0x5566_7788)
+        );
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LMGetCurDirStore;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x5566_7788);
+    }
+
+    #[test]
+    fn hle_import_runner_gets_and_sets_gray_region_low_memory_handle() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetGrayRgn"),
+            PpcImportDispatcherTarget::LMSetGrayRgn
+        );
+
+        let pef = synthetic_pef_with_import(b"LMSetGrayRgn");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_GRAY_RGN_ADDR),
+            Some(PPC_GRAY_RGN_HANDLE)
+        );
+
+        loaded.cpu.gpr[3] = 0x0300_1234;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_GRAY_RGN_ADDR),
+            Some(0x0300_1234)
+        );
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetGrayRgn;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x0300_1234);
+    }
+
+    #[test]
+    fn hle_import_runner_exposes_sound_driver_in_unit_table() {
+        let pef = synthetic_pef_with_import(b"LMGetUTableBase");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], PPC_UNIT_TABLE);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_UNIT_TABLE + 3 * 4),
+            Some(PPC_SOUND_DCE_HANDLE)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_SOUND_DCE_HANDLE),
+            Some(PPC_SOUND_DCE)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_SOUND_DCE + 24),
+            Some((-4i16) as u16)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_get_adb_info_exposes_standard_devices() {
+        for (address, expected) in [(2, [2, 2]), (3, [1, 3])] {
+            let pef = synthetic_pef_with_import(b"GetADBInfo");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let info_ptr = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(info_ptr, vec![0xaa; 12]);
+            loaded.cpu.gpr[3] = info_ptr;
+            loaded.cpu.gpr[4] = address;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.memory.read_u8(info_ptr), Some(expected[0]));
+            assert_eq!(loaded.memory.read_u8(info_ptr + 1), Some(expected[1]));
+            assert_eq!(loaded.memory.read_u32_be(info_ptr + 2), Some(0));
+            assert_eq!(loaded.memory.read_u32_be(info_ptr + 6), Some(0));
+            assert_eq!(loaded.memory.read_u16_be(info_ptr + 10), Some(0xaaaa));
+        }
+
+        let pef = synthetic_pef_with_import(b"GetADBInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 4;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+    }
+
+    #[test]
+    fn hle_import_runner_gets_and_sets_random_seed_low_memory_global() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetRndSeed"),
+            PpcImportDispatcherTarget::LMSetRndSeed
+        );
+        let pef = synthetic_pef_with_import(b"LMSetRndSeed");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+            Some(0x1234_5678)
+        );
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LMGetRndSeed;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
+    }
+
+    #[test]
     fn hle_import_runner_handles_keyboard_time_and_text_width_utilities() {
         assert_eq!(
             ppc_virtual_microseconds(100, 100, 25, 50),
@@ -110914,6 +112514,82 @@ mod tests {
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (5, 6)),
             Some(0)
         );
+
+        let clip_rgn = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip_rgn, 8, 4, 9, 7).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MoveTo;
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = 8;
+        loaded.run_with_hle_imports(64);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LineTo;
+        loaded.cpu.gpr[3] = 9;
+        loaded.cpu.gpr[4] = 8;
+        loaded.run_with_hle_imports(64);
+        for x in 2..=9 {
+            let expected = if (4..7).contains(&x) {
+                u16::from(ppc_rgb_color_to_8bpp_index(red))
+            } else {
+                0
+            };
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 8)),
+                Some(expected)
+            );
+        }
+
+        ppc_write_rgn_bbox(&mut loaded.memory, clip_rgn, 0, 0, 600, 800).unwrap();
+        let vis_rgn = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, 12, 4, 13, 7).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MoveTo;
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = 12;
+        loaded.run_with_hle_imports(64);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LineTo;
+        loaded.cpu.gpr[3] = 9;
+        loaded.cpu.gpr[4] = 12;
+        loaded.run_with_hle_imports(64);
+        for x in 2..=9 {
+            let expected = if (4..7).contains(&x) {
+                u16::from(ppc_rgb_color_to_8bpp_index(red))
+            } else {
+                0
+            };
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 12)),
+                Some(expected)
+            );
+        }
+
+        ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, 0, 0, 600, 800).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HidePen;
+        loaded.run_with_hle_imports(64);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MoveTo;
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = 10;
+        loaded.run_with_hle_imports(64);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LineTo;
+        loaded.cpu.gpr[3] = 6;
+        loaded.cpu.gpr[4] = 10;
+        loaded.run_with_hle_imports(64);
+        for x in 2..=6 {
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, 10)),
+                Some(0)
+            );
+        }
     }
 
     #[test]
@@ -113988,6 +115664,22 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_handles_input_sprocket_version_structure_result() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpGetVersion");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let version_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(version_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = version_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], version_ptr);
+        assert_eq!(loaded.memory.read_u32_be(version_ptr), Some(0x0170_8000));
+    }
+
+    #[test]
     fn hle_import_runner_handles_input_sprocket_virtual_elements() {
         let pef = synthetic_pef_with_library_import(
             b"InputSprocketLib",
@@ -114303,6 +115995,122 @@ mod tests {
             loaded.memory.read_u32_be(buffer_ptr + 4),
             Some(PPC_ISP_MOUSE_DEVICE)
         );
+    }
+
+    #[test]
+    fn hle_import_runner_handles_input_sprocket_devices_extract_by_class() {
+        let pef =
+            synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpDevices_ExtractByClass");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let out_count_ptr = scratch;
+        let buffer_ptr = scratch + 4;
+        loaded.memory.add_region(scratch, vec![0; 8]);
+        loaded.cpu.gpr[3] = PPC_ISP_DEVICE_CLASS_MOUSE;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = out_count_ptr;
+        loaded.cpu.gpr[6] = buffer_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(out_count_ptr), Some(1));
+        assert_eq!(
+            loaded.memory.read_u32_be(buffer_ptr),
+            Some(PPC_ISP_MOUSE_DEVICE)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"joys");
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = out_count_ptr;
+        loaded.cpu.gpr[6] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(out_count_ptr), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_handles_input_sprocket_device_get_element_list() {
+        let pef =
+            synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpDevice_GetElementList");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let out_element_list_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(out_element_list_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = PPC_ISP_KEYBOARD_DEVICE;
+        loaded.cpu.gpr[4] = out_element_list_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(out_element_list_ptr),
+            Some(PPC_ISP_KEYBOARD_DEVICE)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_handles_input_sprocket_element_list_extract() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_Extract");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let out_count_ptr = scratch;
+        let buffer_ptr = scratch + 4;
+        loaded.memory.add_region(scratch, vec![0; 8]);
+        loaded.cpu.gpr[3] = PPC_ISP_MOUSE_DEVICE;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = out_count_ptr;
+        loaded.cpu.gpr[6] = buffer_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(out_count_ptr), Some(3));
+        assert_eq!(
+            loaded.memory.read_u32_be(buffer_ptr),
+            Some(PPC_ISP_MOUSE_X_ELEMENT)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_handles_input_sprocket_element_get_info() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElement_GetInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let info_ptr = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(info_ptr, vec![0xaa; PPC_ISP_ELEMENT_INFO_SIZE as usize]);
+        loaded.cpu.gpr[3] = PPC_ISP_MOUSE_BUTTON_ELEMENT;
+        loaded.cpu.gpr[4] = info_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(info_ptr),
+            Some(PPC_ISP_ELEMENT_LABEL_MOUSE_ONE)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(info_ptr + 4),
+            Some(PPC_ISP_ELEMENT_KIND_BUTTON)
+        );
+        assert_eq!(loaded.memory.read_u8(info_ptr + 8), Some(12));
+        assert_eq!(loaded.memory.read_u8(info_ptr + 9), Some(b'M'));
+        assert_eq!(loaded.memory.read_u32_be(info_ptr + 72), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(info_ptr + 76), Some(0));
     }
 
     #[test]
@@ -115000,6 +116808,56 @@ mod tests {
         assert_eq!(
             loaded.memory.read_u32_be(PPC_HEAP_BASE),
             Some(PPC_SOUND_MANAGER_VERSION)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_handles_unsigned_fixed_mul_div() {
+        let pef = synthetic_pef_with_import(b"UnsignedFixedMulDiv");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.imports[0].library_name = "SoundLib".to_string();
+        loaded.imports[0].dispatcher_target = dispatcher_target_for_import(
+            &loaded.imports[0].library_name,
+            &loaded.imports[0].symbol_name,
+        );
+        loaded.cpu.gpr[3] = 0x0001_0000;
+        loaded.cpu.gpr[4] = 0x5622_0000;
+        loaded.cpu.gpr[5] = 0x5622_0000;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0x0001_0000);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = u32::MAX;
+        loaded.cpu.gpr[4] = u32::MAX;
+        loaded.cpu.gpr[5] = 0;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], u32::MAX);
+    }
+
+    #[test]
+    fn hle_import_runner_gets_default_sound_output_sample_rate() {
+        let pef = synthetic_pef_with_library_import(b"SoundLib", b"GetSoundOutputInfo");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let rate_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(rate_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"srat");
+        loaded.cpu.gpr[5] = rate_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(rate_ptr),
+            Some(crate::sound::OUTPUT_RATE << 16)
         );
     }
 
