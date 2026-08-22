@@ -4509,9 +4509,11 @@ impl super::TrapDispatcher {
     /// The caller supplies a pointer to a `'KCHR'` resource. The
     /// layout used here follows the documented structure from Inside
     /// Macintosh: Macintosh Toolbox Essentials / Text:
-    ///   - byte 0: version
-    ///   - bytes 1..=256: table-selection index keyed by the modifier byte
+    ///   - bytes 0..=1: version
+    ///   - bytes 2..=257: table-selection index keyed by the modifier byte
+    ///   - bytes 258..=259: character-mapping table count
     ///   - character-mapping tables: 128 bytes per table
+    ///   - a trailing dead-key-record count
     ///
     /// The helper only implements the straight-through character
     /// mapping path. If no translation data is supplied, it falls
@@ -4542,8 +4544,12 @@ impl super::TrapDispatcher {
             };
         }
 
-        let table_code = bus.read_byte(trans_data + 1 + modifier_byte) as u32;
-        let table_base = trans_data + 1 + 256 + table_code * 128;
+        let table_code = bus.read_byte(trans_data + 2 + modifier_byte) as u32;
+        let table_count = u32::from(bus.read_word(trans_data + 2 + 256));
+        if table_code >= table_count {
+            return 0;
+        }
+        let table_base = trans_data + 2 + 256 + 2 + table_code * 128;
         let result = bus.read_byte(table_base + vk) as u32;
         if result != 0 {
             return result;
@@ -17998,14 +18004,14 @@ mod tests {
         assert!(disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x7E));
         assert!(!disp.key_is_down(0x2E), "J must not alias the M key");
-        assert_eq!(bus.read_byte(keys_ptr + 4), 0x40, "J key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 4), 0x02, "J key byte");
         assert_eq!(
             bus.read_byte(keys_ptr + 5),
             0,
             "M key byte should stay clear when J is down"
         );
-        assert_eq!(bus.read_byte(keys_ptr + 6), 0x02, "space key byte");
-        assert_eq!(bus.read_byte(keys_ptr + 15), 0x48, "left/up arrow key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 6), 0x40, "space key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x12, "left/up arrow key byte");
         assert_eq!(
             bus.read_byte(keys_ptr + 14),
             0,
@@ -18022,7 +18028,7 @@ mod tests {
         assert!(disp.key_is_down(0x31));
         assert!(disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x7E));
-        assert_eq!(bus.read_byte(keys_ptr + 15), 0x40, "only up remains");
+        assert_eq!(bus.read_byte(keys_ptr + 15), 0x02, "only up remains");
 
         // J ($26) and M ($2E) differ only by KeyMap byte. This catches the
         // byte-pair swap that makes EV/Marathon direct pollers invert them.
@@ -18035,7 +18041,7 @@ mod tests {
         assert!(!disp.key_is_down(0x26));
         assert!(disp.key_is_down(0x2E));
         assert_eq!(bus.read_byte(keys_ptr + 4), 0, "J byte should be clear");
-        assert_eq!(bus.read_byte(keys_ptr + 5), 0x40, "M key byte");
+        assert_eq!(bus.read_byte(keys_ptr + 5), 0x02, "M key byte");
     }
 
     // GetMouse ($A972)
@@ -19849,19 +19855,22 @@ mod tests {
 
     fn seed_synthetic_kchr(bus: &mut super::MacMemoryBus, trans_data: u32) {
         // Minimal KCHR layout:
-        //   byte 0 = version
-        //   bytes 1..=256 = table-selection index
+        //   bytes 0..=1 = version
+        //   bytes 2..=257 = table-selection index
+        //   table-count word
         //   table 0 and table 1 = 128-byte character tables
+        //   dead-key-count word
         //
         // Modifier byte 0 selects table 0; modifier byte 1 selects table 1.
-        bus.write_byte(trans_data, 0);
+        bus.write_word(trans_data, 0);
         for i in 0..256u32 {
-            bus.write_byte(trans_data + 1 + i, 0);
+            bus.write_byte(trans_data + 2 + i, 0);
         }
-        bus.write_byte(trans_data + 1, 0);
-        bus.write_byte(trans_data + 2, 1);
+        bus.write_byte(trans_data + 2, 0);
+        bus.write_byte(trans_data + 3, 1);
 
-        let table0 = trans_data + 1 + 256;
+        bus.write_word(trans_data + 2 + 256, 2);
+        let table0 = trans_data + 2 + 256 + 2;
         let table1 = table0 + 128;
         bus.write_byte(table0 + 2, b'Q');
         bus.write_byte(table0 + 3, b'W');
@@ -19873,6 +19882,7 @@ mod tests {
         bus.write_byte(table1 + 4, b'C');
         bus.write_byte(table1 + 5, b'V');
         bus.write_byte(table1 + 6, b'B');
+        bus.write_word(table1 + 128, 0);
     }
 
     // KeyTrans ($A9C3)
