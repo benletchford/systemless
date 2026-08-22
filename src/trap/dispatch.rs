@@ -1355,6 +1355,10 @@ pub struct TrapDispatcher {
     /// resource fork, but some installers call `GetResource('clut', depth)`
     /// directly instead of `GetCTable`.
     pub(crate) system_clut_cache: HashMap<i16, u32>,
+    /// Cache of the synthetic System-file `'wctb'` ID 0 resource. The
+    /// Window Manager loads this standard table during initialization, and
+    /// applications may also retrieve and duplicate it directly.
+    pub(crate) system_wctb_cache: HashMap<i16, u32>,
     /// Cache of synthetic System-file `'KCHR'` resource pointers. The
     /// U.S. Roman keyboard-layout resource ID 0 is present in every
     /// System file and is used directly by apps that call KeyTranslate.
@@ -3046,6 +3050,7 @@ impl TrapDispatcher {
             system_str_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
+            system_wctb_cache: HashMap::new(),
             system_kchr_cache: HashMap::new(),
             system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
@@ -5572,6 +5577,54 @@ impl TrapDispatcher {
             bus.write_word(entry + 6, b);
         }
         self.system_clut_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate (and cache) the standard System 7 window color table.
+    /// `InitWindows` searches the application, System file, and ROM for
+    /// `'wctb'` ID 0, whose `WinCTab` contains the colors for the standard
+    /// window-part identifiers. Inside Macintosh Volume V (1986), pp.
+    /// V-201..V-203; Macintosh Toolbox Essentials (1992), pp. 4-71 and 4-127.
+    pub(crate) fn synthesize_system_wctb(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if res_id != 0 {
+            return None;
+        }
+        if let Some(&ptr) = self.system_wctb_cache.get(&res_id) {
+            return Some(ptr);
+        }
+
+        const COLORS: [(u16, u16, u16, u16); 13] = [
+            (0, 0xFFFF, 0xFFFF, 0xFFFF),  // wContentColor
+            (1, 0x0000, 0x0000, 0x0000),  // wFrameColor
+            (2, 0x0000, 0x0000, 0x0000),  // wTextColor
+            (3, 0x0000, 0x0000, 0x0000),  // wHiliteColor
+            (4, 0xFFFF, 0xFFFF, 0xFFFF),  // wTitleBarColor
+            (5, 0xFFFF, 0xFFFF, 0xFFFF),  // wHiliteColorLight
+            (6, 0x0000, 0x0000, 0x0000),  // wHiliteColorDark
+            (7, 0xFFFF, 0xFFFF, 0xFFFF),  // wTitleBarLight
+            (8, 0x0000, 0x0000, 0x0000),  // wTitleBarDark
+            (9, 0xCCCC, 0xCCCC, 0xFFFF),  // wDialogLight
+            (10, 0x0000, 0x0000, 0x0000), // wDialogDark
+            (11, 0xCCCC, 0xCCCC, 0xFFFF), // wTingeLight
+            (12, 0x3333, 0x3333, 0x6666), // wTingeDark
+        ];
+
+        let ptr = bus.alloc(8 + COLORS.len() as u32 * 8);
+        bus.write_long(ptr, 0); // wCSeed is reserved.
+        bus.write_word(ptr + 4, 0); // wCReserved is reserved.
+        bus.write_word(ptr + 6, COLORS.len() as u16 - 1);
+        for (index, &(part, red, green, blue)) in COLORS.iter().enumerate() {
+            let entry = ptr + 8 + index as u32 * 8;
+            bus.write_word(entry, part);
+            bus.write_word(entry + 2, red);
+            bus.write_word(entry + 4, green);
+            bus.write_word(entry + 6, blue);
+        }
+        self.system_wctb_cache.insert(res_id, ptr);
         Some(ptr)
     }
 

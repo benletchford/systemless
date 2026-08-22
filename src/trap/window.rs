@@ -1949,7 +1949,11 @@ impl super::TrapDispatcher {
             window_ptr + Self::WINDOW_GO_AWAY_FLAG_OFFSET,
             if go_away_flag { 0xFF } else { 0x00 },
         );
-        bus.write_byte(window_ptr + Self::WINDOW_SPARE_FLAG_OFFSET, 0);
+        let standard_zoom_window = matches!(proc_id, 8 | 12);
+        bus.write_byte(
+            window_ptr + Self::WINDOW_SPARE_FLAG_OFFSET,
+            if standard_zoom_window { 0xFF } else { 0 },
+        );
         // WindowRecord strucRgn, contRgn, and updateRgn are maintained in
         // global coordinates. Inside Macintosh Volume I, p. I-278.
         let global_content = self.window_local_rect_to_global(bus, window_ptr, content_rect);
@@ -1962,7 +1966,48 @@ impl super::TrapDispatcher {
         bus.write_long(window_ptr + Self::WINDOW_CONT_RGN_OFFSET, cont_rgn);
         bus.write_long(window_ptr + Self::WINDOW_UPDATE_RGN_OFFSET, update_rgn);
         bus.write_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET, 0);
-        bus.write_long(window_ptr + Self::WINDOW_DATA_HANDLE_OFFSET, 0);
+        if standard_zoom_window {
+            // The standard WDEF owns a WStateData handle for zoomDocProc and
+            // zoomNoGrow windows. Applications are expressly allowed to
+            // replace either rectangle before calling ZoomWindow, so the
+            // handle must exist as soon as NewWindow/GetNewWindow returns.
+            // Macintosh Toolbox Essentials (1992), pp. 4-53 through 4-54.
+            let state = bus.alloc(16);
+            let state_handle = bus.alloc(4);
+            bus.write_long(state_handle, state);
+
+            // userState begins at the window's requested global content
+            // bounds. The default standard state is the main device's gray
+            // region inset by three pixels; applications commonly replace it
+            // with their own ideal bounds before zooming.
+            for (offset, value) in [
+                (0u32, global_content.0),
+                (2, global_content.1),
+                (4, global_content.2),
+                (6, global_content.3),
+            ] {
+                bus.write_word(state + offset, value as u16);
+            }
+            let (_, _, screen_width, screen_height, _) = self.screen_mode;
+            let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+            let standard = (
+                menu_bar_height.saturating_add(3),
+                3i16,
+                (screen_height as i16).saturating_sub(3),
+                (screen_width as i16).saturating_sub(3),
+            );
+            for (offset, value) in [
+                (8u32, standard.0),
+                (10, standard.1),
+                (12, standard.2),
+                (14, standard.3),
+            ] {
+                bus.write_word(state + offset, value as u16);
+            }
+            bus.write_long(window_ptr + Self::WINDOW_DATA_HANDLE_OFFSET, state_handle);
+        } else {
+            bus.write_long(window_ptr + Self::WINDOW_DATA_HANDLE_OFFSET, 0);
+        }
         bus.write_long(window_ptr + Self::WINDOW_TITLE_HANDLE_OFFSET, 0);
         bus.write_word(window_ptr + Self::WINDOW_TITLE_WIDTH_OFFSET, 0);
         bus.write_long(window_ptr + Self::WINDOW_CONTROL_LIST_OFFSET, 0);
@@ -11490,6 +11535,64 @@ mod tests {
             bus.read_word(TEST_SP),
             0,
             "TrackBox should write BOOLEAN FALSE to the result slot"
+        );
+    }
+
+    // MTE 1992 pp. 4-53..4-54: the standard zoom WDEF creates WStateData
+    // and marks spareFlag when it initializes the window record.
+    #[test]
+    fn standard_zoom_window_creation_installs_wstate_data() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let (_, _, screen_width, screen_height, _) = disp.screen_mode;
+
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            50,
+            10,
+            530,
+            650,
+            "Zoomable",
+            12,
+            true,
+            false,
+            true,
+            0,
+        );
+
+        assert_eq!(
+            bus.read_byte(window + super::super::TrapDispatcher::WINDOW_SPARE_FLAG_OFFSET),
+            0xFF,
+            "zoomNoGrow must set the WindowRecord zoom flag"
+        );
+        let state_handle =
+            bus.read_long(window + super::super::TrapDispatcher::WINDOW_DATA_HANDLE_OFFSET);
+        assert_ne!(state_handle, 0, "zoomNoGrow must allocate WStateData");
+        let state = bus.read_long(state_handle);
+        assert_ne!(state, 0, "WStateData handle must be dereferenceable");
+        assert_eq!(
+            (
+                bus.read_word(state) as i16,
+                bus.read_word(state + 2) as i16,
+                bus.read_word(state + 4) as i16,
+                bus.read_word(state + 6) as i16,
+            ),
+            (50, 10, 530, 650),
+            "userState must begin at the requested global bounds"
+        );
+        assert_eq!(
+            (
+                bus.read_word(state + 8) as i16,
+                bus.read_word(state + 10) as i16,
+                bus.read_word(state + 12) as i16,
+                bus.read_word(state + 14) as i16,
+            ),
+            (23, 3, screen_height as i16 - 3, screen_width as i16 - 3),
+            "stdState must default to the gray region inset by three pixels"
         );
     }
 
