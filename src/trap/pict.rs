@@ -98,6 +98,7 @@ static CLUT_MATCH_ITABLE: OnceLock<bool> = OnceLock::new();
 static CLUT_MATCH_LEGACY_GRAY: OnceLock<bool> = OnceLock::new();
 static PICT_IDENTITY_REMAP: OnceLock<bool> = OnceLock::new();
 static SRC_TO_DST_TABLE_CACHE: OnceLock<Mutex<Vec<SrcToDstTableCacheEntry>>> = OnceLock::new();
+static STANDARD_MAC_8BPP_CLUT: OnceLock<[[u16; 3]; 256]> = OnceLock::new();
 
 const SRC_TO_DST_TABLE_CACHE_LIMIT: usize = 16;
 
@@ -2550,6 +2551,14 @@ fn write_pixel(
                 (byte & !shifted_mask) | ((color_index & pixel_mask) << shift),
             );
         }
+        16 => {
+            let device_clut = STANDARD_MAC_8BPP_CLUT
+                .get_or_init(crate::trap::dispatch::TrapDispatcher::standard_mac_8bpp_clut);
+            let [red, green, blue] = device_clut[usize::from(color_index)];
+            let pixel = ((red >> 11) << 10) | ((green >> 11) << 5) | (blue >> 11);
+            let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 2;
+            bus.write_word(addr, pixel);
+        }
         _ => {
             // 8bpp: one byte per pixel
             let addr = screen_base + (y as u32) * screen_rb + (x as u32);
@@ -2588,6 +2597,25 @@ fn write_pixel_clipped(
             pixel_size,
         );
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_rgb555_pixel_clipped(
+    bus: &mut MacMemoryBus,
+    screen_base: u32,
+    screen_rb: u32,
+    x: i32,
+    y: i32,
+    pixel: u16,
+    screen_w: i32,
+    screen_h: i32,
+    dst_clip: Option<&DstClip>,
+) {
+    if x < 0 || y < 0 || x >= screen_w || y >= screen_h || !dst_clip_contains(dst_clip, x, y) {
+        return;
+    }
+    let addr = screen_base + (y as u32) * screen_rb + (x as u32) * 2;
+    bus.write_word(addr, pixel & 0x7fff);
 }
 
 fn clut_black_white_indices(clut: &[[u16; 3]; 256]) -> (u8, u8) {
@@ -6393,15 +6421,6 @@ fn parse_direct_bits_rect(
                     if byte_idx + 1 < row_data.len() {
                         let pixel =
                             ((row_data[byte_idx] as u16) << 8) | (row_data[byte_idx + 1] as u16);
-                        let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
-                        let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
-                        let b = ((pixel & 0x1F) * 255 / 31) as u8;
-                        let idx = closest_clut_index(
-                            r as u16 * 257,
-                            g as u16 * 257,
-                            b as u16 * 257,
-                            &dst_clut,
-                        );
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
                         };
@@ -6418,18 +6437,41 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel_clipped(
-                            bus,
-                            screen_base,
-                            screen_rb,
-                            x,
-                            y,
-                            idx,
-                            screen_w,
-                            screen_h,
-                            scrn_ps,
-                            dst_clip,
-                        );
+                        if scrn_ps == 16 {
+                            write_rgb555_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                pixel,
+                                screen_w,
+                                screen_h,
+                                dst_clip,
+                            );
+                        } else {
+                            let r = (((pixel >> 10) & 0x1F) * 255 / 31) as u8;
+                            let g = (((pixel >> 5) & 0x1F) * 255 / 31) as u8;
+                            let b = ((pixel & 0x1F) * 255 / 31) as u8;
+                            let idx = closest_clut_index(
+                                r as u16 * 257,
+                                g as u16 * 257,
+                                b as u16 * 257,
+                                &dst_clut,
+                            );
+                            write_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                idx,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                dst_clip,
+                            );
+                        }
                     }
                 }
             }
@@ -6446,12 +6488,6 @@ fn parse_direct_bits_rect(
                     let gi = g_start + px as usize;
                     let bi = b_start + px as usize;
                     if bi < row_data.len() {
-                        let ci = closest_clut_index(
-                            row_data[ri] as u16 * 257,
-                            row_data[gi] as u16 * 257,
-                            row_data[bi] as u16 * 257,
-                            &dst_clut,
-                        );
                         let Some(pic_y) = mapped_pic_y else {
                             continue;
                         };
@@ -6468,18 +6504,41 @@ fn parse_direct_bits_rect(
                             + dst_left as i32;
                         let y = ((pic_y - i32::from(frame_top)) as f64 * scale_y) as i32
                             + dst_top as i32;
-                        write_pixel_clipped(
-                            bus,
-                            screen_base,
-                            screen_rb,
-                            x,
-                            y,
-                            ci,
-                            screen_w,
-                            screen_h,
-                            scrn_ps,
-                            dst_clip,
-                        );
+                        if scrn_ps == 16 {
+                            let red = u16::from(row_data[ri]) * 31 / 255;
+                            let green = u16::from(row_data[gi]) * 31 / 255;
+                            let blue = u16::from(row_data[bi]) * 31 / 255;
+                            write_rgb555_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                (red << 10) | (green << 5) | blue,
+                                screen_w,
+                                screen_h,
+                                dst_clip,
+                            );
+                        } else {
+                            let ci = closest_clut_index(
+                                row_data[ri] as u16 * 257,
+                                row_data[gi] as u16 * 257,
+                                row_data[bi] as u16 * 257,
+                                &dst_clut,
+                            );
+                            write_pixel_clipped(
+                                bus,
+                                screen_base,
+                                screen_rb,
+                                x,
+                                y,
+                                ci,
+                                screen_w,
+                                screen_h,
+                                scrn_ps,
+                                dst_clip,
+                            );
+                        }
                     }
                 }
             }
@@ -8139,8 +8198,8 @@ mod tests {
     }
 
     #[test]
-    fn directbitsrect_maps_rgbdirect_colors_within_low_depth_destinations() {
-        for (pixel_size, expected) in [(2u16, 0x60u8), (4, 0x12)] {
+    fn directbitsrect_maps_rgbdirect_colors_into_indexed_and_16bpp_destinations() {
+        for (pixel_size, expected_indexed) in [(2u16, Some(0x60u8)), (4, Some(0x12)), (16, None)] {
             for source_depth in [16u16, 32] {
                 let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
                 let screen_base = 0x08_0000u32;
@@ -8216,7 +8275,9 @@ mod tests {
                 clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
                 clut[1] = [0xFFFF, 0, 0];
                 clut[2] = [0, 0xFFFF, 0];
-                clut[(1usize << pixel_size) - 1] = [0, 0, 0];
+                if pixel_size < 8 {
+                    clut[(1usize << pixel_size) - 1] = [0, 0, 0];
+                }
                 let (ok, _) = draw_picture(
                     &mut bus,
                     pic,
@@ -8224,17 +8285,28 @@ mod tests {
                     0,
                     1,
                     2,
-                    (screen_base, 1, 2, 1, pixel_size),
+                    (
+                        screen_base,
+                        if pixel_size == 16 { 4 } else { 1 },
+                        2,
+                        1,
+                        pixel_size,
+                    ),
                     &clut,
                     0,
                     None,
                 );
                 assert!(ok);
-                assert_eq!(
-                    bus.read_byte(screen_base),
-                    expected,
-                    "{source_depth}-bit DirectBitsRect into {pixel_size}-bit indexed"
-                );
+                if let Some(expected) = expected_indexed {
+                    assert_eq!(
+                        bus.read_byte(screen_base),
+                        expected,
+                        "{source_depth}-bit DirectBitsRect into {pixel_size}-bit indexed"
+                    );
+                } else {
+                    assert_eq!(bus.read_word(screen_base), 0x7c00);
+                    assert_eq!(bus.read_word(screen_base + 2), 0x03e0);
+                }
             }
         }
     }

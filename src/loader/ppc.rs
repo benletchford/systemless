@@ -19,7 +19,7 @@ use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::quickdraw::fonts::{font_id_for_name, get_font_face_scaled};
+use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
 use crate::trap::extended80::Extended80;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
@@ -970,12 +970,16 @@ pub enum PpcImportDispatcherTarget {
     GetNextDevice,
     GetMainDevice,
     GetMaxDevice,
+    GetSysFont,
+    GetDefFontSize,
+    GetFontName,
     GetMBarHeight,
     SetMBarHeight,
     NewMenu,
     DisposeMenu,
     GetMenu,
     GetItemCmd,
+    SetItemCmd,
     GetItemMark,
     CountMItems,
     GetMenuItemText,
@@ -1004,7 +1008,8 @@ pub enum PpcImportDispatcherTarget {
     GetMenuHandle,
     DrawMenuBar,
     MenuNoop,
-    MenuReturnZero,
+    MenuKey,
+    MenuSelect,
     TestDeviceAttribute,
     SetDeviceAttribute,
     HasDepth,
@@ -4057,6 +4062,7 @@ pub struct PpcSoundFilePlaybackRecord {
     pub buffer: u32,
     pub selection: u32,
     pub completion: u32,
+    pub completion_command: Option<PpcSndCommandRecord>,
     pub async_play: bool,
     pub paused: bool,
     pub active: bool,
@@ -4221,6 +4227,7 @@ pub struct PpcSoundCompletionRecord {
     pub file_playback_index: u32,
     pub channel: u32,
     pub completion: u32,
+    pub command: Option<PpcSndCommandRecord>,
     pub tick: u32,
     pub instruction_count: u64,
     pub scheduled_tick: u32,
@@ -4541,6 +4548,21 @@ impl PpcLoadedApp {
     }
 
     pub fn set_input_snapshot(&mut self, input: PpcInputSnapshot) {
+        use crate::memory::globals::addr;
+
+        // Native mouse and keyboard drivers mirror the current device state
+        // into low memory. PowerPC applications may poll these globals
+        // directly instead of calling Button, GetMouse, or GetKeys.
+        let _ = self
+            .memory
+            .write_u8(addr::MB_STATE, if input.mouse_button { 0x00 } else { 0x80 });
+        let _ = self.memory.write_bytes(addr::KEY_MAP_LM, &input.key_map);
+        for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            let _ = self.memory.write_u16_be(point_addr, input.mouse_v as u16);
+            let _ = self
+                .memory
+                .write_u16_be(point_addr + 2, input.mouse_h as u16);
+        }
         self.input = input;
     }
 
@@ -7013,10 +7035,25 @@ impl PpcLoadedApp {
             saved_cpu.gpr[1]
         };
         self.cpu.gpr[2] = target.rtoc;
+        let command_ptr = completion.command.and_then(|command| {
+            // The PowerPC SndCallBackProcPtr signature is
+            // (SndChannelPtr, SndCommand *). Keep the copied command in the
+            // final eight bytes of the 64-byte callback frame, after its
+            // linkage and eight-word parameter areas and before the
+            // interrupted routine's protected Red Zone.
+            let command_ptr = self.cpu.gpr[1].checked_add(
+                PPC_PARAMETER_AREA_OFFSET + PPC_NATIVE_PARAMETER_GPR_COUNT as u32 * 4,
+            )?;
+            self.memory.write_u16_be(command_ptr, command.command)?;
+            self.memory
+                .write_u16_be(command_ptr + 2, command.param1 as u16)?;
+            self.memory.write_u32_be(command_ptr + 4, command.param2)?;
+            Some(command_ptr)
+        });
         let _ = ppc_install_native_call_arguments(
             &mut self.cpu,
             &mut self.memory,
-            &[completion.channel],
+            &[completion.channel, command_ptr.unwrap_or(0)],
         );
 
         let probe = match (trace_imports, trace_fetches) {
@@ -13691,6 +13728,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "DisposeMenu") => PpcImportDispatcherTarget::DisposeMenu,
         ("InterfaceLib", "GetMenu") => PpcImportDispatcherTarget::GetMenu,
         ("InterfaceLib", "GetItemCmd") => PpcImportDispatcherTarget::GetItemCmd,
+        ("InterfaceLib", "SetItemCmd") => PpcImportDispatcherTarget::SetItemCmd,
         ("InterfaceLib", "GetItemMark") => PpcImportDispatcherTarget::GetItemMark,
         ("InterfaceLib", "CountMItems") => PpcImportDispatcherTarget::CountMItems,
         ("InterfaceLib", "GetMenuItemText") => PpcImportDispatcherTarget::GetMenuItemText,
@@ -13726,6 +13764,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
         ("InterfaceLib", "DrawMenuBar") => PpcImportDispatcherTarget::DrawMenuBar,
         ("InterfaceLib", "HiliteMenu")
+        | ("InterfaceLib", "InvalMenuBar")
         | ("InterfaceLib", "AppendResMenu")
         | ("InterfaceLib", "OpenCPicture")
         | ("InterfaceLib", "ClosePicture")
@@ -13736,9 +13775,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GlobalToLocal") => PpcImportDispatcherTarget::GlobalToLocal,
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
-        ("InterfaceLib", "MenuKey") | ("InterfaceLib", "MenuSelect") => {
-            PpcImportDispatcherTarget::MenuReturnZero
-        }
+        ("InterfaceLib", "MenuKey") => PpcImportDispatcherTarget::MenuKey,
+        ("InterfaceLib", "MenuSelect") => PpcImportDispatcherTarget::MenuSelect,
         ("InterfaceLib", "MoveTo") => PpcImportDispatcherTarget::MoveTo,
         ("InterfaceLib", "Move") => PpcImportDispatcherTarget::Move,
         ("InterfaceLib", "LineTo") => PpcImportDispatcherTarget::LineTo,
@@ -13832,6 +13870,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetNextDevice") => PpcImportDispatcherTarget::GetNextDevice,
         ("InterfaceLib", "GetMainDevice") => PpcImportDispatcherTarget::GetMainDevice,
         ("InterfaceLib", "GetMaxDevice") => PpcImportDispatcherTarget::GetMaxDevice,
+        ("InterfaceLib", "GetSysFont") => PpcImportDispatcherTarget::GetSysFont,
+        ("InterfaceLib", "GetDefFontSize") => PpcImportDispatcherTarget::GetDefFontSize,
+        ("InterfaceLib", "GetFontName") => PpcImportDispatcherTarget::GetFontName,
         ("InterfaceLib", "GetMBarHeight") | ("InterfaceLib", "LMGetMBarHeight") => {
             PpcImportDispatcherTarget::GetMBarHeight
         }
@@ -14292,7 +14333,9 @@ fn dispatcher_target_for_import(
         ("QuickTimeLib", "ClearMoviesStickyError") => {
             PpcImportDispatcherTarget::QtClearMoviesStickyError
         }
-        ("InterfaceLib", "ParamText") => PpcImportDispatcherTarget::ParamText,
+        ("InterfaceLib", "ParamText") | ("InterfaceLib", "paramtext") => {
+            PpcImportDispatcherTarget::ParamText
+        }
         ("InterfaceLib", "X2Fix") => PpcImportDispatcherTarget::X2Fix,
         ("InterfaceLib", "Alert" | "StopAlert" | "NoteAlert" | "CautionAlert") => {
             PpcImportDispatcherTarget::AlertReturnDefault
@@ -14346,7 +14389,7 @@ fn dispatcher_target_for_import(
             "DisposeControl" | "Draw1Control" | "FindControl" | "GetControlMaximum"
             | "GetControlMinimum" | "GetControlTitle" | "GetControlValue" | "GetNewControl"
             | "HideControl" | "KillControls" | "MoveControl" | "NewControl" | "SetControlMaximum"
-            | "SetControlMinimum" | "ShowControl" | "SizeControl" | "TrackControl",
+            | "SetControlMinimum" | "ShowControl" | "SizeControl" | "TestControl" | "TrackControl",
         ) => PpcImportDispatcherTarget::LegacyControl,
         (
             "InterfaceLib",
@@ -15140,6 +15183,16 @@ fn dispatch_supported_import(
             ppc_get_item_cmd(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::SetItemCmd => {
+            if crate::trap::dispatch::trace_input_enabled() {
+                eprintln!(
+                    "[INPUT] PPC SetItemCmd menu=${:08X} item={} command=${:02X}",
+                    cpu.gpr[3], cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8
+                );
+            }
+            ppc_set_item_cmd(cpu, memory);
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetItemMark => {
             ppc_get_item_mark(cpu, memory);
             Some(PpcImportAction::ReturnPreserve)
@@ -15310,7 +15363,28 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
-        PpcImportDispatcherTarget::MenuReturnZero => Some(PpcImportAction::Return(0)),
+        PpcImportDispatcherTarget::MenuKey => {
+            let result = ppc_menu_key(memory, toolbox_startup.current_menu_bar, cpu.gpr[3] as u8);
+            if crate::trap::dispatch::trace_input_enabled() {
+                eprintln!(
+                    "[INPUT] PPC MenuKey menu_list=${:08X} key=${:02X} -> ${result:08X}",
+                    toolbox_startup.current_menu_bar, cpu.gpr[3] as u8
+                );
+            }
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::MenuSelect => {
+            if input.mouse_button {
+                Some(PpcImportAction::Yield(u64::MAX))
+            } else {
+                Some(PpcImportAction::Return(ppc_menu_select(
+                    memory,
+                    toolbox_startup.current_menu_bar,
+                    cpu.gpr[3],
+                    input,
+                )))
+            }
+        }
         PpcImportDispatcherTarget::GetIndResource | PpcImportDispatcherTarget::Get1IndResource => {
             let current_only = matches!(
                 binding.dispatcher_target,
@@ -16444,8 +16518,20 @@ fn dispatch_supported_import(
                         || gworld.port != window
                 });
                 if *current_gworld == window {
-                    *current_gworld = PPC_MAIN_GWORLD;
-                    *current_gdevice = PPC_MAIN_GDEVICE;
+                    *current_gworld = gworlds
+                        .iter()
+                        .rev()
+                        .map(|gworld| gworld.port)
+                        .find(|candidate| {
+                            !matches!(*candidate, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+                                && ppc_window_is_visible(memory, *candidate)
+                        })
+                        .unwrap_or(PPC_MAIN_GWORLD);
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
+                    if *current_gworld != PPC_MAIN_GWORLD {
+                        ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+                    }
                 }
             }
             if ppc_gworld_trace_enabled() {
@@ -16730,6 +16816,18 @@ fn dispatch_supported_import(
                 .map_or(0, |_| PPC_MAIN_GDEVICE);
             Some(PpcImportAction::Return(device))
         }
+        // Inside Macintosh: Text (1993), p. 4-53: GetSysFont returns the
+        // system font ID. Systemless models the standard systemFont value.
+        PpcImportDispatcherTarget::GetSysFont => Some(PpcImportAction::Return(0)),
+        // The same reference specifies that GetDefFontSize returns
+        // SysFontSize, using 12 points when that low-memory value is zero.
+        // Systemless currently models the default system font at 12 points.
+        PpcImportDispatcherTarget::GetDefFontSize => Some(PpcImportAction::Return(12)),
+        PpcImportDispatcherTarget::GetFontName => {
+            let name = font_name_for_id(cpu.gpr[3] as u16 as i16).unwrap_or("");
+            let _ = ppc_write_pstring_bytes(memory, cpu.gpr[4], name.as_bytes());
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::GetMBarHeight => Some(PpcImportAction::Return(u32::from(
             memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
         ))),
@@ -16747,7 +16845,15 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::HasDepth => {
             let depth = cpu.gpr[4] & 0xffff;
-            let mode_id = if matches!(depth, 1 | 2 | 4 | 8) { 1 } else { 0 };
+            // Imaging With QuickDraw (1994), pp. 5-33--5-34: return a
+            // nonzero mode ID for each depth supported by the device. The
+            // main framebuffer reserves enough storage for direct 16-bit
+            // pixels as well as the classic indexed depths.
+            let mode_id = if matches!(depth, 1 | 2 | 4 | 8 | 16) {
+                depth
+            } else {
+                0
+            };
             Some(PpcImportAction::Return(mode_id))
         }
         PpcImportDispatcherTarget::SetDepth => Some(PpcImportAction::Return(ppc_i16_result(
@@ -22258,6 +22364,7 @@ fn dispatch_supported_import(
             current_gworld,
             current_gdevice,
             input,
+            event_queue,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -37659,6 +37766,12 @@ fn ppc_snd_new_channel(
         return PPC_PARAM_ERR;
     }
     *last_mem_error = PPC_NO_ERR;
+    if ppc_sound_trace_enabled() {
+        eprintln!(
+            "[PPC-SOUND] SndNewChannel chan=${channel:08X} synth={synth} init=${:08X} user_routine=${user_routine:08X}",
+            cpu.gpr[5]
+        );
+    }
     PPC_NO_ERR
 }
 
@@ -37930,8 +38043,25 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
     }
 
     // Inside Macintosh: Sound (1994), pp. 2-130–2-131: SndDoCommand appends
-    // the eight-byte SndCommand to the channel's FIFO queue. Our HLE queue is
-    // unbounded, so the noWait distinction cannot produce queueFull.
+    // the eight-byte SndCommand to the channel's FIFO queue. A callbackCmd
+    // following sampled sound runs only when that sound has completed, with
+    // a copy of the queued command as the callback's second argument.
+    if command.command == 13 {
+        let completion = memory.read_u32_be(channel.saturating_add(8)).unwrap_or(0);
+        if completion != 0 {
+            if let Some(playback) = sound
+                .file_playbacks
+                .iter_mut()
+                .rev()
+                .find(|playback| playback.channel == channel && playback.active)
+            {
+                playback.completion = completion;
+                playback.completion_command = Some(PpcSndCommandRecord { channel, ..command });
+            }
+        }
+    }
+    // The HLE queue is unbounded, so the noWait distinction cannot produce
+    // queueFull.
     ppc_decode_buffer_command(memory, sound, channel, command);
     sound
         .queued_commands
@@ -38003,6 +38133,14 @@ fn ppc_snd_play(
         playback.paused = false;
     }
     let summary = decoded.summary;
+    if ppc_sound_trace_enabled() {
+        eprintln!(
+            "[PPC-SOUND] SndPlay chan=${channel:08X} handle=${sound_handle:08X} async={} samples={} rate=${:08X}",
+            async_play,
+            decoded.samples.len(),
+            summary.sample_rate_fixed
+        );
+    }
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
@@ -38019,6 +38157,7 @@ fn ppc_snd_play(
         buffer: 0,
         selection: 0,
         completion: 0,
+        completion_command: None,
         async_play,
         paused: false,
         active: true,
@@ -38278,6 +38417,7 @@ fn ppc_snd_start_file_play(
         buffer: cpu.gpr[7],
         selection: cpu.gpr[8],
         completion: cpu.gpr[9],
+        completion_command: None,
         async_play: cpu.gpr[10] != 0,
         paused: false,
         active: true,
@@ -39199,7 +39339,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
     if front_buffer.depth != 16 || front_buffer.row_bytes < front_buffer.width.saturating_mul(2) {
         return false;
     }
-    let row_bytes = front_buffer.width;
+    let row_bytes = front_buffer.row_bytes;
     let Some(buffer_len) = row_bytes.checked_mul(front_buffer.height) else {
         return false;
     };
@@ -39222,25 +39362,31 @@ fn ppc_draw_pict_bytes_to_16bpp(
         return false;
     }
 
-    let mut indexed = vec![0u8; buffer_len_usize];
+    let mut direct = vec![0u8; buffer_len_usize];
     for y in 0..front_buffer.height {
-        for x in 0..front_buffer.width {
-            let Some(index) = y
-                .checked_mul(row_bytes)
-                .and_then(|row| row.checked_add(x))
-                .and_then(|offset| usize::try_from(offset).ok())
-            else {
-                return false;
-            };
-            let pixel =
-                ppc_q3_read_software_pixel(memory, front_buffer, (x as i32, y as i32)).unwrap_or(0);
-            indexed[index] = ppc_rgb555_to_clut_index(pixel, clut);
+        let Some(src_addr) = front_buffer
+            .base_addr
+            .checked_add(y.saturating_mul(front_buffer.row_bytes))
+        else {
+            return false;
+        };
+        let Some(dst_offset) = usize::try_from(y.saturating_mul(row_bytes)).ok() else {
+            return false;
+        };
+        let Some(row_len) = usize::try_from(row_bytes).ok() else {
+            return false;
+        };
+        if memory
+            .read_bytes_into(src_addr, &mut direct[dst_offset..dst_offset + row_len])
+            .is_none()
+        {
+            return false;
         }
     }
 
     let mut bus = MacMemoryBus::new(ram_size);
     bus.write_bytes(pict_base, data);
-    bus.write_bytes(screen_base, &indexed);
+    bus.write_bytes(screen_base, &direct);
     let (rendered, _) = pict::draw_picture(
         &mut bus,
         pict_base + u32::try_from(pict_offset).unwrap_or(0),
@@ -39248,7 +39394,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
         dst_left,
         dst_bottom,
         dst_right,
-        (screen_base, row_bytes, width, height, 8),
+        (screen_base, row_bytes, width, height, 16),
         clut,
         device_ct_seed,
         None,
@@ -39257,22 +39403,22 @@ fn ppc_draw_pict_bytes_to_16bpp(
         return false;
     }
 
-    let copy_top = i32::from(dst_top).max(0).min(front_buffer.height as i32);
-    let copy_left = i32::from(dst_left).max(0).min(front_buffer.width as i32);
-    let copy_bottom = i32::from(dst_bottom).max(0).min(front_buffer.height as i32);
-    let copy_right = i32::from(dst_right).max(0).min(front_buffer.width as i32);
-    for y in copy_top..copy_bottom {
-        for x in copy_left..copy_right {
-            let (x, y) = (x as u32, y as u32);
-            let pixel_addr = screen_base + y.saturating_mul(row_bytes) + x;
-            let color_index = bus.read_byte(pixel_addr);
-            let [red, green, blue] = clut[color_index as usize];
-            let pixel = ppc_q3_rgb555((
-                f32::from(red) / 65_535.0,
-                f32::from(green) / 65_535.0,
-                f32::from(blue) / 65_535.0,
-            ));
-            let _ = ppc_q3_write_software_pixel(memory, front_buffer, (x as i32, y as i32), pixel);
+    for y in 0..front_buffer.height {
+        let Some(src_addr) = screen_base.checked_add(y.saturating_mul(row_bytes)) else {
+            return false;
+        };
+        let Some(dst_addr) = front_buffer
+            .base_addr
+            .checked_add(y.saturating_mul(front_buffer.row_bytes))
+        else {
+            return false;
+        };
+        let Some(row_len) = usize::try_from(row_bytes).ok() else {
+            return false;
+        };
+        let row = bus.read_bytes(src_addr, row_len);
+        if row.len() != row_len || memory.write_bytes(dst_addr, &row).is_none() {
+            return false;
         }
     }
 
@@ -41306,6 +41452,7 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
         buffer: 0,
         selection: 0,
         completion: 0,
+        completion_command: None,
         async_play: false,
         paused: false,
         active: true,
@@ -43728,7 +43875,14 @@ fn ppc_open_cport(
         )
         .is_none()
         || memory
-            .write_u32_be(pixmap + 42, screen_color_table)
+            .write_u32_be(
+                pixmap + 42,
+                if bits.depth <= 8 {
+                    screen_color_table
+                } else {
+                    0
+                },
+            )
             .is_none()
         || ppc_write_gworld_port(
             memory,
@@ -43963,7 +44117,7 @@ fn ppc_new_cwindow(
         )
         .is_none()
         || memory
-            .write_u32_be(pixmap + 42, screen_color_table)
+            .write_u32_be(pixmap + 42, if depth <= 8 { screen_color_table } else { 0 })
             .is_none()
         || ppc_write_gworld_port(memory, port, pixmap_handle, 0, 0, local_bottom, local_right)
             .is_none()
@@ -46543,6 +46697,7 @@ fn ppc_copy_bits(
     let src_rect_ptr = cpu.gpr[5];
     let dst_rect_ptr = cpu.gpr[6];
     let transfer_mode = cpu.gpr[7] as u16;
+    let mask_rgn = cpu.gpr[8];
     let mut reason = "ok";
     let mut trace_details = None;
     let copied = (|| {
@@ -46631,12 +46786,22 @@ fn ppc_copy_bits(
             return None;
         }
 
+        let mask_storage = if mask_rgn == 0 {
+            None
+        } else {
+            let Some(storage) = ppc_region_storage(memory, mask_rgn) else {
+                reason = "mask-rgn";
+                return None;
+            };
+            Some(storage)
+        };
+
         // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-112–3-116
         // and 4-27: CopyBits copies bitmap or PixMap pixels between graphics
         // ports and GWorlds, including indexed-color PixMaps. Keep the common
         // unscaled copy row-based so an 8-bit full-screen blit remains native
         // host memory bandwidth rather than 307,200 scalar HLE writes.
-        if src_width == dst_width && src_height == dst_height {
+        if mask_storage.is_none() && src_width == dst_width && src_height == dst_height {
             let x_delta = i32::from(src_left) - i32::from(dst_left);
             let y_delta = i32::from(src_top) - i32::from(dst_top);
             let copy_left = copy_left.max(i32::from(src_bits.left) - x_delta);
@@ -46679,6 +46844,11 @@ fn ppc_copy_bits(
                 continue;
             };
             for dst_x in copy_left..copy_right {
+                if mask_storage.as_ref().is_some_and(|storage| {
+                    !ppc_point_in_region_storage(storage, dst_y as i16, dst_x as i16)
+                }) {
+                    continue;
+                }
                 let rel_x = i64::from(dst_x) - i64::from(dst_left);
                 let src_x = i64::from(src_left) + (rel_x * src_width) / dst_width;
                 let Ok(src_x) = i32::try_from(src_x) else {
@@ -46724,7 +46894,7 @@ fn ppc_copy_bits(
     if ppc_hle_trace_enabled() {
         if let Some((src, dst, src_rect, dst_rect)) = trace_details {
             eprintln!(
-                "[PPC-TRACE] CopyBits src=${:08X}[base=${:08X} rb={} depth={} bounds=({},{},{},{})] dst=${:08X}[base=${:08X} rb={} depth={} bounds=({},{},{},{})] srcRect=${:08X}({},{},{},{}) dstRect=${:08X}({},{},{},{}) mode=${:04X} copied={} reason={}",
+                "[PPC-TRACE] CopyBits src=${:08X}[base=${:08X} rb={} depth={} bounds=({},{},{},{})] dst=${:08X}[base=${:08X} rb={} depth={} bounds=({},{},{},{})] srcRect=${:08X}({},{},{},{}) dstRect=${:08X}({},{},{},{}) mode=${:04X} maskRgn=${:08X} copied={} reason={}",
                 src_bits_ptr,
                 src.base_addr,
                 src.row_bytes,
@@ -46752,17 +46922,19 @@ fn ppc_copy_bits(
                 dst_rect.2,
                 dst_rect.3,
                 transfer_mode,
+                mask_rgn,
                 copied,
                 reason
             );
         } else {
             eprintln!(
-                "[PPC-TRACE] CopyBits src=${:08X} dst=${:08X} srcRect=${:08X} dstRect=${:08X} mode=${:04X} copied={} reason={}",
+                "[PPC-TRACE] CopyBits src=${:08X} dst=${:08X} srcRect=${:08X} dstRect=${:08X} mode=${:04X} maskRgn=${:08X} copied={} reason={}",
                 src_bits_ptr,
                 dst_bits_ptr,
                 src_rect_ptr,
                 dst_rect_ptr,
                 transfer_mode,
+                mask_rgn,
                 copied,
                 reason
             );
@@ -46950,10 +47122,15 @@ fn ppc_write_pixmap(
     memory.write_u32_be(pixmap + 18, 0)?;
     memory.write_u32_be(pixmap + 22, 0x0048_0000)?;
     memory.write_u32_be(pixmap + 26, 0x0048_0000)?;
-    memory.write_u16_be(pixmap + 30, 0)?;
+    let (pixel_type, component_count, component_size) = match depth {
+        16 => (16, 3, 5),
+        32 => (16, 3, 8),
+        _ => (0, 1, depth),
+    };
+    memory.write_u16_be(pixmap + 30, pixel_type)?;
     memory.write_u16_be(pixmap + 32, depth as u16)?;
-    memory.write_u16_be(pixmap + 34, 1)?;
-    memory.write_u16_be(pixmap + 36, depth as u16)?;
+    memory.write_u16_be(pixmap + 34, component_count)?;
+    memory.write_u16_be(pixmap + 36, component_size as u16)?;
     memory.write_u32_be(pixmap + 38, 0)?;
     memory.write_u32_be(pixmap + 42, 0)?;
     memory.write_u32_be(pixmap + 46, 0)?;
@@ -47063,7 +47240,7 @@ fn ppc_set_device_attribute(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
 
 fn ppc_set_depth(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcGWorldRecord]) -> i16 {
     let depth = cpu.gpr[4] & 0xffff;
-    if depth != 8 {
+    if !matches!(depth, 8 | 16) {
         return PPC_PARAM_ERR;
     }
     let gdevice_handle = cpu.gpr[3];
@@ -47094,6 +47271,9 @@ fn ppc_set_depth(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcGWo
         PPC_MAIN_SCREEN_WIDTH as i16,
         depth,
     );
+    if depth == 8 {
+        let _ = memory.write_u32_be(PPC_MAIN_PIXMAP + 42, PPC_MAIN_CTABLE_HANDLE);
+    }
     let _ = ppc_write_gdevice(
         memory,
         gdevice,
@@ -47103,6 +47283,9 @@ fn ppc_set_depth(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcGWo
         PPC_MAIN_SCREEN_HEIGHT as i16,
         PPC_MAIN_SCREEN_WIDTH as i16,
     );
+    let clear_byte = if depth == 8 { 0xff } else { 0x00 };
+    let clear_len = row_bytes.saturating_mul(PPC_MAIN_SCREEN_HEIGHT) as usize;
+    let _ = memory.write_bytes(PPC_MAIN_SCREEN_BASE, &vec![clear_byte; clear_len]);
     PPC_NO_ERR
 }
 
@@ -54358,10 +54541,28 @@ fn ppc_dispatch_legacy_control(
             }
             Some(PpcImportAction::Return(ppc_i16_result(part)))
         }
+        "TestControl" => {
+            let v = (cpu.gpr[4] >> 16) as u16 as i16;
+            let h = cpu.gpr[4] as u16 as i16;
+            let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
+            if crate::trap::dispatch::trace_input_enabled() {
+                eprintln!(
+                    "[INPUT] PPC TestControl control=${:08X} point=({}, {}) -> {}",
+                    cpu.gpr[3], v, h, part
+                );
+            }
+            Some(PpcImportAction::Return(ppc_i16_result(part)))
+        }
         "TrackControl" => {
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;
             let part = ppc_control_part_at_point(memory, controls, cpu.gpr[3], v, h).unwrap_or(0);
+            if crate::trap::dispatch::trace_input_enabled() {
+                eprintln!(
+                    "[INPUT] PPC TrackControl control=${:08X} point=({}, {}) action=${:08X} -> {}",
+                    cpu.gpr[3], v, h, cpu.gpr[5], part
+                );
+            }
             if part == 0 || cpu.gpr[5] == 0 {
                 return Some(PpcImportAction::Return(ppc_i16_result(part)));
             }
@@ -54792,6 +54993,7 @@ fn ppc_dispatch_legacy_window(
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     input: PpcInputSnapshot,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -54897,6 +55099,9 @@ fn ppc_dispatch_legacy_window(
                 current_gdevice,
                 cpu.gpr[3],
             );
+            if *current_gworld != PPC_MAIN_GWORLD {
+                ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         "HiliteWindow" => {
@@ -57154,6 +57359,17 @@ fn ppc_get_item_cmd(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let _ = memory.write_u16_be(cmd_char_ptr, u16::from(command));
 }
 
+fn ppc_set_item_cmd(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+    let Some(address) =
+        ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 1)
+    else {
+        return;
+    };
+    // Inside Macintosh Volume V (1986), p. V-244: SetItemCmd installs the
+    // command-key byte, including $1B for a hierarchical submenu.
+    let _ = memory.write_u8(address, cpu.gpr[5] as u8);
+}
+
 fn ppc_get_item_mark(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let mark_ptr = cpu.gpr[5];
     if mark_ptr == 0 || !ppc_memory_can_write_bytes(memory, mark_ptr, 2) {
@@ -57488,6 +57704,74 @@ fn ppc_pop_up_menu_select(
     }
     let menu_id = memory.read_u16_be(menu).unwrap_or(0);
     (u32::from(menu_id) << 16) | u32::from(item as u16)
+}
+
+fn ppc_menu_key(memory: &mut PpcSectionMem, menu_list_handle: u32, key: u8) -> u32 {
+    let Some(menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
+        return 0;
+    };
+    for menu_handle in menus {
+        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+            continue;
+        };
+        let menu_id = memory.read_u16_be(menu).unwrap_or(0);
+        let count = ppc_count_menu_items(memory, menu_handle);
+        for item in 1..=count {
+            if !ppc_menu_item_enabled(memory, menu_handle, item as i16) {
+                continue;
+            }
+            let command = ppc_menu_item_attribute_address(memory, menu_handle, item as i16, 1)
+                .and_then(|address| memory.read_u8(address))
+                .unwrap_or(0);
+            if command != 0 && command != 0x1b && command.eq_ignore_ascii_case(&key) {
+                return (u32::from(menu_id) << 16) | u32::from(item);
+            }
+        }
+    }
+    0
+}
+
+fn ppc_menu_select(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    initial_point: u32,
+    input: PpcInputSnapshot,
+) -> u32 {
+    let initial_h = initial_point as u16 as i16;
+    let Some(menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
+        return 0;
+    };
+    let mut title_left = 10i16;
+    for menu_handle in menus {
+        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+            continue;
+        };
+        let title = ppc_read_pascal_string(memory, menu + 14).unwrap_or_default();
+        let title_width = ppc_text_bytes_advance_for_font(
+            &title,
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        )
+        .max(0)
+        .saturating_add(14);
+        let title_right = title_left.saturating_add(title_width);
+        if initial_h >= title_left && initial_h < title_right {
+            let count = ppc_count_menu_items(memory, menu_handle) as i16;
+            let relative_v = i32::from(input.mouse_v) - 20;
+            let item = if relative_v >= 0 {
+                i16::try_from(relative_v / 16 + 1).unwrap_or(i16::MAX)
+            } else {
+                0
+            };
+            if item > 0 && item <= count && ppc_menu_item_enabled(memory, menu_handle, item) {
+                let menu_id = memory.read_u16_be(menu).unwrap_or(0);
+                return (u32::from(menu_id) << 16) | u32::from(item as u16);
+            }
+            return 0;
+        }
+        title_left = title_right;
+    }
+    0
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -65783,6 +66067,10 @@ mod tests {
             dispatcher_target_for_import("InterfaceLib", "CountMItems"),
             PpcImportDispatcherTarget::CountMItems
         );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetItemCmd"),
+            PpcImportDispatcherTarget::SetItemCmd
+        );
     }
 
     #[test]
@@ -65806,11 +66094,20 @@ mod tests {
         let menu_handle = 0x1000;
         let menu = 0x1100;
         let output = 0x1200;
+        let menu_list_handle = 0x1300;
+        let menu_list = 0x1400;
         let mut memory = PpcSectionMem::new();
         memory.add_region(menu_handle, vec![0; 4]);
         memory.add_region(menu, vec![0; 64]);
         memory.add_region(output, vec![0; 256]);
+        memory.add_region(menu_list_handle, vec![0; 4]);
+        memory.add_region(menu_list, vec![0; 6]);
         memory.write_u32_be(menu_handle, menu).unwrap();
+        memory.write_u16_be(menu, 128).unwrap();
+        memory.write_u32_be(menu + 10, 0b111).unwrap();
+        memory.write_u32_be(menu_list_handle, menu_list).unwrap();
+        memory.write_u16_be(menu_list, 1).unwrap();
+        memory.write_u32_be(menu_list + 2, menu_handle).unwrap();
         memory.write_u8(menu + 14, 4).unwrap();
         memory.write_bytes(menu + 15, b"Test").unwrap();
         memory.write_u8(menu + 19, 3).unwrap();
@@ -65836,6 +66133,16 @@ mod tests {
 
         ppc_get_item_cmd(&cpu, &mut memory);
         assert_eq!(memory.read_u16_be(output), Some(u16::from(b'Q')));
+        assert_eq!(
+            ppc_menu_key(&mut memory, menu_list_handle, b'r'),
+            (128 << 16) | 1
+        );
+
+        cpu.gpr[5] = 0x1b;
+        ppc_set_item_cmd(&cpu, &mut memory);
+        cpu.gpr[5] = output;
+        ppc_get_item_cmd(&cpu, &mut memory);
+        assert_eq!(memory.read_u16_be(output), Some(0x1b));
     }
 
     #[test]
@@ -65954,6 +66261,10 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "DrawMenuBar"),
             PpcImportDispatcherTarget::DrawMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
+            PpcImportDispatcherTarget::MenuNoop
         );
     }
 
@@ -67341,6 +67652,45 @@ mod tests {
             Some(0)
         );
         assert!(loaded.controls.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_test_control_returns_the_hit_part() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"TestControl")).unwrap();
+        let scratch = ppc_heap_alloc(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            32,
+            true,
+        );
+        ppc_write_rect(&mut loaded.memory, scratch, 5, 6, 25, 86).unwrap();
+        write_ppc_pstring(&mut loaded.memory, scratch + 8, b"OK");
+        let handle = ppc_new_control_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            scratch,
+            scratch + 8,
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = (10 << 16) | 10;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 10);
     }
 
     #[test]
@@ -101214,8 +101564,36 @@ mod tests {
     fn hle_import_runner_handles_close_window() {
         let pef = synthetic_pef_with_import(b"CloseWindow");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let underlying_window = PPC_DATA_BASE + 0x0800;
         let window_ptr = PPC_DATA_BASE + 0x1000;
         let gdevice = PPC_DATA_BASE + 0x2000;
+        loaded
+            .memory
+            .add_region(underlying_window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        loaded
+            .memory
+            .add_region(window_ptr, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        loaded
+            .memory
+            .write_u8(underlying_window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(window_ptr + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded.gworlds.push(PpcGWorldRecord {
+            port: underlying_window,
+            pixmap_handle: PPC_DATA_BASE + 0x0900,
+            pixmap: PPC_DATA_BASE + 0x0a00,
+            base_addr: PPC_DATA_BASE + 0x4000,
+            gdevice,
+            width: 320,
+            height: 240,
+            depth: PPC_MAIN_PIXEL_DEPTH,
+            row_bytes: 640,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        });
         loaded.gworlds.push(PpcGWorldRecord {
             port: window_ptr,
             pixmap_handle: PPC_DATA_BASE + 0x1100,
@@ -101249,8 +101627,12 @@ mod tests {
             .gworlds
             .iter()
             .any(|record| record.port == window_ptr));
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(loaded.current_gworld, underlying_window);
+        assert_eq!(loaded.current_gdevice, gdevice);
+        assert!(loaded
+            .event_queue()
+            .iter()
+            .any(|event| event.what == 6 && event.message == underlying_window));
     }
 
     #[test]
@@ -102722,6 +103104,71 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(dst_addr(12, 21)), Some(0x1023));
         assert_eq!(loaded.memory.read_u16_be(dst_addr(9, 20)), Some(0x0bad));
         assert_eq!(loaded.memory.read_u16_be(dst_addr(13, 20)), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_clips_to_complex_mask_region() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x11800;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 0x20;
+        let src_pixmap = scratch + 0x40;
+        let dst_pixmap = scratch + 0x80;
+        let rect = scratch + 0xc0;
+        loaded.memory.add_region(scratch, vec![0; 0xe0]);
+        ppc_write_pixmap(&mut loaded.memory, src_pixmap, src_pixels, 4, 0, 0, 4, 4, 8).unwrap();
+        ppc_write_pixmap(&mut loaded.memory, dst_pixmap, dst_pixels, 4, 0, 0, 4, 4, 8).unwrap();
+        loaded
+            .memory
+            .write_bytes(
+                src_pixels,
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            )
+            .unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 4, 4).unwrap();
+
+        let mask_rgn = ppc_new_rgn(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+        );
+        let mask_storage = ppc_region_storage_from_rows(
+            0,
+            &[vec![1, 3], vec![0, 1, 3, 4], vec![1, 3], Vec::new()],
+        )
+        .unwrap();
+        assert_eq!(
+            ppc_write_region_storage(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                mask_rgn,
+                &mask_storage,
+            ),
+            PPC_NO_ERR
+        );
+
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 0;
+        loaded.cpu.gpr[8] = mask_rgn;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let mut copied = [0; 16];
+        loaded
+            .memory
+            .read_bytes_into(dst_pixels, &mut copied)
+            .unwrap();
+        assert_eq!(copied, [0, 2, 3, 0, 5, 0, 0, 8, 0, 10, 11, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -112836,6 +113283,31 @@ mod tests {
     }
 
     #[test]
+    fn input_snapshot_updates_powerpc_low_memory_device_state() {
+        use crate::memory::globals::addr;
+
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let mut key_map = [0; PPC_KEY_MAP_SIZE as usize];
+        key_map[3] = 0x40;
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            key_map,
+            mouse_button: true,
+            mouse_v: 123,
+            mouse_h: 456,
+        });
+
+        assert_eq!(loaded.memory.read_u8(addr::MB_STATE), Some(0));
+        assert_eq!(loaded.memory.read_u8(addr::KEY_MAP_LM + 3), Some(0x40));
+        for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            assert_eq!(loaded.memory.read_u16_be(point_addr), Some(123));
+            assert_eq!(loaded.memory.read_u16_be(point_addr + 2), Some(456));
+        }
+
+        loaded.set_input_snapshot(PpcInputSnapshot::default());
+        assert_eq!(loaded.memory.read_u8(addr::MB_STATE), Some(0x80));
+    }
+
+    #[test]
     fn hle_import_runner_posts_events_with_the_current_mouse_position() {
         let pef = synthetic_pef_with_import(b"PostEvent");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -114137,6 +114609,52 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_handles_get_def_font_size() {
+        let pef = synthetic_pef_with_import(b"GetDefFontSize");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 12);
+    }
+
+    #[test]
+    fn hle_import_runner_handles_get_sys_font() {
+        let pef = synthetic_pef_with_import(b"GetSysFont");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+
+    #[test]
+    fn hle_import_runner_handles_get_font_name() {
+        let pef = synthetic_pef_with_import(b"GetFontName");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let name_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(name_ptr, vec![0; 256]);
+        loaded.cpu.gpr[3] = 3;
+        loaded.cpu.gpr[4] = name_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u8(name_ptr), Some(6));
+        let mut name = [0; 6];
+        assert!(loaded
+            .memory
+            .read_bytes_into(name_ptr + 1, &mut name)
+            .is_some());
+        assert_eq!(&name, b"Geneva");
+    }
+
+    #[test]
     fn hle_import_runner_handles_test_device_attribute() {
         let pef = synthetic_pef_with_import(b"TestDeviceAttribute");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -114183,7 +114701,7 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.cpu.gpr[3], 16);
     }
 
     #[test]
@@ -114210,7 +114728,33 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.gworlds[0].depth, 16);
+        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2);
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(16));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(16));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(3));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 36), Some(5));
+        assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42), Some(0));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[4] = 8;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.gworlds[0].depth, 8);
+        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH);
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(0));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(8));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(1));
+        assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 36), Some(8));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42),
+            Some(PPC_MAIN_CTABLE_HANDLE)
+        );
     }
 
     #[test]
@@ -116959,6 +117503,82 @@ mod tests {
     }
 
     #[test]
+    fn queued_callback_command_schedules_the_async_snd_play_completion() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let channel = PPC_DATA_BASE + 0x1000;
+        let sound_handle = PPC_DATA_BASE + 0x1100;
+        let sound_ptr = PPC_DATA_BASE + 0x1200;
+        let command_ptr = PPC_DATA_BASE + 0x1300;
+        let completion = PPC_CODE_BASE + 0x80;
+        let samples = [0x80, 0x90, 0x70, 0x80];
+        let mut resource = vec![0; 40];
+        write_u16(&mut resource, 0, 2);
+        write_u16(&mut resource, 4, 1);
+        write_u16(&mut resource, 6, 0x8050);
+        write_u32(&mut resource, 10, 14);
+        write_u32(&mut resource, 18, samples.len() as u32);
+        write_u32(&mut resource, 22, crate::sound::OUTPUT_RATE << 16);
+        resource[34] = 0;
+        resource[35] = 60;
+        resource[36..40].copy_from_slice(&samples);
+        loaded
+            .memory
+            .add_region(channel, vec![0; PPC_GUEST_SND_CHANNEL_SIZE as usize]);
+        loaded.memory.add_region(sound_handle, vec![0; 4]);
+        loaded.memory.add_region(sound_ptr, resource.clone());
+        loaded.memory.add_region(command_ptr, vec![0; 8]);
+        loaded.memory.write_u32_be(channel + 8, completion).unwrap();
+        loaded.memory.write_u32_be(sound_handle, sound_ptr).unwrap();
+        loaded.handles.push(PpcHandleRecord {
+            handle: sound_handle,
+            ptr: sound_ptr,
+            size: resource.len() as u32,
+            capacity: resource.len() as u32,
+        });
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = sound_handle;
+        loaded.cpu.gpr[5] = 1;
+
+        assert_eq!(
+            ppc_snd_play(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.handles,
+                &mut loaded.sound,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.sound.file_playbacks[0].completion, 0);
+        assert!(loaded.sound.file_playbacks[0].async_play);
+
+        loaded.memory.write_u16_be(command_ptr, 13).unwrap();
+        loaded.memory.write_u16_be(command_ptr + 2, 0x5348).unwrap();
+        loaded
+            .memory
+            .write_u32_be(command_ptr + 4, 0x0200_0000)
+            .unwrap();
+        loaded.cpu.gpr[4] = command_ptr;
+        loaded.cpu.gpr[5] = 1;
+
+        assert_eq!(
+            ppc_snd_do_command(&loaded.cpu, &mut loaded.memory, &mut loaded.sound),
+            PPC_NO_ERR
+        );
+        let command = PpcSndCommandRecord {
+            channel,
+            command: 13,
+            param1: 0x5348,
+            param2: 0x0200_0000,
+        };
+        assert_eq!(loaded.sound.file_playbacks[0].completion, completion);
+        assert_eq!(
+            loaded.sound.file_playbacks[0].completion_command,
+            Some(command)
+        );
+        assert_eq!(loaded.sound.queued_commands, vec![command]);
+    }
+
+    #[test]
     fn hle_import_runner_handles_snd_play_double_buffer() {
         let pef = synthetic_pef_with_import(b"SndPlayDoubleBuffer");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -117047,6 +117667,7 @@ mod tests {
                 buffer: 0,
                 selection: 0,
                 completion: 0,
+                completion_command: None,
                 async_play: false,
                 paused: true,
                 active: true,
@@ -117406,6 +118027,7 @@ mod tests {
                 buffer: PPC_DATA_BASE + 0x2000,
                 selection: PPC_DATA_BASE + 0x2100,
                 completion: PPC_CODE_BASE + 0x40,
+                completion_command: None,
                 async_play: true,
                 paused: false,
                 active: true,
@@ -117489,6 +118111,8 @@ mod tests {
         let callback_rtoc = PPC_HEAP_BASE + 0x2000;
         let channel = 0x0500_1234;
         let callback_sp = ppc_interrupt_callback_stack_pointer(loaded.cpu.gpr[1]);
+        let command_ptr =
+            callback_sp + PPC_PARAMETER_AREA_OFFSET + PPC_NATIVE_PARAMETER_GPR_COUNT as u32 * 4;
         let mut callback = Vec::new();
         for word in [
             d_form_u(36, 3, 2, 0),
@@ -117536,6 +118160,12 @@ mod tests {
                 file_playback_index: 3,
                 channel,
                 completion: tvector,
+                command: Some(PpcSndCommandRecord {
+                    channel,
+                    command: 13,
+                    param1: 0x5348,
+                    param2: 0x0200_0000,
+                }),
                 tick: 7,
                 instruction_count: 11,
                 scheduled_tick: 13,
@@ -117595,7 +118225,10 @@ mod tests {
             Some(saved_rtoc)
         );
         assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(channel));
-        assert_eq!(loaded.memory.read_u32_be(callback_rtoc + 4), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(callback_rtoc + 4),
+            Some(command_ptr)
+        );
         assert_eq!(loaded.memory.read_u32_be(callback_rtoc + 8), Some(channel));
         assert_eq!(loaded.memory.read_u32_be(callback_rtoc + 12), Some(0));
         assert_eq!(
@@ -117607,6 +118240,18 @@ mod tests {
                 .memory
                 .read_u32_be(ppc_parameter_area_slot_addr(callback_sp, 0).unwrap()),
             Some(channel)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(ppc_parameter_area_slot_addr(callback_sp, 1).unwrap()),
+            Some(command_ptr)
+        );
+        assert_eq!(loaded.memory.read_u16_be(command_ptr), Some(13));
+        assert_eq!(loaded.memory.read_u16_be(command_ptr + 2), Some(0x5348));
+        assert_eq!(
+            loaded.memory.read_u32_be(command_ptr + 4),
+            Some(0x0200_0000)
         );
         assert_eq!(
             loaded.memory.read_u32_be(
@@ -117849,6 +118494,22 @@ mod tests {
         assert_eq!(loaded.param_text[1], b"bravo");
         assert_eq!(loaded.param_text[2], b"chi");
         assert_eq!(loaded.param_text[3], b"d");
+    }
+
+    #[test]
+    fn hle_import_runner_handles_legacy_lowercase_param_text_symbol() {
+        let pef = synthetic_pef_with_import(b"paramtext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let string = PPC_HEAP_BASE;
+        loaded.memory.add_region(string, vec![0; 16]);
+        write_ppc_pstring(&mut loaded.memory, string, b"legacy");
+        loaded.cpu.gpr[3] = string;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.param_text[0], b"legacy");
     }
 
     #[test]
@@ -118253,6 +118914,7 @@ mod tests {
             buffer: 0,
             selection: 0,
             completion: 0,
+            completion_command: None,
             async_play: false,
             paused,
             active,

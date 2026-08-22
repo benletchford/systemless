@@ -11474,7 +11474,14 @@ mod tests {
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
 
         let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 402, 0x302000, "Pop");
-        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302040, "First;Second;Third");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x302040,
+            "First;Second;Third",
+        );
         insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
 
         let sp = TEST_SP;
