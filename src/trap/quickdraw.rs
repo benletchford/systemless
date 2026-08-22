@@ -9325,12 +9325,23 @@ impl super::TrapDispatcher {
                     ];
                 }
 
-                let dst_clut = if dst_ctab_handle != 0 {
-                    self.read_port_clut(bus, dst_ctab_handle)
+                // Screen-backed color ports retain their own PixMap color
+                // table, but the pixels are interpreted by the live screen
+                // device table. Palette activation can therefore make the
+                // port's table stale. Use the same screen-destination rule as
+                // CopyBits so PlotCIcon maps colors through the live device.
+                // Imaging With QuickDraw (1994), pp. 4-55 to 4-59 and 5-28.
+                let effective_dst_ctab = self.effective_destination_ctab_handle(
+                    dst_base,
+                    dst_row_bytes,
+                    dst_pixel_size,
+                    dst_ctab_handle,
+                );
+                let dst_clut = if effective_dst_ctab != 0 {
+                    self.read_port_clut(bus, effective_dst_ctab)
                 } else {
                     self.device_clut
                 };
-
                 for dst_y_local in dst_top..dst_bottom {
                     let Some(sy) =
                         Self::scale_coord(pm_top, pm_bottom, dst_top, dst_bottom, dst_y_local)
@@ -9403,13 +9414,29 @@ impl super::TrapDispatcher {
                                 ) else {
                                     continue;
                                 };
-                                let rgb = icon_clut
+                                let mut rgb = icon_clut
                                     .get(src_index as usize)
                                     .copied()
                                     .unwrap_or(self.device_clut[src_index as usize]);
-                                let dst_index = super::pict::closest_clut_index(
-                                    rgb[0], rgb[1], rgb[2], &dst_clut,
-                                );
+                                if (self.icon_transform_override & 0x4000) != 0 {
+                                    // ttSelected darkens the standard color
+                                    // icon before mapping it to the active
+                                    // device. This is the selection mechanism
+                                    // used by Finder-style icon controls.
+                                    // More Macintosh Toolbox (1993), pp. 5-20
+                                    // to 5-21 and 5-37; Macintosh Human
+                                    // Interface Guidelines (1992), p. 241.
+                                    for component in &mut rgb {
+                                        *component /= 2;
+                                    }
+                                }
+                                // PlotCIcon performs ordinary Color Manager
+                                // inverse mapping. Do not apply the PICT-only
+                                // grayscale-ramp preference here: a standard
+                                // icon table drawn under an application
+                                // palette must be allowed to select the
+                                // nearest tinted device color.
+                                let dst_index = Self::nearest_palette_index(&dst_clut, rgb);
                                 bus.write_byte(dst_base + dst_y * dst_row_bytes + dst_x, dst_index);
                             }
                             1 => {
@@ -21691,7 +21718,7 @@ impl super::TrapDispatcher {
         Some(i32::from(src_start) + (rel * src_span) / dst_span)
     }
 
-    fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
+    pub(crate) fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
         // QuickDraw's inverse tables reserve exact white/black for the first
         // and last CLUT entries when the endpoints are white/black, rather
         // than returning an arbitrary duplicate color-cube entry. During
@@ -35430,6 +35457,104 @@ mod tests {
             vec![7, 9, 42, 255],
             "packed 4bpp source nibbles should decode and remap through the icon ColorTable"
         );
+    }
+
+    #[test]
+    fn plotcicon_screen_backed_port_uses_live_device_clut() {
+        // A screen-backed CGrafPort's private PixMap table can predate a
+        // Palette Manager activation. The screen device's live table must
+        // control inverse mapping, just as it does for other screen drawing.
+        // Imaging With QuickDraw (1994), pp. 4-55 to 4-59 and 5-28.
+        let (mut d, mut cpu, mut bus) = setup();
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        d.device_clut[1] = [0x1010, 0x1010, 0x1010];
+        d.device_clut[7] = [0x4040, 0x4545, 0x4545];
+
+        let (screen_base, screen_row_bytes, screen_w, screen_h, _) = d.screen_mode;
+        let stale_ctab = make_test_ctab_handle(&mut bus, &[[0x4444, 0x4444, 0x4444]], 1, 0);
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        bus.write_long(pm_ptr, screen_base);
+        bus.write_word(pm_ptr + 4, 0x8000 | screen_row_bytes as u16);
+        write_rect(&mut bus, pm_ptr + 6, 0, 0, screen_h as i16, screen_w as i16);
+        bus.write_word(pm_ptr + 32, 8);
+        bus.write_long(pm_ptr + 42, stale_ctab);
+
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        let a5 = cpu.read_reg(Register::A5);
+        let globals_ptr = bus.read_long(a5);
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = [0x4444, 0x4444, 0x4444];
+        let cicn_data = make_test_cicn_resource_4bpp([0x11, 0x11], &icon_entries);
+        d.install_test_resource(&mut bus, *b"cicn", 130, &cicn_data);
+
+        bus.write_word(TEST_SP, 130);
+        let get_icon = d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus);
+        assert!(get_icon.unwrap().is_ok());
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        let rect_ptr = 0x300180u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+
+        assert!(plot.unwrap().is_ok());
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![7, 7, 7, 7]);
+    }
+
+    #[test]
+    fn plotcicon_selected_transform_reduces_icon_brightness() {
+        // ttSelected makes the Apple icon colors darker before inverse
+        // mapping them to the destination device. Macintosh Human Interface
+        // Guidelines (1992), p. 241; More Macintosh Toolbox (1993), p. 5-37.
+        let (mut d, mut cpu, mut bus) = setup();
+        d.device_clut = [[0, 0, 0]; 256];
+        d.device_clut[8] = [0x2222, 0x2222, 0x2222];
+
+        let dst_base = bus.alloc(8);
+        let pm_handle = bus.alloc(4);
+        let pm_ptr = bus.alloc(64);
+        bus.fill_zeros(pm_ptr, 64);
+        bus.write_long(pm_handle, pm_ptr);
+        write_pixmap_8(&mut bus, pm_ptr, dst_base, 4, 1, 0);
+        let port_ptr = bus.alloc(128);
+        bus.fill_zeros(port_ptr, 128);
+        bus.write_long(port_ptr + 2, pm_handle);
+        bus.write_word(port_ptr + 6, 0xC000);
+        let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(globals_ptr, port_ptr);
+
+        let mut icon_entries = [[0, 0, 0]; 16];
+        icon_entries[1] = [0x4444, 0x4444, 0x4444];
+        let cicn_data = make_test_cicn_resource_4bpp([0x11, 0x11], &icon_entries);
+        d.install_test_resource(&mut bus, *b"cicn", 131, &cicn_data);
+        bus.write_word(TEST_SP, 131);
+        d.dispatch_quickdraw(true, 0x21E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let icon_handle = bus.read_long(TEST_SP + 2);
+        let rect_ptr = 0x3001A0u32;
+        write_rect(&mut bus, rect_ptr, 0, 0, 1, 4);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+        d.icon_transform_override = 0x4000;
+
+        d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_bytes(dst_base, 4), vec![8, 8, 8, 8]);
     }
 
     #[test]

@@ -1900,6 +1900,9 @@ pub struct TrapDispatcher {
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
     pub(crate) explicit_palette_ctabs: HashSet<u32>,
+    /// Transform supplied by an Icon Utilities handle call while it routes
+    /// through the legacy icon renderer. Zero for ordinary PlotCIcon calls.
+    pub(crate) icon_transform_override: i16,
     /// Printing Manager error code surfaced by `PrError` and set by
     /// `PrSetError`. Inside Macintosh Volume II 1985, p. II-161;
     /// Inside Macintosh Volume V 1986, p. V-408.
@@ -3228,6 +3231,7 @@ impl TrapDispatcher {
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
             explicit_palette_ctabs: HashSet::new(),
+            icon_transform_override: 0,
             printing_error: 0,
             next_ct_seed: 1,
             fill_black_override: None,
@@ -5471,7 +5475,11 @@ impl TrapDispatcher {
         })
     }
 
-    pub(crate) fn find_loaded_resource_any(&self, res_type: [u8; 4], res_id: i16) -> Option<(u16, u32)> {
+    pub(crate) fn find_loaded_resource_any(
+        &self,
+        res_type: [u8; 4],
+        res_id: i16,
+    ) -> Option<(u16, u32)> {
         let res_type = Self::normalize_ostype(res_type);
         let resources = self.resources.as_ref()?;
         for refnum in self.resource_search_order() {
@@ -6794,7 +6802,7 @@ mod tests {
             highlighted_item: 0,
             saved_pixels: Vec::new(),
             dropdown_rect: (0, 0, 0, 0),
-            submenu: None,
+            submenus: Vec::new(),
             stack_ptr: 0,
             flash_remaining: 0,
             flash_delay: 0,

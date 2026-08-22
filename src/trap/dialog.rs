@@ -36,6 +36,16 @@ struct DialogCIconLayout {
     pixel_data_ptr: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DialogItemTextStyle {
+    font: i16,
+    face: u8,
+    size: i16,
+    foreground: Option<[u16; 3]>,
+    background: Option<[u16; 3]>,
+    mode: i16,
+}
+
 #[derive(Clone, Copy)]
 struct FullscreenOffscreenDialogRestoreCandidate {
     base: u32,
@@ -3977,7 +3987,18 @@ impl super::TrapDispatcher {
         proc_id: i16,
     ) -> (i16, i16, i16, i16) {
         let (_, _, screen_w, screen_h, _) = self.get_screen_params();
-        let main_screen = (0, 0, screen_h, screen_w);
+        let menu_bar_height = if self.menu_bar_hidden {
+            0
+        } else {
+            bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16
+        };
+        // The main-screen positioning area is the desktop below the menu bar.
+        // Position the complete window structure within it, then translate
+        // back to the content bounds consumed by NewWindow. The WIND bounds
+        // themselves describe only the content region.
+        // Macintosh Toolbox Essentials (1992), pp. 4-29, 4-31, 4-55,
+        // and 4-124 to 4-126.
+        let main_screen = (menu_bar_height, 0, screen_h, screen_w);
         let place_at_alert_position = |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
             let dialog_w = bounds.3 - bounds.1;
             let dialog_h = bounds.2 - bounds.0;
@@ -4008,6 +4029,23 @@ impl super::TrapDispatcher {
                     new_left + (bounds.3 - bounds.1),
                 )
             };
+        let center_structure = |target: (i16, i16, i16, i16)| -> (i16, i16, i16, i16) {
+            let structure = self.window_structure_global_rect_for_proc(bus, bounds, proc_id);
+            let structure_w = structure.3 - structure.1;
+            let structure_h = structure.2 - structure.0;
+            let target_w = target.3 - target.1;
+            let target_h = target.2 - target.0;
+            let new_structure_left = target.1 + (target_w - structure_w) / 2;
+            let new_structure_top = target.0 + (target_h - structure_h) / 2;
+            let new_left = new_structure_left + (bounds.1 - structure.1);
+            let new_top = new_structure_top + (bounds.0 - structure.0);
+            (
+                new_top,
+                new_left,
+                new_top + (bounds.2 - bounds.0),
+                new_left + (bounds.3 - bounds.1),
+            )
+        };
         match position {
             // alertPositionMainScreen / ParentWindowScreen
             // Macintosh Toolbox Essentials 1992, pp. 4-125 to 4-126
@@ -4025,15 +4063,25 @@ impl super::TrapDispatcher {
                     .unwrap_or(main_screen);
                 bounds = place_structure_at_alert_position(target);
             }
-            // centerMainScreen / centerParentWindow: true vertical center
-            // Macintosh Toolbox Essentials 1992, p. 4-126
-            0x280A | 0x680A | 0xA80A | 0x380A => {
-                let (_, _, screen_w, screen_h, _) = self.get_screen_params();
-                let dialog_w = bounds.3 - bounds.1;
-                let dialog_h = bounds.2 - bounds.0;
-                let new_left = (screen_w - dialog_w) / 2;
-                let new_top = (screen_h - dialog_h) / 2;
-                bounds = (new_top, new_left, new_top + dialog_h, new_left + dialog_w);
+            // centerMainScreen / centerParentWindowScreen. Systemless models a
+            // single screen, so both use the main-screen desktop rectangle.
+            0x280A | 0x680A => {
+                bounds = center_structure(main_screen);
+            }
+            // centerParentWindow uses the content rectangle of the window in
+            // which the user was last working.
+            0xA80A => {
+                let parent = self.front_window_for_trap(bus);
+                let target = (parent != 0)
+                    .then(|| self.window_content_global_rect(bus, parent))
+                    .flatten()
+                    .unwrap_or(main_screen);
+                bounds = center_structure(target);
+            }
+            // Staggering is retained as the existing single-window fallback
+            // until the Window Manager tracks per-screen stagger slots.
+            0x380A => {
+                bounds = center_structure(main_screen);
             }
             _ => {} // noAutoCenter (0x0000) or unknown: use raw bounds
         }
@@ -4095,6 +4143,7 @@ impl super::TrapDispatcher {
             alert_id as u32,
             items_handle,
             items.clone(),
+            None,
             None,
         );
         if dialog_ptr == 0 {
@@ -4438,9 +4487,11 @@ impl super::TrapDispatcher {
 
     fn ditl_item_payload_len(base_type: u8, data_len_byte: u8, remaining: u32) -> Option<u32> {
         let payload_len = match base_type {
-            // userItem has only the byte after itmtype (reserved/empty),
-            // not a following payload.
-            0 => 0,
+            // The compiled item record stores a length byte for every item
+            // type. User items do not interpret their payload, but the Dialog
+            // Manager must still skip it to locate the next record.
+            // Inside Macintosh Volume I, I-404 to I-405 and I-427.
+            0 => u32::from(data_len_byte),
             // Help items use the byte after itmtype as a sized payload.
             // Macintosh Toolbox Essentials 1992, p. 6-154
             1 => u32::from(data_len_byte),
@@ -5114,6 +5165,108 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn copy_dialog_item_color_table_resource(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        table_id: i16,
+    ) -> Option<u32> {
+        let (_, resource_ptr) = self.find_or_load_resource_any(bus, *b"ictb", table_id)?;
+        let byte_size = bus.get_alloc_size(resource_ptr)?;
+        if byte_size == 0 {
+            return None;
+        }
+        let table_ptr = bus.alloc(byte_size);
+        for offset in 0..byte_size {
+            bus.write_byte(table_ptr + offset, bus.read_byte(resource_ptr + offset));
+        }
+        let table_handle = bus.alloc(4);
+        bus.write_long(table_handle, table_ptr);
+        Some(table_handle)
+    }
+
+    fn dialog_item_text_style(
+        &self,
+        bus: &MacMemoryBus,
+        dialog_ptr: u32,
+        item_index: usize,
+    ) -> Option<DialogItemTextStyle> {
+        let table_handle = self.window_dialog_item_color_table(bus, dialog_ptr);
+        if table_handle == 0 {
+            return None;
+        }
+        let table_ptr = bus.read_long(table_handle);
+        if table_ptr == 0 {
+            return None;
+        }
+        let table_size = bus.get_alloc_size(table_ptr)?;
+        let entry_offset = u32::try_from(item_index).ok()?.checked_mul(4)?;
+        if entry_offset.checked_add(4)? > table_size {
+            return None;
+        }
+
+        let flags = bus.read_word(table_ptr + entry_offset);
+        let style_offset = u32::from(bus.read_word(table_ptr + entry_offset + 2));
+        if flags == 0 && style_offset == 0 {
+            return None;
+        }
+        if style_offset.checked_add(20)? > table_size {
+            return None;
+        }
+
+        let style_ptr = table_ptr + style_offset;
+        let stored_font = bus.read_word(style_ptr) as i16;
+        let stored_face = bus.read_word(style_ptr + 2) as u8;
+        let stored_size = bus.read_word(style_ptr + 4) as i16;
+        let mut size = self.tx_size;
+        if flags & 0x0004 != 0 {
+            size = stored_size;
+        }
+        if flags & 0x0010 != 0 {
+            size = size.saturating_add(stored_size);
+        }
+
+        // A set doFontName bit makes diFont an offset to a Pascal font name.
+        // Font-number lookup remains the safe fallback when that optional
+        // name cannot be resolved by the HLE Font Manager.
+        let font = if flags & 0x0001 != 0 && flags & 0x8000 == 0 {
+            stored_font
+        } else {
+            self.tx_font
+        };
+        let face = if flags & 0x0002 != 0 {
+            stored_face
+        } else {
+            self.tx_face as u8
+        };
+        let foreground = (flags & 0x0008 != 0).then(|| {
+            [
+                bus.read_word(style_ptr + 6),
+                bus.read_word(style_ptr + 8),
+                bus.read_word(style_ptr + 10),
+            ]
+        });
+        let background = (flags & 0x2000 != 0).then(|| {
+            [
+                bus.read_word(style_ptr + 12),
+                bus.read_word(style_ptr + 14),
+                bus.read_word(style_ptr + 16),
+            ]
+        });
+        let mode = if flags & 0x4000 != 0 {
+            bus.read_word(style_ptr + 18) as i16
+        } else {
+            self.tx_mode
+        };
+        Some(DialogItemTextStyle {
+            font,
+            face,
+            size,
+            foreground,
+            background,
+            mode,
+        })
+    }
+
     fn finish_dialog_creation<C: CpuOps>(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -5128,6 +5281,7 @@ impl super::TrapDispatcher {
         items_handle: u32,
         items: Vec<DialogItem>,
         dialog_color_table: Option<u32>,
+        dialog_item_color_table: Option<u32>,
     ) -> u32 {
         let previous_port = self.current_port;
         let previous_gdevice = self.current_gdevice;
@@ -5175,6 +5329,9 @@ impl super::TrapDispatcher {
         if let Some(color_table) = dialog_color_table {
             self.ensure_window_aux_record(bus, dlg_ptr, color_table);
             self.apply_window_color_table(bus, dlg_ptr, color_table);
+        }
+        if let Some(item_color_table) = dialog_item_color_table {
+            self.set_window_dialog_item_color_table(bus, dlg_ptr, item_color_table);
         }
 
         // DialogRecord starts with a WindowRecord; +108 is windowKind,
@@ -5852,7 +6009,7 @@ impl super::TrapDispatcher {
         if let Some((red, green, blue)) = self.window_semantic_color(bus, dialog_ptr, 0) {
             let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
                 self.get_screen_params();
-            let pixel_index = super::pict::closest_clut_index(red, green, blue, &self.device_clut);
+            let pixel_index = Self::nearest_palette_index(&self.device_clut, [red, green, blue]);
             Self::fb_fill_rect_index(
                 bus,
                 screen_base,
@@ -5869,6 +6026,38 @@ impl super::TrapDispatcher {
         } else {
             self.fill_rect_clipped_to_dialog(bus, bounds, rect, false);
         }
+    }
+
+    fn fill_dialog_item_background(
+        &self,
+        bus: &mut MacMemoryBus,
+        bounds: (i16, i16, i16, i16),
+        rect: (i16, i16, i16, i16),
+        rgb: [u16; 3],
+    ) {
+        let top = rect.0.max(bounds.0);
+        let left = rect.1.max(bounds.1);
+        let bottom = rect.2.min(bounds.2);
+        let right = rect.3.min(bounds.3);
+        if top >= bottom || left >= right {
+            return;
+        }
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let pixel_index = Self::nearest_palette_index(&self.device_clut, rgb);
+        Self::fb_fill_rect_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            top,
+            left,
+            bottom,
+            right,
+            pixel_index,
+        );
     }
 
     fn dialog_item_enclosing_local_rect(
@@ -6005,7 +6194,7 @@ impl super::TrapDispatcher {
         if !game_managed {
             if let Some((red, green, blue)) = content_color {
                 let pixel_index =
-                    super::pict::closest_clut_index(red, green, blue, &self.device_clut);
+                    Self::nearest_palette_index(&self.device_clut, [red, green, blue]);
                 Self::fb_fill_rect_index(
                     bus,
                     screen_base,
@@ -6088,7 +6277,7 @@ impl super::TrapDispatcher {
                     self.draw_rect_border(bus, top - 1, left - 1, bottom + 1, right + 1);
                     self.draw_shadow(bus, top - 1, left - 1, bottom + 1, right + 1);
                 }
-                0 | 4 => {
+                0 | 4 | 5 => {
                     // documentProc/noGrowDocProc use the Window Manager's
                     // document WDEF title-bar chrome. DrawDialog is allowed
                     // on modeless dialogs too (IM:I I-417; MTE 1992 p. 6-142),
@@ -6106,7 +6295,13 @@ impl super::TrapDispatcher {
                         title.to_string()
                     };
                     self.go_away_flag = dialog_ptr != 0 && bus.read_byte(dialog_ptr + 112) != 0;
-                    self.draw_window_frame(bus);
+                    // DrawDialog has already painted the dialog content. The
+                    // full WDEF draw path erases its structure region before
+                    // drawing document/movable chrome, so use the chrome-only
+                    // path here. This also gives movableDBoxProc its striped
+                    // title bar without clearing dialog-manager-owned items.
+                    // MTE 1992 p. 6-142; HIG 1992 pp. 185-186.
+                    self.draw_window_chrome(bus, true);
                     self.window_bounds = saved_bounds;
                     self.window_proc_id = saved_proc_id;
                     self.window_title = saved_title;
@@ -6243,8 +6438,17 @@ impl super::TrapDispatcher {
                 }
                 // Static text (8)
                 8 => {
+                    let style = self.dialog_item_text_style(bus, dialog_ptr, i);
+                    if let Some(rgb) = style.and_then(|value| value.background) {
+                        self.fill_dialog_item_background(
+                            bus,
+                            bounds,
+                            (abs_top, abs_left, abs_bottom, abs_right),
+                            rgb,
+                        );
+                    }
                     self.draw_static_text(
-                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text,
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, style,
                     );
                 }
                 // Edit text (16)
@@ -6860,13 +7064,25 @@ impl super::TrapDispatcher {
                     }
                 }
                 8 => {
-                    self.fill_dialog_content_rect(
-                        bus,
-                        dialog_ptr,
-                        bounds,
-                        (abs_top, abs_left, abs_bottom, abs_right),
-                    );
-                    self.draw_static_text(bus, abs_top, abs_left, abs_bottom, abs_right, &item.text)
+                    let style = self.dialog_item_text_style(bus, dialog_ptr, i);
+                    if let Some(rgb) = style.and_then(|value| value.background) {
+                        self.fill_dialog_item_background(
+                            bus,
+                            bounds,
+                            (abs_top, abs_left, abs_bottom, abs_right),
+                            rgb,
+                        );
+                    } else {
+                        self.fill_dialog_content_rect(
+                            bus,
+                            dialog_ptr,
+                            bounds,
+                            (abs_top, abs_left, abs_bottom, abs_right),
+                        );
+                    }
+                    self.draw_static_text(
+                        bus, abs_top, abs_left, abs_bottom, abs_right, &item.text, style,
+                    )
                 }
                 16 => {
                     let display_text = if item_num == edit_item {
@@ -8512,13 +8728,18 @@ impl super::TrapDispatcher {
         bottom: i16,
         right: i16,
         text: &str,
+        style: Option<DialogItemTextStyle>,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         // SetDialogFont/SetDAFont affects statText and editText items but
         // not control titles (IM:I I-412; MTE 1992 p. 6-105).
-        let font_id = self.tx_font;
-        let font_size = Self::font_lookup_size(self.tx_size);
+        let font_id = style.map(|value| value.font).unwrap_or(self.tx_font);
+        let raw_font_size = style.map(|value| value.size).unwrap_or(self.tx_size);
+        let font_size = Self::font_lookup_size(raw_font_size);
+        let face = style.map(|value| value.face).unwrap_or(self.tx_face as u8);
+        let foreground = style.and_then(|value| value.foreground);
+        let _mode = style.map(|value| value.mode).unwrap_or(self.tx_mode);
         let metrics = get_font_metrics(font_id, font_size);
         let line_height = metrics.ascent + metrics.descent + metrics.leading;
         let max_width = (right - left).saturating_sub(Self::TE_LINE_LEFT_INSET);
@@ -8529,7 +8750,7 @@ impl super::TrapDispatcher {
 
         let substituted = self.apply_param_text(text);
         let text_bytes = substituted.as_bytes();
-        let lines = self.te_wrap_lines(font_id, self.tx_size, text_bytes, max_width);
+        let lines = self.te_wrap_lines(font_id, raw_font_size, text_bytes, max_width);
 
         for (start, end) in lines {
             let mut trimmed_end = end;
@@ -8545,19 +8766,39 @@ impl super::TrapDispatcher {
                     .iter()
                     .map(|&byte| byte as char)
                     .collect();
-                Self::fb_draw_string(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    left + Self::TE_LINE_LEFT_INSET,
-                    y,
-                    &line,
-                    font_id,
-                    font_size,
-                );
+                if let Some(rgb) = foreground {
+                    let pixel_index = Self::nearest_palette_index(&self.device_clut, rgb);
+                    Self::fb_draw_string_styled_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        left + Self::TE_LINE_LEFT_INSET,
+                        y,
+                        &line,
+                        font_id,
+                        font_size,
+                        face,
+                        pixel_index,
+                    );
+                } else {
+                    Self::fb_draw_string_styled(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        left + Self::TE_LINE_LEFT_INSET,
+                        y,
+                        &line,
+                        font_id,
+                        font_size,
+                        face,
+                    );
+                }
             }
             y += line_height;
             if y > bottom {
@@ -9430,7 +9671,15 @@ impl super::TrapDispatcher {
         } else {
             self.window_bounds
         };
-        let exposed_rect = retained_visible_bounds.unwrap_or(dialog_record_bounds);
+        // A movable modal dialog's structure includes its title bar above the
+        // DialogRecord content bounds. CloseDialog has CloseWindow semantics,
+        // so PaintBehind must expose the entire structure, not only the port;
+        // otherwise the window behind can never repaint the former title-bar
+        // strip. Macintosh Toolbox Essentials (1992), pp. 4-89, 6-119..6-120.
+        let exposed_rect = self
+            .window_structure_rect(bus, dialog_ptr)
+            .or(retained_visible_bounds)
+            .unwrap_or(dialog_record_bounds);
         let initial_draw_deferred = self.dialog_initial_draw_deferred.remove(&dialog_ptr);
         let retained_stale_saved_under = self
             .dialog_saved_pixels
@@ -10557,9 +10806,15 @@ impl super::TrapDispatcher {
                     } else {
                         0
                     };
-                    // A matching DCTab is copied and associated before the
-                    // dialog's initial visible shell is drawn.
+                    // Matching DCTab and item color table resources are copied
+                    // and associated before the initial visible shell is drawn.
+                    // The ictb ID follows the DITL ID, not the DLOG ID.
+                    // Macintosh Toolbox Essentials 1992, pp. 6-158 to 6-164.
                     let dialog_color_table = self.copy_dialog_color_table_resource(bus, dialog_id);
+                    let dialog_item_color_table = dialog_color_table
+                        .is_some()
+                        .then(|| self.copy_dialog_item_color_table_resource(bus, items_id))
+                        .flatten();
                     // Honor the DLOG resource's visible flag per IM:I I-424.
                     let dlg_ptr = self.finish_dialog_creation(
                         bus,
@@ -10574,6 +10829,7 @@ impl super::TrapDispatcher {
                         items_handle,
                         items,
                         dialog_color_table,
+                        dialog_item_color_table,
                     );
                     // Install any 'pltt' resource whose id matches the
                     // dialog id onto the freshly-created window. This
@@ -15932,6 +16188,7 @@ impl super::TrapDispatcher {
                     items_handle,
                     items,
                     None,
+                    None,
                 );
                 // Honor Pascal `behind` param at SP+10 per IM:I I-412.
                 self.apply_behind_parameter(bus, dlg_ptr, behind);
@@ -16499,6 +16756,7 @@ impl super::TrapDispatcher {
                             items_handle,
                             items,
                             None,
+                            None,
                         );
                         self.apply_behind_parameter(bus, dlg_ptr, behind);
                         bus.write_long(sp + param_bytes, dlg_ptr);
@@ -16665,6 +16923,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
+    use super::DialogItemTextStyle;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::{
@@ -17116,6 +17375,31 @@ mod tests {
         assert_eq!(items[0].item_type, 0);
         assert_eq!(items[0].rect, (10, 20, 30, 40));
         assert_eq!(items[0].proc_ptr, 0x12345678);
+    }
+
+    #[test]
+    fn ditl_iter_skips_user_item_payload_before_following_items() {
+        let (_disp, _cpu, mut bus) = setup();
+        let mut ditl = Vec::new();
+        push_ditl_count(&mut ditl, 1);
+        push_ditl_item(
+            &mut ditl,
+            0,
+            (10, 20, 30, 140),
+            0,
+            4,
+            &[0x00, 0x05, 0x00, 0x09],
+        );
+        push_ditl_item(&mut ditl, 0, (40, 50, 52, 150), 6, 4, b"Home");
+
+        let items = parse_ditl_bytes(&mut bus, &ditl);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].item_type, 0);
+        assert_eq!(items[0].rect, (10, 20, 30, 140));
+        assert_eq!(items[1].item_type, 6);
+        assert_eq!(items[1].rect, (40, 50, 52, 150));
+        assert_eq!(items[1].text, "Home");
     }
 
     #[test]
@@ -17879,6 +18163,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let screen_base = bus.alloc((800 * 600) as u32);
         bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
         disp.screen_mode = (screen_base, 800, 800, 600, 8);
 
         let dlog = build_test_dlog((10, 20, 110, 220), 1503, 0x280A);
@@ -17894,7 +18179,7 @@ mod tests {
 
         let dlg_ptr = bus.read_long(TEST_SP + 10);
         assert_ne!(dlg_ptr, 0);
-        assert_eq!(disp.window_bounds, (250, 300, 350, 500));
+        assert_eq!(disp.window_bounds, (260, 300, 360, 500));
     }
 
     #[test]
@@ -18173,6 +18458,96 @@ mod tests {
             42,
             "retained statText redraws must erase with the DCTab content color"
         );
+    }
+
+    #[test]
+    fn get_new_dialog_applies_matching_ictb_text_style_on_initial_draw() {
+        // An ictb follows the matching DITL ID. Each four-byte item entry
+        // selects a 20-byte text style record by resource-relative offset.
+        // MTE 1992, pp. 6-158 to 6-164; Inside Macintosh V, pp. V-279–V-282.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc((320 * 240) as u32);
+        bus.write_bytes(screen_base, &vec![0xEE; 320 * 240]);
+        bus.write_long(0x0824, screen_base);
+        disp.screen_mode = (screen_base, 320, 320, 240, 8);
+        disp.device_clut.fill([0, 0, 0]);
+        disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        disp.device_clut[20] = [0xFFFF, 0xFFFF, 0];
+        disp.device_clut[42] = [0, 0x4000, 0];
+        disp.device_clut[255] = [0, 0, 0];
+
+        let mut dlog = build_test_dlog((40, 50, 120, 250), 1931, 0);
+        dlog[8..10].copy_from_slice(&4i16.to_be_bytes()); // noGrowDocProc
+        dlog[10] = 1;
+        let ditl = build_test_ditl_item(8, (8, 8, 30, 90), b"Styled");
+
+        let mut dctb = Vec::with_capacity(16);
+        dctb.extend_from_slice(&0u32.to_be_bytes());
+        dctb.extend_from_slice(&0u16.to_be_bytes());
+        dctb.extend_from_slice(&0u16.to_be_bytes());
+        dctb.extend_from_slice(&0u16.to_be_bytes());
+        dctb.extend_from_slice(&0u16.to_be_bytes());
+        dctb.extend_from_slice(&0x4000u16.to_be_bytes());
+        dctb.extend_from_slice(&0u16.to_be_bytes());
+
+        let mut ictb = Vec::with_capacity(24);
+        ictb.extend_from_slice(&0x200Fu16.to_be_bytes()); // font, face, size, fg, bg
+        ictb.extend_from_slice(&4u16.to_be_bytes());
+        ictb.extend_from_slice(&0u16.to_be_bytes()); // Chicago
+        ictb.extend_from_slice(&1u16.to_be_bytes()); // bold
+        ictb.extend_from_slice(&12u16.to_be_bytes());
+        ictb.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        ictb.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        ictb.extend_from_slice(&0u16.to_be_bytes());
+        ictb.extend_from_slice(&0u16.to_be_bytes());
+        ictb.extend_from_slice(&0u16.to_be_bytes());
+        ictb.extend_from_slice(&0u16.to_be_bytes());
+        ictb.extend_from_slice(&1u16.to_be_bytes()); // srcCopy
+
+        disp.install_test_resource(&mut bus, *b"DLOG", 1930, &dlog);
+        disp.install_test_resource(&mut bus, *b"DITL", 1931, &ditl);
+        disp.install_test_resource(&mut bus, *b"dctb", 1930, &dctb);
+        let ictb_resource = disp.install_test_resource(&mut bus, *b"ictb", 1931, &ictb);
+        bus.write_long(TEST_SP, 0xFFFF_FFFF);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_word(TEST_SP + 8, 1930);
+
+        disp.dispatch_dialog(true, 0x17C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let dialog_ptr = bus.read_long(TEST_SP + 10);
+        let ictb_handle = disp.window_dialog_item_color_table(&bus, dialog_ptr);
+        assert_ne!(ictb_handle, 0);
+        assert_ne!(bus.read_long(ictb_handle), ictb_resource);
+        assert_eq!(
+            disp.window_semantic_color(&bus, dialog_ptr, 0),
+            Some((0, 0x4000, 0)),
+            "associating the ictb must not replace the dialog's DCTab"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 100 * 320 + 200),
+            42,
+            "the DCTab must still color content outside styled item rectangles"
+        );
+        assert_eq!(
+            disp.dialog_item_text_style(&bus, dialog_ptr, 0),
+            Some(DialogItemTextStyle {
+                font: 0,
+                face: 1,
+                size: 12,
+                foreground: Some([0xFFFF, 0xFFFF, 0]),
+                background: Some([0, 0, 0]),
+                mode: 1,
+            })
+        );
+
+        let mut pixels = Vec::new();
+        for y in 48..70 {
+            pixels.extend(bus.read_bytes(screen_base + y * 320 + 58, 82));
+        }
+        assert!(pixels.contains(&20), "styled text must use ictb foreground");
+        assert!(pixels.contains(&255), "item must use ictb background");
     }
 
     #[test]
@@ -25798,6 +26173,28 @@ mod tests {
     }
 
     #[test]
+    fn movable_dialog_draws_its_title_bar_above_the_content() {
+        // movableDBoxProc adds a striped title bar without a close box.
+        // Macintosh Human Interface Guidelines (1992), pp. 185-186.
+        let (mut disp, _cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        let row_bytes = 64u32;
+        let bounds = (40, 40, 100, 140);
+        disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
+
+        disp.draw_dialog(&mut bus, bounds, 5, "Options", &[], 0, "", 0, false, 0x2000);
+
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 39, 21),
+            "movableDBoxProc must paint the title-frame top above portRect"
+        );
+        assert!(
+            screen_pixel_is_set(&bus, screen_base, row_bytes, 42, 22),
+            "an active movable title bar must contain racing stripes"
+        );
+    }
+
+    #[test]
     fn draw_window_frame_systemless_theme_routes_border_through_provider() {
         let screen_base = 0x300000u32;
         let row_bytes = 64u32;
@@ -26857,6 +27254,14 @@ mod tests {
         let dialog_ptr = 0x200000u32;
         let prev_window = 0x181000u32;
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
+        seed_window_regions(&mut bus, dialog_ptr, (100, 120, 220, 320));
+        // WindowRecord.strucRgn is the handle at offset 114 (IM:I I-278).
+        let dialog_structure = bus.read_long(dialog_ptr + 114);
+        let dialog_structure_ptr = bus.read_long(dialog_structure);
+        bus.write_word(dialog_structure_ptr + 2, 81);
+        bus.write_word(dialog_structure_ptr + 4, 119);
+        bus.write_word(dialog_structure_ptr + 6, 222);
+        bus.write_word(dialog_structure_ptr + 8, 322);
 
         disp.front_window = dialog_ptr;
         disp.current_port = dialog_ptr;
@@ -26881,8 +27286,8 @@ mod tests {
         assert_eq!(bus.read_long(global_ptr), prev_window);
         assert_eq!(
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(prev_window + 122)),
-            Some((100, 120, 220, 320)),
-            "CloseDialog should invalidate the dialog-exposed area on the promoted window"
+            Some((81, 119, 222, 322)),
+            "CloseDialog should invalidate the complete structure, including a movable title bar"
         );
         assert!(
             disp.event_queue.iter().any(|event| {
