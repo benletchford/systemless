@@ -36,10 +36,20 @@ const CHECKMARK_LEN: usize = data_len(CHECKMARK_SRC);
 static CHECKMARK_GLYPHS: [Glyph; 1] = decode_glyphs(CHECKMARK_SRC);
 static CHECKMARK_DATA: [u8; CHECKMARK_LEN] = decode_data(CHECKMARK_SRC);
 
+const TRADEMARK_SRC: &[GlyphSrc] = &[g!(6, (0, -8),
+    "###.#.#"
+    ".#..###"
+    ".#..#.#"
+)];
+const TRADEMARK_LEN: usize = data_len(TRADEMARK_SRC);
+static TRADEMARK_GLYPHS: [Glyph; 1] = decode_glyphs(TRADEMARK_SRC);
+static TRADEMARK_DATA: [u8; TRADEMARK_LEN] = decode_data(TRADEMARK_SRC);
+
 pub(crate) fn get_glyph(ch: char) -> Option<(&'static Glyph, &'static [u8])> {
     match ch {
         '\u{2318}' => Some((&COMMAND_KEY_GLYPHS[0], &COMMAND_KEY_DATA)),
         '\u{2713}' => Some((&CHECKMARK_GLYPHS[0], &CHECKMARK_DATA)),
+        '\u{2122}' => Some((&TRADEMARK_GLYPHS[0], &TRADEMARK_DATA)),
         _ => None,
     }
 }

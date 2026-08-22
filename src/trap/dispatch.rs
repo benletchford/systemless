@@ -1896,6 +1896,11 @@ pub struct TrapDispatcher {
     pub(crate) window_palettes: HashMap<u32, (u32, i16)>,
     /// Palette update flags keyed by PaletteHandle.
     pub(crate) palette_updates: HashMap<u32, i16>,
+    /// Device indices assigned to palette entries by the most recent
+    /// activation. Ordinary tolerant entries are not tied to their palette
+    /// positions, so Entry2Index must consult this allocation rather than
+    /// treating the entry number as a pixel value.
+    pub(crate) palette_device_indices: HashMap<(u32, u16), u8>,
     /// Color tables produced from palettes whose entries are all pmExplicit.
     /// Their pixel values are literal device indices, so indexed CopyBits
     /// must preserve those values instead of color-matching duplicate RGBs.
@@ -3230,6 +3235,7 @@ impl TrapDispatcher {
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
+            palette_device_indices: HashMap::new(),
             explicit_palette_ctabs: HashSet::new(),
             icon_transform_override: 0,
             printing_error: 0,

@@ -54,16 +54,17 @@ pub(crate) fn decode_mac_roman_for_render(bytes: &[u8]) -> String {
 pub(crate) fn encode_mac_roman_lossy(value: &str) -> Vec<u8> {
     value
         .chars()
-        .map(|ch| {
-            if ch.is_ascii() {
-                ch as u8
-            } else {
-                MAC_ROMAN_HIGH
-                    .iter()
-                    .position(|&candidate| candidate == ch)
-                    .map(|idx| idx as u8 + 0x80)
-                    .unwrap_or(b'?')
-            }
-        })
+        .map(|ch| encode_mac_roman_char(ch).unwrap_or(b'?'))
         .collect()
+}
+
+pub(crate) fn encode_mac_roman_char(ch: char) -> Option<u8> {
+    if ch.is_ascii() {
+        Some(ch as u8)
+    } else {
+        MAC_ROMAN_HIGH
+            .iter()
+            .position(|&candidate| candidate == ch)
+            .map(|idx| idx as u8 + 0x80)
+    }
 }

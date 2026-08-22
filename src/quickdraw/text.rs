@@ -79,6 +79,13 @@ pub fn get_glyph(font_id: i16, size: i16, ch: char) -> Option<(&'static Glyph, &
         return get_macroman_glyph(font_id, size, 0x14);
     }
 
+    // HLE chrome stores text as Unicode for layout and logging. Route every
+    // representable extended character back through its Mac Roman glyph slot
+    // so titles and menus use the same bitmap repertoire as guest DrawText.
+    if let Some(mac_code @ 0x80..=0xFF) = crate::mac_roman::encode_mac_roman_char(ch) {
+        return macroman_or_ascii_fallback(font_id, size, mac_code);
+    }
+
     None
 }
 
@@ -102,6 +109,9 @@ fn macroman_or_ascii_fallback(
 ) -> Option<(&'static Glyph, &'static [u8])> {
     if let Some(hit) = get_macroman_glyph(font_id, size, mac_code) {
         return Some(hit);
+    }
+    if mac_code == 0xAA {
+        return crate::quickdraw::fonts::pixel_font::menu_symbols::get_glyph('\u{2122}');
     }
     // ASCII fallback for extended characters that have a close ASCII
     // equivalent. Better to render a slightly-wrong glyph than silently
@@ -148,5 +158,14 @@ mod tests {
                 "{name} symbol should contain visible pixels"
             );
         }
+    }
+
+    #[test]
+    fn unicode_hle_text_uses_mac_roman_extended_glyphs() {
+        let (glyph, data) = get_glyph(0, 12, '™').expect("Mac Roman trademark glyph");
+        let glyph_len = usize::from(glyph.width) * usize::from(glyph.height);
+        assert!(data[glyph.data_offset..glyph.data_offset + glyph_len]
+            .iter()
+            .any(|pixel| *pixel != 0));
     }
 }

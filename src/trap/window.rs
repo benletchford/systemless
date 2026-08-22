@@ -1,6 +1,7 @@
 //! Window Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::mac_roman::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::trap::dispatch::{DrawOldState, PortDrawState, QueuedEvent};
 use crate::trap::quickdraw::RegionBooleanOp;
@@ -93,8 +94,7 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let title =
-            String::from_utf8_lossy(&bus.read_bytes(ptr + 19, title_len as usize)).into_owned();
+        let title = decode_mac_roman(&bus.read_bytes(ptr + 19, title_len as usize));
         Some(WindTemplate {
             bounds: Self::read_rect(bus, ptr),
             proc_id: bus.read_word(ptr + 8) as i16,
@@ -2407,7 +2407,7 @@ impl super::TrapDispatcher {
         self.window_title = if title_handle != 0 {
             let title_ptr = bus.read_long(title_handle);
             if title_ptr != 0 {
-                String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                decode_mac_roman(&bus.read_pstring(title_ptr))
             } else {
                 String::new()
             }
@@ -2810,7 +2810,7 @@ impl super::TrapDispatcher {
 
         // Allocate a StringHandle for the title and store it in the window record.
         // Inside Macintosh Volume I, I-276: titleHandle is a StringHandle.
-        Self::set_title_handle(bus, window_ptr, wind_title.as_bytes());
+        Self::set_title_handle(bus, window_ptr, &encode_mac_roman_lossy(wind_title));
 
         // Window creation initializes the port as the current drawing target.
         // Individual NewWindow/NewCWindow callers restore the previous port
@@ -3078,7 +3078,7 @@ impl super::TrapDispatcher {
 
                 // Read title Pascal string
                 let title = if title_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -3290,7 +3290,7 @@ impl super::TrapDispatcher {
                 let storage_ptr = bus.read_long(sp + 22);
 
                 let wind_title = if title_ptr != 0 {
-                    String::from_utf8_lossy(&bus.read_pstring(title_ptr)).into_owned()
+                    decode_mac_roman(&bus.read_pstring(title_ptr))
                 } else {
                     String::new()
                 };
@@ -3795,7 +3795,7 @@ impl super::TrapDispatcher {
                     let bytes = bus.read_pstring(title_ptr);
                     Self::set_title_handle(bus, the_window, &bytes);
                     if the_window == self.front_window {
-                        self.window_title = String::from_utf8_lossy(&bytes).into_owned();
+                        self.window_title = decode_mac_roman(&bytes);
                     }
                     if self.window_visible(bus, the_window) {
                         let hilited = bus.read_byte(the_window + Self::WINDOW_HILITED_OFFSET) != 0;
@@ -7004,6 +7004,18 @@ mod tests {
     }
 
     #[test]
+    fn wind_template_preserves_mac_roman_title_bytes() {
+        let (_disp, _cpu, mut bus) = setup();
+        let wind_ptr = bus.alloc(24);
+        bus.write_byte(wind_ptr + 18, 4);
+        bus.write_bytes(wind_ptr + 19, b"DLB\xAA");
+
+        let template = super::super::TrapDispatcher::parse_wind_template(&bus, wind_ptr, 23)
+            .expect("WIND template with Mac Roman title");
+        assert_eq!(template.title, "DLB™");
+    }
+
+    #[test]
     fn get_new_window_constructors_apply_center_main_screen_positioning() {
         for trap_num in [0x1BD, 0x246] {
             let (mut disp, mut cpu, mut bus) = setup();
@@ -8701,6 +8713,28 @@ mod tests {
         let result = dispatch(&mut disp, 0x11A, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    #[test]
+    fn setwtitle_decodes_mac_roman_for_window_chrome() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = bus.alloc(256);
+        disp.front_window = window;
+        let title = bus.alloc(8);
+        bus.write_pstring(title, b"DLB\xAA");
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, title);
+        bus.write_long(sp + 4, window);
+
+        dispatch(&mut disp, 0x11A, &mut cpu, &mut bus)
+            .expect("SetWTitle dispatch")
+            .expect("SetWTitle");
+
+        assert_eq!(disp.window_title, "DLB™");
+        let handle =
+            bus.read_long(window + super::super::TrapDispatcher::WINDOW_TITLE_HANDLE_OFFSET);
+        assert_eq!(bus.read_pstring(bus.read_long(handle)), b"DLB\xAA");
     }
 
     #[test]
