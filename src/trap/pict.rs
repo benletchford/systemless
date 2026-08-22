@@ -347,7 +347,6 @@ pub fn draw_picture(
 
     let scale_x = dst_w / frame_w;
     let scale_y = dst_h / frame_h;
-
     // Start parsing opcodes after the 10-byte header
     let mut pos = pic_ptr + 10;
     let mut opcount = 0;
@@ -487,7 +486,9 @@ pub fn draw_picture(
                 pos += 4;
             }
             0x0C => {
-                // Origin (4 bytes)
+                // Origin(dh,dv). The opcode updates QuickDraw's current port
+                // origin while recording; its coordinate effect is already
+                // baked into the subsequent PICT operands.
                 pos += 4;
             }
             0x0D => {
@@ -1197,6 +1198,8 @@ pub fn draw_picture(
                         dst_left,
                         frame_top,
                         frame_left,
+                        frame_bottom,
+                        frame_right,
                         scale_x,
                         scale_y,
                         screen_mode,
@@ -1243,6 +1246,8 @@ pub fn draw_picture(
                     dst_left,
                     frame_top,
                     frame_left,
+                    frame_bottom,
+                    frame_right,
                     scale_x,
                     scale_y,
                     screen_mode,
@@ -4382,6 +4387,25 @@ fn map_src_pixel_span(
     Some((pic_start, screen_start, screen_end))
 }
 
+/// Some classic screen-capture PICTs retain global CopyBits destination
+/// coordinates even though their picture frame is rebased to `(0, 0)`.
+/// DrawPicture treats a full-frame raster as local to that frame; normalize
+/// the retained coordinate before applying the picture-to-destination scale.
+fn normalize_full_frame_raster_start(
+    frame_start: i16,
+    frame_end: i16,
+    pic_dst_start: i16,
+    pic_dst_end: i16,
+) -> i16 {
+    let raster_span = i32::from(pic_dst_end) - i32::from(pic_dst_start);
+    let frame_span = i32::from(frame_end) - i32::from(frame_start);
+    if frame_start == 0 && pic_dst_start != 0 && raster_span > 0 && raster_span == frame_span {
+        pic_dst_start
+    } else {
+        frame_start
+    }
+}
+
 /// Parse BitsRect / BitsRgn (1bpp bitmap, opcode 0x0090/0x0091)
 fn parse_bits_rect(
     bus: &mut MacMemoryBus,
@@ -4527,6 +4551,8 @@ fn parse_indexed_bits_rect(
     dst_left: i16,
     frame_top: i16,
     frame_left: i16,
+    frame_bottom: i16,
+    frame_right: i16,
     scale_x: f64,
     scale_y: f64,
     screen_mode: (u32, u32, u16, u16, u16),
@@ -4615,6 +4641,11 @@ fn parse_indexed_bits_rect(
     let mode = bus.read_word(pos);
     pos += 2;
     let mode_base = mode & 0x003F;
+
+    let frame_top =
+        normalize_full_frame_raster_start(frame_top, frame_bottom, pic_dst_top, pic_dst_bottom);
+    let frame_left =
+        normalize_full_frame_raster_start(frame_left, frame_right, pic_dst_left, pic_dst_right);
 
     if trace_pict_enabled() {
         let kind = if packed { "PackBits" } else { "Bits" };
@@ -6495,12 +6526,20 @@ mod tests {
     use super::{
         blit_row, build_device_itable, build_pict_indexed_transfer_table, build_src_to_dst_table,
         clear_src_to_dst_table_cache_for_tests, closest_grayscale_luminance_index, draw_picture,
-        dst_clip_row_spans, peek_initial_packbits_clut, picture_stream_len, read_color_table,
-        try_blit_packbits_8bpp_src_copy_fast, try_blit_row_8bpp_src_copy_fast, DstClip,
-        DstClipRegion, PictIndexedTransfer, PictureRegion, PixMapInfo,
+        dst_clip_row_spans, normalize_full_frame_raster_start, peek_initial_packbits_clut,
+        picture_stream_len, read_color_table, try_blit_packbits_8bpp_src_copy_fast,
+        try_blit_row_8bpp_src_copy_fast, DstClip, DstClipRegion, PictIndexedTransfer,
+        PictureRegion, PixMapInfo,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
     use crate::trap::dispatch::TrapDispatcher;
+
+    #[test]
+    fn full_frame_raster_with_global_coordinates_is_rebased() {
+        assert_eq!(normalize_full_frame_raster_start(0, 74, 381, 455), 381);
+        assert_eq!(normalize_full_frame_raster_start(12, 86, 381, 455), 12);
+        assert_eq!(normalize_full_frame_raster_start(0, 74, 381, 454), 0);
+    }
 
     #[test]
     fn device_itable_matches_rom_propagation_samples() {

@@ -3089,10 +3089,9 @@ impl TrapDispatcher {
             pm_fg_color: None,
             pm_bg_color: None,
             makergbpat_colors: HashMap::new(),
-            // Default HiliteRGB used before an application calls HiliteColor.
-            // The System 7.5.3 BasiliskII reference resolves this to EV's
-            // darker selected-list green rather than a saturated primary.
-            hilite_color: (0x0000, 0x8000, 0x0000),
+            // Classic default HiliteRGB used before an application calls
+            // HiliteColor. Applications can replace it per color port.
+            hilite_color: (0x0000, 0x0000, 0x0000),
             op_color: (0x0000, 0x0000, 0x0000),
             char_extra: 0,
             bk_pat: [0x00; 8],

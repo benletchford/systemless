@@ -5026,6 +5026,29 @@ impl FixtureRunner {
                         continue;
                     }
                     if completed_modal_dialog_draw_proc {
+                        let dialog_ptr = self
+                            .dispatcher
+                            .dialog_tracking
+                            .as_ref()
+                            .map(|tracking| tracking.dialog_ptr)
+                            .unwrap_or(0);
+                        let after_trap_pc = self.cpu.read_reg(Register::PC);
+                        self.cpu
+                            .write_reg(Register::PC, after_trap_pc.wrapping_sub(2));
+                        if self.dispatcher.arm_dialog_control_def_draws(
+                            &mut self.cpu,
+                            &mut self.bus,
+                            dialog_ptr,
+                        ) {
+                            self.dispatcher
+                                .dialog_cdef_draw_pending_snapshot
+                                .insert(dialog_ptr);
+                            if let Some(tracking) = self.dispatcher.dialog_tracking.as_mut() {
+                                tracking.rendered_pixels_final = false;
+                            }
+                            continue;
+                        }
+                        self.cpu.write_reg(Register::PC, after_trap_pc);
                         // The callback completion check already proved that
                         // PC/SP are ModalDialog's exact resume boundary. Do
                         // not let an older deferred tracking address redirect
@@ -8951,7 +8974,7 @@ impl FixtureRunner {
             return false;
         }
         let entry = self.bus.read_word(addr);
-        entry == 0x4E56 || entry == 0x48E7 || entry == 0x4EF9 || entry == 0x4EFA
+        entry == 0x4E56 || entry == 0x48E7 || entry == 0x4EF9 || entry == 0x4EFA || entry == 0x4FEF
     }
 
     fn resolve_dialog_draw_proc_addr(&self, proc_addr: u32) -> Option<u32> {
@@ -19182,6 +19205,16 @@ mod tests {
         );
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn dialog_draw_proc_accepts_stack_adjust_entry() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let proc_addr = 0x0004_2000u32;
+        runner.bus.write_word(proc_addr, 0x4FEF); // LEA d16(SP),SP
+        runner.bus.write_word(proc_addr + 2, 0xFFF0);
+
+        assert!(runner.looks_like_dialog_proc_entry(proc_addr));
     }
 
     #[test]

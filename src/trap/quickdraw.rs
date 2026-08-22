@@ -1743,6 +1743,10 @@ impl super::TrapDispatcher {
                 self.tx_font = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0003);
+                    Self::push_pict_word(commands, self.tx_font as u16);
+                }
                 Ok(())
             }
 
@@ -1756,6 +1760,10 @@ impl super::TrapDispatcher {
                 self.tx_face = decode_text_face_style(bus.read_word(sp));
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0004);
+                    Self::push_pict_word(commands, self.tx_face as u16);
+                }
                 Ok(())
             }
 
@@ -1769,6 +1777,10 @@ impl super::TrapDispatcher {
                 self.tx_mode = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x0005);
+                    Self::push_pict_word(commands, self.tx_mode as u16);
+                }
                 Ok(())
             }
 
@@ -1782,6 +1794,10 @@ impl super::TrapDispatcher {
                 self.tx_size = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    Self::push_pict_word(commands, 0x000D);
+                    Self::push_pict_word(commands, self.tx_size as u16);
+                }
                 Ok(())
             }
 
@@ -1966,6 +1982,9 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                let len = bus.read_byte(str_ptr) as usize;
+                let text = bus.read_bytes(str_ptr + 1, len);
+                self.record_picture_long_text(self.pn_loc.0, self.pn_loc.1, &text);
                 self.draw_string(cpu, bus, str_ptr);
                 self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
                 Ok(())
@@ -2006,6 +2025,9 @@ impl super::TrapDispatcher {
                         String::from_utf8_lossy(&bytes),
                     );
                 }
+                let safe_count = byte_count.max(0) as usize;
+                let text = bus.read_bytes(start, safe_count);
+                self.record_picture_long_text(self.pn_loc.0, self.pn_loc.1, &text);
                 for i in 0..byte_count {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
@@ -2580,7 +2602,11 @@ impl super::TrapDispatcher {
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
+                let hilite_mode = bus.read_byte(0x0938);
                 self.draw_rect(cpu, bus, &r, ShapeOp::Invert);
+                if hilite_mode & 1 == 0 {
+                    bus.write_byte(0x0938, hilite_mode | 1);
+                }
                 Ok(())
             }
 
@@ -7596,7 +7622,11 @@ impl super::TrapDispatcher {
                     // QuickDraw Reference (Carbon) p. 307;
                     // QDOffscreen.h declaration.
                     0x0014 => {
-                        let version = 1u32;
+                        // OffscreenVersion uses the classic packed version
+                        // format: $0100 means version 1.0. Returning the
+                        // integer 1 makes clients mistake an available
+                        // Color QuickDraw implementation for a pre-1.0 one.
+                        let version = 0x0100u32;
                         bus.write_long(sp, version);
                         cpu.write_reg(Register::D0, version);
                     }
@@ -20354,6 +20384,21 @@ impl super::TrapDispatcher {
         bytes.extend_from_slice(&value.to_be_bytes());
     }
 
+    fn record_picture_long_text(&mut self, v: i16, h: i16, text: &[u8]) {
+        let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() else {
+            return;
+        };
+        let len = text.len().min(255);
+        Self::push_pict_word(commands, 0x0028);
+        Self::push_pict_word(commands, v as u16);
+        Self::push_pict_word(commands, h as u16);
+        commands.push(len as u8);
+        commands.extend_from_slice(&text[..len]);
+        if !(1 + len).is_multiple_of(2) {
+            commands.push(0);
+        }
+    }
+
     fn push_packbits_literal_row(bytes: &mut Vec<u8>, row: &[u8]) {
         let mut packed = Vec::with_capacity(row.len() + row.len().div_ceil(128));
         for chunk in row.chunks(128) {
@@ -26131,6 +26176,7 @@ mod tests {
     /// path). Returns the buffer after the call.
     fn invert_rect_8bpp(notched_clip: bool) -> Vec<u8> {
         let (mut d, mut cpu, mut bus) = setup();
+        bus.write_byte(0x0938, 1);
         let base = bus.alloc(16 * 6);
         for offset in 0..(16 * 6) as u32 {
             bus.write_byte(base + offset, (offset * 7 + 3) as u8);
@@ -30612,10 +30658,12 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let rect_ptr = 0x300000u32;
         write_rect(&mut bus, rect_ptr, 10, 10, 20, 20);
+        bus.write_byte(0x0938, 0);
         bus.write_long(TEST_SP, rect_ptr);
         let result = d.dispatch_quickdraw(true, 0x0A4, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_byte(0x0938), 1, "hilite mode is one-shot");
     }
 
     #[test]
@@ -40486,8 +40534,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_ne!(bus.read_long(TEST_SP), 0);
-        assert_ne!(bus.read_long(TEST_SP), 0xDEAD_BEEFu32);
+        assert_eq!(bus.read_long(TEST_SP), 0x0100);
     }
 
     // $AB1C is not documented as SetGWorld (SetGWorld uses _QDExtensions
@@ -43026,6 +43073,43 @@ mod tests {
         assert_ne!(bus.read_byte(screen_base + 1 + 8), 0);
         assert_ne!(bus.read_byte(screen_base + 2 + 2 * 8), 0);
         assert_eq!(bus.read_byte(screen_base + 4 + 4 * 8), 0);
+    }
+
+    #[test]
+    fn closepicture_replays_recorded_long_text_commands() {
+        let (mut d, _cpu, mut bus) = setup();
+        let screen_base = bus.alloc(64 * 32);
+        bus.fill_zeros(screen_base, 64 * 32);
+        d.screen_mode = (screen_base, 64, 64, 32, 8);
+        d.recording_picture = Some((1, 0, 0, 32, 64, Vec::new()));
+
+        d.record_picture_long_text(16, 4, b"Picture text");
+        let (_, _, _, _, _, commands) = d.recording_picture.take().unwrap();
+        assert_eq!(&commands[..2], &[0x00, 0x28]);
+        let picture = TrapDispatcher::encode_recorded_picture_pict(0, 0, 32, 64, commands);
+        let pic_ptr = bus.alloc(picture.len() as u32);
+        bus.write_bytes(pic_ptr, &picture);
+
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            32,
+            64,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert!(
+            bus.read_bytes(screen_base, 64 * 32)
+                .iter()
+                .any(|&pixel| pixel != 0),
+            "recorded text must render when the generated picture is replayed"
+        );
     }
 
     #[test]
