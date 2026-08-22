@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.9](https://github.com/benletchford/systemless/compare/v0.18.8...v0.18.9) (2026-08-22)
+
+
+### Bug Fixes
+
+* **menu:** return zero from PopUpMenuSelect when mouse button is up ([#744](https://github.com/benletchford/systemless/issues/744)) ([c0b96db](https://github.com/benletchford/systemless/commit/c0b96db8fa60fd6365126b3a5a9dda701d759334))
+
 ## [0.18.8](https://github.com/benletchford/systemless/compare/v0.18.7...v0.18.8) (2026-08-22)
 
 
