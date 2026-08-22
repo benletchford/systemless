@@ -40204,6 +40204,11 @@ fn ppc_qt_new_movie_from_file(
     {
         return PPC_PARAM_ERR;
     }
+    // Inside Macintosh: QuickTime (1993), pp. 4-5–4-6: NewMovieFromFile
+    // returns NIL in the movie output when it cannot create the movie.
+    if memory.write_u32_be(movie_out_ptr, 0).is_none() {
+        return PPC_PARAM_ERR;
+    }
     let requested_res_id = if res_id_ptr == 0 {
         None
     } else {
@@ -40363,7 +40368,8 @@ fn ppc_qt_append_movie_resource(
     requested_res_id: Option<i16>,
 ) -> Option<i16> {
     // Inside Macintosh: QuickTime (1993), pp. 4-3–4-6.
-    if ppc_qt_top_level_atom(movie_file_data, b"moov").is_some() {
+    let data_movie_range = ppc_qt_top_level_atom_offsets(movie_file_data, b"moov");
+    if data_movie_range.is_some() && !matches!(requested_res_id, Some(1..=i16::MAX)) {
         return requested_res_id
             .map_or(true, |res_id| res_id == 0 || res_id == -1)
             .then_some(-1);
@@ -40401,9 +40407,27 @@ fn ppc_qt_append_movie_resource(
         ppc_qt_atom_range(&resource_data, 0, resource_data.len())
     {
         if atom_type == b"moov" && atom_end == resource_data.len() {
+            if let Some((start, end)) = data_movie_range {
+                movie_file_data.drain(start..end);
+            }
             movie_file_data.extend_from_slice(&resource_data);
             return Some(res_id);
         }
+    }
+    None
+}
+
+fn ppc_qt_top_level_atom_offsets(data: &[u8], expected_type: &[u8; 4]) -> Option<(usize, usize)> {
+    let mut offset = 0usize;
+    while offset.checked_add(8)? <= data.len() {
+        let (atom_type, _, atom_end) = ppc_qt_atom_range(data, offset, data.len())?;
+        if atom_type == expected_type {
+            return Some((offset, atom_end));
+        }
+        if atom_end == data.len() {
+            break;
+        }
+        offset = atom_end;
     }
     None
 }
@@ -40427,6 +40451,7 @@ fn ppc_qt_refresh_open_movie_metadata(quicktime: &mut PpcQuickTimeState) {
     }
 }
 
+#[cfg(test)]
 fn ppc_qt_top_level_atom<'a>(data: &'a [u8], expected_type: &[u8; 4]) -> Option<&'a [u8]> {
     let mut offset = 0usize;
     while offset.checked_add(8)? <= data.len() {
@@ -40942,6 +40967,7 @@ fn ppc_qt_synthesize_music_events(
     // QuickTime Music Architecture (1997), pp. 19-30.
     let mut offset = 0usize;
     let mut local_time = 0u64;
+    let mut reserved_end_marker_seen = false;
     while offset.checked_add(4)? <= data.len() {
         let word = u32::from_be_bytes(data.get(offset..offset + 4)?.try_into().ok()?);
         let short_type = (word >> 29) & 0x7;
@@ -40980,10 +41006,13 @@ fn ppc_qt_synthesize_music_events(
                 offset += 4;
             }
             3 => {
-                offset += 4;
                 if ((word >> 16) & 0xff) == 0 {
-                    return Some(());
+                    if word & 0xffff == 0 {
+                        return (offset + 4 == data.len()).then_some(());
+                    }
+                    reserved_end_marker_seen = true;
                 }
+                offset += 4;
             }
             _ => {
                 let extended_type = word >> 28;
@@ -41053,7 +41082,7 @@ fn ppc_qt_synthesize_music_events(
             }
         }
     }
-    (offset == data.len()).then_some(())
+    (offset == data.len() && !reserved_end_marker_seen).then_some(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -41118,6 +41147,10 @@ fn ppc_qt_mix_music_note(
     media_time_scale: u32,
     sample_rate: u32,
 ) -> Option<()> {
+    // QuickTime Musical Instruments playback uses most of the signed 8-bit
+    // output range. Keep headroom for overlapping notes while matching that
+    // mixer level instead of leaving each synthesized part near silence.
+    const OUTPUT_GAIN: i32 = 6;
     if duration == 0 || velocity == 0 || media_time_scale == 0 {
         return Some(());
     }
@@ -41194,7 +41227,8 @@ fn ppc_qt_mix_music_note(
         let amplitude = waveform * velocity as i32 * edge_envelope / (127 * 64 * 4096) * volume
             / i32::from(i16::MAX)
             * decay_envelope
-            / i32::try_from(note_len.max(1)).unwrap_or(i32::MAX);
+            / i32::try_from(note_len.max(1)).unwrap_or(i32::MAX)
+            * OUTPUT_GAIN;
         *destination = destination.saturating_add(amplitude);
         phase = phase.wrapping_add(phase_step);
     }
@@ -51425,7 +51459,7 @@ fn ppc_palette_to_ctab(
     let Some(entry_count) = memory.read_u16_be(palette_ptr).map(u32::from) else {
         return;
     };
-    if entry_count == 0 || ctable_handle == 0 {
+    if ctable_handle == 0 {
         return;
     }
     let Some(byte_count) = entry_count
@@ -51455,7 +51489,14 @@ fn ppc_palette_to_ctab(
     let header_written = memory.write_u32_be(ctable_ptr, seed).is_some()
         && memory.write_u16_be(ctable_ptr + 4, 0).is_some()
         && memory
-            .write_u16_be(ctable_ptr + 6, entry_count.saturating_sub(1) as u16)
+            .write_u16_be(
+                ctable_ptr + 6,
+                if entry_count == 0 {
+                    u16::MAX
+                } else {
+                    (entry_count - 1) as u16
+                },
+            )
             .is_some();
     let colors_written = (0..entry_count).all(|entry| {
         let info_ptr = palette_ptr + 16 + entry * 16;
@@ -96986,6 +97027,23 @@ mod tests {
         assert_eq!(loaded.quicktime.movie_file_duration, 120);
         assert!(loaded.quicktime.movie_file_video_track.is_some());
         assert!(loaded.quicktime.movie_file_audio_track.is_some());
+
+        loaded
+            .memory
+            .write_u32_be(movie_out_ptr, 0xdead_beef)
+            .unwrap();
+        loaded.memory.write_u16_be(res_id_ptr, 777).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = movie_out_ptr;
+        loaded.cpu.gpr[4] = PPC_FIRST_FILE_REF_NUM as u32;
+        loaded.cpu.gpr[5] = res_id_ptr;
+        loaded.cpu.gpr[8] = changed_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_RES_NOT_FOUND_ERR));
+        assert_eq!(loaded.memory.read_u32_be(movie_out_ptr), Some(0));
     }
 
     #[test]
@@ -97047,6 +97105,18 @@ mod tests {
             Some(128)
         );
         assert_eq!(ppc_qt_movie_bounds(&selected), Some((0, 0, 240, 320)));
+        selected = first_movie.clone();
+        assert_eq!(
+            ppc_qt_append_movie_resource(
+                &mut selected,
+                &resource_files,
+                &[],
+                "Music/Theme",
+                Some(129),
+            ),
+            Some(129)
+        );
+        assert_eq!(ppc_qt_movie_bounds(&selected), Some((0, 0, 480, 640)));
         selected = data_fork;
         assert_eq!(
             ppc_qt_append_movie_resource(
@@ -97258,6 +97328,27 @@ mod tests {
         let malformed_extended_note = [0x9000_003cu32.to_be_bytes(), 0u32.to_be_bytes()].concat();
         assert!(ppc_qt_synthesize_music_events(
             &malformed_extended_note,
+            600,
+            0,
+            &mut mixed,
+            22_050,
+            &mut parts,
+        )
+        .is_none());
+
+        let invalid_end_value = 0x6000_0001u32.to_be_bytes();
+        assert!(ppc_qt_synthesize_music_events(
+            &invalid_end_value,
+            600,
+            0,
+            &mut mixed,
+            22_050,
+            &mut parts,
+        )
+        .is_none());
+        let end_with_trailing_data = [0x6000_0000u32.to_be_bytes(), note.to_be_bytes()].concat();
+        assert!(ppc_qt_synthesize_music_events(
+            &end_with_trailing_data,
             600,
             0,
             &mut mixed,
@@ -100120,6 +100211,25 @@ mod tests {
                 .find(|record| record.handle == ctable_handle)
                 .map(|record| record.size),
             Some(32)
+        );
+
+        loaded.memory.write_u16_be(palette_ptr, 0).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.gpr[3] = palette_handle;
+        loaded.cpu.gpr[4] = ctable_handle;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let ctable_ptr = loaded.memory.read_u32_be(ctable_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(ctable_ptr + 6), Some(u16::MAX));
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == ctable_handle)
+                .map(|record| record.size),
+            Some(8)
         );
     }
 
