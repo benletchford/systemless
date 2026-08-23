@@ -2091,11 +2091,13 @@ fn load_selected_executable(
     runner
         .dispatcher_mut()
         .set_launched_app_path(&executable.name);
+    runner.dispatcher_mut().materialize_quilt_resources();
 
     let rsrc = runner
         .dispatcher()
         .vfs_rsrc
         .get(&executable.vfs_key)
+
         .cloned()
         .ok_or_else(|| {
             format!(
@@ -2428,6 +2430,8 @@ impl ExecutableCandidate {
         )
     }
 }
+
+
 
 fn same_application_family(left: &ExecutableCandidate, right: &ExecutableCandidate) -> bool {
     left.creator == right.creator

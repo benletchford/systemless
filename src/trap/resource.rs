@@ -8494,8 +8494,12 @@ impl super::TrapDispatcher {
                 return Some(path);
             }
         }
+        if let Some(path) = self.materialize_named_quilt_resource_file(filename) {
+            return Some(path);
+        }
         None
     }
+
 
     fn find_vfs_directory_for_hfs_lookup(
         &mut self,

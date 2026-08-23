@@ -62882,9 +62882,19 @@ fn ppc_vfs_resource_file_index(
     vfs_resource_files: &[PpcVfsResourceFileRecord],
     path: &str,
 ) -> Option<usize> {
-    vfs_resource_files
+    if let Some(index) = vfs_resource_files
         .iter()
         .position(|record| record.path.eq_ignore_ascii_case(path))
+    {
+        return Some(index);
+    }
+    if !path.contains('/') {
+        let basename = ppc_vfs_basename(path);
+        return vfs_resource_files
+            .iter()
+            .position(|record| ppc_vfs_basename(&record.path).eq_ignore_ascii_case(basename));
+    }
+    None
 }
 
 fn ppc_mark_resource_file_contents_dirty(
@@ -63234,24 +63244,8 @@ fn ppc_quilt_named_resource_records(
     });
     source_paths.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
     let source_path = source_paths.first()?;
-    let source_rank = |path: &str| {
-        (
-            path.split('/')
-                .zip(target_path.split('/'))
-                .take_while(|(left, right)| left.eq_ignore_ascii_case(right))
-                .count(),
-            path.split('/')
-                .filter(|component| !component.is_empty())
-                .count(),
-        )
-    };
-    if source_paths
-        .get(1)
-        .is_some_and(|next| source_rank(next) == source_rank(source_path))
-    {
-        return None;
-    }
     matches.retain(|(source_file, _)| source_file.path.eq_ignore_ascii_case(source_path));
+
     let source_file = matches.first()?.0.clone();
     let mut resources = matches
         .into_iter()
@@ -64133,6 +64127,12 @@ fn ppc_fsp_open_res_file(
             return -1;
         }
     };
+    let resolved_path = if let Some(index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) {
+        vfs_resource_files[index].path.clone()
+    } else {
+        path
+    };
+    let path = resolved_path;
     let data_file_exists = vfs_files
         .iter()
         .any(|file| file.path.eq_ignore_ascii_case(&path));
@@ -64339,6 +64339,12 @@ fn ppc_open_resource_path(
     make_existing_current: bool,
     trace_name: &str,
 ) -> i16 {
+    let resolved_path = if let Some(index) = ppc_vfs_resource_file_index(vfs_resource_files, &path) {
+        vfs_resource_files[index].path.clone()
+    } else {
+        path
+    };
+    let path = resolved_path;
     let data_file_exists = vfs_files
         .iter()
         .any(|file| file.path.eq_ignore_ascii_case(&path));

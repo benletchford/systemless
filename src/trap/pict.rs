@@ -302,6 +302,95 @@ fn parse_picture_region(bus: &MacMemoryBus, region_ptr: u32) -> Option<PictureRe
     })
 }
 
+fn is_raw_quilt_frame(bus: &MacMemoryBus, pic_ptr: u32) -> bool {
+    let pic_size = bus.read_word(pic_ptr) as usize;
+    if pic_size < 24 {
+        return false;
+    }
+    for offset in 10..24u32 {
+        if bus.read_byte(pic_ptr + offset) != 0 {
+            return false;
+        }
+    }
+    let frame_top = bus.read_word(pic_ptr + 2) as i16;
+    let frame_left = bus.read_word(pic_ptr + 4) as i16;
+    let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
+    let frame_right = bus.read_word(pic_ptr + 8) as i16;
+    let src_width = i32::from(frame_right) - i32::from(frame_left);
+    let src_height = i32::from(frame_bottom) - i32::from(frame_top);
+    if src_width <= 0 || src_height <= 0 {
+        return false;
+    }
+    let alloc_size = bus.get_alloc_size(pic_ptr).unwrap_or(0) as usize;
+    let raw_len = alloc_size.max(pic_size).saturating_sub(24);
+    raw_len > 0 && raw_len % (src_height as usize) == 0
+}
+
+fn draw_raw_quilt_frame(
+    bus: &mut MacMemoryBus,
+    pic_ptr: u32,
+    dst_top: i16,
+    dst_left: i16,
+    dst_bottom: i16,
+    dst_right: i16,
+    screen_mode: (u32, u32, u16, u16, u16), // (base, row_bytes, width, height, pixel_size)
+    dst_clip: Option<&DstClip>,
+) -> bool {
+    let (dst_base, dst_row_bytes, dst_w, dst_h, dst_bpp) = screen_mode;
+    if dst_bpp != 8 {
+        return false;
+    }
+    let frame_top = bus.read_word(pic_ptr + 2) as i16;
+    let frame_left = bus.read_word(pic_ptr + 4) as i16;
+    let frame_bottom = bus.read_word(pic_ptr + 6) as i16;
+    let frame_right = bus.read_word(pic_ptr + 8) as i16;
+
+    let src_width = i32::from(frame_right) - i32::from(frame_left);
+    let src_height = i32::from(frame_bottom) - i32::from(frame_top);
+    if src_width <= 0 || src_height <= 0 {
+        return false;
+    }
+
+    let alloc_size = bus.get_alloc_size(pic_ptr).unwrap_or(0) as usize;
+    let pic_size = bus.read_word(pic_ptr) as usize;
+    let raw_len = alloc_size.max(pic_size).saturating_sub(24);
+    if raw_len == 0 || raw_len % (src_height as usize) != 0 {
+        return false;
+    }
+    let src_row_bytes = (raw_len / (src_height as usize)) as u32;
+
+
+    let dst_width = i32::from(dst_right) - i32::from(dst_left);
+    let dst_height = i32::from(dst_bottom) - i32::from(dst_top);
+    if dst_width <= 0 || dst_height <= 0 {
+        return false;
+    }
+
+    let clip_top = 0i32.max(i32::from(dst_top)).min(i32::from(dst_h));
+    let clip_bottom = 0i32.max(i32::from(dst_bottom)).min(i32::from(dst_h));
+    let clip_left = 0i32.max(i32::from(dst_left)).min(i32::from(dst_w));
+    let clip_right = 0i32.max(i32::from(dst_right)).min(i32::from(dst_w));
+    if clip_bottom <= clip_top || clip_right <= clip_left {
+        return true;
+    }
+
+    for y in clip_top..clip_bottom {
+        let src_y =
+            ((y - i32::from(dst_top)) * src_height / dst_height).clamp(0, src_height - 1) as u32;
+        for x in clip_left..clip_right {
+            if !dst_clip_contains(dst_clip, x, y) {
+                continue;
+            }
+            let src_x =
+                ((x - i32::from(dst_left)) * src_width / dst_width).clamp(0, src_width - 1) as u32;
+            let pixel = bus.read_byte(pic_ptr + 24 + src_y * src_row_bytes + src_x);
+            bus.write_byte(dst_base + (y as u32) * dst_row_bytes + (x as u32), pixel);
+        }
+    }
+    true
+}
+
+
 /// Parse and render a PICT from guest memory.
 /// `pic_ptr` points to the Picture record (picSize + picFrame + opcodes).
 /// `dst_rect` is the destination rectangle from DrawPicture parameters.
@@ -321,6 +410,21 @@ pub fn draw_picture(
     if pic_ptr == 0 {
         return (false, None);
     }
+
+    if is_raw_quilt_frame(bus, pic_ptr) {
+        let ok = draw_raw_quilt_frame(
+            bus,
+            pic_ptr,
+            dst_top,
+            dst_left,
+            dst_bottom,
+            dst_right,
+            screen_mode,
+            dst_clip,
+        );
+        return (ok, None);
+    }
+
 
     // Read Picture header
     let _pic_size = bus.read_word(pic_ptr) as u32;
