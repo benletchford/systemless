@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.14](https://github.com/benletchford/systemless/compare/v0.18.13...v0.18.14) (2026-08-23)
+
+
+### Bug Fixes
+
+* complete native PowerPC CFM runtime support ([#774](https://github.com/benletchford/systemless/issues/774)) ([fe37fd5](https://github.com/benletchford/systemless/commit/fe37fd5ee64e14bec20b3faa2d2bb01b2a707711))
+
 ## [0.18.13](https://github.com/benletchford/systemless/compare/v0.18.12...v0.18.13) (2026-08-23)
 
 
