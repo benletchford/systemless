@@ -13,6 +13,9 @@ const PEF_LOADER_HEADER_SIZE: usize = 56;
 const PEF_IMPORTED_LIBRARY_SIZE: usize = 24;
 const PEF_IMPORTED_SYMBOL_SIZE: usize = 4;
 const PEF_RELOCATION_HEADER_SIZE: usize = 12;
+const PEF_EXPORT_HASH_SLOT_SIZE: usize = 4;
+const PEF_EXPORT_HASH_KEY_SIZE: usize = 4;
+const PEF_EXPORTED_SYMBOL_SIZE: usize = 10;
 
 pub const SECTION_KIND_CODE: u8 = 0;
 pub const SECTION_KIND_UNPACKED_DATA: u8 = 1;
@@ -124,6 +127,36 @@ impl PefImportedSymbol {
             _ => "reserved",
         }
     }
+}
+
+/// One 4-byte export hash-table slot.
+///
+/// The high 14 bits contain the number of symbols in this hash chain and the
+/// low 18 bits contain the index of its first key/symbol pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PefExportedSymbolHashSlot {
+    pub symbol_count: u32,
+    pub first_key: u32,
+}
+
+/// One 4-byte export hash key.
+///
+/// The high 16 bits of the full hash word are the packed export-name length;
+/// the low 16 bits are the name hash value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PefExportedSymbolKey {
+    pub full_hash_word: u32,
+    pub name_length: u16,
+    pub hash_value: u16,
+}
+
+/// One symbol exported by a PEF container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PefExportedSymbol {
+    pub name: String,
+    pub class: u8,
+    pub symbol_value: u32,
+    pub section_index: i16,
 }
 
 /// One 12-byte relocation-header table entry from the loader section.
@@ -345,6 +378,96 @@ pub fn parse_pef_imported_symbols(data: &[u8]) -> Option<Vec<PefImportedSymbol>>
             class: class_byte & 0x0f,
             name_offset,
             weak: (class_byte & 0x80) != 0,
+        });
+    }
+
+    Some(symbols)
+}
+
+/// Parse the export hash-slot table from the loader section.
+pub fn parse_pef_export_hash_slots(data: &[u8]) -> Option<Vec<PefExportedSymbolHashSlot>> {
+    let layout = pef_export_layout(data)?;
+    let export_count = u32::try_from(layout.exported_symbol_count).ok()?;
+    let mut slots = Vec::with_capacity(layout.hash_slot_count);
+
+    // PEFBinaryFormat.h, PEFExportedSymbolHashSlot: each slot packs a
+    // 14-bit symbol count and an 18-bit first-key index.
+    for index in 0..layout.hash_slot_count {
+        let base = layout
+            .export_hash_start
+            .checked_add(index.checked_mul(PEF_EXPORT_HASH_SLOT_SIZE)?)?;
+        let count_and_start = read_u32(data, base)?;
+        let symbol_count = count_and_start >> 18;
+        let first_key = count_and_start & 0x0003_ffff;
+        if first_key > export_count || symbol_count > export_count.saturating_sub(first_key) {
+            return None;
+        }
+        slots.push(PefExportedSymbolHashSlot {
+            symbol_count,
+            first_key,
+        });
+    }
+
+    Some(slots)
+}
+
+/// Parse the full 32-bit export hash keys from the loader section.
+pub fn parse_pef_export_hash_keys(data: &[u8]) -> Option<Vec<PefExportedSymbolKey>> {
+    let layout = pef_export_layout(data)?;
+    parse_pef_export_hash_slots(data)?;
+    let mut keys = Vec::with_capacity(layout.exported_symbol_count);
+
+    // The key table follows the hash slots and has one 32-bit full hash word
+    // for each exported symbol (PEFBinaryFormat.h, PEFExportedSymbolKey).
+    for index in 0..layout.exported_symbol_count {
+        let base = layout
+            .key_table_start
+            .checked_add(index.checked_mul(PEF_EXPORT_HASH_KEY_SIZE)?)?;
+        let full_hash_word = read_u32(data, base)?;
+        keys.push(PefExportedSymbolKey {
+            full_hash_word,
+            name_length: (full_hash_word >> 16) as u16,
+            hash_value: full_hash_word as u16,
+        });
+    }
+
+    Some(keys)
+}
+
+/// Parse every symbol exported by a PEF container.
+pub fn parse_pef_exported_symbols(data: &[u8]) -> Option<Vec<PefExportedSymbol>> {
+    let layout = pef_export_layout(data)?;
+    // Validate every hash-chain range before consuming the flattened tables.
+    parse_pef_export_hash_slots(data)?;
+
+    let mut symbols = Vec::with_capacity(layout.exported_symbol_count);
+    for index in 0..layout.exported_symbol_count {
+        let key_base = layout
+            .key_table_start
+            .checked_add(index.checked_mul(PEF_EXPORT_HASH_KEY_SIZE)?)?;
+        let full_hash_word = read_u32(data, key_base)?;
+        let name_length = usize::from((full_hash_word >> 16) as u16);
+        let symbol_base = layout
+            .symbol_table_start
+            .checked_add(index.checked_mul(PEF_EXPORTED_SYMBOL_SIZE)?)?;
+        let class_and_name = read_u32(data, symbol_base)?;
+        let name_offset = class_and_name & 0x00ff_ffff;
+        let name_start = layout
+            .string_table_start
+            .checked_add(usize::try_from(name_offset).ok()?)?;
+        let name_end = name_start.checked_add(name_length)?;
+        if name_end > layout.string_table_end {
+            return None;
+        }
+
+        symbols.push(PefExportedSymbol {
+            name: decode_mac_roman(data.get(name_start..name_end)?),
+            class: (class_and_name >> 24) as u8,
+            symbol_value: read_u32(data, symbol_base + 4)?,
+            // PEFExportedSymbol is a packed 10-byte record. Negative section
+            // indices identify pseudo-sections such as absolute exports and
+            // re-exported imports (PEFBinaryFormat.h, PEFExportedSymbol).
+            section_index: read_i16(data, symbol_base + 8)?,
         });
     }
 
@@ -1063,6 +1186,56 @@ fn loader_section_end(data: &[u8], loader: &PefSection) -> Option<usize> {
     (end <= data.len()).then_some(end)
 }
 
+struct PefExportLayout {
+    string_table_start: usize,
+    string_table_end: usize,
+    export_hash_start: usize,
+    hash_slot_count: usize,
+    key_table_start: usize,
+    symbol_table_start: usize,
+    exported_symbol_count: usize,
+}
+
+fn pef_export_layout(data: &[u8]) -> Option<PefExportLayout> {
+    let sections = parse_pef_sections(data)?;
+    let loader = loader_section(&sections)?;
+    let header = parse_pef_loader_header(data)?;
+    let loader_base = usize::try_from(loader.container_offset).ok()?;
+    let loader_end = loader_section_end(data, loader)?;
+    let string_table_start =
+        loader_base.checked_add(usize::try_from(header.loader_strings_offset).ok()?)?;
+    let export_hash_start =
+        loader_base.checked_add(usize::try_from(header.export_hash_offset).ok()?)?;
+    if string_table_start > export_hash_start || export_hash_start > loader_end {
+        return None;
+    }
+
+    // Mac OS Runtime Architectures (1997), pp. 8-37–8-39: the hash table
+    // contains 2^exportHashTablePower slots, followed by one key and one
+    // packed 10-byte symbol record per exported symbol.
+    let hash_slot_count = 1usize.checked_shl(header.export_hash_table_power)?;
+    let exported_symbol_count = usize::try_from(header.exported_symbol_count).ok()?;
+    let key_table_start =
+        export_hash_start.checked_add(hash_slot_count.checked_mul(PEF_EXPORT_HASH_SLOT_SIZE)?)?;
+    let symbol_table_start = key_table_start
+        .checked_add(exported_symbol_count.checked_mul(PEF_EXPORT_HASH_KEY_SIZE)?)?;
+    let table_end = symbol_table_start
+        .checked_add(exported_symbol_count.checked_mul(PEF_EXPORTED_SYMBOL_SIZE)?)?;
+    if table_end > loader_end {
+        return None;
+    }
+
+    Some(PefExportLayout {
+        string_table_start,
+        string_table_end: export_hash_start,
+        export_hash_start,
+        hash_slot_count,
+        key_table_start,
+        symbol_table_start,
+        exported_symbol_count,
+    })
+}
+
 fn read_count(inline: u8, packed: &[u8], pc: &mut usize) -> Option<u32> {
     if inline != 0 {
         Some(u32::from(inline))
@@ -1216,6 +1389,12 @@ fn read_i32(data: &[u8], offset: usize) -> Option<i32> {
     ))
 }
 
+fn read_i16(data: &[u8], offset: usize) -> Option<i16> {
+    Some(i16::from_be_bytes(
+        data.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_be_bytes(
         data.get(offset..offset + 4)?.try_into().ok()?,
@@ -1356,6 +1535,86 @@ mod tests {
         assert_eq!(imports[0].class, 2);
         assert_eq!(imports[1].symbol_name, "GetSharedLibrary");
         assert!(imports[1].weak);
+    }
+
+    #[test]
+    fn parse_export_tables_uses_packed_name_lengths_and_signed_sections() {
+        let pef = synthetic_pef(
+            synthetic_loader_with_exports(),
+            block_copy_section(b"\0\0\0\0\0\0\0\0"),
+            8,
+            8,
+        );
+
+        assert_eq!(
+            parse_pef_export_hash_slots(&pef).unwrap(),
+            vec![
+                PefExportedSymbolHashSlot {
+                    symbol_count: 1,
+                    first_key: 0,
+                },
+                PefExportedSymbolHashSlot {
+                    symbol_count: 1,
+                    first_key: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_pef_export_hash_keys(&pef).unwrap(),
+            vec![
+                PefExportedSymbolKey {
+                    full_hash_word: 0x000a_1234,
+                    name_length: 10,
+                    hash_value: 0x1234,
+                },
+                PefExportedSymbolKey {
+                    full_hash_word: 0x0005_5678,
+                    name_length: 5,
+                    hash_value: 0x5678,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_pef_exported_symbols(&pef).unwrap(),
+            vec![
+                PefExportedSymbol {
+                    name: "LongExport".to_string(),
+                    class: 1,
+                    symbol_value: 0x1234_5678,
+                    section_index: 1,
+                },
+                PefExportedSymbol {
+                    name: "Short".to_string(),
+                    class: 4,
+                    symbol_value: 0x9abc_def0,
+                    section_index: -2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_export_tables_rejects_out_of_range_chains_and_names() {
+        let mut bad_chain = synthetic_pef(
+            synthetic_loader_with_exports(),
+            block_copy_section(b"\0\0\0\0\0\0\0\0"),
+            8,
+            8,
+        );
+        // Loader offset 0x80; export hash offset 72; the second slot starts
+        // eight bytes into the loader's export hash area.
+        write_u32(&mut bad_chain, 0x80 + 72 + 4, 0x0004_0002);
+        assert!(parse_pef_export_hash_slots(&bad_chain).is_none());
+
+        let mut bad_name = synthetic_pef(
+            synthetic_loader_with_exports(),
+            block_copy_section(b"\0\0\0\0\0\0\0\0"),
+            8,
+            8,
+        );
+        // The first key starts after the two 4-byte hash slots.
+        write_u32(&mut bad_name, 0x80 + 72 + 8, 0xffff_1234);
+        assert!(parse_pef_exported_symbols(&bad_name).is_none());
     }
 
     #[test]
@@ -1918,6 +2177,43 @@ mod tests {
         bytes
     }
 
+    fn synthetic_loader_with_exports() -> Vec<u8> {
+        let string_offset = PEF_LOADER_HEADER_SIZE;
+        let export_hash_offset = string_offset + 16;
+        let hash_slot_count = 2;
+        let export_count = 2;
+        let key_table_offset = export_hash_offset + hash_slot_count * PEF_EXPORT_HASH_SLOT_SIZE;
+        let symbol_table_offset = key_table_offset + export_count * PEF_EXPORT_HASH_KEY_SIZE;
+        let mut bytes = vec![0u8; symbol_table_offset + export_count * PEF_EXPORTED_SYMBOL_SIZE];
+
+        write_i32(&mut bytes, 0, -1);
+        write_i32(&mut bytes, 8, -1);
+        write_i32(&mut bytes, 16, -1);
+        write_u32(&mut bytes, 40, string_offset as u32);
+        write_u32(&mut bytes, 44, export_hash_offset as u32);
+        write_u32(&mut bytes, 48, 1);
+        write_u32(&mut bytes, 52, export_count as u32);
+
+        // The names intentionally have no NUL terminators: export key name
+        // lengths, rather than a terminator, delimit them in PEF.
+        bytes[string_offset..string_offset + 10].copy_from_slice(b"LongExport");
+        bytes[string_offset + 10..string_offset + 15].copy_from_slice(b"Short");
+
+        write_u32(&mut bytes, export_hash_offset, 0x0004_0000);
+        write_u32(&mut bytes, export_hash_offset + 4, 0x0004_0001);
+        write_u32(&mut bytes, key_table_offset, 0x000a_1234);
+        write_u32(&mut bytes, key_table_offset + 4, 0x0005_5678);
+
+        write_u32(&mut bytes, symbol_table_offset, 0x0100_0000);
+        write_u32(&mut bytes, symbol_table_offset + 4, 0x1234_5678);
+        write_i16(&mut bytes, symbol_table_offset + 8, 1);
+        write_u32(&mut bytes, symbol_table_offset + 10, 0x0400_000a);
+        write_u32(&mut bytes, symbol_table_offset + 14, 0x9abc_def0);
+        write_i16(&mut bytes, symbol_table_offset + 18, -2);
+
+        bytes
+    }
+
     fn block_copy_section(bytes: &[u8]) -> Vec<u8> {
         assert!(bytes.len() < 32);
         let mut packed = vec![0x20 | bytes.len() as u8];
@@ -2034,6 +2330,10 @@ mod tests {
 
     fn write_i32(bytes: &mut [u8], offset: usize, value: i32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+    }
+
+    fn write_i16(bytes: &mut [u8], offset: usize, value: i16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
