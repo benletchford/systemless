@@ -6682,10 +6682,24 @@ impl super::TrapDispatcher {
                     );
                 }
 
-                let ct_handle = if ct_id == 1 || ct_id == 2 || ct_id == 4 || ct_id == 8 {
+                let standard_ctable = match ct_id {
+                    1 | 2 | 4 | 8 => Some((ct_id as u16, false)),
+                    // Inside Macintosh: Volume VI (1991), pp. 17-17..17-18:
+                    // pixel depth + 64 selects the enhanced standard color
+                    // table, and must be obtained through GetCTable rather
+                    // than GetResource.
+                    66 => Some((2, true)),
+                    68 => Some((4, true)),
+                    72 => Some((8, true)),
+                    _ => None,
+                };
+                let ct_handle = if let Some((depth, enhanced)) = standard_ctable {
                     self.recent_resource_ctable_fetch = None;
-                    let (std_clut, entry_count) =
-                        Self::standard_mac_indexed_clut(ct_id as u16).unwrap();
+                    let (std_clut, entry_count) = if enhanced {
+                        Self::standard_mac_enhanced_clut(depth, self.hilite_color).unwrap()
+                    } else {
+                        Self::standard_mac_indexed_clut(depth).unwrap()
+                    };
                     let ct_size: u32 = 8 + entry_count as u32 * 8;
                     let ct_ptr = bus.alloc(ct_size);
                     // Executor's depth convention (qGWorld.cpp:217,
@@ -6695,7 +6709,15 @@ impl super::TrapDispatcher {
                     // (also stamped ctSeed=depth) identity-copy via the
                     // seed-match gates when the destination
                     // is that same canonical CTab.
-                    bus.write_long(ct_ptr, ct_id as u32); // ctSeed = depth
+                    // Enhanced tables are derived from the standard table and
+                    // depend on HiliteColor, so they need a fresh seed rather
+                    // than colliding with the canonical depth seed.
+                    let seed = if enhanced {
+                        self.next_color_table_seed()
+                    } else {
+                        depth as u32
+                    };
+                    bus.write_long(ct_ptr, seed);
                     bus.write_word(ct_ptr + 4, 0); // ctFlags (0 = pixmap color table)
                     bus.write_word(ct_ptr + 6, entry_count as u16 - 1); // ctSize
                     for i in 0..entry_count as u32 {
@@ -44298,6 +44320,58 @@ mod tests {
             8,
             "GetCTable(8) must return ctSeed=8 (depth convention)"
         );
+    }
+
+    /// GetCTable's depth-plus-64 IDs are standard Color QuickDraw tables,
+    /// not resource lookups. In particular, a missing 'clut' 72 resource
+    /// must not turn the enhanced 8-bit table into NIL (Inside Macintosh:
+    /// Volume VI, pp. 17-17..17-18 and 20-7).
+    #[test]
+    fn test_get_ctable_enhanced_standard_ids() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let hilite = d.hilite_color;
+
+        bus.write_word(TEST_SP, 66u16);
+        d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ctab_66 = bus.read_long(cpu.read_reg(Register::A7));
+        assert_ne!(ctab_66, 0, "GetCTable(66) must return a non-null handle");
+        let ptr_66 = bus.read_long(ctab_66);
+        assert_eq!(bus.read_word(ptr_66 + 6), 3);
+        assert_eq!(bus.read_word(ptr_66 + 8 + 2 * 8 + 2), hilite.0);
+        assert_eq!(bus.read_word(ptr_66 + 8 + 2 * 8 + 4), hilite.1);
+        assert_eq!(bus.read_word(ptr_66 + 8 + 2 * 8 + 6), hilite.2);
+
+        let sp = cpu.read_reg(Register::A7);
+        bus.write_word(sp, 68u16);
+        d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ctab_68 = bus.read_long(cpu.read_reg(Register::A7));
+        assert_ne!(ctab_68, 0, "GetCTable(68) must return a non-null handle");
+        let ptr_68 = bus.read_long(ctab_68);
+        assert_eq!(bus.read_word(ptr_68 + 6), 15);
+        assert_eq!(bus.read_word(ptr_68 + 8 + 9 * 8 + 2), hilite.0);
+        assert_eq!(bus.read_word(ptr_68 + 8 + 9 * 8 + 4), hilite.1);
+        assert_eq!(bus.read_word(ptr_68 + 8 + 9 * 8 + 6), hilite.2);
+
+        let sp = cpu.read_reg(Register::A7);
+        bus.write_word(sp, 72u16);
+        d.dispatch_quickdraw(true, 0x218, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let ctab_72 = bus.read_long(cpu.read_reg(Register::A7));
+        assert_ne!(ctab_72, 0, "GetCTable(72) must return a non-null handle");
+        let ptr_72 = bus.read_long(ctab_72);
+        assert_eq!(bus.read_word(ptr_72 + 6), 255);
+        let standard_8bpp = TrapDispatcher::standard_mac_8bpp_clut();
+        for index in [0usize, 197, 225, 255] {
+            let entry = ptr_72 + 8 + index as u32 * 8;
+            assert_eq!(bus.read_word(entry + 2), standard_8bpp[index][0]);
+            assert_eq!(bus.read_word(entry + 4), standard_8bpp[index][1]);
+            assert_eq!(bus.read_word(entry + 6), standard_8bpp[index][2]);
+        }
     }
 
     #[test]
