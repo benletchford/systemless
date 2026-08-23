@@ -3,7 +3,7 @@
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
+use crate::trap::types::{decode_mac_roman, decode_mac_roman_for_render, encode_mac_roman_lossy};
 use crate::ui_theme::UiThemeId;
 use crate::Result;
 
@@ -197,6 +197,16 @@ fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
 
 fn internal_menu_string_to_unicode(value: &str) -> String {
     decode_mac_roman(&internal_menu_string_bytes(value))
+}
+
+/// Convert the byte-preserving menu string representation into the text that
+/// the framebuffer renderer can draw. MENU resource strings are MacRoman
+/// bytes (Inside Macintosh Volume I, I-345); keeping their bytes in `String`
+/// lets the Menu Manager round-trip them, but the Chicago replacement font
+/// does not contain every MacRoman glyph. The render conversion expands the
+/// classic ellipsis byte ($C9) and other punctuation into available glyphs.
+pub(crate) fn menu_text_for_render(value: &str) -> String {
+    decode_mac_roman_for_render(&internal_menu_string_bytes(value))
 }
 
 /// Parse a MENU resource from guest memory into a Menu struct.
@@ -2795,7 +2805,8 @@ impl super::TrapDispatcher {
 
                     let mut max_width: i16 = 0;
                     for item in &menu.items {
-                        let w = Self::fb_measure_string(&item.text, 0, 12);
+                        let item_text = menu_text_for_render(&item.text);
+                        let w = Self::fb_measure_string(&item_text, 0, 12);
                         let total = w + self.menu_item_width_extra(bus, item) + 24;
                         if total > max_width {
                             max_width = total;
@@ -4282,7 +4293,8 @@ impl super::TrapDispatcher {
 
         let mut width: i16 = 0;
         for item in &menu.items {
-            let w = Self::fb_measure_string(&item.text, 0, 12)
+            let item_text = menu_text_for_render(&item.text);
+            let w = Self::fb_measure_string(&item_text, 0, 12)
                 + self.menu_item_width_extra(bus, item)
                 + 26;
             width = width.max(w);
@@ -4352,7 +4364,8 @@ impl super::TrapDispatcher {
         };
         let mut max_width = min_width;
         for item in &menu.items {
-            let w = Self::fb_measure_string(&item.text, 0, 12);
+            let item_text = menu_text_for_render(&item.text);
+            let w = Self::fb_measure_string(&item_text, 0, 12);
             let total =
                 w + self.menu_item_width_extra(bus, item) + Self::menu_item_pulldown_padding(item);
             max_width = max_width.max(total);
@@ -4965,6 +4978,7 @@ impl super::TrapDispatcher {
             let item_height = self.menu_item_height(bus, item);
             let item_bottom = item_top + item_height;
             let is_separator = item.text == "-";
+            let item_text = menu_text_for_render(&item.text);
             let mark_pixel_index =
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 4);
             let name_pixel_index =
@@ -5172,7 +5186,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     text_left,
                     text_y,
-                    &item.text,
+                    &item_text,
                     font_id,
                     font_size,
                     item.style,
@@ -5188,7 +5202,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     text_left,
                     text_y,
-                    &item.text,
+                    &item_text,
                     font_id,
                     font_size,
                     item.style,
@@ -5603,6 +5617,7 @@ impl super::TrapDispatcher {
                 let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
                 let text_height = metrics.ascent + metrics.descent;
                 let text_y = (menu_bar_height - text_height) / 2 + metrics.ascent;
+                let title = menu_text_for_render(&menu.title);
                 Self::fb_draw_string_styled_ink(
                     bus,
                     screen_base,
@@ -5612,7 +5627,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     left + 7,
                     text_y,
-                    &menu.title,
+                    &title,
                     font_id,
                     font_size,
                     0,
@@ -5672,9 +5687,9 @@ impl super::TrapDispatcher {
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        count_menu_items_from_memory, parse_appendmenu_items, parse_menu_resource, Menu, MenuItem,
-        MenuTrackingState, MC_ENTRY_SIZE, MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON,
-        MENU_ROW_HEIGHT,
+        count_menu_items_from_memory, menu_text_for_render, parse_appendmenu_items,
+        parse_menu_resource, Menu, MenuItem, MenuTrackingState, MC_ENTRY_SIZE,
+        MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON, MENU_ROW_HEIGHT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
@@ -9293,6 +9308,54 @@ mod tests {
     }
 
     // 0x137 — DrawMenuBar: no stack params, calls draw_menu_bar_to_fb.
+    #[test]
+    fn menu_render_text_keeps_macroman_ellipsis_geometry_and_pixels_consistent() {
+        const STORED: &str = "Open Game\u{C9}";
+        const RENDERED: &str = "Open Game...";
+
+        assert_eq!(menu_text_for_render(STORED), RENDERED);
+        assert_eq!(
+            super::super::TrapDispatcher::fb_measure_string(&menu_text_for_render(STORED), 0, 12,),
+            super::super::TrapDispatcher::fb_measure_string(RENDERED, 0, 12),
+            "MacRoman ellipsis measurement must use the same expanded text as drawing"
+        );
+        assert_eq!(
+            super::super::TrapDispatcher::menu_title_advance(STORED),
+            super::super::TrapDispatcher::menu_title_advance(RENDERED),
+            "menu-bar title geometry must use the render-facing ellipsis"
+        );
+
+        let capture = |title: &str, item_text: &str| {
+            let (mut disp, mut cpu, mut bus) = setup_with_port();
+            let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 200, 100);
+            disp.menu_bar_hidden = false;
+            bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+            let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 650, 0x303900, "File");
+            append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303940, "Open Game");
+            disp.menus[0].title = title.to_string();
+            disp.menus[0].items[0].text = item_text.to_string();
+            insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+
+            let title_width = super::super::TrapDispatcher::menu_title_advance(title);
+            let dropdown_width = disp.dropdown_width_for_menu(&bus, 0, 100);
+            disp.draw_menu_bar_to_fb(&mut bus);
+            disp.draw_menu_dropdown(&mut bus, 0, (20, 20, 60, dropdown_width + 20));
+
+            let pixels = (0..row_bytes * 100)
+                .map(|offset| bus.read_byte(base + offset))
+                .collect::<Vec<_>>();
+            (pixels, title_width, dropdown_width)
+        };
+
+        let (stored_pixels, stored_title_width, stored_dropdown_width) = capture(STORED, STORED);
+        let (rendered_pixels, rendered_title_width, rendered_dropdown_width) =
+            capture(RENDERED, RENDERED);
+
+        assert_eq!(stored_title_width, rendered_title_width);
+        assert_eq!(stored_dropdown_width, rendered_dropdown_width);
+        assert_eq!(stored_pixels, rendered_pixels);
+    }
+
     #[test]
     fn test_draw_menu_bar() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();

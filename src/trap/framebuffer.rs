@@ -2,6 +2,7 @@
 
 use std::{collections::HashSet, sync::OnceLock};
 
+use super::menu::menu_text_for_render;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
@@ -2287,8 +2288,8 @@ impl super::TrapDispatcher {
             if !menu.visible_in_menu_bar {
                 continue;
             }
-            let title = &menu.title;
-            let title_width = Self::menu_title_advance(title);
+            let title = menu_text_for_render(&menu.title);
+            let title_width = Self::menu_title_advance(&title);
             // HIG 1992 p. 54 says unavailable menu titles remain visible
             // but dimmed; p. 55 says pressing a menu title highlights it.
             // Route title-state chrome through the provider while keeping
@@ -2316,7 +2317,7 @@ impl super::TrapDispatcher {
             } else {
                 None
             };
-            let system_mark = Self::is_system_menu_mark_title(title);
+            let system_mark = Self::is_system_menu_mark_title(&title);
             // The retro mark is multi-coloured original artwork, so it dims
             // through the pattern path on every screen depth rather than
             // collapsing to a single grey silhouette.
@@ -2342,7 +2343,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     x,
                     text_y,
-                    title,
+                    &title,
                     font_id,
                     font_size,
                     0,
@@ -2358,7 +2359,7 @@ impl super::TrapDispatcher {
                     screen_height,
                     x,
                     text_y,
-                    title,
+                    &title,
                     font_id,
                     font_size,
                 )
@@ -2431,7 +2432,8 @@ impl super::TrapDispatcher {
         if Self::is_system_menu_mark_title(title) {
             SYSTEM_MENU_MARK_TITLE_ADVANCE
         } else {
-            Self::fb_measure_string(title, 0, 12)
+            let title = menu_text_for_render(title);
+            Self::fb_measure_string(&title, 0, 12)
         }
     }
 
