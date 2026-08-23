@@ -6499,6 +6499,18 @@ impl FixtureRunner {
                 continue;
             };
             let channel = playback.channel;
+            if trace_sound_runner_enabled() {
+                let non_silent = decoded
+                    .samples
+                    .iter()
+                    .filter(|sample| **sample != 0x80)
+                    .count();
+                eprintln!(
+                    "[PPC-SOUND] host file play index={index} chan=${channel:08X} rate=${:08X} samples={} non_silent={non_silent}",
+                    decoded.sample_rate_fixed,
+                    decoded.samples.len()
+                );
+            }
             self.ensure_ppc_sound_playback_timing(ppc_app, index, &decoded);
             let chan_index = self
                 .dispatcher
@@ -6931,6 +6943,7 @@ impl FixtureRunner {
                             file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
                             channel: playback.channel,
                             completion: playback.completion,
+                            command: playback.completion_command,
                             tick: current_tick,
                             instruction_count: current_instructions,
                             scheduled_tick,
@@ -7022,6 +7035,7 @@ impl FixtureRunner {
                                 .unwrap_or(u32::MAX),
                             channel: record.channel,
                             completion: playback.completion,
+                            command: playback.completion_command,
                             tick: self.dispatcher.tick_count,
                             instruction_count: self.total_instructions,
                             scheduled_tick,
@@ -12063,6 +12077,7 @@ mod tests {
                 buffer: 0,
                 selection: 0,
                 completion,
+                completion_command: None,
                 async_play: true,
                 paused: false,
                 active: true,
@@ -12207,6 +12222,7 @@ mod tests {
                 buffer: 0,
                 selection: 0,
                 completion: callback_entry,
+                completion_command: None,
                 async_play: true,
                 paused: false,
                 active: true,
@@ -12343,6 +12359,7 @@ mod tests {
                 buffer: 0,
                 selection: 0,
                 completion: callback_entry,
+                completion_command: None,
                 async_play: true,
                 paused: false,
                 active: true,
