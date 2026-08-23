@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.16](https://github.com/benletchford/systemless/compare/v0.18.15...v0.18.16) (2026-08-23)
+
+
+### Bug Fixes
+
+* launch installed PowerPC games reliably ([#785](https://github.com/benletchford/systemless/issues/785)) ([961a2ce](https://github.com/benletchford/systemless/commit/961a2ce394d9f9dd9ed9e3e4b9f725e9d7bb0618))
+
 ## [0.18.15](https://github.com/benletchford/systemless/compare/v0.18.14...v0.18.15) (2026-08-23)
 
 
