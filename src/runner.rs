@@ -391,6 +391,14 @@ fn format_input_key_map(key_map: &[u8; 16]) -> String {
     out
 }
 
+fn sync_ppc_system_event_mask(dispatcher: &mut TrapDispatcher, system_event_mask: u16) {
+    // Macintosh Toolbox Essentials (1992), pp. 2-99--2-100: SetEventMask
+    // changes the current process's OS Event Manager posting mask. Input is
+    // injected through the shared dispatcher, so it must observe the PPC
+    // process's mask before deciding whether to post keyUp events.
+    dispatcher.system_event_mask = system_event_mask;
+}
+
 fn format_oracle_hex32(value: u32) -> String {
     format!("{value:08X}")
 }
@@ -1415,6 +1423,10 @@ pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
 /// reported by the PPC Gestalt implementation.
 /// <https://support.apple.com/en-hk/112050>
 pub const DEFAULT_REALTIME_PPC_CPU_MHZ: f64 = 120.0;
+/// Default direct-color display depth for native PowerPC applications.
+/// Imaging With QuickDraw (1994), p. 6-16, defines 16 bits per pixel as a
+/// supported Color QuickDraw screen and offscreen graphics-world depth.
+pub const DEFAULT_POWERPC_SCREEN_DEPTH: u32 = 16;
 /// Default 68K realtime CPU budget used by scripted realtime mode and by GUI
 /// sessions that do not load a PowerPC executable.
 pub const DEFAULT_REALTIME_INSTRUCTIONS_PER_SECOND: f64 = DEFAULT_REALTIME_CPU_MHZ * 1_000_000.0;
@@ -5972,6 +5984,10 @@ impl FixtureRunner {
             self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         }
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        sync_ppc_system_event_mask(
+            &mut self.dispatcher,
+            ppc_app.toolbox_startup.system_event_mask,
+        );
         self.dispatcher.event_queue = ppc_app
             .event_queue()
             .iter()
@@ -11589,6 +11605,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: Vec::new(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
@@ -11768,6 +11785,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: vec![PpcVfsFileRecord {
                 path: "System Folder/Preferences/Test App Prefs".to_string(),
                 data: b"prefs".to_vec(),
@@ -12509,6 +12527,21 @@ mod tests {
     }
 
     #[test]
+    fn ppc_system_event_mask_enables_injected_key_up_events() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        sync_ppc_system_event_mask(&mut runner.dispatcher, 0xffdf);
+        runner.push_key_down(0x7c, 29);
+        runner.push_key_up(0x7c, 29);
+
+        assert!(runner
+            .dispatcher
+            .event_queue
+            .iter()
+            .any(|event| event.what == 4 && event.message == 0x0000_7c1d));
+    }
+
+    #[test]
     fn ppc_getkeys_reads_runner_key_map() {
         let key_map_ptr = PPC_DATA_BASE;
         let mut memory = PpcSectionMem::new();
@@ -12598,6 +12631,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: Vec::new(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
@@ -12756,6 +12790,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: Vec::new(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
@@ -13174,6 +13209,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: Vec::new(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
@@ -13484,6 +13520,7 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             files: Vec::new(),
+            stdio_streams: ppc_initial_stdio_streams(),
             vfs_files: Vec::new(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),

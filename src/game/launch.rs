@@ -4,7 +4,10 @@
 //! packs), runner initialization, and post-load configuration so all
 //! frontends behave identically.
 
-use crate::loader::cfrg::{parse_cfrg_resource, select_powerpc_application_fragment, WHOLE_FORK};
+use crate::loader::cfrg::{
+    parse_cfrg_resource, select_powerpc_application_fragment, ARCH_POWERPC, LOCATION_ON_DISK_FLAT,
+    USAGE_LIB, WHOLE_FORK,
+};
 use crate::loader::pef::{parse_pef_header, parse_pef_loader_header, resolve_pef_main_entry};
 use crate::loader::ppc::{
     PpcCfmLibraryFragment, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord,
@@ -2142,35 +2145,17 @@ fn load_selected_executable(
                     eprintln!("[LOAD] PowerPC PEF details: {details}");
                 }
             }
-            let mut loaded = crate::loader::ppc::load_pef_application_with_config(
-                pef,
-                crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size),
-            )
-            .map_err(|error| {
-                format!(
-                    "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
-                    executable.name
-                )
-            })?;
-            let library_fragments = ResourceFork::parse(&rsrc)
-                .and_then(|fork| fork.get(*b"cfrg", 0).cloned())
-                .and_then(|resource| parse_cfrg_resource(&resource.data))
-                .map(|cfrg| {
-                    cfrg.fragments
-                        .into_iter()
-                        .filter_map(|fragment| {
-                            if !fragment.is_powerpc_library_data_fork() {
-                                return None;
-                            }
-                            let range = fragment.data_fork_range(data.len())?;
-                            Some(PpcCfmLibraryFragment {
-                                name: fragment.name,
-                                bytes: data.get(range)?.to_vec(),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let mut ppc_config =
+                crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
+            ppc_config.screen_depth = crate::runner::DEFAULT_POWERPC_SCREEN_DEPTH;
+            let mut loaded = crate::loader::ppc::load_pef_application_with_config(pef, ppc_config)
+                .map_err(|error| {
+                    format!(
+                        "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+                        executable.name
+                    )
+                })?;
+            let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
             loaded.seed_cfm_library_fragments(library_fragments);
             loaded.seed_vfs_directories(
                 ppc_vfs.directories,
@@ -2530,6 +2515,111 @@ struct PpcDiagnosticVfs {
     resources: Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
     next_dir_id: u32,
+}
+
+#[derive(Debug, Clone)]
+struct PpcCfmLibraryCandidate {
+    path: String,
+    fragment_index: usize,
+    name: String,
+    bytes: Vec<u8>,
+}
+
+/// Discover native CFM libraries from complete data/resource fork pairs.
+///
+/// A launch volume can contain shared libraries independently of the selected
+/// application. The Code Fragment Manager identifies those libraries by the
+/// logical name in their `'cfrg'` resource, not by their filesystem name. Keep
+/// this scan independent of any application or archive layout and validate the
+/// advertised flat data-fork range before handing bytes to the PEF loader.
+fn discover_ppc_cfm_library_fragments(ppc_vfs: &PpcDiagnosticVfs) -> Vec<PpcCfmLibraryFragment> {
+    let mut resource_files: Vec<_> = ppc_vfs.resource_files.iter().collect();
+    resource_files.sort_by_key(|file| vfs_path_sort_key(&file.path));
+
+    let mut candidates = Vec::new();
+    for resource_file in resource_files {
+        let Some(resource_data) = resource_file.raw_data.as_deref() else {
+            continue;
+        };
+        let Some(data_file) = ppc_vfs
+            .files
+            .iter()
+            .filter(|file| file.path.eq_ignore_ascii_case(&resource_file.path))
+            .min_by(|left, right| {
+                vfs_path_sort_key(&left.path).cmp(&vfs_path_sort_key(&right.path))
+            })
+        else {
+            continue;
+        };
+        let Some(resource_fork) = ResourceFork::parse(resource_data) else {
+            continue;
+        };
+        let Some(cfrg_resource) = resource_fork.get(*b"cfrg", 0) else {
+            continue;
+        };
+        let Some(cfrg) = parse_cfrg_resource(&cfrg_resource.data) else {
+            continue;
+        };
+
+        for (fragment_index, fragment) in cfrg.fragments.into_iter().enumerate() {
+            if fragment.architecture != ARCH_POWERPC
+                || fragment.usage != USAGE_LIB
+                || fragment.location != LOCATION_ON_DISK_FLAT
+                || fragment.name.is_empty()
+            {
+                continue;
+            }
+            let Some(range) = fragment.data_fork_range(data_file.data.len()) else {
+                continue;
+            };
+            let Some(bytes) = data_file.data.get(range) else {
+                continue;
+            };
+            let Some(pef_header) = parse_pef_header(bytes) else {
+                continue;
+            };
+            if pef_header.architecture != ARCH_POWERPC {
+                continue;
+            }
+            candidates.push(PpcCfmLibraryCandidate {
+                path: resource_file.path.clone(),
+                fragment_index,
+                name: fragment.name,
+                bytes: bytes.to_vec(),
+            });
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        vfs_path_sort_key(&left.path)
+            .cmp(&vfs_path_sort_key(&right.path))
+            .then(left.fragment_index.cmp(&right.fragment_index))
+            .then(
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase()),
+            )
+            .then(left.name.cmp(&right.name))
+            .then(left.bytes.cmp(&right.bytes))
+    });
+
+    let mut fragments = Vec::new();
+    for candidate in candidates {
+        if fragments.iter().any(|fragment: &PpcCfmLibraryFragment| {
+            fragment.name.eq_ignore_ascii_case(&candidate.name)
+        }) {
+            continue;
+        }
+        fragments.push(PpcCfmLibraryFragment {
+            name: candidate.name,
+            bytes: candidate.bytes,
+        });
+    }
+    fragments
+}
+
+fn vfs_path_sort_key(path: &str) -> (String, String) {
+    (path.to_ascii_lowercase(), path.to_string())
 }
 
 impl ExecutableKind {
@@ -3835,6 +3925,71 @@ mod tests {
         bytes
     }
 
+    fn make_library_cfrg(
+        architecture: [u8; 4],
+        usage: u8,
+        location: u8,
+        fragment_offset: u32,
+        fragment_length: u32,
+        name: &[u8],
+    ) -> Vec<u8> {
+        assert!(name.len() <= u8::MAX as usize);
+        let name_record = [vec![name.len() as u8], name.to_vec()].concat();
+        let record_len = 42 + name_record.len();
+        let mut bytes = vec![0u8; 32 + record_len];
+        bytes[8..12].copy_from_slice(&1u32.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1u32.to_be_bytes());
+
+        let record = 32;
+        bytes[record..record + 4].copy_from_slice(&architecture);
+        bytes[record + 22] = usage;
+        bytes[record + 23] = location;
+        bytes[record + 24..record + 28].copy_from_slice(&fragment_offset.to_be_bytes());
+        bytes[record + 28..record + 32].copy_from_slice(&fragment_length.to_be_bytes());
+        bytes[record + 40..record + 42].copy_from_slice(&(record_len as u16).to_be_bytes());
+        bytes[record + 42..].copy_from_slice(&name_record);
+        bytes
+    }
+
+    fn make_ppc_diagnostic_vfs(
+        entries: Vec<(&str, Option<Vec<u8>>, Option<Vec<u8>>)>,
+    ) -> PpcDiagnosticVfs {
+        let mut files = Vec::new();
+        let mut resource_files = Vec::new();
+        for (path, data, rsrc) in entries {
+            if let Some(data) = data {
+                files.push(PpcVfsFileRecord {
+                    path: path.to_string(),
+                    data,
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    dirty: false,
+                });
+            }
+            if let Some(rsrc) = rsrc {
+                resource_files.push(PpcVfsResourceFileRecord {
+                    path: path.to_string(),
+                    creator: 0,
+                    file_type: 0,
+                    finder_flags: 0,
+                    resource_len: rsrc.len() as u32,
+                    raw_data: Some(rsrc),
+                    map_attrs: 0,
+                    dirty: false,
+                });
+            }
+        }
+        PpcDiagnosticVfs {
+            directories: Vec::new(),
+            files,
+            resource_files,
+            resources: Vec::new(),
+            default_dir_id: 0,
+            next_dir_id: 1,
+        }
+    }
+
     fn make_cfrg(fragment_offset: u32, fragment_length: u32) -> Vec<u8> {
         make_cfrg_with_stack(fragment_offset, fragment_length, 0)
     }
@@ -3861,6 +4016,176 @@ mod tests {
         bytes[record + 40..record + 42].copy_from_slice(&(record_len as u16).to_be_bytes());
         bytes[record + 42..].copy_from_slice(name);
         bytes
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_pairs_forks_case_insensitively_and_uses_logical_name() {
+        let pef = make_minimal_pef(*b"pwpc");
+        let cfrg = make_library_cfrg(
+            ARCH_POWERPC,
+            USAGE_LIB,
+            LOCATION_ON_DISK_FLAT,
+            0,
+            WHOLE_FORK,
+            b"SDL",
+        );
+        let vfs = PpcDiagnosticVfs {
+            directories: Vec::new(),
+            files: vec![PpcVfsFileRecord {
+                path: "Volume/SDL".to_string(),
+                data: pef.clone(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            }],
+            resource_files: vec![PpcVfsResourceFileRecord {
+                path: "volume/sdl".to_string(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                resource_len: 0,
+                raw_data: Some(make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg)),
+                map_attrs: 0,
+                dirty: false,
+            }],
+            resources: Vec::new(),
+            default_dir_id: 0,
+            next_dir_id: 1,
+        };
+
+        let fragments = discover_ppc_cfm_library_fragments(&vfs);
+        assert_eq!(
+            fragments,
+            vec![PpcCfmLibraryFragment {
+                name: "SDL".to_string(),
+                bytes: pef,
+            }]
+        );
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_rejects_incomplete_invalid_and_non_library_pairs() {
+        let valid_pef = make_minimal_pef(*b"pwpc");
+        let valid_library = |name: &[u8]| {
+            make_single_resource_fork_bytes(
+                *b"cfrg",
+                0,
+                &make_library_cfrg(
+                    ARCH_POWERPC,
+                    USAGE_LIB,
+                    LOCATION_ON_DISK_FLAT,
+                    0,
+                    WHOLE_FORK,
+                    name,
+                ),
+            )
+        };
+        let invalid_library = |architecture, usage, location, offset, length| {
+            make_single_resource_fork_bytes(
+                *b"cfrg",
+                0,
+                &make_library_cfrg(architecture, usage, location, offset, length, b"Rejected"),
+            )
+        };
+
+        let vfs = make_ppc_diagnostic_vfs(vec![
+            (
+                "Valid",
+                Some(valid_pef.clone()),
+                Some(valid_library(b"Accepted")),
+            ),
+            (
+                "BadArchitecture",
+                Some(make_minimal_pef(*b"m68k")),
+                Some(valid_library(b"Wrong PEF")),
+            ),
+            (
+                "BadRange",
+                Some(valid_pef.clone()),
+                Some(invalid_library(
+                    ARCH_POWERPC,
+                    USAGE_LIB,
+                    LOCATION_ON_DISK_FLAT,
+                    100,
+                    40,
+                )),
+            ),
+            (
+                "EmptyName",
+                Some(valid_pef.clone()),
+                Some(valid_library(b"")),
+            ),
+            (
+                "NotLibrary",
+                Some(valid_pef.clone()),
+                Some(invalid_library(
+                    ARCH_POWERPC,
+                    1,
+                    LOCATION_ON_DISK_FLAT,
+                    0,
+                    WHOLE_FORK,
+                )),
+            ),
+            (
+                "NotFlat",
+                Some(valid_pef.clone()),
+                Some(invalid_library(ARCH_POWERPC, USAGE_LIB, 2, 0, WHOLE_FORK)),
+            ),
+            ("NoDataFork", None, Some(valid_library(b"No Data"))),
+            ("NoResourceFork", Some(valid_pef), None),
+        ]);
+
+        let fragments = discover_ppc_cfm_library_fragments(&vfs);
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].name, "Accepted");
+    }
+
+    #[test]
+    fn ppc_cfm_discovery_resolves_duplicate_logical_names_deterministically() {
+        let mut first_pef = make_minimal_pef(*b"pwpc");
+        first_pef[39] = 0x11;
+        let mut second_pef = make_minimal_pef(*b"pwpc");
+        second_pef[39] = 0x22;
+        let vfs = make_ppc_diagnostic_vfs(vec![
+            (
+                "z-library",
+                Some(second_pef),
+                Some(make_single_resource_fork_bytes(
+                    *b"cfrg",
+                    0,
+                    &make_library_cfrg(
+                        ARCH_POWERPC,
+                        USAGE_LIB,
+                        LOCATION_ON_DISK_FLAT,
+                        0,
+                        WHOLE_FORK,
+                        b"sdl",
+                    ),
+                )),
+            ),
+            (
+                "A-library",
+                Some(first_pef.clone()),
+                Some(make_single_resource_fork_bytes(
+                    *b"cfrg",
+                    0,
+                    &make_library_cfrg(
+                        ARCH_POWERPC,
+                        USAGE_LIB,
+                        LOCATION_ON_DISK_FLAT,
+                        0,
+                        WHOLE_FORK,
+                        b"SDL",
+                    ),
+                )),
+            ),
+        ]);
+
+        let fragments = discover_ppc_cfm_library_fragments(&vfs);
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0].name, "SDL");
+        assert_eq!(fragments[0].bytes, first_pef);
     }
 
     #[test]
