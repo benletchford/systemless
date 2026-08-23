@@ -16249,7 +16249,14 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CopyBits => {
-            let _ = ppc_copy_bits(cpu, memory, gworlds, color_manager_clut);
+            let _ = ppc_copy_bits(
+                cpu,
+                memory,
+                gworlds,
+                color_manager_clut,
+                *quickdraw_fore_color,
+                *quickdraw_back_color,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BitMapToRegion => Some(PpcImportAction::Return(ppc_i16_result(
@@ -16586,6 +16593,17 @@ fn dispatch_supported_import(
                     if let Some(content_color) = ppc_window_content_color(memory, color_table) {
                         if window == *current_gworld {
                             *quickdraw_back_color = content_color;
+                        }
+                        if ppc_window_is_visible(memory, window) {
+                            if let Some(bounds) = ppc_read_rect(memory, window.wrapping_add(16)) {
+                                let _ = ppc_paint_rect_bounds(
+                                    memory,
+                                    gworlds,
+                                    window,
+                                    bounds,
+                                    content_color,
+                                );
+                            }
                         }
                     }
                     ppc_enqueue_window_update_event(event_queue, window, input);
@@ -44193,12 +44211,16 @@ fn ppc_new_cwindow(
         pixels_locked: false,
         pixels_no_purge: false,
     });
+    if visible && _proc_id == 1 {
+        ppc_draw_dialog_box_frame(memory, gworlds, port, local_bottom, local_right);
+    }
     if ppc_gworld_trace_enabled() {
         eprintln!(
-            "[PPC-GWORLD-TRACE] NewCWindow port=${:08X} storage=${:08X} visible={} base=${:08X} pixmap=${:08X} handle=${:08X} gdevice=${:08X} global_bounds=({}, {}, {}, {}) port_rect=(0, 0, {}, {}) pixel_bounds=({}, {}, {}, {}) size={}x{}x{} row_bytes={} ref_con=${:08X}",
+            "[PPC-GWORLD-TRACE] NewCWindow port=${:08X} storage=${:08X} visible={} proc_id={} base=${:08X} pixmap=${:08X} handle=${:08X} gdevice=${:08X} global_bounds=({}, {}, {}, {}) port_rect=(0, 0, {}, {}) pixel_bounds=({}, {}, {}, {}) size={}x{}x{} row_bytes={} ref_con=${:08X}",
             port,
             storage_ptr,
             visible,
+            _proc_id,
             base_addr,
             pixmap,
             pixmap_handle,
@@ -44221,6 +44243,47 @@ fn ppc_new_cwindow(
         );
     }
     port
+}
+
+fn ppc_draw_dialog_box_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+    height: i16,
+    width: i16,
+) {
+    // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26: dBoxProc owns a
+    // gray dialog surface and a structure region outside the content rectangle.
+    // Initialize both before the application draws its dialog items.
+    const BORDER: i16 = 6;
+    const WINDOW_GRAY: PpcRgbColor = PpcRgbColor {
+        red: 0xcccc,
+        green: 0xcccc,
+        blue: 0xcccc,
+    };
+    let _ = ppc_paint_rect_bounds(memory, gworlds, window, (0, 0, height, width), WINDOW_GRAY);
+    let outer_bottom = height.saturating_add(BORDER);
+    let outer_right = width.saturating_add(BORDER);
+    for rect in [
+        (-BORDER, -BORDER, 0, outer_right),
+        (height, -BORDER, outer_bottom, outer_right),
+        (0, -BORDER, height, 0),
+        (0, width, height, outer_right),
+    ] {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, WINDOW_GRAY);
+    }
+    for rect in [
+        (-BORDER, -BORDER, -BORDER + 1, outer_right),
+        (outer_bottom - 1, -BORDER, outer_bottom, outer_right),
+        (-BORDER, -BORDER, outer_bottom, -BORDER + 1),
+        (-BORDER, outer_right - 1, outer_bottom, outer_right),
+        (-1, -1, 0, width + 1),
+        (height, -1, height + 1, width + 1),
+        (-1, -1, height + 1, 0),
+        (-1, width, height + 1, width + 1),
+    ] {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK);
+    }
 }
 
 fn ppc_get_new_cwindow(
@@ -46053,6 +46116,16 @@ fn ppc_paint_rect(
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
     };
+    ppc_paint_rect_bounds(memory, gworlds, current_gworld, rect, color)
+}
+
+fn ppc_paint_rect_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -46717,6 +46790,8 @@ fn ppc_copy_bits(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     color_manager_clut: &[[u16; 3]; 256],
+    fore_color: PpcRgbColor,
+    back_color: PpcRgbColor,
 ) -> bool {
     let src_bits_ptr = cpu.gpr[3];
     let dst_bits_ptr = cpu.gpr[4];
@@ -46727,7 +46802,8 @@ fn ppc_copy_bits(
     let mut reason = "ok";
     let mut trace_details = None;
     let copied = (|| {
-        if (transfer_mode & 0x3f) != 0 {
+        let mode = transfer_mode & 0x3f;
+        if !matches!(mode, 0 | 36) {
             reason = "unsupported-mode";
             return None;
         }
@@ -46739,20 +46815,30 @@ fn ppc_copy_bits(
             reason = "dst-bits";
             return None;
         };
-        if src_bits.depth != dst_bits.depth || !matches!(src_bits.depth, 8 | 16) {
+        let transparent = mode == 36;
+        let compatible_depths = if transparent {
+            matches!(src_bits.depth, 1 | 8 | 16) && matches!(dst_bits.depth, 8 | 16)
+        } else {
+            src_bits.depth == dst_bits.depth && matches!(src_bits.depth, 8 | 16)
+        };
+        if !compatible_depths {
             reason = "depth";
             return None;
         }
-        let palette_map = if src_bits.depth == 8 {
-            let src_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, src_bits_ptr);
-            let dst_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, dst_bits_ptr);
+        let src_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, src_bits_ptr);
+        let dst_ctable = ppc_resolve_pixmap_ctable_handle(memory, gworlds, dst_bits_ptr);
+        let src_clut = (src_bits.depth == 8)
+            .then(|| ppc_copy_bits_clut(memory, src_ctable.unwrap_or(0), color_manager_clut));
+        let dst_clut = (dst_bits.depth == 8)
+            .then(|| ppc_copy_bits_clut(memory, dst_ctable.unwrap_or(0), color_manager_clut));
+        let palette_map = if src_bits.depth == 8 && dst_bits.depth == 8 {
             match (src_ctable, dst_ctable) {
                 (Some(src_ctable), Some(dst_ctable)) if src_ctable != dst_ctable => {
                     // Inside Macintosh Volume VI (1991), pp. 20-16--20-17:
                     // ctFlags bit 14 makes each ColorSpec.value a palette
                     // entry for the corresponding source pixel value.
-                    let src_clut = ppc_copy_bits_clut(memory, src_ctable, color_manager_clut);
-                    let dst_clut = ppc_copy_bits_clut(memory, dst_ctable, color_manager_clut);
+                    let src_clut = src_clut.as_ref().unwrap();
+                    let dst_clut = dst_clut.as_ref().unwrap();
                     (src_clut != dst_clut).then(|| {
                         ppc_copy_bits_palette_index_map(memory, src_ctable).unwrap_or_else(|| {
                             std::array::from_fn::<u8, 256, _>(|index| {
@@ -46827,7 +46913,11 @@ fn ppc_copy_bits(
         // ports and GWorlds, including indexed-color PixMaps. Keep the common
         // unscaled copy row-based so an 8-bit full-screen blit remains native
         // host memory bandwidth rather than 307,200 scalar HLE writes.
-        if mask_storage.is_none() && src_width == dst_width && src_height == dst_height {
+        if !transparent
+            && mask_storage.is_none()
+            && src_width == dst_width
+            && src_height == dst_height
+        {
             let x_delta = i32::from(src_left) - i32::from(dst_left);
             let y_delta = i32::from(src_top) - i32::from(dst_top);
             let copy_left = copy_left.max(i32::from(src_bits.left) - x_delta);
@@ -46862,6 +46952,33 @@ fn ppc_copy_bits(
             return Some(());
         }
 
+        let transparent_back_pixel = match src_bits.depth {
+            1 => 0,
+            8 => {
+                let clut = src_clut.as_ref()?;
+                u32::from(pict::closest_clut_index(
+                    back_color.red,
+                    back_color.green,
+                    back_color.blue,
+                    clut,
+                ))
+            }
+            16 => u32::from(ppc_rgb_color_to_rgb555(back_color)),
+            _ => return None,
+        };
+        let transparent_fore_pixel = match dst_bits.depth {
+            8 => {
+                let clut = dst_clut.as_ref()?;
+                u32::from(pict::closest_clut_index(
+                    fore_color.red,
+                    fore_color.green,
+                    fore_color.blue,
+                    clut,
+                ))
+            }
+            16 => u32::from(ppc_rgb_color_to_rgb555(fore_color)),
+            _ => return None,
+        };
         let mut writes = Vec::new();
         for dst_y in copy_top..copy_bottom {
             let rel_y = i64::from(dst_y) - i64::from(dst_top);
@@ -46880,39 +46997,48 @@ fn ppc_copy_bits(
                 let Ok(src_x) = i32::try_from(src_x) else {
                     continue;
                 };
-                let Some(src_addr) = ppc_pixmap_pixel_addr(src_bits, src_x, src_y) else {
+                let Some(src_pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, src_x, src_y)
+                else {
                     continue;
                 };
-                let Some(dst_addr) = ppc_pixmap_pixel_addr(dst_bits, dst_x, dst_y) else {
-                    continue;
-                };
-                let pixel = if src_bits.depth == 8 {
-                    let pixel = memory.read_u8(src_addr)?;
-                    u16::from(
-                        palette_map
-                            .as_ref()
-                            .map(|palette_map| palette_map[usize::from(pixel)])
-                            .unwrap_or(pixel),
-                    )
-                } else {
-                    memory.read_u16_be(src_addr)?
-                };
-                if !ppc_memory_can_write_bytes(memory, dst_addr, src_bits.depth / 8) {
+                if transparent && src_pixel == transparent_back_pixel {
                     continue;
                 }
-                writes.push((dst_addr, pixel));
+                let pixel = if transparent && src_bits.depth == 1 {
+                    transparent_fore_pixel
+                } else if src_bits.depth == 8 && dst_bits.depth == 8 {
+                    u32::from(
+                        palette_map
+                            .as_ref()
+                            .map(|palette_map| palette_map[src_pixel as usize])
+                            .unwrap_or(src_pixel as u8),
+                    )
+                } else if src_bits.depth == 8 && dst_bits.depth == 16 {
+                    let [red, green, blue] = src_clut.as_ref()?[src_pixel as usize];
+                    u32::from(ppc_rgb_color_to_rgb555(PpcRgbColor { red, green, blue }))
+                } else if src_bits.depth == 16 && dst_bits.depth == 8 {
+                    let [red, green, blue] = ppc_rgb555_to_rgb16(src_pixel as u16);
+                    u32::from(pict::closest_clut_index(
+                        red,
+                        green,
+                        blue,
+                        dst_clut.as_ref()?,
+                    ))
+                } else {
+                    src_pixel
+                };
+                writes.push((dst_x, dst_y, pixel));
             }
         }
         if writes.is_empty() {
+            if transparent {
+                return Some(());
+            }
             reason = "no-pixels";
             return None;
         }
-        for (addr, pixel) in writes {
-            if src_bits.depth == 8 {
-                let _ = memory.write_u8(addr, pixel as u8);
-            } else {
-                let _ = memory.write_u16_be(addr, pixel);
-            }
+        for (x, y, pixel) in writes {
+            ppc_write_pixmap_raw_pixel(memory, dst_bits, x, y, pixel)?;
         }
         Some(())
     })();
@@ -54966,12 +55092,81 @@ fn ppc_draw_control(
         & 0x0fff;
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
-    let framed = if proc_id == 0 {
-        frame_cpu.gpr[4] = 16;
-        frame_cpu.gpr[5] = 16;
-        ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK)
-    } else {
-        ppc_frame_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK)
+    let framed = match proc_id {
+        0 => {
+            frame_cpu.gpr[4] = 16;
+            frame_cpu.gpr[5] = 16;
+            ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK)
+        }
+        1 => {
+            // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
+            // standard checkbox CDEF draws a compact indicator at the left
+            // of the control title and marks it when contrlValue is nonzero.
+            let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
+            let box_top =
+                top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
+            let box_bottom = box_top.saturating_add(indicator_size);
+            let box_right = left.saturating_add(indicator_size);
+            let mut wrote = ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (left, box_top),
+                (box_right.saturating_sub(1), box_top),
+                PPC_RGB_BLACK,
+            );
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (box_right.saturating_sub(1), box_top),
+                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
+                PPC_RGB_BLACK,
+            );
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
+                (left, box_bottom.saturating_sub(1)),
+                PPC_RGB_BLACK,
+            );
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (left, box_bottom.saturating_sub(1)),
+                (left, box_top),
+                PPC_RGB_BLACK,
+            );
+            if memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                .unwrap_or(0)
+                != 0
+            {
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (
+                        left.saturating_add(2),
+                        box_top.saturating_add(indicator_size / 2),
+                    ),
+                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
+                    PPC_RGB_BLACK,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    owner,
+                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
+                    (box_right.saturating_sub(2), box_top.saturating_add(2)),
+                    PPC_RGB_BLACK,
+                );
+            }
+            wrote
+        }
+        _ => ppc_frame_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK),
     };
     let title =
         ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
@@ -67681,6 +67876,61 @@ mod tests {
                 handle,
                 proc_id: 16
             }]
+        );
+    }
+
+    #[test]
+    fn selected_checkbox_draws_indicator_and_checkmark_without_framing_title() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let handle = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 180),
+            b"Sound Effects",
+            true,
+            1,
+            0,
+            1,
+            1,
+            0,
+        );
+        assert_ne!(handle, 0);
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 200),
+            PPC_RGB_WHITE,
+        ));
+
+        assert!(ppc_draw_control(
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            handle,
+        ));
+
+        let front = surface.front_buffer;
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (22, 20)),
+            Some(black)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (179, 10)),
+            Some(white)
         );
     }
 
@@ -101191,6 +101441,11 @@ mod tests {
         );
         loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
         loaded.cpu.gpr[4] = table_handle;
+        loaded
+            .memory
+            .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded.memory.write_u16_be(PPC_MAIN_SCREEN_BASE, 0).unwrap();
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -101210,10 +101465,79 @@ mod tests {
                 blue: 0x9abc,
             }
         );
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let expected = ppc_quickdraw_surface_color_pixel(
+            &mut loaded.memory,
+            surface,
+            loaded.quickdraw_back_color,
+        )
+        .unwrap();
+        match surface.front_buffer.depth {
+            8 => assert_eq!(
+                loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE),
+                Some(expected as u8)
+            ),
+            16 => assert_eq!(
+                loaded.memory.read_u16_be(PPC_MAIN_SCREEN_BASE),
+                Some(expected)
+            ),
+            depth => panic!("unexpected synthetic screen depth {depth}"),
+        }
         assert!(loaded
             .event_queue
             .iter()
             .any(|event| event.what == 6 && event.message == PPC_MAIN_GWORLD));
+    }
+
+    #[test]
+    fn hle_import_runner_new_cwindow_draws_dbox_structure_region() {
+        let pef = synthetic_pef_with_import(b"NewCWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let bounds_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(bounds_ptr, vec![0; 8]);
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, 100, 100, 200, 300).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = bounds_ptr;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = 1;
+        loaded.cpu.gpr[8] = u32::MAX;
+        loaded.cpu.gpr[9] = 0;
+        loaded.cpu.gpr[10] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let window = loaded.cpu.gpr[3];
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, window).unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let gray = ppc_quickdraw_surface_color_pixel(
+            &mut loaded.memory,
+            surface,
+            PpcRgbColor {
+                red: 0xcccc,
+                green: 0xcccc,
+                blue: 0xcccc,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (94, 94)),
+            Some(black)
+        );
+        assert_ne!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (95, 95)),
+            Some(black)
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (150, 150)),
+            Some(gray)
+        );
     }
 
     #[test]
@@ -103193,6 +103517,133 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(dst_addr(12, 21)), Some(0x1023));
         assert_eq!(loaded.memory.read_u16_be(dst_addr(9, 20)), Some(0x0bad));
         assert_eq!(loaded.memory.read_u16_be(dst_addr(13, 20)), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_scales_transparent_bitmap_into_direct_color() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x11700;
+        let src_pixels = scratch;
+        let src_bitmap = scratch + 0x10;
+        let dst_pixels = scratch + 0x30;
+        let dst_pixmap = scratch + 0x60;
+        let rects = scratch + 0xa0;
+        loaded.memory.add_region(scratch, vec![0; 0xc0]);
+        loaded.memory.write_u8(src_pixels, 0b1010_0000).unwrap();
+        loaded.memory.write_u32_be(src_bitmap, src_pixels).unwrap();
+        loaded.memory.write_u16_be(src_bitmap + 4, 1).unwrap();
+        ppc_write_rect(&mut loaded.memory, src_bitmap + 6, 0, 0, 1, 4).unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            dst_pixels,
+            16,
+            0,
+            0,
+            2,
+            8,
+            16,
+        )
+        .unwrap();
+        for offset in (0..32).step_by(2) {
+            loaded
+                .memory
+                .write_u16_be(dst_pixels + offset, 0x1234)
+                .unwrap();
+        }
+        ppc_write_rect(&mut loaded.memory, rects, 0, 0, 1, 4).unwrap();
+        ppc_write_rect(&mut loaded.memory, rects + 8, 0, 0, 2, 8).unwrap();
+        loaded.quickdraw_fore_color = PpcRgbColor {
+            red: 0xffff,
+            green: 0,
+            blue: 0,
+        };
+        loaded.quickdraw_back_color = PPC_RGB_WHITE;
+        loaded.cpu.gpr[3] = src_bitmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rects;
+        loaded.cpu.gpr[6] = rects + 8;
+        loaded.cpu.gpr[7] = 36;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let red = ppc_rgb_color_to_rgb555(loaded.quickdraw_fore_color);
+        for y in 0..2 {
+            let row = dst_pixels + y * 16;
+            assert_eq!(loaded.memory.read_u16_be(row), Some(red));
+            assert_eq!(loaded.memory.read_u16_be(row + 2), Some(red));
+            assert_eq!(loaded.memory.read_u16_be(row + 4), Some(0x1234));
+            assert_eq!(loaded.memory.read_u16_be(row + 6), Some(0x1234));
+            assert_eq!(loaded.memory.read_u16_be(row + 8), Some(red));
+            assert_eq!(loaded.memory.read_u16_be(row + 10), Some(red));
+            assert_eq!(loaded.memory.read_u16_be(row + 12), Some(0x1234));
+            assert_eq!(loaded.memory.read_u16_be(row + 14), Some(0x1234));
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_copybits_transparent_direct_color_preserves_background_pixels() {
+        let pef = synthetic_pef_with_import(b"CopyBits");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE + 0x117c0;
+        let src_pixels = scratch;
+        let dst_pixels = scratch + 0x10;
+        let src_pixmap = scratch + 0x20;
+        let dst_pixmap = scratch + 0x60;
+        let rect = scratch + 0xa0;
+        loaded.memory.add_region(scratch, vec![0; 0xb0]);
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            src_pixmap,
+            src_pixels,
+            4,
+            0,
+            0,
+            1,
+            2,
+            16,
+        )
+        .unwrap();
+        ppc_write_pixmap(
+            &mut loaded.memory,
+            dst_pixmap,
+            dst_pixels,
+            4,
+            0,
+            0,
+            1,
+            2,
+            16,
+        )
+        .unwrap();
+        let red = ppc_rgb_color_to_rgb555(PpcRgbColor {
+            red: 0xffff,
+            green: 0,
+            blue: 0,
+        });
+        loaded
+            .memory
+            .write_u16_be(src_pixels, ppc_rgb_color_to_rgb555(PPC_RGB_WHITE))
+            .unwrap();
+        loaded.memory.write_u16_be(src_pixels + 2, red).unwrap();
+        loaded.memory.write_u16_be(dst_pixels, 0x001f).unwrap();
+        loaded.memory.write_u16_be(dst_pixels + 2, 0x001f).unwrap();
+        ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 2).unwrap();
+        loaded.cpu.gpr[3] = src_pixmap;
+        loaded.cpu.gpr[4] = dst_pixmap;
+        loaded.cpu.gpr[5] = rect;
+        loaded.cpu.gpr[6] = rect;
+        loaded.cpu.gpr[7] = 36;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.memory.read_u16_be(dst_pixels), Some(0x001f));
+        assert_eq!(loaded.memory.read_u16_be(dst_pixels + 2), Some(red));
     }
 
     #[test]
