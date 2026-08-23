@@ -3433,13 +3433,6 @@ impl super::TrapDispatcher {
                     // handler below.
                     _ => {}
                 }
-                let s = std::str::from_utf8(&sel).unwrap_or("????");
-                eprintln!(
-                    "[GESTALT] selector='{}' (${:08X}) PC=${:08X}",
-                    s,
-                    selector,
-                    cpu.read_reg(Register::PC)
-                );
                 match &sel {
                     // gestaltVersion ('vers') -> Gestalt Manager version.
                     // Inside Macintosh: Operating System Utilities 1994,
@@ -3603,6 +3596,17 @@ impl super::TrapDispatcher {
                     b"snd " => {
                         cpu.write_reg(Register::A0, 0x1CFB);
                         cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltScreenSaverAttr ('SAVR') -> After Dark absent.
+                    // AfterDarkGestalt.h (Berkeley Systems, 1993) defines
+                    // this selector for its optional extension. Operating
+                    // System Utilities 1994, pp. 1-31 to 1-32 specifies that
+                    // undefined selectors return gestaltUndefSelectorErr.
+                    // Clear A0 so callers cannot mistake a stale response for
+                    // the extension's enabled or asleep attribute bits.
+                    b"SAVR" => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, GESTALT_UNDEF_SELECTOR_ERR);
                     }
                     // gestaltSpeechAttr ('ttsc') -> Speech Manager absent.
                     // Sound 1994, 1-11..1-12 defines bit 0 as
@@ -14045,6 +14049,19 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    #[test]
+    fn gestalt_absent_screen_saver_extension_clears_response_register() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0xFFFF_FFFF);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"SAVR"));
+
+        call(&mut disp, false, 0xAD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::A0), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_EA51);
+    }
+
     // ================================================================
     // 14c. Gestalt (0xAD) — unknown selector
     // ================================================================
@@ -14082,6 +14099,18 @@ mod tests {
         call_trap_word(&mut disp, 0xA3AD, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_EA50);
+    }
+
+    #[test]
+    fn newgestalt_accepts_unregistered_screen_saver_selector() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::A0, 0x0040_0000);
+        cpu.write_reg(Register::D0, u32::from_be_bytes(*b"SAVR"));
+
+        call_trap_word(&mut disp, 0xA3AD, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     /// Dispatches _NewGestalt with five distinct fictional selectors via
