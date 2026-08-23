@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.15](https://github.com/benletchford/systemless/compare/v0.18.14...v0.18.15) (2026-08-23)
+
+
+### Bug Fixes
+
+* **resource:** materialize Quilt qDir resources and decode raw frames ([#779](https://github.com/benletchford/systemless/issues/779)) ([68dd343](https://github.com/benletchford/systemless/commit/68dd343b0f74602c785104085db052a4ce22c9f7))
+
 ## [0.18.14](https://github.com/benletchford/systemless/compare/v0.18.13...v0.18.14) (2026-08-23)
 
 
