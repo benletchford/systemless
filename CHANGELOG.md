@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.18.13](https://github.com/benletchford/systemless/compare/v0.18.12...v0.18.13) (2026-08-23)
+
+
+### Bug Fixes
+
+* complete MINDit PowerPC runtime support ([#756](https://github.com/benletchford/systemless/issues/756)) ([a4b7737](https://github.com/benletchford/systemless/commit/a4b77379b8ddc537e94b5938c20999e113ce3382))
+* complete Spins native PowerPC compatibility ([#758](https://github.com/benletchford/systemless/issues/758)) ([87c2d9e](https://github.com/benletchford/systemless/commit/87c2d9e1f0e4bd22e89b38f4ebe302cc1e248e98))
+* preserve modal alerts and absent screen saver state ([#768](https://github.com/benletchford/systemless/issues/768)) ([5c18232](https://github.com/benletchford/systemless/commit/5c182328638feb5b5574ec62a9a47ae12cf44004))
+* **quickdraw:** support enhanced standard color tables ([#771](https://github.com/benletchford/systemless/issues/771)) ([d6e7ba8](https://github.com/benletchford/systemless/commit/d6e7ba8a93eec5cb7a68191684e83f1858f95160))
+* support international resources and fair interrupt timing ([#765](https://github.com/benletchford/systemless/issues/765)) ([7383493](https://github.com/benletchford/systemless/commit/73834935cc048dabdbe913a675723a9f2888de67))
+
 ## [0.18.12](https://github.com/benletchford/systemless/compare/v0.18.11...v0.18.12) (2026-08-22)
 
 
