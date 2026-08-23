@@ -3463,6 +3463,53 @@ impl TrapDispatcher {
         Some((clut, entries))
     }
 
+    /// Return a standard color-device table (the depth plus 64 CTable IDs)
+    /// with the current highlight color represented in the table.
+    ///
+    /// Inside Macintosh: Volume VI (1991), pp. 17-17..17-18 and 20-7,
+    /// describes IDs 66, 68, and 72 as the standard 2-, 4-, and 8-bit
+    /// color tables with the highlight color added. The 2-bit table reserves
+    /// index 2 for that color. The 4-bit table replaces the standard entry
+    /// nearest to it. The 8-bit table already has 254 color entries; the
+    /// System 7.5.3 ROM's GetCTable(72) oracle returns that canonical table
+    /// unchanged, so there is no spare entry to replace in that case.
+    pub(crate) fn standard_mac_enhanced_clut(
+        depth: u16,
+        hilite: (u16, u16, u16),
+    ) -> Option<([[u16; 3]; 256], usize)> {
+        let (mut clut, entries) = Self::standard_mac_indexed_clut(depth)?;
+        let hilite = [hilite.0, hilite.1, hilite.2];
+        match depth {
+            2 => clut[2] = hilite,
+            4 => {
+                // Index 0 is white and the last entry is black; both are
+                // fixed endpoints of the standard table. Select the closest
+                // interior entry using the Color Manager's RGB distance.
+                let mut closest = 1;
+                let mut closest_distance = u64::MAX;
+                for index in 1..entries - 1 {
+                    let color = clut[index];
+                    let distance = color
+                        .iter()
+                        .zip(hilite.iter())
+                        .map(|(&a, &b)| {
+                            let delta = i64::from(a) - i64::from(b);
+                            (delta * delta) as u64
+                        })
+                        .sum();
+                    if distance < closest_distance {
+                        closest = index;
+                        closest_distance = distance;
+                    }
+                }
+                clut[closest] = hilite;
+            }
+            8 => {}
+            _ => return None,
+        }
+        Some((clut, entries))
+    }
+
     /// Return the default 4-bit CTable installed by `NewGWorld` on
     /// System 7.5.3. This differs from the `GetCTable(4)` resource at
     /// dark-green entry 9.
