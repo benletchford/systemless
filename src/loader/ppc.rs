@@ -49997,7 +49997,11 @@ fn ppc_rect_dimensions(top: i16, left: i16, bottom: i16, right: i16) -> (u32, u3
 }
 
 fn ppc_row_bytes(width: u32, depth: u32) -> Option<u32> {
-    Some(width.checked_mul(depth)?.div_ceil(32).checked_mul(4)?)
+    let visible_row_bytes = width.checked_mul(depth)?.div_ceil(8);
+    visible_row_bytes
+        .checked_div(16)?
+        .checked_add(1)?
+        .checked_mul(16)
 }
 
 fn ppc_u32_to_i16_saturating(value: u32) -> i16 {
@@ -102825,7 +102829,7 @@ mod tests {
             .unwrap();
         assert_eq!(record.depth, 8);
         assert_eq!(record.base_addr, PPC_MAIN_SCREEN_BASE);
-        assert_eq!(record.row_bytes, PPC_MAIN_SCREEN_WIDTH);
+        assert_eq!(record.row_bytes, PPC_MAIN_SCREEN_WIDTH + 16);
         assert_eq!(loaded.memory.read_u16_be(record.pixmap + 32), Some(8));
     }
 
@@ -104149,7 +104153,7 @@ mod tests {
         assert_eq!(record.width, 128);
         assert_eq!(record.height, 64);
         assert_eq!(record.depth, 16);
-        assert_eq!(record.row_bytes, 256);
+        assert_eq!(record.row_bytes, 272);
         assert_eq!(
             loaded.memory.read_u32_be(record.port + 2),
             Some(record.pixmap_handle)
@@ -104164,7 +104168,7 @@ mod tests {
         );
         assert_eq!(
             loaded.memory.read_u16_be(record.pixmap + 4),
-            Some(0x8000 | 256)
+            Some(0x8000 | 272)
         );
         let logical_pixel_end = record.base_addr + record.row_bytes * record.height;
         assert!(record.pixmap >= logical_pixel_end + record.row_bytes);
@@ -116574,7 +116578,7 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.gworlds[0].depth, 16);
-        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2);
+        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2 + 16);
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(16));
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(16));
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(3));
@@ -116590,7 +116594,7 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.gworlds[0].depth, 8);
-        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH);
+        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH + 16);
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 30), Some(0));
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(8));
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 34), Some(1));
@@ -120481,7 +120485,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(loaded.gworlds[0].depth, 16);
-        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2);
+        assert_eq!(loaded.gworlds[0].row_bytes, PPC_MAIN_SCREEN_WIDTH * 2 + 16);
         assert_eq!(loaded.current_front_buffer().unwrap().depth, 16);
         assert_eq!(loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32), Some(16));
         assert_eq!(loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 42), Some(0));

@@ -1226,9 +1226,9 @@ fn parse_macbinary_payload(
     }
 
     let name_len = (file_data[1] as usize).min(63);
-    let name = std::str::from_utf8(&file_data[2..2 + name_len]).unwrap_or("FixtureGen");
+    let name = crate::mac_roman::decode_mac_roman(&file_data[2..2 + name_len]);
     let name = if parent.is_empty() {
-        name.to_string()
+        name
     } else {
         format!("{parent}/{name}")
     };
@@ -2091,7 +2091,6 @@ fn load_selected_executable(
     runner
         .dispatcher_mut()
         .set_launched_app_path(&executable.name);
-    runner.dispatcher_mut().materialize_quilt_resources();
 
     let rsrc = runner
         .dispatcher()
@@ -3626,6 +3625,23 @@ mod tests {
         assert_eq!(
             runner.dispatcher().vfs_rsrc.get("Self Opening App"),
             Some(&rsrc)
+        );
+    }
+
+    #[test]
+    fn macbinary_application_decodes_mac_roman_filename() {
+        let data = b"demo data";
+        let rsrc = make_single_resource_fork_bytes(*b"CODE", 0, &[0; 128]);
+        let mut macbinary = make_macbinary_application("Gridz Demo", data, &rsrc);
+        macbinary[1] = 11;
+        macbinary[2..13].copy_from_slice(b"Gridz\xAA Demo");
+        let mut runner = new_runner();
+
+        load_macbinary(&mut runner, &macbinary).expect("MacBinary application should load");
+
+        assert_eq!(
+            runner.dispatcher().vfs.get("Gridz™ Demo"),
+            Some(&data.to_vec())
         );
     }
 

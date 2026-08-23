@@ -6959,7 +6959,14 @@ impl super::TrapDispatcher {
                                 requested_right,
                             )
                         };
-                        let row_bytes = (width * depth).div_ceil(32) * 4;
+                        // QuickDraw's offscreen PixMaps use 16-byte scanline
+                        // alignment plus one padding quantum. Some classic
+                        // image libraries persist that storage stride and
+                        // stream a complete scanline into a GWorld, so
+                        // exposing only the visible-byte minimum corrupts
+                        // every following row.
+                        let visible_row_bytes = (width * depth).div_ceil(8);
+                        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
 
                         // IM:VI 21-13: noNewDevice uses the supplied GDevice's
                         // depth and color table; custom cTable requires an
@@ -7245,7 +7252,8 @@ impl super::TrapDispatcher {
                         let new_width = ((new_right as i32) - (new_left as i32)).max(1) as u32;
                         let new_height = ((new_bottom as i32) - (new_top as i32)).max(1) as u32;
 
-                        let new_row_bytes = (new_width * depth).div_ceil(32) * 4;
+                        let visible_row_bytes = (new_width * depth).div_ceil(8);
+                        let new_row_bytes = (visible_row_bytes / 16 + 1) * 16;
                         let new_buf_size = new_row_bytes * new_height;
 
                         let mut result_flags: u32 = 0;
@@ -16815,6 +16823,22 @@ impl super::TrapDispatcher {
             //
             // Only the pure-explicit case keeps the device value; the
             // combined cases fall through to the ordinary install below.
+            if usage == PM_COURTEOUS {
+                let requested = [
+                    bus.read_word(color_info),
+                    bus.read_word(color_info + 2),
+                    bus.read_word(color_info + 4),
+                ];
+                let device_index = super::pict::closest_clut_index(
+                    requested[0],
+                    requested[1],
+                    requested[2],
+                    &current_clut,
+                );
+                self.palette_device_indices
+                    .insert((palette_handle, index as u16), device_index);
+                continue;
+            }
             if usage & PM_EXPLICIT != 0 && usage & (PM_TOLERANT | PM_ANIMATED) == 0 {
                 continue;
             }
@@ -36790,10 +36814,18 @@ mod tests {
         bus.write_word(entry0, 0x1111);
         bus.write_word(entry0 + 2, 0x2222);
         bus.write_word(entry0 + 4, 0x3333);
+        bus.write_word(
+            entry0 + 6,
+            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
+        );
         let entry1 = crate::trap::TrapDispatcher::palette_color_info_ptr(palette_ptr, 1);
         bus.write_word(entry1, 0x4444);
         bus.write_word(entry1 + 2, 0x5555);
         bus.write_word(entry1 + 4, 0x6666);
+        bus.write_word(
+            entry1 + 6,
+            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
+        );
 
         // No window association and no ActivatePalette call: the front window is
         // something else entirely.
@@ -36853,6 +36885,10 @@ mod tests {
         bus.write_word(palette_ptr + 16, 0x1234);
         bus.write_word(palette_ptr + 18, 0x5678);
         bus.write_word(palette_ptr + 20, 0x9ABC);
+        bus.write_word(
+            palette_ptr + 22,
+            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
+        );
 
         d.set_window_palette_association(window, palette_handle, 0);
         d.front_window = window;
@@ -36867,6 +36903,34 @@ mod tests {
         assert_ne!(d.device_clut, before);
         assert_eq!(d.device_clut[0], [0x1234, 0x5678, 0x9ABC]);
         assert_eq!(d.color_manager_clut[0], [0x1234, 0x5678, 0x9ABC]);
+    }
+
+    #[test]
+    fn activatepalette_maps_courteous_entries_without_replacing_device_colors() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4110u32;
+        let palette = d.create_palette_from_ctab(&mut bus, 1, 0, super::PM_COURTEOUS, 0);
+        let palette_ptr = TrapDispatcher::palette_ptr(&bus, palette);
+        TrapDispatcher::write_palette_color_info(
+            &mut bus,
+            palette_ptr,
+            0,
+            [0x1234, 0x5678, 0x9ABC],
+            super::PM_COURTEOUS,
+            0,
+        );
+        d.set_window_palette_association(window, palette, 0);
+        d.front_window = window;
+        d.current_port = window;
+        let before = d.device_clut;
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.device_clut, before);
+        assert_eq!(d.color_manager_clut, before);
+        assert!(d.palette_device_indices.contains_key(&(palette, 0)));
     }
 
     #[test]
@@ -39212,6 +39276,37 @@ mod tests {
     }
 
     #[test]
+    fn new_gworld_uses_classic_offscreen_scanline_alignment() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let bounds_ptr = 0x300000u32;
+        let gworld_ptr_ptr = 0x300100u32;
+        write_rect(&mut bus, bounds_ptr, 0, 0, 74, 74);
+        bus.write_long(TEST_SP, 0u32);
+        bus.write_long(TEST_SP + 4, 0u32);
+        bus.write_long(TEST_SP + 8, 0u32);
+        bus.write_long(TEST_SP + 12, bounds_ptr);
+        bus.write_word(TEST_SP + 16, 8u16);
+        bus.write_long(TEST_SP + 18, gworld_ptr_ptr);
+
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pixmap_handle = bus.read_long(gworld + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 80);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        write_rect(&mut bus, bounds_ptr, 0, 0, 460, 640);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        let gworld = bus.read_long(gworld_ptr_ptr);
+        let pixmap_handle = bus.read_long(gworld + 2);
+        let pixmap = bus.read_long(pixmap_handle);
+        assert_eq!(bus.read_word(pixmap + 4) & 0x3FFF, 656);
+    }
+
+    #[test]
     fn test_new_gworld_depth_four_uses_rom_palette_and_inverse_table() {
         let (mut d, mut cpu, mut bus) = setup();
         let bounds_ptr = 0x300000u32;
@@ -40896,7 +40991,7 @@ mod tests {
         assert_eq!(d.ptr_to_handle.get(&old_base), None);
         assert_eq!(d.ptr_to_handle.get(&new_base), Some(&base_handle));
         assert_eq!(flags & (1 << 20), 1 << 20);
-        assert_eq!(flags & (1 << 19), 1 << 19);
+        assert_eq!(flags & (1 << 19), 0);
         for i in 0..16 {
             assert_eq!(
                 bus.read_byte(new_base + i),
@@ -40931,8 +41026,10 @@ mod tests {
         let pmh = bus.read_long(gworld + 2);
         let pm = bus.read_long(pmh);
         let old_base = TrapDispatcher::offscreen_pixmap_base_ptr(&bus, pm);
-        for i in 0..16 {
-            bus.write_byte(old_base + i, (0x40 + i) as u8);
+        for row in 0..4u32 {
+            for col in 0..4u32 {
+                bus.write_byte(old_base + row * 16 + col, (0x40 + row * 4 + col) as u8);
+            }
         }
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -40951,7 +41048,7 @@ mod tests {
         for row in 0..4u32 {
             for col in 0..4u32 {
                 assert_eq!(
-                    bus.read_byte(new_base + row * 8 + col),
+                    bus.read_byte(new_base + row * 16 + col),
                     (0x40 + row * 4 + col) as u8
                 );
             }
