@@ -4096,13 +4096,6 @@ impl super::TrapDispatcher {
         (stage_idx, nibble, box_drawn.then_some(default_item))
     }
 
-    fn enabled_button_count(items: &[DialogItem]) -> usize {
-        items
-            .iter()
-            .filter(|item| (item.item_type & 0x7F) == 4 && (item.item_type & 0x80) == 0)
-            .count()
-    }
-
     fn begin_interactive_alert<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -4120,9 +4113,6 @@ impl super::TrapDispatcher {
         };
         let ditl_len = bus.get_alloc_size(ditl_data).unwrap_or(0);
         let items = Self::parse_ditl(bus, ditl_data, ditl_len);
-        if Self::enabled_button_count(&items) <= 1 {
-            return false;
-        }
 
         let items_handle = {
             let handle = bus.alloc(4);
@@ -4323,7 +4313,15 @@ impl super::TrapDispatcher {
                 let item = &items[(hit - 1) as usize];
                 let base_type = item.item_type & 0x7F;
                 let is_disabled = (item.item_type & 0x80) != 0;
-                if base_type != 4 || is_disabled {
+                if is_disabled {
+                    return;
+                }
+                // Alert returns the number of any enabled item selected by
+                // the user. Push buttons use the standard pressed-button
+                // tracking affordance; other enabled items terminate the
+                // alert directly (Inside Macintosh Volume I, I-418).
+                if base_type != 4 {
+                    self.finish_interactive_alert(cpu, bus, hit);
                     return;
                 }
                 let rect = Self::dialog_item_screen_rect(bounds, item.rect);
@@ -10902,11 +10900,10 @@ impl super::TrapDispatcher {
             // The four alert variants differ only in the ICON they
             // display (none / Stop hand / Note speaker / Caution
             // triangle); their dispatch into the ALRT template +
-            // ALRT stages logic is identical. OK-only alerts collapse
-            // to "return the bold/default item for the current stage,
-            // increment AlertStage." Multi-button alerts enter the
-            // normal dialog tracking loop so a script or user can
-            // choose a non-default button before the trap returns.
+            // ALRT stages logic is identical. Every visible alert enters
+            // the normal dialog tracking loop until the user selects an
+            // enabled item. This includes one-button informational
+            // alerts; Alert is modal and must not silently accept them.
             //
             // ALRT template per IM:I I-422:
             //   +0  boundsRect:   Rect (8 bytes)
@@ -10945,7 +10942,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-417..I-422 (Alert
             // family + ALRT template); Macintosh Toolbox Essentials
             // 1992, 6-105..6-119 (System 7 alert dispatch).
-            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, returns bold item (1 or 2) for current visible AlertStage ($0A9A) or -1 if ALRT missing / boxDrwn is clear; multi-button alerts track user/script button hits before returning; increments AlertStage capped at 3; filterProc NOT invoked
+            // Alert ($A985): Looks up ALRT, parses stages word at +10 per IM:I I-422, tracks user/script item hits for a visible alert and returns that item, or returns -1 if ALRT is missing / boxDrwn is clear; increments AlertStage capped at 3; filterProc NOT invoked
             // StopAlert ($A986): Same as Alert with Stop icon; identical dispatch path
             // NoteAlert ($A987): Same as Alert with Note icon; identical dispatch path
             // CautionAlert ($A988): Same as Alert with Caution icon; identical dispatch path
@@ -11014,7 +11011,7 @@ impl super::TrapDispatcher {
 
                     if let Some(default_item) = default_item {
                         // A filter procedure customizes event handling; it does
-                        // not make a multi-button alert non-modal. Until guest
+                        // not make a visible alert non-modal. Until guest
                         // filter callbacks are supported, preserve the visible
                         // alert and standard button/Return handling instead of
                         // silently choosing the default item.
@@ -17662,6 +17659,93 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
     }
 
+    #[test]
+    fn one_button_alert_remains_modal_until_default_button_is_accepted() {
+        // Inside Macintosh Volume I, I-417: Alert displays the alert and
+        // returns after the user clicks a button. An informational alert with
+        // only an OK button is still modal and must not be auto-accepted.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alert_id = 3302;
+        let ditl_id = 3303;
+        let alrt = build_test_alrt((100, 100, 210, 400), ditl_id, 0x5555);
+        let ditl = build_test_ditl_items(&[
+            (4, (70, 230, 90, 290), b"OK"),
+            (8, (16, 20, 56, 280), b"Read this notice before continuing."),
+        ]);
+        disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+
+        bus.write_long(TEST_SP, 0); // filterProc
+        bus.write_word(TEST_SP + 4, alert_id as u16);
+        bus.write_word(TEST_SP + 6, 0xCAFE);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        assert!(disp.dialog_tracking.is_some());
+        assert!(disp.is_tracking_refire(0xA985));
+
+        for _ in 0..4 {
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert!(disp.dialog_tracking.is_some());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+            assert_eq!(bus.read_word(TEST_SP + 6), 0);
+        }
+
+        disp.push_key_down(0x24, b'\r');
+        for _ in 0..4 {
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+        }
+
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(TEST_SP + 6), 1);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
+    #[test]
+    fn alert_returns_enabled_non_button_item_selected_by_mouse() {
+        // Alert returns the item number for any enabled item. TrackControl is
+        // reserved for controls; selecting another enabled item returns it
+        // directly (Inside Macintosh Volume I, I-418).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let alert_id = 3304;
+        let ditl_id = 3305;
+        let alrt = build_test_alrt((100, 100, 210, 400), ditl_id, 0x5555);
+        let ditl = build_test_ditl_items(&[
+            (4, (70, 230, 90, 290), b"OK"),
+            (8, (16, 20, 56, 280), b"Select this enabled text item."),
+        ]);
+        disp.install_test_resource(&mut bus, *b"ALRT", alert_id, &alrt);
+        disp.install_test_resource(&mut bus, *b"DITL", ditl_id, &ditl);
+
+        bus.write_long(TEST_SP, 0); // filterProc
+        bus.write_word(TEST_SP + 4, alert_id as u16);
+        bus.write_word(TEST_SP + 6, 0xCAFE);
+        let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert!(disp.dialog_tracking.is_some());
+
+        disp.push_mouse_down(130, 140);
+        for _ in 0..4 {
+            let result = disp.dispatch_dialog(true, 0x185, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            if disp.dialog_tracking.is_none() {
+                break;
+            }
+        }
+
+        assert!(disp.dialog_tracking.is_none());
+        assert_eq!(bus.read_word(TEST_SP + 6), 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+    }
+
     fn loaded_resource_handle_for_test(
         disp: &TrapDispatcher,
         res_type: [u8; 4],
@@ -23669,9 +23753,7 @@ mod tests {
 
         let ditl = build_test_ditl_items(&[
             (4, (48, 70, 70, 132), b"OK".as_slice()),
-            // Keep this fixture on the auto-return path while still verifying
-            // that stage defaults can report item 2.
-            (0x84, (48, 144, 70, 212), b"Cancel".as_slice()),
+            (4, (48, 144, 70, 212), b"Cancel".as_slice()),
         ]);
         let alrt = build_alrt_template(2100, 0xC4C4);
         disp.install_test_resource(&mut bus, *b"DITL", 2100, &ditl);
@@ -23686,6 +23768,17 @@ mod tests {
             disp.dispatch_dialog(true, trap_word, &mut cpu, &mut bus)
                 .unwrap()
                 .unwrap();
+            disp.push_key_down(0x24, b'\r');
+            for _ in 0..4 {
+                disp.dispatch_dialog(true, trap_word, &mut cpu, &mut bus)
+                    .unwrap()
+                    .unwrap();
+                if disp.dialog_tracking.is_none() {
+                    break;
+                }
+            }
+            assert!(disp.dialog_tracking.is_none());
+            disp.push_key_up(0x24, b'\r');
             staged_calls.push(AlertTrapCallSnapshot {
                 trap_word,
                 result: bus.read_word(TEST_SP + 6) as i16,
