@@ -1904,6 +1904,10 @@ pub struct TrapDispatcher {
     /// SetEntries fades are applied as brightness changes over this palette
     /// instead of clobbering it back to the system CLUT.
     pub(crate) seeded_picture_palette: [[u16; 3]; 256],
+    /// True while the Palette Manager has left the screen hardware CLUT on a
+    /// transient full-table fade frame while retaining the prior logical
+    /// GDevice table for inverse-table lookups.
+    pub(crate) screen_palette_fade_active: bool,
     /// Most recent non-system GetCTable resource fetch. Some games fetch a
     /// CLUT immediately before drawing a screen-backed PICT and expect that
     /// table to drive the initial palette seed for the picture.
@@ -3252,6 +3256,7 @@ impl TrapDispatcher {
             clut_reserved: [false; 256],
             seeded_picture_palette_until_tick: 0,
             seeded_picture_palette: Self::standard_mac_8bpp_clut(),
+            screen_palette_fade_active: false,
             recent_resource_ctable_fetch: None,
             window_palettes: HashMap::new(),
             palette_updates: HashMap::new(),
