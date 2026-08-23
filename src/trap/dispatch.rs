@@ -4040,6 +4040,65 @@ impl TrapDispatcher {
         self.launched_app_path.as_deref()
     }
 
+    pub fn materialize_quilt_resources(&mut self) -> usize {
+        let (materialized_count, synthesized_files) =
+            crate::managers::resource::quilt::materialize_quilt_resources_for_vfs(
+                &self.vfs,
+                &mut self.vfs_rsrc,
+            );
+        for (synth_path, file_type, creator, finder_flags) in synthesized_files {
+            self.set_vfs_entry_metadata(&synth_path, file_type, creator, finder_flags);
+        }
+        materialized_count
+    }
+
+    pub(crate) fn materialize_named_quilt_resource_file(&mut self, path: &str) -> Option<String> {
+        let normalized = Self::normalize_vfs_path(path);
+        let hfs_normalized = Self::normalize_hfs_path(path);
+        let target_key = if self.vfs_rsrc.contains_key(&hfs_normalized) {
+            return Some(hfs_normalized);
+        } else if self.vfs_rsrc.contains_key(&normalized) {
+            return Some(normalized);
+        } else if !hfs_normalized.is_empty() {
+            hfs_normalized
+        } else {
+            normalized
+        };
+
+        if let Some((source_file, mut quilt_entries)) =
+            crate::managers::resource::quilt::quilt_named_resource_records(
+                &self.vfs,
+                &self.vfs_rsrc,
+                &target_key,
+            )
+        {
+            crate::managers::resource::quilt::synthesize_quilt_img_resource_if_missing(
+                &target_key,
+                &mut quilt_entries,
+            );
+            if let Some(fork_data) =
+                crate::managers::resource::serialize_resource_fork(&quilt_entries)
+            {
+                let (creator, file_type, finder_flags) = self
+                    .vfs_metadata
+                    .get(&source_file)
+                    .map(|m| (m.creator, m.file_type, m.finder_flags))
+                    .unwrap_or((
+                        u32::from_be_bytes(*b"Game"),
+                        u32::from_be_bytes(*b"bits"),
+                        0,
+                    ));
+
+                let materialized_path = target_key.clone();
+                self.vfs_rsrc.insert(materialized_path.clone(), fork_data);
+                self.set_vfs_entry_finfo(&materialized_path, file_type, creator, finder_flags);
+                return Some(materialized_path);
+            }
+        }
+        None
+    }
+
+
     pub(crate) fn queue_pending_launch_application(&mut self, name: &str, after_event_yield: bool) {
         let normalized = Self::normalize_vfs_path(name);
         self.pending_launch_app = Some(PendingLaunchApplication {
@@ -4435,10 +4494,16 @@ impl TrapDispatcher {
             if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &candidate) {
                 return Some(found);
             }
+            if let Some(found) = self.materialize_named_quilt_resource_file(&candidate) {
+                return Some(found);
+            }
         }
         if normalized.contains('/') {
             if let Some(found) = Self::find_case_insensitive_key(self.vfs_rsrc.keys(), &normalized)
             {
+                return Some(found);
+            }
+            if let Some(found) = self.materialize_named_quilt_resource_file(&normalized) {
                 return Some(found);
             }
         }
@@ -4454,10 +4519,17 @@ impl TrapDispatcher {
                 {
                     return Some(found);
                 }
+                if let Some(found) = self.materialize_named_quilt_resource_file(&sibling) {
+                    return Some(found);
+                }
             }
+        }
+        if let Some(found) = self.materialize_named_quilt_resource_file(name) {
+            return Some(found);
         }
         None
     }
+
 
     pub(crate) fn find_vfs_directory_in_directory(
         &mut self,
