@@ -3517,16 +3517,14 @@ impl FixtureRunner {
             (-crate::trap::dispatch::BOOT_VOLUME_REF_NUM) as u16
         );
 
-        // The application stack is ordinary RAM used for stack frames and
-        // local variables; classic Mac code does not get it pre-cleared.
-        // Memory 1992, 1-9 and 1-39 describe the stack as the region where
-        // stack frames live and grow downward from high memory. Seed the
-        // unused top-of-stack window with a deterministic nonzero pattern so
-        // partially initialized stack records behave like real hardware
-        // instead of inheriting zeroed RAM.
+        // The application stack is carved from the freshly initialized
+        // application partition. Keep that initial stack window zeroed to
+        // match a newly booted classic Mac environment. Ordinary NewPtr and
+        // NewHandle allocations retain their documented undefined contents;
+        // this only establishes the process's initial stack state.
         let stack_seed_start = stack_base.saturating_sub(0x8000);
         self.bus
-            .fill_bytes(stack_seed_start, stack_base - stack_seed_start, 0xA5);
+            .fill_zeros(stack_seed_start, stack_base - stack_seed_start);
 
         // Zone header at visible_zone_start (Inside Macintosh Volume II, II-22)
         // Apps and the Memory Manager read the zone header to determine
@@ -13680,7 +13678,7 @@ mod tests {
     }
 
     #[test]
-    fn init_app_seeds_top_of_stack_with_nonzero_bytes() {
+    fn init_app_zeroes_fresh_top_of_stack() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {
             ppc: None,
@@ -13703,8 +13701,8 @@ mod tests {
         let stack_seed_start = app.initial_sp.saturating_sub(0x8000);
         assert_eq!(
             runner.bus.read_long(stack_seed_start),
-            0xA5A5_A5A5,
-            "top-of-stack window must not be zeroed"
+            0,
+            "fresh process stack should match a newly initialized application partition"
         );
     }
 
