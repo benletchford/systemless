@@ -12359,22 +12359,19 @@ impl super::TrapDispatcher {
             // convention.
             //
             // HLE compromise: Systemless runs a single-script (Roman /
-            // Latin-1) US-default environment with no localised
-            // 'INTL' / 'itl2' / 'itl4' resources. Date strings
+            // Latin-1) US-default environment. It synthesizes classic
+            // U.S. 'INTL' IDs 0 and 1, but no localised 'itl2' / 'itl4'
+            // resources. Date strings
             // collapse to a "1/1/04" placeholder; time strings to
             // "12:00 AM" / "12:00:00 AM"; metric query returns FALSE;
-            // INTL resource handles return NIL; comparators do byte-
+            // comparators do byte-
             // level compare returning -1/0/+1 (Mag/Comp variants;
             // case-sensitive) or 0/1 (MagID/Equal variants; case-
             // insensitive ASCII fold); script/lang ordering does
             // numeric compare. IUClearCache / IUSetIntl /
             // IUGetIntlTable are no-ops with documented VAR-out NIL
-            // writes. Apps that defensively check (handle != NIL)
-            // before dereffing fall through cleanly; apps that need
-            // locale-specific formatting see Mac-default English
-            // output. The "no INTL" fallback is INTENTIONALLY SAFE
-            // per IM:I I-505 ("if the INTL resource is missing,
-            // IUGetIntl returns NIL").
+            // writes. Apps that need locale-specific formatting see
+            // Mac-default English output.
             //
             // Stack frames assume Pascal arg conventions: LongInt =
             // 4, Integer/Boolean/DateForm = 2 (DateForm = 1 byte at
@@ -12393,7 +12390,7 @@ impl super::TrapDispatcher {
             //
             // Inside Macintosh Volume I (1985), pages I-485..I-510.
             // Inside Macintosh Volume VI (1991), pages 14-1..14-135.
-            // Pack6 / Intl Utilities ($A9ED): Per-selector Pascal frames per IM:I I-487 + IM:VI 14-135: $0000 IUDateString pop 12 result@SP+2, $0002 IUTimeString pop 12 result@SP+2, $0004 IUMetric pop 2 result@SP+2 (FALSE), $0006 IUGetIntl pop 4 result@SP+4 (NIL handle), $0008 IUSetIntl pop 10 (no-op), $000A IUMagString pop 14 result@SP+14 (-1/0/+1 byte cmp), $000C IUMagIDString pop 14 result@SP+14 (0/1 case-insens), $000E IUDatePString pop 16 result@SP+6, $0010 IUTimePString pop 16 result@SP+6, $0014 IULDateString pop 16 result@SP+6, $0016 IULTimeString pop 16 result@SP+6, $0018 IUClearCache pop 2 (no-op), $001A IUMagPString pop 18 result@SP+18 (-1/0/+1), $001C IUMagIDPString pop 18 result@SP+18 (0/1), $001E IUScriptOrder pop 6 result@SP+6 (-1/0/+1), $0020 IULangOrder pop 6 result@SP+6 (-1/0/+1), $0022 IUTextOrder pop 22 result@SP+22 (-1/0/+1), $0024 IUGetIntlTable pop 18 (writes NIL/0/0 to 3 VAR ptrs).
+            // Pack6 / Intl Utilities ($A9ED): Per-selector Pascal frames per IM:I I-487 + IM:VI 14-135: $0000 IUDateString pop 12 result@SP+2, $0002 IUTimeString pop 12 result@SP+2, $0004 IUMetric pop 2 result@SP+2 (FALSE), $0006 IUGetIntl pop 4 result@SP+4 (INTL handle), $0008 IUSetIntl pop 10 (no-op), $000A IUMagString pop 14 result@SP+14 (-1/0/+1 byte cmp), $000C IUMagIDString pop 14 result@SP+14 (0/1 case-insens), $000E IUDatePString pop 16 result@SP+6, $0010 IUTimePString pop 16 result@SP+6, $0014 IULDateString pop 16 result@SP+6, $0016 IULTimeString pop 16 result@SP+6, $0018 IUClearCache pop 2 (no-op), $001A IUMagPString pop 18 result@SP+18 (-1/0/+1), $001C IUMagIDPString pop 18 result@SP+18 (0/1), $001E IUScriptOrder pop 6 result@SP+6 (-1/0/+1), $0020 IULangOrder pop 6 result@SP+6 (-1/0/+1), $0022 IUTextOrder pop 22 result@SP+22 (-1/0/+1), $0024 IUGetIntlTable pop 18 (writes NIL/0/0 to 3 VAR ptrs).
             (true, 0x1ED) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
@@ -12444,9 +12441,23 @@ impl super::TrapDispatcher {
                     // FUNCTION IUGetIntl(theID: Integer): Handle;
                     // IM:I I-487, I-505. Stack: sel(2) + theID(2)
                     // + result(4) = 8. Pop 4, leave result long at
-                    // new SP+0. Returns NIL — no INTL resources.
+                    // new SP+0. Search loaded resource files first, then use
+                    // the built-in U.S. System-file records for IDs 0 and 1.
                     0x0006 => {
-                        bus.write_long(sp + 4, 0);
+                        let id = bus.read_word(sp + 2) as i16;
+                        let handle = if let Some((refnum, ptr)) =
+                            self.find_or_load_resource_any(bus, *b"INTL", id)
+                        {
+                            self.get_or_create_resource_handle_in_file(
+                                bus, *b"INTL", id, ptr, refnum,
+                            )
+                        } else if let Some(ptr) = self.synthesize_system_intl(bus, id) {
+                            self.get_or_create_resource_handle_in_file(bus, *b"INTL", id, ptr, 0)
+                        } else {
+                            0
+                        };
+                        bus.write_long(sp + 4, handle);
+                        cpu.write_reg(Register::A0, handle);
                         cpu.write_reg(Register::A7, sp + 4);
                         cpu.write_reg(Register::D0, 0);
                         Ok(())
@@ -26796,6 +26807,88 @@ mod tests {
         assert_eq!(bus.read_word(sp + 2), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    // Pack6 / Intl Utilities ($A9ED) — IUGetIntl selector $0006.
+    // IM:I pp. I-495 and I-505: return the requested INTL resource handle.
+    #[test]
+    fn iugetintl_returns_stable_us_system_resource_handles() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        bus.write_word(sp, 0x0006);
+        bus.write_word(sp + 2, 0);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let intl0_handle = bus.read_long(sp + 4);
+        assert_ne!(intl0_handle, 0);
+        assert_eq!(cpu.read_reg(Register::A0), intl0_handle);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(disp.resource_handle_files.get(&intl0_handle), Some(&0));
+        assert_eq!(bus.get_alloc_size(bus.read_long(intl0_handle)), Some(32));
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp + 2, 1);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let intl1_handle = bus.read_long(sp + 4);
+        let intl1 = bus.read_long(intl1_handle);
+        assert_ne!(intl1_handle, 0);
+        assert_eq!(bus.get_alloc_size(intl1), Some(332));
+        assert_eq!(bus.read_pstring(intl1), b"Sunday");
+        assert_eq!(bus.read_pstring(intl1 + 7 * 16), b"January");
+        assert_eq!(bus.read_word(intl1 + 330), 0x4E75);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp + 2, 0);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(sp + 4), intl0_handle);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp + 2, 42);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(sp + 4), 0);
+    }
+
+    #[test]
+    fn iugetintl_prefers_loaded_application_resource() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let override_ptr = bus.alloc(32);
+        bus.fill_bytes(override_ptr, 32, 0xA5);
+        disp.resources = Some(LoadedResources {
+            files: HashMap::from([
+                (0, ResourceFileMap::default()),
+                (
+                    1,
+                    ResourceFileMap {
+                        loaded: HashMap::from([((*b"INTL", 0), override_ptr)]),
+                        ..ResourceFileMap::default()
+                    },
+                ),
+            ]),
+            names: HashMap::new(),
+            search_order: vec![0, 1],
+            current_file: 1,
+        });
+
+        bus.write_word(TEST_SP, 0x0006);
+        bus.write_word(TEST_SP + 2, 0);
+        disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let handle = bus.read_long(TEST_SP + 4);
+        assert_eq!(bus.read_long(handle), override_ptr);
+        assert_eq!(disp.resource_handle_files.get(&handle), Some(&1));
+        assert!(disp.system_intl_cache.is_empty());
     }
 
     // Pack6 / Intl Utilities ($A9ED) — IUMagIDString selector $000C

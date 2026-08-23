@@ -563,8 +563,11 @@ impl super::TrapDispatcher {
         bus.write_word(task_ptr + 10, vbl_count.wrapping_add(vbl_phase) as u16);
 
         self.vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-        self.vbl_tasks
-            .push(super::dispatch::VblTask { task_ptr, slot });
+        self.vbl_tasks.push(super::dispatch::VblTask {
+            task_ptr,
+            slot,
+            pending: false,
+        });
         self.sync_vbl_links(bus);
         0
     }
@@ -1870,7 +1873,33 @@ impl super::TrapDispatcher {
             // Processes 1994, 3-19
             (false, 0x59) => {
                 let task_ptr = cpu.read_reg(Register::A0);
+                let current_subtick = self
+                    .timer_current_subtick
+                    .max(bus.read_long(0x016A) as u64 * 1_000_000);
+                let remaining_subticks = self
+                    .timer_tasks
+                    .iter()
+                    .find(|task| task.task_ptr == task_ptr && task.active)
+                    .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
+                    .unwrap_or(0);
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
+
+                // The revised and extended Time Managers return unused time
+                // through tmCount. Prefer negated microseconds for maximum
+                // accuracy, falling back to positive milliseconds only when
+                // the microsecond magnitude cannot fit in a signed LongInt.
+                // Inside Macintosh: Processes (1994), pp. 3-14 and 3-21.
+                let remaining_count = if remaining_subticks == 0 {
+                    0
+                } else {
+                    let remaining_us = remaining_subticks.div_ceil(60);
+                    if remaining_us <= i32::MAX as u64 {
+                        -(remaining_us as i32)
+                    } else {
+                        remaining_us.div_ceil(1_000).min(i32::MAX as u64) as i32
+                    }
+                };
+                bus.write_long(task_ptr + 10, remaining_count as u32);
                 // RmvTime clears the qType high-order bit (task no longer active).
                 // Processes 1994, 3-20: "RmvTime sets the high-order bit of the qType field to 0."
                 let q = bus.read_word(task_ptr + 4);
@@ -9384,6 +9413,59 @@ mod tests {
             task.fire_at_subtick, 100_199_980,
             "3,333 microseconds should remain below one 60 Hz guest tick"
         );
+    }
+
+    #[test]
+    fn rmv_time_returns_active_task_remaining_time_as_negative_microseconds() {
+        // Processes 1994 pp. 3-14 and 3-21: revised Time Manager RmvTime
+        // reports unused time in tmCount, using negated microseconds when it
+        // fits. This is the standard elapsed-time measurement contract.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+        bus.write_long(0x016A, 100);
+
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, (-10_000_i32) as u32);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        dispatcher.timer_current_subtick = 100_150_000; // 2,500 us elapsed
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_long(task_ptr + 10) as i32, -7_500);
+        assert_eq!(bus.read_word(task_ptr + 4) & 0x8000, 0);
+        assert_eq!(dispatcher.timer_task_count(), 0);
+    }
+
+    #[test]
+    fn rmv_time_returns_zero_for_inactive_task() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+        bus.write_long(task_ptr + 10, 0xDEAD_BEEF);
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_long(task_ptr + 10), 0);
     }
 
     #[test]

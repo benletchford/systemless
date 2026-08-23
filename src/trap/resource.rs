@@ -1750,6 +1750,19 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"INTL" {
+                    if let Some(ptr) = self.synthesize_system_intl(bus, res_id) {
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"clut" {
                     if let Some(ptr) = self.synthesize_system_clut(bus, res_id) {
                         if trace_getresource_enabled() {
@@ -9105,6 +9118,30 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_us_system_intl_zero() {
+        // IM:I pp. I-495..I-499: INTL ID 0 contains the active numeric,
+        // currency, short-date, and time conventions.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"INTL"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(disp.resource_handle_files.get(&handle), Some(&0));
+        assert_eq!(bus.read_word(0x0A60), 0);
+
+        let intl = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(intl), Some(32));
+        assert_eq!(bus.read_bytes(intl, 12), b".,;$\0\0\xF0\0\0/\xFF\x60");
+        assert_eq!(bus.read_bytes(intl + 12, 4), b" AM\0");
+        assert_eq!(bus.read_bytes(intl + 16, 4), b" PM\0");
+        assert_eq!(bus.read_byte(intl + 20), b':');
+        assert_eq!(bus.read_word(intl + 30), 0);
     }
 
     #[test]

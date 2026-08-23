@@ -8216,8 +8216,18 @@ impl FixtureRunner {
             return;
         }
 
-        let mut due_task = None;
-        for task in &self.dispatcher.vbl_tasks {
+        // Decrement every queue element before choosing a callback. A task
+        // earlier in the queue may run every retrace; stopping at that task
+        // would starve all later elements. Preserve tasks that became due
+        // while another callback was delivered and service those first on
+        // the next opportunity.
+        let pending_before: Vec<bool> = self
+            .dispatcher
+            .vbl_tasks
+            .iter()
+            .map(|task| task.pending)
+            .collect();
+        for task in &mut self.dispatcher.vbl_tasks {
             let count = self.bus.read_word(task.task_ptr + 10) as i16;
             if count <= 0 {
                 continue;
@@ -8225,10 +8235,24 @@ impl FixtureRunner {
             let new_count = count - 1;
             self.bus.write_word(task.task_ptr + 10, new_count as u16);
             if new_count == 0 {
-                due_task = Some(task.task_ptr);
-                break;
+                task.pending = true;
             }
         }
+
+        let due_index = pending_before
+            .iter()
+            .position(|pending| *pending)
+            .or_else(|| {
+                self.dispatcher
+                    .vbl_tasks
+                    .iter()
+                    .position(|task| task.pending)
+            });
+        let due_task = due_index.map(|index| {
+            let task = &mut self.dispatcher.vbl_tasks[index];
+            task.pending = false;
+            task.task_ptr
+        });
 
         let Some(task_ptr) = due_task else {
             return;
@@ -8352,11 +8376,7 @@ impl FixtureRunner {
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .filter(|task| {
-                task.active
-                    && current_subtick >= task.fire_at_subtick
-                    && task.last_fired_tick != Some(current_tick)
-            })
+            .filter(|task| task.active && current_subtick >= task.fire_at_subtick)
             .min_by_key(|task| task.fire_at_subtick)
         {
             let task_ptr = task.task_ptr;
@@ -14770,7 +14790,7 @@ mod tests {
     }
 
     #[test]
-    fn self_reprimed_timer_waits_for_the_next_vbl_service() {
+    fn self_reprimed_timer_can_fire_again_within_the_same_vbl() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
         let interrupted_sp = 0x007F_FFC0;
@@ -14801,17 +14821,11 @@ mod tests {
 
         runner.fire_timer_tasks_at(10_300_000);
         assert!(
-            runner.active_interrupt_callback.is_none(),
-            "one queue element must not monopolize the same VBL"
-        );
-        assert!(runner.dispatcher.timer_tasks[0].active);
-
-        runner.fire_timer_tasks_at(11_000_000);
-        assert!(
             runner.active_interrupt_callback.is_some(),
-            "the re-primed element becomes eligible at the next VBL service"
+            "a revised Time Manager task must honor a new sub-VBL deadline"
         );
-        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(11));
+        assert!(!runner.dispatcher.timer_tasks[0].active);
+        assert_eq!(runner.dispatcher.timer_tasks[0].last_fired_tick, Some(10));
     }
 
     #[test]
@@ -15757,6 +15771,7 @@ mod tests {
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
             slot: Some(9),
+            pending: false,
         });
 
         runner.fire_vbl_tasks();
@@ -15785,6 +15800,47 @@ mod tests {
     }
 
     #[test]
+    fn simultaneous_vbl_callbacks_do_not_starve_later_queue_elements() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0002_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let first_ptr = 0x0020_2000;
+        let second_ptr = 0x0020_2020;
+
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        for (task_ptr, callback) in [(first_ptr, 0x0004_1234), (second_ptr, 0x0004_5678)] {
+            runner.bus.write_word(task_ptr + 4, 1);
+            runner.bus.write_long(task_ptr + 6, callback);
+            runner.bus.write_word(task_ptr + 10, 1);
+            runner.dispatcher.vbl_tasks.push(VblTask {
+                task_ptr,
+                slot: None,
+                pending: false,
+            });
+        }
+
+        runner.fire_vbl_tasks();
+        assert_eq!(runner.bus.read_long(runner.vbl_trampoline + 6), first_ptr);
+        assert!(runner.dispatcher.vbl_tasks[1].pending);
+
+        // Model the first callback rescheduling itself every retrace. The
+        // already-due second element must run before the first one can run
+        // again.
+        runner.bus.write_word(first_ptr + 10, 1);
+        runner.active_interrupt_callback = None;
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.core.set_sr_noint_nosp(0x2000);
+        runner.fire_vbl_tasks();
+
+        assert_eq!(runner.bus.read_long(runner.vbl_trampoline + 6), second_ptr);
+        assert!(runner.dispatcher.vbl_tasks[0].pending);
+        assert!(!runner.dispatcher.vbl_tasks[1].pending);
+    }
+
+    #[test]
     fn vbl_callback_defers_while_processor_priority_masks_level_one() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0002_0000;
@@ -15802,6 +15858,7 @@ mod tests {
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
             slot: None,
+            pending: false,
         });
 
         runner.fire_vbl_tasks();
@@ -15833,6 +15890,7 @@ mod tests {
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
             slot: None,
+            pending: false,
         });
 
         runner.fire_vbl_tasks();
@@ -17361,6 +17419,7 @@ mod tests {
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
             slot: None,
+            pending: false,
         });
 
         let mut count = 0usize;
@@ -19624,6 +19683,7 @@ mod tests {
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
             slot: None,
+            pending: false,
         });
 
         let (steps, running) = runner.run_steps(1, None);

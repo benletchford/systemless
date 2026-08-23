@@ -708,12 +708,10 @@ pub struct TimerTask {
     /// Revised Time Manager deadline in millionths of a 60 Hz guest tick.
     /// This preserves negative PrimeTime microsecond delays below one VBL.
     pub fire_at_subtick: u64,
-    /// VBL tick in which this task was most recently dispatched.
-    ///
-    /// BasiliskII's Time Manager services an individual queue element at
-    /// most once per VBL even when its revised/extended delay is shorter.
-    /// Retaining the sub-tick deadline still orders concurrent tasks without
-    /// allowing one self-repriming task to monopolize the interrupt queue.
+    /// VBL tick in which this task was most recently dispatched. The PPC
+    /// runner uses this to prevent repeat delivery within a VBL; the 68K
+    /// runner retains it as callback metadata while honoring revised
+    /// sub-VBL deadlines.
     pub last_fired_tick: Option<u32>,
 }
 
@@ -725,6 +723,8 @@ pub struct VblTask {
     pub task_ptr: u32,
     /// Optional slot number for slot-based VBL tasks.
     pub slot: Option<i16>,
+    /// The task reached a zero count but has not yet received its callback.
+    pub pending: bool,
 }
 
 pub(crate) const LOADSEG_GETRESOURCE_SENTINEL: u16 = 0x51F0;
@@ -1339,6 +1339,12 @@ pub struct TrapDispatcher {
     /// resource fork provides. The pointer is held permanently so
     /// repeat calls return the same handle. Networking 1994, 2-799.
     pub(crate) system_str_cache: HashMap<i16, u32>,
+    /// Cache of synthetic System-file `'INTL'` resource pointers. Classic
+    /// International Utilities expose U.S. numeric/time settings as ID 0 and
+    /// U.S. day/month names as ID 1. Systemless does not mount a System file,
+    /// so these records are synthesized on demand. Inside Macintosh Volume I
+    /// (1985), pp. I-495..I-505.
+    pub(crate) system_intl_cache: HashMap<i16, u32>,
     /// Cache of synthesized built-in system cursor blocks for
     /// GetCursor ($A9B9). On real Mac the standard cursor IDs (1
     /// iBeamCursor, 2 crossCursor, 3 plusCursor, 4 watchCursor per
@@ -3048,6 +3054,7 @@ impl TrapDispatcher {
             saved_draw_old_regions: HashMap::new(),
             fired_oapp_handler: false,
             system_str_cache: HashMap::new(),
+            system_intl_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_wctb_cache: HashMap::new(),
@@ -5548,6 +5555,94 @@ impl TrapDispatcher {
         let ptr = bus.alloc(body.len() as u32);
         bus.write_bytes(ptr, body);
         self.system_str_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
+    /// Allocate and cache the classic U.S. `'INTL'` resources used by
+    /// `IUGetIntl` and direct Resource Manager lookups. ID 0 is an `Intl0Rec`
+    /// (numeric, currency, short-date, and time settings); ID 1 is an
+    /// `Intl1Rec` (long-date names and separators). Inside Macintosh Volume I
+    /// (1985), pp. I-495..I-501.
+    pub(crate) fn synthesize_system_intl(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if let Some(&ptr) = self.system_intl_cache.get(&res_id) {
+            return Some(ptr);
+        }
+
+        let body = match res_id {
+            0 => vec![
+                b'.', b',', b';', // decimalPt, thousSep, listSep
+                b'$', 0, 0,    // currSym1..3
+                0xF0, // symbol leads; minus sign; trailing and leading zeroes
+                0,    // dateOrder: month, day, year
+                0,    // shrtDateFmt: no leading zeroes or century
+                b'/', 0xFF, // dateSep, 12-hour timeCycle
+                0x60, // leading zeroes for minutes and seconds
+                b' ', b'A', b'M', 0, // mornStr
+                b' ', b'P', b'M', 0,    // eveStr
+                b':', // timeSep
+                0, 0, 0, 0, 0, 0, 0, 0, // time1Suff..time8Suff
+                0, // non-metric
+                0, 0, // U.S. region, version 0
+            ],
+            1 => {
+                fn push_str15(body: &mut Vec<u8>, value: &[u8]) {
+                    debug_assert!(value.len() <= 15);
+                    body.push(value.len() as u8);
+                    body.extend_from_slice(value);
+                    body.resize(body.len() + 15 - value.len(), 0);
+                }
+
+                let mut body = Vec::with_capacity(332);
+                for day in [
+                    b"Sunday".as_slice(),
+                    b"Monday",
+                    b"Tuesday",
+                    b"Wednesday",
+                    b"Thursday",
+                    b"Friday",
+                    b"Saturday",
+                ] {
+                    push_str15(&mut body, day);
+                }
+                for month in [
+                    b"January".as_slice(),
+                    b"February",
+                    b"March",
+                    b"April",
+                    b"May",
+                    b"June",
+                    b"July",
+                    b"August",
+                    b"September",
+                    b"October",
+                    b"November",
+                    b"December",
+                ] {
+                    push_str15(&mut body, month);
+                }
+                body.extend_from_slice(&[
+                    0, 0xFF, 0, 3, // include day; month/day/year; no leading 0; abbr 3
+                    0, 0, 0, 0, // st0
+                    b',', b' ', 0, 0, // st1
+                    b' ', 0, 0, 0, // st2
+                    b',', b' ', 0, 0, // st3
+                    0, 0, 0, 0, // st4
+                    0, 0, // U.S. region, version 0
+                    0x4E, 0x75, // localRtn: RTS (no localization hook)
+                ]);
+                debug_assert_eq!(body.len(), 332);
+                body
+            }
+            _ => return None,
+        };
+
+        let ptr = bus.alloc(body.len() as u32);
+        bus.write_bytes(ptr, &body);
+        self.system_intl_cache.insert(res_id, ptr);
         Some(ptr)
     }
 
