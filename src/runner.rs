@@ -7475,7 +7475,10 @@ impl FixtureRunner {
         let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
             return false;
         };
-        if destination_x_bytes.saturating_add(front_buffer.row_bytes) > host_row_bytes {
+        let Some(visible_row_bytes) = Self::ppc_front_buffer_visible_row_bytes(front_buffer) else {
+            return false;
+        };
+        if destination_x_bytes.saturating_add(visible_row_bytes) > host_row_bytes {
             return false;
         }
         let mut row = vec![0u8; front_buffer.row_bytes as usize];
@@ -7487,7 +7490,7 @@ impl FixtureRunner {
                 return false;
             }
             Self::apply_ppc_draw_sprocket_gamma_fade(
-                &mut row,
+                &mut row[..visible_row_bytes as usize],
                 front_buffer.depth,
                 ppc_app.draw_sprocket.last_fade_percent,
                 ppc_app.draw_sprocket.last_fade_zero_color,
@@ -7497,10 +7500,20 @@ impl FixtureRunner {
             };
             bus.write_bytes(
                 host_base + destination_row.saturating_mul(host_row_bytes) + destination_x_bytes,
-                &row,
+                &row[..visible_row_bytes as usize],
             );
         }
         true
+    }
+
+    fn ppc_front_buffer_visible_row_bytes(front_buffer: PpcFrontBuffer) -> Option<u32> {
+        let bytes_per_pixel = match front_buffer.depth {
+            8 => 1,
+            16 => 2,
+            _ => return None,
+        };
+        let visible = front_buffer.width.checked_mul(bytes_per_pixel)?;
+        (visible <= front_buffer.row_bytes).then_some(visible)
     }
 
     fn apply_ppc_draw_sprocket_gamma_fade(
@@ -13574,6 +13587,33 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(ppc_app.q3_completed_frames.is_empty());
         assert_eq!(runner.q3_completed_frame_index, 1);
+    }
+
+    #[test]
+    fn ppc_host_sync_excludes_scanline_padding_from_visible_rows() {
+        let indexed = PpcFrontBuffer {
+            base_addr: 0x1000,
+            row_bytes: 656,
+            width: 640,
+            height: 480,
+            depth: 8,
+        };
+        let direct = PpcFrontBuffer {
+            base_addr: 0x2000,
+            row_bytes: 1296,
+            width: 640,
+            height: 480,
+            depth: 16,
+        };
+
+        assert_eq!(
+            FixtureRunner::ppc_front_buffer_visible_row_bytes(indexed),
+            Some(640)
+        );
+        assert_eq!(
+            FixtureRunner::ppc_front_buffer_visible_row_bytes(direct),
+            Some(1280)
+        );
     }
 
     #[test]
