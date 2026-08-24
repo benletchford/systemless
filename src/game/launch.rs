@@ -603,7 +603,7 @@ impl<'a> WebPackLoader<'a> {
                 .is_some_and(WebPackPendingEntry::is_complete)
             {
                 let pending = self.pending.take().expect("complete web-pack entry");
-                maybe_select_executable(
+                maybe_select_executable_with_preference(
                     &mut self.executable_entry,
                     &pending.name,
                     &pending.data,
@@ -612,6 +612,7 @@ impl<'a> WebPackLoader<'a> {
                     pending.data_len,
                     pending.creator_code,
                     1,
+                    runner.prefers_powerpc_executables() || prefer_powerpc(),
                 );
                 insert_forks_into_vfs(
                     runner,
@@ -2062,7 +2063,7 @@ fn insert_payload_into_vfs(
     for file in payload.files {
         let data_len = file.data.len();
         let is_appl = file.file_type == *b"APPL";
-        maybe_select_executable(
+        maybe_select_executable_with_preference(
             executable_entry,
             &file.name,
             &file.data,
@@ -2071,6 +2072,7 @@ fn insert_payload_into_vfs(
             data_len,
             file.creator,
             file.executable_priority,
+            runner.prefers_powerpc_executables() || prefer_powerpc(),
         );
         insert_forks_into_vfs(
             runner,
@@ -2261,6 +2263,7 @@ fn creator_matches(executable: [u8; 4], companion: [u8; 4]) -> bool {
     executable == companion || executable == *b"????" || companion == *b"????"
 }
 
+#[cfg(test)]
 fn maybe_select_executable(
     executable_entry: &mut Option<ExecutableCandidate>,
     name: &str,
@@ -2271,8 +2274,32 @@ fn maybe_select_executable(
     creator: [u8; 4],
     executable_priority: u8,
 ) {
+    maybe_select_executable_with_preference(
+        executable_entry,
+        name,
+        data,
+        rsrc,
+        is_appl,
+        data_len,
+        creator,
+        executable_priority,
+        prefer_powerpc(),
+    );
+}
+
+fn maybe_select_executable_with_preference(
+    executable_entry: &mut Option<ExecutableCandidate>,
+    name: &str,
+    data: &[u8],
+    rsrc: &[u8],
+    is_appl: bool,
+    data_len: usize,
+    creator: [u8; 4],
+    executable_priority: u8,
+    prefer_powerpc: bool,
+) {
     let executable_override = executable_name_override();
-    maybe_select_executable_with_override(
+    maybe_select_executable_with_override_and_preference(
         executable_entry,
         name,
         data,
@@ -2282,9 +2309,11 @@ fn maybe_select_executable(
         creator,
         executable_priority,
         executable_override.as_deref(),
+        prefer_powerpc,
     );
 }
 
+#[cfg(test)]
 fn maybe_select_executable_with_override(
     executable_entry: &mut Option<ExecutableCandidate>,
     name: &str,
@@ -2296,11 +2325,38 @@ fn maybe_select_executable_with_override(
     executable_priority: u8,
     executable_override: Option<&str>,
 ) {
+    maybe_select_executable_with_override_and_preference(
+        executable_entry,
+        name,
+        data,
+        rsrc,
+        is_appl,
+        data_len,
+        creator,
+        executable_priority,
+        executable_override,
+        prefer_powerpc(),
+    );
+}
+
+fn maybe_select_executable_with_override_and_preference(
+    executable_entry: &mut Option<ExecutableCandidate>,
+    name: &str,
+    data: &[u8],
+    rsrc: &[u8],
+    is_appl: bool,
+    data_len: usize,
+    creator: [u8; 4],
+    executable_priority: u8,
+    executable_override: Option<&str>,
+    prefer_powerpc: bool,
+) {
     if rsrc.is_empty() {
         return;
     }
 
-    let Some(kind) = classify_executable(data, rsrc, is_appl) else {
+    let Some(kind) = classify_executable_with_preference(data, rsrc, is_appl, prefer_powerpc)
+    else {
         return;
     };
 
@@ -2643,6 +2699,7 @@ impl ExecutableKind {
     }
 }
 
+#[cfg(test)]
 fn classify_executable(data: &[u8], rsrc: &[u8], is_appl: bool) -> Option<ExecutableKind> {
     classify_executable_with_preference(data, rsrc, is_appl, prefer_powerpc())
 }
@@ -4295,6 +4352,30 @@ mod tests {
                 app_stack_size: 0,
             })
         );
+    }
+
+    #[test]
+    fn executable_candidate_selection_honors_powerpc_preference() {
+        let rsrc = make_fat_application_resource_fork(make_cfrg(0, 0));
+        let ppc_data = make_minimal_pef(*b"pwpc");
+        let mut selected = None;
+
+        maybe_select_executable_with_preference(
+            &mut selected,
+            "Fat Application",
+            &ppc_data,
+            &rsrc,
+            true,
+            ppc_data.len(),
+            *b"TEST",
+            1,
+            true,
+        );
+
+        assert!(matches!(
+            selected.map(|candidate| candidate.kind),
+            Some(ExecutableKind::PowerPcPef { .. })
+        ));
     }
 
     #[test]

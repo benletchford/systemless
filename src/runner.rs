@@ -1702,6 +1702,7 @@ pub struct FixtureRunner {
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     config: FixtureRunnerConfig,
+    prefer_powerpc_executables: bool,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
     /// Set to true when the application calls ExitToShell
     halted: bool,
@@ -1926,6 +1927,7 @@ impl FixtureRunner {
             bus,
             dispatcher,
             config,
+            prefer_powerpc_executables: false,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
             halted: false,
             halted_trap: None,
@@ -1972,6 +1974,18 @@ impl FixtureRunner {
             external_q3_renderer_enabled: false,
             pending_q3_gpu_frame: None,
         }
+    }
+
+    /// Prefer a PowerPC application fragment over a classic `CODE` fallback
+    /// when loading a fat application. The default remains classic 68k for
+    /// callers that do not select an architecture explicitly.
+    pub fn set_prefer_powerpc_executables(&mut self, enabled: bool) {
+        self.prefer_powerpc_executables = enabled;
+    }
+
+    /// Returns whether fat applications should prefer a PowerPC fragment.
+    pub fn prefers_powerpc_executables(&self) -> bool {
+        self.prefer_powerpc_executables
     }
 
     pub fn set_external_q3_renderer_enabled(&mut self, enabled: bool) {
