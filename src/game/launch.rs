@@ -2096,7 +2096,6 @@ fn load_selected_executable(
         .dispatcher()
         .vfs_rsrc
         .get(&executable.vfs_key)
-
         .cloned()
         .ok_or_else(|| {
             format!(
@@ -2430,8 +2429,6 @@ impl ExecutableCandidate {
     }
 }
 
-
-
 fn same_application_family(left: &ExecutableCandidate, right: &ExecutableCandidate) -> bool {
     left.creator == right.creator
         && left.creator != *b"????"
@@ -2462,6 +2459,21 @@ fn executable_version(rsrc: &[u8]) -> Option<u32> {
 
 fn is_installer_executable(name: &str, creator: [u8; 4]) -> bool {
     if creator == *b"VIS3" {
+        return true;
+    }
+    if name
+        .rsplit_once('/')
+        .map(|(parent, _)| {
+            parent.split('/').any(|component| {
+                executable_name_has_role(component, "update")
+                    || executable_name_has_role(component, "updater")
+            })
+        })
+        .unwrap_or(false)
+    {
+        // Updater payloads are commonly deltas that only become runnable
+        // after being overlaid onto an existing installation. Do not let a
+        // nested application from one outrank a complete installer payload.
         return true;
     }
     [
@@ -3574,6 +3586,40 @@ mod tests {
                 "Collection/Product Demo"
             );
         }
+    }
+
+    #[test]
+    fn executable_selection_does_not_launch_a_nested_updater_payload() {
+        let version = [0x01, 0x20, 0x80, 0x00];
+        let demo_rsrc = make_versioned_code_resource_fork(version);
+        let updater_rsrc = make_versioned_code_resource_fork(version);
+        let mut selected = None;
+
+        maybe_select_executable(
+            &mut selected,
+            "Gridz 1.2/Gridz 1.2 Demo Installer/Gridz Demo ƒ/Gridz™ Demo",
+            &[0],
+            &demo_rsrc,
+            true,
+            687_530,
+            *b"Grdz",
+            1,
+        );
+        maybe_select_executable(
+            &mut selected,
+            "Gridz 1.2/Gridz 1.2 Updater/Gridz™",
+            &[0],
+            &updater_rsrc,
+            true,
+            697_464,
+            *b"Grdz",
+            1,
+        );
+
+        assert_eq!(
+            selected.expect("expected an executable candidate").name,
+            "Gridz 1.2/Gridz 1.2 Demo Installer/Gridz Demo ƒ/Gridz™ Demo"
+        );
     }
 
     #[test]
