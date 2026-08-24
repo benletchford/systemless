@@ -321,9 +321,11 @@ Systemless intentionally diverges from it, and why.
 
 ## License
 
-The emulator code is GPL-3.0-or-later. See [LICENSE](./LICENSE).
+The open-source Systemless emulator/runtime is licensed under
+GPL-3.0-or-later.
 
-The systemless bitmap fonts are original artwork authored for this project and
-are additionally available under the SIL Open Font License 1.1 (see
-[OFL.txt](./OFL.txt)), Reserved Font Name "Systemless" — see
-[Font license](#font-license). No third-party font data is bundled.
+Some components have additional component-specific licensing, including the
+original Systemless bitmap fonts under the SIL Open Font License 1.1.
+
+See [LICENSING.md](./LICENSING.md), [LICENSE](./LICENSE), and
+[OFL.txt](./OFL.txt) for details.

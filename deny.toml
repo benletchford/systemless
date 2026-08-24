@@ -1,0 +1,26 @@
+[licenses]
+confidence-threshold = 0.8
+unused-allowed-license = "deny"
+unused-license-exception = "deny"
+
+# Permissive licence expressions currently present in the resolved graph.
+# Licences not listed here or in a crate-specific exception are denied.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# Keep copyleft and component-specific licences scoped to the reviewed crates
+# that require them. New GPL, LGPL, AGPL, or OFL dependencies will fail.
+exceptions = [
+    { crate = "hfs-reader@0.1.1", allow = ["GPL-3.0-or-later"] },
+    { crate = "systemless", allow = ["GPL-3.0-or-later", "OFL-1.1"] },
+]
