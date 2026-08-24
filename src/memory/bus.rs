@@ -910,7 +910,7 @@ impl MacMemoryBus {
         } else {
             0 // Fallback for unit tests with small RAM
         };
-        let screen_row_bytes: u16 = 800;
+        let screen_row_bytes: u16 = 816;
         let screen_width: u16 = 800;
         let screen_height: u16 = 600;
 
@@ -953,7 +953,9 @@ impl MacMemoryBus {
     pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
         debug_assert!(matches!(depth, 1 | 4 | 8));
         let profile = crate::machine_profile::reference_machine_profile();
-        let row_bytes = ((u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8) + 1) & !1;
+        let visible_row_bytes =
+            (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
+        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
     }
@@ -1961,7 +1963,7 @@ mod tests {
     #[test]
     fn new_bus_publishes_default_screen_row_bytes() {
         let bus = MacMemoryBus::new(1024);
-        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 800);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::SCREEN_ROW), 816);
     }
 
     #[test]
@@ -2259,7 +2261,7 @@ mod tests {
         let sound_base = bus.read_long(crate::memory::globals::addr::SOUND_BASE);
 
         assert_eq!(
-            sound_base, 0x003F_5300,
+            sound_base, 0x003F_7880,
             "SoundBase should sit just past the active framebuffer in the reserved hardware-buffer area"
         );
         assert!(

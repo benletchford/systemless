@@ -1898,9 +1898,9 @@ impl FixtureRunner {
         bus.set_addressing_32_bit(config.addressing_32_bit);
         bus.configure_screen_depth(config.screen_depth);
         let profile = crate::machine_profile::reference_machine_profile();
-        let row_bytes =
-            ((u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8) + 1)
-                & !1;
+        let visible_row_bytes =
+            (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
+        let row_bytes = (visible_row_bytes / 16 + 1) * 16;
         dispatcher.screen_mode = (
             bus.read_long(crate::memory::globals::addr::SCRN_BASE),
             row_bytes,
@@ -10329,11 +10329,11 @@ mod tests {
         let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
         let ctab = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
 
-        assert_eq!(runner.dispatcher.screen_mode.1, 400);
+        assert_eq!(runner.dispatcher.screen_mode.1, 416);
         assert_eq!(runner.dispatcher.screen_mode.4, 4);
-        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 400);
-        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 400);
-        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 400);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 416);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 416);
+        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 416);
         assert_eq!(runner.bus.read_word(pixmap + 32), 4);
         assert_eq!(runner.bus.read_word(pixmap + 36), 4);
         assert_eq!(runner.bus.read_word(ctab + 6), 15);
@@ -10355,11 +10355,11 @@ mod tests {
         let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
         let ctab = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
 
-        assert_eq!(runner.dispatcher.screen_mode.1, 100);
+        assert_eq!(runner.dispatcher.screen_mode.1, 112);
         assert_eq!(runner.dispatcher.screen_mode.4, 1);
-        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 100);
-        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 100);
-        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 100);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 112);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 112);
+        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 112);
         assert_eq!(runner.bus.read_word(pixmap + 32), 1);
         assert_eq!(runner.bus.read_word(pixmap + 36), 1);
         assert_eq!(runner.bus.read_word(ctab + 6), 1);
@@ -14031,7 +14031,7 @@ mod tests {
             .bus
             .read_long(crate::memory::globals::addr::SOUND_BASE);
         assert_eq!(
-            sound_base, 0x007F_5300,
+            sound_base, 0x007F_7880,
             "SoundBase ($0266) should point at the 370-word legacy sound buffer in reserved display memory"
         );
         assert_eq!(
