@@ -2551,8 +2551,16 @@ fn run_headless(
         let screenshot_num = total / 500_000;
         if screenshot_num > last_screenshot {
             last_screenshot = screenshot_num;
-            runner.composite_frame();
-            save_screenshot(&runner, screenshot_num);
+            // Measurement-only switch: timing A/Bs suppress the periodic
+            // PNG encodes (a constant ~7s of host work per census run)
+            // while keeping the final screenshot and its tick check.
+            if std::env::var("SYSTEMLESS_HEADLESS_PERIODIC_SCREENSHOTS")
+                .map(|v| v != "0")
+                .unwrap_or(true)
+            {
+                runner.composite_frame();
+                save_screenshot(&runner, screenshot_num);
+            }
         }
 
         if !running {
@@ -2564,6 +2572,8 @@ fn run_headless(
     eprintln!("[HEADLESS] Completed {} instructions", total);
     save_store.sync_save_files_now(&mut runner);
     save_screenshot(&runner, 9999);
+    // Measurement-only: prints nothing unless SYSTEMLESS_WAIT_STATS is set.
+    systemless::runner::dump_wait_stats();
 }
 
 fn main() {
