@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.17](https://github.com/benletchford/systemless/compare/v0.18.16...v0.18.17) (2026-08-24)
+
+
+### Bug Fixes
+
+* extract grouped VISE resources ([#788](https://github.com/benletchford/systemless/issues/788)) ([163ad9b](https://github.com/benletchford/systemless/commit/163ad9b37976217d5510b8cb76b33a32a2483d8a))
+
 ## [0.18.16](https://github.com/benletchford/systemless/compare/v0.18.15...v0.18.16) (2026-08-23)
 
 
