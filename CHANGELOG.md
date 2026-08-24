@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.19](https://github.com/benletchford/systemless/compare/v0.18.18...v0.18.19) (2026-08-24)
+
+
+### Bug Fixes
+
+* **game:** honor explicit PowerPC executable preference ([#799](https://github.com/benletchford/systemless/issues/799)) ([837f5ea](https://github.com/benletchford/systemless/commit/837f5ea9ba774a662b7bf320f02f9db32ea12de7))
+
 ## [0.18.18](https://github.com/benletchford/systemless/compare/v0.18.17...v0.18.18) (2026-08-24)
 
 
