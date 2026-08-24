@@ -164,11 +164,16 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 cursor += VISE_FILE_RECORD_LEN;
                 let parent = read_u16(record, 92, "file parent")? as usize;
                 let packed_offset = read_u32(record, 96, "file payload offset")? as usize;
-                let data_packed_len = read_u32(record, 64, "packed data length")? as usize;
+                let declared_data_packed_len = read_u32(record, 64, "packed data length")? as usize;
                 let data_unpacked_len = read_u32(record, 68, "data length")? as usize;
-                let rsrc_packed_len = read_u32(record, 72, "packed resource length")? as usize;
+                let declared_rsrc_packed_len =
+                    read_u32(record, 72, "packed resource length")? as usize;
                 let rsrc_unpacked_len = read_u32(record, 76, "resource length")? as usize;
-                let unpacked_offset = read_u32(record, 100, "unpacked payload offset")? as usize;
+                let extended_unpacked_offset = if version == VISE_VERSION_EXTENDED_CATALOG {
+                    read_u32(record, 100, "unpacked payload offset")? as usize
+                } else {
+                    0
+                };
                 let name_len = record[118] as usize;
                 let mut file_type = [0; 4];
                 file_type.copy_from_slice(&record[40..44]);
@@ -185,6 +190,23 @@ fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
                 }
                 let name = decode_catalog_name(data, &mut cursor, name_len, "file name")?;
                 let path = child_path(&dirs, parent, &name, "file")?;
+                // In classic VISE resource-only records, the resource stream
+                // starts at the file payload offset and uses the first packed
+                // length. Gridz uses this layout for controls and graphics.
+                let resource_only_classic = version != VISE_VERSION_EXTENDED_CATALOG
+                    && data_unpacked_len == 0
+                    && rsrc_unpacked_len != 0
+                    && declared_data_packed_len != 0;
+                let (data_packed_len, rsrc_packed_len) = if resource_only_classic {
+                    (0, declared_data_packed_len)
+                } else {
+                    (declared_data_packed_len, declared_rsrc_packed_len)
+                };
+                let unpacked_offset = if resource_only_classic {
+                    read_u32(record, 104, "grouped resource offset")? as usize
+                } else {
+                    extended_unpacked_offset
+                };
                 let data_packed = range(
                     data,
                     packed_offset,
@@ -720,6 +742,7 @@ mod tests {
         file[76..80].copy_from_slice(&(resource_fork.len() as u32).to_be_bytes());
         file[92..94].copy_from_slice(&1u16.to_be_bytes());
         file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file[100..104].copy_from_slice(&346u32.to_be_bytes());
         file[118] = 7;
         archive.extend_from_slice(&file);
         archive.extend_from_slice(b"Runtime");
@@ -731,12 +754,60 @@ mod tests {
         assert_eq!(entry.path, "Game/Runtime");
         assert_eq!(entry.file_type, *b"APPL");
         assert_eq!(entry.creator, *b"TEST");
+        assert_eq!(entry.unpacked_offset, 0);
         assert_eq!(
             decode_vise_fork(entry.data_packed, entry.data_unpacked_len).unwrap(),
             data_fork
         );
         assert_eq!(
             decode_vise_fork(entry.rsrc_packed, entry.rsrc_unpacked_len).unwrap(),
+            resource_fork
+        );
+    }
+
+    #[test]
+    fn parses_classic_resource_only_stream_at_the_file_payload_offset() {
+        let prefix = b"earlier grouped resource";
+        let resource_fork = b"resource-only VISE payload";
+        let grouped_resources = [prefix.as_slice(), resource_fork.as_slice()].concat();
+        let packed_rsrc = encode_vise_fork(&grouped_resources);
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + packed_rsrc.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_35_LITE.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed_rsrc);
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&1u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        archive.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[40..44].copy_from_slice(b"RSRC");
+        file[44..48].copy_from_slice(b"TEST");
+        file[64..68].copy_from_slice(&(packed_rsrc.len() as u32).to_be_bytes());
+        file[72..76].copy_from_slice(&(grouped_resources.len() as u32).to_be_bytes());
+        file[76..80].copy_from_slice(&(resource_fork.len() as u32).to_be_bytes());
+        file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file[104..108].copy_from_slice(&(prefix.len() as u32).to_be_bytes());
+        file[118] = 7;
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(b"Control");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        let entry = &parsed.entries[0];
+        assert!(entry.data_packed.is_empty());
+        assert_eq!(entry.rsrc_packed, packed_rsrc);
+        assert_eq!(entry.unpacked_offset, prefix.len());
+        let decoded = decode_vise_fork(
+            entry.rsrc_packed,
+            entry.unpacked_offset + entry.rsrc_unpacked_len,
+        )
+        .unwrap();
+        assert_eq!(
+            &decoded[entry.unpacked_offset..entry.unpacked_offset + entry.rsrc_unpacked_len],
             resource_fork
         );
     }
