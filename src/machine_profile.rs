@@ -73,10 +73,13 @@ impl MachineProfile {
         self.gestalt_fpu_type != 0
     }
 
-    /// Bytes per scanline for this profile's packed indexed screen.
+    /// Bytes per scanline for this profile's indexed screen. `rowBytes` is an
+    /// offset and may include storage beyond the visible pixels; matching the
+    /// offscreen 16-byte quantum keeps direct full-row transfers coherent.
+    /// Imaging With QuickDraw 1994, p. 4-5
     pub const fn screen_row_bytes(self) -> u32 {
         let bytes = (self.screen_width as u32 * self.screen_depth as u32).div_ceil(8);
-        (bytes + 1) & !1
+        (bytes / 16 + 1) * 16
     }
 }
 
