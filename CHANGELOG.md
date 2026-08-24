@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.18](https://github.com/benletchford/systemless/compare/v0.18.17...v0.18.18) (2026-08-24)
+
+
+### Bug Fixes
+
+* **file:** preserve closed paths across PBGetFInfo ([#796](https://github.com/benletchford/systemless/issues/796)) ([80f9e15](https://github.com/benletchford/systemless/commit/80f9e15f13b6d8a9627face4d4b74675c9c45b44))
+* **ppc:** exclude scanline padding from presented frames ([#795](https://github.com/benletchford/systemless/issues/795)) ([2a80efb](https://github.com/benletchford/systemless/commit/2a80efb50ce49d868a616f6ee02bd18fc041b1e5))
+* **quickdraw:** align main and offscreen scanline storage ([#794](https://github.com/benletchford/systemless/issues/794)) ([086f388](https://github.com/benletchford/systemless/commit/086f388d3eaf3a6b279afda6e9ca0f728d90dbd9))
+
 ## [0.18.17](https://github.com/benletchford/systemless/compare/v0.18.16...v0.18.17) (2026-08-24)
 
 
