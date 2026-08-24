@@ -5602,14 +5602,28 @@ impl super::TrapDispatcher {
                 };
 
                 if let Some(vfs_name) = lookup {
+                    let open_refnum = self
+                        .open_files
+                        .iter()
+                        .find(|(_, path)| path.eq_ignore_ascii_case(&vfs_name))
+                        .map(|(refnum, _)| *refnum)
+                        .or_else(|| self.refnum_for_resource_file_name(&vfs_name));
                     if let Some(metadata) = self.vfs_file_metadata(&vfs_name) {
                         self.fill_file_catalog_info(bus, pb, &vfs_name, metadata);
-                        if name_ptr != 0 {
+                        // Inside Macintosh Volume IV, pp. IV-148–149: for a
+                        // name-based PBGetFInfo call, ioNamePtr is returned as
+                        // the leaf name when an access path to the file is
+                        // open. Closed files leave the caller's pathname in
+                        // place so the documented PBGetFInfo -> PBSetFInfo
+                        // sequence continues to identify the same file.
+                        // Indexed calls still need the discovered leaf name.
+                        if name_ptr != 0 && (fdir_index > 0 || open_refnum.is_some()) {
                             let guest_name = super::TrapDispatcher::hfs_name_from_vfs_component(
                                 super::TrapDispatcher::vfs_basename(&vfs_name),
                             );
                             Self::write_pstring(bus, name_ptr, &guest_name);
                         }
+                        bus.write_word(pb + 24, open_refnum.unwrap_or(0));
                     }
                     bus.write_word(pb + 16, 0); // noErr
                     cpu.write_reg(Register::D0, 0);
@@ -15972,6 +15986,79 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
         assert_eq!(bus.read_long(pb + 100), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn pb_get_finfo_closed_file_preserves_path_for_followup_set_finfo() {
+        // Inside Macintosh Volume IV, IV-148–149 recommends calling
+        // PBGetFInfo immediately before PBSetFInfo. A closed file does not
+        // return an access-path leaf name, so the caller's pathname must
+        // survive the get and keep the set aimed at the same file.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.ensure_vfs_directory("PR Resources");
+        disp.ensure_vfs_directory("Color Disk 1/Color Playroom");
+        disp.vfs
+            .insert("PR Resources/PR Settings".to_string(), vec![]);
+        disp.vfs.insert(
+            "Color Disk 1/Color Playroom/PR Settings".to_string(),
+            vec![],
+        );
+        disp.set_vfs_entry_metadata("PR Resources/PR Settings", *b"pref", *b"PLAY", 0);
+        disp.set_vfs_entry_metadata(
+            "Color Disk 1/Color Playroom/PR Settings",
+            *b"pref",
+            *b"DISK",
+            0,
+        );
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b":PR Resources:PR Settings");
+        call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            bus.read_pstring(name_ptr),
+            b":PR Resources:PR Settings".to_vec()
+        );
+        assert_eq!(bus.read_word(pb + 24), 0, "closed file has no access path");
+
+        bus.write_long(pb + 36, u32::from_be_bytes(*b"NEW!"));
+        call(&mut disp, false, 0x0D, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            disp.vfs_file_metadata("PR Resources/PR Settings")
+                .unwrap()
+                .creator,
+            u32::from_be_bytes(*b"NEW!")
+        );
+        assert_eq!(
+            disp.vfs_file_metadata("Color Disk 1/Color Playroom/PR Settings")
+                .unwrap()
+                .creator,
+            u32::from_be_bytes(*b"DISK")
+        );
+    }
+
+    #[test]
+    fn pb_get_finfo_open_file_returns_leaf_name_and_refnum() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        disp.ensure_vfs_directory("PR Resources");
+        disp.vfs
+            .insert("PR Resources/PR Settings".to_string(), vec![]);
+        disp.set_vfs_entry_metadata("PR Resources/PR Settings", *b"pref", *b"PLAY", 0);
+        disp.open_files
+            .insert(7, "PR Resources/PR Settings".to_string());
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b":PR Resources:PR Settings");
+        call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"PR Settings".to_vec());
+        assert_eq!(bus.read_word(pb + 24), 7);
     }
 
     #[test]
