@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.21](https://github.com/benletchford/systemless/compare/v0.18.20...v0.18.21) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ppc:** preserve keyed Quilt sprite backgrounds ([#807](https://github.com/benletchford/systemless/issues/807)) ([3c705ed](https://github.com/benletchford/systemless/commit/3c705ed7ba3f2b09700c9a11c9356aa181008ea4))
+
 ## [0.18.20](https://github.com/benletchford/systemless/compare/v0.18.19...v0.18.20) (2026-08-25)
 
 
