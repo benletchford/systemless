@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.20](https://github.com/benletchford/systemless/compare/v0.18.19...v0.18.20) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ppc:** restore Gridz QuickDraw rendering ([54b5f69](https://github.com/benletchford/systemless/commit/54b5f69bfc66fe91f3b3dea884190edcc7e083f7)), closes [#801](https://github.com/benletchford/systemless/issues/801)
+
 ## [0.18.19](https://github.com/benletchford/systemless/compare/v0.18.18...v0.18.19) (2026-08-24)
 
 
