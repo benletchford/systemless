@@ -328,9 +328,104 @@ fn decode_relocation_offsets(data: &[u8], start: usize, end: usize) -> Option<Ve
     Some(offsets)
 }
 
+/// One relocation decoded from Retro68's compressed `RELA` resource format.
+///
+/// Retro68's `Elf2Mac/Reloc.cc::SerializeRelocs` writes absolute and
+/// PC-relative relocations as two separately terminated ULEB128-delta streams;
+/// `libretro/relocate.c::Retro68ApplyRelocations` consumes the same format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Retro68Relocation {
+    pub offset: u32,
+    pub base_index: usize,
+    pub pc_relative: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retro68RelocationError {
+    MissingPassTerminator,
+    TruncatedUleb128,
+    Uleb128Overflow,
+    TargetOutOfBounds { offset: i64, target_size: usize },
+    GuestAddressOverflow { base: u32, offset: u32 },
+}
+
+fn decode_retro68_uleb128(data: &[u8], cursor: &mut usize) -> Result<u32, Retro68RelocationError> {
+    let mut value = 0u32;
+
+    for shift in [0, 7, 14, 21, 28] {
+        let byte = *data
+            .get(*cursor)
+            .ok_or(Retro68RelocationError::TruncatedUleb128)?;
+        *cursor += 1;
+
+        let payload = u32::from(byte & 0x7F);
+        if shift == 28 && payload > 0x0F {
+            return Err(Retro68RelocationError::Uleb128Overflow);
+        }
+        value |= payload << shift;
+
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+
+    Err(Retro68RelocationError::Uleb128Overflow)
+}
+
+pub(crate) fn decode_retro68_relocations(
+    data: &[u8],
+    target_size: usize,
+) -> Result<Vec<Retro68Relocation>, Retro68RelocationError> {
+    let mut relocations = Vec::new();
+    let mut cursor = 0usize;
+
+    for pc_relative in [false, true] {
+        // Retro68 starts each pass one byte before the relocation target so
+        // the first delta can encode an offset of zero without colliding with
+        // the zero-byte pass terminator.
+        let mut offset = -1i64;
+
+        loop {
+            let first = *data
+                .get(cursor)
+                .ok_or(Retro68RelocationError::MissingPassTerminator)?;
+            if first == 0 {
+                cursor += 1;
+                break;
+            }
+
+            let encoded = decode_retro68_uleb128(data, &mut cursor)?;
+            offset += i64::from(encoded >> 2);
+            let end = offset
+                .checked_add(4)
+                .ok_or(Retro68RelocationError::TargetOutOfBounds {
+                    offset,
+                    target_size,
+                })?;
+            if offset < 0 || end > target_size as i64 {
+                return Err(Retro68RelocationError::TargetOutOfBounds {
+                    offset,
+                    target_size,
+                });
+            }
+
+            relocations.push(Retro68Relocation {
+                offset: offset as u32,
+                base_index: (encoded & 3) as usize,
+                pc_relative,
+            });
+        }
+    }
+
+    Ok(relocations)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ApplicationSizeResource, CodeSegmentHeader, MpwFarSegmentHeader};
+    use super::{
+        decode_retro68_relocations, ApplicationSizeResource, CodeSegmentHeader,
+        MpwFarSegmentHeader, Retro68Relocation, Retro68RelocationError,
+    };
 
     #[test]
     fn parses_application_size_resource_flags_and_partition_sizes() {
@@ -420,6 +515,77 @@ mod tests {
 
         assert_eq!(header.a5_relocation_offsets(&data), Some(vec![0x1428]));
         assert_eq!(header.pc_relocation_offsets(&data), Some(vec![0x2A]));
+    }
+
+    #[test]
+    fn decodes_both_retro68_relocation_passes_and_base_kinds() {
+        let relocations = decode_retro68_relocations(
+            &[
+                0x04, // absolute offset 0, code base
+                0x11, // absolute offset 4, data base
+                0x12, // absolute offset 8, bss base
+                0x13, // absolute offset 12, jump-table base
+                0x00, // absolute pass terminator
+                0xC4, 0x02, // PC-relative offset 80, code base
+                0x00, // PC-relative pass terminator
+            ],
+            84,
+        )
+        .expect("decode Retro68 RELA resource");
+
+        assert_eq!(
+            relocations,
+            vec![
+                Retro68Relocation {
+                    offset: 0,
+                    base_index: 0,
+                    pc_relative: false,
+                },
+                Retro68Relocation {
+                    offset: 4,
+                    base_index: 1,
+                    pc_relative: false,
+                },
+                Retro68Relocation {
+                    offset: 8,
+                    base_index: 2,
+                    pc_relative: false,
+                },
+                Retro68Relocation {
+                    offset: 12,
+                    base_index: 3,
+                    pc_relative: false,
+                },
+                Retro68Relocation {
+                    offset: 80,
+                    base_index: 0,
+                    pc_relative: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_retro68_relocation_streams() {
+        assert_eq!(
+            decode_retro68_relocations(&[0x00], 4),
+            Err(Retro68RelocationError::MissingPassTerminator)
+        );
+        assert_eq!(
+            decode_retro68_relocations(&[0x84], 4),
+            Err(Retro68RelocationError::TruncatedUleb128)
+        );
+        assert_eq!(
+            decode_retro68_relocations(&[0xFF, 0xFF, 0xFF, 0xFF, 0x10], 4),
+            Err(Retro68RelocationError::Uleb128Overflow)
+        );
+        assert_eq!(
+            decode_retro68_relocations(&[0x08, 0x00, 0x00], 4),
+            Err(Retro68RelocationError::TargetOutOfBounds {
+                offset: 1,
+                target_size: 4,
+            })
+        );
     }
 }
 
