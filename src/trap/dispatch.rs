@@ -4583,12 +4583,7 @@ impl TrapDispatcher {
                 .find(|path| path.eq_ignore_ascii_case(&normalized))
                 .cloned();
         }
-        sorted_keys
-            .iter()
-            .copied()
-            .filter(|path| !path.is_empty())
-            .find(|path| Self::vfs_basename(path).eq_ignore_ascii_case(&normalized))
-            .cloned()
+        None
     }
 
     pub(crate) fn list_vfs_catalog_entries(&mut self, dir_id: u32) -> Vec<VfsCatalogEntry> {
@@ -7321,6 +7316,20 @@ mod tests {
 
         assert_eq!(
             disp.find_vfs_file_in_directory(pref_dir_id, "Shared Preferences"),
+            None
+        );
+    }
+
+    #[test]
+    fn find_vfs_directory_in_directory_does_not_escape_explicit_parent() {
+        // Files 1992, 2-29: a nonzero parent directory ID suppresses the
+        // poor man's search path. A same-named directory elsewhere on the
+        // volume must not satisfy the lookup.
+        let mut disp = TrapDispatcher::new();
+        let simfarm_dir_id = disp.ensure_vfs_directory("Maxis/SimFarm");
+
+        assert_eq!(
+            disp.find_vfs_directory_in_directory(simfarm_dir_id, "SimFarm"),
             None
         );
     }

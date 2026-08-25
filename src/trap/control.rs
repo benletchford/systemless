@@ -18,7 +18,7 @@ impl super::TrapDispatcher {
     const CDEF_DRAW_CNTL_MSG: i16 = 0;
     const CDEF_TEST_CNTL_MSG: i16 = 1;
     const CDEF_INIT_CNTL_MSG: i16 = 3;
-    const CDEF_TRAMPOLINE_SIZE: u32 = 64;
+    const CDEF_TRAMPOLINE_SIZE: u32 = 80;
     const LOWMEM_AUX_CTL_HEAD: u32 = 0x0CD4;
     const AUX_CTL_NEXT_OFFSET: u32 = 0;
     const AUX_CTL_OWNER_OFFSET: u32 = 4;
@@ -269,6 +269,8 @@ impl super::TrapDispatcher {
         result_addr: u32,
         saved_regs_sp: u32,
         next_trampoline: Option<u32>,
+        restore_port: u32,
+        restore_gdevice: u32,
     ) {
         bus.write_word(tramp, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
         bus.write_word(tramp + 2, 0xF0F0);
@@ -297,8 +299,17 @@ impl super::TrapDispatcher {
                 bus.write_long(tramp + 56, next);
             }
             None => {
-                bus.write_word(tramp + 54, 0x4E75); // RTS
-                bus.write_long(tramp + 56, 0);
+                // Control Manager calls a CDEF in its owning window's port,
+                // but leaves the caller's current GrafPort and GDevice
+                // unchanged. Restore both after the final callback.
+                // Inside Macintosh Volume I, pp. I-163, I-329 to I-331.
+                bus.write_word(tramp + 54, 0x2F3C); // MOVE.L #port,-(SP)
+                bus.write_long(tramp + 56, restore_port);
+                bus.write_word(tramp + 60, 0xA873); // _SetPort
+                bus.write_word(tramp + 62, 0x2F3C); // MOVE.L #gdh,-(SP)
+                bus.write_long(tramp + 64, restore_gdevice);
+                bus.write_word(tramp + 68, 0xAA31); // _SetGDevice
+                bus.write_word(tramp + 70, 0x4E75); // RTS
             }
         }
     }
@@ -330,6 +341,13 @@ impl super::TrapDispatcher {
         if callable.is_empty() {
             return false;
         }
+        let restore_port = self.current_port;
+        let restore_gdevice = self.current_gdevice;
+        let first_ctrl_ptr = Self::control_record_ptr(bus, callable[0].0);
+        let owner = bus.read_long(first_ctrl_ptr + 4);
+        if owner != 0 && owner != self.current_port {
+            self.set_current_port_state(bus, cpu, owner, None);
+        }
         let final_sp = cpu.read_reg(Register::A7);
         let return_pc = cpu.read_reg(Register::PC);
         let return_slot = final_sp.wrapping_sub(4);
@@ -357,9 +375,11 @@ impl super::TrapDispatcher {
                 message,
                 param,
                 proc_addr,
-                result_addr.unwrap_or(trampolines[idx] + 60),
+                result_addr.unwrap_or(trampolines[idx] + 72),
                 saved_regs_sp,
                 trampolines.get(idx + 1).copied(),
+                restore_port,
+                restore_gdevice,
             );
         }
 
@@ -381,6 +401,48 @@ impl super::TrapDispatcher {
             .map(|&(message, param, result_addr)| (ctrl_handle, message, param, result_addr))
             .collect();
         self.arm_control_def_call_chain(cpu, bus, &calls)
+    }
+
+    fn arm_control_action_proc<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        ctrl_handle: u32,
+        part: u16,
+        action_proc: u32,
+        final_sp: u32,
+    ) -> bool {
+        if action_proc == 0 || action_proc > bus.ram_size().saturating_sub(2) {
+            return false;
+        }
+
+        // ControlActionProcPtr is a Pascal procedure taking the control and
+        // part code. TrackControl calls it while the mouse remains over an
+        // arrow or page region. One callback corresponds to the initial
+        // mouse-down; subsequent host events can enter TrackControl again for
+        // auto-repeat. Macintosh Toolbox Essentials 1992, pp. 5-89 to 5-91.
+        let trampoline = self.get_or_create_control_def_trampoline(bus);
+        let return_pc = cpu.read_reg(Register::PC);
+        let return_slot = final_sp.wrapping_sub(4);
+        let saved_regs_sp = return_slot.wrapping_sub(32);
+        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(trampoline + 2, 0xF0F0);
+        bus.write_word(trampoline + 4, 0x2F3C); // MOVE.L #control,-(SP)
+        bus.write_long(trampoline + 6, ctrl_handle);
+        bus.write_word(trampoline + 10, 0x3F3C); // MOVE.W #part,-(SP)
+        bus.write_word(trampoline + 12, part);
+        bus.write_word(trampoline + 14, 0x4EB9); // JSR abs.L
+        bus.write_long(trampoline + 16, action_proc);
+        bus.write_word(trampoline + 20, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_long(trampoline + 22, saved_regs_sp);
+        bus.write_word(trampoline + 26, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(trampoline + 28, 0x0F0F);
+        bus.write_word(trampoline + 30, 0x4E75); // RTS
+
+        bus.write_long(return_slot, return_pc);
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampoline);
+        true
     }
 
     pub(crate) fn arm_new_dialog_control_defs<C: CpuOps>(
@@ -414,9 +476,6 @@ impl super::TrapDispatcher {
         if calls.is_empty() {
             return false;
         }
-        // Custom CDEFs use dialog-local contrlRect coordinates for both
-        // OpenPicture and DrawPicture, so dispatch them in the owner port.
-        self.set_current_port_state(bus, cpu, dialog_ptr, None);
         self.arm_control_def_call_chain(cpu, bus, &calls)
     }
 
@@ -457,7 +516,6 @@ impl super::TrapDispatcher {
         if calls.is_empty() {
             return false;
         }
-        self.set_current_port_state(bus, cpu, dialog_ptr, None);
         // Establish the retained-dialog baseline before guest drawing. Each
         // DrawPicture callback then refreshes this snapshot, so frame
         // composition cannot restore the pre-CDEF shell over the artwork.
@@ -1150,6 +1208,18 @@ impl super::TrapDispatcher {
         if !Self::control_vis_is_visible(vis) {
             return;
         }
+        let window_ptr = bus.read_long(ctrl_ptr + 4);
+        if window_ptr != 0 {
+            let vis_rgn = bus.read_long(window_ptr + 24);
+            if vis_rgn != 0 && Self::region_handle_rect(bus, vis_rgn).is_none() {
+                return;
+            }
+        }
+        let saved_port = self.current_port;
+        let saved_gdevice = self.current_gdevice;
+        if window_ptr != 0 && window_ptr != saved_port {
+            self.set_current_port_state(bus, cpu, window_ptr, None);
+        }
 
         let r_top = bus.read_word(ctrl_ptr + 8) as i16;
         let r_left = bus.read_word(ctrl_ptr + 10) as i16;
@@ -1181,7 +1251,6 @@ impl super::TrapDispatcher {
         };
 
         // Screen coordinates for fb_draw_string (text rendering)
-        let window_ptr = bus.read_long(ctrl_ptr + 4);
         let (scr_top, scr_left, _, _) = Self::dialog_screen_bounds(bus, window_ptr);
         let abs_top = scr_top + r_top;
         let abs_left = scr_left + r_left;
@@ -1405,6 +1474,9 @@ impl super::TrapDispatcher {
         self.pn_size = saved_pn_size;
         self.pn_mode = saved_pn_mode;
         self.pn_pat = saved_pn_pat;
+        if self.current_port != saved_port || self.current_gdevice != saved_gdevice {
+            self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
+        }
     }
 
     fn draw_picture_title_control(
@@ -2563,10 +2635,6 @@ impl super::TrapDispatcher {
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 if let Some(ctrl_ptr) = newly_visible_control {
-                    let owner = bus.read_long(ctrl_ptr + 4);
-                    if owner != 0 {
-                        self.set_current_port_state(bus, cpu, owner, None);
-                    }
                     if !self.arm_control_def_messages(
                         cpu,
                         bus,
@@ -3175,6 +3243,39 @@ impl super::TrapDispatcher {
                             {
                                 let proc_id =
                                     self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                                if proc_id == 16 {
+                                    part = self.standard_scrollbar_testcontrol_part_code(
+                                        bus, ctrl_ptr, pt_v, pt_h,
+                                    );
+                                    outcome = if part == 0 {
+                                        "scrollbar_no_part"
+                                    } else {
+                                        "scrollbar_part_hit"
+                                    };
+                                    self.record_trackcontrol_input_trace(
+                                        bus,
+                                        "start",
+                                        ctrl_handle,
+                                        Some((pt_v, pt_h)),
+                                        action_proc,
+                                        Some(part),
+                                        None,
+                                        outcome,
+                                    );
+                                    bus.write_word(sp + 12, part);
+                                    cpu.write_reg(Register::A7, sp + 12);
+                                    if matches!(part, 20..=23) {
+                                        self.arm_control_action_proc(
+                                            cpu,
+                                            bus,
+                                            ctrl_handle,
+                                            part,
+                                            action_proc,
+                                            sp + 12,
+                                        );
+                                    }
+                                    return Some(Ok(()));
+                                }
                                 if Self::is_popup_menu_proc_id(proc_id) {
                                     let menu_id = self.popup_control_menu_id(
                                         bus,
@@ -4407,7 +4508,10 @@ mod tests {
         );
         assert_eq!(bus.read_long(draw_tramp + 26), 0);
         assert_eq!(bus.read_long(draw_tramp + 32), cdef_proc);
-        assert_eq!(bus.read_word(draw_tramp + 54), 0x4E75);
+        assert_eq!(bus.read_word(draw_tramp + 54), 0x2F3C);
+        assert_eq!(bus.read_word(draw_tramp + 60), 0xA873);
+        assert_eq!(bus.read_word(draw_tramp + 68), 0xAA31);
+        assert_eq!(bus.read_word(draw_tramp + 70), 0x4E75);
     }
 
     // IM:I I-332: DisposeControl takes one ControlHandle argument.
@@ -5398,6 +5502,44 @@ mod tests {
     }
 
     #[test]
+    fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let return_pc = 0x0012_3456;
+        let action_proc = bus.alloc(2);
+        bus.write_word(action_proc, 0x4E75); // RTS
+        let (ctrl_handle, _) =
+            alloc_scrollbar_control(&mut disp, &mut bus, (60, 240, 220, 256), 255, 0, 40, 0, 100);
+
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, action_proc);
+        bus.write_word(sp + 4, 210);
+        bus.write_word(sp + 6, 248);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(sp + 12), 21, "down arrow is inDownButton");
+        let trampoline = disp.control_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_long(sp + 8), return_pc);
+        assert_eq!(bus.read_word(trampoline), 0x48E7);
+        assert_eq!(bus.read_word(trampoline + 4), 0x2F3C);
+        assert_eq!(bus.read_long(trampoline + 6), ctrl_handle);
+        assert_eq!(bus.read_word(trampoline + 10), 0x3F3C);
+        assert_eq!(bus.read_word(trampoline + 12), 21);
+        assert_eq!(bus.read_word(trampoline + 14), 0x4EB9);
+        assert_eq!(bus.read_long(trampoline + 16), action_proc);
+        assert_eq!(bus.read_word(trampoline + 30), 0x4E75);
+    }
+
+    #[test]
     fn track_control_button_systemless_theme_tracks_pressed_state_until_release() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
@@ -6042,7 +6184,10 @@ mod tests {
             super::super::TrapDispatcher::CDEF_DRAW_CNTL_MSG as u16
         );
         assert_eq!(bus.read_long(second_tramp + 32), cdef_proc);
-        assert_eq!(bus.read_word(second_tramp + 54), 0x4E75);
+        assert_eq!(bus.read_word(second_tramp + 54), 0x2F3C);
+        assert_eq!(bus.read_word(second_tramp + 60), 0xA873);
+        assert_eq!(bus.read_word(second_tramp + 68), 0xAA31);
+        assert_eq!(bus.read_word(second_tramp + 70), 0x4E75);
     }
 
     // FindControl semantics per IM:I (1985) I-323 and MTE (1992) 5-89.

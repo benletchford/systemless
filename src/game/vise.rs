@@ -15,6 +15,7 @@ const VISE_MAGIC: &[u8; 4] = b"SVCT";
 const VISE_CATALOG_MAGIC: &[u8; 4] = b"CVCT";
 const VISE_HEADER_LEN: usize = 44;
 const VISE_CATALOG_HEADER_LEN: usize = 20;
+const VISE_VERSION_35: u32 = 0x8001_0201;
 const VISE_VERSION_35_LITE: u32 = 0x8001_0202;
 const VISE_VERSION_36_LITE: u32 = 0x8001_0300;
 const VISE_VERSION_EXTENDED_CATALOG: u32 = 0x8001_0307;
@@ -78,12 +79,162 @@ pub fn parse_vise(data: &[u8]) -> Option<Result<ViseArchive<'_>, String>> {
         .then(|| parse_vise_result(data))
 }
 
+pub(crate) fn continuation_bytes(data: &[u8]) -> Option<&[u8]> {
+    let header = data.get(..VISE_HEADER_LEN)?;
+    (header.starts_with(VISE_MAGIC) && read_u32(header, 36, "catalog offset").ok()? == 0)
+        .then(|| &data[VISE_HEADER_LEN..])
+}
+
+pub(crate) fn join_segments(primary: &[u8], continuations: &[&[u8]]) -> Result<Vec<u8>, String> {
+    let header = range(primary, 0, VISE_HEADER_LEN, "primary header")?;
+    if !header.starts_with(VISE_MAGIC) {
+        return Err("primary segment is missing the SVCT signature".to_string());
+    }
+    let version = read_u32(header, 16, "archive version")?;
+    let catalog_offset = read_u32(header, 36, "catalog offset")? as usize;
+    let mut continuation_payloads = Vec::with_capacity(continuations.len());
+    for (index, continuation) in continuations.iter().enumerate() {
+        let payload = continuation_bytes(continuation)
+            .ok_or_else(|| format!("VISE continuation segment {} has a catalog", index + 2))?;
+        continuation_payloads.push(payload);
+    }
+
+    let mut patched = primary.to_vec();
+    let catalog = range(
+        &patched,
+        catalog_offset,
+        VISE_CATALOG_HEADER_LEN,
+        "catalog header",
+    )?;
+    if !catalog.starts_with(VISE_CATALOG_MAGIC) {
+        return Err(format!(
+            "missing CVCT catalog signature at 0x{catalog_offset:X}"
+        ));
+    }
+    let entry_count = read_u16(catalog, 16, "catalog entry count")? as usize;
+    let mut cursor = catalog_offset + VISE_CATALOG_HEADER_LEN;
+    if version == VISE_VERSION_EXTENDED_CATALOG {
+        range(
+            &patched,
+            cursor,
+            VISE_EXTENDED_CATALOG_PREFIX_LEN,
+            "extended catalog prefix",
+        )?;
+        cursor += VISE_EXTENDED_CATALOG_PREFIX_LEN;
+    }
+    for index in 0..entry_count {
+        let magic = range(&patched, cursor, 4, &format!("catalog entry {index} magic"))?;
+        let kind = magic[0];
+        if &magic[1..] != b"VCT" {
+            return Err(format!("catalog entry {index} has invalid magic"));
+        }
+        cursor += 4;
+        match kind {
+            b'D' => {
+                let record = range(
+                    &patched,
+                    cursor,
+                    VISE_DIRECTORY_RECORD_LEN,
+                    &format!("directory {index} record"),
+                )?;
+                let name_len = record[76] as usize;
+                cursor += VISE_DIRECTORY_RECORD_LEN;
+                if version == VISE_VERSION_36_LITE {
+                    cursor += 6;
+                } else if version == VISE_VERSION_EXTENDED_CATALOG {
+                    cursor += VISE_EXTENDED_DIRECTORY_SUFFIX_LEN;
+                }
+                range(&patched, cursor, name_len, "directory name")?;
+                cursor += name_len;
+            }
+            b'F' => {
+                let record_offset = cursor;
+                let record = range(
+                    &patched,
+                    record_offset,
+                    VISE_FILE_RECORD_LEN,
+                    &format!("file {index} record"),
+                )?;
+                let name_len = record[118] as usize;
+                let segment_number = read_u16(record, 94, "file segment number")? as usize;
+                if segment_number > 1 {
+                    let segment_index = segment_number - 2;
+                    let segment = continuation_payloads.get(segment_index).ok_or_else(|| {
+                        format!("file {index} requires missing VISE segment {segment_number}")
+                    })?;
+                    let original_offset = read_u32(record, 96, "file payload offset")? as usize;
+                    let segment_end = segment
+                        .len()
+                        .checked_add(VISE_HEADER_LEN)
+                        .ok_or_else(|| "VISE segment length overflow".to_string())?;
+                    if original_offset < VISE_HEADER_LEN || original_offset > segment_end {
+                        return Err(format!(
+                            "file {index} has invalid segment {segment_number} offset 0x{original_offset:X}"
+                        ));
+                    }
+                    let prior_payload_len = continuation_payloads[..segment_index]
+                        .iter()
+                        .try_fold(0usize, |total, payload| total.checked_add(payload.len()))
+                        .ok_or_else(|| "VISE segment offset overflow".to_string())?;
+                    let normalized_offset = catalog_offset
+                        .checked_add(prior_payload_len)
+                        .and_then(|offset| offset.checked_add(original_offset - VISE_HEADER_LEN))
+                        .ok_or_else(|| "VISE normalized file offset overflow".to_string())?;
+                    let normalized_offset = u32::try_from(normalized_offset)
+                        .map_err(|_| "VISE normalized file offset exceeds 32 bits".to_string())?;
+                    patched[record_offset + 94..record_offset + 96]
+                        .copy_from_slice(&1u16.to_be_bytes());
+                    patched[record_offset + 96..record_offset + 100]
+                        .copy_from_slice(&normalized_offset.to_be_bytes());
+                }
+                cursor += VISE_FILE_RECORD_LEN;
+                if version == VISE_VERSION_EXTENDED_CATALOG {
+                    cursor += VISE_EXTENDED_FILE_SUFFIX_LEN;
+                }
+                range(&patched, cursor, name_len, "file name")?;
+                cursor += name_len;
+            }
+            other => {
+                return Err(format!(
+                    "catalog entry {index} has unsupported kind 0x{other:02X}"
+                ));
+            }
+        }
+    }
+
+    let continuation_len = continuation_payloads
+        .iter()
+        .try_fold(0usize, |total, payload| total.checked_add(payload.len()))
+        .ok_or_else(|| "VISE continuation length overflow".to_string())?;
+    let normalized_catalog_offset = catalog_offset
+        .checked_add(continuation_len)
+        .ok_or_else(|| "VISE normalized catalog offset overflow".to_string())?;
+    let mut joined = Vec::with_capacity(
+        primary
+            .len()
+            .checked_add(continuation_len)
+            .ok_or_else(|| "VISE joined length overflow".to_string())?,
+    );
+    joined.extend_from_slice(&patched[..catalog_offset]);
+    for payload in continuation_payloads {
+        joined.extend_from_slice(payload);
+    }
+    joined.extend_from_slice(&patched[catalog_offset..]);
+    let normalized_catalog_offset = u32::try_from(normalized_catalog_offset)
+        .map_err(|_| "VISE normalized catalog offset exceeds 32 bits".to_string())?;
+    joined[36..40].copy_from_slice(&normalized_catalog_offset.to_be_bytes());
+    Ok(joined)
+}
+
 fn parse_vise_result(data: &[u8]) -> Result<ViseArchive<'_>, String> {
     let header = range(data, 0, VISE_HEADER_LEN, "header")?;
     let version = read_u32(header, 16, "archive version")?;
     if !matches!(
         version,
-        VISE_VERSION_35_LITE | VISE_VERSION_36_LITE | VISE_VERSION_EXTENDED_CATALOG
+        VISE_VERSION_35
+            | VISE_VERSION_35_LITE
+            | VISE_VERSION_36_LITE
+            | VISE_VERSION_EXTENDED_CATALOG
     ) {
         return Err(format!("unsupported archive version 0x{version:08X}"));
     }
@@ -762,6 +913,118 @@ mod tests {
         assert_eq!(
             decode_vise_fork(entry.rsrc_packed, entry.rsrc_unpacked_len).unwrap(),
             resource_fork
+        );
+    }
+
+    #[test]
+    fn parses_full_vise_35_catalog_layout() {
+        let payload = b"VISE 3.5 installed file";
+        let packed = encode_vise_fork(payload);
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + packed.len();
+        let mut archive = vec![0u8; VISE_HEADER_LEN];
+        archive[0..4].copy_from_slice(VISE_MAGIC);
+        archive[16..20].copy_from_slice(&VISE_VERSION_35.to_be_bytes());
+        archive[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        archive.extend_from_slice(&packed);
+
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&1u16.to_be_bytes());
+        archive.extend_from_slice(&catalog);
+        archive.extend_from_slice(b"FVCT");
+        let mut file = [0u8; VISE_FILE_RECORD_LEN];
+        file[40..44].copy_from_slice(b"APPL");
+        file[44..48].copy_from_slice(b"TEST");
+        file[64..68].copy_from_slice(&(packed.len() as u32).to_be_bytes());
+        file[68..72].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+        file[94..96].copy_from_slice(&1u16.to_be_bytes());
+        file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        file[118] = 7;
+        archive.extend_from_slice(&file);
+        archive.extend_from_slice(b"Runtime");
+
+        let parsed = parse_vise(&archive).unwrap().unwrap();
+        assert_eq!(parsed.entries[0].path, "Runtime");
+        assert_eq!(
+            decode_vise_fork(
+                parsed.entries[0].data_packed,
+                parsed.entries[0].data_unpacked_len,
+            )
+            .unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn joins_crossing_and_later_segment_file_streams() {
+        let crossing_data = b"a compressed stream split across installer disks";
+        let later_data = b"a file stored wholly on the second disk";
+        let crossing_packed = encode_vise_fork(crossing_data);
+        let later_packed = encode_vise_fork(later_data);
+        let split = crossing_packed.len() / 2;
+        let payload_offset = VISE_HEADER_LEN;
+        let catalog_offset = payload_offset + split;
+
+        let mut primary = vec![0u8; VISE_HEADER_LEN];
+        primary[0..4].copy_from_slice(VISE_MAGIC);
+        primary[16..20].copy_from_slice(&VISE_VERSION_35.to_be_bytes());
+        primary[36..40].copy_from_slice(&(catalog_offset as u32).to_be_bytes());
+        primary.extend_from_slice(&crossing_packed[..split]);
+        let mut catalog = [0u8; VISE_CATALOG_HEADER_LEN];
+        catalog[0..4].copy_from_slice(VISE_CATALOG_MAGIC);
+        catalog[16..18].copy_from_slice(&2u16.to_be_bytes());
+        primary.extend_from_slice(&catalog);
+
+        primary.extend_from_slice(b"FVCT");
+        let mut crossing_file = [0u8; VISE_FILE_RECORD_LEN];
+        crossing_file[40..44].copy_from_slice(b"TEXT");
+        crossing_file[44..48].copy_from_slice(b"TEST");
+        crossing_file[64..68].copy_from_slice(&(crossing_packed.len() as u32).to_be_bytes());
+        crossing_file[68..72].copy_from_slice(&(crossing_data.len() as u32).to_be_bytes());
+        crossing_file[94..96].copy_from_slice(&1u16.to_be_bytes());
+        crossing_file[96..100].copy_from_slice(&(payload_offset as u32).to_be_bytes());
+        crossing_file[118] = 8;
+        primary.extend_from_slice(&crossing_file);
+        primary.extend_from_slice(b"Crossing");
+
+        primary.extend_from_slice(b"FVCT");
+        let mut later_file = [0u8; VISE_FILE_RECORD_LEN];
+        later_file[40..44].copy_from_slice(b"TEXT");
+        later_file[44..48].copy_from_slice(b"TEST");
+        later_file[64..68].copy_from_slice(&(later_packed.len() as u32).to_be_bytes());
+        later_file[68..72].copy_from_slice(&(later_data.len() as u32).to_be_bytes());
+        later_file[94..96].copy_from_slice(&2u16.to_be_bytes());
+        let later_segment_offset = VISE_HEADER_LEN + crossing_packed.len().saturating_sub(split);
+        later_file[96..100].copy_from_slice(&(later_segment_offset as u32).to_be_bytes());
+        later_file[118] = 5;
+        primary.extend_from_slice(&later_file);
+        primary.extend_from_slice(b"Later");
+
+        let mut continuation = vec![0u8; VISE_HEADER_LEN];
+        continuation[0..4].copy_from_slice(VISE_MAGIC);
+        continuation[16..20].copy_from_slice(&VISE_VERSION_35.to_be_bytes());
+        continuation.extend_from_slice(&crossing_packed[split..]);
+        continuation.extend_from_slice(&later_packed);
+
+        let joined = join_segments(&primary, &[&continuation]).unwrap();
+        let parsed = parse_vise(&joined).unwrap().unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(
+            decode_vise_fork(
+                parsed.entries[0].data_packed,
+                parsed.entries[0].data_unpacked_len,
+            )
+            .unwrap(),
+            crossing_data
+        );
+        assert_eq!(
+            decode_vise_fork(
+                parsed.entries[1].data_packed,
+                parsed.entries[1].data_unpacked_len,
+            )
+            .unwrap(),
+            later_data
         );
     }
 
