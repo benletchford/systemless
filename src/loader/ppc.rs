@@ -15740,6 +15740,7 @@ fn dispatch_supported_import(
                 cpu,
                 memory,
                 handles,
+                vfs_resources,
                 gworlds,
                 *current_gworld,
                 screen_clut,
@@ -39878,6 +39879,7 @@ fn ppc_draw_raw_quilt_frame(
     pict_bounds: (i16, i16, i16, i16),
     dst_rect: (i16, i16, i16, i16),
     clut: &[[u16; 3]; 256],
+    zero_is_opaque: bool,
 ) -> bool {
     if data.len() < 24 || data[10..24].iter().any(|byte| *byte != 0) {
         return false;
@@ -39928,10 +39930,7 @@ fn ppc_draw_raw_quilt_frame(
             else {
                 continue;
             };
-            // Quilt raw animation payloads encode black as index 0. Remap it
-            // through the active device palette, whose index 0 is normally
-            // white, before copying the synthesized Picture frame.
-            if color_index == 0 {
+            if zero_is_opaque && color_index == 0 {
                 color_index = pict::closest_clut_index(0, 0, 0, clut);
             }
             if front_buffer.depth == 8 {
@@ -39966,6 +39965,7 @@ fn ppc_draw_pict_bytes_to_16bpp(
     dst_rect: (i16, i16, i16, i16),
     clut: &[[u16; 3]; 256],
     device_ct_seed: u32,
+    quilt_zero_is_opaque: bool,
 ) -> bool {
     if front_buffer.base_addr == 0 || front_buffer.width == 0 || front_buffer.height == 0 {
         return false;
@@ -39985,7 +39985,15 @@ fn ppc_draw_pict_bytes_to_16bpp(
         return false;
     };
     if pict_offset == 0
-        && ppc_draw_raw_quilt_frame(memory, front_buffer, data, bounds, dst_rect, clut)
+        && ppc_draw_raw_quilt_frame(
+            memory,
+            front_buffer,
+            data,
+            bounds,
+            dst_rect,
+            clut,
+            quilt_zero_is_opaque,
+        )
     {
         return true;
     }
@@ -41692,6 +41700,7 @@ fn ppc_qt_draw_pict_source_to_16bpp(
         (0, 0, dst_bottom, dst_right),
         &TrapDispatcher::standard_mac_8bpp_clut(),
         0,
+        false,
     )
 }
 
@@ -50355,6 +50364,7 @@ fn ppc_draw_picture(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     screen_clut: &[[u16; 3]; 256],
@@ -50462,6 +50472,7 @@ fn ppc_draw_picture(
         .filter(|ctable| *ctable != 0)
         .and_then(|ctable| memory.read_u32_be(ctable))
         .unwrap_or(0);
+    let quilt_zero_is_opaque = ppc_quilt_picture_zero_is_opaque(vfs_resources, pic_handle);
     let drawn = ppc_draw_pict_bytes_to_16bpp(
         memory,
         front_buffer,
@@ -50469,6 +50480,7 @@ fn ppc_draw_picture(
         dst_rect,
         &draw_clut,
         device_ct_seed,
+        quilt_zero_is_opaque,
     );
     if ppc_hle_trace_enabled() {
         let (top, left, bottom, right) = dst_rect;
@@ -50486,6 +50498,28 @@ fn ppc_draw_picture(
         );
     }
     drawn
+}
+
+fn ppc_quilt_picture_zero_is_opaque(
+    vfs_resources: &[PpcVfsResourceRecord],
+    picture_handle: u32,
+) -> bool {
+    let pict_type = u32::from_be_bytes(*b"PICT");
+    let img_type = u32::from_be_bytes(*b"#Img");
+    let Some(picture) = vfs_resources
+        .iter()
+        .find(|resource| resource.res_type == pict_type && resource.handle == picture_handle)
+    else {
+        return false;
+    };
+    vfs_resources.iter().any(|resource| {
+        // Quilt's #Img record distinguishes opaque-black frames (mode 3)
+        // from frames that retain pixel index 0 as a key for later sprite
+        // compositing. Converting every zero while loading destroys that key.
+        resource.res_type == img_type
+            && resource.path.eq_ignore_ascii_case(&picture.path)
+            && resource.data.get(10..12) == Some(&3u16.to_be_bytes())
+    })
 }
 
 fn ppc_kill_picture(
@@ -55152,8 +55186,15 @@ fn ppc_draw_dialog(
             }
             PPC_DIALOG_ITEM_PICTURE => {
                 if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
-                    let _ =
-                        ppc_draw_pict_bytes_to_16bpp(memory, front, &bytes, rect, screen_clut, 0);
+                    let _ = ppc_draw_pict_bytes_to_16bpp(
+                        memory,
+                        front,
+                        &bytes,
+                        rect,
+                        screen_clut,
+                        0,
+                        false,
+                    );
                 }
             }
             PPC_DIALOG_ITEM_ICON => {
@@ -102441,6 +102482,7 @@ mod tests {
             (5, 0, 6, 8),
             &one_bit_clut,
             0,
+            false,
         ));
         assert_eq!(loaded.memory.read_u8(pixels + 5), Some(0b1010_0000));
         assert_eq!(loaded.memory.read_u8(pixels + 4), Some(0x55));
@@ -102503,12 +102545,69 @@ mod tests {
         assert_eq!(loaded.memory.read_u8(pix_base + 8 + 3), Some(12));
         assert_eq!(loaded.memory.read_u8(pix_base + 8 + 4), Some(13));
         assert_eq!(loaded.memory.read_u8(pix_base + 16 + 2), Some(21));
+        assert_eq!(loaded.memory.read_u8(pix_base + 16 + 3), Some(0));
+        assert_eq!(loaded.memory.read_u8(pix_base + 16 + 4), Some(23));
+        assert_eq!(loaded.memory.read_u8(pix_base), Some(42));
+
+        assert!(ppc_draw_pict_bytes_to_16bpp(
+            &mut loaded.memory,
+            PpcFrontBuffer {
+                base_addr: pix_base,
+                row_bytes: 8,
+                width: 8,
+                height: 8,
+                depth: 8,
+            },
+            &pict,
+            (1, 2, 3, 5),
+            &loaded.screen_clut,
+            0,
+            true,
+        ));
         assert_eq!(
             loaded.memory.read_u8(pix_base + 16 + 3),
             Some(pict::closest_clut_index(0, 0, 0, &loaded.screen_clut))
         );
-        assert_eq!(loaded.memory.read_u8(pix_base + 16 + 4), Some(23));
-        assert_eq!(loaded.memory.read_u8(pix_base), Some(42));
+    }
+
+    #[test]
+    fn quilt_img_compositing_mode_controls_whether_zero_is_opaque() {
+        let picture_handle = PPC_HEAP_BASE + 0x1000;
+        let mut img = vec![0; 18];
+        img[10..12].copy_from_slice(&3u16.to_be_bytes());
+        let mut resources = vec![
+            PpcVfsResourceRecord {
+                ref_num: 128,
+                path: "Sprites/Robot.PICR".to_string(),
+                res_type: u32::from_be_bytes(*b"PICT"),
+                res_id: 1000,
+                name: Vec::new(),
+                data: Vec::new(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: picture_handle,
+            },
+            PpcVfsResourceRecord {
+                ref_num: 128,
+                path: "Sprites/Robot.PICR".to_string(),
+                res_type: u32::from_be_bytes(*b"#Img"),
+                res_id: 1000,
+                name: Vec::new(),
+                data: img,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ];
+
+        assert!(ppc_quilt_picture_zero_is_opaque(&resources, picture_handle));
+        resources[1].data[10..12].copy_from_slice(&2u16.to_be_bytes());
+        assert!(!ppc_quilt_picture_zero_is_opaque(
+            &resources,
+            picture_handle
+        ));
     }
 
     #[test]
