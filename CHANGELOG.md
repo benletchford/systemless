@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.22](https://github.com/benletchford/systemless/compare/v0.18.21...v0.18.22) (2026-08-25)
+
+
+### Bug Fixes
+
+* **ppc:** align system menu mark behavior ([#809](https://github.com/benletchford/systemless/issues/809)) ([0db4592](https://github.com/benletchford/systemless/commit/0db4592ce7f85262bdcbbd5bad940a489dc7019c))
+
 ## [0.18.21](https://github.com/benletchford/systemless/compare/v0.18.20...v0.18.21) (2026-08-25)
 
 
