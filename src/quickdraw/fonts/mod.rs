@@ -38,6 +38,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+use ab_glyph::{point, Font, FontRef, ScaleFont};
+
 pub use self::heuristics::{
     FONT_APPLICATION, FONT_ATHENS, FONT_CAIRO, FONT_CHICAGO, FONT_COURIER, FONT_GENEVA,
     FONT_HELVETICA, FONT_LONDON, FONT_LOSANGELES, FONT_MOBILE, FONT_MONACO, FONT_NEWYORK,
@@ -209,6 +211,8 @@ static ITALIC_TABLE: LazyLock<&'static [ItalicFace]> =
 static RESOURCE_FACES: LazyLock<Mutex<HashMap<(i16, i16), &'static FontFace>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static RESOURCE_MACROMAN_FACES: LazyLock<Mutex<HashMap<(i16, i16), &'static MacRomanFace>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static RESOURCE_OUTLINE_FONTS: LazyLock<Mutex<HashMap<i16, &'static [u8]>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn resource_word(data: &[u8], offset: usize) -> Option<u16> {
@@ -453,6 +457,143 @@ pub(crate) fn register_resource_font_strike_for_family(
     true
 }
 
+/// Register a scalable `sfnt` resource for lazy rasterization at the point
+/// size requested by QuickDraw. Inside Macintosh: Text (1993), pp. 4-47–4-48
+/// and 4-97–4-98, describes `sfnt` resources as the outline data associated
+/// with a FOND and specifies that the Font Manager scales outline fonts.
+pub(crate) fn register_resource_outline_font(family_id: i16, bytes: &[u8]) -> bool {
+    if family_id < 0 || FontRef::try_from_slice(bytes).is_err() {
+        return false;
+    }
+    let bytes = Box::leak(bytes.to_vec().into_boxed_slice());
+    RESOURCE_OUTLINE_FONTS
+        .lock()
+        .expect("resource outline font cache poisoned")
+        .insert(family_id, bytes);
+    true
+}
+
+fn rasterize_resource_outline_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
+    if size <= 0 {
+        return None;
+    }
+    let bytes = RESOURCE_OUTLINE_FONTS
+        .lock()
+        .expect("resource outline font cache poisoned")
+        .get(&font_id)
+        .copied()?;
+    let font = FontRef::try_from_slice(bytes).ok()?;
+    let parsed = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let macintosh_cmap = parsed.tables().cmap.and_then(|cmap| {
+        cmap.subtables
+            .into_iter()
+            .find(|subtable| subtable.platform_id == ttf_parser::PlatformId::Macintosh)
+    });
+    let scaled = font.as_scaled(size as f32);
+    let ascent = scaled.ascent().ceil() as i16;
+    let descent = (-scaled.descent()).ceil().max(0.0) as i16;
+    let leading = scaled.line_gap().round().max(0.0) as i16;
+    let mut coverage = Vec::new();
+
+    let mut rasterize = |mac_code: u8, ch: char| {
+        let mut glyph_id = scaled.glyph_id(ch);
+        if glyph_id.0 == 0 {
+            if let Some(mapped) = macintosh_cmap.and_then(|cmap| cmap.glyph_index(mac_code.into()))
+            {
+                glyph_id = ab_glyph::GlyphId(mapped.0);
+            }
+        }
+        let advance = scaled
+            .h_advance(glyph_id)
+            .round()
+            .clamp(0.0, u8::MAX as f32) as u8;
+        let Some(outlined) =
+            scaled.outline_glyph(glyph_id.with_scale_and_position(size as f32, point(0.0, 0.0)))
+        else {
+            return Glyph {
+                width: 0,
+                height: 0,
+                advance,
+                origin_x: 0,
+                origin_y: 0,
+                data_offset: coverage.len(),
+            };
+        };
+        let bounds = outlined.px_bounds();
+        let width = bounds.width().round().clamp(0.0, u8::MAX as f32) as u8;
+        let height = bounds.height().round().clamp(0.0, u8::MAX as f32) as u8;
+        let data_offset = coverage.len();
+        coverage.resize(data_offset + usize::from(width) * usize::from(height), 0);
+        outlined.draw(|x, y, value| {
+            let index = data_offset + y as usize * usize::from(width) + x as usize;
+            if let Some(pixel) = coverage.get_mut(index) {
+                *pixel = (value * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        });
+        Glyph {
+            width,
+            height,
+            advance,
+            origin_x: (bounds.min.x.round() as i16).clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+            origin_y: (bounds.min.y.round() as i16).clamp(i8::MIN as i16, i8::MAX as i16) as i8,
+            data_offset,
+        }
+    };
+
+    let ascii = (0x20u8..=0x7e)
+        .map(|code| rasterize(code, char::from(code)))
+        .collect::<Vec<_>>();
+    let macroman = (0x80u8..=0xff)
+        .map(|code| {
+            let ch = crate::mac_roman::decode_mac_roman(&[code])
+                .chars()
+                .next()
+                .unwrap_or('?');
+            MacRomanGlyph {
+                mac_code: code,
+                glyph: rasterize(code, ch),
+            }
+        })
+        .collect::<Vec<_>>();
+    let wid_max = ascii
+        .iter()
+        .chain(macroman.iter().map(|entry| &entry.glyph))
+        .map(|glyph| i16::from(glyph.advance))
+        .max()
+        .unwrap_or(0);
+
+    let coverage = Box::leak(coverage.into_boxed_slice());
+    let ascii = Box::leak(ascii.into_boxed_slice());
+    let face = Box::leak(Box::new(FontFace {
+        font_id,
+        size,
+        metrics: FontMetrics {
+            ascent,
+            descent,
+            wid_max,
+            leading,
+        },
+        glyphs: ascii,
+        data: coverage,
+    }));
+    RESOURCE_FACES
+        .lock()
+        .expect("resource font cache poisoned")
+        .insert((font_id, size), face);
+    let macroman = Box::leak(macroman.into_boxed_slice());
+    let macroman_face = Box::leak(Box::new(MacRomanFace {
+        font_id,
+        size,
+        glyphs: macroman,
+        data: coverage,
+    }));
+    RESOURCE_MACROMAN_FACES
+        .lock()
+        .expect("resource Mac Roman font cache poisoned")
+        .insert((font_id, size), macroman_face);
+    Some(face)
+}
+
 // --- Font ID ↔ name lookup -----------------------------------------------
 
 pub static FONT_NAMES: &[(i16, &str)] = &[
@@ -528,6 +669,9 @@ pub fn get_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
     {
         return Some(face);
     }
+    if let Some(face) = rasterize_resource_outline_face(font_id, size) {
+        return Some(face);
+    }
     get_baked_font_face(font_id, size)
 }
 
@@ -598,6 +742,22 @@ fn fallback_font_id(font_id: i16) -> Option<i16> {
     }
 }
 
+fn closest_font_face(font_id: i16, size: i16) -> Option<&'static FontFace> {
+    let requested_size = if size == 0 { 12 } else { size };
+    let resource_faces = RESOURCE_FACES.lock().expect("resource font cache poisoned");
+    resource_faces
+        .values()
+        .copied()
+        .chain(FONT_TABLE.iter())
+        .filter(|face| face.font_id == font_id)
+        .min_by_key(|face| {
+            (
+                (i32::from(face.size) - i32::from(requested_size)).unsigned_abs(),
+                std::cmp::Reverse(face.size),
+            )
+        })
+}
+
 pub fn get_font_face_or_default(font_id: i16, size: i16) -> &'static FontFace {
     if let Some(face) = get_font_face(font_id, size) {
         return face;
@@ -614,7 +774,7 @@ pub fn get_font_face_or_default(font_id: i16, size: i16) -> &'static FontFace {
                 }
             }
         }
-        if let Some(face) = FONT_TABLE.iter().find(|f| f.font_id == fb) {
+        if let Some(face) = closest_font_face(fb, size) {
             return face;
         }
     }
@@ -626,7 +786,7 @@ pub fn get_font_face_or_default(font_id: i16, size: i16) -> &'static FontFace {
             }
         }
     }
-    if let Some(face) = FONT_TABLE.iter().find(|f| f.font_id == font_id) {
+    if let Some(face) = closest_font_face(font_id, size) {
         return face;
     }
     if let Some(default_face) = get_font_face(FONT_CHICAGO, 12) {
@@ -655,7 +815,7 @@ fn get_font_face_scaled_impl(font_id: i16, size: i16) -> (&'static FontFace, i16
                 }
             }
         }
-        if let Some(face) = FONT_TABLE.iter().find(|f| f.font_id == fb) {
+        if let Some(face) = closest_font_face(fb, size) {
             return (face, 1);
         }
     }
@@ -667,10 +827,16 @@ fn get_font_face_scaled_impl(font_id: i16, size: i16) -> (&'static FontFace, i16
             }
         }
     }
-    if let Some(face) = FONT_TABLE.iter().find(|f| f.font_id == font_id) {
+    if let Some(face) = closest_font_face(font_id, size) {
         return (face, 1);
     }
     (get_font_face_or_default(font_id, size), 1)
+}
+
+pub fn get_font_face_scale_ratio(font_id: i16, size: i16) -> (&'static FontFace, i32, i32) {
+    let requested_size = if size == 0 { 12 } else { size }.max(1);
+    let (face, _) = get_font_face_scaled_impl(font_id, requested_size);
+    (face, i32::from(requested_size), i32::from(face.size.max(1)))
 }
 
 pub fn get_macroman_glyph(
@@ -831,6 +997,14 @@ mod tests {
         let face = get_font_face_or_default(FONT_CHICAGO, 12);
         assert_eq!(face.font_id, FONT_CHICAGO);
         assert_eq!(face.size, 12);
+    }
+
+    #[test]
+    fn implicit_scaling_uses_the_closest_bitmap_strike_and_exact_ratio() {
+        let (face, numerator, denominator) = get_font_face_scale_ratio(FONT_CHICAGO, 40);
+        assert_eq!(face.font_id, FONT_CHICAGO);
+        assert_eq!(face.size, 12);
+        assert_eq!((numerator, denominator), (40, 12));
     }
 
     #[test]

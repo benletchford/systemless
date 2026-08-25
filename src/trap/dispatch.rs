@@ -173,11 +173,11 @@ pub(crate) fn trace_delivered_events_enabled() -> bool {
 }
 
 // GetKeys returns a 16-byte KeyMap (`PACKED ARRAY[0..127] OF Boolean`;
-// `typedef long KeyMap[4]`). Inside Macintosh Volume I, I-260 and Macintosh
-// Toolbox Essentials 2-110 document the virtual-key-indexed logical array;
-// classic code commonly tests the returned bytes directly:
-// `((uint8_t *)keyMap)[key >> 3] & (1 << (key & 7))`.
-fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
+// Universal Interfaces also exposes the byte-level representation as
+// `KeyMapByteArray[16]`). Inside Macintosh Volume I (1985), pp. I-259–I-260
+// says each array index is its key's virtual key code. In the byte-level ABI,
+// the first logical element occupies the low-order bit of each byte.
+pub(crate) fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if key_code >= 128 {
         return None;
     }
@@ -185,14 +185,11 @@ fn key_map_byte_mask(key_code: u8) -> Option<(usize, u8)> {
     if byte_idx >= 16 {
         return None;
     }
-    // The classic C ABI exposes KeyMap as four longs, and games commonly
-    // inspect its bytes directly. Inside Macintosh: Macintosh Toolbox
-    // Essentials (1992), pp. 2-109..2-110.
     let mask = 1u8 << (key_code & 0x07);
     Some((byte_idx, mask))
 }
 
-fn key_map_key_is_down(key_map: &[u8; 16], key_code: u8) -> bool {
+pub(crate) fn key_map_key_is_down(key_map: &[u8; 16], key_code: u8) -> bool {
     let Some((byte_idx, mask)) = key_map_byte_mask(key_code) else {
         return false;
     };

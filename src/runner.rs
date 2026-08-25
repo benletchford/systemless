@@ -5,10 +5,11 @@ use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::display::CursorImage;
 use crate::loader::ppc::{
     PpcDecodedAiffPlaybackRecord, PpcDecodedBufferCommandRecord, PpcDrawSprocketTraceEntry,
-    PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding, PpcInputSnapshot,
-    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay,
-    PpcQ3SoftwareRenderStats, PpcQueuedEvent, PpcRgbColor, PpcSoundCompletionRecord,
-    PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
+    PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding,
+    PpcImportDispatcherTarget, PpcInputSnapshot, PpcInputSprocketSimpleStateTraceEntry,
+    PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay, PpcQ3SoftwareRenderStats, PpcQueuedEvent,
+    PpcRgbColor, PpcSoundCompletionRecord, PpcSoundDoubleBackRecord,
+    PpcSoundDoubleBufferPlaybackRecord,
 };
 use crate::loader::{
     ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
@@ -43,6 +44,24 @@ fn ppc_run_result_cycles(result: PpcRunResult) -> u64 {
         | PpcRunResult::Exception { cycles, .. }
         | PpcRunResult::FetchFault { cycles, .. } => cycles,
     }
+}
+
+fn ppc_halted_by_exit_to_shell(
+    imports: &[PpcImportBinding],
+    result: PpcRunResult,
+    last_import_index: Option<u32>,
+    unsupported_import_index: Option<u32>,
+) -> bool {
+    unsupported_import_index.is_none()
+        && matches!(result, PpcRunResult::Halted { .. })
+        && last_import_index.is_some_and(|symbol_index| {
+            imports
+                .iter()
+                .find(|binding| binding.symbol_index == symbol_index)
+                .is_some_and(|binding| {
+                    binding.dispatcher_target == PpcImportDispatcherTarget::ExitToShell
+                })
+        })
 }
 
 fn ppc_decoded_playback_duration_ticks(decoded: &PpcDecodedAiffPlaybackRecord) -> Option<u32> {
@@ -1844,6 +1863,11 @@ pub struct FixtureRunner {
     /// Override for the application's startup time in Mac-epoch seconds.
     /// Used by scripted frontends to keep guest-visible time deterministic.
     app_start_time: Option<u32>,
+    /// Optional deterministic launch state. These values are applied while
+    /// initializing an application, before its first guest instruction.
+    launch_ticks_override: Option<u32>,
+    launch_rnd_seed_override: Option<u32>,
+    launch_ppc_time_base_override: Option<u64>,
     /// Optional Finder-style application partition size override in bytes.
     /// Scripted frontends use this to model a user raising the preferred
     /// memory size before launch without mutating the application's resources.
@@ -1990,6 +2014,9 @@ impl FixtureRunner {
             dialog_filter_last_null_event_tick: None,
             dialog_filter_last_update_event_tick: None,
             app_start_time: None,
+            launch_ticks_override: None,
+            launch_rnd_seed_override: None,
+            launch_ppc_time_base_override: None,
             application_partition_size: None,
             opcode_histogram: Box::new([0u64; 65536]),
             pc_histogram: HashMap::new(),
@@ -2511,6 +2538,37 @@ impl FixtureRunner {
         self.app_start_time = Some(secs);
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    /// Override the guest-visible state at application launch.
+    /// Scripted frontends use this to align otherwise independent
+    /// runtime boot histories without changing normal frontend defaults. The
+    /// tick value is a monotonic floor, not permission to rewind TickCount.
+    pub fn set_launch_state(&mut self, ticks: u32, rnd_seed: u32, ppc_time_base: u64) {
+        self.set_optional_launch_state(Some(ticks), Some(rnd_seed), Some(ppc_time_base));
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// Apply independently optional launch-state controls. A requested tick
+    /// value is a monotonic floor; initialization never rewinds the runtime's
+    /// established launch default. Missing controls leave existing defaults or
+    /// overrides unchanged.
+    pub fn set_optional_launch_state(
+        &mut self,
+        ticks: Option<u32>,
+        rnd_seed: Option<u32>,
+        ppc_time_base: Option<u64>,
+    ) {
+        if let Some(ticks) = ticks {
+            self.launch_ticks_override = Some(ticks);
+        }
+        if let Some(rnd_seed) = rnd_seed {
+            self.launch_rnd_seed_override = Some(rnd_seed);
+        }
+        if let Some(ppc_time_base) = ppc_time_base {
+            self.launch_ppc_time_base_override = Some(ppc_time_base);
+        }
+    }
+
     pub fn set_application_partition_size(&mut self, bytes: Option<u32>) {
         self.application_partition_size = bytes.filter(|&bytes| bytes >= 128 * 1024);
     }
@@ -2642,6 +2700,19 @@ impl FixtureRunner {
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    /// Return the number of queued mouse-down events awaiting guest delivery.
+    /// Input diagnostics can use this to observe whether an application has
+    /// consumed a posted mouse-down event; physical button duration is tracked
+    /// independently.
+    pub fn pending_mouse_down_count(&self) -> usize {
+        self.dispatcher
+            .event_queue
+            .iter()
+            .filter(|event| event.what == 1)
+            .count()
     }
 
     /// Inject a mouse-up event.
@@ -3160,10 +3231,14 @@ impl FixtureRunner {
         let instructions_per_tick = self.instructions_per_tick;
         let wait_sleep_cap_in_headless = self.wait_sleep_cap_in_headless;
         let app_start_time = self.app_start_time;
+        let launch_ticks_override = self.launch_ticks_override;
+        let launch_rnd_seed_override = self.launch_rnd_seed_override;
+        let launch_ppc_time_base_override = self.launch_ppc_time_base_override;
         let application_partition_size = self.application_partition_size;
         let total_instructions = self.total_instructions;
         let launch_tick = self.guest_tick();
         let launch_time = self.bus.read_long(addr::TIME);
+        let launch_rnd_seed = self.bus.read_long(addr::RND_SEED);
         let mouse_pos = self.dispatcher.mouse_pos;
         let mouse_button = self.dispatcher.mouse_button;
         let output_dir = self.dispatcher.output_dir.clone();
@@ -3190,6 +3265,9 @@ impl FixtureRunner {
         replacement.tick_budget = instructions_per_tick as i32;
         replacement.wait_sleep_cap_in_headless = wait_sleep_cap_in_headless;
         replacement.app_start_time = app_start_time;
+        replacement.launch_ticks_override = launch_ticks_override;
+        replacement.launch_rnd_seed_override = launch_rnd_seed_override;
+        replacement.launch_ppc_time_base_override = launch_ppc_time_base_override;
         replacement.application_partition_size = application_partition_size;
         replacement.total_instructions = total_instructions;
 
@@ -3215,7 +3293,14 @@ impl FixtureRunner {
         replacement.init_app(&app);
         replacement.bus.write_long(addr::TICKS, launch_tick);
         replacement.bus.write_long(addr::TIME, launch_time);
+        replacement.bus.write_long(addr::RND_SEED, launch_rnd_seed);
         replacement.dispatcher.tick_count = launch_tick;
+        if let Some(ppc_app) = replacement.ppc_app.as_mut() {
+            ppc_app.set_tick_count(launch_tick);
+            let _ = ppc_app.memory.write_u32_be(addr::TICKS, launch_tick);
+            let _ = ppc_app.memory.write_u32_be(addr::TIME, launch_time);
+            let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, launch_rnd_seed);
+        }
         replacement.dispatcher.mouse_pos = mouse_pos;
         replacement.dispatcher.mouse_button = mouse_button;
         replacement
@@ -3450,8 +3535,13 @@ impl FixtureRunner {
         // random sequences (e.g., ship heading always zero in EV).
         // 600 ticks ≈ 10 seconds of post-boot time, a conservative
         // estimate for a minimal System 7 configuration.
-        self.bus.write_long(addr::TICKS, DEFAULT_LAUNCH_TICKS);
-        self.dispatcher.tick_count = DEFAULT_LAUNCH_TICKS;
+        let launch_ticks = self
+            .launch_ticks_override
+            .map_or(DEFAULT_LAUNCH_TICKS, |floor| {
+                DEFAULT_LAUNCH_TICKS.max(floor)
+            });
+        self.bus.write_long(addr::TICKS, launch_ticks);
+        self.dispatcher.tick_count = launch_ticks;
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
@@ -3468,7 +3558,10 @@ impl FixtureRunner {
         // get non-deterministic entropy. Use the startup time so play
         // scripts produce repeatable but non-trivial random sequences.
         // Inside Macintosh Volume II, II-387
-        self.bus.write_long(addr::RND_SEED, time);
+        self.bus.write_long(
+            addr::RND_SEED,
+            self.launch_rnd_seed_override.unwrap_or(time),
+        );
         // MBState: $80 = button UP (Mac convention: 0 = down, $80 = up).
         // RAM is zero-initialized which would mean "button down" — must set explicitly.
         self.bus.write_byte(addr::MB_STATE, 0x80);
@@ -3768,17 +3861,27 @@ impl FixtureRunner {
             .write_reg(Register::PC, app.entry_point(app.a5_base));
     }
 
-    fn init_ppc_app(&mut self, ppc_app: PpcLoadedApp) {
+    fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
         use crate::memory::globals::addr;
 
         let ram_size = self.bus.ram_size();
         self.bus.write_long(addr::MEM_TOP, ram_size);
-        self.bus.write_long(addr::TICKS, 0);
+        let launch_ticks = self.launch_ticks_override.unwrap_or(0);
+        self.bus.write_long(addr::TICKS, launch_ticks);
+        self.dispatcher.tick_count = launch_ticks;
+        ppc_app.set_tick_count(launch_ticks);
+        let _ = ppc_app.memory.write_u32_be(addr::TICKS, launch_ticks);
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
         self.bus.write_long(addr::TIME, time);
-        self.bus.write_long(addr::RND_SEED, time);
+        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
+        let rnd_seed = self.launch_rnd_seed_override.unwrap_or(time);
+        self.bus.write_long(addr::RND_SEED, rnd_seed);
+        let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, rnd_seed);
+        if let Some(time_base) = self.launch_ppc_time_base_override {
+            ppc_app.cpu.set_time_base(time_base);
+        }
         self.bus.write_byte(addr::MB_STATE, 0x80);
         self.bus.write_word(addr::MBAR_HEIGHT, 20);
         self.bus.write_byte(addr::SOUND_LEVEL, 1);
@@ -4868,7 +4971,11 @@ impl FixtureRunner {
             }
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
-                self.finish_host_frame(audio_samples, false);
+                if self.halted_by_exit_to_shell() {
+                    self.dispatcher.redraw_chrome(&mut self.bus);
+                } else {
+                    self.finish_host_frame(audio_samples, false);
+                }
             }
             return (count, running);
         }
@@ -5895,19 +6002,8 @@ impl FixtureRunner {
 
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         ppc_app.set_input_snapshot(input);
-        ppc_app.set_event_queue(
-            self.dispatcher
-                .event_queue
-                .iter()
-                .map(|event| PpcQueuedEvent {
-                    what: event.what,
-                    message: event.message,
-                    where_v: event.where_v.saturating_sub(input_offset_v),
-                    where_h: event.where_h.saturating_sub(input_offset_h),
-                    modifiers: event.modifiers,
-                }),
-        );
-        ppc_app.set_tick_count(self.dispatcher.tick_count);
+        self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
+        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
         let remaining_cycles =
             (i64::from(self.tick_budget).clamp(0, i64::from(cycles_per_tick))) as u32;
@@ -5916,6 +6012,7 @@ impl FixtureRunner {
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
         let ppc_start_tick = self.dispatcher.tick_count;
+        let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
         let profile_ppc = ppc_profile_enabled();
         let profile_total_start = profile_ppc.then(Instant::now);
         let record_ppc_imports = self.dispatcher.is_trace_recording();
@@ -5937,29 +6034,39 @@ impl FixtureRunner {
         let sp = ppc_app.cpu.gpr[1];
         let gpr3 = ppc_app.cpu.gpr[3];
         let unsupported_import_index = probe.unsupported_import_index;
+        let exited_via_ppc_exit_to_shell = ppc_halted_by_exit_to_shell(
+            &ppc_app.imports,
+            probe.result,
+            probe.last_import_index,
+            unsupported_import_index,
+        );
         let still_running = matches!(probe.result, PpcRunResult::CycleLimit { .. })
             && unsupported_import_index.is_none();
 
         self.total_instructions = self.total_instructions.saturating_add(cycles);
         self.dispatcher.instruction_count = self.total_instructions;
-        self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-        let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-        let vbl_probes = ppc_app.fire_vbl_tasks_for_ticks(
-            ppc_start_tick,
-            elapsed_ticks,
-            usize::MAX,
-            u64::from(cycles_per_tick),
-            trace_ppc_imports,
-            trace_ppc_fetches,
-        );
-        let timer_probes = ppc_app.fire_timer_tasks_for_ticks(
-            ppc_start_tick,
-            elapsed_ticks,
-            usize::MAX,
-            u64::from(cycles_per_tick),
-            trace_ppc_imports,
-            trace_ppc_fetches,
-        );
+        self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
+        self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
+        let (vbl_probes, timer_probes) = if exited_via_ppc_exit_to_shell {
+            (Vec::new(), Vec::new())
+        } else {
+            self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
+            self.sync_ppc_event_queue_before_execution(
+                &mut ppc_app,
+                input_offset_v,
+                input_offset_h,
+            );
+            let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
+            self.fire_ppc_tick_callbacks(
+                &mut ppc_app,
+                ppc_start_tick,
+                ppc_start_time,
+                elapsed_ticks,
+                u64::from(cycles_per_tick),
+                trace_ppc_imports,
+                trace_ppc_fetches,
+            )
+        };
         if trace_vbl_enabled() {
             for vbl_probe in &vbl_probes {
                 eprintln!(
@@ -5996,6 +6103,7 @@ impl FixtureRunner {
             .iter()
             .map(|probe| probe.invocation.cycles)
             .sum::<u64>();
+        self.sync_ppc_low_memory_after_execution(&mut ppc_app);
         self.total_instructions = self
             .total_instructions
             .saturating_add(vbl_cycles)
@@ -6049,26 +6157,12 @@ impl FixtureRunner {
             self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         }
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
-        sync_ppc_system_event_mask(
-            &mut self.dispatcher,
-            ppc_app.toolbox_startup.system_event_mask,
-        );
+        self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
         sync_ppc_cursor_state(
             &mut self.dispatcher,
             ppc_app.quickdraw_cursor_level,
             &ppc_app.toolbox_startup,
         );
-        self.dispatcher.event_queue = ppc_app
-            .event_queue()
-            .iter()
-            .map(|event| crate::trap::dispatch::QueuedEvent {
-                what: event.what,
-                message: event.message,
-                where_v: event.where_v,
-                where_h: event.where_h,
-                modifiers: event.modifiers,
-            })
-            .collect();
         let profile_sync_us = elapsed_profile_micros(profile_sync_start);
 
         if profile_ppc {
@@ -6113,6 +6207,9 @@ impl FixtureRunner {
 
         if !still_running {
             self.halted = true;
+            if exited_via_ppc_exit_to_shell {
+                self.halted_trap = Some(0xA9F4);
+            }
             self.halted_pc = Some(pc);
             self.halted_sp = Some(sp);
             self.halted_d0 = Some(gpr3);
@@ -6160,9 +6257,15 @@ impl FixtureRunner {
         }
 
         self.ppc_app = Some(ppc_app);
-        self.queue_due_ppc_sound_completions();
-        if finish_frame {
-            self.finish_host_frame(audio_samples, false);
+        if exited_via_ppc_exit_to_shell {
+            if finish_frame {
+                self.dispatcher.redraw_chrome(&mut self.bus);
+            }
+        } else {
+            self.queue_due_ppc_sound_completions();
+            if finish_frame {
+                self.finish_host_frame(audio_samples, false);
+            }
         }
         (
             usize::try_from(
@@ -6173,6 +6276,132 @@ impl FixtureRunner {
             .unwrap_or(usize::MAX),
             still_running,
         )
+    }
+
+    fn sync_ppc_low_memory_before_execution(&self, ppc_app: &mut PpcLoadedApp) {
+        use crate::memory::globals::addr;
+
+        let ticks = self.bus.read_long(addr::TICKS);
+        let time = self.bus.read_long(addr::TIME);
+        let rnd_seed = self.bus.read_long(addr::RND_SEED);
+        ppc_app.set_tick_count(ticks);
+        let _ = ppc_app.memory.write_u32_be(addr::TICKS, ticks);
+        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
+        let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, rnd_seed);
+    }
+
+    fn sync_ppc_low_memory_after_execution(&mut self, ppc_app: &mut PpcLoadedApp) {
+        use crate::memory::globals::addr;
+
+        let ticks = self.dispatcher.tick_count;
+        let time = self.bus.read_long(addr::TIME);
+        ppc_app.set_tick_count(ticks);
+        let _ = ppc_app.memory.write_u32_be(addr::TICKS, ticks);
+        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
+        self.sync_ppc_rnd_seed_to_bus(ppc_app);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fire_ppc_tick_callbacks(
+        &self,
+        ppc_app: &mut PpcLoadedApp,
+        start_tick: u32,
+        start_time: u32,
+        elapsed_ticks: u32,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+    ) -> (
+        Vec<crate::loader::ppc::PpcVblCallbackProbe>,
+        Vec<crate::loader::ppc::PpcTimerCallbackProbe>,
+    ) {
+        use crate::memory::globals::addr;
+
+        let mut vbl_probes = Vec::new();
+        let mut timer_probes = Vec::new();
+        let mut callback_time = start_time;
+        for tick_offset in 0..elapsed_ticks {
+            let callback_tick = start_tick.wrapping_add(tick_offset).wrapping_add(1);
+            if callback_tick.is_multiple_of(60) {
+                callback_time = callback_time.wrapping_add(1);
+            }
+            ppc_app.set_tick_count(callback_tick);
+            let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
+            let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
+            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks(
+                callback_tick.wrapping_sub(1),
+                1,
+                usize::MAX,
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+            ));
+            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks(
+                callback_tick.wrapping_sub(1),
+                1,
+                usize::MAX,
+                max_cycles,
+                trace_imports,
+                trace_fetches,
+            ));
+        }
+        (vbl_probes, timer_probes)
+    }
+
+    fn sync_ppc_rnd_seed_to_bus(&mut self, ppc_app: &mut PpcLoadedApp) {
+        use crate::memory::globals::addr;
+
+        if let Some(rnd_seed) = ppc_app.memory.read_u32_be(addr::RND_SEED) {
+            self.bus.write_long(addr::RND_SEED, rnd_seed);
+        }
+    }
+
+    fn sync_ppc_event_state_after_execution(
+        &mut self,
+        ppc_app: &PpcLoadedApp,
+        input_offset_v: i16,
+        input_offset_h: i16,
+    ) {
+        // Establish a queue ownership boundary before runner callbacks run.
+        // Their mutations are synchronized back into PPC memory before any
+        // subsequent PPC callback, so a consumed event and a newly posted
+        // value-identical event never need to be inferred from value equality.
+        self.dispatcher.event_queue = ppc_app
+            .event_queue()
+            .iter()
+            .map(|event| crate::trap::dispatch::QueuedEvent {
+                what: event.what,
+                message: event.message,
+                where_v: event.where_v.saturating_add(input_offset_v),
+                where_h: event.where_h.saturating_add(input_offset_h),
+                modifiers: event.modifiers,
+            })
+            .collect();
+        sync_ppc_system_event_mask(
+            &mut self.dispatcher,
+            ppc_app.toolbox_startup.system_event_mask,
+        );
+    }
+
+    fn sync_ppc_event_queue_before_execution(
+        &self,
+        ppc_app: &mut PpcLoadedApp,
+        input_offset_v: i16,
+        input_offset_h: i16,
+    ) {
+        ppc_app.set_event_queue(
+            self.dispatcher
+                .event_queue
+                .iter()
+                .map(|event| PpcQueuedEvent {
+                    what: event.what,
+                    message: event.message,
+                    where_v: event.where_v.saturating_sub(input_offset_v),
+                    where_h: event.where_h.saturating_sub(input_offset_h),
+                    modifiers: event.modifiers,
+                }),
+        );
+        ppc_app.toolbox_startup.system_event_mask = self.dispatcher.system_event_mask;
     }
 
     fn render_ppc_completed_frames(
@@ -7203,9 +7432,12 @@ impl FixtureRunner {
         let trace_ppc_import_hist = ppc_import_hist_enabled();
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
+        let (input_offset_v, input_offset_h) = self.ppc_viewport_offset();
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return;
         };
+        self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
+        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
@@ -7248,7 +7480,15 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
+            self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
+            self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
+            self.sync_ppc_event_queue_before_execution(
+                &mut ppc_app,
+                input_offset_v,
+                input_offset_h,
+            );
+            self.sync_ppc_low_memory_before_execution(&mut ppc_app);
 
             let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
             if let Some(playback) =
@@ -7289,6 +7529,7 @@ impl FixtureRunner {
                 break;
             }
         }
+        self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
@@ -7306,9 +7547,12 @@ impl FixtureRunner {
         let trace_ppc_import_hist = ppc_import_hist_enabled();
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
+        let (input_offset_v, input_offset_h) = self.ppc_viewport_offset();
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return;
         };
+        self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
+        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
@@ -7337,7 +7581,15 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
+            self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
+            self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
+            self.sync_ppc_event_queue_before_execution(
+                &mut ppc_app,
+                input_offset_v,
+                input_offset_h,
+            );
+            self.sync_ppc_low_memory_before_execution(&mut ppc_app);
 
             let callback_failed = invocation.unsupported_import_index.is_some()
                 || !matches!(invocation.result, PpcRunResult::Halted { .. });
@@ -7363,6 +7615,7 @@ impl FixtureRunner {
                 break;
             }
         }
+        self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
@@ -7929,6 +8182,7 @@ impl FixtureRunner {
         let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
         self.bus.write_long(0x016A, new_tick);
         self.dispatcher.tick_count = new_tick;
+        self.dispatcher.post_auto_key_if_due();
 
         // Sync MBState ($0172) from the internal button state.
         // On real hardware the VBL interrupt handler reads the ADB mouse
@@ -10750,6 +11004,547 @@ mod tests {
     }
 
     #[test]
+    fn init_app_applies_pinned_68k_launch_state() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(1234, 0x89AB_CDEF, 0x1122_3344_5566_7788);
+
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 1234);
+        assert_eq!(runner.dispatcher.tick_count, 1234);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89AB_CDEF);
+    }
+
+    #[test]
+    fn optional_68k_launch_state_uses_tick_floor_and_exact_seed() {
+        use crate::memory::globals::addr;
+
+        let code0 = minimal_code0(0, 0x2000, 0, 0);
+        let fork_bytes = make_resource_fork_bytes(&[(*b"CODE", 0, &code0)]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(Some(10), Some(0x1020_3040), None);
+
+        let app = runner.load_app(&fork).expect("load app");
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), DEFAULT_LAUNCH_TICKS);
+        assert_eq!(runner.dispatcher.tick_count, DEFAULT_LAUNCH_TICKS);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
+    }
+
+    #[test]
+    fn init_ppc_app_applies_pinned_launch_state_to_both_memories() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(4321, 0x7654_3210, 0x8877_6655_4433_2211);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
+        assert_eq!(runner.dispatcher.tick_count, 4321);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.tick_count, 4321);
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(4321));
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x7654_3210)
+        );
+        assert_eq!(ppc_app.cpu.time_base(), 0x8877_6655_4433_2211);
+    }
+
+    #[test]
+    fn optional_ppc_seed_preserves_tick_and_time_base_defaults() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(None, Some(0x1020_3040), None);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 0);
+        assert_eq!(runner.dispatcher.tick_count, 0);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(0));
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x1020_3040)
+        );
+        assert_eq!(ppc_app.cpu.time_base(), 0);
+    }
+
+    #[test]
+    fn repeated_partial_launch_state_updates_preserve_prior_controls() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(Some(4321), None, Some(0x1122_3344_5566_7788));
+        runner.set_optional_launch_state(None, Some(0x7654_3210), None);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 4321);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(4321));
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x7654_3210)
+        );
+        assert_eq!(ppc_app.cpu.time_base(), 0x1122_3344_5566_7788);
+    }
+
+    #[test]
+    fn init_ppc_app_preserves_launch_defaults_without_override() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_app_start_time(0x1020_3040);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        runner.init_app(&app);
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 0);
+        assert_eq!(runner.dispatcher.tick_count, 0);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1020_3040);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.tick_count, 0);
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(0));
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TIME), Some(0x1020_3040));
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x1020_3040)
+        );
+        assert_eq!(ppc_app.cpu.time_base(), 0);
+    }
+
+    #[test]
+    fn ppc_slice_keeps_ticks_coherent_across_runner_and_guest_memory() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app
+            .memory
+            .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+            .expect("rewrite entry as infinite branch");
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(41, 0x1234_5678, 0);
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(1_000_000);
+        runner.tick_budget = 1;
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert_eq!(steps, 1);
+        assert!(running);
+        assert_eq!(runner.bus.read_long(addr::TICKS), 42);
+        assert_eq!(runner.dispatcher.tick_count, 42);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.tick_count, 42);
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(42));
+    }
+
+    #[test]
+    fn ppc_slice_synchronizes_low_memory_time_after_sixtieth_tick() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app
+            .memory
+            .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+            .expect("rewrite entry as infinite branch");
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_app_start_time(0x1020_3040);
+        runner.set_launch_state(59, 1, 0);
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(1);
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert_eq!(steps, 1);
+        assert!(running);
+        assert_eq!(runner.bus.read_long(addr::TICKS), 60);
+        assert_eq!(runner.bus.read_long(addr::TIME), 0x1020_3041);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(60));
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TIME), Some(0x1020_3041));
+    }
+
+    #[test]
+    fn tick_count_poll_fast_forward_returns_for_due_ppc_vbl_callback() {
+        use crate::loader::ppc::PpcVblTaskRecord;
+        use crate::memory::globals::addr;
+
+        const LOOP: u32 = PPC_CODE_BASE + 0x1000;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x2000;
+        const TASK: u32 = PPC_DATA_BASE + 0x3000;
+        const CALLBACK_TICK: u32 = PPC_DATA_BASE + 0x3100;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app.cpu.pc = LOOP;
+        ppc_app.memory.add_region(
+            LOOP,
+            [
+                0x3d80_01f0u32, // lis r12,$01f0
+                0x618c_0000,    // ori r12,r12,0
+                0x7d89_03a6,    // mtctr r12
+                0x4e80_0421,    // bctrl
+                0x4bff_fffc,    // b -4
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        ppc_app.memory.add_region(
+            CALLBACK,
+            [
+                0x8060_016au32, // lwz r3,$016a(0)
+                0x3c80_0200,    // lis r4,$0200
+                0x9064_3100,    // stw r3,$3100(r4)
+                0x4e80_0020,    // blr
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        ppc_app.memory.add_region(TASK, vec![0; 0x104]);
+        ppc_app.memory.write_u32_be(TASK + 6, CALLBACK).unwrap();
+        ppc_app.memory.write_u16_be(TASK + 10, 1).unwrap();
+        ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: TASK });
+        let mut tick_count = test_ppc_import_binding(0, "InterfaceLib", "LMGetTicks");
+        tick_count.address = PPC_IMPORT_TRAP_BASE;
+        tick_count.trap_pc = PPC_IMPORT_TRAP_BASE;
+        tick_count.dispatcher_target = PpcImportDispatcherTarget::TickCount;
+        ppc_app.import_count = 1;
+        ppc_app.imports = vec![tick_count];
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(Some(41), None, None);
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(1_000);
+
+        let (_steps, running) = runner.run_steps(1_000, None);
+
+        assert!(running);
+        assert_eq!(runner.bus.read_long(addr::TICKS), 42);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(ppc_app.memory.read_u32_be(CALLBACK_TICK), Some(42));
+    }
+
+    #[test]
+    fn batched_ppc_vbl_callbacks_read_their_own_tick_from_low_memory() {
+        use crate::loader::ppc::PpcVblTaskRecord;
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_app_start_time(0x1020_3040);
+        runner.set_optional_launch_state(Some(41), None, None);
+        runner.init_app(&app);
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+
+        for (index, count) in [1u16, 2].into_iter().enumerate() {
+            let task = PPC_DATA_BASE + 0x1000 + index as u32 * 0x100;
+            let callback = task + 0x20;
+            ppc_app.memory.add_region(task, vec![0; 0x60]);
+            ppc_app.memory.write_u32_be(task + 6, callback).unwrap();
+            ppc_app.memory.write_u16_be(task + 10, count).unwrap();
+            for (offset, instruction) in [
+                0x8060_016au32, // lwz r3,$016a(0)
+                0x4e80_0020,    // blr
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                ppc_app
+                    .memory
+                    .write_u32_be(callback + offset as u32 * 4, instruction)
+                    .unwrap();
+            }
+            ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: task });
+        }
+
+        let (vbl, timer) =
+            runner.fire_ppc_tick_callbacks(&mut ppc_app, 41, 0x1020_3040, 2, 64, false, false);
+
+        assert_eq!(vbl.len(), 2);
+        assert!(timer.is_empty());
+        assert_eq!(vbl[0].invocation.tick, 42);
+        assert_eq!(vbl[0].invocation.end_r3, 42);
+        assert_eq!(vbl[1].invocation.tick, 43);
+        assert_eq!(vbl[1].invocation.end_r3, 43);
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(43));
+    }
+
+    #[test]
+    fn ppc_slice_synchronizes_rnd_seed_in_both_directions() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app
+            .memory
+            .write_u32_be(PPC_CODE_BASE, 0x3C60_1234) // lis r3,$1234
+            .unwrap();
+        ppc_app.memory.add_region(
+            PPC_CODE_BASE + 4,
+            [
+                0x6063_5678u32, // ori r3,r3,$5678
+                0x3880_0156,    // li r4,$0156
+                0x9064_0000,    // stw r3,0(r4)
+                0x4800_0000,    // b .
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(0, 1, 0);
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(100);
+
+        let (steps, running) = runner.run_steps(5, None);
+        assert!(steps > 0);
+        assert!(running);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1234_5678);
+
+        runner.bus.write_long(addr::RND_SEED, 0x89AB_CDEF);
+        let (steps, running) = runner.run_steps(1, None);
+        assert_eq!(steps, 1);
+        assert!(running);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x89AB_CDEF)
+        );
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89AB_CDEF);
+    }
+
+    #[test]
+    fn ppc_rnd_seed_phase_preserves_intervening_runner_mutation() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(None, Some(1), None);
+        runner.init_app(&app);
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+
+        ppc_app
+            .memory
+            .write_u32_be(addr::RND_SEED, 0x1234_5678)
+            .unwrap();
+        runner.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1234_5678);
+
+        // Model a runner-side tick callback changing Random's authoritative
+        // low-memory seed between PPC execution phases.
+        runner.bus.write_long(addr::RND_SEED, 0x89ab_cdef);
+        runner.sync_ppc_low_memory_before_execution(&mut ppc_app);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::RND_SEED),
+            Some(0x89ab_cdef)
+        );
+    }
+
+    #[test]
+    fn ppc_event_merge_keeps_callback_and_tick_posted_events() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner
+            .dispatcher
+            .event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 3,
+                message: 0x1111,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0,
+            });
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+
+        // Model the callback consuming the old event and posting a new one,
+        // while tick advancement independently posts an event on the runner.
+        ppc_app.set_event_queue([PpcQueuedEvent {
+            what: 23,
+            message: 0x2222,
+            where_v: 30,
+            where_h: 40,
+            modifiers: 0,
+        }]);
+        ppc_app.toolbox_startup.system_event_mask = 0x1234;
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+        runner
+            .dispatcher
+            .event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 5,
+                message: 0x3333,
+                where_v: 50,
+                where_h: 60,
+                modifiers: 0,
+            });
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+
+        assert_eq!(runner.dispatcher.event_queue.len(), 2);
+        assert_eq!(runner.dispatcher.event_queue[0].message, 0x2222);
+        assert_eq!(runner.dispatcher.event_queue[1].message, 0x3333);
+        assert_eq!(runner.dispatcher.system_event_mask, 0x1234);
+    }
+
+    #[test]
+    fn ppc_event_merge_keeps_posted_event_after_original_queue_mutation() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        for message in [0x1111, 0x2222] {
+            runner
+                .dispatcher
+                .event_queue
+                .push_back(crate::trap::dispatch::QueuedEvent {
+                    what: 3,
+                    message,
+                    where_v: 10,
+                    where_h: 20,
+                    modifiers: 0,
+                });
+        }
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+        ppc_app.set_event_queue([]);
+
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+        runner.dispatcher.event_queue.pop_front();
+        runner
+            .dispatcher
+            .event_queue
+            .push_back(crate::trap::dispatch::QueuedEvent {
+                what: 5,
+                message: 0x3333,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0,
+            });
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+
+        assert_eq!(runner.dispatcher.event_queue.len(), 1);
+        assert_eq!(runner.dispatcher.event_queue[0].message, 0x3333);
+    }
+
+    #[test]
+    fn ppc_event_sync_preserves_callback_repost_identical_to_consumed_event() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let original = crate::trap::dispatch::QueuedEvent {
+            what: 3,
+            message: 0x1111,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0x0200,
+        };
+        runner.dispatcher.event_queue.push_back(original.clone());
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+
+        // Establish the post-PPC boundary, then model a runner callback that
+        // consumes the original and posts a byte-identical replacement.
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+        let consumed = runner.dispatcher.event_queue.pop_front().unwrap();
+        assert_eq!(consumed.message, original.message);
+        runner.dispatcher.event_queue.push_back(original);
+        runner.sync_ppc_event_queue_before_execution(&mut ppc_app, 0, 0);
+        runner.dispatcher.event_queue.clear();
+
+        runner.sync_ppc_event_state_after_execution(&ppc_app, 0, 0);
+
+        assert_eq!(runner.dispatcher.event_queue.len(), 1);
+        let reposted = &runner.dispatcher.event_queue[0];
+        assert_eq!(reposted.what, 3);
+        assert_eq!(reposted.message, 0x1111);
+        assert_eq!((reposted.where_v, reposted.where_h), (10, 20));
+        assert_eq!(reposted.modifiers, 0x0200);
+    }
+
+    #[test]
     fn init_app_propagates_size_high_level_event_capability() {
         let code0 = minimal_code0(0, 0x2000, 0, 0);
         let unaware_size = size_resource_bytes(0, 0x0008_0000, 0x0008_0000);
@@ -11206,6 +12001,8 @@ mod tests {
         let app = runner.load_app(&current_fork).expect("load current app");
         runner.init_app(&app);
         runner.bus.write_long(addr::TICKS, 1234);
+        runner.bus.write_long(addr::TIME, 0x1020_3040);
+        runner.bus.write_long(addr::RND_SEED, 0x89AB_CDEF);
         runner.dispatcher.tick_count = 1234;
         runner
             .dispatcher
@@ -11234,6 +12031,8 @@ mod tests {
             1234,
             "Process Manager launch must preserve system TickCount"
         );
+        assert_eq!(runner.bus.read_long(addr::TIME), 0x1020_3040);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89AB_CDEF);
         let cur_ap_len = runner.bus.read_byte(addr::CUR_APNAME) as usize;
         let cur_ap_name = String::from_utf8(
             (0..cur_ap_len)
@@ -11289,6 +12088,8 @@ mod tests {
         let app = runner.load_app(&current_fork).expect("load current app");
         runner.init_app(&app);
         runner.bus.write_long(addr::TICKS, 4321);
+        runner.bus.write_long(addr::TIME, 0x5060_7080);
+        runner.bus.write_long(addr::RND_SEED, 0x7654_3210);
         runner.dispatcher.tick_count = 4321;
         runner
             .dispatcher
@@ -11313,6 +12114,8 @@ mod tests {
             4321,
             "foreground app switch must preserve system TickCount"
         );
+        assert_eq!(runner.bus.read_long(addr::TIME), 0x5060_7080);
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x7654_3210);
         let cur_ap_len = runner.bus.read_byte(addr::CUR_APNAME) as usize;
         let cur_ap_name = String::from_utf8(
             (0..cur_ap_len)
@@ -11558,6 +12361,51 @@ mod tests {
     }
 
     #[test]
+    fn ppc_exit_to_shell_halt_is_distinct_from_other_ppc_stops() {
+        let mut exit = test_ppc_import_binding(7, "InterfaceLib", "ExitToShell");
+        exit.dispatcher_target = PpcImportDispatcherTarget::ExitToShell;
+        let imports = vec![exit];
+        let halted = PpcRunResult::Halted {
+            pc: PPC_HALT_PC,
+            cycles: 4,
+        };
+
+        assert!(ppc_halted_by_exit_to_shell(&imports, halted, Some(7), None));
+        assert!(!ppc_halted_by_exit_to_shell(
+            &imports,
+            halted,
+            Some(7),
+            Some(7)
+        ));
+        assert!(!ppc_halted_by_exit_to_shell(
+            &imports,
+            halted,
+            Some(8),
+            None
+        ));
+        let mut unsupported = test_ppc_import_binding(7, "InterfaceLib", "MysteryCall");
+        unsupported.dispatcher_target = PpcImportDispatcherTarget::Unsupported;
+        let duplicate_imports = vec![unsupported, imports[0].clone()];
+        assert!(!ppc_halted_by_exit_to_shell(
+            &duplicate_imports,
+            halted,
+            Some(7),
+            None
+        ));
+        assert!(!ppc_halted_by_exit_to_shell(
+            &imports,
+            PpcRunResult::MemoryFault {
+                pc: PPC_CODE_BASE,
+                addr: 0,
+                was_write: false,
+                cycles: 4,
+            },
+            Some(7),
+            None
+        ));
+    }
+
+    #[test]
     fn ppc_unimpl_histogram_key_names_unsupported_imports() {
         let imports = vec![test_ppc_import_binding(7, "InterfaceLib", "MysteryCall")];
 
@@ -11702,6 +12550,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -11729,6 +12578,254 @@ mod tests {
             event_queue: VecDeque::new(),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
+    }
+
+    #[test]
+    fn ppc_exit_to_shell_stops_before_tick_and_callback_phase() {
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        let sound = PpcSoundState {
+            pending_completions: vec![PpcSoundCompletionRecord {
+                file_playback_index: 0,
+                channel: 0x0300_1000,
+                completion: CALLBACK,
+                command: None,
+                tick: 0,
+                instruction_count: 0,
+                scheduled_tick: 0,
+                scheduled_instruction_count: 0,
+            }],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app
+            .memory
+            .add_region(CALLBACK, 0x4e80_0020u32.to_be_bytes().to_vec());
+        ppc_app
+            .memory
+            .write_u32_be(
+                PPC_CODE_BASE,
+                ppc_test_relative_branch(PPC_CODE_BASE, PPC_IMPORT_TRAP_BASE),
+            )
+            .unwrap();
+        let mut exit = test_ppc_import_binding(0, "InterfaceLib", "ExitToShell");
+        exit.trap_pc = PPC_IMPORT_TRAP_BASE;
+        exit.dispatcher_target = PpcImportDispatcherTarget::ExitToShell;
+        ppc_app.import_count = 1;
+        ppc_app.imports = vec![exit];
+        ppc_app.vbl_tasks.push(PpcVblTaskRecord {
+            task_ptr: PPC_DATA_BASE + 0x3000,
+        });
+        ppc_app.timer_tasks.push(PpcTimerTaskRecord {
+            task_ptr: PPC_DATA_BASE + 0x3100,
+            callback: CALLBACK,
+            active: true,
+            fire_at_tick: 0,
+            last_fired_tick: None,
+        });
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(1_000_000);
+        runner.tick_budget = 1_000_000;
+        let initial_tick = runner.guest_tick();
+        let initial_screen_events = runner.dispatcher.screen_event_count;
+
+        let (_steps, running) = runner.run_steps(64, None);
+
+        assert!(!running);
+        assert!(runner.halted_by_exit_to_shell());
+        assert_eq!(runner.guest_tick(), initial_tick);
+        assert_eq!(runner.dispatcher.tick_count, initial_tick);
+        assert_eq!(runner.dispatcher.screen_event_count, initial_screen_events);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        assert_eq!(ppc_app.vbl_tasks.len(), 1);
+        assert_eq!(ppc_app.timer_tasks[0].last_fired_tick, None);
+        assert_eq!(ppc_app.sound.pending_completions.len(), 1);
+        assert!(ppc_app.sound.completion_invocations.is_empty());
+    }
+
+    const PPC_SOUND_EVENT_RECORD: u32 = PPC_DATA_BASE + 0x2000;
+    const PPC_SOUND_GET_EVENT_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+    const PPC_SOUND_POST_EVENT_CALLBACK: u32 = PPC_CODE_BASE + 0x1100;
+    const PPC_SOUND_SET_EVENT_MASK_CALLBACK: u32 = PPC_CODE_BASE + 0x1200;
+
+    fn ppc_test_relative_branch(from: u32, to: u32) -> u32 {
+        0x4800_0000 | (to.wrapping_sub(from) & 0x03ff_fffc)
+    }
+
+    fn install_ppc_sound_event_boundary_fixture(app: &mut LoadedApp) {
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        let mut add_callback = |address: u32, mut words: Vec<u32>, import_index: u32| {
+            let branch_address = address + u32::try_from(words.len()).unwrap() * 4;
+            words.push(ppc_test_relative_branch(
+                branch_address,
+                PPC_IMPORT_TRAP_BASE + import_index * 4,
+            ));
+            ppc_app.memory.add_region(
+                address,
+                words.into_iter().flat_map(u32::to_be_bytes).collect(),
+            );
+        };
+        add_callback(
+            PPC_SOUND_GET_EVENT_CALLBACK,
+            vec![
+                0x3860_ffff, // li r3,-1
+                0x3c80_0200, // lis r4,$0200
+                0x6084_2000, // ori r4,r4,$2000
+            ],
+            0,
+        );
+        add_callback(
+            PPC_SOUND_POST_EVENT_CALLBACK,
+            vec![
+                0x3860_0005, // li r3,5
+                0x3c80_5566, // lis r4,$5566
+                0x6084_7788, // ori r4,r4,$7788
+            ],
+            1,
+        );
+        add_callback(
+            PPC_SOUND_SET_EVENT_MASK_CALLBACK,
+            vec![0x3860_1234], // li r3,$1234
+            2,
+        );
+        ppc_app
+            .memory
+            .add_region(PPC_SOUND_EVENT_RECORD, vec![0; 16]);
+        ppc_app.import_count = 3;
+        ppc_app.imports = [
+            ("GetNextEvent", PpcImportDispatcherTarget::GetNextEvent),
+            ("PostEvent", PpcImportDispatcherTarget::PostEvent),
+            ("SetEventMask", PpcImportDispatcherTarget::SetEventMask),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (symbol, dispatcher_target))| {
+            let index = u32::try_from(index).unwrap();
+            PpcImportBinding {
+                library_index: 0,
+                symbol_index: index,
+                library_name: "InterfaceLib".into(),
+                symbol_name: symbol.into(),
+                class: 0,
+                weak: false,
+                address: PPC_IMPORT_TRAP_BASE + index * 4,
+                tvector_address: None,
+                trap_pc: PPC_IMPORT_TRAP_BASE + index * 4,
+                dispatcher_target,
+            }
+        })
+        .collect();
+        ppc_app.gworlds.push(PpcGWorldRecord {
+            port: PPC_MAIN_GWORLD,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: 0,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: 512,
+            height: 342,
+            depth: 8,
+            row_bytes: 512,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        });
+        ppc_app.set_input_snapshot(PpcInputSnapshot {
+            mouse_v: 17,
+            mouse_h: 19,
+            ..PpcInputSnapshot::default()
+        });
+    }
+
+    fn assert_ppc_sound_event_boundary(
+        mut app: LoadedApp,
+        fire_callbacks: impl FnOnce(&mut FixtureRunner),
+    ) {
+        install_ppc_sound_event_boundary_fixture(&mut app);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let (offset_v, offset_h) = runner.ppc_viewport_offset();
+        assert!(
+            offset_v > 0 && offset_h > 0,
+            "fixture must use a centered viewport"
+        );
+        runner.dispatcher.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x1122_3344,
+            where_v: 120,
+            where_h: 180,
+            modifiers: 0x0080,
+        });
+
+        fire_callbacks(&mut runner);
+
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        assert_eq!(
+            ppc_app.memory.read_u16_be(PPC_SOUND_EVENT_RECORD + 10),
+            Some(120i16.saturating_sub(offset_v) as u16)
+        );
+        assert_eq!(
+            ppc_app.memory.read_u16_be(PPC_SOUND_EVENT_RECORD + 12),
+            Some(180i16.saturating_sub(offset_h) as u16)
+        );
+        assert_eq!(runner.dispatcher.event_queue.len(), 1);
+        let posted = &runner.dispatcher.event_queue[0];
+        assert_eq!((posted.what, posted.message), (5, 0x5566_7788));
+        assert_eq!(
+            (posted.where_v, posted.where_h),
+            (
+                17i16.saturating_add(offset_v),
+                19i16.saturating_add(offset_h)
+            )
+        );
+        assert_eq!(runner.dispatcher.system_event_mask, 0x1234);
+    }
+
+    #[test]
+    fn ppc_sound_doublebacks_preserve_centered_viewport_event_coordinates() {
+        let callback = |callback| PpcSoundDoubleBackRecord {
+            channel: 0x0300_1000,
+            header: 0x0300_2000,
+            exhausted_buffer: 0x0300_3000,
+            exhausted_buffer_index: 0,
+            callback,
+            tick: 0,
+            instruction_count: 0,
+        };
+        let app = halted_ppc_app_with_sound(PpcSoundState {
+            pending_doublebacks: vec![
+                callback(PPC_SOUND_GET_EVENT_CALLBACK),
+                callback(PPC_SOUND_POST_EVENT_CALLBACK),
+                callback(PPC_SOUND_SET_EVENT_MASK_CALLBACK),
+            ],
+            ..PpcSoundState::default()
+        });
+
+        assert_ppc_sound_event_boundary(app, FixtureRunner::fire_pending_ppc_sound_doublebacks);
+    }
+
+    #[test]
+    fn ppc_sound_completions_preserve_centered_viewport_event_coordinates() {
+        let callback = |completion| PpcSoundCompletionRecord {
+            file_playback_index: 0,
+            channel: 0x0300_1000,
+            completion,
+            command: None,
+            tick: 0,
+            instruction_count: 0,
+            scheduled_tick: 0,
+            scheduled_instruction_count: 0,
+        };
+        let app = halted_ppc_app_with_sound(PpcSoundState {
+            pending_completions: vec![
+                callback(PPC_SOUND_GET_EVENT_CALLBACK),
+                callback(PPC_SOUND_POST_EVENT_CALLBACK),
+                callback(PPC_SOUND_SET_EVENT_MASK_CALLBACK),
+            ],
+            ..PpcSoundState::default()
+        });
+
+        assert_ppc_sound_event_boundary(app, FixtureRunner::fire_pending_ppc_sound_completions);
     }
 
     #[test]
@@ -11779,6 +12876,183 @@ mod tests {
                 cycles: (CALLBACK_CYCLES + 1) as u64,
             }
         );
+    }
+
+    #[test]
+    fn ppc_sound_doubleback_callback_refills_and_plays_exhausted_buffer() {
+        const CHANNEL: u32 = 0x0300_1000;
+        const HEADER: u32 = 0x0300_2000;
+        const BUFFER: u32 = 0x0300_3000;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const SAMPLES: [u8; 4] = [0x80, 0x90, 0x70, 0xa0];
+
+        let sound = PpcSoundState {
+            double_buffer_playbacks: vec![PpcSoundDoubleBufferPlaybackRecord {
+                channel: CHANNEL,
+                header: HEADER,
+                buffers: [BUFFER, 0],
+                callback: CALLBACK,
+                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+                num_channels: 1,
+                sample_size: 8,
+                compression_id: 0,
+                packet_size: 0,
+                current_buffer_index: 0,
+                callback_pending_mask: 0,
+                active: true,
+                host_initialized: false,
+                host_buffer_loaded: false,
+            }],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(BUFFER, vec![0; 32]);
+
+        // Inside Macintosh: Sound (1994), pp. 2-147 and 2-178: a doubleback
+        // receives the exhausted SndDoubleBufferPtr and refills dbNumFrames,
+        // dbFlags, and dbSoundData before setting dbBufferReady.
+        let callback = [
+            0x38a0_0004u32, // li r5,4
+            0x90a4_0000,    // stw r5,0(r4): dbNumFrames
+            0x3ca0_8090,    // lis r5,$8090
+            0x60a5_70a0,    // ori r5,r5,$70A0
+            0x90a4_0010,    // stw r5,16(r4): dbSoundData
+            0x38a0_0005,    // li r5,5: dbBufferReady | dbLastBuffer
+            0x90a4_0004,    // stw r5,4(r4): dbFlags
+            0x4e80_0020,    // blr
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>();
+        ppc_app.memory.add_region(CALLBACK, callback);
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.mix_audio(SAMPLES.len());
+
+        assert_eq!(runner.drain_audio(), SAMPLES);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        let mut memory = ppc_app.memory.clone();
+        assert_eq!(memory.read_u32_be(BUFFER), Some(SAMPLES.len() as u32));
+        assert_eq!(memory.read_u32_be(BUFFER + 4), Some(0x04));
+        assert_eq!(
+            memory.read_u32_be(BUFFER + 16),
+            Some(u32::from_be_bytes(SAMPLES))
+        );
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
+        assert!(!ppc_app.sound.double_buffer_playbacks[0].active);
+        assert_eq!(
+            runner.dispatcher().sound_manager.debug_samples_mixed,
+            SAMPLES.len() as u64
+        );
+    }
+
+    #[test]
+    fn ppc_sound_completion_preserves_callback_rnd_seed_update() {
+        use crate::memory::globals::addr;
+
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        let sound = PpcSoundState {
+            pending_completions: vec![PpcSoundCompletionRecord {
+                file_playback_index: 0,
+                channel: 0x0300_1000,
+                completion: CALLBACK,
+                command: None,
+                tick: 0,
+                instruction_count: 0,
+                scheduled_tick: 0,
+                scheduled_instruction_count: 0,
+            }],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app.memory.add_region(
+            CALLBACK,
+            [
+                0x3c60_89abu32, // lis r3,$89ab
+                0x6063_cdef,    // ori r3,r3,$cdef
+                0x3880_0156,    // li r4,$0156
+                0x9064_0000,    // stw r3,0(r4)
+                0x4e80_0020,    // blr
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(None, Some(1), None);
+        runner.init_app(&app);
+        runner.fire_pending_ppc_sound_completions();
+
+        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89ab_cdef);
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_mut()
+                .expect("PPC app")
+                .memory
+                .read_u32_be(addr::RND_SEED),
+            Some(0x89ab_cdef)
+        );
+    }
+
+    #[test]
+    fn ppc_sound_completions_see_ticks_advanced_by_prior_callback() {
+        use crate::memory::globals::addr;
+
+        const FIRST_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const SECOND_CALLBACK: u32 = PPC_CODE_BASE + 0x1100;
+        let completion = |completion| PpcSoundCompletionRecord {
+            file_playback_index: 0,
+            channel: 0x0300_1000,
+            completion,
+            command: None,
+            tick: 0,
+            instruction_count: 0,
+            scheduled_tick: 0,
+            scheduled_instruction_count: 0,
+        };
+        let sound = PpcSoundState {
+            pending_completions: vec![completion(FIRST_CALLBACK), completion(SECOND_CALLBACK)],
+            ..PpcSoundState::default()
+        };
+        let mut app = halted_ppc_app_with_sound(sound);
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app.memory.add_region(
+            FIRST_CALLBACK,
+            [0x6000_0000u32, 0x4e80_0020]
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        ppc_app.memory.add_region(
+            SECOND_CALLBACK,
+            [0x8060_016au32, 0x4e80_0020] // lwz r3,$016a(0); blr
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_optional_launch_state(Some(41), None, None);
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(2);
+        runner.fire_pending_ppc_sound_completions();
+
+        assert_eq!(runner.bus.read_long(addr::TICKS), 43);
+        assert_eq!(runner.dispatcher.tick_count, 43);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        assert_eq!(ppc_app.tick_count, 43);
+        assert_eq!(ppc_app.memory.read_u32_be(addr::TICKS), Some(43));
+        assert_eq!(ppc_app.sound.completion_invocations.len(), 2);
+        assert_eq!(ppc_app.sound.completion_invocations[1].end_r3, 42);
     }
 
     #[test]
@@ -11909,6 +13183,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -12654,7 +13929,34 @@ mod tests {
     }
 
     #[test]
-    fn ppc_getkeys_reads_runner_key_map() {
+    fn ppc_queue_sync_preserves_autokey_posted_during_tick_advance() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app
+            .memory
+            .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
+            .unwrap(); // b .
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.set_instructions_per_tick(1);
+        runner.push_key_down(0x00, b'a');
+
+        for _ in 0..TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS {
+            let (steps, running) = runner.run_steps(1, None);
+            assert_eq!(steps, 1);
+            assert!(running);
+        }
+
+        assert!(runner
+            .dispatcher
+            .event_queue
+            .iter()
+            .any(|event| { event.what == 5 && event.message == 0x0000_0061 }));
+    }
+
+    #[test]
+    fn ppc_getkeys_reads_runner_key_map_with_classic_packed_bit_order() {
         let key_map_ptr = PPC_DATA_BASE;
         let mut memory = PpcSectionMem::new();
         memory.add_region(PPC_CODE_BASE, 0x4800_0002u32.to_be_bytes().to_vec());
@@ -12757,6 +14059,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -12797,17 +14100,18 @@ mod tests {
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
+        runner.push_key_down(0x00, b'a');
         runner.push_key_down(0x7b, 28);
+        runner.push_key_down(0x31, b' ');
 
         let (steps, running) = runner.run_steps(16, None);
 
         assert!(!running);
         assert_eq!(steps, 2);
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app should stay loaded");
-        let left_key = 0x7bu8;
-        let left_byte = key_map_ptr + u32::from(left_key / 8);
-        let left_bit = 1u8 << (left_key % 8);
-        assert_ne!(ppc_app.memory.read_u8(left_byte).unwrap() & left_bit, 0);
+        assert_eq!(ppc_app.memory.read_u8(key_map_ptr), Some(0x01));
+        assert_eq!(ppc_app.memory.read_u8(key_map_ptr + 6), Some(0x02));
+        assert_eq!(ppc_app.memory.read_u8(key_map_ptr + 15), Some(0x08));
     }
 
     #[test]
@@ -12916,6 +14220,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -13335,6 +14640,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -13646,6 +14952,7 @@ mod tests {
                 green: 0,
                 blue: 0,
             },
+            quickdraw_fore_indices: Default::default(),
             quickdraw_back_color: PpcRgbColor {
                 red: 0xffff,
                 green: 0xffff,
@@ -13745,12 +15052,17 @@ mod tests {
 
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM), 0);
         assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 4), 0);
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 6), 0);
         assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 15), 0);
 
+        runner.push_key_down(0x00, b'a');
         runner.push_key_down(0x26, b'j');
+        runner.push_key_down(0x31, b' ');
         runner.push_key_down(0x7E, 30);
 
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM), 0x01);
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 4),
             0x40,
@@ -13759,8 +15071,9 @@ mod tests {
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 5),
             0,
-            "J key should not alias M at KeyMapLM byte 5 bit 6"
+            "J key should not alias M at KeyMapLM byte 5"
         );
+        assert_eq!(runner.bus.read_byte(addr::KEY_MAP_LM + 6), 0x02);
         assert_eq!(
             runner.bus.read_byte(addr::KEY_MAP_LM + 15),
             0x40,
@@ -20117,6 +21430,18 @@ mod tests {
         assert_eq!(runner.bus.read_word(0x082E), 456u16);
         assert_eq!(runner.bus.read_word(0x0830), 123u16);
         assert_eq!(runner.bus.read_word(0x0832), 456u16);
+    }
+
+    #[test]
+    fn pending_mouse_down_count_tracks_queued_clicks() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        assert_eq!(runner.pending_mouse_down_count(), 0);
+
+        runner.push_mouse_down(10, 20);
+        assert_eq!(runner.pending_mouse_down_count(), 1);
+
+        runner.dispatcher.event_queue.pop_front();
+        assert_eq!(runner.pending_mouse_down_count(), 0);
     }
 
     /// `push_mouse_up` must update MBState ($0172) to 0x80 (button

@@ -37,6 +37,102 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn toolbox_event_priority(what: u16) -> u8 {
+        // Macintosh Toolbox Essentials (1992), pp. 2-18--2-19: the Event
+        // Manager selects by event-class priority, preserving FIFO order
+        // among mouse, key, and disk events.
+        match what {
+            8 => 0,
+            1..=4 | 7 => 1,
+            5 => 2,
+            6 => 3,
+            15 => 4,
+            Self::K_HIGH_LEVEL_EVENT => 5,
+            _ => 6,
+        }
+    }
+
+    fn matching_toolbox_event_index(&self, event_mask: u16) -> Option<usize> {
+        self.event_queue
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| {
+                event.what != 6 && Self::event_matches_mask(event_mask, event.what)
+            })
+            .min_by_key(|(index, event)| (Self::toolbox_event_priority(event.what), *index))
+            .map(|(index, _)| index)
+    }
+
+    fn preferred_marked_update_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<(super::dispatch::QueuedEvent, bool)> {
+        if !Self::event_matches_mask(event_mask, 6) {
+            return None;
+        }
+
+        let known_windows = &self.window_list;
+        self.flushed_update_events
+            .retain(|event| event.what == 6 && known_windows.contains(&event.message));
+
+        for &window in &self.window_list {
+            if !self.window_visible(bus, window) || !self.window_has_pending_update(bus, window) {
+                continue;
+            }
+            // CheckUpdate consumes picture-backed window updates internally,
+            // so EventAvail must not advertise a marker that GetNextEvent
+            // will redraw instead of returning. Macintosh Toolbox Essentials
+            // (1992), pp. 4-115--4-116.
+            const WINDOW_PIC_OFFSET: u32 = 148;
+            let picture_handle = bus.read_long(window + WINDOW_PIC_OFFSET);
+            if picture_handle != 0 && bus.read_long(picture_handle) != 0 {
+                continue;
+            }
+            if let Some(event) = self
+                .event_queue
+                .iter()
+                .find(|event| event.what == 6 && event.message == window)
+            {
+                return Some((event.clone(), false));
+            }
+            if let Some(event) = self
+                .flushed_update_events
+                .iter()
+                .find(|event| event.what == 6 && event.message == window)
+            {
+                return Some((event.clone(), true));
+            }
+        }
+
+        // Preserve explicitly posted update events that do not name a window
+        // known to this Window Manager. Known-window markers were considered
+        // above and must not bypass visibility, dirtiness, picture handling,
+        // or front-to-back order through this fallback.
+        self.event_queue
+            .iter()
+            .find(|event| event.what == 6 && !self.window_list.contains(&event.message))
+            .cloned()
+            .map(|event| (event, false))
+    }
+
+    fn dequeue_preferred_marked_update_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        let (event, recovered) = self.preferred_marked_update_event(bus, event_mask)?;
+        let queue = if recovered {
+            &mut self.flushed_update_events
+        } else {
+            &mut self.event_queue
+        };
+        let index = queue
+            .iter()
+            .position(|candidate| candidate.what == 6 && candidate.message == event.message)?;
+        queue.remove(index)
+    }
+
     pub(crate) fn mouse_moved_event_for_region(
         &self,
         bus: &MacMemoryBus,
@@ -178,66 +274,6 @@ impl super::TrapDispatcher {
         self.flushed_update_events.push_back(event.clone());
     }
 
-    fn peek_flushed_update_event(
-        &mut self,
-        bus: &MacMemoryBus,
-        event_mask: u16,
-    ) -> Option<super::dispatch::QueuedEvent> {
-        if !Self::event_matches_mask(event_mask, 6) {
-            return None;
-        }
-
-        while let Some(event) = self.flushed_update_events.front().cloned() {
-            if self.window_visible(bus, event.message)
-                && self.window_has_pending_update(bus, event.message)
-            {
-                return Some(event);
-            }
-            if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
-                eprintln!(
-                    "[INVAL] drop_stale_flushed_update_event window=${:08X} tick={}",
-                    event.message, self.tick_count
-                );
-            }
-            self.flushed_update_events.pop_front();
-        }
-
-        None
-    }
-
-    fn dequeue_flushed_update_event(
-        &mut self,
-        bus: &MacMemoryBus,
-        event_mask: u16,
-    ) -> Option<super::dispatch::QueuedEvent> {
-        if !Self::event_matches_mask(event_mask, 6) {
-            return None;
-        }
-
-        while let Some(event) = self.flushed_update_events.front().cloned() {
-            if self.window_visible(bus, event.message)
-                && self.window_has_pending_update(bus, event.message)
-            {
-                if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
-                    eprintln!(
-                        "[INVAL] dequeue_flushed_update_event window=${:08X} tick={}",
-                        event.message, self.tick_count
-                    );
-                }
-                return self.flushed_update_events.pop_front();
-            }
-            if std::env::var_os("SYSTEMLESS_TRACE_INVAL").is_some() {
-                eprintln!(
-                    "[INVAL] drop_stale_flushed_update_event window=${:08X} tick={}",
-                    event.message, self.tick_count
-                );
-            }
-            self.flushed_update_events.pop_front();
-        }
-
-        None
-    }
-
     fn enqueue_open_application_event_if_needed(&mut self, event_mask: u16) {
         // The Finder sends required launch Apple events only to applications
         // whose 'SIZE' resource declares isHighLevelEventAware. Applications
@@ -264,19 +300,14 @@ impl super::TrapDispatcher {
         now.wrapping_sub(due) < 0x8000_0000
     }
 
-    fn enqueue_auto_key_if_due(&mut self, event_mask: u16) {
-        // Auto-key events are posted only when requested and when no matching
-        // higher-priority event is already available. Inside Macintosh Volume
-        // I, I-246.
-        if !Self::event_matches_mask(event_mask, Self::AUTO_KEY_EVENT)
-            || self
-                .event_queue
-                .iter()
-                .any(|event| Self::event_matches_mask(event_mask, event.what))
-        {
+    pub(crate) fn post_auto_key_if_due(&mut self) {
+        // Auto-key is a low-level event posted by the Operating System Event
+        // Manager once the threshold/rate elapses; it is not synthesized only
+        // when an application happens to poll. Macintosh Toolbox Essentials,
+        // pp. 2-29 and 2-38.
+        if !self.posted_event_is_enabled(Self::AUTO_KEY_EVENT) {
             return;
         }
-
         let Some(repeat) = self.key_repeat else {
             return;
         };
@@ -302,6 +333,12 @@ impl super::TrapDispatcher {
         });
     }
 
+    fn enqueue_auto_key_if_due(&mut self, event_mask: u16) {
+        if Self::event_matches_mask(event_mask, Self::AUTO_KEY_EVENT) {
+            self.post_auto_key_if_due();
+        }
+    }
+
     fn peek_pending_native_menu_event(
         &self,
         event_mask: u16,
@@ -313,6 +350,14 @@ impl super::TrapDispatcher {
             .as_ref()
             .filter(|event| Self::event_matches_mask(event_mask, event.what))
             .cloned()
+    }
+
+    fn pending_native_menu_wins_fifo_tie(&self) -> bool {
+        // Before the retained click has been presented, matching low-level
+        // events already in the OS queue predate it. Once presented, the
+        // retained click keeps its place while it is rate-limited between
+        // presentations. Macintosh Toolbox Essentials (1992), pp. 2-18--2-19.
+        self.pending_native_menu_event_tick.is_some()
     }
 
     fn dequeue_pending_native_menu_event(
@@ -341,25 +386,58 @@ impl super::TrapDispatcher {
     ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(event_mask);
-        self.peek_pending_native_menu_event(event_mask)
-            .or_else(|| {
-                self.event_queue
-                    .iter()
-                    .find(|event| Self::event_matches_mask(event_mask, event.what))
-                    .cloned()
-            })
-            .or_else(|| self.peek_flushed_update_event(bus, event_mask))
-            .or_else(|| self.pending_update_event(bus, event_mask))
+        let pending_menu = self.peek_pending_native_menu_event(event_mask);
+        let queued = self
+            .matching_toolbox_event_index(event_mask)
+            .and_then(|index| self.event_queue.get(index))
+            .cloned();
+        let update = self
+            .preferred_marked_update_event(bus, event_mask)
+            .map(|(event, _)| event);
+        let queued_or_menu = match (pending_menu, queued) {
+            (Some(pending), Some(queued)) => Some(
+                if Self::toolbox_event_priority(pending.what)
+                    < Self::toolbox_event_priority(queued.what)
+                    || (Self::toolbox_event_priority(pending.what)
+                        == Self::toolbox_event_priority(queued.what)
+                        && self.pending_native_menu_wins_fifo_tie())
+                {
+                    pending
+                } else {
+                    queued
+                },
+            ),
+            (pending, queued) => pending.or(queued),
+        };
+        match (queued_or_menu, update) {
+            (Some(queued), Some(update)) => Some(
+                if Self::toolbox_event_priority(queued.what)
+                    <= Self::toolbox_event_priority(update.what)
+                {
+                    queued
+                } else {
+                    update
+                },
+            ),
+            (queued, update) => queued.or(update),
+        }
     }
 
     fn peek_event(&mut self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_auto_key_if_due(event_mask);
-        self.peek_pending_native_menu_event(event_mask).or_else(|| {
-            self.event_queue
-                .iter()
-                .find(|event| Self::event_matches_mask(event_mask, event.what))
-                .cloned()
-        })
+        let pending = self.peek_pending_native_menu_event(event_mask);
+        let queued = self
+            .event_queue
+            .iter()
+            .find(|event| {
+                Self::is_low_level_os_event(event.what)
+                    && Self::event_matches_mask(event_mask, event.what)
+            })
+            .cloned();
+        match (pending, queued) {
+            (Some(_), Some(queued)) if !self.pending_native_menu_wins_fifo_tie() => Some(queued),
+            (pending, queued) => pending.or(queued),
+        }
     }
 
     pub(crate) fn dequeue_toolbox_event<C: CpuOps>(
@@ -370,12 +448,32 @@ impl super::TrapDispatcher {
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
         self.enqueue_auto_key_if_due(event_mask);
-        let preferred_update = if Self::event_matches_mask(event_mask, 6) {
-            self.service_window_picture_updates(cpu, bus)
-        } else {
-            None
-        };
-        if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
+        if Self::event_matches_mask(event_mask, 6) {
+            self.service_window_picture_updates(cpu, bus);
+        }
+        let pending_menu = self.peek_pending_native_menu_event(event_mask);
+        let first_idx = self.matching_toolbox_event_index(event_mask);
+        let preferred_update = self
+            .preferred_marked_update_event(bus, event_mask)
+            .map(|(event, _)| event);
+        let pending_has_priority = pending_menu.as_ref().is_some_and(|pending| {
+            let precedes_queued = first_idx
+                .and_then(|index| self.event_queue.get(index))
+                .is_none_or(|queued| {
+                    Self::toolbox_event_priority(pending.what)
+                        < Self::toolbox_event_priority(queued.what)
+                        || (Self::toolbox_event_priority(pending.what)
+                            == Self::toolbox_event_priority(queued.what)
+                            && self.pending_native_menu_wins_fifo_tie())
+                });
+            let precedes_update = preferred_update.as_ref().is_none_or(|update| {
+                Self::toolbox_event_priority(pending.what)
+                    <= Self::toolbox_event_priority(update.what)
+            });
+            precedes_queued && precedes_update
+        });
+        if pending_has_priority {
+            let event = self.dequeue_pending_native_menu_event(event_mask).unwrap();
             return (
                 event.what,
                 event.message,
@@ -385,22 +483,35 @@ impl super::TrapDispatcher {
                 true,
             );
         }
-        if let Some(first_idx) = self
-            .event_queue
-            .iter()
-            .position(|event| Self::event_matches_mask(event_mask, event.what))
-        {
-            let idx = if self.event_queue[first_idx].what == 6 {
-                preferred_update
-                    .and_then(|window| {
-                        self.event_queue
-                            .iter()
-                            .position(|event| event.what == 6 && event.message == window)
-                    })
-                    .unwrap_or(first_idx)
-            } else {
-                first_idx
-            };
+        let update_has_priority = preferred_update.as_ref().is_some_and(|update| {
+            first_idx
+                .and_then(|index| self.event_queue.get(index))
+                .is_none_or(|queued| {
+                    Self::toolbox_event_priority(update.what)
+                        < Self::toolbox_event_priority(queued.what)
+                })
+        });
+        if update_has_priority {
+            let event = self
+                .dequeue_preferred_marked_update_event(bus, event_mask)
+                .expect("selected update must remain available");
+            if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
+                eprintln!(
+                    "[INPUT] dequeue update what={} message=${:08X} mask=${:04X}",
+                    event.what, event.message, event_mask
+                );
+            }
+            return (
+                event.what,
+                event.message,
+                event.where_v,
+                event.where_h,
+                event.modifiers,
+                true,
+            );
+        }
+        if let Some(first_idx) = first_idx {
+            let idx = first_idx;
             let event = self.event_queue[idx].clone();
             if self.consume_retained_modal_dialog_event(cpu, bus, &event) {
                 self.event_queue.remove(idx);
@@ -447,10 +558,10 @@ impl super::TrapDispatcher {
             );
         }
 
-        if let Some(event) = self.dequeue_flushed_update_event(bus, event_mask) {
+        if let Some(event) = self.dequeue_preferred_marked_update_event(bus, event_mask) {
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
-                    "[INPUT] dequeue flushed update what={} message=${:08X} mask=${:04X}",
+                    "[INPUT] dequeue update what={} message=${:08X} mask=${:04X}",
                     event.what, event.message, event_mask
                 );
             }
@@ -470,9 +581,8 @@ impl super::TrapDispatcher {
         // update while the Window Manager update region remains dirty, so
         // those dropped entries are recoverable once through
         // `flushed_update_events`. We intentionally do not synthesize from
-        // arbitrary dirty update regions here: POD MARS Master's modal loop
-        // ignored a visible MARS update, leaving the region dirty and causing
-        // the old synthetic path to stream updateEvts indefinitely.
+        // arbitrary dirty update regions here: an unacknowledged dirty region
+        // would otherwise stream updateEvts indefinitely.
         (
             0,
             0,
@@ -547,21 +657,23 @@ impl super::TrapDispatcher {
     /// Returns (what, message, where_v, where_h, modifiers, has_event).
     pub(crate) fn dequeue_event(&mut self, event_mask: u16) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_auto_key_if_due(event_mask);
-        if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
-            return (
-                event.what,
-                event.message,
-                event.where_v,
-                event.where_h,
-                event.modifiers,
-                true,
-            );
+        let queued_idx = self.event_queue.iter().position(|event| {
+            Self::is_low_level_os_event(event.what)
+                && Self::event_matches_mask(event_mask, event.what)
+        });
+        if queued_idx.is_none() || self.pending_native_menu_wins_fifo_tie() {
+            if let Some(event) = self.dequeue_pending_native_menu_event(event_mask) {
+                return (
+                    event.what,
+                    event.message,
+                    event.where_v,
+                    event.where_h,
+                    event.modifiers,
+                    true,
+                );
+            }
         }
-        if let Some(idx) = self
-            .event_queue
-            .iter()
-            .position(|e| Self::event_matches_mask(event_mask, e.what))
-        {
+        if let Some(idx) = queued_idx {
             let ev = self.event_queue.remove(idx).unwrap();
             if trace_input_enabled() || super::dispatch::trace_delivered_events_enabled() {
                 eprintln!(
@@ -594,6 +706,10 @@ impl super::TrapDispatcher {
                 false,
             )
         }
+    }
+
+    fn is_low_level_os_event(what: u16) -> bool {
+        matches!(what, 1..=5 | 7)
     }
 
     fn enqueue_qelem(&self, bus: &mut MacMemoryBus, q_entry: u32, q_header: u32) {
@@ -1133,6 +1249,43 @@ mod tests {
     }
 
     #[test]
+    fn native_menu_mouse_down_follows_older_low_level_events() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.tick_count = 100;
+        disp.event_queue.push_back(QueuedEvent {
+            what: 3,
+            message: 0x1234,
+            where_v: 20,
+            where_h: 30,
+            modifiers: 0,
+        });
+        disp.pending_native_menu_event = Some(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 10,
+            where_h: 42,
+            modifiers: 0,
+        });
+
+        assert_eq!(disp.peek_event(u16::MAX).unwrap().what, 3);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (3, 0x1234));
+        let event = disp.dequeue_event(u16::MAX);
+        assert_eq!((event.0, event.2, event.3), (1, 10, 42));
+
+        disp.tick_count += 1;
+        disp.event_queue.push_back(QueuedEvent {
+            what: 4,
+            message: 0x5678,
+            where_v: 20,
+            where_h: 30,
+            modifiers: 0,
+        });
+        assert_eq!(disp.peek_event(u16::MAX).unwrap().what, 1);
+        assert_eq!(disp.dequeue_event(u16::MAX).0, 1);
+    }
+
+    #[test]
     fn flush_events_clears_queue_and_sets_d0_zero() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -1237,6 +1390,29 @@ mod tests {
         disp.tick_count = 100;
         let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
         assert!(!has_event, "released key should not keep auto-keying");
+    }
+
+    #[test]
+    fn autokey_is_posted_when_ticks_advance_before_the_next_poll() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.sent_open_app_event = true;
+
+        disp.push_key_down(0x00, b'a');
+        let (_, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0008);
+        assert!(has_event, "initial keyDown should be delivered");
+
+        disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
+        disp.post_auto_key_if_due();
+
+        disp.push_key_up(0x00, b'a');
+        let (what, message, _, _, _, has_event) =
+            disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0020);
+        assert!(
+            has_event,
+            "elapsed autoKey must survive a later key release"
+        );
+        assert_eq!(what, 5);
+        assert_eq!(message, 0x0000_0061);
     }
 
     #[test]
@@ -2231,6 +2407,34 @@ mod tests {
         assert_eq!(modifiers & 0x0080, 0x0080);
     }
 
+    #[test]
+    fn os_event_avail_peeks_latched_native_menu_mouse_down() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.tick_count = 100;
+        disp.pending_native_menu_event = Some(QueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: 10,
+            where_h: 42,
+            modifiers: 0,
+        });
+        cpu.write_reg(Register::D0, 1 << 1);
+        cpu.write_reg(Register::A0, EVENT_PTR);
+
+        let result = disp.dispatch_event(false, 0x30, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(read_event_record(&bus, EVENT_PTR).0, 1);
+        assert!(disp.pending_native_menu_event.is_some());
+
+        cpu.write_reg(Register::D0, 1 << 1);
+        let result = disp.dispatch_event(false, 0x31, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(read_event_record(&bus, EVENT_PTR).0, 1);
+    }
+
     // ---- GetOSEvent ($A031) ----
 
     #[test]
@@ -2248,6 +2452,273 @@ mod tests {
             read_event_record(&bus, EVENT_PTR);
         assert_eq!(what, 0);
         assert_eq!(modifiers & 0x0080, 0x0080);
+    }
+
+    #[test]
+    fn get_os_event_skips_toolbox_and_high_level_events() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: 0x1000,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+        disp.event_queue.push_back(QueuedEvent {
+            what: 23,
+            message: u32::from_be_bytes(*b"aevt"),
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.push_key_down(0x00, b'a');
+        cpu.write_reg(Register::D0, 0xFFFF);
+        cpu.write_reg(Register::A0, EVENT_PTR);
+
+        // Macintosh Toolbox Essentials (1992), pp. 2-97--2-99:
+        // GetOSEvent and OSEventAvail return only low-level events from the
+        // Operating System event queue, never update or high-level events.
+        let result = disp.dispatch_event(false, 0x31, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(read_event_record(&bus, EVENT_PTR).0, 3);
+        assert_eq!(disp.event_queue.len(), 2);
+        assert_eq!(disp.event_queue[0].what, 6);
+        assert_eq!(disp.event_queue[1].what, 23);
+
+        cpu.write_reg(Register::D0, 0xFFFF);
+        let result = disp.dispatch_event(false, 0x30, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF);
+        assert_eq!(read_event_record(&bus, EVENT_PTR).0, 0);
+        assert_eq!(disp.event_queue.len(), 2);
+    }
+
+    #[test]
+    fn toolbox_event_accessors_apply_documented_event_priority() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for (what, message) in [
+            (6, 0x1000),
+            (23, u32::from_be_bytes(*b"aevt")),
+            (1, 0),
+            (8, 0x2000),
+        ] {
+            disp.event_queue.push_back(QueuedEvent {
+                what,
+                message,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0,
+            });
+        }
+
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 8, "activate events have highest priority");
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 1, "user input precedes update events");
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 6, "update events precede high-level events");
+        assert_eq!(disp.event_queue.front().map(|event| event.what), Some(23));
+    }
+
+    #[test]
+    fn low_level_toolbox_events_preserve_fifo_order() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for (what, message) in [(3, 0x3000), (2, 0x2000), (7, 0x7000)] {
+            disp.event_queue.push_back(QueuedEvent {
+                what,
+                message,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0,
+            });
+        }
+
+        for expected in [(3, 0x3000), (2, 0x2000), (7, 0x7000)] {
+            let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+            assert_eq!((peeked.what, peeked.message), expected);
+            let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+            assert_eq!((event.0, event.1), expected);
+        }
+    }
+
+    fn make_dirty_visible_window(bus: &mut crate::memory::MacMemoryBus) -> u32 {
+        let window = bus.alloc(160);
+        bus.write_byte(window + 110, 0xFF); // WindowRecord.visible
+        let region = bus.alloc(10);
+        bus.write_word(region, 10);
+        bus.write_word(region + 2, 0);
+        bus.write_word(region + 4, 0);
+        bus.write_word(region + 6, 20);
+        bus.write_word(region + 8, 20);
+        let update_handle = bus.alloc(4);
+        bus.write_long(update_handle, region);
+        bus.write_long(window + 122, update_handle); // WindowRecord.updateRgn
+        window
+    }
+
+    #[test]
+    fn flushed_update_keeps_priority_between_autokey_and_os_events() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = make_dirty_visible_window(&mut bus);
+        disp.window_list.push(window);
+        disp.queue_window_update_event(window);
+        disp.flush_events_with_masks(1 << 6, 0);
+        assert!(disp.event_queue.is_empty());
+        assert_eq!(disp.flushed_update_events.len(), 1);
+
+        for what in [15, 5] {
+            disp.event_queue.push_back(QueuedEvent {
+                what,
+                message: 0,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0,
+            });
+        }
+
+        let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+        assert_eq!(peeked.what, 5, "autoKey precedes recovered updateEvt");
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 5);
+
+        let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+        assert_eq!(peeked.what, 6, "recovered updateEvt precedes OS events");
+        assert_eq!(peeked.message, window);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (6, window));
+
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 15);
+    }
+
+    #[test]
+    fn mixed_source_updates_follow_front_to_back_window_order() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let front = make_dirty_visible_window(&mut bus);
+        let back = make_dirty_visible_window(&mut bus);
+        disp.window_list = vec![front, back];
+
+        disp.queue_window_update_event(front);
+        disp.flush_events_with_masks(1 << 6, 0);
+        disp.queue_window_update_event(back);
+        assert_eq!(disp.flushed_update_events.len(), 1);
+        assert_eq!(disp.event_queue.len(), 1);
+
+        let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+        assert_eq!(peeked.message, front, "recovered front update must win");
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (6, front));
+
+        let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+        assert_eq!(peeked.message, back);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (6, back));
+    }
+
+    #[test]
+    fn stale_ordinary_update_does_not_precede_valid_recovered_update() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let hidden = make_dirty_visible_window(&mut bus);
+        bus.write_byte(hidden + 110, 0);
+        let visible = make_dirty_visible_window(&mut bus);
+        disp.window_list = vec![hidden, visible];
+        disp.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: hidden,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        disp.queue_window_update_event(visible);
+        disp.flush_events_with_masks(1 << 6, 0);
+        // Restore the stale ordinary marker after FlushEvents recovered the
+        // valid marker; this models an independently queued stale source.
+        disp.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: hidden,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+
+        let peeked = disp.peek_toolbox_event(&bus, u16::MAX).unwrap();
+        assert_eq!(peeked.message, visible);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (6, visible));
+    }
+
+    #[test]
+    fn explicitly_posted_orphan_update_remains_deliverable() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.event_queue.push_back(QueuedEvent {
+            what: 6,
+            message: 0x1234_5678,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+
+        assert_eq!(
+            disp.peek_toolbox_event(&bus, u16::MAX).unwrap().message,
+            0x1234_5678
+        );
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!((event.0, event.1), (6, 0x1234_5678));
+    }
+
+    #[test]
+    fn picture_backed_update_peek_and_dequeue_skip_the_same_marker() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let picture_window = make_dirty_visible_window(&mut bus);
+        let picture_handle = bus.alloc(4);
+        bus.write_long(picture_handle, 0x0010_0000);
+        bus.write_long(picture_window + 148, picture_handle);
+        disp.window_list.push(picture_window);
+        disp.queue_window_update_event(picture_window);
+        disp.event_queue.push_back(QueuedEvent {
+            what: 15,
+            message: 0,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+
+        assert_eq!(disp.peek_toolbox_event(&bus, u16::MAX).unwrap().what, 15);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 15);
+    }
+
+    #[test]
+    fn dequeue_does_not_synthesize_markerless_dirty_window_updates() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = make_dirty_visible_window(&mut bus);
+        disp.window_list.push(window);
+        disp.event_queue.push_back(QueuedEvent {
+            what: 15,
+            message: 0,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert_eq!(event.0, 15);
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert!(!event.5, "a dirty region alone must not stream updateEvts");
+    }
+
+    #[test]
+    fn peek_and_dequeue_agree_on_markerless_dirty_window() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = make_dirty_visible_window(&mut bus);
+        disp.window_list.push(window);
+
+        assert!(disp.peek_toolbox_event(&bus, u16::MAX).is_none());
+        let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
+        assert!(!event.5);
+        assert_eq!(event.0, 0);
     }
 
     #[test]

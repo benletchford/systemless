@@ -17988,8 +17988,7 @@ mod tests {
         let sp = TEST_SP;
         let keys_ptr = 0x200100u32;
 
-        // Press left arrow (0x7B), space (0x31), and the EVO hyperspace
-        // controls whose KeyMap word layout matters in-game.
+        // Press keys spanning several KeyMap bytes, including byte 15.
         disp.push_key_down(0x7B, 28);
         disp.push_key_down(0x31, 32);
         disp.push_key_down(0x26, b'j');
@@ -18032,8 +18031,8 @@ mod tests {
         assert!(disp.key_is_down(0x7E));
         assert_eq!(bus.read_byte(keys_ptr + 15), 0x40, "only up remains");
 
-        // J ($26) and M ($2E) differ only by KeyMap byte. This catches the
-        // byte-pair swap that makes EV/Marathon direct pollers invert them.
+        // J ($26) and M ($2E) differ only by KeyMap byte. This catches a
+        // byte-pair swap in clients that inspect the returned bytes directly.
         disp.push_key_up(0x26, b'j');
         disp.push_key_down(0x2E, b'm');
         cpu.write_reg(Register::A7, sp);

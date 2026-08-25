@@ -359,7 +359,6 @@ fn draw_raw_quilt_frame(
     }
     let src_row_bytes = (raw_len / (src_height as usize)) as u32;
 
-
     let dst_width = i32::from(dst_right) - i32::from(dst_left);
     let dst_height = i32::from(dst_bottom) - i32::from(dst_top);
     if dst_width <= 0 || dst_height <= 0 {
@@ -389,7 +388,6 @@ fn draw_raw_quilt_frame(
     }
     true
 }
-
 
 /// Parse and render a PICT from guest memory.
 /// `pic_ptr` points to the Picture record (picSize + picFrame + opcodes).
@@ -424,7 +422,6 @@ pub fn draw_picture(
         );
         return (ok, None);
     }
-
 
     // Read Picture header
     let _pic_size = bus.read_word(pic_ptr) as u32;
@@ -637,13 +634,12 @@ pub fn draw_picture(
             }
             0x1A => {
                 // RGBFgCol (6 bytes) - v2 only. Maps the 48-bit RGB to the
-                // closest 8bpp CLUT index.
+                // closest destination CLUT index.
                 let r = bus.read_word(pos);
                 let g = bus.read_word(pos + 2);
                 let b = bus.read_word(pos + 4);
                 pos += 6;
-                let clut = super::TrapDispatcher::standard_mac_8bpp_clut();
-                fg_idx = closest_clut_index(r, g, b, &clut);
+                fg_idx = closest_clut_index(r, g, b, device_clut);
             }
             0x1B => {
                 // RGBBkCol (6 bytes) - v2 only. Same mapping.
@@ -651,8 +647,7 @@ pub fn draw_picture(
                 let g = bus.read_word(pos + 2);
                 let b = bus.read_word(pos + 4);
                 pos += 6;
-                let clut = super::TrapDispatcher::standard_mac_8bpp_clut();
-                bg_idx = closest_clut_index(r, g, b, &clut);
+                bg_idx = closest_clut_index(r, g, b, device_clut);
             }
             0x1C => {
                 // HiliteMode (0 bytes).
@@ -8564,6 +8559,88 @@ mod tests {
 
         assert!(ok, "v2 OpColor should be skipped, not stop the PICT stream");
         assert_eq!(bus.read_byte(screen_base + 8 * row_bytes + 8), 255);
+    }
+
+    #[test]
+    fn pict_v2_rgb_colors_map_foreground_and_background_through_destination_clut() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let screen_w = 4u16;
+        let screen_h = 4u16;
+        let row_bytes = u32::from(screen_w);
+        bus.write_bytes(
+            screen_base,
+            &vec![0xEE; (row_bytes * u32::from(screen_h)) as usize],
+        );
+
+        let pic = 0x10_0000u32;
+        let mut p = pic + 10;
+        bus.write_byte(p, 0x11);
+        p += 1; // VersionOp
+        bus.write_byte(p, 0x02);
+        p += 1; // PICT v2
+        bus.write_byte(p, 0xFF);
+        p += 1; // version padding
+        bus.write_byte(p, 0x00);
+        p += 1; // align first word opcode
+
+        bus.write_word(p, 0x001A);
+        p += 2; // RGBFgCol
+        for component in [0x1234u16, 0x5678, 0x9ABC] {
+            bus.write_word(p, component);
+            p += 2;
+        }
+        bus.write_word(p, 0x0034);
+        p += 2; // fillRect with the default all-set FillPat
+        for value in [0u16, 0, 2, 4] {
+            bus.write_word(p, value);
+            p += 2;
+        }
+
+        bus.write_word(p, 0x001B);
+        p += 2; // RGBBkCol
+        for component in [0xDEADu16, 0xBEEF, 0x1111] {
+            bus.write_word(p, component);
+            p += 2;
+        }
+        bus.write_word(p, 0x000A);
+        p += 2; // FillPat
+        bus.fill_zeros(p, 8); // clear pattern bits select the background color
+        p += 8;
+        bus.write_word(p, 0x0034);
+        p += 2; // fillRect
+        for value in [2u16, 0, 4, 4] {
+            bus.write_word(p, value);
+            p += 2;
+        }
+        bus.write_word(p, 0x00FF);
+        p += 2; // EndOfPicture
+
+        bus.write_word(pic, (p - pic) as u16);
+        bus.write_word(pic + 2, 0);
+        bus.write_word(pic + 4, 0);
+        bus.write_word(pic + 6, screen_h);
+        bus.write_word(pic + 8, screen_w);
+
+        let mut clut = [[0x8000u16; 3]; 256];
+        clut[42] = [0x1234, 0x5678, 0x9ABC];
+        clut[77] = [0xDEAD, 0xBEEF, 0x1111];
+        let (ok, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            screen_h as i16,
+            screen_w as i16,
+            (screen_base, row_bytes, screen_w, screen_h, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(ok);
+        assert_eq!(bus.read_bytes(screen_base, 8), vec![42; 8]);
+        assert_eq!(bus.read_bytes(screen_base + 2 * row_bytes, 8), vec![77; 8]);
     }
 
     #[test]
