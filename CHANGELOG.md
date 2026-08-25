@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/benletchford/systemless/compare/v0.20.0...v0.20.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **loader:** apply Retro68 RELA relocations ([44e0179](https://github.com/benletchford/systemless/commit/44e0179ac46cf61d7cfd2b86a4cf3b21a2a4ce4b))
+
 ## [0.20.0](https://github.com/benletchford/systemless/compare/v0.19.1...v0.20.0) (2026-08-25)
 
 
