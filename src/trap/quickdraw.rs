@@ -1056,7 +1056,7 @@ impl super::TrapDispatcher {
                     if global_ptr != 0 {
                         bus.read_long(global_ptr)
                     } else {
-                        bus.read_long(0x2A6)
+                        bus.read_long(crate::memory::globals::addr::THE_PORT)
                     }
                 };
                 let dst_handle = if port_ptr != 0 {
@@ -1113,7 +1113,7 @@ impl super::TrapDispatcher {
                     if global_ptr != 0 {
                         bus.read_long(global_ptr)
                     } else {
-                        bus.read_long(0x2A6)
+                        bus.read_long(crate::memory::globals::addr::THE_PORT)
                     }
                 };
                 let clip_rgn = if port_ptr != 0 {
@@ -1164,7 +1164,7 @@ impl super::TrapDispatcher {
                     if global_ptr != 0 {
                         bus.read_long(global_ptr)
                     } else {
-                        bus.read_long(0x2A6)
+                        bus.read_long(crate::memory::globals::addr::THE_PORT)
                     }
                 };
                 let clip_rgn_handle = if port_ptr != 0 {
@@ -23910,7 +23910,7 @@ impl super::TrapDispatcher {
         if self.current_port != 0 {
             self.current_port
         } else {
-            bus.read_long(0x2A6)
+            bus.read_long(crate::memory::globals::addr::THE_PORT)
         }
     }
 
