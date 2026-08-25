@@ -305,6 +305,10 @@ const PPC_DSP_SCREEN_HEIGHT: u32 = 480;
 pub const PPC_QD_TEXT_FONT_DEFAULT: i16 = 0;
 pub const PPC_QD_TEXT_MODE_SRC_OR: i16 = 1;
 pub const PPC_QD_TEXT_SIZE_SYSTEM: i16 = 0;
+const PPC_MENU_TITLE_ORIGIN_H: i16 = 18;
+const PPC_MENU_TITLE_HIT_LEFT: i16 = 11;
+const PPC_MENU_TITLE_SPACING: i16 = 13;
+const PPC_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
 const PPC_QD_PEN_MODE_PAT_COPY: i16 = 8;
 const PPC_CGRAF_PORT_PN_LOC_OFFSET: u32 = 48;
 const PPC_CGRAF_PORT_PN_SIZE_OFFSET: u32 = 52;
@@ -15465,7 +15469,12 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawMenuBar => {
             toolbox_startup.menu_bar_draw_count =
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
-            let _ = ppc_draw_menu_bar(memory, gworlds, toolbox_startup.current_menu_bar);
+            let _ = ppc_draw_menu_bar(
+                memory,
+                gworlds,
+                toolbox_startup.current_menu_bar,
+                screen_clut,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HMGetHelpMenuHandle => {
@@ -58947,19 +58956,13 @@ fn ppc_menu_select(
     let Some(menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
         return 0;
     };
-    let mut title_left = 10i16;
+    let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
     for menu_handle in menus {
         let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
         let title = ppc_read_pascal_string(memory, menu + 14).unwrap_or_default();
-        let title_width = ppc_text_bytes_advance_for_font(
-            &title,
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-        )
-        .max(0)
-        .saturating_add(14);
+        let title_width = ppc_menu_title_advance(&title).saturating_add(PPC_MENU_TITLE_SPACING);
         let title_right = title_left.saturating_add(title_width);
         if initial_h >= title_left && initial_h < title_right {
             let count = ppc_count_menu_items(memory, menu_handle) as i16;
@@ -59262,6 +59265,7 @@ fn ppc_draw_menu_bar(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     menu_list_handle: u32,
+    screen_clut: &[[u16; 3]; 256],
 ) -> bool {
     let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
         return false;
@@ -59291,7 +59295,7 @@ fn ppc_draw_menu_bar(
         return true;
     };
     let count = usize::from(memory.read_u16_be(menu_list).unwrap_or(0)).min(64);
-    let mut title_h = 10i16;
+    let mut title_h = PPC_MENU_TITLE_ORIGIN_H;
     for index in 0..count {
         let Some(entry_addr) = menu_list.checked_add(2 + index as u32 * 4) else {
             break;
@@ -59306,20 +59310,79 @@ fn ppc_draw_menu_bar(
         let Some(title) = ppc_read_pascal_string(memory, title_ptr) else {
             continue;
         };
-        let advance = ppc_draw_text_bytes(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            (title_h, 15),
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-            PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_RGB_BLACK,
-            &title,
-        );
-        title_h = title_h.saturating_add(advance).saturating_add(14);
+        let advance = if ppc_is_system_menu_mark(&title) {
+            ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
+            PPC_SYSTEM_MENU_MARK_ADVANCE
+        } else {
+            ppc_draw_text_bytes(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                (title_h, 15),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+                PPC_QD_TEXT_MODE_SRC_OR,
+                PPC_RGB_BLACK,
+                &title,
+            )
+        };
+        title_h = title_h
+            .saturating_add(advance)
+            .saturating_add(PPC_MENU_TITLE_SPACING);
     }
     true
+}
+
+fn ppc_is_system_menu_mark(title: &[u8]) -> bool {
+    title == [0x14]
+}
+
+fn ppc_menu_title_advance(title: &[u8]) -> i16 {
+    if ppc_is_system_menu_mark(title) {
+        PPC_SYSTEM_MENU_MARK_ADVANCE
+    } else {
+        ppc_text_bytes_advance_for_font(
+            title,
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        )
+        .max(0)
+    }
+}
+
+fn ppc_draw_system_menu_mark(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    screen_clut: &[[u16; 3]; 256],
+    left: i16,
+) {
+    let palette = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+        if front_buffer.depth == 8 {
+            u16::from(pict::closest_clut_index(rgb[0], rgb[1], rgb[2], screen_clut))
+        } else {
+            ppc_q3_rgb555((
+                f32::from(rgb[0]) / 65_535.0,
+                f32::from(rgb[1]) / 65_535.0,
+                f32::from(rgb[2]) / 65_535.0,
+            ))
+        }
+    });
+    for (dy, row) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
+        .iter()
+        .enumerate()
+    {
+        for (dx, palette_index) in row.iter().copied().enumerate() {
+            if palette_index == 0 {
+                continue;
+            }
+            let _ = ppc_quickdraw_write_raw_pixel(
+                memory,
+                front_buffer,
+                (i32::from(left) + dx as i32, 3 + dy as i32),
+                palette[usize::from(palette_index - 1)],
+            );
+        }
+    }
 }
 
 fn ppc_menu_first_item(memory: &mut PpcSectionMem, menu_handle: u32) -> Option<u32> {
@@ -67568,7 +67631,7 @@ mod tests {
                 res_type: u32::from_be_bytes(*b"MENU"),
                 res_id: 128,
                 name: Vec::new(),
-                data: menu_resource(128, b"File"),
+                data: menu_resource(128, &[0x14]),
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -67580,7 +67643,12 @@ mod tests {
                 res_type: u32::from_be_bytes(*b"MENU"),
                 res_id: 129,
                 name: Vec::new(),
-                data: menu_resource(129, b"Edit"),
+                data: {
+                    let mut data = menu_resource(129, b"File");
+                    data.pop();
+                    data.extend_from_slice(&[4, b'O', b'p', b'e', b'n', 0, 0, 0, 0, 0]);
+                    data
+                },
                 raw_data: None,
                 raw_attrs: None,
                 attrs: 0,
@@ -67607,11 +67675,38 @@ mod tests {
         assert!(ppc_draw_menu_bar(
             &mut loaded.memory,
             &loaded.gworlds,
-            menu_list_handle
+            menu_list_handle,
+            &loaded.screen_clut,
         ));
         let white = ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE);
         let black = ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK);
         assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE), Some(white));
+        let mark_outline = pict::closest_clut_index(
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE[0][0],
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE[0][1],
+            crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE[0][2],
+            &loaded.screen_clut,
+        );
+        assert_eq!(
+            loaded.memory.read_u8(
+                PPC_MAIN_SCREEN_BASE + 3 * ppc_main_screen_row_bytes() + 19
+            ),
+            Some(mark_outline)
+        );
+        assert_eq!(ppc_menu_title_advance(&[0x14]), 11);
+        assert_eq!(
+            ppc_menu_select(
+                &mut loaded.memory,
+                menu_list_handle,
+                42,
+                PpcInputSnapshot {
+                    mouse_v: 21,
+                    mouse_h: 42,
+                    ..PpcInputSnapshot::default()
+                },
+            ),
+            (129 << 16) | 1
+        );
         assert_eq!(
             loaded
                 .memory
@@ -67619,7 +67714,7 @@ mod tests {
             Some(black)
         );
         assert!((3..19).any(|y| {
-            (0..100).any(|x| {
+            (42..100).any(|x| {
                 loaded
                     .memory
                     .read_u8(PPC_MAIN_SCREEN_BASE + y * ppc_main_screen_row_bytes() + x)
