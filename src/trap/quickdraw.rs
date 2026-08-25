@@ -3255,8 +3255,12 @@ impl super::TrapDispatcher {
                 let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut =
-                    self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
+                let dst_clut = self.read_indexed_destination_clut(
+                    bus,
+                    dst_ctab_handle,
+                    dst_info.pixel_size,
+                    screen_copybits_rect.is_some(),
+                );
                 let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
                 // Executor's translation gate compares the source PixMap's
                 // CTab seed against `CTAB_SEED(PIXMAP_TABLE(GD_PMAP(the_gd)))` —
@@ -3382,19 +3386,31 @@ impl super::TrapDispatcher {
                 // and the destination is the screen cm (ctab_handle 0)
                 // — the raw indices will display correctly once the
                 // palette fade completes.
-                let hardware_palette_active =
-                    dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
                 let skip_canonical_to_screen = src_info.pixel_size == 8
                     && dst_ctab_handle == 0
                     && src_clut
                         .as_ref()
                         .is_some_and(Self::uses_canonical_system_8bpp_clut);
-                // A same-depth 8-bit screen blit already carries indices for
-                // the installed hardware palette. Packed 2/4-bit sources do
-                // not: their small source CTable must still be expanded into
-                // the active 8-bit destination palette.
-                let skip_hardware_palette_to_screen =
-                    hardware_palette_active && src_info.pixel_size == 8;
+                // A full-table Palette Manager fade leaves the logical
+                // GDevice table as the inverse-table baseline while the
+                // physical CLUT is transiently rewritten. Same-depth pixels
+                // already authored for that fade retain their device indices;
+                // translating them through the retained logical table would
+                // change the image during the fade. The state is set only by
+                // a full-table SetEntries fade, so unrelated device/CM
+                // differences still take the normal color-matching path.
+                // A device ColorTable (ctFlags high bit set) explicitly
+                // describes positional device indices; a pixMap ColorTable
+                // describes RGB values associated with source pixels and
+                // must be matched. Inside Macintosh Volume V (1986),
+                // pp. V-57..V-58.
+                let source_ctab_ptr = Self::color_table_ptr(bus, src_info.ctab_handle);
+                let source_uses_device_ctab =
+                    source_ctab_ptr != 0 && bus.read_word(source_ctab_ptr + 4) & 0x8000 != 0;
+                let skip_active_fade_to_screen = src_info.pixel_size == 8
+                    && dst_ctab_handle == 0
+                    && self.screen_palette_fade_active
+                    && source_uses_device_ctab;
                 // An all-explicit palette assigns stable device indices, so
                 // same-depth copies preserve those indices. Packed 2/4-bit
                 // sources copied into an 8-bit destination cannot preserve
@@ -3402,14 +3418,22 @@ impl super::TrapDispatcher {
                 // must still be matched into the destination CTable.
                 let skip_explicit_palette_translation = src_info.pixel_size == dst_info.pixel_size
                     && self.explicit_palette_ctabs.contains(&src_info.ctab_handle);
+                // A CTable seed is an invalidation token, not proof that two
+                // tables contain the same RGB entries. Applications may reuse
+                // a seed while changing a table in place, and the screen's
+                // live device CLUT may intentionally differ from the Color
+                // Manager's logical table during a fade. Compare the
+                // effective tables before preserving indexed pixels.
+                let indexed_tables_differ = match (src_clut.as_ref(), dst_clut.as_ref()) {
+                    (Some(src_clut), Some(dst_clut)) => src_clut != dst_clut,
+                    _ => src_ctab_seed != dst_ctab_seed,
+                };
                 let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
                     && matches!(dst_info.pixel_size, 2 | 4 | 8)
                     && src_info.ctab_handle != dst_info.ctab_handle
-                    && (src_info.pixel_size != dst_info.pixel_size
-                        || (matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
-                            && src_ctab_seed != dst_ctab_seed))
+                    && (src_info.pixel_size != dst_info.pixel_size || indexed_tables_differ)
                     && !skip_canonical_to_screen
-                    && !skip_hardware_palette_to_screen
+                    && !skip_active_fade_to_screen
                     && !skip_explicit_palette_translation
                 {
                     match (src_clut.as_ref(), dst_clut.as_ref()) {
@@ -13968,8 +13992,15 @@ impl super::TrapDispatcher {
                     self.copy_bits_destination_ctab_handle(bus, self.current_port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-                let dst_clut =
-                    self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
+                let screen_destination = dst_info.base == self.screen_mode.0
+                    && dst_info.row_bytes == self.screen_mode.1
+                    && dst_info.pixel_size == u32::from(self.screen_mode.4);
+                let dst_clut = self.read_indexed_destination_clut(
+                    bus,
+                    dst_ctab_handle,
+                    dst_info.pixel_size,
+                    screen_destination,
+                );
                 let palette_translation = match (src_clut.as_ref(), dst_clut.as_ref()) {
                     (Some(src_clut), Some(dst_clut)) if src_clut != dst_clut => {
                         Some(self.build_palette_translation(
@@ -17260,6 +17291,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         ctab_handle: u32,
         pixel_size: u32,
+        screen_destination: bool,
     ) -> Option<[[u16; 3]; 256]> {
         if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return None;
@@ -17268,6 +17300,15 @@ impl super::TrapDispatcher {
             let mut clut = [[0u16; 3]; 256];
             clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
             clut
+        } else if screen_destination {
+            // CopyBits uses the current GDevice's ColorTable for an indexed
+            // destination because the Color Manager needs that table's
+            // inverse table to translate source colors to destination
+            // indices. In this model `color_manager_clut` is the effective
+            // logical GDevice table; `device_clut` is the transient physical
+            // hardware view used while fades are in progress. Imaging With
+            // QuickDraw (1994), p. 3-117.
+            self.color_manager_clut
         } else {
             self.read_port_clut(bus, ctab_handle)
         };
@@ -19729,18 +19770,25 @@ impl super::TrapDispatcher {
         let dst_ctab_handle = self.copy_bits_destination_ctab_handle(bus, port, &dst_info);
         let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
             .then(|| self.read_port_clut(bus, src_info.ctab_handle));
-        let dst_clut =
-            self.read_indexed_destination_clut(bus, dst_ctab_handle, dst_info.pixel_size);
+        let screen_destination = dst_info.base == self.screen_mode.0
+            && dst_info.row_bytes == self.screen_mode.1
+            && dst_info.pixel_size == u32::from(self.screen_mode.4);
+        let dst_clut = self.read_indexed_destination_clut(
+            bus,
+            dst_ctab_handle,
+            dst_info.pixel_size,
+            screen_destination,
+        );
         let src_ctab_seed = Self::ctab_seed(bus, src_info.ctab_handle);
         let dst_ctab_seed = Self::ctab_seed(bus, dst_ctab_handle);
-        let hardware_palette_active =
-            dst_ctab_handle == 0 && self.device_clut != self.color_manager_clut;
+        let indexed_tables_differ = match (src_clut.as_ref(), dst_clut.as_ref()) {
+            (Some(src_clut), Some(dst_clut)) => src_clut != dst_clut,
+            _ => src_ctab_seed != dst_ctab_seed,
+        };
         let palette_translation = if matches!(src_info.pixel_size, 2 | 4 | 8)
             && matches!(dst_info.pixel_size, 2 | 4 | 8)
             && src_info.ctab_handle != dst_info.ctab_handle
-            && matches!(src_ctab_seed, Some(src_seed) if src_seed != 0)
-            && src_ctab_seed != dst_ctab_seed
-            && !(hardware_palette_active && src_info.pixel_size == 8)
+            && (src_info.pixel_size != dst_info.pixel_size || indexed_tables_differ)
         {
             match (src_clut.as_ref(), dst_clut.as_ref()) {
                 (Some(src_clut), Some(dst_clut)) => Some(self.build_palette_translation(
@@ -22597,6 +22645,7 @@ impl super::TrapDispatcher {
             && self.tick_count < self.seeded_picture_palette_until_tick
             && !Self::uses_canonical_system_8bpp_clut(&self.seeded_picture_palette);
         if preserve_seeded_picture_palette && !strict_palette && !palette_as_game_wrote_enabled() {
+            self.screen_palette_fade_active = true;
             if let Some(scale) = Self::canonical_table_brightness_scale(bus, table_ptr) {
                 self.device_clut = Self::scale_clut(&self.seeded_picture_palette, scale);
             }
@@ -22700,17 +22749,23 @@ impl super::TrapDispatcher {
                         table_ptr,
                         &self.color_manager_clut,
                     )));
-
+        if is_full_replace {
+            // Only a full-table update of the screen GDevice can put the
+            // screen hardware into this transient-fade state. Offscreen
+            // palette installs must never affect screen CopyBits decisions.
+            self.screen_palette_fade_active = target_is_screen && transient_fade_table;
+        }
         // Uniform sequence-mode ColorSpec.value fields are client IDs after
         // Color Manager processing, not physical CLUT indices. Preserve the
         // independently valid physical mapping while updating the logical
         // GDevice table; treating the latter as a physical palette
         // reinterprets already indexed artwork through unrelated colors.
+        // A sequence immediately following a fade has no independently valid
+        // physical mapping: its prior DAC contents are the dimmed palette,
+        // so the new full table must install its RGB values physically.
         // Inside Macintosh Volume V (1986), pp. V-142..V-143.
         if target_is_screen && sequence_uses_client_ids && !transient_fade_table {
-            if previous_frame_was_dimmed {
-                self.device_clut = self.color_manager_clut;
-            } else {
+            if !previous_frame_was_dimmed {
                 let gdh = self.set_entries_target_gdevice_handle(bus);
                 let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
                 if ctab != 0 {
@@ -34728,7 +34783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_bits_screen_blit_preserves_indices_when_hardware_palette_active() {
+    fn test_copy_bits_screen_blit_maps_custom_source_into_live_device_clut() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let gdh = d.ensure_main_gdevice(&mut bus);
         let gd = bus.read_long(gdh);
@@ -34743,13 +34798,15 @@ mod tests {
         let src_ctab_handle = 0x31C000u32;
         let src_rect = 0x31D000u32;
         let dst_rect = 0x31D010u32;
-        let cm = d.color_manager_clut;
+        let target = d.color_manager_clut[7];
+        d.device_clut[7] = [0x0100, 0x0200, 0x0300];
+        d.device_clut[1] = [0x0200, 0x0100, 0x0300];
 
         write_color_table(
             &mut bus,
             src_ctab_handle,
             0x1111_1111,
-            &[(42, cm[7][0], cm[7][1], cm[7][2])],
+            &[(42, target[0], target[1], target[2])],
         );
         write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
         bus.write_byte(src_base, 42);
@@ -34757,7 +34814,97 @@ mod tests {
         write_rect(&mut bus, src_rect, 0, 0, 1, 1);
         write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
 
-        d.device_clut[1] = [0x0100, 0x0200, 0x0300];
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, screen_pm);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base), 7);
+    }
+
+    #[test]
+    fn test_copy_bits_screen_blit_translates_equal_seed_different_tables() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let screen_pm_handle = bus.read_long(gd + 22);
+        let screen_pm = bus.read_long(screen_pm_handle);
+        let screen_base = bus.read_long(screen_pm);
+        let screen_row_bytes = (bus.read_word(screen_pm + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        let src_pixmap = 0x31A200u32;
+        let src_base = 0x31B200u32;
+        let src_ctab_handle = 0x31C200u32;
+        let src_rect = 0x31D200u32;
+        let dst_rect = 0x31D210u32;
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let screen_seed = TrapDispatcher::ctab_seed(&bus, screen_ctab_handle).unwrap();
+        let target = d.color_manager_clut[7];
+        d.device_clut[7] = [0x0100, 0x0200, 0x0300];
+        d.device_clut[1] = [0x0200, 0x0100, 0x0300];
+
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            screen_seed,
+            &[(42, target[0], target[1], target[2])],
+        );
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        bus.write_byte(src_base, 42);
+        bus.write_byte(screen_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, screen_pm);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base), 7);
+    }
+
+    #[test]
+    fn test_copy_bits_screen_blit_preserves_authored_indices_during_active_fade() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let screen_pm_handle = bus.read_long(gd + 22);
+        let screen_pm = bus.read_long(screen_pm_handle);
+        let screen_base = bus.read_long(screen_pm);
+        let screen_row_bytes = (bus.read_word(screen_pm + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut = baseline;
+        d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.screen_palette_fade_active = true;
+
+        let src_pixmap = 0x31A400u32;
+        let src_base = 0x31B400u32;
+        let src_ctab_handle = 0x31C400u32;
+        let src_rect = 0x31D400u32;
+        let dst_rect = 0x31D410u32;
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x1111_1111,
+            &[(42, baseline[7][0], baseline[7][1], baseline[7][2])],
+        );
+        bus.write_word(bus.read_long(src_ctab_handle) + 4, 0x8000);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        bus.write_byte(src_base, 42);
+        bus.write_byte(screen_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
 
         bus.write_long(TEST_SP, 0);
         bus.write_word(TEST_SP + 4, 0u16);
@@ -34769,6 +34916,54 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(screen_base), 42);
+    }
+
+    #[test]
+    fn test_copy_bits_screen_blit_translates_unrelated_pixmap_during_active_fade() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let screen_pm_handle = bus.read_long(gd + 22);
+        let screen_pm = bus.read_long(screen_pm_handle);
+        let screen_base = bus.read_long(screen_pm);
+        let screen_row_bytes = (bus.read_word(screen_pm + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        let baseline = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut = baseline;
+        d.device_clut = TrapDispatcher::scale_clut(&baseline, 0.02);
+        d.screen_palette_fade_active = true;
+
+        let src_pixmap = 0x31A600u32;
+        let src_base = 0x31B600u32;
+        let src_ctab_handle = 0x31C600u32;
+        let src_rect = 0x31D600u32;
+        let dst_rect = 0x31D610u32;
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            0x2222_2222,
+            &[(42, baseline[7][0], baseline[7][1], baseline[7][2])],
+        );
+        // A pixMap ColorTable has ctFlags high bit clear; CopyBits must
+        // match its RGB entries even while the screen hardware is fading.
+        bus.write_word(bus.read_long(src_ctab_handle) + 4, 0);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        bus.write_byte(src_base, 42);
+        bus.write_byte(screen_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, screen_pm);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base), 7);
     }
 
     #[test]
@@ -42553,7 +42748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_setentries_client_id_sequence_after_fade_restores_stable_physical_palette() {
+    fn test_setentries_client_id_sequence_after_fade_installs_incoming_physical_palette() {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
@@ -42570,7 +42765,8 @@ mod tests {
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
-        assert_eq!(d.device_clut, baseline);
+        assert_eq!(d.device_clut[42], [0x2A00, 0xD500, 0x5500]);
+        assert_ne!(d.device_clut, baseline);
         assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
         let ctab_handle = d.current_gdevice_ctab_handle(&bus);
         let ctab = bus.read_long(ctab_handle);
@@ -42614,6 +42810,7 @@ mod tests {
             d.color_manager_clut, baseline,
             "color_manager_clut must remain the baseline palette during hardware fade-down"
         );
+        assert!(d.screen_palette_fade_active);
     }
 
     #[test]
