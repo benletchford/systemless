@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.0](https://github.com/benletchford/systemless/compare/v0.18.25...v0.19.0) (2026-08-25)
+
+
+### Features
+
+* **disk:** add native classic HFS reader ([#821](https://github.com/benletchford/systemless/issues/821)) ([a35b6ee](https://github.com/benletchford/systemless/commit/a35b6ee871a0cc0243db2920b811db2e9ad0eca0))
+
+
+### Bug Fixes
+
+* restore classic window layering and dragging ([#823](https://github.com/benletchford/systemless/issues/823)) ([6fb2508](https://github.com/benletchford/systemless/commit/6fb250840d948501cdd6c046a89d0856e819dc16))
+
 ## [0.18.25](https://github.com/benletchford/systemless/compare/v0.18.24...v0.18.25) (2026-08-25)
 
 
