@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/benletchford/systemless/compare/v0.19.1...v0.20.0) (2026-08-25)
+
+
+### Features
+
+* **headless:** replay input from a script scheduled by instruction count ([#824](https://github.com/benletchford/systemless/issues/824)) ([552efff](https://github.com/benletchford/systemless/commit/552efff23d06e9883f67aff9bced42c375995bd8))
+
+
+### Bug Fixes
+
+* preserve indexed artwork during palette fades ([#777](https://github.com/benletchford/systemless/issues/777)) ([ed3bda9](https://github.com/benletchford/systemless/commit/ed3bda92ace0a4fc677897605b68c76589bad4f6))
+* **quickdraw:** never hand out SysZone as a GrafPtr when no port is current ([#825](https://github.com/benletchford/systemless/issues/825)) ([142c725](https://github.com/benletchford/systemless/commit/142c7251c4295ff9a54a503c8f14daea0d2648c7))
+
 ## [0.19.1](https://github.com/benletchford/systemless/compare/v0.19.0...v0.19.1) (2026-08-25)
 
 
