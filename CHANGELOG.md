@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.23](https://github.com/benletchford/systemless/compare/v0.18.22...v0.18.23) (2026-08-25)
+
+
+### Bug Fixes
+
+* restore PowerPC cursor and menu behavior ([eeddde1](https://github.com/benletchford/systemless/commit/eeddde1bfe3a1b28f30f4b16bf89b1e816ac15fd))
+
 ## [0.18.22](https://github.com/benletchford/systemless/compare/v0.18.21...v0.18.22) (2026-08-25)
 
 
