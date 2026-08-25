@@ -2847,6 +2847,14 @@ impl super::TrapDispatcher {
             go_away_flag,
             ref_con,
         );
+        if !visible {
+            // A hidden window has no pixels visible on the screen. Its
+            // GrafPort remains a valid drawing destination, but QuickDraw's
+            // visRgn must be empty so controls and other drawing cannot paint
+            // through it until ShowWindow makes the window visible.
+            // Inside Macintosh Volume I, pp. I-278, I-283.
+            Self::write_region_handle_rect(bus, bus.read_long(window_ptr + 24), None);
+        }
         let window_def_proc = self.window_def_proc_handle(bus, wind_proc_id);
         bus.write_long(window_ptr + Self::WINDOW_DEF_PROC_OFFSET, window_def_proc);
         // OpenPort/OpenCPort initializes clipRgn to an arbitrarily large
@@ -5739,6 +5747,12 @@ mod tests {
             false,
             false,
             0,
+        );
+
+        assert_eq!(
+            read_window_region_rect(&bus, window_addr, 24),
+            (0, 0, 0, 0),
+            "a newly hidden window must start with an empty visRgn"
         );
 
         disp.move_window_to_global(&mut bus, window_addr, 0, 0, false);

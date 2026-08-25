@@ -2885,6 +2885,20 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                // The QuickDraw bottleneck is downstream of GrafPort
+                // clipping. A replacement bitsProc must not get a chance to
+                // paint through a hidden window (whose visRgn is empty), nor
+                // through an empty clipRgn. Inside Macintosh Volume I,
+                // pp. I-158, I-176, and I-197.
+                if self.copy_bits_fully_clipped_in_current_port(
+                    bus,
+                    dst_bits_ptr,
+                    dst_rect_ptr,
+                    mask_rgn,
+                ) {
+                    return Some(Ok(()));
+                }
+
                 // CopyBits is a bottleneck caller: it hands the transfer to the
                 // current port's grafProcs.bitsProc, which is StdBits unless the
                 // app replaced it (IM:I I-176 and I-197). Applications that
@@ -9320,6 +9334,35 @@ impl super::TrapDispatcher {
                     dst_pixel_size
                 };
 
+                // PlotCIcon is defined in terms of QuickDraw transfers and
+                // therefore observes the current port's visRgn and clipRgn.
+                // Hidden windows have an empty visRgn; drawing their cached
+                // controls must not leak directly into the screen PixMap.
+                // More Macintosh Toolbox 1993, pp. 5-25 to 5-26; Inside
+                // Macintosh Volume I, p. I-158.
+                let vis_rgn = bus.read_long(port + 24);
+                let clip_rgn = bus.read_long(port + 28);
+                let mut clip_top = dst_top;
+                let mut clip_left = dst_left;
+                let mut clip_bottom = dst_bottom;
+                let mut clip_right = dst_right;
+                for region in [vis_rgn, clip_rgn] {
+                    if !Self::clip_rect_to_region_bbox(
+                        bus,
+                        region,
+                        &mut clip_top,
+                        &mut clip_left,
+                        &mut clip_bottom,
+                        &mut clip_right,
+                    ) {
+                        return Some(Ok(()));
+                    }
+                }
+                let vis_membership =
+                    Self::build_region_membership_cache(bus, vis_rgn, clip_top, clip_bottom);
+                let clip_membership =
+                    Self::build_region_membership_cache(bus, clip_rgn, clip_top, clip_bottom);
+
                 if trace_menu_redraw_enabled() {
                     let abs_top = dst_top + dst_bounds_top;
                     let abs_left = dst_left + dst_bounds_left;
@@ -9420,13 +9463,28 @@ impl super::TrapDispatcher {
                 } else {
                     self.device_clut
                 };
-                for dst_y_local in dst_top..dst_bottom {
+                for dst_y_local in clip_top..clip_bottom {
                     let Some(sy) =
                         Self::scale_coord(pm_top, pm_bottom, dst_top, dst_bottom, dst_y_local)
                     else {
                         continue;
                     };
-                    for dst_x_local in dst_left..dst_right {
+                    for dst_x_local in clip_left..clip_right {
+                        if !Self::region_contains_point_cached(
+                            bus,
+                            vis_rgn,
+                            vis_membership.as_ref(),
+                            dst_y_local,
+                            dst_x_local,
+                        ) || !Self::region_contains_point_cached(
+                            bus,
+                            clip_rgn,
+                            clip_membership.as_ref(),
+                            dst_y_local,
+                            dst_x_local,
+                        ) {
+                            continue;
+                        }
                         let Some(sx) =
                             Self::scale_coord(pm_left, pm_right, dst_left, dst_right, dst_x_local)
                         else {
@@ -20295,6 +20353,52 @@ impl super::TrapDispatcher {
         Some(bits_proc)
     }
 
+    fn copy_bits_fully_clipped_in_current_port(
+        &self,
+        bus: &MacMemoryBus,
+        dst_bits_ptr: u32,
+        dst_rect_ptr: u32,
+        mask_rgn: u32,
+    ) -> bool {
+        let port = self.current_port;
+        if port == 0 || !Self::guest_range_in_ram(bus, port, 32) {
+            return false;
+        }
+
+        let port_version = bus.read_word(port + 6);
+        let port_base = if (port_version & 0xC000) == 0xC000 {
+            let pixmap_handle = bus.read_long(port + 2);
+            let pixmap = (pixmap_handle != 0).then(|| bus.read_long(pixmap_handle));
+            pixmap
+                .filter(|&pixmap| pixmap != 0)
+                .map(|pixmap| Self::offscreen_pixmap_base_ptr(bus, pixmap))
+                .unwrap_or(0)
+        } else {
+            bus.read_long(port + 2)
+        };
+        if port_base != self.resolve_copy_bitmap(bus, dst_bits_ptr).base {
+            return false;
+        }
+
+        let mut top = bus.read_word(dst_rect_ptr) as i16;
+        let mut left = bus.read_word(dst_rect_ptr + 2) as i16;
+        let mut bottom = bus.read_word(dst_rect_ptr + 4) as i16;
+        let mut right = bus.read_word(dst_rect_ptr + 6) as i16;
+        for region in [bus.read_long(port + 24), bus.read_long(port + 28), mask_rgn] {
+            if !Self::clip_rect_to_region_bbox(
+                bus,
+                region,
+                &mut top,
+                &mut left,
+                &mut bottom,
+                &mut right,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(super) fn resolve_copy_bitmap(&self, bus: &MacMemoryBus, bits_ptr: u32) -> CopyBitmapInfo {
         if bits_ptr == 0 || !Self::guest_range_in_ram(bus, bits_ptr, 14) {
             return Self::inert_copy_bitmap_info();
@@ -30181,6 +30285,32 @@ mod tests {
     }
 
     #[test]
+    fn copybits_does_not_call_replacement_bitsproc_for_hidden_port() {
+        // A hidden WindowRecord has an empty visRgn. CopyBits is clipped
+        // before the bitsProc bottleneck, so an application replacement proc
+        // cannot draw its screen-backed port while the window is hidden.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        const PORT_PTR: u32 = 0x181000;
+        const BITS_PROC: u32 = 0x0006_F123;
+        const RETURN_PC: u32 = 0x0004_5678;
+        d.current_port = PORT_PTR;
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
+
+        let vis_rgn_ptr = bus.alloc(10);
+        bus.write_word(vis_rgn_ptr, 10);
+        let vis_rgn = bus.alloc(4);
+        bus.write_long(vis_rgn, vis_rgn_ptr);
+        bus.write_long(PORT_PTR + 24, vis_rgn);
+        cpu.write_reg(Register::PC, RETURN_PC);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::PC), RETURN_PC);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 22);
+        assert_eq!(bus.read_byte(0x300480), 0x00);
+    }
+
+    #[test]
     fn copybits_ignores_the_synthesized_standard_bitsproc_marker() {
         // SetStdProcs writes $00F0A8EB into the bitsProc slot to mean "the
         // standard proc" (IM:I I-197). Calling back into that marker address
@@ -35603,7 +35733,7 @@ mod tests {
     }
 
     #[test]
-    fn plotcicon_draws_into_real_cgrafport_portpixmap_layout() {
+    fn plotcicon_uses_real_cgrafport_layout_and_honors_empty_visrgn() {
         // Systemless CGrafPorts store portPixMap at +2 and portVersion at
         // +6, matching Imaging With QuickDraw's CGrafPort layout. PlotCIcon
         // must resolve that real layout, not only the legacy synthetic test
@@ -35649,6 +35779,20 @@ mod tests {
         assert!(plot.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_byte(dst_base), 0x5F);
+
+        let vis_rgn_ptr = bus.alloc(10);
+        bus.write_word(vis_rgn_ptr, 10);
+        let vis_rgn = bus.alloc(4);
+        bus.write_long(vis_rgn, vis_rgn_ptr);
+        bus.write_long(port_ptr + 24, vis_rgn);
+        bus.write_byte(dst_base, 0x0F);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, icon_handle);
+        bus.write_long(TEST_SP + 4, rect_ptr);
+
+        let hidden_plot = d.dispatch_quickdraw(true, 0x21F, &mut cpu, &mut bus);
+        assert!(hidden_plot.unwrap().is_ok());
+        assert_eq!(bus.read_byte(dst_base), 0x0F);
     }
 
     #[test]

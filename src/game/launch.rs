@@ -340,12 +340,16 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
 
     let mut executable_entry: Option<ExecutableCandidate> = None;
     let mut skipped_disk_image_errors = Vec::new();
+    let mut payload = Payload {
+        dirs: Vec::new(),
+        files: Vec::new(),
+        volumes: Vec::new(),
+        skipped_disk_image_errors: Vec::new(),
+    };
 
     for entry in &archive.entries {
         if entry.is_folder {
-            // Register folder in VFS so directory lookups (e.g. Plug-Ins) succeed.
-            let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&entry.name);
-            runner.dispatcher_mut().ensure_vfs_directory(&normalized);
+            payload.dirs.push(entry.name.clone());
             continue;
         }
 
@@ -354,7 +358,7 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             .expect("one decoded fork pair per file entry")
             .map_err(|e| format!("Decompress error: {:?}", e))?;
 
-        let payload = payload_from_forks(
+        let entry_payload = payload_from_forks(
             &entry.name,
             data,
             rsrc,
@@ -363,9 +367,16 @@ fn load_stuffit(runner: &mut FixtureRunner, file_data: &[u8]) -> Result<LoadedAp
             entry.finder_flags,
             1,
         )?;
-        skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
-        insert_payload_into_vfs(runner, payload, &mut executable_entry);
+        payload.dirs.extend(entry_payload.dirs);
+        payload.files.extend(entry_payload.files);
+        payload.volumes.extend(entry_payload.volumes);
+        payload
+            .skipped_disk_image_errors
+            .extend(entry_payload.skipped_disk_image_errors);
     }
+    let payload = expand_split_vise_payloads(payload)?;
+    skipped_disk_image_errors.extend(payload.skipped_disk_image_errors.iter().cloned());
+    insert_payload_into_vfs(runner, payload, &mut executable_entry);
 
     log_vfs(runner);
 
@@ -1152,7 +1163,7 @@ fn collect_zip_payload(file_data: &[u8]) -> Result<Payload, String> {
             .extend(nested.skipped_disk_image_errors);
     }
 
-    Ok(payload)
+    expand_split_vise_payloads(payload)
 }
 
 fn safe_zip_entry_path<R: std::io::Read>(
@@ -1288,7 +1299,7 @@ fn payload_from_stuffit_archive(
     for entry in archive.entries.iter().filter(|entry| entry.is_folder) {
         payload.dirs.push(entry.name.clone());
     }
-    Ok(payload)
+    expand_split_vise_payloads(payload)
 }
 
 fn payload_from_stuffit_bytes(
@@ -1630,8 +1641,29 @@ fn payload_from_forks(
         return Ok(payload);
     }
 
-    if let Some(payload) = expand_vise_payload(name, &data, executable_priority)? {
-        return Ok(payload);
+    if let Some(parsed) = crate::game::vise::parse_vise(&data) {
+        match parsed {
+            Ok(_) => match expand_vise_payload(name, &data, executable_priority) {
+                Ok(Some(payload)) => return Ok(payload),
+                Ok(None) => {}
+                Err(error) => {
+                    if crate::runner::trace_load_enabled() {
+                        eprintln!(
+                        "[LOAD] Preserving Installer VISE payload \"{}\" for possible continuation: {}",
+                        name, error
+                    );
+                    }
+                }
+            },
+            Err(error) => {
+                if crate::runner::trace_load_enabled() {
+                    eprintln!(
+                        "[LOAD] Preserving unexpanded Installer VISE payload \"{}\": {}",
+                        name, error
+                    );
+                }
+            }
+        }
     }
 
     if let Some(file) = expand_squz_payload_file(
@@ -1963,6 +1995,92 @@ fn expand_vise_payload(
     }
 
     Ok(Some(payload))
+}
+
+fn expand_split_vise_payloads(mut payload: Payload) -> Result<Payload, String> {
+    loop {
+        let mut resolved = None;
+
+        'sources: for source_index in 0..payload.files.len() {
+            let source = &payload.files[source_index];
+            if crate::game::vise::parse_vise(&source.data).is_none()
+                || crate::game::vise::continuation_bytes(&source.data).is_some()
+            {
+                continue;
+            }
+
+            let source_name = source.name.clone();
+            let executable_priority = source.executable_priority;
+            if let Ok(Some(expanded)) =
+                expand_vise_payload(&source_name, &source.data, executable_priority)
+            {
+                resolved = Some((source_index, Vec::new(), expanded, source_name));
+                break;
+            }
+
+            // Multi-disk VISE installers store the catalog in the first file
+            // and continue its logical byte stream in VIS* data files on
+            // later disks. Join those segments in archive order before
+            // parsing so multi-volume installers can be opened directly.
+            let mut continuation_indices = Vec::new();
+            for (index, file) in payload.files.iter().enumerate().skip(source_index + 1) {
+                if (file.file_type[..3] != *b"VIS" && file.creator[..3] != *b"VIS")
+                    || crate::game::vise::continuation_bytes(&file.data).is_none()
+                {
+                    continue;
+                }
+                continuation_indices.push(index);
+                let continuation_data = continuation_indices
+                    .iter()
+                    .map(|&index| payload.files[index].data.as_slice())
+                    .collect::<Vec<_>>();
+                let Ok(joined) = crate::game::vise::join_segments(
+                    &payload.files[source_index].data,
+                    &continuation_data,
+                ) else {
+                    continue;
+                };
+                let Ok(Some(expanded)) =
+                    expand_vise_payload(&source_name, &joined, executable_priority)
+                else {
+                    continue;
+                };
+                resolved = Some((source_index, continuation_indices, expanded, source_name));
+                break 'sources;
+            }
+        }
+
+        let Some((source_index, continuation_indices, expanded, source_name)) = resolved else {
+            break;
+        };
+        if crate::runner::trace_load_enabled() && !continuation_indices.is_empty() {
+            eprintln!(
+                "[LOAD] Joined {} Installer VISE continuation file(s) for \"{}\"",
+                continuation_indices.len(),
+                source_name
+            );
+        }
+
+        let mut remove = vec![false; payload.files.len()];
+        remove[source_index] = true;
+        for index in continuation_indices {
+            remove[index] = true;
+        }
+        payload.files = payload
+            .files
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, file)| (!remove[index]).then_some(file))
+            .collect();
+        payload.dirs.extend(expanded.dirs);
+        payload.files.extend(expanded.files);
+        payload.volumes.extend(expanded.volumes);
+        payload
+            .skipped_disk_image_errors
+            .extend(expanded.skipped_disk_image_errors);
+    }
+
+    Ok(payload)
 }
 
 fn decode_installer_fork(
