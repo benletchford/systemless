@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.24](https://github.com/benletchford/systemless/compare/v0.18.23...v0.18.24) (2026-08-25)
+
+
+### Bug Fixes
+
+* support authentic multi-disk game launches ([#815](https://github.com/benletchford/systemless/issues/815)) ([2ccff10](https://github.com/benletchford/systemless/commit/2ccff101239277b8427011d1a217bfd901dc7d7d))
+
 ## [0.18.23](https://github.com/benletchford/systemless/compare/v0.18.22...v0.18.23) (2026-08-25)
 
 
