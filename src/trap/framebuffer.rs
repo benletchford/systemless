@@ -4509,30 +4509,19 @@ impl super::TrapDispatcher {
             && wl <= 2
             && wb >= screen_h as i16 - 2
             && wr >= screen_w as i16 - 2;
-        let skip_chrome = matches!(self.window_proc_id, 1 | 2 | 3 | 5)
-            || self.fullscreen_locked
-            || menu_bar_height <= 0
-            || hidden_menu_fullscreen_window;
+        let skip_chrome =
+            self.fullscreen_locked || menu_bar_height <= 0 || hidden_menu_fullscreen_window;
 
-        // Draw chrome for each visible non-front window FIRST
-        // (back-to-front order per window_list which is front-to-back),
-        // then the front window on top. Each back-window's chrome uses its
-        // WindowRecord-stored state (bounds derived from portPixMap bounds,
-        // title from titleHandle, goAway byte, hilited byte).
+        // WindowList is the visual front-to-back order. BringToFront changes
+        // that order without changing the active-window cache, so the cache
+        // cannot be used as the compositing top layer.
+        // Draw every visible frame in reverse WindowList order, preserving
+        // the content pixels of windows above each frame.
+        // Macintosh Toolbox Essentials (1992), pp. 4-65 and 4-69.
         if !skip_chrome && menu_bar_height > 0 {
             let list_snapshot = self.window_list.clone();
-            let saved_bounds = self.window_bounds;
-            let saved_title = self.window_title.clone();
-            let saved_proc = self.window_proc_id;
-            let saved_go_away = self.go_away_flag;
-            // Iterate back-to-front so earlier windows get overdrawn
-            // by later ones.
             for &w in list_snapshot.iter().rev() {
-                if w == self.front_window {
-                    continue;
-                }
                 if bus.read_byte(w + 110u32) == 0 {
-                    // Not visible.
                     continue;
                 }
                 let preserved_front_pixels: Vec<_> = self
@@ -4552,76 +4541,12 @@ impl super::TrapDispatcher {
                             .collect()
                     })
                     .unwrap_or_default();
-                // Derive per-window screen bounds from port geometry:
-                // init_cgraf_window writes pixmap bounds as
-                // (-wind_top, -wind_left, screen_h - wind_top,
-                //  screen_w - wind_left) — so wind_top = -bounds_top,
-                // wind_left = -bounds_left, and window size comes
-                // from portRect at window_ptr+16.
-                let port_version = bus.read_word(w + 6);
-                let (pmap_top, pmap_left) = if (port_version & 0xC000) == 0xC000 {
-                    let pm_handle = bus.read_long(w + 2);
-                    let pm_ptr = bus.read_long(pm_handle);
-                    (
-                        bus.read_word(pm_ptr + 6) as i16,
-                        bus.read_word(pm_ptr + 8) as i16,
-                    )
-                } else {
-                    (bus.read_word(w + 8) as i16, bus.read_word(w + 10) as i16)
-                };
-                let wind_top = -pmap_top;
-                let wind_left = -pmap_left;
-                let port_bottom = bus.read_word(w + 20) as i16;
-                let port_right = bus.read_word(w + 22) as i16;
-                let wind_bottom = wind_top + port_bottom;
-                let wind_right = wind_left + port_right;
-                // Degenerate / invalid — skip.
-                if wind_bottom <= wind_top || wind_right <= wind_left {
-                    continue;
-                }
-                self.window_bounds = (wind_top, wind_left, wind_bottom, wind_right);
-                // Read title from titleHandle at +134.
-                let title_h = bus.read_long(w + 134u32);
-                self.window_title = if title_h != 0 {
-                    let title_p = bus.read_long(title_h);
-                    if title_p != 0 {
-                        String::from_utf8_lossy(&bus.read_pstring(title_p)).into_owned()
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    String::new()
-                };
-                self.go_away_flag = bus.read_byte(w + 112u32) != 0;
-                // Use the per-window procID. Windows with no title bar
-                // (plainDBox/dBoxProc/altDBoxProc) draw only a border.
-                let w_proc = self.window_proc_ids.get(&w).copied().unwrap_or(0);
-                if self.window_uses_custom_def_proc(bus, w) {
-                    continue;
-                }
-                self.window_proc_id = w_proc;
                 let hilited = bus.read_byte(w + 111u32) != 0;
-                if matches!(w_proc, 1..=3) {
-                    self.draw_window_frame(bus);
-                } else {
-                    self.draw_window_chrome(bus, hilited);
-                }
+                self.draw_single_window_chrome_inline(bus, w, hilited);
                 for (top, left, width, height, pixels) in preserved_front_pixels {
                     self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
                 }
             }
-            // Restore front-window state before drawing front chrome.
-            self.window_bounds = saved_bounds;
-            self.window_title = saved_title;
-            self.window_proc_id = saved_proc;
-            self.go_away_flag = saved_go_away;
-        }
-
-        if self.front_window != 0 && !skip_chrome {
-            // Use the front window's hilited byte rather than hard-coding
-            // active=true so HiliteWindow(front, false) renders no stripes.
-            let front_hilited = bus.read_byte(self.front_window + 111u32) != 0;
-            self.draw_single_window_chrome_inline(bus, self.front_window, front_hilited);
         }
         // If a modal dialog is active, restore the rendered snapshot and
         // redraw only dynamic elements (edit text, button flash) on top.
@@ -4711,6 +4636,16 @@ impl super::TrapDispatcher {
             }
         }
         self.fill_kiosk_stage_for_centered_game_surface(bus, self.front_window);
+        if let Some(tracking) = self.window_tracking.as_ref() {
+            self.draw_window_drag_outline(bus, tracking.outline_rect);
+        }
+        if let Some((rect, pattern)) = self.region_tracking.as_ref().and_then(|tracking| {
+            tracking
+                .outline_rect
+                .map(|rect| (rect, tracking.outline_pattern))
+        }) {
+            self.draw_drag_outline_pattern(bus, rect, pattern);
+        }
         self.capture_gui_frame(bus, "redraw_chrome");
     }
 }

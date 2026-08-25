@@ -9525,16 +9525,12 @@ impl super::TrapDispatcher {
             //   sp+22  4-byte LONGINT result slot (caller pre-pushed)
             // Total args = 22 bytes; pop = 22.
             //
-            // HLE compromise + family rationale: see the Window Manager
-            // interactive-tracking family block above $A925 DragWindow at
-            // src/trap/window.rs (TrackGoAway / DragWindow / GrowWindow /
-            // DragTheRgn / DragGrayRgn — all share the "no WaitMouseUp /
-            // no DragHook dispatch" no-op shape).
-            //
-            // Systemless has no real WaitMouseUp outline loop, but it uses
-            // the current local mouse position as the terminal release point:
-            // inside slopRect returns the bounded offset, outside slopRect
-            // returns the $80008000 no-drag sentinel per IM:I I-302.
+            // The shared retained implementation in window.rs follows the
+            // mouse across host presentation boundaries, pins the offset point
+            // to limitRect, hides the outline outside slopRect, and completes
+            // only on release. Optional actionProc and DragHook callbacks are
+            // not yet dispatched; see the Window Manager tracking-family block
+            // above $A925 DragWindow for the complete rationale.
             //
             // Pop-count history note (load-bearing for future audits): an
             // earlier iteration pinned this trap at pop=30, assuming Rect
@@ -9545,12 +9541,7 @@ impl super::TrapDispatcher {
             // IM:I I-93). This path uses pop=22 + result slot
             // @ sp+22.
             // DragGrayRgn ($A905): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + IM:I I-93 _DragTheRgn macro alias; writes the bounded offset or $80008000 no-drag sentinel to the 4-byte LONGINT result slot @ sp+22 per IM:I I-302.
-            (true, 0x105) => {
-                let sp = cpu.read_reg(Register::A7);
-                let result = self.drag_region_result(bus, sp);
-                Self::finish_drag_result(cpu, bus, sp, result);
-                Ok(())
-            }
+            (true, 0x105) => self.handle_drag_region_trap(cpu, bus, false),
 
             // NewString ($A906)
             // Allocates a relocatable block sized to the string's actual length and returns a handle to it.
@@ -22263,6 +22254,42 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(bus.read_long(TEST_SP), 0x0014_001E);
+    }
+
+    #[test]
+    fn draggrayrgn_retains_tracking_until_release_and_returns_live_offset() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        let region = test_region_handle(&mut bus, 5, 10, 45, 70);
+        bus.write_long(sp + 18, region);
+
+        disp.push_mouse_down(10, 20);
+        let result = disp.dispatch_toolbox(true, 0x105, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.region_tracking.is_some());
+
+        disp.set_mouse_position(30, 50);
+        let result = disp.dispatch_toolbox(true, 0x105, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            disp.region_tracking.as_ref().unwrap().outline_rect,
+            Some((25, 40, 65, 100))
+        );
+
+        disp.push_mouse_up(30, 50);
+        let result = disp.dispatch_toolbox(true, 0x105, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), 0x0014_001E);
+        assert!(disp.region_tracking.is_none());
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
     }
 
     // SetResLoad ($A99B) — Mac Pascal Boolean is in the high byte

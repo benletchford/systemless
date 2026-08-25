@@ -60,6 +60,8 @@ impl super::TrapDispatcher {
     const LOWMEM_CUR_DEACTIVATE: u32 = 0x0A68;
     const LOWMEM_WMGR_PORT: u32 = 0x09DE;
     const LOWMEM_GRAY_RGN: u32 = 0x09EE;
+    const LOWMEM_DRAG_PATTERN: u32 = 0x0A34;
+    const GRAY_DRAG_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
     const WDEF_WDRAW_MSG: i16 = 0;
     const WDEF_WCALC_RGNS_MSG: i16 = 2;
     const WDEF_WNEW_MSG: i16 = 3;
@@ -112,9 +114,8 @@ impl super::TrapDispatcher {
         sp: u32,
         result: u32,
     ) {
-        // DragGrayRgn and DragTheRgn share the same 22-byte frame; only the
-        // returned LONGINT sentinel differs between the gray and custom-outline
-        // aliases.
+        // DragGrayRgn and DragTheRgn share the same 22-byte frame and LONGINT
+        // return semantics; the latter selects DragPattern for its outline.
         bus.write_long(sp + 22, result);
         cpu.write_reg(Register::A7, sp + 22);
     }
@@ -156,6 +157,158 @@ impl super::TrapDispatcher {
         let dv = offset_v.wrapping_sub(start_v) as u16 as u32;
         let dh = offset_h.wrapping_sub(start_h) as u16 as u32;
         (dv << 16) | dh
+    }
+
+    fn drag_region_local_mouse(
+        &self,
+        bus: &MacMemoryBus,
+        port_bounds_origin: (i16, i16),
+    ) -> (i16, i16) {
+        let (global_v, global_h) = self.window_tracking_mouse_pos(bus);
+        (
+            global_v.wrapping_add(port_bounds_origin.0),
+            global_h.wrapping_add(port_bounds_origin.1),
+        )
+    }
+
+    fn drag_region_offset(
+        mouse: (i16, i16),
+        start: (i16, i16),
+        limit_rect: Option<(i16, i16, i16, i16)>,
+        axis: i16,
+    ) -> (i16, i16) {
+        let (mut pinned_v, mut pinned_h) = limit_rect
+            .filter(|rect| !Self::rect_is_empty(*rect))
+            .map(|rect| Self::clamp_point_to_rect(mouse.0, mouse.1, rect))
+            .unwrap_or(mouse);
+        match axis {
+            Self::DRAG_H_AXIS_ONLY => pinned_v = start.0,
+            Self::DRAG_V_AXIS_ONLY => pinned_h = start.1,
+            _ => {}
+        }
+        (
+            pinned_v.wrapping_sub(start.0),
+            pinned_h.wrapping_sub(start.1),
+        )
+    }
+
+    fn refresh_region_drag_outline(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &mut super::dispatch::RegionTrackingState,
+        mouse: (i16, i16),
+    ) {
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        tracking.outline_saved_pixels.clear();
+        if !Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect) {
+            tracking.outline_rect = None;
+            return;
+        }
+
+        let (delta_v, delta_h) = Self::drag_region_offset(
+            mouse,
+            tracking.start_mouse,
+            tracking.limit_rect,
+            tracking.axis,
+        );
+        let (top, left, bottom, right) = tracking.original_outline_rect;
+        let local_rect = (
+            top.wrapping_add(delta_v),
+            left.wrapping_add(delta_h),
+            bottom.wrapping_add(delta_v),
+            right.wrapping_add(delta_h),
+        );
+        let global_rect = (
+            local_rect.0.wrapping_sub(tracking.port_bounds_origin.0),
+            local_rect.1.wrapping_sub(tracking.port_bounds_origin.1),
+            local_rect.2.wrapping_sub(tracking.port_bounds_origin.0),
+            local_rect.3.wrapping_sub(tracking.port_bounds_origin.1),
+        );
+        tracking.outline_rect = Some(global_rect);
+        tracking.outline_saved_pixels = self.save_window_drag_outline_pixels(bus, global_rect);
+        self.draw_drag_outline_pattern(bus, global_rect, tracking.outline_pattern);
+    }
+
+    pub(crate) fn handle_drag_region_trap<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        use_drag_pattern: bool,
+    ) -> Result<()> {
+        if let Some(mut tracking) = self.region_tracking.take() {
+            let mouse = self.drag_region_local_mouse(bus, tracking.port_bounds_origin);
+            if self.window_tracking_button_down(bus) {
+                self.refresh_region_drag_outline(bus, &mut tracking, mouse);
+                cpu.write_reg(Register::A7, tracking.stack_ptr);
+                self.region_tracking = Some(tracking);
+                return Ok(());
+            }
+
+            self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+            if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                self.event_queue.remove(index);
+            }
+            let result = if Self::point_in_rect(mouse.0, mouse.1, tracking.slop_rect) {
+                let (delta_v, delta_h) = Self::drag_region_offset(
+                    mouse,
+                    tracking.start_mouse,
+                    tracking.limit_rect,
+                    tracking.axis,
+                );
+                ((delta_v as u16 as u32) << 16) | u32::from(delta_h as u16)
+            } else {
+                Self::DRAG_NO_DRAG_SENTINEL
+            };
+            Self::finish_drag_result(cpu, bus, tracking.stack_ptr, result);
+            return Ok(());
+        }
+
+        let sp = cpu.read_reg(Register::A7);
+        if !self.window_tracking_button_down(bus) {
+            let result = self.drag_region_result(bus, sp);
+            Self::finish_drag_result(cpu, bus, sp, result);
+            return Ok(());
+        }
+        let region_handle = bus.read_long(sp + 18);
+        let slop_rect_ptr = bus.read_long(sp + 6);
+        if region_handle == 0 || slop_rect_ptr == 0 {
+            Self::finish_drag_result(cpu, bus, sp, Self::DRAG_NO_DRAG_SENTINEL);
+            return Ok(());
+        }
+        let Some(original_outline_rect) = Self::region_handle_rect(bus, region_handle) else {
+            Self::finish_drag_result(cpu, bus, sp, Self::DRAG_NO_DRAG_SENTINEL);
+            return Ok(());
+        };
+
+        let start_mouse = (bus.read_word(sp + 14) as i16, bus.read_word(sp + 16) as i16);
+        let limit_rect_ptr = bus.read_long(sp + 10);
+        let port_bounds_origin = self.port_bounds_top_left(bus, self.current_port);
+        let outline_pattern = if use_drag_pattern {
+            let mut pattern = [0u8; 8];
+            for (offset, byte) in pattern.iter_mut().enumerate() {
+                *byte = bus.read_byte(Self::LOWMEM_DRAG_PATTERN + offset as u32);
+            }
+            pattern
+        } else {
+            Self::GRAY_DRAG_PATTERN
+        };
+        let mut tracking = super::dispatch::RegionTrackingState {
+            stack_ptr: sp,
+            start_mouse,
+            port_bounds_origin,
+            limit_rect: (limit_rect_ptr != 0).then(|| Self::read_rect(bus, limit_rect_ptr)),
+            slop_rect: Self::read_rect(bus, slop_rect_ptr),
+            axis: bus.read_word(sp + 4) as i16,
+            original_outline_rect,
+            outline_rect: None,
+            outline_saved_pixels: Vec::new(),
+            outline_pattern,
+        };
+        let mouse = self.drag_region_local_mouse(bus, port_bounds_origin);
+        self.refresh_region_drag_outline(bus, &mut tracking, mouse);
+        self.region_tracking = Some(tracking);
+        cpu.write_reg(Register::A7, sp);
+        Ok(())
     }
 
     fn rect_is_empty(rect: (i16, i16, i16, i16)) -> bool {
@@ -1362,6 +1515,149 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn window_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
+        // DragWindow owns the mouse until release. MBState is the classic
+        // low-memory hardware mirror (0=down, $80=up). Host input is
+        // authoritative; a low-memory down state corroborates it only while
+        // the initiating mouseDown remains queued, avoiding a zero-initialized
+        // MBState falsely retaining synthetic/test calls forever.
+        // Inside Macintosh Volume II (1985), p. II-371.
+        self.mouse_button
+            || (bus.read_byte(crate::memory::globals::addr::MB_STATE) == 0x00
+                && self.has_unmatched_queued_mouse_down())
+    }
+
+    fn window_tracking_mouse_pos(&self, bus: &MacMemoryBus) -> (i16, i16) {
+        let v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
+        let h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
+        if (v, h) != (0, 0) {
+            (v, h)
+        } else {
+            self.mouse_pos
+        }
+    }
+
+    fn window_drag_outline_strips(rect: (i16, i16, i16, i16)) -> Vec<(i16, i16, i16, i16)> {
+        let (top, left, bottom, right) = rect;
+        if bottom <= top || right <= left {
+            return Vec::new();
+        }
+        let mut strips = vec![(top, left, top.saturating_add(1), right)];
+        if bottom - top > 1 {
+            strips.push((bottom - 1, left, bottom, right));
+        }
+        if bottom - top > 2 {
+            strips.push((top + 1, left, bottom - 1, left.saturating_add(1)));
+            if right - left > 1 {
+                strips.push((top + 1, right - 1, bottom - 1, right));
+            }
+        }
+        strips
+    }
+
+    fn save_window_drag_outline_pixels(
+        &self,
+        bus: &MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) -> Vec<(i16, i16, i16, i16, Vec<u8>)> {
+        Self::window_drag_outline_strips(rect)
+            .into_iter()
+            .filter_map(|strip| self.save_screen_rect_pixels(bus, strip))
+            .collect()
+    }
+
+    fn restore_window_drag_outline_pixels(
+        &self,
+        bus: &mut MacMemoryBus,
+        pixels: &[(i16, i16, i16, i16, Vec<u8>)],
+    ) {
+        for (top, left, width, height, saved) in pixels {
+            self.restore_screen_rect_pixels(bus, *top, *left, *width, *height, saved);
+        }
+    }
+
+    pub(crate) fn draw_window_drag_outline(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) {
+        self.draw_drag_outline_pattern(bus, rect, Self::GRAY_DRAG_PATTERN);
+    }
+
+    pub(crate) fn draw_drag_outline_pattern(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        pattern: [u8; 8],
+    ) {
+        // DragWindow tracks a gray outline of the structure region rather
+        // than moving live window pixels. DragTheRgn uses the eight-byte
+        // DragPattern global at $0A34; DragWindow and DragGrayRgn use gray.
+        // Macintosh Toolbox Essentials (1992), pp. 4-94 to 4-98;
+        // Inside Macintosh Volume III (1985), Appendix D.
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        if bottom <= top || right <= left {
+            return;
+        }
+        for x in left..right {
+            for y in [top, bottom - 1] {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    (pattern[(y as i32).rem_euclid(8) as usize]
+                        & (0x80 >> (x as i32).rem_euclid(8)))
+                        != 0,
+                );
+            }
+        }
+        for y in top.saturating_add(1)..bottom.saturating_sub(1) {
+            for x in [left, right - 1] {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    (pattern[(y as i32).rem_euclid(8) as usize]
+                        & (0x80 >> (x as i32).rem_euclid(8)))
+                        != 0,
+                );
+            }
+        }
+    }
+
+    fn refresh_window_drag_outline(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &mut super::dispatch::WindowTrackingState,
+        mouse: (i16, i16),
+    ) {
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        let delta_v = mouse.0.wrapping_sub(tracking.start_mouse.0);
+        let delta_h = mouse.1.wrapping_sub(tracking.start_mouse.1);
+        let (top, left, bottom, right) = tracking.original_outline_rect;
+        tracking.outline_rect = (
+            top.saturating_add(delta_v),
+            left.saturating_add(delta_h),
+            bottom.saturating_add(delta_v),
+            right.saturating_add(delta_h),
+        );
+        tracking.outline_saved_pixels =
+            self.save_window_drag_outline_pixels(bus, tracking.outline_rect);
+        self.draw_window_drag_outline(bus, tracking.outline_rect);
+    }
+
     pub(crate) fn window_is_document_proc(proc_id: i16) -> bool {
         matches!(proc_id, 0 | 4 | 8 | 12 | 16)
     }
@@ -2129,10 +2425,20 @@ impl super::TrapDispatcher {
     ///
     /// Idempotent when `the_window` is already the front or NIL.
     pub(crate) fn activate_as_front_window(&mut self, bus: &mut MacMemoryBus, the_window: u32) {
-        if the_window == 0 || the_window == self.front_window {
+        if the_window == 0 {
             return;
         }
         let old_front = self.front_window;
+        if the_window == old_front {
+            // BringToFront can place another window visually ahead without
+            // changing activation. Selecting the already-active window still
+            // has to restore it to the head of WindowList.
+            self.track_window_front(bus, the_window);
+            if let Some(content) = self.window_content_rect(bus, the_window) {
+                self.invalidate_window_rect(bus, the_window, content);
+            }
+            return;
+        }
         if old_front != 0 {
             bus.write_byte(old_front + Self::WINDOW_HILITED_OFFSET, 0x00);
             self.queue_window_activation_event(bus, old_front, false);
@@ -2143,6 +2449,9 @@ impl super::TrapDispatcher {
         bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0xFF);
         self.queue_window_activation_event(bus, the_window, true);
         self.activate_palette_for_window(bus, the_window);
+        if let Some(content) = self.window_content_rect(bus, the_window) {
+            self.invalidate_window_rect(bus, the_window, content);
+        }
     }
 
     fn activate_created_front_window(
@@ -4173,32 +4482,28 @@ impl super::TrapDispatcher {
             //     FUNCTION-typed traps; PROCEDUREs (DragWindow) just call
             //     MoveWindow at the final location
             //
-            // HLE compromise: frontends feed high-level input events,
-            // not a continuous mouse-position-per-tick stream. There is no
-            // WaitMouseUp loop and no DragHook dispatch infrastructure
-            // (calling a guest-fn ProcPtr would need a synthesised JSR
-            // frame + RTS-back-into-trap-handler infrastructure that
-            // Systemless does not have — same compromise documented for
-            // ModalDialog filterProc + Alert filterProc + Pack1 LSearch
-            // searchProc).
+            // HLE compromise: DragWindow, DragGrayRgn, and DragTheRgn retain
+            // their traps across host presentation boundaries and follow the
+            // live mouse with the documented outline. TrackGoAway and
+            // GrowWindow still model only terminal state. Optional DragHook
+            // and region actionProc callbacks are not yet dispatched.
             //
-            // So these traps model the caller-observable terminal state
-            // and skip only the outline/DragHook tracking loop:
+            // The current behavior is:
             //   - TrackGoAway → FALSE (user didn't release inside the
             //     close box — equivalent to "user pressed close box but
             //     dragged out before releasing"; correct semantic since
             //     no click has actually happened yet from Systemless's
             //     event model)
-            //   - DragWindow  → use the frontend's current mouse position
-            //     as the release point; if it is inside boundsRect, move
-            //     by the release-start delta via MoveWindow semantics
+            //   - DragWindow  → retain until release, then move by the
+            //     release-start delta via MoveWindow semantics when the
+            //     release point is inside boundsRect
             //   - GrowWindow  → 0 (LONGINT zero == "no drag" sentinel
             //     per IM:I I-298: "GrowWindow returns 0 if the user
             //     releases the mouse button without moving it")
-            //   - DragTheRgn / DragGrayRgn → use the frontend's current
-            //     mouse position as the release point; return the bounded
-            //     offset if inside slopRect, or the $80008000 no-drag
-            //     sentinel if outside it.
+            //   - DragTheRgn / DragGrayRgn → retain until release; pin the
+            //     offset point to limitRect, hide/re-show the outline at the
+            //     slopRect boundary, honor axis constraints, and return the
+            //     bounded offset or $80008000 no-drag sentinel.
             //
             // Pascal frame discipline (Rect args BY POINTER per IM:I-91
             // PEA-sizeRect example: "a Rect is an 8-byte record, so push
@@ -4223,7 +4528,7 @@ impl super::TrapDispatcher {
             //                     identical pop count of 22.
             //
             // Tests pin: (a) pop discipline matches IM Pascal frame, (b)
-            // DragWindow's terminal move/no-move cases, (c) result-slot
+            // retained window/region move and no-move cases, (c) result-slot
             // sentinel value for FUNCTION traps, (d) other registers
             // (A0/A1/D1) not mutated, (e) caller stack ABOVE the pop
             // window not mutated (defensive against future "update
@@ -4233,55 +4538,136 @@ impl super::TrapDispatcher {
             // DragWindow ($A925)
             // PROCEDURE DragWindow(theWindow: WindowPtr; startPt: Point; boundsRect: Rect);
             // Inside Macintosh Volume I, I-296
-            // DragWindow ($A925): Pops 12 bytes (theWindow 4 + startPt 4 + boundsRect ptr 4) per IM:I I-91 PEA convention; uses the current hardware mouse position as the IM:I I-296 release point, moves by release-start delta through MoveWindow semantics when the release is inside global boundsRect, and still skips only the dotted-outline/DragHook loop that HLE cannot drive continuously.
+            // DragWindow ($A925): retains its 12-byte Pascal frame while the
+            // button is down, tracks a gray outline at the live mouse delta,
+            // then applies MoveWindow semantics and pops the frame on release.
+            // Command-drag moves without activating the window.
+            // Inside Macintosh Volume I (1985), pp. I-91 and I-296;
+            // Macintosh Toolbox Essentials (1992), pp. 4-94 to 4-95.
             (true, 0x125) => {
-                let sp = cpu.read_reg(Register::A7);
-                let bounds_rect_ptr = bus.read_long(sp);
-                let start_v = bus.read_word(sp + 4) as i16;
-                let start_h = bus.read_word(sp + 6) as i16;
-                let the_window = bus.read_long(sp + 8);
-
-                if the_window != 0 && bounds_rect_ptr != 0 {
-                    let bounds_rect = (
-                        bus.read_word(bounds_rect_ptr) as i16,
-                        bus.read_word(bounds_rect_ptr + 2) as i16,
-                        bus.read_word(bounds_rect_ptr + 4) as i16,
-                        bus.read_word(bounds_rect_ptr + 6) as i16,
-                    );
-                    let (release_v, release_h) = self.mouse_pos;
-                    if trace_dragwindow_enabled() {
-                        eprintln!(
-                            "[DRAGWINDOW] DragWindow window=${:08X} start=({}, {}) release=({}, {}) bounds=({},{},{},{})",
-                            the_window,
-                            start_v,
-                            start_h,
-                            release_v,
-                            release_h,
-                            bounds_rect.0,
-                            bounds_rect.1,
-                            bounds_rect.2,
-                            bounds_rect.3
-                        );
+                if let Some(mut tracking) = self.window_tracking.take() {
+                    let mouse = self.window_tracking_mouse_pos(bus);
+                    if self.window_tracking_button_down(bus) {
+                        self.refresh_window_drag_outline(bus, &mut tracking, mouse);
+                        cpu.write_reg(Register::A7, tracking.stack_ptr);
+                        self.window_tracking = Some(tracking);
+                        return Some(Ok(()));
                     }
-                    if Self::point_in_rect(release_v, release_h, bounds_rect)
-                        && (release_v != start_v || release_h != start_h)
+
+                    self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+                    // The release belongs to DragWindow's private tracking
+                    // loop and is not returned to the application's event loop.
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    if Self::point_in_rect(mouse.0, mouse.1, tracking.bounds_rect)
+                        && mouse != tracking.start_mouse
                     {
-                        let (top, left, _, _) = self.window_global_port_rect(bus, the_window);
-                        let new_v = top.wrapping_add(release_v.wrapping_sub(start_v));
-                        let new_h = left.wrapping_add(release_h.wrapping_sub(start_h));
-                        let front_flag = !self.key_is_down(0x37);
-                        self.move_window_to_global(bus, the_window, new_h, new_v, front_flag);
+                        let new_v = tracking
+                            .original_port_origin
+                            .0
+                            .wrapping_add(mouse.0.wrapping_sub(tracking.start_mouse.0));
+                        let new_h = tracking
+                            .original_port_origin
+                            .1
+                            .wrapping_add(mouse.1.wrapping_sub(tracking.start_mouse.1));
+                        self.move_window_to_global(
+                            bus,
+                            tracking.window_ptr,
+                            new_h,
+                            new_v,
+                            !tracking.command_down,
+                        );
                         if trace_dragwindow_enabled() {
                             eprintln!(
                                 "[DRAGWINDOW] moved window=${:08X} from=({}, {}) to=({}, {}) front={}",
-                                the_window, top, left, new_v, new_h, front_flag
+                                tracking.window_ptr,
+                                tracking.original_port_origin.0,
+                                tracking.original_port_origin.1,
+                                new_v,
+                                new_h,
+                                !tracking.command_down
                             );
                         }
                     } else if trace_dragwindow_enabled() {
                         eprintln!("[DRAGWINDOW] no move");
                     }
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    return Some(Ok(()));
                 }
-                cpu.write_reg(Register::A7, sp + 12);
+
+                let sp = cpu.read_reg(Register::A7);
+                let bounds_rect_ptr = bus.read_long(sp);
+                let start_mouse = (bus.read_word(sp + 4) as i16, bus.read_word(sp + 6) as i16);
+                let window_ptr = bus.read_long(sp + 8);
+                if window_ptr == 0 || bounds_rect_ptr == 0 {
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+
+                let bounds_rect = (
+                    bus.read_word(bounds_rect_ptr) as i16,
+                    bus.read_word(bounds_rect_ptr + 2) as i16,
+                    bus.read_word(bounds_rect_ptr + 4) as i16,
+                    bus.read_word(bounds_rect_ptr + 6) as i16,
+                );
+                let mouse = self.window_tracking_mouse_pos(bus);
+                if trace_dragwindow_enabled() {
+                    eprintln!(
+                        "[DRAGWINDOW] DragWindow window=${:08X} start=({}, {}) live=({}, {}) bounds=({},{},{},{})",
+                        window_ptr,
+                        start_mouse.0,
+                        start_mouse.1,
+                        mouse.0,
+                        mouse.1,
+                        bounds_rect.0,
+                        bounds_rect.1,
+                        bounds_rect.2,
+                        bounds_rect.3
+                    );
+                }
+
+                let original_port_origin = {
+                    let (top, left, _, _) = self.window_global_port_rect(bus, window_ptr);
+                    (top, left)
+                };
+                let original_outline_rect = self
+                    .window_structure_rect(bus, window_ptr)
+                    .unwrap_or_else(|| self.window_global_port_rect(bus, window_ptr));
+                let mut tracking = super::dispatch::WindowTrackingState {
+                    window_ptr,
+                    stack_ptr: sp,
+                    start_mouse,
+                    original_port_origin,
+                    bounds_rect,
+                    original_outline_rect,
+                    outline_rect: original_outline_rect,
+                    outline_saved_pixels: Vec::new(),
+                    command_down: self.key_is_down(0x37),
+                };
+
+                if self.window_tracking_button_down(bus) {
+                    self.refresh_window_drag_outline(bus, &mut tracking, mouse);
+                    self.window_tracking = Some(tracking);
+                    cpu.write_reg(Register::A7, sp);
+                } else {
+                    if Self::point_in_rect(mouse.0, mouse.1, bounds_rect) && mouse != start_mouse {
+                        let new_v = original_port_origin
+                            .0
+                            .wrapping_add(mouse.0.wrapping_sub(start_mouse.0));
+                        let new_h = original_port_origin
+                            .1
+                            .wrapping_add(mouse.1.wrapping_sub(start_mouse.1));
+                        self.move_window_to_global(
+                            bus,
+                            window_ptr,
+                            new_h,
+                            new_v,
+                            !tracking.command_down,
+                        );
+                    }
+                    cpu.write_reg(Register::A7, sp + 12);
+                }
                 Ok(())
             }
 
@@ -4727,13 +5113,18 @@ impl super::TrapDispatcher {
 
             // BringToFront ($A920)
             // PROCEDURE BringToFront(theWindow: WindowPtr);
-            // BringToFront ($A920): Re-orders window_list to put theWindow first, updates front_window per IM:I I-282
+            // BringToFront ($A920): Re-orders WindowList to put theWindow
+            // visually first. It deliberately does not change highlighting
+            // or activation; callers use SelectWindow for that.
+            // Macintosh Toolbox Essentials (1992), p. 4-90.
             (true, 0x120) => {
                 let sp = cpu.read_reg(Register::A7);
                 let the_window = bus.read_long(sp);
                 if the_window != 0 {
                     self.track_window_front(bus, the_window);
-                    self.front_window = the_window;
+                    if let Some(content) = self.window_content_rect(bus, the_window) {
+                        self.invalidate_window_rect(bus, the_window, content);
+                    }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -4744,15 +5135,16 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-283
             //
             // Updates window_list z-order, re-links windowNext pointers,
-            // re-derives front_window, and inval-rects the old visible
-            // area so the exposed window behind redraws.
-            // SendBehind ($A921): Reorders window_list relative to behindWindow, syncs windowNext links, inval-rects exposed area per IM:I I-283
+            // transfers activation only when the moved window was active, and
+            // inval-rects the old visible area so exposed windows redraw.
+            // Macintosh Toolbox Essentials (1992), p. 4-91.
             (true, 0x121) => {
                 let sp = cpu.read_reg(Register::A7);
                 let behind = bus.read_long(sp);
                 let the_window = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 if the_window != 0 && self.window_list.contains(&the_window) {
+                    let was_active = self.front_window == the_window;
                     // Read bounds (portRect, port+16..22) for follow-on
                     // inval before the move reshuffles indices.
                     let bounds = if the_window >= 0x100 {
@@ -4775,12 +5167,23 @@ impl super::TrapDispatcher {
                         self.window_list.push(the_window);
                     }
                     self.sync_window_list_links(bus);
-                    // Re-derive front_window to the first VISIBLE entry.
-                    let list = self.window_list.clone();
-                    self.front_window = list
-                        .into_iter()
-                        .find(|&w| self.window_visible(bus, w))
-                        .unwrap_or_else(|| self.window_list.first().copied().unwrap_or(0));
+                    if was_active {
+                        let new_active = self.front_window_for_internal_state(bus);
+                        if new_active != the_window {
+                            bus.write_byte(the_window + Self::WINDOW_HILITED_OFFSET, 0x00);
+                            self.queue_window_activation_event(bus, the_window, false);
+                            self.front_window = new_active;
+                            self.sync_cached_front_window_render_state(bus);
+                            if new_active != 0 {
+                                bus.write_byte(new_active + Self::WINDOW_HILITED_OFFSET, 0xFF);
+                                self.queue_window_activation_event(bus, new_active, true);
+                                self.activate_palette_for_window(bus, new_active);
+                                if let Some(content) = self.window_content_rect(bus, new_active) {
+                                    self.invalidate_window_rect(bus, new_active, content);
+                                }
+                            }
+                        }
+                    }
                     if let Some(rect) = bounds {
                         // Any window that was behind and is now exposed
                         // should redraw. Conservatively inval each
@@ -4810,12 +5213,7 @@ impl super::TrapDispatcher {
             // _DragTheRgn"). Same Pascal sig, same pop count of 22.
             // See family-level rationale block above $A925 DragWindow arm.
             // DragTheRgn ($A926): Pops 22 args bytes (theRgn 4 + startPt 4 + limitRect ptr 4 + slopRect ptr 4 + axis 2 + actionProc 4) per IM:I-91 PEA convention + writes the bounded offset or $80008000 no-drag sentinel to the 4-byte LONGINT result slot @ sp+22 per IM:I I-302.
-            (true, 0x126) => {
-                let sp = cpu.read_reg(Register::A7);
-                let result = self.drag_region_result(bus, sp);
-                Self::finish_drag_result(cpu, bus, sp, result);
-                Ok(())
-            }
+            (true, 0x126) => self.handle_drag_region_trap(cpu, bus, true),
 
             // InvalRgn ($A927)
             // PROCEDURE InvalRgn(badRgn: RgnHandle);
@@ -8964,6 +9362,70 @@ mod tests {
     }
 
     #[test]
+    fn redraw_chrome_uses_visual_window_list_above_active_document() {
+        // BringToFront can place a window visually above the active window
+        // without activating it. WindowList, not the active-window cache,
+        // owns that visual order. Macintosh Toolbox Essentials (1992),
+        // pp. 4-65, 4-69, and 4-90.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        disp.menu_bar_hidden = false;
+
+        let document = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            screen_base,
+            80,
+            50,
+            220,
+            300,
+            "Document",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        let utility = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            utility,
+            screen_base,
+            50,
+            40,
+            110,
+            200,
+            "",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+
+        disp.front_window = document;
+        disp.window_bounds = (80, 50, 220, 300);
+        disp.window_proc_id = 0;
+        disp.window_title = "Document".to_string();
+        let protected = screen_base + 70 * 800 + 60;
+        bus.write_byte(protected, 0x7B);
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(protected),
+            0x7B,
+            "active-document chrome must remain behind visual-front utility content"
+        );
+    }
+
+    #[test]
     fn inactive_document_window_chrome_still_draws_title_text() {
         let (mut disp, mut cpu, mut bus) = setup();
         let window_addr = bus.alloc(256);
@@ -9243,6 +9705,90 @@ mod tests {
             bus.read_long(wnd_ptr_ptr),
             utility,
             "FindWindow should hit-test against visual layer order"
+        );
+    }
+
+    #[test]
+    fn select_active_window_restores_it_to_visual_front() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        install_wdef_resource(&mut disp, &mut bus, 200);
+        let utility_proc_id = (200i16 << 4) | 3;
+
+        let document = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            disp.screen_mode.0,
+            80,
+            80,
+            360,
+            500,
+            "Document",
+            8,
+            true,
+            false,
+            true,
+            0,
+        );
+        let palette = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            palette,
+            disp.screen_mode.0,
+            100,
+            100,
+            180,
+            240,
+            "Palette",
+            2,
+            true,
+            false,
+            false,
+            0,
+        );
+        let utility = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            utility,
+            disp.screen_mode.0,
+            32,
+            12,
+            64,
+            504,
+            "",
+            utility_proc_id,
+            true,
+            false,
+            false,
+            0,
+        );
+        disp.front_window = document;
+        disp.sync_cached_front_window_render_state(&bus);
+        disp.event_queue.clear();
+        let update_handle =
+            bus.read_long(document + super::super::TrapDispatcher::WINDOW_UPDATE_RGN_OFFSET);
+        super::super::TrapDispatcher::write_region_handle_rect(&mut bus, update_handle, None);
+        assert_eq!(disp.window_list, vec![utility, palette, document]);
+
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, document);
+        let result = dispatch(&mut disp, 0x11F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(
+            disp.window_list,
+            vec![document, utility, palette],
+            "SelectWindow must restore the active window to the head of WindowList"
+        );
+        assert_eq!(disp.front_window, document);
+        assert!(disp.window_has_pending_update(&bus, document));
+        assert!(
+            disp.event_queue.iter().all(|event| event.what != 8),
+            "reordering an already-active document must not synthesize activation changes"
         );
     }
 
@@ -11126,7 +11672,6 @@ mod tests {
         bus.write_word(bounds_rect_ptr + 6, 600);
 
         disp.push_mouse_down(50, 30);
-        disp.set_mouse_position(70, 80);
 
         let sp = TEST_SP - 12;
         cpu.write_reg(Register::A7, sp);
@@ -11136,7 +11681,25 @@ mod tests {
 
         let result = dispatch(&mut disp, 0x125, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.window_tracking.is_some());
+
+        disp.set_mouse_position(70, 80);
+        let result = dispatch(&mut disp, 0x125, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(
+            disp.window_tracking.as_ref().unwrap().outline_rect,
+            (60, 70, 160, 270),
+            "the retained gray outline follows the live mouse delta"
+        );
+
+        disp.push_mouse_up(70, 80);
+        let result = dispatch(&mut disp, 0x125, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert!(disp.window_tracking.is_none());
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
         assert_eq!(
             bus.read_word(window_addr + 8) as i16,
             -60,
@@ -11152,6 +11715,56 @@ mod tests {
             (60, 70, 160, 270),
             "front-window hit-test bounds move with DragWindow"
         );
+    }
+
+    #[test]
+    fn dragwindow_latches_command_and_moves_without_activating_window() {
+        // Command-dragging moves an inactive window without bringing it to
+        // the front. The modifier is sampled at mouse-down, not release.
+        // Macintosh Toolbox Essentials (1992), p. 4-92.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let target: u32 = 0x300000;
+        let front: u32 = 0x301000;
+        setup_window_with_regions(&mut bus, target, 0, 0, 100, 200);
+        setup_window_with_regions(&mut bus, front, 0, 0, 100, 200);
+        for (window, top, left) in [(target, 40i16, 20i16), (front, 80, 100)] {
+            bus.write_word(window + 6, 0);
+            bus.write_word(window + 8, (-top) as u16);
+            bus.write_word(window + 10, (-left) as u16);
+            bus.write_word(window + 12, (600 - top) as u16);
+            bus.write_word(window + 14, (800 - left) as u16);
+            bus.write_byte(window + 110, 0xFF);
+        }
+        disp.window_list = vec![front, target];
+        disp.front_window = front;
+        disp.window_bounds = (80, 100, 180, 300);
+
+        let bounds_rect_ptr = 0x320000;
+        bus.write_word(bounds_rect_ptr, 0);
+        bus.write_word(bounds_rect_ptr + 2, 0);
+        bus.write_word(bounds_rect_ptr + 4, 400);
+        bus.write_word(bounds_rect_ptr + 6, 600);
+        let sp = TEST_SP - 12;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, bounds_rect_ptr);
+        bus.write_long(sp + 4, 0x0032_001E);
+        bus.write_long(sp + 8, target);
+
+        disp.push_key_down(0x37, 0);
+        disp.push_mouse_down(50, 30);
+        assert!(dispatch(&mut disp, 0x125, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        disp.push_key_up(0x37, 0);
+        disp.push_mouse_up(70, 80);
+        assert!(dispatch(&mut disp, 0x125, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(disp.front_window, front);
+        assert_eq!(disp.window_list, vec![front, target]);
+        assert_eq!(bus.read_word(target + 8) as i16, -60);
+        assert_eq!(bus.read_word(target + 10) as i16, -70);
     }
 
     // IM:I p.I-296 (with Rect-by-pointer calling convention on p.I-91):
@@ -11461,6 +12074,37 @@ mod tests {
             bus.read_long(TEST_SP),
             0x0000_003B,
             "hAxisOnly keeps vertical offset zero and clamps h to right-1"
+        );
+    }
+
+    #[test]
+    fn dragthergn_uses_low_memory_dragpattern_for_retained_outline() {
+        // _DragTheRgn differs from _DragGrayRgn by using the eight-byte
+        // DragPattern global. Inside Macintosh Volume III (1985), Appendix D;
+        // Macintosh Toolbox Essentials (1992), p. 4-98.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP - 22;
+        cpu.write_reg(Register::A7, sp);
+        let limit_rect = 0x240000;
+        let slop_rect = 0x240008;
+        write_test_rect(&mut bus, limit_rect, (0, 0, 100, 100));
+        write_test_rect(&mut bus, slop_rect, (0, 0, 120, 120));
+        write_drag_region_frame(&mut bus, sp, (10, 20), limit_rect, slop_rect, 0);
+        let region = make_region_handle(&mut bus, 0x300000, 0x300020, 10, (5, 10, 45, 70));
+        bus.write_long(sp + 18, region);
+        let pattern = [0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01];
+        for (offset, byte) in pattern.iter().copied().enumerate() {
+            bus.write_byte(0x0A34 + offset as u32, byte);
+        }
+
+        disp.push_mouse_down(10, 20);
+        let result = dispatch(&mut disp, 0x126, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(
+            disp.region_tracking.as_ref().unwrap().outline_pattern,
+            pattern
         );
     }
 
@@ -12202,6 +12846,14 @@ mod tests {
         let win_c = 0x200240u32;
         disp.window_list = vec![win_a, win_b, win_c];
         disp.front_window = win_a;
+        bus.write_byte(
+            win_a + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+        bus.write_byte(
+            win_c + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0x00,
+        );
 
         let sp = TEST_SP - 4;
         cpu.write_reg(Register::A7, sp);
@@ -12211,7 +12863,20 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.window_list, vec![win_c, win_a, win_b]);
-        assert_eq!(disp.front_window, win_c);
+        assert_eq!(
+            disp.front_window, win_a,
+            "BringToFront must not change the active window"
+        );
+        assert_eq!(
+            bus.read_byte(win_a + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0xFF,
+            "BringToFront must not unhighlight the active window"
+        );
+        assert_eq!(
+            bus.read_byte(win_c + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0x00,
+            "BringToFront must not highlight the reordered window"
+        );
     }
 
     #[test]
@@ -12301,8 +12966,8 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // SendBehind (0x121) — reorders the window_list and re-derives
-    // front_window.
+    // SendBehind (0x121) — reorders WindowList and transfers activation only
+    // when the moved window was active.
     // ---------------------------------------------------------------
 
     #[test]
@@ -12344,6 +13009,8 @@ mod tests {
         disp.front_window = win_b;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_b + 110u32, 0xFF);
+        bus.write_byte(win_a + 111u32, 0x00);
+        bus.write_byte(win_b + 111u32, 0xFF);
         for base in [win_a, win_b] {
             bus.write_word(base + 16, 10);
             bus.write_word(base + 18, 10);
@@ -12361,6 +13028,52 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.window_list, vec![win_a, win_b]);
         assert_eq!(disp.front_window, win_a);
+        assert_eq!(bus.read_byte(win_b + 111u32), 0x00);
+        assert_eq!(bus.read_byte(win_a + 111u32), 0xFF);
+        assert!(disp.event_queue.iter().any(|event| {
+            event.what == 8 && event.message == win_b && (event.modifiers & 1) == 0
+        }));
+        assert!(disp.event_queue.iter().any(|event| {
+            event.what == 8 && event.message == win_a && (event.modifiers & 1) != 0
+        }));
+    }
+
+    #[test]
+    fn sendbehind_inactive_window_preserves_active_window() {
+        // BringToFront can leave an inactive window visually ahead of the
+        // active one. Sending a different inactive window backward must not
+        // silently activate that visual head. Macintosh Toolbox Essentials
+        // (1992), pp. 4-90 to 4-91.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let visual_front = 0x200040u32;
+        let active = 0x200140u32;
+        let target = 0x200240u32;
+        disp.window_list = vec![visual_front, active, target];
+        disp.front_window = active;
+        for base in [visual_front, active, target] {
+            bus.write_byte(base + 110u32, 0xFF);
+            bus.write_word(base + 16, 10);
+            bus.write_word(base + 18, 10);
+            bus.write_word(base + 20, 50);
+            bus.write_word(base + 22, 100);
+        }
+        bus.write_byte(visual_front + 111u32, 0x00);
+        bus.write_byte(active + 111u32, 0xFF);
+        bus.write_byte(target + 111u32, 0x00);
+        disp.event_queue.clear();
+
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, target);
+
+        let result = dispatch(&mut disp, 0x121, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.window_list, vec![visual_front, active, target]);
+        assert_eq!(disp.front_window, active);
+        assert_eq!(bus.read_byte(visual_front + 111u32), 0x00);
+        assert_eq!(bus.read_byte(active + 111u32), 0xFF);
+        assert!(disp.event_queue.is_empty());
     }
 
     #[test]
