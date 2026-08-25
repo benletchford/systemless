@@ -2,6 +2,7 @@
 
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
+use crate::display::CursorImage;
 use crate::loader::ppc::{
     PpcDecodedAiffPlaybackRecord, PpcDecodedBufferCommandRecord, PpcDrawSprocketTraceEntry,
     PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding, PpcInputSnapshot,
@@ -397,6 +398,28 @@ fn sync_ppc_system_event_mask(dispatcher: &mut TrapDispatcher, system_event_mask
     // injected through the shared dispatcher, so it must observe the PPC
     // process's mask before deciding whether to post keyUp events.
     dispatcher.system_event_mask = system_event_mask;
+}
+
+fn sync_ppc_cursor_state(
+    dispatcher: &mut TrapDispatcher,
+    cursor_level: i16,
+    toolbox_startup: &crate::loader::ppc::PpcToolboxStartupState,
+) {
+    // InitCursor, HideCursor, and ShowCursor maintain a signed visibility
+    // level shared by QuickDraw and the cursor display code.
+    // Inside Macintosh Volume I (1985), pp. I-167--I-168.
+    dispatcher.cursor_level = cursor_level;
+    dispatcher.cursor_visible = cursor_level == 0;
+    dispatcher.cursor_data = Some(if toolbox_startup.cursor_installed {
+        CursorImage::mono(
+            toolbox_startup.cursor_data,
+            toolbox_startup.cursor_mask,
+            toolbox_startup.cursor_hot_v,
+            toolbox_startup.cursor_hot_h,
+        )
+    } else {
+        TrapDispatcher::default_arrow_cursor_image()
+    });
 }
 
 fn format_oracle_hex32(value: u32) -> String {
@@ -2571,13 +2594,28 @@ impl FixtureRunner {
     /// Native and web frontends can use this without exposing mutable Toolbox
     /// internals.
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
-        self.dispatcher.guest_menu_snapshot(&self.bus)
+        if let Some(ppc_app) = self.ppc_app.as_mut() {
+            ppc_app.guest_menu_snapshot()
+        } else {
+            self.dispatcher.guest_menu_snapshot(&self.bus)
+        }
     }
 
     /// Route a host-presented menu selection back through the guest's normal
     /// mouseDown -> FindWindow -> MenuSelect path.  Returns false if the menu
     /// or item is no longer present, enabled, and selectable.
     pub fn select_guest_menu_item(&mut self, menu_id: i16, item_number: i16) -> bool {
+        if let Some(ppc_app) = self.ppc_app.as_mut() {
+            if !ppc_app.queue_native_menu_selection(menu_id, item_number) {
+                return false;
+            }
+            // A native command still enters the guest through its ordinary
+            // mouseDown event loop; MenuSelect consumes the staged item after
+            // the application recognizes the menu-bar click.
+            self.push_mouse_down(10, 15);
+            self.push_mouse_up(10, 15);
+            return true;
+        }
         let Some((_v, _h)) =
             self.dispatcher
                 .queue_native_menu_selection(&self.bus, menu_id, item_number)
@@ -5841,6 +5879,7 @@ impl FixtureRunner {
             return (0, !self.halted);
         };
 
+        ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         ppc_app.set_input_snapshot(input);
         ppc_app.set_event_queue(
             self.dispatcher
@@ -5999,6 +6038,11 @@ impl FixtureRunner {
         sync_ppc_system_event_mask(
             &mut self.dispatcher,
             ppc_app.toolbox_startup.system_event_mask,
+        );
+        sync_ppc_cursor_state(
+            &mut self.dispatcher,
+            ppc_app.quickdraw_cursor_level,
+            &ppc_app.toolbox_startup,
         );
         self.dispatcher.event_queue = ppc_app
             .event_queue()
@@ -12564,6 +12608,35 @@ mod tests {
             .event_queue
             .iter()
             .any(|event| event.what == 4 && event.message == 0x0000_7c1d));
+    }
+
+    #[test]
+    fn ppc_cursor_level_controls_the_shared_host_cursor() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let mut toolbox_startup = crate::loader::ppc::PpcToolboxStartupState::default();
+        toolbox_startup.cursor_installed = true;
+        toolbox_startup.cursor_data[0] = 0x80;
+        toolbox_startup.cursor_mask[0] = 0xc0;
+        toolbox_startup.cursor_hot_v = 3;
+        toolbox_startup.cursor_hot_h = 4;
+
+        sync_ppc_cursor_state(&mut runner.dispatcher, -1, &toolbox_startup);
+        assert_eq!(runner.dispatcher.cursor_level(), -1);
+        assert!(!runner.dispatcher.cursor_visible());
+        assert_eq!(
+            runner.dispatcher.cursor_data(),
+            Some((
+                toolbox_startup.cursor_data,
+                toolbox_startup.cursor_mask,
+                3,
+                4
+            ))
+        );
+
+        sync_ppc_cursor_state(&mut runner.dispatcher, 0, &toolbox_startup);
+        assert_eq!(runner.dispatcher.cursor_level(), 0);
+        assert!(runner.dispatcher.cursor_visible());
     }
 
     #[test]
