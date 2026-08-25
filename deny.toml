@@ -21,6 +21,5 @@ allow = [
 # Keep copyleft and component-specific licences scoped to the reviewed crates
 # that require them. New GPL, LGPL, AGPL, or OFL dependencies will fail.
 exceptions = [
-    { crate = "hfs-reader@0.1.1", allow = ["GPL-3.0-or-later"] },
     { crate = "systemless", allow = ["GPL-3.0-or-later", "OFL-1.1"] },
 ]

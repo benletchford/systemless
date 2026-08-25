@@ -1022,12 +1022,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
-name = "hfs-reader"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36a822b987c359fdbdbd791c51a00bb4f7cec2d2b5c843de0288d4efbf212667"
-
-[[package]]
 name = "hfsplus"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,7 +2201,6 @@ dependencies = [
  "clap",
  "cpal",
  "flate2",
- "hfs-reader",
  "hfsplus",
  "image",
  "libm",
