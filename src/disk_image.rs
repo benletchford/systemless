@@ -9,9 +9,11 @@ use std::{
     path::{Component, Path},
 };
 
-use hfs_reader::HfsVolume;
-
 use crate::mac_roman::decode_mac_roman;
+
+mod hfs;
+
+use hfs::HfsVolume;
 
 const HFS_SIGNATURE: u16 = 0x4244;
 const HFS_PLUS_SIGNATURE: u16 = 0x482B;
@@ -117,7 +119,7 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
             rsrc,
             file_type: file.file_type,
             creator: file.creator,
-            // hfs-reader exposes type/creator but not fdFlags yet.
+            // The classic-HFS path does not currently expose fdFlags.
             finder_flags: 0,
         });
     }
@@ -191,8 +193,7 @@ fn hfs_volume_name_from_mdb(filesystem: &[u8]) -> Option<String> {
         return None;
     }
     // The HFS master directory block stores its authoritative volume name as
-    // a Str27 Pascal string. Decode those bytes directly because hfs-reader's
-    // host-path representation has already replaced non-ASCII characters.
+    // a Str27 Pascal string, so decode those bytes directly as MacRoman.
     let name_len = *filesystem.get(HFS_MDB_VOLUME_NAME_OFFSET)? as usize;
     if name_len == 0 || name_len > HFS_MAX_VOLUME_NAME_LEN {
         return None;
