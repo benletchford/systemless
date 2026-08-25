@@ -2198,6 +2198,7 @@ dependencies = [
 name = "systemless"
 version = "0.19.0"
 dependencies = [
+ "ab_glyph",
  "clap",
  "cpal",
  "flate2",
@@ -2218,6 +2219,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "ttf-parser",
  "winit",
  "zip",
 ]

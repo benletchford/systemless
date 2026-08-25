@@ -20505,17 +20505,15 @@ impl super::TrapDispatcher {
         // reads the pixel data correctly instead of interpreting 8bpp bytes
         // as 1bpp packed bits.
         let raw_row_bytes = (raw_word & 0x3FFF) as u32;
-        let (pixel_size, ctab_handle) = if base == screen_base
-            && raw_row_bytes == self.screen_mode.1
-            && screen_ps > 1
-        {
-            (
-                screen_ps as u32,
-                Self::gdevice_ctab_handle(bus, self.main_gdevice_handle),
-            )
-        } else {
-            (1, 0)
-        };
+        let (pixel_size, ctab_handle) =
+            if base == screen_base && raw_row_bytes == self.screen_mode.1 && screen_ps > 1 {
+                (
+                    screen_ps as u32,
+                    Self::gdevice_ctab_handle(bus, self.main_gdevice_handle),
+                )
+            } else {
+                (1, 0)
+            };
         CopyBitmapInfo {
             base,
             row_bytes: raw_row_bytes,
@@ -36958,18 +36956,12 @@ mod tests {
         bus.write_word(entry0, 0x1111);
         bus.write_word(entry0 + 2, 0x2222);
         bus.write_word(entry0 + 4, 0x3333);
-        bus.write_word(
-            entry0 + 6,
-            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
-        );
+        bus.write_word(entry0 + 6, (super::PM_TOLERANT | super::PM_EXPLICIT) as u16);
         let entry1 = crate::trap::TrapDispatcher::palette_color_info_ptr(palette_ptr, 1);
         bus.write_word(entry1, 0x4444);
         bus.write_word(entry1 + 2, 0x5555);
         bus.write_word(entry1 + 4, 0x6666);
-        bus.write_word(
-            entry1 + 6,
-            (super::PM_TOLERANT | super::PM_EXPLICIT) as u16,
-        );
+        bus.write_word(entry1 + 6, (super::PM_TOLERANT | super::PM_EXPLICIT) as u16);
 
         // No window association and no ActivatePalette call: the front window is
         // something else entirely.

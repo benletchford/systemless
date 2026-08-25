@@ -23,6 +23,8 @@ thiserror = "2"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ab_glyph = "0.2.32"
+ttf-parser = "0.25.1"
 
 # Windowing (optional, for graphical runner)
 winit = { version = "0.30", optional = true }
