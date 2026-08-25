@@ -1088,6 +1088,9 @@ fn tracking_refire_should_freeze_ticks(opcode: u16) -> bool {
     trap_no_autopop == 0xA93D // MenuSelect
         || trap_no_autopop == 0xA80B // PopUpMenuSelect / MenuKey tracking
         || trap_no_autopop == 0xA968 // TrackControl
+        || trap_no_autopop == 0xA925 // DragWindow
+        || trap_no_autopop == 0xA905 // DragGrayRgn
+        || trap_no_autopop == 0xA926 // DragTheRgn
 }
 
 /// Only Dialog Manager-owned retained loops may schedule dialog draw and
@@ -1098,8 +1101,8 @@ fn tracking_refire_uses_dialog_callbacks(opcode: u16) -> bool {
 }
 
 /// Retained managers with their own event loops must keep guest ticks moving
-/// while waiting for input. MenuSelect and TrackControl instead freeze time
-/// while their transient tracking state is presented.
+/// while waiting for input. MenuSelect and the control/window/region drag
+/// loops instead freeze time while their transient tracking state is presented.
 fn tracking_refire_advances_gui_idle_tick(opcode: u16) -> bool {
     matches!(opcode & !0x0400, 0xA991 | 0xA9EA)
 }
@@ -2819,6 +2822,8 @@ impl FixtureRunner {
             || self.dispatcher.is_menu_tracking()
             || self.dispatcher.is_dialog_tracking()
             || self.dispatcher.is_control_tracking()
+            || self.dispatcher.is_window_tracking()
+            || self.dispatcher.is_region_tracking()
     }
 
     /// Advance the guest tick counter by one, firing VBL and timer tasks.
@@ -5562,6 +5567,8 @@ impl FixtureRunner {
                             && !self.dispatcher.is_menu_tracking()
                             && !self.dispatcher.is_dialog_tracking()
                             && !self.dispatcher.is_control_tracking()
+                            && !self.dispatcher.is_window_tracking()
+                            && !self.dispatcher.is_region_tracking()
                         {
                             self.dispatcher.game_trap_count += 1;
                         }
@@ -17698,6 +17705,12 @@ mod tests {
         assert!(tracking_refire_should_freeze_ticks(0xAC0B));
         assert!(tracking_refire_should_freeze_ticks(0xA968));
         assert!(tracking_refire_should_freeze_ticks(0xAD68));
+        assert!(tracking_refire_should_freeze_ticks(0xA925));
+        assert!(tracking_refire_should_freeze_ticks(0xAD25));
+        assert!(tracking_refire_should_freeze_ticks(0xA905));
+        assert!(tracking_refire_should_freeze_ticks(0xAD05));
+        assert!(tracking_refire_should_freeze_ticks(0xA926));
+        assert!(tracking_refire_should_freeze_ticks(0xAD26));
 
         // ModalDialog must keep ticks/VBL/sound callbacks live. EV's pilot
         // dialog flow plays music through this path.

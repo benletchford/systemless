@@ -616,6 +616,41 @@ pub(crate) struct ControlTrackingState {
     pub scrollbar_callback_pending: bool,
 }
 
+/// Retained state for DragWindow while the mouse button remains down.
+/// DragWindow owns a mouse-tracking loop and does not return until release;
+/// the GUI runner therefore refires the trap at presentation boundaries.
+/// Macintosh Toolbox Essentials (1992), pp. 4-94 to 4-95.
+#[derive(Clone, Debug)]
+pub(crate) struct WindowTrackingState {
+    pub window_ptr: u32,
+    pub stack_ptr: u32,
+    pub start_mouse: (i16, i16),
+    pub original_port_origin: (i16, i16),
+    pub bounds_rect: (i16, i16, i16, i16),
+    pub original_outline_rect: (i16, i16, i16, i16),
+    pub outline_rect: (i16, i16, i16, i16),
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub command_down: bool,
+}
+
+/// Retained state shared by DragGrayRgn and DragTheRgn while the mouse
+/// button remains down. Both routines own a synchronous tracking loop and
+/// return only after release.
+/// Macintosh Toolbox Essentials (1992), pp. 4-95 to 4-98.
+#[derive(Clone, Debug)]
+pub(crate) struct RegionTrackingState {
+    pub stack_ptr: u32,
+    pub start_mouse: (i16, i16),
+    pub port_bounds_origin: (i16, i16),
+    pub limit_rect: Option<(i16, i16, i16, i16)>,
+    pub slop_rect: (i16, i16, i16, i16),
+    pub axis: i16,
+    pub original_outline_rect: (i16, i16, i16, i16),
+    pub outline_rect: Option<(i16, i16, i16, i16)>,
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+    pub outline_pattern: [u8; 8],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PortDrawState {
     pub fg_color: (u16, u16, u16),
@@ -1650,6 +1685,10 @@ pub struct TrapDispatcher {
     pub(crate) pending_native_menu_event_tick: Option<u32>,
     /// Active control tracking state (currently popup-menu TrackControl).
     pub(crate) control_tracking: Option<ControlTrackingState>,
+    /// Active DragWindow tracking state.
+    pub(crate) window_tracking: Option<WindowTrackingState>,
+    /// Active DragGrayRgn / DragTheRgn tracking state.
+    pub(crate) region_tracking: Option<RegionTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
     pub(crate) underline_info: Option<UnderlineInfo>,
     /// Current mouse position in Mac screen coordinates (v, h)
@@ -3155,6 +3194,8 @@ impl TrapDispatcher {
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
             control_tracking: None,
+            window_tracking: None,
+            region_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),
             mouse_button: false,
@@ -3364,6 +3405,16 @@ impl TrapDispatcher {
         self.control_tracking.is_some()
     }
 
+    /// Whether DragWindow is actively tracking the mouse.
+    pub fn is_window_tracking(&self) -> bool {
+        self.window_tracking.is_some()
+    }
+
+    /// Whether DragGrayRgn or DragTheRgn is actively tracking the mouse.
+    pub fn is_region_tracking(&self) -> bool {
+        self.region_tracking.is_some()
+    }
+
     /// Whether TrackControl has redirected execution into a guest scrollbar
     /// action procedure. The runner must let that callback return to the
     /// retained A968 trap instead of immediately rewinding over it.
@@ -3375,10 +3426,9 @@ impl TrapDispatcher {
 
     /// Shared check used by both dispatch.rs (auto-pop push-back) and
     /// runner.rs (PC rewind for refire). Returns true when the given trap
-    /// word should refire next frame because menu or dialog tracking is
-    /// active and the trap is one of the refire-relevant kind. Strips the
-    /// auto-pop bit (0x0400) so auto-pop variants ($AD3D, $AC0B, $AD91)
-    /// match too.
+    /// word should refire next frame because one of the synchronous Toolbox
+    /// tracking loops is active and the trap is the matching routine. Strips
+    /// the auto-pop bit (0x0400) so auto-pop variants match too.
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
@@ -3386,11 +3436,15 @@ impl TrapDispatcher {
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
         let is_control_refire = trap_no_autopop == 0xA968;
+        let is_window_refire = trap_no_autopop == 0xA925;
+        let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire && self.is_control_tracking())
+            || (is_window_refire && self.is_window_tracking())
+            || (is_region_refire && self.is_region_tracking())
     }
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.
@@ -7209,6 +7263,35 @@ mod tests {
         });
     }
 
+    fn install_window_tracking(disp: &mut TrapDispatcher) {
+        disp.window_tracking = Some(WindowTrackingState {
+            window_ptr: 0,
+            stack_ptr: 0,
+            start_mouse: (0, 0),
+            original_port_origin: (0, 0),
+            bounds_rect: (0, 0, 0, 0),
+            original_outline_rect: (0, 0, 0, 0),
+            outline_rect: (0, 0, 0, 0),
+            outline_saved_pixels: Vec::new(),
+            command_down: false,
+        });
+    }
+
+    fn install_region_tracking(disp: &mut TrapDispatcher) {
+        disp.region_tracking = Some(RegionTrackingState {
+            stack_ptr: 0,
+            start_mouse: (0, 0),
+            port_bounds_origin: (0, 0),
+            limit_rect: None,
+            slop_rect: (0, 0, 1, 1),
+            axis: 0,
+            original_outline_rect: (0, 0, 1, 1),
+            outline_rect: None,
+            outline_saved_pixels: Vec::new(),
+            outline_pattern: [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+        });
+    }
+
     fn centered_playfield_rect() -> ScreenCopyBitsRect {
         ScreenCopyBitsRect {
             src_top: 0,
@@ -7560,7 +7643,11 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xA987)); // NoteAlert
         assert!(!disp.is_tracking_refire(0xA988)); // CautionAlert
         assert!(!disp.is_tracking_refire(0xA968)); // TrackControl
-                                                   // Auto-pop variants too.
+        assert!(!disp.is_tracking_refire(0xA925)); // DragWindow
+        assert!(!disp.is_tracking_refire(0xA905)); // DragGrayRgn
+        assert!(!disp.is_tracking_refire(0xA926)); // DragTheRgn
+
+        // Auto-pop variants too.
         assert!(!disp.is_tracking_refire(0xAD3D));
         assert!(!disp.is_tracking_refire(0xAC0B));
         assert!(!disp.is_tracking_refire(0xAD91));
@@ -7596,6 +7683,24 @@ mod tests {
         install_control_tracking(&mut disp);
         assert!(disp.is_tracking_refire(0xA968));
         assert!(disp.is_tracking_refire(0xAD68));
+    }
+
+    #[test]
+    fn is_tracking_refire_true_for_dragwindow_when_window_tracking() {
+        let mut disp = TrapDispatcher::new();
+        install_window_tracking(&mut disp);
+        assert!(disp.is_tracking_refire(0xA925));
+        assert!(disp.is_tracking_refire(0xAD25));
+    }
+
+    #[test]
+    fn is_tracking_refire_true_for_drag_region_family_when_region_tracking() {
+        let mut disp = TrapDispatcher::new();
+        install_region_tracking(&mut disp);
+        assert!(disp.is_tracking_refire(0xA905));
+        assert!(disp.is_tracking_refire(0xAD05));
+        assert!(disp.is_tracking_refire(0xA926));
+        assert!(disp.is_tracking_refire(0xAD26));
     }
 
     // Lock the `current_trap_caller` contract — preserved when an auto-pop
