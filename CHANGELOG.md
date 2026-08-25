@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.1](https://github.com/benletchford/systemless/compare/v0.19.0...v0.19.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* complete Return to Dark Castle PowerPC compatibility ([c6e78c0](https://github.com/benletchford/systemless/commit/c6e78c00c5cea2e3937968c9a021e2c272218242))
+
 ## [0.19.0](https://github.com/benletchford/systemless/compare/v0.18.25...v0.19.0) (2026-08-25)
 
 
