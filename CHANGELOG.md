@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.25](https://github.com/benletchford/systemless/compare/v0.18.24...v0.18.25) (2026-08-25)
+
+
+### Bug Fixes
+
+* repeat held scrollbar actions ([#817](https://github.com/benletchford/systemless/issues/817)) ([02052b4](https://github.com/benletchford/systemless/commit/02052b48343283620491d8d90ce7f384ade808ff))
+
 ## [0.18.24](https://github.com/benletchford/systemless/compare/v0.18.23...v0.18.24) (2026-08-25)
 
 
