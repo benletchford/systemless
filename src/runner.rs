@@ -12,8 +12,8 @@ use crate::loader::ppc::{
     PpcSoundDoubleBufferPlaybackRecord,
 };
 use crate::loader::{
-    ApplicationSizeResource, Code0Header, CodeSegmentHeader, JumpTableEntry, LoadedApp,
-    MpwFarSegmentHeader,
+    decode_retro68_relocations, ApplicationSizeResource, Code0Header, CodeSegmentHeader,
+    JumpTableEntry, LoadedApp, MpwFarSegmentHeader, Retro68RelocationError,
 };
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -10178,6 +10178,54 @@ impl Drop for FixtureRunner {
 // Loader Implementation
 // =============================================================================
 
+fn apply_retro68_rela_relocations<M: MemoryBus>(
+    bus: &mut M,
+    target_base: u32,
+    target_size: usize,
+    rela: &[u8],
+    displacements: [u32; 4],
+) -> std::result::Result<usize, Retro68RelocationError> {
+    let relocations = decode_retro68_relocations(rela, target_size)?;
+    let addresses = relocations
+        .iter()
+        .map(|relocation| {
+            target_base.checked_add(relocation.offset).ok_or(
+                Retro68RelocationError::GuestAddressOverflow {
+                    base: target_base,
+                    offset: relocation.offset,
+                },
+            )
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    for (relocation, address) in relocations.iter().zip(addresses) {
+        let mut value = bus
+            .read_long(address)
+            .wrapping_add(displacements[relocation.base_index]);
+        if relocation.pc_relative {
+            value = value.wrapping_sub(address);
+        }
+        bus.write_long(address, value);
+    }
+
+    Ok(relocations.len())
+}
+
+fn update_far_segment_runtime_addresses<M: MemoryBus>(
+    bus: &mut M,
+    segment_addr: u32,
+    a5_base: u32,
+) {
+    bus.write_long(
+        segment_addr + MpwFarSegmentHeader::CURRENT_A5_OFFSET,
+        a5_base,
+    );
+    bus.write_long(
+        segment_addr + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET,
+        segment_addr,
+    );
+}
+
 fn apply_mpw_far_segment_relocations<M: MemoryBus>(
     bus: &mut M,
     segment_id: i16,
@@ -10229,14 +10277,7 @@ fn apply_mpw_far_segment_relocations<M: MemoryBus>(
         }
     }
 
-    bus.write_long(
-        segment_addr + MpwFarSegmentHeader::CURRENT_A5_OFFSET,
-        a5_base,
-    );
-    bus.write_long(
-        segment_addr + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET,
-        segment_addr,
-    );
+    update_far_segment_runtime_addresses(bus, segment_addr, a5_base);
 
     if trace_load_enabled() {
         eprintln!(
@@ -10298,6 +10339,16 @@ fn load_app_generic<M: MemoryBus>(
     }
 
     let a5_base = load_address + header.below_a5;
+    let mut all_codes = fork.get_all_code();
+    all_codes.sort_by_key(|code| code.id);
+    let is_retro68_multisegment = all_codes.iter().any(|code| {
+        code.id != 0
+            && matches!(
+                CodeSegmentHeader::parse(&code.data),
+                Some(CodeSegmentHeader::MpwFar)
+            )
+            && fork.get(*b"RELA", code.id).is_some()
+    });
     // For classic Mac apps, above_a5 defines the space needed above A5.
     // However, some apps place QuickDraw globals at higher offsets (e.g., A5+39KB).
     // Add 48KB reserve to accommodate most classic apps.
@@ -10391,6 +10442,31 @@ fn load_app_generic<M: MemoryBus>(
             );
         }
         bus.write_bytes(data_dest, &data.data);
+
+        if is_retro68_multisegment {
+            if let Some(rela) = fork.get(*b"RELA", 0) {
+                // Retro68 MultiSegApp.c relocates initialized globals with
+                // {code, data, bss, jump table} displacements of
+                // {0, A5, A5, A5}.
+                match apply_retro68_rela_relocations(
+                    bus,
+                    data_dest,
+                    data.data.len(),
+                    &rela.data,
+                    [0, a5_base, a5_base, a5_base],
+                ) {
+                    Ok(count) => {
+                        if trace_load_enabled() {
+                            eprintln!("[LOAD] Applied Retro68 RELA 0: count={count}");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!("invalid Retro68 RELA 0 resource: {error:?}");
+                        return None;
+                    }
+                }
+            }
+        }
     }
 
     // 2. Parse Jump Table from CODE 0
@@ -10475,9 +10551,6 @@ fn load_app_generic<M: MemoryBus>(
     // Reserve space: scan CODE headers to find max JT extent so CODE segments
     // are placed above the JT area.
     let mut max_jt_end: u32 = jt_base + (jump_table.len() as u32 * 8);
-    let mut all_codes = fork.get_all_code();
-    all_codes.sort_by_key(|c| c.id);
-
     for code_res in &all_codes {
         if code_res.id == 0 || code_res.data.len() < 4 {
             continue;
@@ -10583,7 +10656,47 @@ fn load_app_generic<M: MemoryBus>(
         // original CODE 0 parse). Near-model segments get their JT entries
         // populated by the app's startup code and patched by LoadSeg.
         if matches!(segment_header, Some(CodeSegmentHeader::MpwFar)) {
-            apply_mpw_far_segment_relocations(bus, code_res.id, user_addr, &code_res.data, a5_base);
+            if let Some(rela) = fork.get(*b"RELA", code_res.id) {
+                // Retro68 MultiSegApp.c relocates the body after the 40-byte
+                // far header with {segment, A5, A5, A5} displacements.
+                let target_base = match user_addr.checked_add(MpwFarSegmentHeader::SIZE as u32) {
+                    Some(address) => address,
+                    None => {
+                        tracing::warn!(
+                            "Retro68 CODE {} relocation target address overflowed",
+                            code_res.id
+                        );
+                        return None;
+                    }
+                };
+                let target_size = code_res.data.len() - MpwFarSegmentHeader::SIZE;
+                match apply_retro68_rela_relocations(
+                    bus,
+                    target_base,
+                    target_size,
+                    &rela.data,
+                    [user_addr, a5_base, a5_base, a5_base],
+                ) {
+                    Ok(count) => {
+                        update_far_segment_runtime_addresses(bus, user_addr, a5_base);
+                        if trace_load_enabled() {
+                            eprintln!("[LOAD] Applied Retro68 RELA {}: count={count}", code_res.id);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!("invalid Retro68 RELA {} resource: {error:?}", code_res.id);
+                        return None;
+                    }
+                }
+            } else {
+                apply_mpw_far_segment_relocations(
+                    bus,
+                    code_res.id,
+                    user_addr,
+                    &code_res.data,
+                    a5_base,
+                );
+            }
 
             for (i, entry) in jump_table.iter_mut().enumerate() {
                 if entry.segment == code_res.id {
@@ -11965,6 +12078,115 @@ mod tests {
                 .read_long(code1_base + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET),
             code1_base
         );
+    }
+
+    #[test]
+    fn load_app_applies_retro68_code_and_data_relocations() {
+        let mut code0 = minimal_code0(40, 0x2000, 8, 32);
+        code0[16..24].copy_from_slice(&[
+            0x00, 0x01, // segment 1
+            0xA9, 0xF0, // far-model unloaded LoadSeg trap
+            0x00, 0x00, 0x00, 0x28,
+        ]);
+
+        let mut code1 = vec![0u8; 0x60];
+        code1[0..2].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        for (offset, value) in [0x20u32, 0x30, 0x40, 0x50, 0x60].into_iter().enumerate() {
+            let start = MpwFarSegmentHeader::SIZE + offset * 4;
+            code1[start..start + 4].copy_from_slice(&value.to_be_bytes());
+        }
+        let rela1 = [
+            0x04, // absolute offset 0, code base
+            0x11, // absolute offset 4, data base
+            0x12, // absolute offset 8, bss base
+            0x13, // absolute offset 12, jump-table base
+            0x00, // absolute pass terminator
+            0x44, // PC-relative offset 16, code base
+            0x00, // PC-relative pass terminator
+        ];
+
+        let mut data = Vec::new();
+        for value in [0x10u32, 0x20, 0x30, 0x40] {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        let rela0 = [
+            0x04, // absolute offset 0, code base
+            0x11, // absolute offset 4, data base
+            0x12, // absolute offset 8, bss base
+            0x13, // absolute offset 12, jump-table base
+            0x00, // absolute pass terminator
+            0x00, // empty PC-relative pass
+        ];
+
+        let fork_bytes = make_resource_fork_bytes(&[
+            (*b"CODE", 0, &code0),
+            (*b"CODE", 1, &code1),
+            (*b"DATA", 0, &data),
+            (*b"RELA", 0, &rela0),
+            (*b"RELA", 1, &rela1),
+        ]);
+        let fork = ResourceFork::parse(&fork_bytes).expect("parse synthetic Retro68 app fork");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+
+        let app = runner.load_app(&fork).expect("load Retro68 app");
+        let code1_base = app.segment_bases[&1];
+        let code_body = code1_base + MpwFarSegmentHeader::SIZE as u32;
+        let data_base = app.a5_base - app.code0_header.below_a5;
+
+        assert_eq!(runner.bus.read_long(code_body), code1_base + 0x20);
+        assert_eq!(runner.bus.read_long(code_body + 4), app.a5_base + 0x30);
+        assert_eq!(runner.bus.read_long(code_body + 8), app.a5_base + 0x40);
+        assert_eq!(runner.bus.read_long(code_body + 12), app.a5_base + 0x50);
+        assert_eq!(
+            runner.bus.read_long(code_body + 16),
+            0x28,
+            "the first PC-relative record must immediately follow the first terminator"
+        );
+        assert_eq!(runner.bus.read_long(data_base), 0x10);
+        assert_eq!(runner.bus.read_long(data_base + 4), app.a5_base + 0x20);
+        assert_eq!(runner.bus.read_long(data_base + 8), app.a5_base + 0x30);
+        assert_eq!(runner.bus.read_long(data_base + 12), app.a5_base + 0x40);
+        assert_eq!(
+            runner
+                .bus
+                .read_long(code1_base + MpwFarSegmentHeader::CURRENT_A5_OFFSET),
+            app.a5_base
+        );
+        assert_eq!(
+            runner
+                .bus
+                .read_long(code1_base + MpwFarSegmentHeader::LOAD_ADDRESS_OFFSET),
+            code1_base
+        );
+    }
+
+    #[test]
+    fn invalid_retro68_relocations_do_not_partially_modify_memory() {
+        let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+        let target = 0x1000;
+        runner.bus.write_long(target, 0x20);
+
+        let result = apply_retro68_rela_relocations(
+            &mut runner.bus,
+            target,
+            4,
+            &[
+                0x04, // valid absolute relocation at offset 0
+                0x00, // absolute pass terminator
+                0x08, // invalid PC-relative relocation at offset 1
+                0x00,
+            ],
+            [0x100, 0, 0, 0],
+        );
+
+        assert_eq!(
+            result,
+            Err(Retro68RelocationError::TargetOutOfBounds {
+                offset: 1,
+                target_size: 4,
+            })
+        );
+        assert_eq!(runner.bus.read_long(target), 0x20);
     }
 
     #[test]
