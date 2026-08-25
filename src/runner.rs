@@ -5670,6 +5670,13 @@ impl FixtureRunner {
                                     self.deferred_tracking_refire_pc = Some(pc);
                                     continue;
                                 }
+                                // A retained TrackControl may have redirected
+                                // execution into its guest action procedure.
+                                // That callback returns directly to this trap;
+                                // rewinding PC now would skip it entirely.
+                                if self.dispatcher.is_control_action_callback_pending() {
+                                    continue;
+                                }
                                 // In GUI mode, freeze ticks so the game clock doesn't
                                 // advance while the host renders intermediate frames.
                                 // In headless mode (scripted harnesses), let the budget
@@ -17701,6 +17708,51 @@ mod tests {
         assert!(!tracking_refire_uses_dialog_callbacks(0xA9EA));
         assert!(tracking_refire_advances_gui_idle_tick(0xA991));
         assert!(tracking_refire_advances_gui_idle_tick(0xA9EA));
+    }
+
+    #[test]
+    fn trackcontrol_refire_allows_guest_scrollbar_callback_to_execute() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap_pc = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        let marker = runner.bus.alloc(2);
+        let action_proc = runner.bus.alloc(12);
+        let ctrl_ptr = runner.bus.alloc(40);
+        let ctrl_handle = runner.bus.alloc(4);
+
+        runner.bus.write_word(trap_pc, 0xA968); // _TrackControl
+        runner.bus.write_word(action_proc, 0x33FC); // MOVE.W #$7A5A,marker
+        runner.bus.write_word(action_proc + 2, 0x7A5A);
+        runner.bus.write_long(action_proc + 4, marker);
+        runner.bus.write_word(action_proc + 8, 0x4E74); // RTD #6
+        runner.bus.write_word(action_proc + 10, 6);
+        runner.bus.write_long(ctrl_handle, ctrl_ptr);
+        runner.bus.write_word(ctrl_ptr + 8, 60);
+        runner.bus.write_word(ctrl_ptr + 10, 240);
+        runner.bus.write_word(ctrl_ptr + 12, 220);
+        runner.bus.write_word(ctrl_ptr + 14, 256);
+        runner.bus.write_byte(ctrl_ptr + 16, 0xFF);
+        runner.bus.write_word(ctrl_ptr + 18, 40);
+        runner.bus.write_word(ctrl_ptr + 20, 0);
+        runner.bus.write_word(ctrl_ptr + 22, 100);
+        runner.dispatcher.control_proc_ids.insert(ctrl_ptr, 16);
+        runner.dispatcher.mouse_button = true;
+        runner.dispatcher.mouse_pos = (210, 248);
+
+        runner.bus.write_long(sp, action_proc);
+        runner.bus.write_word(sp + 4, 210);
+        runner.bus.write_word(sp + 6, 248);
+        runner.bus.write_long(sp + 8, ctrl_handle);
+        runner.bus.write_word(sp + 12, 0xBEEF);
+        runner.cpu.write_reg(Register::PC, trap_pc);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let (_steps, running) = runner.run_steps(20, None);
+
+        assert!(running);
+        assert_eq!(runner.bus.read_word(marker), 0x7A5A);
+        assert!(runner.dispatcher.is_control_tracking());
+        assert!(!runner.dispatcher.is_control_action_callback_pending());
     }
 
     #[test]
