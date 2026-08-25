@@ -379,6 +379,9 @@ pub fn expand_compact_quilt_frames(resources: &mut Vec<ResourceForkEntry>) {
 }
 
 /// Wrap raw pixel payloads with a 24-byte QuickDraw Picture header.
+///
+/// Pixel values remain Quilt source-palette indices; renderers must remap
+/// source index 0 (black) through the active destination palette.
 pub fn wrap_quilt_raw_pict_frames(resources: &mut [ResourceForkEntry]) {
     let frms_type = *b"frms";
     let pict_type = *b"PICT";
@@ -695,4 +698,3 @@ mod tests {
         assert_eq!(fork.get(*b"PICT", 1000).unwrap().data, b"pictdata");
     }
 }
-

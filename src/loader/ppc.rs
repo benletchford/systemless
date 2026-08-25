@@ -312,6 +312,8 @@ const PPC_CGRAF_PORT_PN_MODE_OFFSET: u32 = 56;
 const PPC_CGRAF_PORT_PN_VIS_OFFSET: u32 = 66;
 const PPC_CGRAF_PORT_VIS_RGN_OFFSET: u32 = 24;
 const PPC_CGRAF_PORT_CLIP_RGN_OFFSET: u32 = 28;
+const PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET: u32 = 36;
+const PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET: u32 = 42;
 const PPC_CGRAF_PORT_TX_FONT_OFFSET: u32 = 68;
 const PPC_CGRAF_PORT_TX_FACE_OFFSET: u32 = 70;
 const PPC_CGRAF_PORT_TX_MODE_OFFSET: u32 = 72;
@@ -15830,34 +15832,62 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetForeColor => {
             let color_ptr = cpu.gpr[3];
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
-                let _ = ppc_write_rgb_color(memory, color_ptr, *quickdraw_fore_color);
+                let color = ppc_port_rgb_colors(memory, *current_gworld)
+                    .map_or(*quickdraw_fore_color, |colors| colors.0);
+                let _ = ppc_write_rgb_color(memory, color_ptr, color);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetBackColor => {
             let color_ptr = cpu.gpr[3];
             if color_ptr != 0 && ppc_memory_can_write_bytes(memory, color_ptr, 6) {
-                let _ = ppc_write_rgb_color(memory, color_ptr, *quickdraw_back_color);
+                let color = ppc_port_rgb_colors(memory, *current_gworld)
+                    .map_or(*quickdraw_back_color, |colors| colors.1);
+                let _ = ppc_write_rgb_color(memory, color_ptr, color);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ForeColor => {
             *quickdraw_fore_color = ppc_legacy_qd_color_to_rgb(cpu.gpr[3]);
+            let _ = ppc_write_port_rgb_color(
+                memory,
+                *current_gworld,
+                PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+                *quickdraw_fore_color,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::BackColor => {
             *quickdraw_back_color = ppc_legacy_qd_color_to_rgb(cpu.gpr[3]);
+            let _ = ppc_write_port_rgb_color(
+                memory,
+                *current_gworld,
+                PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                *quickdraw_back_color,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RGBForeColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
                 *quickdraw_fore_color = color;
+                let _ = ppc_write_port_rgb_color(
+                    memory,
+                    *current_gworld,
+                    PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+                    color,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RGBBackColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
                 *quickdraw_back_color = color;
+                let _ = ppc_write_port_rgb_color(
+                    memory,
+                    *current_gworld,
+                    PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                    color,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15878,6 +15908,12 @@ fn dispatch_supported_import(
                     } else {
                         color
                     };
+                    let _ = ppc_write_port_rgb_color(
+                        memory,
+                        *current_gworld,
+                        PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+                        *quickdraw_fore_color,
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -16690,6 +16726,12 @@ fn dispatch_supported_import(
                     if let Some(content_color) = ppc_window_content_color(memory, color_table) {
                         if window == *current_gworld {
                             *quickdraw_back_color = content_color;
+                            let _ = ppc_write_port_rgb_color(
+                                memory,
+                                *current_gworld,
+                                PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+                                content_color,
+                            );
                         }
                         if ppc_window_is_visible(memory, window) {
                             if let Some(bounds) = ppc_read_rect(memory, window.wrapping_add(16)) {
@@ -16779,6 +16821,12 @@ fn dispatch_supported_import(
                 *current_gworld = cpu.gpr[3];
                 *current_gdevice =
                     ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+                ppc_restore_port_rgb_colors(
+                    memory,
+                    *current_gworld,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                );
                 let _ = ppc_set_window_hilited(memory, *current_gworld, true);
             }
             if ppc_gworld_trace_enabled() {
@@ -16907,6 +16955,12 @@ fn dispatch_supported_import(
             *current_gworld = cpu.gpr[3];
             *current_gdevice =
                 ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
+            ppc_restore_port_rgb_colors(
+                memory,
+                *current_gworld,
+                quickdraw_fore_color,
+                quickdraw_back_color,
+            );
             if ppc_gworld_trace_enabled() {
                 eprintln!(
                     "[PPC-GWORLD-TRACE] SetPort port=${:08X} gdevice=${:08X}",
@@ -17234,6 +17288,12 @@ fn dispatch_supported_import(
                 *quickdraw_pen_h = h;
                 *quickdraw_pen_v = v;
             }
+            ppc_restore_port_rgb_colors(
+                memory,
+                *current_gworld,
+                quickdraw_fore_color,
+                quickdraw_back_color,
+            );
             if ppc_gworld_trace_enabled() {
                 eprintln!(
                     "[PPC-GWORLD-TRACE] SetGWorld port=${:08X} requested_gdevice=${:08X} gdevice=${:08X}",
@@ -17263,6 +17323,12 @@ fn dispatch_supported_import(
                 *current_gdevice,
             ) {
                 *current_gworld = cpu.gpr[3];
+                ppc_restore_port_rgb_colors(
+                    memory,
+                    *current_gworld,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -17278,11 +17344,23 @@ fn dispatch_supported_import(
                 *current_gdevice,
             ) {
                 *current_gworld = cpu.gpr[3];
+                ppc_restore_port_rgb_colors(
+                    memory,
+                    *current_gworld,
+                    quickdraw_fore_color,
+                    quickdraw_back_color,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CloseCPort => {
             ppc_close_cport(cpu.gpr[3], gworlds, current_gworld, current_gdevice);
+            ppc_restore_port_rgb_colors(
+                memory,
+                *current_gworld,
+                quickdraw_fore_color,
+                quickdraw_back_color,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetPortBits { color } => {
@@ -39844,12 +39922,18 @@ fn ppc_draw_raw_quilt_frame(
         for x in copy_left..copy_right {
             let src_x = ((x - i32::from(dst_left)) * src_width / dst_width).clamp(0, src_width - 1)
                 as usize;
-            let Some(color_index) = raw
+            let Some(mut color_index) = raw
                 .get(src_y.saturating_mul(src_row_bytes).saturating_add(src_x))
                 .copied()
             else {
                 continue;
             };
+            // Quilt raw animation payloads encode black as index 0. Remap it
+            // through the active device palette, whose index 0 is normally
+            // white, before copying the synthesized Picture frame.
+            if color_index == 0 {
+                color_index = pict::closest_clut_index(0, 0, 0, clut);
+            }
             if front_buffer.depth == 8 {
                 let Some(dst_addr) = front_buffer
                     .base_addr
@@ -48075,6 +48159,16 @@ fn ppc_write_gworld_port(
     ppc_write_rect(memory, port + 16, top, left, bottom, right)?;
     memory.write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)?;
     memory.write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 1)?;
+    ppc_write_rgb_color(
+        memory,
+        port + PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+        PPC_RGB_BLACK,
+    )?;
+    ppc_write_rgb_color(
+        memory,
+        port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+        PPC_RGB_WHITE,
+    )?;
     memory.write_u16_be(
         port + PPC_CGRAF_PORT_PN_MODE_OFFSET,
         PPC_QD_PEN_MODE_PAT_COPY as u16,
@@ -48645,6 +48739,54 @@ fn ppc_write_rgb_color(memory: &mut PpcSectionMem, color: u32, value: PpcRgbColo
     memory.write_u16_be(color + 2, value.green)?;
     memory.write_u16_be(color + 4, value.blue)?;
     Some(())
+}
+
+fn ppc_port_rgb_colors(
+    memory: &mut PpcSectionMem,
+    port: u32,
+) -> Option<(PpcRgbColor, PpcRgbColor)> {
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-9--2-10:
+    // rgbFgColor and rgbBkColor belong to each CGrafPort. Port switches must
+    // therefore restore them instead of leaking the previous port's colors.
+    if memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
+    }
+    Some((
+        ppc_read_rgb_color(
+            memory,
+            port.checked_add(PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET)?,
+        )?,
+        ppc_read_rgb_color(
+            memory,
+            port.checked_add(PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET)?,
+        )?,
+    ))
+}
+
+fn ppc_write_port_rgb_color(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    offset: u32,
+    color: PpcRgbColor,
+) -> Option<()> {
+    // A monochrome GrafPort has legacy fgColor/bkColor fields at these byte
+    // positions rather than RGBColor records. Do not overwrite them.
+    if memory.read_u16_be(port.checked_add(6)?)? & 0xc000 != 0xc000 {
+        return None;
+    }
+    ppc_write_rgb_color(memory, port.checked_add(offset)?, color)
+}
+
+fn ppc_restore_port_rgb_colors(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    fore_color: &mut PpcRgbColor,
+    back_color: &mut PpcRgbColor,
+) {
+    if let Some((port_fore_color, port_back_color)) = ppc_port_rgb_colors(memory, port) {
+        *fore_color = port_fore_color;
+        *back_color = port_back_color;
+    }
 }
 
 fn ppc_rgb2hsl(memory: &mut PpcSectionMem, rgb_ptr: u32, hsl_ptr: u32) -> bool {
@@ -102318,7 +102460,7 @@ mod tests {
         raw[1] = 12;
         raw[2] = 13;
         raw[16] = 21;
-        raw[17] = 22;
+        raw[17] = 0;
         raw[18] = 23;
         pict.extend_from_slice(&raw);
         let handle = ppc_alloc_handle_with_bytes(
@@ -102361,7 +102503,10 @@ mod tests {
         assert_eq!(loaded.memory.read_u8(pix_base + 8 + 3), Some(12));
         assert_eq!(loaded.memory.read_u8(pix_base + 8 + 4), Some(13));
         assert_eq!(loaded.memory.read_u8(pix_base + 16 + 2), Some(21));
-        assert_eq!(loaded.memory.read_u8(pix_base + 16 + 3), Some(22));
+        assert_eq!(
+            loaded.memory.read_u8(pix_base + 16 + 3),
+            Some(pict::closest_clut_index(0, 0, 0, &loaded.screen_clut))
+        );
         assert_eq!(loaded.memory.read_u8(pix_base + 16 + 4), Some(23));
         assert_eq!(loaded.memory.read_u8(pix_base), Some(42));
     }
@@ -114259,6 +114404,66 @@ mod tests {
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (7, 7)),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_restores_quickdraw_colors_when_switching_ports() {
+        let pef = synthetic_pef_with_import(b"ForeColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let offscreen_port = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(offscreen_port, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+        loaded
+            .memory
+            .write_u16_be(offscreen_port + 6, 0xc000)
+            .unwrap();
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            offscreen_port + PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+            PPC_RGB_BLACK,
+        )
+        .unwrap();
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            offscreen_port + PPC_CGRAF_PORT_RGB_BK_COLOR_OFFSET,
+            PPC_RGB_WHITE,
+        )
+        .unwrap();
+
+        let red = ppc_legacy_qd_color_to_rgb(205);
+        loaded.cpu.gpr[3] = 205;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.quickdraw_fore_color, red);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetPort;
+        loaded.cpu.gpr[3] = offscreen_port;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.quickdraw_fore_color, PPC_RGB_BLACK);
+
+        let green = ppc_legacy_qd_color_to_rgb(341);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ForeColor;
+        loaded.cpu.gpr[3] = 341;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.quickdraw_fore_color, green);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetPort;
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.quickdraw_fore_color, red);
+        assert_eq!(
+            ppc_read_rgb_color(
+                &mut loaded.memory,
+                offscreen_port + PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
+            ),
+            Some(green)
         );
     }
 
