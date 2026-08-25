@@ -609,6 +609,11 @@ pub(crate) struct ControlTrackingState {
     pub simple_highlighted: bool,
     pub saved_hilite: u8,
     pub stack_ptr: u32,
+    pub scrollbar_action_proc: u32,
+    pub scrollbar_part: u16,
+    pub scrollbar_last_action_tick: u32,
+    pub scrollbar_idle_refires: u8,
+    pub scrollbar_callback_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3359,6 +3364,15 @@ impl TrapDispatcher {
         self.control_tracking.is_some()
     }
 
+    /// Whether TrackControl has redirected execution into a guest scrollbar
+    /// action procedure. The runner must let that callback return to the
+    /// retained A968 trap instead of immediately rewinding over it.
+    pub(crate) fn is_control_action_callback_pending(&self) -> bool {
+        self.control_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.scrollbar_callback_pending)
+    }
+
     /// Shared check used by both dispatch.rs (auto-pop push-back) and
     /// runner.rs (PC rewind for refire). Returns true when the given trap
     /// word should refire next frame because menu or dialog tracking is
@@ -4098,7 +4112,6 @@ impl TrapDispatcher {
         None
     }
 
-
     pub(crate) fn queue_pending_launch_application(&mut self, name: &str, after_event_yield: bool) {
         let normalized = Self::normalize_vfs_path(name);
         self.pending_launch_app = Some(PendingLaunchApplication {
@@ -4529,7 +4542,6 @@ impl TrapDispatcher {
         }
         None
     }
-
 
     pub(crate) fn find_vfs_directory_in_directory(
         &mut self,
@@ -7189,6 +7201,11 @@ mod tests {
             simple_highlighted: false,
             saved_hilite: 0,
             stack_ptr: 0,
+            scrollbar_action_proc: 0,
+            scrollbar_part: 0,
+            scrollbar_last_action_tick: 0,
+            scrollbar_idle_refires: 0,
+            scrollbar_callback_pending: false,
         });
     }
 

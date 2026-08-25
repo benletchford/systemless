@@ -411,6 +411,7 @@ impl super::TrapDispatcher {
         part: u16,
         action_proc: u32,
         final_sp: u32,
+        callback_return_pc: u32,
     ) -> bool {
         if action_proc == 0 || action_proc > bus.ram_size().saturating_sub(2) {
             return false;
@@ -422,7 +423,6 @@ impl super::TrapDispatcher {
         // mouse-down; subsequent host events can enter TrackControl again for
         // auto-repeat. Macintosh Toolbox Essentials 1992, pp. 5-89 to 5-91.
         let trampoline = self.get_or_create_control_def_trampoline(bus);
-        let return_pc = cpu.read_reg(Register::PC);
         let return_slot = final_sp.wrapping_sub(4);
         let saved_regs_sp = return_slot.wrapping_sub(32);
         bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
@@ -439,10 +439,73 @@ impl super::TrapDispatcher {
         bus.write_word(trampoline + 28, 0x0F0F);
         bus.write_word(trampoline + 30, 0x4E75); // RTS
 
-        bus.write_long(return_slot, return_pc);
+        bus.write_long(return_slot, callback_return_pc);
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampoline);
         true
+    }
+
+    const SCROLLBAR_ACTION_REPEAT_TICKS: u32 = 3;
+
+    fn scrollbar_tracking_part(&self, bus: &MacMemoryBus) -> u16 {
+        let Some(tracking) = self.control_tracking.as_ref() else {
+            return 0;
+        };
+        let ctrl_ptr = tracking.ctrl_ptr;
+        if ctrl_ptr == 0 {
+            return 0;
+        }
+        let (screen_top, screen_left, screen_bottom, screen_right) = tracking.simple_screen_rect;
+        let (mouse_v, mouse_h) = self.control_tracking_mouse_pos(bus);
+        if mouse_v < screen_top
+            || mouse_v >= screen_bottom
+            || mouse_h < screen_left
+            || mouse_h >= screen_right
+        {
+            return 0;
+        }
+        let local_top = bus.read_word(ctrl_ptr + 8) as i16;
+        let local_left = bus.read_word(ctrl_ptr + 10) as i16;
+        let port_top = screen_top.wrapping_sub(local_top);
+        let port_left = screen_left.wrapping_sub(local_left);
+        self.standard_scrollbar_testcontrol_part_code(
+            bus,
+            ctrl_ptr,
+            mouse_v.wrapping_sub(port_top),
+            mouse_h.wrapping_sub(port_left),
+        )
+    }
+
+    fn finish_scrollbar_control_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        current_part: u16,
+    ) {
+        let Some(tracking) = self.control_tracking.take() else {
+            return;
+        };
+        let part = if current_part == tracking.scrollbar_part {
+            current_part
+        } else {
+            0
+        };
+        self.record_trackcontrol_input_trace(
+            bus,
+            "tracking_finish",
+            tracking.ctrl_handle,
+            None,
+            tracking.scrollbar_action_proc,
+            Some(part),
+            None,
+            if part == 0 {
+                "scrollbar_no_selection"
+            } else {
+                "scrollbar_part_selected"
+            },
+        );
+        bus.write_word(tracking.stack_ptr + 12, part);
+        cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
     }
 
     pub(crate) fn arm_new_dialog_control_defs<C: CpuOps>(
@@ -3131,6 +3194,79 @@ impl super::TrapDispatcher {
             // simple push/checkbox/radio controls across refires; preserves
             // the old immediate hit-test path when the mouse is already up.
             (true, 0x168) => {
+                if self
+                    .control_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.scrollbar_action_proc != 0)
+                {
+                    if self
+                        .control_tracking
+                        .as_ref()
+                        .is_some_and(|tracking| tracking.scrollbar_callback_pending)
+                    {
+                        if let Some(tracking) = self.control_tracking.as_mut() {
+                            tracking.scrollbar_callback_pending = false;
+                        }
+                        return Some(Ok(()));
+                    }
+
+                    let current_part = self.scrollbar_tracking_part(bus);
+                    if !self.control_tracking_button_down(bus) {
+                        self.finish_scrollbar_control_tracking(cpu, bus, current_part);
+                        return Some(Ok(()));
+                    }
+
+                    let tick = self.tick_count;
+                    let callback_due = if let Some(tracking) = self.control_tracking.as_mut() {
+                        tracking.scrollbar_idle_refires =
+                            tracking.scrollbar_idle_refires.saturating_add(1);
+                        if self.yield_for_ui {
+                            tracking.scrollbar_idle_refires
+                                >= Self::SCROLLBAR_ACTION_REPEAT_TICKS as u8
+                        } else {
+                            tick.wrapping_sub(tracking.scrollbar_last_action_tick)
+                                >= Self::SCROLLBAR_ACTION_REPEAT_TICKS
+                        }
+                    } else {
+                        false
+                    };
+                    let expected_part = self
+                        .control_tracking
+                        .as_ref()
+                        .map(|tracking| tracking.scrollbar_part)
+                        .unwrap_or(0);
+                    if callback_due && current_part == expected_part {
+                        let (ctrl_handle, action_proc, stack_ptr) = self
+                            .control_tracking
+                            .as_ref()
+                            .map(|tracking| {
+                                (
+                                    tracking.ctrl_handle,
+                                    tracking.scrollbar_action_proc,
+                                    tracking.stack_ptr,
+                                )
+                            })
+                            .unwrap_or((0, 0, 0));
+                        let callback_return_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+                        if self.arm_control_action_proc(
+                            cpu,
+                            bus,
+                            ctrl_handle,
+                            expected_part,
+                            action_proc,
+                            stack_ptr,
+                            callback_return_pc,
+                        ) {
+                            if let Some(tracking) = self.control_tracking.as_mut() {
+                                tracking.scrollbar_last_action_tick = tick;
+                                tracking.scrollbar_idle_refires = 0;
+                                tracking.scrollbar_callback_pending = true;
+                            }
+                        }
+                    }
+                    return Some(Ok(()));
+                }
+
                 if self.control_tracking.is_some() {
                     let popup_tracking = self
                         .control_tracking
@@ -3263,17 +3399,53 @@ impl super::TrapDispatcher {
                                         outcome,
                                     );
                                     bus.write_word(sp + 12, part);
-                                    cpu.write_reg(Register::A7, sp + 12);
-                                    if matches!(part, 20..=23) {
-                                        self.arm_control_action_proc(
+                                    if matches!(part, 20..=23)
+                                        && action_proc != 0
+                                        && action_proc <= bus.ram_size().saturating_sub(2)
+                                    {
+                                        let window_ptr = bus.read_long(ctrl_ptr + 4);
+                                        let (scr_top, scr_left, _, _) =
+                                            Self::dialog_screen_bounds(bus, window_ptr);
+                                        let screen_rect = (
+                                            scr_top + r_top,
+                                            scr_left + r_left,
+                                            scr_top + r_bottom,
+                                            scr_left + r_right,
+                                        );
+                                        let callback_return_pc =
+                                            cpu.read_reg(Register::PC).wrapping_sub(2);
+                                        if self.arm_control_action_proc(
                                             cpu,
                                             bus,
                                             ctrl_handle,
                                             part,
                                             action_proc,
-                                            sp + 12,
-                                        );
+                                            sp,
+                                            callback_return_pc,
+                                        ) {
+                                            self.control_tracking = Some(ControlTrackingState {
+                                                ctrl_handle,
+                                                ctrl_ptr,
+                                                popup_tracking: false,
+                                                active_menu: 0,
+                                                highlighted_item: 0,
+                                                saved_pixels: Vec::new(),
+                                                dropdown_rect: (0, 0, 0, 0),
+                                                simple_part: 0,
+                                                simple_screen_rect: screen_rect,
+                                                simple_highlighted: false,
+                                                saved_hilite: hilite,
+                                                stack_ptr: sp,
+                                                scrollbar_action_proc: action_proc,
+                                                scrollbar_part: part,
+                                                scrollbar_last_action_tick: self.tick_count,
+                                                scrollbar_idle_refires: 0,
+                                                scrollbar_callback_pending: true,
+                                            });
+                                            return Some(Ok(()));
+                                        }
                                     }
+                                    cpu.write_reg(Register::A7, sp + 12);
                                     return Some(Ok(()));
                                 }
                                 if Self::is_popup_menu_proc_id(proc_id) {
@@ -3302,6 +3474,11 @@ impl super::TrapDispatcher {
                                             simple_highlighted: false,
                                             saved_hilite: hilite,
                                             stack_ptr: sp,
+                                            scrollbar_action_proc: 0,
+                                            scrollbar_part: 0,
+                                            scrollbar_last_action_tick: 0,
+                                            scrollbar_idle_refires: 0,
+                                            scrollbar_callback_pending: false,
                                         });
                                         self.record_trackcontrol_input_trace(
                                             bus,
@@ -3350,6 +3527,11 @@ impl super::TrapDispatcher {
                                         simple_highlighted: false,
                                         saved_hilite: hilite,
                                         stack_ptr: sp,
+                                        scrollbar_action_proc: 0,
+                                        scrollbar_part: 0,
+                                        scrollbar_last_action_tick: 0,
+                                        scrollbar_idle_refires: 0,
+                                        scrollbar_callback_pending: false,
                                     });
                                     self.redraw_simple_control_tracking_state(cpu, bus, true);
                                     self.record_trackcontrol_input_trace(
@@ -5505,13 +5687,13 @@ mod tests {
     fn track_control_scrollbar_arrow_calls_action_proc_with_part_code() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = 0x300000u32;
-        let return_pc = 0x0012_3456;
+        let trap_pc = 0x0012_3454;
         let action_proc = bus.alloc(2);
         bus.write_word(action_proc, 0x4E75); // RTS
         let (ctrl_handle, _) =
             alloc_scrollbar_control(&mut disp, &mut bus, (60, 240, 220, 256), 255, 0, 40, 0, 100);
 
-        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, action_proc);
         bus.write_word(sp + 4, 210);
@@ -5527,8 +5709,8 @@ mod tests {
         let trampoline = disp.control_def_trampoline;
         assert_ne!(trampoline, 0);
         assert_eq!(cpu.read_reg(Register::PC), trampoline);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
-        assert_eq!(bus.read_long(sp + 8), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(bus.read_long(sp - 4), trap_pc);
         assert_eq!(bus.read_word(trampoline), 0x48E7);
         assert_eq!(bus.read_word(trampoline + 4), 0x2F3C);
         assert_eq!(bus.read_long(trampoline + 6), ctrl_handle);
@@ -5537,6 +5719,56 @@ mod tests {
         assert_eq!(bus.read_word(trampoline + 14), 0x4EB9);
         assert_eq!(bus.read_long(trampoline + 16), action_proc);
         assert_eq!(bus.read_word(trampoline + 30), 0x4E75);
+
+        let tracking = disp.control_tracking.as_ref().unwrap();
+        assert!(tracking.scrollbar_callback_pending);
+        assert_eq!(tracking.scrollbar_part, 21);
+
+        // Returning from the initial action callback retains TrackControl.
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        disp.mouse_button = true;
+        disp.mouse_pos = (210, 248);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !disp
+                .control_tracking
+                .as_ref()
+                .unwrap()
+                .scrollbar_callback_pending
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+
+        // A held arrow repeats at the classic 20 Hz cadence.
+        disp.tick_count += TrapDispatcher::SCROLLBAR_ACTION_REPEAT_TICKS;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(
+            disp.control_tracking
+                .as_ref()
+                .unwrap()
+                .scrollbar_callback_pending
+        );
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+
+        // Once that callback returns, mouse-up completes the retained trap.
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        disp.mouse_button = false;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.control_tracking.is_none());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 21);
     }
 
     #[test]
