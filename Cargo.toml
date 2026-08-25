@@ -30,7 +30,6 @@ softbuffer = { version = "0.4", optional = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 cpal = { version = "0.15", optional = true }
 stuffit = "0.1.5"
-hfs-reader = "0.1.1"
 hfsplus = "0.2.4"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
