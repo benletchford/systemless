@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.3](https://github.com/benletchford/systemless/compare/v0.20.2...v0.20.3) (2026-08-26)
+
+
+### Bug Fixes
+
+* **ppc:** preserve hierarchical menu lists ([79e0963](https://github.com/benletchford/systemless/commit/79e096343fd1b09d269197603561f40438e988a7))
+
 ## [0.20.2](https://github.com/benletchford/systemless/compare/v0.20.1...v0.20.2) (2026-08-26)
 
 
