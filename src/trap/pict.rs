@@ -2717,6 +2717,19 @@ fn write_rgb555_pixel_clipped(
     bus.write_word(addr, pixel & 0x7fff);
 }
 
+fn indexed_src_copy_rgb555(
+    source_index: usize,
+    source_clut: &[[u16; 3]],
+    source_to_destination: &[u8; 256],
+    device_clut: &[[u16; 3]; 256],
+) -> u16 {
+    let [red, green, blue] = source_clut
+        .get(source_index)
+        .copied()
+        .unwrap_or_else(|| device_clut[usize::from(source_to_destination[source_index.min(255)])]);
+    ((red >> 11) << 10) | ((green >> 11) << 5) | (blue >> 11)
+}
+
 fn clut_black_white_indices(clut: &[[u16; 3]; 256]) -> (u8, u8) {
     let mut black_idx = 0u8;
     let mut black_luma = u64::MAX;
@@ -4902,6 +4915,7 @@ fn parse_indexed_bits_rect(
                 &row_data,
                 mode_base,
                 &pm,
+                src_clut,
                 device_clut,
                 &src_to_dst,
                 src_to_dst_is_identity,
@@ -5030,6 +5044,7 @@ fn parse_indexed_bits_rect(
                 &row_data,
                 mode_base,
                 &pm,
+                src_clut,
                 device_clut,
                 &src_to_dst,
                 src_to_dst_is_identity,
@@ -5093,6 +5108,7 @@ fn blit_row(
     row_data: &[u8],
     mode_base: u16,
     pm: &PixMapInfo,
+    src_clut: &[[u16; 3]],
     device_clut: &[[u16; 3]; 256],
     src_to_dst: &[u8; 256],
     src_to_dst_is_identity: bool,
@@ -5279,6 +5295,20 @@ fn blit_row(
                     }
                     let x =
                         ((pic_x - i32::from(frame_left)) as f64 * scale_x) as i32 + dst_left as i32;
+                    if scrn_ps == 16 && mode_base == 0 {
+                        write_rgb555_pixel_clipped(
+                            bus,
+                            screen_base,
+                            screen_rb,
+                            x,
+                            base_y,
+                            indexed_src_copy_rgb555(ci, src_clut, src_to_dst, device_clut),
+                            screen_w,
+                            screen_h,
+                            dst_clip,
+                        );
+                        continue;
+                    }
                     let Some(pixel) = pict_indexed_transfer_pixel(
                         bus,
                         ci,
@@ -5348,6 +5378,20 @@ fn blit_row(
                     }
                     for y in y_start..y_end {
                         for x in x_start..x_end {
+                            if scrn_ps == 16 && mode_base == 0 {
+                                write_rgb555_pixel_clipped(
+                                    bus,
+                                    screen_base,
+                                    screen_rb,
+                                    x,
+                                    y,
+                                    indexed_src_copy_rgb555(ci, src_clut, src_to_dst, device_clut),
+                                    screen_w,
+                                    screen_h,
+                                    dst_clip,
+                                );
+                                continue;
+                            }
                             let Some(pixel) = pict_indexed_transfer_pixel(
                                 bus,
                                 ci,
@@ -5418,6 +5462,25 @@ fn blit_row(
                     }
                     for y in y_start..y_end {
                         for x in x_start..x_end {
+                            if scrn_ps == 16 && mode_base == 0 {
+                                write_rgb555_pixel_clipped(
+                                    bus,
+                                    screen_base,
+                                    screen_rb,
+                                    x,
+                                    y,
+                                    indexed_src_copy_rgb555(
+                                        src_pixel,
+                                        src_clut,
+                                        src_to_dst,
+                                        device_clut,
+                                    ),
+                                    screen_w,
+                                    screen_h,
+                                    dst_clip,
+                                );
+                                continue;
+                            }
                             let Some(pixel) = pict_indexed_transfer_pixel(
                                 bus,
                                 src_pixel,
@@ -7034,6 +7097,7 @@ mod tests {
                 0,
                 &pm,
                 &device_clut,
+                &device_clut,
                 &src_to_dst,
                 true,
                 &indexed_transfer,
@@ -7109,6 +7173,7 @@ mod tests {
                 pixels,
                 0,
                 &pm,
+                &device_clut,
                 &device_clut,
                 &src_to_dst,
                 true,
@@ -7345,6 +7410,7 @@ mod tests {
                 bits,
                 mode,
                 &pm,
+                &device_clut,
                 &device_clut,
                 &src_to_dst,
                 true,
@@ -7668,6 +7734,7 @@ mod tests {
                 0,
                 &pm,
                 &device_clut,
+                &device_clut,
                 &src_to_dst,
                 false,
                 &transfer,
@@ -7707,6 +7774,73 @@ mod tests {
                 20, 20, 10, 10, //
                 20, 20, 10, 10,
             ]
+        );
+    }
+
+    #[test]
+    fn indexed_src_copy_preserves_source_colors_on_direct_destinations() {
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let screen_base = 0x08_0000u32;
+        let pm = PixMapInfo {
+            row_bytes: 1,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 1,
+            bounds_right: 1,
+            pixel_size: 8,
+            cmp_count: 1,
+            pack_type: 0,
+        };
+        let mut source_clut = vec![[0u16; 3]; 256];
+        source_clut[5] = [0x7000, 0x8800, 0x9800];
+        let mut device_clut = [[0u16; 3]; 256];
+        device_clut[42] = [0xffff, 0, 0];
+        let mut src_to_dst = [0u8; 256];
+        src_to_dst[5] = 42;
+        let transfer =
+            build_pict_indexed_transfer_table(0, &source_clut, &src_to_dst, &device_clut, 0, 0);
+        let mut scratch = Vec::new();
+
+        blit_row(
+            &mut bus,
+            &[5],
+            0,
+            &pm,
+            &source_clut,
+            &device_clut,
+            &src_to_dst,
+            false,
+            &transfer,
+            0,
+            0,
+            0,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            1,
+            1.0,
+            1.0,
+            screen_base,
+            2,
+            1,
+            1,
+            16,
+            0,
+            0,
+            None,
+            None,
+            &mut scratch,
+        );
+
+        assert_eq!(
+            bus.read_word(screen_base),
+            ((0x7000u16 >> 11) << 10) | ((0x8800u16 >> 11) << 5) | (0x9800u16 >> 11)
         );
     }
 
