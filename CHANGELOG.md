@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.4](https://github.com/benletchford/systemless/compare/v0.20.3...v0.20.4) (2026-08-26)
+
+
+### Bug Fixes
+
+* **menu:** restore packed four-bit pixels ([01d3ff6](https://github.com/benletchford/systemless/commit/01d3ff6ba76e71aad1d50dcc58df3c6d4d3d0efd))
+
 ## [0.20.3](https://github.com/benletchford/systemless/compare/v0.20.2...v0.20.3) (2026-08-26)
 
 
