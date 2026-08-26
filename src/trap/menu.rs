@@ -811,7 +811,93 @@ impl super::TrapDispatcher {
     }
 
     fn menu_color_rgb_pixel_index(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
-        Self::fb_pixel_index_for_rgb(bus, rgb)
+        // Menu chrome is drawn directly into the main framebuffer even when
+        // an application has selected an offscreen GDevice.
+        Self::fb_main_screen_pixel_index_for_rgb(bus, rgb)
+    }
+
+    pub(super) fn menu_standard_pixel_index(
+        bus: &MacMemoryBus,
+        pixel_size: u16,
+        black: bool,
+    ) -> Option<u8> {
+        if !matches!(pixel_size, 4 | 8) {
+            return None;
+        }
+        Self::menu_color_rgb_pixel_index(bus, if black { [0; 3] } else { [0xFFFF; 3] })
+    }
+
+    fn menu_set_standard_pixel(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, u16, i16, i16),
+        x: i16,
+        y: i16,
+        black: bool,
+    ) {
+        let (screen_base, row_bytes, pixel_size, screen_width, screen_height) = screen;
+        if let Some(pixel_index) = Self::menu_standard_pixel_index(bus, pixel_size, black) {
+            Self::fb_set_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel_index,
+            );
+        } else {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                black,
+            );
+        }
+    }
+
+    fn menu_draw_standard_hline(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, u16, i16, i16),
+        y: i16,
+        left: i16,
+        right: i16,
+        black: bool,
+    ) {
+        let (screen_base, row_bytes, pixel_size, screen_width, screen_height) = screen;
+        if let Some(pixel_index) = Self::menu_standard_pixel_index(bus, pixel_size, black) {
+            Self::fb_hline_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                y,
+                left,
+                right,
+                pixel_index,
+            );
+        } else {
+            Self::fb_hline(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                y,
+                left,
+                right,
+                black,
+            );
+        }
     }
 
     pub(super) fn menu_bar_background_pixel_index(
@@ -824,21 +910,13 @@ impl super::TrapDispatcher {
         }
 
         // IM:V 1986 pp. V-232 to V-233 / MTE 1992 table 3-7:
-        // a menu bar entry uses RGB4 for the menu bar color. Without
-        // a menu bar entry, a menu title entry's RGB2 duplicates the bar
-        // color; use the first current menu's title entry because those
-        // duplicated values are expected to agree across the menu list.
+        // a menu bar entry uses RGB4 for the menu bar color. StandardMBDF
+        // looks up only MCEntry(0, 0) for DrawBar/FlipBar and otherwise uses
+        // standard white; per-title RGB2 values do not recolor the full bar.
         let rgb = if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
             Self::menu_color_entry_rgb(bus, menu_bar, 22)
-        } else if let Some(title) = self
-            .menus
-            .iter()
-            .filter(|menu| menu.visible_in_menu_bar)
-            .find_map(|menu| Self::menu_color_entry_ptr(bus, menu.id, 0))
-        {
-            Self::menu_color_entry_rgb(bus, title, 10)
         } else {
-            return None;
+            return Self::menu_standard_pixel_index(bus, pixel_size, false);
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
     }
@@ -860,9 +938,30 @@ impl super::TrapDispatcher {
         } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
             Self::menu_color_entry_rgb(bus, menu_bar, 4)
         } else {
-            return None;
+            return Self::menu_standard_pixel_index(bus, pixel_size, true);
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
+    }
+
+    pub(super) fn menu_title_background_pixel_index(
+        &self,
+        bus: &MacMemoryBus,
+        menu_id: i16,
+        pixel_size: u16,
+    ) -> Option<u8> {
+        if !matches!(pixel_size, 4 | 8) {
+            return None;
+        }
+
+        // IM:V 1986 pp. V-232 to V-233: a title entry duplicates the
+        // menu-bar color in RGB2 for title drawing/highlighting.
+        if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
+            return Self::menu_color_rgb_pixel_index(
+                bus,
+                Self::menu_color_entry_rgb(bus, title, 10),
+            );
+        }
+        self.menu_bar_background_pixel_index(bus, pixel_size)
     }
 
     fn menu_dropdown_background_pixel_index(
@@ -870,7 +969,7 @@ impl super::TrapDispatcher {
         menu_id: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if pixel_size != 8 {
+        if !matches!(pixel_size, 4 | 8) {
             return None;
         }
 
@@ -882,7 +981,7 @@ impl super::TrapDispatcher {
         } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
             Self::menu_color_entry_rgb(bus, menu_bar, 10)
         } else {
-            return None;
+            return Self::menu_standard_pixel_index(bus, pixel_size, false);
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
     }
@@ -894,7 +993,7 @@ impl super::TrapDispatcher {
         pixel_size: u16,
         item_rgb_offset: u32,
     ) -> Option<u8> {
-        if pixel_size != 8 {
+        if !matches!(pixel_size, 4 | 8) {
             return None;
         }
 
@@ -909,9 +1008,31 @@ impl super::TrapDispatcher {
         } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
             Self::menu_color_entry_rgb(bus, menu_bar, 16)
         } else {
-            return None;
+            return Self::menu_standard_pixel_index(bus, pixel_size, true);
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
+    }
+
+    fn menu_item_background_pixel_index(
+        bus: &MacMemoryBus,
+        menu_id: i16,
+        menu_item: i16,
+        pixel_size: u16,
+    ) -> Option<u8> {
+        if !matches!(pixel_size, 4 | 8) {
+            return None;
+        }
+
+        // IM:V 1986 p. V-233: an item entry duplicates its menu background
+        // in RGB4 so the standard MDEF can resolve selected-item colors
+        // directly; otherwise the title/menu-bar background applies.
+        if let Some(item) = Self::menu_color_entry_ptr(bus, menu_id, menu_item) {
+            return Self::menu_color_rgb_pixel_index(
+                bus,
+                Self::menu_color_entry_rgb(bus, item, 22),
+            );
+        }
+        Self::menu_dropdown_background_pixel_index(bus, menu_id, pixel_size)
     }
 
     /// Pixel value the standard definition procedures use to dim
@@ -935,60 +1056,78 @@ impl super::TrapDispatcher {
             return None;
         }
         let resolve = |index: Option<u8>, default: [u16; 3]| match index {
-            Some(index) => Self::fb_rgb_for_pixel_index(bus, index).unwrap_or(default),
+            Some(index) => Self::fb_main_screen_rgb_for_pixel_index(bus, index).unwrap_or(default),
             None => default,
         };
         let background = resolve(background_index, [0xFFFF; 3]);
         let content = resolve(content_index, [0; 3]);
-        Self::fb_gray_pixel_index_between(bus, background, content)
+        Self::fb_main_screen_gray_pixel_index_between(bus, background, content)
     }
 
     fn menu_hilite_pixel_indexes(
-        &self,
         bus: &MacMemoryBus,
         background_index: Option<u8>,
+        foreground_index: Option<u8>,
         pixel_size: u16,
     ) -> Option<(u8, u8)> {
-        if pixel_size != 8 {
+        if !matches!(pixel_size, 4 | 8) {
             return None;
         }
 
-        // HIG 1992 p. 38 and Imaging With QuickDraw 1994 p. 4-42:
-        // color hilite mode swaps the background color with HiliteRGB
-        // instead of applying an arbitrary indexed-pixel complement.
+        // IM:V 1986 pp. V-249 and V-252 to V-253: the standard MDEF and
+        // MBDF highlight color menus by reversing their element foreground
+        // and background colors, not by complementing indices or applying
+        // the general QuickDraw HiliteRGB transfer mode.
         let background =
             background_index.or_else(|| Self::menu_color_rgb_pixel_index(bus, [0xFFFF; 3]))?;
-        let hilite = Self::menu_color_rgb_pixel_index(
-            bus,
-            [
-                self.hilite_color.0,
-                self.hilite_color.1,
-                self.hilite_color.2,
-            ],
-        )?;
-        Some((background, hilite))
+        let foreground =
+            foreground_index.or_else(|| Self::menu_color_rgb_pixel_index(bus, [0; 3]))?;
+        Some((background, foreground))
     }
 
-    fn menu_hilited_pixel_index(pixel: u8, background: u8, hilite: u8) -> u8 {
+    fn menu_hilited_pixel_index(pixel: u8, background: u8, foreground: u8) -> u8 {
         if pixel == background {
-            hilite
-        } else if pixel == hilite {
+            foreground
+        } else if pixel == foreground {
             background
         } else {
             pixel
         }
     }
 
-    fn menu_plain_hilited_pixel_index(bus: &MacMemoryBus, pixel: u8) -> u8 {
-        let white = Self::fb_pixel_index_for_rgb(bus, [0xFFFF; 3]).unwrap_or(0);
-        let black = Self::fb_pixel_index_for_rgb(bus, [0; 3]).unwrap_or(255);
-        if pixel == white {
-            black
-        } else if pixel == black {
-            white
-        } else {
-            pixel
+    fn hilite_packed_4bpp_menu_pixel(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, i16, i16),
+        x: i16,
+        y: i16,
+        hilite_indexes: (u8, u8),
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height) = screen;
+        if x < 0 || x >= screen_width || y < 0 || y >= screen_height {
+            return;
         }
+
+        // Imaging With QuickDraw 1994 pp. 4-88 to 4-89: 4-bit indexed
+        // pixels are packed high-nibble first. Read only the target pixel,
+        // then use the packed-aware setter so its neighbour survives.
+        let packed = bus.read_byte(screen_base + (y as u32) * row_bytes + (x as u32 / 2));
+        let pixel = if x & 1 == 0 {
+            packed >> 4
+        } else {
+            packed & 0x0F
+        };
+        let highlighted = Self::menu_hilited_pixel_index(pixel, hilite_indexes.0, hilite_indexes.1);
+        Self::fb_set_pixel_index(
+            bus,
+            screen_base,
+            row_bytes,
+            4,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            highlighted,
+        );
     }
 
     fn alloc_handle_with_bytes(&mut self, bus: &mut MacMemoryBus, bytes: &[u8]) -> u32 {
@@ -3011,9 +3150,11 @@ impl super::TrapDispatcher {
             //   flashmenubar_five_call_composition_advances_stack_by_ten_bytes
             //   covers the 5-call composition.
             //
-            // Visual side effect: on the System 7.5.3 screen,
-            // FlashMenuBar(0) inverts the current top menu-bar strip
-            // once, so a second call blinks it back.
+            // Visual side effect: on a monochrome System 7.5.3 screen the
+            // strip bits are inverted. On indexed-color screens StandardMBDF
+            // reverses the MCEntry(0,0) RGB4/RGB1 background/title pair, or
+            // standard white/black when that entry is absent. A second call
+            // blinks either representation back.
             (true, 0x14C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
@@ -4230,6 +4371,13 @@ impl super::TrapDispatcher {
         };
         let (screen_base, row_bytes, screen_width, screen_height, screen_pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            screen_pixel_size,
+            screen_width,
+            screen_height,
+        );
 
         for dy in 0..layout.height {
             for dx in 0..layout.width {
@@ -4241,7 +4389,7 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
-                if screen_pixel_size == 8 && layout.pixel_size >= 2 {
+                if matches!(screen_pixel_size, 4 | 8) && layout.pixel_size >= 2 {
                     let Some(pixel_index) = Self::menu_cicn_pixel_index(
                         bus,
                         layout.pixel_data_ptr,
@@ -4259,24 +4407,31 @@ impl super::TrapDispatcher {
                     // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
                     let destination_index = Self::menu_cicn_rgb_for_index(bus, layout, pixel_index)
                         .map(|rgb| {
-                            Self::fb_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
-                                super::pict::closest_clut_index(
-                                    rgb[0],
-                                    rgb[1],
-                                    rgb[2],
-                                    &self.device_clut,
-                                )
-                            })
+                            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(
+                                || {
+                                    super::pict::closest_clut_index(
+                                        rgb[0],
+                                        rgb[1],
+                                        rgb[2],
+                                        &self.device_clut,
+                                    )
+                                },
+                            )
                         })
                         .unwrap_or(pixel_index);
                     let dst_x = left + dx;
                     let dst_y = top + dy;
-                    if dst_x >= 0 && dst_y >= 0 && dst_x < screen_width && dst_y < screen_height {
-                        bus.write_byte(
-                            screen_base + (dst_y as u32) * row_bytes + dst_x as u32,
-                            destination_index,
-                        );
-                    }
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        screen_pixel_size,
+                        screen_width,
+                        screen_height,
+                        dst_x,
+                        dst_y,
+                        destination_index,
+                    );
                     continue;
                 }
 
@@ -4305,17 +4460,7 @@ impl super::TrapDispatcher {
                 ) else {
                     continue;
                 };
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    screen_pixel_size,
-                    screen_width,
-                    screen_height,
-                    left + dx,
-                    top + dy,
-                    pixel_index != 0,
-                );
+                Self::menu_set_standard_pixel(bus, screen, left + dx, top + dy, pixel_index != 0);
             }
         }
     }
@@ -4692,10 +4837,6 @@ impl super::TrapDispatcher {
             return;
         }
         self.close_submenus_from(bus, depth + 1);
-        let classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7;
-        if classic_highlight && old_item > 0 {
-            self.invert_dropdown_item_rect(bus, menu_idx, rect, old_item);
-        }
         if let Some(submenu) = self
             .menu_tracking
             .as_mut()
@@ -4703,11 +4844,7 @@ impl super::TrapDispatcher {
         {
             submenu.highlighted_item = new_item;
         }
-        if classic_highlight && new_item > 0 {
-            self.invert_dropdown_item_rect(bus, menu_idx, rect, new_item);
-        } else if !classic_highlight {
-            self.draw_menu_dropdown(bus, menu_idx, rect);
-        }
+        self.draw_menu_dropdown(bus, menu_idx, rect);
         if new_item > 0 {
             self.ensure_submenu_for_parent_item(bus, Some(depth), new_item);
         }
@@ -4724,25 +4861,17 @@ impl super::TrapDispatcher {
 
         if old_item != new_item {
             self.close_submenus_from(bus, 0);
-            let classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7;
-            if classic_highlight && old_item > 0 {
-                self.invert_menu_item(bus, old_item);
-            }
             if let Some(tracking) = self.menu_tracking.as_mut() {
                 tracking.highlighted_item = new_item;
             }
-            if classic_highlight && new_item > 0 {
-                self.invert_menu_item(bus, new_item);
-            } else if !classic_highlight {
-                let Some((active_menu, dropdown_rect)) = self
-                    .menu_tracking
-                    .as_ref()
-                    .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
-                else {
-                    return;
-                };
-                self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
-            }
+            let Some((active_menu, dropdown_rect)) = self
+                .menu_tracking
+                .as_ref()
+                .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
+            else {
+                return;
+            };
+            self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
         }
 
         if new_item > 0 {
@@ -4845,6 +4974,13 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
         let (top, left, bottom, right) = rect;
         if menu_idx >= self.menus.len() {
             return;
@@ -4895,54 +5031,12 @@ impl super::TrapDispatcher {
             }
 
             if !attached_pulldown {
-                Self::fb_hline(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    top,
-                    left,
-                    right,
-                    true,
-                );
+                Self::menu_draw_standard_hline(bus, screen, top, left, right, true);
             }
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                bottom - 1,
-                left,
-                right,
-                true,
-            );
+            Self::menu_draw_standard_hline(bus, screen, bottom - 1, left, right, true);
             for y in top..bottom {
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    left,
-                    y,
-                    true,
-                );
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    right - 1,
-                    y,
-                    true,
-                );
+                Self::menu_set_standard_pixel(bus, screen, left, y, true);
+                Self::menu_set_standard_pixel(bus, screen, right - 1, y, true);
             }
 
             // Shadow (right edge + bottom edge). Detached popup menus start
@@ -4950,30 +5044,9 @@ impl super::TrapDispatcher {
             // in the System 7.5.3 MDEF reference. MTE 1992, p. 3-120.
             let shadow_top = if detached_popup { top + 3 } else { top + 2 };
             for y in shadow_top..=bottom {
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    right,
-                    y,
-                    true,
-                );
+                Self::menu_set_standard_pixel(bus, screen, right, y, true);
             }
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                bottom,
-                left + 3,
-                right + 1,
-                true,
-            );
+            Self::menu_draw_standard_hline(bus, screen, bottom, left + 3, right + 1, true);
         }
 
         // Draw items
@@ -5023,6 +5096,40 @@ impl super::TrapDispatcher {
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 10);
             let command_pixel_index =
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 16);
+            let classic_selected = self.ui_theme_id() == UiThemeId::ClassicSystem7
+                && highlighted_item == item_no
+                && item.enabled
+                && !is_separator;
+            let selected_mono = classic_selected && pixel_size == 1;
+            let selected_colors = (classic_selected && matches!(pixel_size, 4 | 8)).then(|| {
+                // IM:V 1986 pp. V-233 and V-249: the standard color MDEF
+                // redraws a selected row with its item/name color (RGB2, or
+                // the default item color) as the background and its menu
+                // background (RGB4) as the foreground for every component.
+                let selected_background = name_pixel_index
+                    .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0; 3]))
+                    .unwrap_or(255);
+                let selected_foreground =
+                    Self::menu_item_background_pixel_index(bus, menu.id, item_no, pixel_size)
+                        .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0xFFFF; 3]))
+                        .unwrap_or(0);
+                (selected_background, selected_foreground)
+            });
+            if let Some((selected_background, _)) = selected_colors {
+                Self::fb_fill_rect_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    item_top,
+                    left + 1,
+                    item_bottom,
+                    right - 1,
+                    selected_background,
+                );
+            }
             let cicn_icon_ptr = self.cicn_menu_icon_resource_ptr(item);
             let reduced_icon_ptr = self.reduced_menu_icon_resource_ptr(item);
             let small_icon_ptr = self.small_menu_icon_resource_ptr(item);
@@ -5068,7 +5175,9 @@ impl super::TrapDispatcher {
             };
             let dim_with_pattern = dim_row && dim_index.is_none();
             let content_index = |component_index: Option<u8>| {
-                if dim_row {
+                if let Some((_, selected_foreground)) = selected_colors {
+                    Some(selected_foreground)
+                } else if dim_row {
                     dim_index.or(component_index)
                 } else {
                     component_index
@@ -5101,17 +5210,31 @@ impl super::TrapDispatcher {
                         // is on. Imaging With QuickDraw 1994 p. 3-9.
                         None => {
                             if (x + sep_y) % 2 == 0 {
-                                Self::fb_set_pixel(
-                                    bus,
-                                    screen_base,
-                                    row_bytes,
-                                    pixel_size,
-                                    screen_width,
-                                    screen_height,
-                                    x,
-                                    sep_y,
-                                    true,
-                                );
+                                if let Some(pixel_index) = name_pixel_index {
+                                    Self::fb_set_pixel_index(
+                                        bus,
+                                        screen_base,
+                                        row_bytes,
+                                        pixel_size,
+                                        screen_width,
+                                        screen_height,
+                                        x,
+                                        sep_y,
+                                        pixel_index,
+                                    );
+                                } else {
+                                    Self::fb_set_pixel(
+                                        bus,
+                                        screen_base,
+                                        row_bytes,
+                                        pixel_size,
+                                        screen_width,
+                                        screen_height,
+                                        x,
+                                        sep_y,
+                                        true,
+                                    );
+                                }
                             }
                         }
                     }
@@ -5183,7 +5306,7 @@ impl super::TrapDispatcher {
                     item_top,
                     icon_left,
                     MENU_NORMAL_ICON_SIZE,
-                    name_pixel_index,
+                    content_index(name_pixel_index),
                 );
                 text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             } else if let Some(icon_ptr) = reduced_icon_ptr {
@@ -5194,12 +5317,18 @@ impl super::TrapDispatcher {
                     item_top,
                     icon_left,
                     MENU_ROW_HEIGHT,
-                    name_pixel_index,
+                    content_index(name_pixel_index),
                 );
                 text_left = icon_left + MENU_ROW_HEIGHT;
             } else if let Some(icon_ptr) = small_icon_ptr {
                 let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_sicn_menu_icon(bus, icon_ptr, item_top, icon_left, name_pixel_index);
+                self.draw_sicn_menu_icon(
+                    bus,
+                    icon_ptr,
+                    item_top,
+                    icon_left,
+                    content_index(name_pixel_index),
+                );
                 text_left = icon_left + MENU_ROW_HEIGHT;
             } else if Self::menu_item_uses_normal_icon(item) {
                 // MTE 1992 pp. 3-137 to 3-138 says SetItemIcon stores an
@@ -5255,7 +5384,7 @@ impl super::TrapDispatcher {
                     let x = right - 12 + dx;
                     let half_height = dx.min(6 - dx);
                     for dy in -half_height..=half_height {
-                        match content_index(None) {
+                        match content_index(command_pixel_index) {
                             Some(pixel_index) => Self::fb_set_pixel_index(
                                 bus,
                                 screen_base,
@@ -5339,17 +5468,48 @@ impl super::TrapDispatcher {
                 for y in item_top..item_bottom {
                     for x in (left + 1)..(right - 1) {
                         if (x + y) % 2 != 0 {
-                            Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                y,
-                                false,
-                            );
+                            if let Some(bg_index) = dropdown_bg_index {
+                                Self::fb_set_pixel_index(
+                                    bus,
+                                    screen_base,
+                                    row_bytes,
+                                    pixel_size,
+                                    screen_width,
+                                    screen_height,
+                                    x,
+                                    y,
+                                    bg_index,
+                                );
+                            } else {
+                                Self::fb_set_pixel(
+                                    bus,
+                                    screen_base,
+                                    row_bytes,
+                                    pixel_size,
+                                    screen_width,
+                                    screen_height,
+                                    x,
+                                    y,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            if selected_mono {
+                // The monochrome standard MDEF highlights by inverting the
+                // fully rendered row. Doing this after icons and text keeps
+                // cicn bitmap fallbacks and every other 1-bit component
+                // byte-for-byte identical to the classic XOR path.
+                for y in item_top..item_bottom {
+                    for x in (left + 1)..(right - 1) {
+                        if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
+                            let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
+                            let bit = 7 - (x as u32 % 8);
+                            let addr = screen_base + byte_offset;
+                            bus.write_byte(addr, bus.read_byte(addr) ^ (1 << bit));
                         }
                     }
                 }
@@ -5381,15 +5541,26 @@ impl super::TrapDispatcher {
                 continue;
             }
             let row_start = screen_base + (y as u32) * row_bytes;
-            let (byte_left, byte_right) = if pixel_size == 1 {
-                // 1bpp: pixels packed 8 per byte
-                (
-                    (left.max(0) as u32) / 8,
-                    (save_right.max(0) as u32).div_ceil(8),
-                )
-            } else {
-                // 8bpp: each pixel is one byte
-                (left.max(0) as u32, save_right.max(0) as u32)
+            let (byte_left, byte_right) = match pixel_size {
+                1 => {
+                    // 1bpp: pixels packed 8 per byte
+                    (
+                        (left.max(0) as u32) / 8,
+                        (save_right.max(0) as u32).div_ceil(8),
+                    )
+                }
+                4 => {
+                    // 4bpp: pixels packed two per byte, high nibble first.
+                    // Save whole boundary bytes so odd edges round-trip.
+                    (
+                        (left.max(0) as u32) / 2,
+                        (save_right.max(0) as u32).div_ceil(2),
+                    )
+                }
+                _ => {
+                    // 8bpp: each pixel is one byte
+                    (left.max(0) as u32, save_right.max(0) as u32)
+                }
             };
             let bx_end = byte_right.min(row_bytes);
             for bx in byte_left..bx_end {
@@ -5411,13 +5582,16 @@ impl super::TrapDispatcher {
         let (top, left, bottom, right) = rect;
         let save_bottom = bottom + 1;
         let save_right = right + 1;
-        let (byte_left, byte_right) = if pixel_size == 1 {
-            (
+        let (byte_left, byte_right) = match pixel_size {
+            1 => (
                 (left.max(0) as u32) / 8,
                 (save_right.max(0) as u32).div_ceil(8),
-            )
-        } else {
-            (left.max(0) as u32, save_right.max(0) as u32)
+            ),
+            4 => (
+                (left.max(0) as u32) / 2,
+                (save_right.max(0) as u32).div_ceil(2),
+            ),
+            _ => (left.max(0) as u32, save_right.max(0) as u32),
         };
         let bx_end = byte_right.min(row_bytes);
         let bytes_per_row = bx_end.saturating_sub(byte_left);
@@ -5437,64 +5611,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    /// Invert a menu item row in the dropdown (for highlighting).
-    pub(super) fn invert_dropdown_item_rect(
-        &self,
-        bus: &mut MacMemoryBus,
-        menu_idx: usize,
-        rect: (i16, i16, i16, i16),
-        item: i16,
-    ) {
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
-        let (top, left, _bottom, right) = rect;
-        if item < 1 || menu_idx >= self.menus.len() {
-            return;
-        }
-        let menu = &self.menus[menu_idx];
-        let mut item_top = top + 1;
-        for prior in menu.items.iter().take((item - 1) as usize) {
-            item_top += self.menu_item_height(bus, prior);
-        }
-        let Some(target_item) = menu.items.get((item - 1) as usize) else {
-            return;
-        };
-        let item_bottom = item_top + self.menu_item_height(bus, target_item);
-        let background_index = Self::menu_dropdown_background_pixel_index(bus, menu.id, pixel_size);
-        let hilite_indexes = background_index.and_then(|background| {
-            self.menu_hilite_pixel_indexes(bus, Some(background), pixel_size)
-        });
-        // Invert pixels in the item row (inside the border).
-        for y in item_top..item_bottom {
-            for x in (left + 1)..(right - 1) {
-                if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
-                    if pixel_size == 1 {
-                        let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
-                        let bit = 7 - (x as u32 % 8);
-                        let addr = screen_base + byte_offset;
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(addr, b ^ (1 << bit));
-                    } else if let Some((background, hilite)) = hilite_indexes {
-                        let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_hilited_pixel_index(b, background, hilite));
-                    } else {
-                        let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-                        let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_plain_hilited_pixel_index(bus, b));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Invert a menu item row in the dropdown (for highlighting).
-    pub(super) fn invert_menu_item(&self, bus: &mut MacMemoryBus, item: i16) {
-        if let Some(ref tracking) = self.menu_tracking {
-            self.invert_dropdown_item_rect(bus, tracking.active_menu, tracking.dropdown_rect, item);
-        }
-    }
-
     fn invert_menu_bar_rect(
         &self,
         bus: &mut MacMemoryBus,
@@ -5502,6 +5618,7 @@ impl super::TrapDispatcher {
         left: i16,
         bottom: i16,
         right: i16,
+        hilite_indexes: Option<(u8, u8)>,
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
@@ -5521,10 +5638,23 @@ impl super::TrapDispatcher {
                     let addr = screen_base + byte_offset;
                     let b = bus.read_byte(addr);
                     bus.write_byte(addr, b ^ (1 << bit));
+                } else if pixel_size == 4 {
+                    let indexes = hilite_indexes.unwrap_or((0, 15));
+                    Self::hilite_packed_4bpp_menu_pixel(
+                        bus,
+                        (screen_base, row_bytes, screen_width, screen_height),
+                        x,
+                        y,
+                        indexes,
+                    );
                 } else if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
                     let b = bus.read_byte(addr);
-                    bus.write_byte(addr, Self::menu_plain_hilited_pixel_index(bus, b));
+                    let (background, foreground) = hilite_indexes.unwrap_or((0, 255));
+                    bus.write_byte(
+                        addr,
+                        Self::menu_hilited_pixel_index(b, background, foreground),
+                    );
                 }
             }
         }
@@ -5540,22 +5670,43 @@ impl super::TrapDispatcher {
         if menu_bar_height <= 0 {
             return;
         }
-        if !matches!(pixel_size, 1 | 8) {
+        if !matches!(pixel_size, 1 | 4 | 8) {
             return;
         }
 
         if menu_id != 0 {
-            if let Some((_, left, right)) = self
+            if let Some((idx, left, right)) = self
                 .menu_title_regions_with_indices()
                 .into_iter()
                 .find(|(idx, _, _)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
             {
-                self.invert_menu_bar_rect(bus, 1, left - 2, menu_bar_height - 1, right + 3);
+                let menu = &self.menus[idx];
+                let hilite_indexes = Self::menu_hilite_pixel_indexes(
+                    bus,
+                    self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
+                    Self::menu_title_pixel_index(bus, menu.id, pixel_size),
+                    pixel_size,
+                );
+                self.invert_menu_bar_rect(
+                    bus,
+                    1,
+                    left - 2,
+                    menu_bar_height - 1,
+                    right + 3,
+                    hilite_indexes,
+                );
+                self.redraw_color_system_menu_mark_title(bus, idx, left + 7);
                 return;
             }
         }
 
-        self.invert_menu_bar_rect(bus, 0, 0, menu_bar_height, screen_width);
+        let hilite_indexes = Self::menu_hilite_pixel_indexes(
+            bus,
+            self.menu_bar_background_pixel_index(bus, pixel_size),
+            Self::menu_title_pixel_index(bus, 0, pixel_size),
+            pixel_size,
+        );
+        self.invert_menu_bar_rect(bus, 0, 0, menu_bar_height, screen_width, hilite_indexes);
         // DrawMenuBar stamps the classic top screen-corner mask (IM:I
         // I-354). System 7.5.3 FlashMenuBar(0) preserves that black mask
         // while inverting the menu-bar strip; dialog_visual_flash_menubar_smoke
@@ -5579,19 +5730,6 @@ impl super::TrapDispatcher {
             return;
         };
         if old_item == item {
-            return;
-        }
-
-        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
-            if old_item > 0 {
-                self.invert_menu_item(bus, old_item);
-            }
-            if let Some(tracking) = self.menu_tracking.as_mut() {
-                tracking.highlighted_item = item;
-            }
-            if item > 0 {
-                self.invert_menu_item(bus, item);
-            }
             return;
         }
 
@@ -5625,6 +5763,10 @@ impl super::TrapDispatcher {
         let Some((left, right)) = target_region else {
             return;
         };
+        let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+        if menu_bar_height <= 1 {
+            return;
+        }
         if self.ui_theme_id() != UiThemeId::ClassicSystem7 {
             let Some(menu) = self
                 .menus
@@ -5633,11 +5775,6 @@ impl super::TrapDispatcher {
             else {
                 return;
             };
-            let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
-            if menu_bar_height <= 1 {
-                return;
-            }
-
             // HIG 1992 p. 55 says the title remains highlighted while
             // its menu is open. Non-classic themes own that title-state
             // chrome; the compatibility path redraws only the app title text.
@@ -5673,17 +5810,26 @@ impl super::TrapDispatcher {
             }
             return;
         }
-        let background_index = self.menu_bar_background_pixel_index(bus, pixel_size);
-        let hilite_indexes = background_index.and_then(|background| {
-            self.menu_hilite_pixel_indexes(bus, Some(background), pixel_size)
-        });
+        let Some(menu) = self
+            .menus
+            .get(menu_idx)
+            .filter(|menu| menu.visible_in_menu_bar)
+        else {
+            return;
+        };
+        let hilite_indexes = Self::menu_hilite_pixel_indexes(
+            bus,
+            self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
+            Self::menu_title_pixel_index(bus, menu.id, pixel_size),
+            pixel_size,
+        );
         // Invert the title area in the menu bar. The standard MDEF's
         // highlighted title rectangle begins two pixels before the logical
         // hit region, matching the pull-down rectangle captured by the
         // System 7.5.3 MenuSelect reference. Inside Macintosh Volume I, I-356.
         let classic_left = left - 2;
         let classic_right = right + 3;
-        for y in 1i16..19 {
+        for y in 1i16..(menu_bar_height - 1) {
             for x in classic_left..classic_right {
                 if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
                     if pixel_size == 1 {
@@ -5692,17 +5838,94 @@ impl super::TrapDispatcher {
                         let addr = screen_base + byte_offset;
                         let b = bus.read_byte(addr);
                         bus.write_byte(addr, b ^ (1 << bit));
-                    } else if let Some((background, hilite)) = hilite_indexes {
+                    } else if pixel_size == 4 {
+                        Self::hilite_packed_4bpp_menu_pixel(
+                            bus,
+                            (screen_base, row_bytes, screen_width, screen_height),
+                            x,
+                            y,
+                            hilite_indexes.unwrap_or((0, 15)),
+                        );
+                    } else if let Some((background, foreground)) = hilite_indexes {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
                         let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_hilited_pixel_index(b, background, hilite));
+                        bus.write_byte(
+                            addr,
+                            Self::menu_hilited_pixel_index(b, background, foreground),
+                        );
                     } else {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
                         let b = bus.read_byte(addr);
-                        bus.write_byte(addr, Self::menu_plain_hilited_pixel_index(bus, b));
+                        bus.write_byte(addr, Self::menu_hilited_pixel_index(b, 0, 255));
                     }
                 }
             }
+        }
+        // StandardMBDF reverses a title's foreground/background pair and
+        // then replots the title. Preserve the color system-mark artwork
+        // itself: only its transparent cell background participates in the
+        // reversal. Replotting is intentionally limited to indexed color;
+        // the monochrome mark remains ordinary reversed one-bit title ink.
+        self.redraw_color_system_menu_mark_title(bus, menu_idx, left + 7);
+    }
+
+    fn redraw_color_system_menu_mark_title(
+        &self,
+        bus: &mut MacMemoryBus,
+        menu_idx: usize,
+        title_x: i16,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let Some(menu_enabled) = self
+            .menus
+            .get(menu_idx)
+            .filter(|menu| Self::is_system_menu_mark_title(&menu.title))
+            .map(|menu| menu.enabled)
+        else {
+            return;
+        };
+        if !matches!(pixel_size, 4 | 8) {
+            return;
+        }
+        self.fb_draw_retro_computer_menu_mark(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            title_x,
+        );
+        if !menu_enabled {
+            let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+            // Read the already-reversed cell background rather than assuming
+            // which half of the toggle this call represents. This keeps a
+            // disabled mark's checkerboard dimming involutive across both
+            // HiliteMenu and nonzero FlashMenuBar calls.
+            let background_x = title_x - 9;
+            let background_addr = screen_base + row_bytes + (background_x as u32 / 2);
+            let background_index = if pixel_size == 4 {
+                let packed = bus.read_byte(background_addr);
+                if background_x & 1 == 0 {
+                    packed >> 4
+                } else {
+                    packed & 0x0F
+                }
+            } else {
+                bus.read_byte(screen_base + row_bytes + background_x as u32)
+            };
+            self.fb_apply_menu_title_dim_pattern(
+                bus,
+                (
+                    1,
+                    title_x,
+                    menu_bar_height - 1,
+                    title_x.saturating_add(Self::menu_title_advance("\u{14}")),
+                ),
+                Some(background_index),
+                true,
+            );
         }
     }
 
@@ -5814,6 +6037,94 @@ mod tests {
 
     fn screen_pixel_index(bus: &MacMemoryBus, base: u32, row_bytes: u32, x: i16, y: i16) -> u8 {
         bus.read_byte(base + (y as u32 * row_bytes) + x as u32)
+    }
+
+    fn packed_4bpp_screen_pixel_index(
+        bus: &MacMemoryBus,
+        base: u32,
+        row_bytes: u32,
+        x: i16,
+        y: i16,
+    ) -> u8 {
+        let packed = bus.read_byte(base + (y as u32 * row_bytes) + (x as u32 / 2));
+        if x & 1 == 0 {
+            packed >> 4
+        } else {
+            packed & 0x0F
+        }
+    }
+
+    fn set_packed_4bpp_screen_pixel_index(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, i16, i16),
+        x: i16,
+        y: i16,
+        pixel_index: u8,
+    ) {
+        let (base, row_bytes, width, height) = screen;
+        super::super::TrapDispatcher::fb_set_pixel_index(
+            bus,
+            base,
+            row_bytes,
+            4,
+            width,
+            height,
+            x,
+            y,
+            pixel_index,
+        );
+    }
+
+    fn setup_4bpp_menu_screen(
+        disp: &mut super::super::TrapDispatcher,
+        bus: &mut MacMemoryBus,
+        width: u16,
+        height: u16,
+    ) -> (u32, u32) {
+        let row_bytes = u32::from(width).div_ceil(2);
+        let base = bus.alloc(row_bytes * u32::from(height));
+        disp.set_screen_mode_for_test(base, row_bytes, width, height, 4);
+        for offset in 0..(row_bytes * u32::from(height)) {
+            bus.write_byte(base + offset, 0);
+        }
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, base);
+
+        let gdevice_handle = disp.ensure_main_gdevice(bus);
+        bus.write_long(0x08A4, gdevice_handle); // MainDevice
+        bus.write_long(0x0CC8, gdevice_handle); // TheGDevice
+        (base, row_bytes)
+    }
+
+    fn make_8bpp_current_gdevice(bus: &mut MacMemoryBus) -> u32 {
+        let mut foreign = super::super::TrapDispatcher::new();
+        let base = bus.alloc(16 * 16);
+        foreign.set_screen_mode_for_test(base, 16, 16, 16, 8);
+        foreign.ensure_main_gdevice(bus)
+    }
+
+    fn remap_main_device_mono_indexes(bus: &mut MacMemoryBus, white: u8, black: u8) {
+        let gdevice_handle = bus.read_long(0x08A4); // MainDevice
+        let gdevice = bus.read_long(gdevice_handle);
+        let pixmap_handle = bus.read_long(gdevice + 22);
+        let pixmap = bus.read_long(pixmap_handle);
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        let count = bus.read_word(ctab + 6) as u32 + 1;
+        assert!(u32::from(white.max(black)) < count);
+
+        for ordinal in 0..count {
+            let entry = ctab + 8 + ordinal * 8;
+            bus.write_word(entry, ordinal as u16);
+            for component in 0..3 {
+                bus.write_word(entry + 2 + component * 2, 0x8000);
+            }
+        }
+        for (index, component) in [(white, 0xFFFF), (black, 0)] {
+            let entry = ctab + 8 + u32::from(index) * 8;
+            for offset in [2, 4, 6] {
+                bus.write_word(entry + offset, component);
+            }
+        }
     }
 
     fn clear_8bpp_screen(bus: &mut MacMemoryBus, base: u32, row_bytes: u32, height: u32, fill: u8) {
@@ -9567,6 +9878,219 @@ mod tests {
     }
 
     #[test]
+    fn drawmenubar_4bpp_keeps_the_color_system_mark_through_title_reversals() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let system = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 128, 0x302380, "\u{14}");
+        insert_menu(&mut disp, &mut cpu, &mut bus, system);
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        let palette_indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
+            super::super::TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, rgb)
+                .expect("4bpp MainDevice should expose its color table")
+        });
+        let white =
+            super::super::TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, [0xFFFF; 3])
+                .unwrap();
+        let black =
+            super::super::TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
+        let assert_mark_art = |bus: &MacMemoryBus, transparent_index: u8| {
+            for (row, pixels) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
+                .into_iter()
+                .enumerate()
+            {
+                for (col, palette_index) in pixels.into_iter().enumerate() {
+                    let expected = if palette_index == 0 {
+                        transparent_index
+                    } else {
+                        palette_indices[usize::from(palette_index - 1)]
+                    };
+                    assert_eq!(
+                        packed_4bpp_screen_pixel_index(
+                            bus,
+                            base,
+                            row_bytes,
+                            18 + col as i16,
+                            3 + row as i16,
+                        ),
+                        expected,
+                        "packed system-menu mark pixel ({col}, {row})"
+                    );
+                }
+            }
+        };
+        assert_mark_art(&bus, white);
+        let title_cell_pixel = (disp.menu_title_regions()[0].0 - 2, 1);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                title_cell_pixel.0,
+                title_cell_pixel.1,
+            ),
+            white
+        );
+        let unrelated_pixel = (title_cell_pixel.0 + 1, title_cell_pixel.1 + 1);
+        set_packed_4bpp_screen_pixel_index(
+            &mut bus,
+            (base, row_bytes, 128, 64),
+            unrelated_pixel.0,
+            unrelated_pixel.1,
+            8,
+        );
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        disp.highlight_menu_title(&mut bus, 0);
+
+        assert_mark_art(&bus, black);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                title_cell_pixel.0,
+                title_cell_pixel.1,
+            ),
+            black,
+            "title selection should reverse only the transparent mark-cell background"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                unrelated_pixel.0,
+                unrelated_pixel.1,
+            ),
+            8,
+            "title selection should preserve an unrelated packed color index"
+        );
+
+        disp.highlight_menu_title(&mut bus, 0);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "two packed title reversals should restore the full menu bar exactly"
+        );
+
+        disp.flash_menu_bar(&mut bus, 128);
+        assert_mark_art(&bus, black);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                unrelated_pixel.0,
+                unrelated_pixel.1,
+            ),
+            8,
+            "FlashMenuBar(menuID) should preserve an unrelated packed color index"
+        );
+        disp.flash_menu_bar(&mut bus, 128);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "two packed FlashMenuBar(menuID) reversals should restore the full menu bar"
+        );
+
+        let mut kept_art_pixel = None;
+        let mut knocked_art_pixel = None;
+        for (row, pixels) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
+            .into_iter()
+            .enumerate()
+        {
+            for (col, palette_index) in pixels.into_iter().enumerate() {
+                if palette_index == 0 {
+                    continue;
+                }
+                let expected = palette_indices[usize::from(palette_index - 1)];
+                if expected == black || expected == white {
+                    continue;
+                }
+                let point = (18 + col as i16, 3 + row as i16, expected);
+                if (point.0 + point.1) % 2 == 0 {
+                    kept_art_pixel.get_or_insert(point);
+                } else {
+                    knocked_art_pixel.get_or_insert(point);
+                }
+            }
+        }
+        let kept_art_pixel = kept_art_pixel.expect("colored art pixel on an enabled pattern bit");
+        let knocked_art_pixel =
+            knocked_art_pixel.expect("colored art pixel on a disabled pattern bit");
+
+        disp.menus[0].enabled = false;
+        disp.draw_menu_bar_to_fb(&mut bus);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                knocked_art_pixel.0,
+                knocked_art_pixel.1,
+            ),
+            white,
+            "a disabled color mark should knock alternate art pixels into its normal background"
+        );
+        let disabled_before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        disp.highlight_menu_title(&mut bus, 0);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                kept_art_pixel.0,
+                kept_art_pixel.1,
+            ),
+            kept_art_pixel.2,
+            "selected disabled mark should retain art on enabled pattern bits"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                knocked_art_pixel.0,
+                knocked_art_pixel.1,
+            ),
+            black,
+            "selected disabled mark should knock alternate art pixels into the reversed background"
+        );
+        disp.highlight_menu_title(&mut bus, 0);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            disabled_before,
+            "two disabled-title reversals should restore the dimmed mark exactly"
+        );
+
+        disp.flash_menu_bar(&mut bus, 128);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                knocked_art_pixel.0,
+                knocked_art_pixel.1,
+            ),
+            black,
+            "FlashMenuBar(menuID) should keep a disabled mark dimmed on the reversed background"
+        );
+        disp.flash_menu_bar(&mut bus, 128);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            disabled_before,
+            "two disabled FlashMenuBar(menuID) reversals should restore the dimmed mark"
+        );
+    }
+
+    #[test]
     fn drawmenubar_keeps_the_retro_computer_mark_legible_in_monochrome() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let row_bytes = 16;
@@ -10031,7 +10555,7 @@ mod tests {
         classic.menus[0].items[1].icon = 7;
         classic.menu_tracking = Some(MenuTrackingState {
             active_menu: 0,
-            highlighted_item: 2,
+            highlighted_item: 1,
             saved_pixels: Vec::new(),
             dropdown_rect: rect,
             stack_ptr: TEST_SP,
@@ -10068,7 +10592,7 @@ mod tests {
         themed.menus[0].items[1].icon = 7;
         themed.menu_tracking = Some(MenuTrackingState {
             active_menu: 0,
-            highlighted_item: 2,
+            highlighted_item: 1,
             saved_pixels: Vec::new(),
             dropdown_rect: rect,
             stack_ptr: TEST_SP,
@@ -10080,12 +10604,20 @@ mod tests {
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
-            !screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 23, 39),
-            "classic dropdown rows should not draw the systemless highlight rail"
+            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 23, 23),
+            "classic selected rows should reverse their full background"
         );
         assert!(
-            screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 23, 39),
+            screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 23, 23),
             "systemless-default provider should own highlighted menu-item row chrome"
+        );
+        assert!(
+            screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 100, 26),
+            "classic selected rows should remain filled away from the provider rail"
+        );
+        assert!(
+            !screen_pixel_is_set(&themed_bus, themed_base, themed_row_bytes, 100, 26),
+            "systemless-default highlight chrome should remain a provider-owned rail and frame"
         );
         assert!(
             !screen_pixel_is_set(&classic_bus, classic_base, classic_row_bytes, 36, 43),
@@ -10750,7 +11282,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_menu_dropdown_remaps_cicn_color_table_to_current_device() {
+    fn draw_menu_dropdown_remaps_cicn_color_table_to_main_screen_device() {
         let rect = (20, 20, 38, 110);
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 96);
@@ -10763,8 +11295,8 @@ mod tests {
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         let mapped_green =
-            super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0, 0xFFFF, 0])
-                .expect("active device should represent green");
+            super::super::TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, [0, 0xFFFF, 0])
+                .expect("main screen device should represent green");
         assert_ne!(
             mapped_green, 3,
             "precondition: source icon index must differ from the device index"
@@ -10773,6 +11305,46 @@ mod tests {
             screen_pixel_index(&bus, base, row_bytes, rect.1 + 4, rect.0 + 2),
             mapped_green,
             "cicn pixels should be mapped through their own ColorTable instead of copied as raw indexes"
+        );
+    }
+
+    #[test]
+    fn draw_menu_dropdown_4bpp_preserves_remapped_cicn_color_when_selected() {
+        let rect = (20, 20, 38, 110);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 622, 0x302F00, "Color");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302F40, "Crop");
+        disp.menus[0].items[0].icon = 7;
+        let icon = cicn_source_with_solid_4bpp_color(3, [0, 0xFFFF, 0]);
+        disp.install_test_resource(&mut bus, *b"cicn", 263, &icon);
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+        let icon_pixel = (rect.1 + 4, rect.0 + 2);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, icon_pixel.0, icon_pixel.1,),
+            8,
+            "4bpp cicn color should map through MainDevice instead of the foreign 8bpp TheGDevice"
+        );
+
+        disp.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: rect,
+            submenus: Vec::new(),
+            stack_ptr: TEST_SP,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_result: 0,
+        });
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, icon_pixel.0, icon_pixel.1,),
+            8,
+            "selected color cicn artwork should keep its mapped color"
         );
     }
 
@@ -10845,20 +11417,254 @@ mod tests {
     }
 
     #[test]
-    fn draw_menu_dropdown_8bpp_highlight_swaps_background_with_hilite_color() {
+    fn menu_chrome_4bpp_uses_main_device_standard_colors() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        remap_main_device_mono_indexes(&mut bus, 5, 10);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 620, 0x302E00, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302E40, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            5,
+            "plain menu-bar background should use MainDevice white"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 90, 19),
+            10,
+            "menu-bar bottom rule should use MainDevice black"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 0, 0),
+            10,
+            "rounded corner mask should use MainDevice black"
+        );
+        let regions = disp.menu_title_regions();
+        assert!((1..19).any(|y| {
+            (regions[0].0..regions[0].1)
+                .any(|x| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, x, y) == 10)
+        }));
+
+        let rect = (20, 21, 38, 111);
+        set_packed_4bpp_screen_pixel_index(&mut bus, (base, row_bytes, 128, 96), 20, 25, 7);
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 22, 25),
+            5,
+            "plain dropdown background should use MainDevice white"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 21, 25),
+            10,
+            "dropdown frame should use MainDevice black"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 111, 25),
+            10,
+            "dropdown shadow should use MainDevice black"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 20, 25),
+            7,
+            "drawing a low-nibble frame edge must preserve its packed neighbour"
+        );
+        let text_left = rect.1 + 15;
+        let text_right = text_left + super::super::TrapDispatcher::fb_measure_string("Open", 0, 12);
+        assert!(((rect.0 + 1)..(rect.0 + 17)).any(|y| {
+            (text_left..text_right)
+                .any(|x| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, x, y) == 10)
+        }));
+    }
+
+    #[test]
+    fn menu_chrome_8bpp_uses_main_device_standard_colors() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        remap_main_device_mono_indexes(&mut bus, 17, 23);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 621, 0x302E80, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302EC0, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 90, 5), 17);
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 90, 19), 23);
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 0, 0), 23);
+
+        let rect = (20, 21, 38, 111);
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 22, 25), 17);
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 21, 25), 23);
+        assert_eq!(screen_pixel_index(&bus, base, row_bytes, 111, 25), 23);
+        let text_left = rect.1 + 15;
+        let text_right = text_left + super::super::TrapDispatcher::fb_measure_string("Open", 0, 12);
+        assert!(((rect.0 + 1)..(rect.0 + 17)).any(|y| {
+            (text_left..text_right).any(|x| screen_pixel_index(&bus, base, row_bytes, x, y) == 23)
+        }));
+    }
+
+    #[test]
+    fn menu_dim_4bpp_uses_main_device_midpoint_color() {
         let rect = (20, 20, 38, 110);
-        let menu_id = 624;
-        let red = (0xFFFF, 0, 0);
-        let green = (0, 0xFFFF, 0);
-        let blue = (0, 0, 0xFFFF);
-        let black = (0, 0, 0);
-        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        remap_main_device_mono_indexes(&mut bus, 5, 10);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 621, 0x302EE0, "Dim");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302F20, "Unavailable");
+        disp.menus[0].items[0].enabled = false;
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let text_left = rect.1 + 15;
+        let text_right =
+            text_left + super::super::TrapDispatcher::fb_measure_string("Unavailable", 0, 12);
+        assert!(
+            ((rect.0 + 1)..(rect.0 + 17)).any(|y| {
+                (text_left..text_right).any(|x| {
+                    packed_4bpp_screen_pixel_index(&bus, base, row_bytes, x, y) == 0
+                })
+            }),
+            "disabled item should use MainDevice midpoint index 0 rather than the foreign active table"
+        );
+    }
+
+    #[test]
+    fn draw_menu_dropdown_1bpp_highlight_preserves_classic_row_inversion() {
+        let rect = (20, 20, 38, 120);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 16;
+        let base = bus.alloc(row_bytes * 96);
+        disp.set_screen_mode_for_test(base, row_bytes, 128, 96, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 96);
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 622, 0x302E80, "Mono");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302EC0, "Open/O");
+        disp.menus[0].items[0].mark = 0x12;
+        disp.menus[0].items[0].icon = 7;
+        let cicn = cicn_source_with_left_stripe(16, 16);
+        disp.install_test_resource(&mut bus, *b"cicn", 263, &cicn);
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let item_top = rect.0 + 1;
+        let item_bottom = item_top + 16;
+        let mark_pixel = (item_top..item_bottom)
+            .flat_map(|y| ((rect.1 + 3)..(rect.1 + 15)).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_is_set(&bus, base, row_bytes, *x, *y))
+            .expect("precondition: monochrome mark should draw");
+        let text_left = rect.1 + 34;
+        let text_right = text_left + super::super::TrapDispatcher::fb_measure_string("Open", 0, 12);
+        let name_pixel = (item_top..item_bottom)
+            .flat_map(|y| (text_left..text_right).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_is_set(&bus, base, row_bytes, *x, *y))
+            .expect("precondition: monochrome item name should draw");
+        let command_pixel = (item_top..item_bottom)
+            .flat_map(|y| ((rect.3 - 25)..(rect.3 - 1)).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_is_set(&bus, base, row_bytes, *x, *y))
+            .expect("precondition: monochrome command key should draw");
+        let icon_black_pixel = (rect.1 + 20, item_top);
+        let icon_white_pixel = (rect.1 + 18, item_top);
+        assert!(screen_pixel_is_set(
+            &bus,
+            base,
+            row_bytes,
+            icon_black_pixel.0,
+            icon_black_pixel.1
+        ));
+        assert!(!screen_pixel_is_set(
+            &bus,
+            base,
+            row_bytes,
+            icon_white_pixel.0,
+            icon_white_pixel.1
+        ));
+        let outside_edge = (rect.1, item_top + 4);
+        let outside_before =
+            screen_pixel_is_set(&bus, base, row_bytes, outside_edge.0, outside_edge.1);
+        let before = bus.read_bytes(base, (row_bytes * 96) as usize);
+
+        disp.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: rect,
+            submenus: Vec::new(),
+            stack_ptr: TEST_SP,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_result: 0,
+        });
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        for (component, pixel) in [
+            ("mark", mark_pixel),
+            ("name", name_pixel),
+            ("command key", command_pixel),
+            ("black cicn bit", icon_black_pixel),
+        ] {
+            assert!(
+                !screen_pixel_is_set(&bus, base, row_bytes, pixel.0, pixel.1),
+                "selected monochrome {component} should be bit-inverted"
+            );
+        }
+        assert!(
+            screen_pixel_is_set(
+                &bus,
+                base,
+                row_bytes,
+                icon_white_pixel.0,
+                icon_white_pixel.1
+            ),
+            "selected monochrome white cicn bit should be inverted to black"
+        );
+        assert_eq!(
+            screen_pixel_is_set(&bus, base, row_bytes, outside_edge.0, outside_edge.1,),
+            outside_before,
+            "non-byte-aligned selected row must preserve the border bit outside its rectangle"
+        );
+
+        disp.menu_tracking.as_mut().unwrap().highlighted_item = 0;
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 96) as usize),
+            before,
+            "redrawing the unselected 1bpp row should restore every framebuffer byte"
+        );
+    }
+
+    #[test]
+    fn draw_menu_dropdown_4bpp_highlight_reverses_all_item_component_colors() {
+        let rect = (20, 20, 38, 110);
+        let menu_id = 623;
+        let (clut, _) = super::super::TrapDispatcher::standard_mac_indexed_clut(4).unwrap();
+        let rgb = |index: usize| (clut[index][0], clut[index][1], clut[index][2]);
+        let white = rgb(0);
+        let red = rgb(3);
+        let blue = rgb(6);
+        let green = rgb(8);
+        let black = rgb(15);
 
         let (mut disp, mut cpu, mut bus) = setup_with_port();
-        disp.hilite_color = green;
-        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 96);
-        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x303000, "Color");
-        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303040, "Open");
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x302F00, "Color");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302F40, "Open/O");
+        disp.menus[0].items[0].mark = 0x12;
 
         let entries_ptr = bus.alloc((2 * MC_ENTRY_SIZE) as u32);
         write_mc_entry_colors(&mut bus, entries_ptr, menu_id, 0, black, white, green, red);
@@ -10869,7 +11675,7 @@ mod tests {
             1,
             green,
             blue,
-            green,
+            black,
             red,
         );
         cpu.write_reg(Register::A7, TEST_SP);
@@ -10884,76 +11690,290 @@ mod tests {
 
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
-        let bg_x = rect.1 + 70;
+        let edge_x = rect.1 + 1;
+        let edge_y = rect.0 + 5;
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, edge_x, edge_y),
+            3,
+            "precondition: dropdown background should resolve to 4bpp red"
+        );
+        let packed_neighbor =
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, edge_x - 1, edge_y);
+
+        let mark_pixel = ((rect.0 + 1)..(rect.0 + 17))
+            .flat_map(|y| ((rect.1 + 3)..(rect.1 + 15)).map(move |x| (x, y)))
+            .find(|(x, y)| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, *x, *y) == 8)
+            .expect("precondition: item RGB1 green mark should draw");
+        let text_left = rect.1 + 15;
+        let text_top = rect.0 + 1;
+        let text_bottom = text_top + 16;
+        let text_right = text_left + super::super::TrapDispatcher::fb_measure_string("Open", 0, 12);
+        let name_pixel = (text_top..text_bottom)
+            .flat_map(|y| (text_left..text_right).map(move |x| (x, y)))
+            .find(|(x, y)| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, *x, *y) == 6)
+            .expect("precondition: item RGB2 blue text should draw");
+        let command_pixel = (text_top..text_bottom)
+            .flat_map(|y| ((rect.3 - 25)..(rect.3 - 1)).map(move |x| (x, y)))
+            .find(|(x, y)| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, *x, *y) == 15)
+            .expect("precondition: item RGB3 black command key should draw");
+        let before = bus.read_bytes(base, (row_bytes * 96) as usize);
+
+        disp.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: rect,
+            submenus: Vec::new(),
+            stack_ptr: TEST_SP,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_result: 0,
+        });
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, edge_x, edge_y),
+            6,
+            "selected 4bpp row should use item RGB2 as its background"
+        );
+        for (component, pixel) in [
+            ("mark", mark_pixel),
+            ("name", name_pixel),
+            ("command key", command_pixel),
+        ] {
+            assert_eq!(
+                packed_4bpp_screen_pixel_index(&bus, base, row_bytes, pixel.0, pixel.1),
+                3,
+                "selected 4bpp {component} should use item RGB4/menu background"
+            );
+        }
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, edge_x - 1, edge_y),
+            packed_neighbor,
+            "redrawing a selected odd pixel must preserve the neighbouring high nibble"
+        );
+
+        disp.menu_tracking.as_mut().unwrap().highlighted_item = 0;
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 96) as usize),
+            before,
+            "redrawing the unselected 4bpp row should restore every packed framebuffer byte"
+        );
+    }
+
+    #[test]
+    fn draw_menu_dropdown_8bpp_highlight_reverses_all_item_component_colors() {
+        let rect = (20, 20, 38, 110);
+        let menu_id = 624;
+        let red = (0xFFFF, 0, 0);
+        let green = (0, 0xFFFF, 0);
+        let blue = (0, 0, 0xFFFF);
+        let black = (0, 0, 0);
+        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x303000, "Color");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303040, "Open/O");
+        disp.menus[0].items[0].mark = 0x12;
+
+        let entries_ptr = bus.alloc((2 * MC_ENTRY_SIZE) as u32);
+        write_mc_entry_colors(&mut bus, entries_ptr, menu_id, 0, black, white, green, red);
+        write_mc_entry_colors(
+            &mut bus,
+            entries_ptr + MC_ENTRY_SIZE as u32,
+            menu_id,
+            1,
+            green,
+            blue,
+            black,
+            red,
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, entries_ptr);
+        bus.write_word(TEST_SP + 4, 2);
+        assert!(
+            disp.dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "SetMCEntries should install dropdown color entries"
+        );
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let bg_x = rect.1 + 1;
         let bg_y = rect.0 + 5;
         assert_eq!(
             screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
             35,
             "precondition: dropdown background should be the MenuCInfo red"
         );
-        let hilite_swap_x = rect.1 + 80;
-        let hilite_swap_y = rect.0 + 5;
-        bus.write_byte(
-            base + (hilite_swap_y as u32) * row_bytes + hilite_swap_x as u32,
-            185,
-        );
-
-        let text_left = rect.1 + 18;
+        let mark_pixel = ((rect.0 + 1)..(rect.0 + 17))
+            .flat_map(|y| ((rect.1 + 3)..(rect.1 + 15)).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 185)
+            .expect("precondition: item RGB1 green mark should draw");
+        let text_left = rect.1 + 15;
         let text_top = rect.0 + 1;
         let text_bottom = text_top + 16;
         let text_right = text_left + super::super::TrapDispatcher::fb_measure_string("Open", 0, 12);
-        let blue_text_pixel = (text_top..text_bottom)
+        let name_pixel = (text_top..text_bottom)
             .flat_map(|y| (text_left..text_right).map(move |x| (x, y)))
             .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 210)
             .expect("precondition: item RGB2 blue text should draw");
+        let command_pixel = (text_top..text_bottom)
+            .flat_map(|y| ((rect.3 - 25)..(rect.3 - 1)).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 255)
+            .expect("precondition: item RGB3 black command key should draw");
+        let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        disp.invert_dropdown_item_rect(&mut bus, 0, rect, 1);
+        disp.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: rect,
+            submenus: Vec::new(),
+            stack_ptr: TEST_SP,
+            flash_remaining: 0,
+            flash_delay: 0,
+            flash_result: 0,
+        });
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         assert_eq!(
             screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            185,
-            "8bpp menu highlighting should swap the background to HiliteColor"
-        );
-        assert_ne!(
-            screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            220,
-            "8bpp menu highlighting must not use the indexed complement of red"
-        );
-        assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, hilite_swap_x, hilite_swap_y),
-            35,
-            "8bpp menu highlighting should swap existing HiliteColor pixels back to the background"
-        );
-        assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, blue_text_pixel.0, blue_text_pixel.1),
             210,
-            "8bpp menu highlighting should leave non-background MenuCInfo text colors unchanged"
+            "selected 8bpp row should use item RGB2 as its background"
         );
+        for (component, pixel) in [
+            ("mark", mark_pixel),
+            ("name", name_pixel),
+            ("command key", command_pixel),
+        ] {
+            assert_eq!(
+                screen_pixel_index(&bus, base, row_bytes, pixel.0, pixel.1),
+                35,
+                "selected 8bpp {component} should use item RGB4/menu background"
+            );
+        }
 
-        disp.invert_dropdown_item_rect(&mut bus, 0, rect, 1);
-
+        disp.menu_tracking.as_mut().unwrap().highlighted_item = 0;
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
         assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            35,
-            "highlighting the same row twice should restore the background"
-        );
-        assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, hilite_swap_x, hilite_swap_y),
-            185,
-            "highlighting the same row twice should restore existing HiliteColor pixels"
+            bus.read_bytes(base, (row_bytes * 96) as usize),
+            before,
+            "redrawing the unselected 8bpp row should restore every framebuffer byte"
         );
     }
 
     #[test]
-    fn draw_menu_bar_8bpp_highlight_swaps_background_with_hilite_color() {
+    fn draw_menu_bar_4bpp_highlight_reverses_title_and_background_colors() {
+        let file_id = 625;
+        let (clut, _) = super::super::TrapDispatcher::standard_mac_indexed_clut(4).unwrap();
+        let rgb = |index: usize| (clut[index][0], clut[index][1], clut[index][2]);
+        let white = rgb(0);
+        let red = rgb(3);
+        let blue = rgb(6);
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, file_id, 0x303080, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+
+        let entries_ptr = bus.alloc(MC_ENTRY_SIZE as u32);
+        write_mc_entry_colors(&mut bus, entries_ptr, 0, 0, blue, white, blue, red);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, entries_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        assert!(
+            disp.dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+                .unwrap()
+                .is_ok(),
+            "SetMCEntries should install menu bar color entry"
+        );
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+
+        let regions = disp.menu_title_regions();
+        let classic_left = regions[0].0 - 2;
+        assert_eq!(
+            classic_left & 1,
+            1,
+            "test edge should occupy the low nibble"
+        );
+        let edge_y = 5;
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, classic_left, edge_y),
+            3,
+            "precondition: menu bar should use its 4bpp red background"
+        );
+        let packed_neighbor =
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, classic_left - 1, edge_y);
+
+        let unrelated_x = regions[0].1 + 1;
+        set_packed_4bpp_screen_pixel_index(
+            &mut bus,
+            (base, row_bytes, 128, 64),
+            unrelated_x,
+            edge_y,
+            8,
+        );
+        let blue_title_pixel = (1..19)
+            .flat_map(|y| (regions[0].0..regions[0].1).map(move |x| (x, y)))
+            .find(|(x, y)| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, *x, *y) == 6)
+            .expect("precondition: menu-bar RGB1 blue title should draw");
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        disp.highlight_menu_title(&mut bus, 0);
+
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, classic_left, edge_y),
+            6,
+            "4bpp menu-title highlighting should replace RGB2 background with RGB1 title color"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, unrelated_x, edge_y),
+            8,
+            "4bpp menu-title highlighting should preserve unrelated indexed colors"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(
+                &bus,
+                base,
+                row_bytes,
+                blue_title_pixel.0,
+                blue_title_pixel.1,
+            ),
+            3,
+            "4bpp menu-title highlighting should replace RGB1 title pixels with RGB2 background"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, classic_left - 1, edge_y),
+            packed_neighbor,
+            "highlighting a low nibble must preserve its neighbour outside the title rect"
+        );
+
+        disp.highlight_menu_title(&mut bus, 0);
+
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "highlighting the same packed title twice should restore every framebuffer byte"
+        );
+    }
+
+    #[test]
+    fn draw_menu_bar_8bpp_highlight_reverses_title_and_background_colors() {
         let file_id = 625;
         let red = (0xFFFF, 0, 0);
-        let green = (0, 0xFFFF, 0);
         let blue = (0, 0, 0xFFFF);
         let white = (0xFFFF, 0xFFFF, 0xFFFF);
 
         let (mut disp, mut cpu, mut bus) = setup_with_port();
-        disp.hilite_color = green;
         let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 64);
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
@@ -10982,33 +12002,29 @@ mod tests {
             35,
             "precondition: menu title background should be the MenuCInfo red bar"
         );
-        let hilite_swap_x = regions[0].1 - 2;
-        let hilite_swap_y = 5;
+        let unrelated_x = regions[0].1 - 2;
+        let unrelated_y = 5;
         bus.write_byte(
-            base + (hilite_swap_y as u32) * row_bytes + hilite_swap_x as u32,
+            base + (unrelated_y as u32) * row_bytes + unrelated_x as u32,
             185,
         );
         let blue_title_pixel = (1..19)
             .flat_map(|y| (regions[0].0..regions[0].1).map(move |x| (x, y)))
             .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 210)
             .expect("precondition: menu-bar RGB1 blue title should draw");
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
 
         disp.highlight_menu_title(&mut bus, 0);
 
         assert_eq!(
             screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            185,
-            "8bpp menu-title highlighting should swap the bar background to HiliteColor"
-        );
-        assert_ne!(
-            screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            220,
-            "8bpp menu-title highlighting must not use the indexed complement of red"
+            210,
+            "8bpp menu-title highlighting should replace RGB2 background with RGB1 title color"
         );
         assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, hilite_swap_x, hilite_swap_y),
-            35,
-            "8bpp menu-title highlighting should swap existing HiliteColor pixels back to the bar background"
+            screen_pixel_index(&bus, base, row_bytes, unrelated_x, unrelated_y),
+            185,
+            "8bpp menu-title highlighting should preserve unrelated indexed colors"
         );
         assert_eq!(
             screen_pixel_index(
@@ -11018,21 +12034,16 @@ mod tests {
                 blue_title_pixel.0,
                 blue_title_pixel.1
             ),
-            210,
-            "8bpp menu-title highlighting should leave non-background title colors unchanged"
+            35,
+            "8bpp menu-title highlighting should replace RGB1 title pixels with RGB2 background"
         );
 
         disp.highlight_menu_title(&mut bus, 0);
 
         assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, bg_x, bg_y),
-            35,
-            "highlighting the same title twice should restore the bar background"
-        );
-        assert_eq!(
-            screen_pixel_index(&bus, base, row_bytes, hilite_swap_x, hilite_swap_y),
-            185,
-            "highlighting the same title twice should restore existing HiliteColor pixels"
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "highlighting the same 8bpp title twice should restore every framebuffer byte"
         );
     }
 
@@ -11975,6 +12986,255 @@ mod tests {
             screen_pixel_is_set(&bus, base, row_bytes, 0, 0),
             "a second FlashMenuBar(0) call should keep the top corner mask"
         );
+    }
+
+    #[test]
+    fn flashmenubar_zero_4bpp_swaps_bar_and_default_title_colors() {
+        // IM:V V-252 to V-253: the standard MBDF flashes a colour menu bar
+        // by reversing its bar-background and default-title colours. Packed
+        // 4bpp pixels must be transformed independently.
+        let (clut, _) = super::super::TrapDispatcher::standard_mac_indexed_clut(4).unwrap();
+        let rgb = |index: usize| (clut[index][0], clut[index][1], clut[index][2]);
+        let white = rgb(0);
+        let red = rgb(3);
+        let blue = rgb(6);
+        let green = rgb(8);
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        let offscreen_gdevice = make_8bpp_current_gdevice(&mut bus);
+        bus.write_long(0x0CC8, offscreen_gdevice); // TheGDevice
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 702, 0x306080, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+
+        let entries_ptr = bus.alloc(MC_ENTRY_SIZE as u32);
+        write_mc_entry_colors(&mut bus, entries_ptr, 0, 0, blue, white, green, red);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, entries_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        disp.dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let regions = disp.menu_title_regions();
+        let title_pixel = (1..19)
+            .flat_map(|y| (regions[0].0..regions[0].1).map(move |x| (x, y)))
+            .find(|(x, y)| packed_4bpp_screen_pixel_index(&bus, base, row_bytes, *x, *y) == 6)
+            .expect("precondition: default RGB1 blue title should draw before flashing");
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            3,
+            "precondition: menu-bar RGB4 red should fill the packed bar"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 0, 0),
+            15,
+            "precondition: DrawMenuBar should stamp the packed top corner mask"
+        );
+        set_packed_4bpp_screen_pixel_index(&mut bus, (base, row_bytes, 128, 64), 100, 5, 8);
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            6,
+            "FlashMenuBar(0) should replace RGB4 background with default RGB1 title color"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, title_pixel.0, title_pixel.1,),
+            3,
+            "FlashMenuBar(0) should replace default RGB1 title pixels with RGB4 background"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 100, 5),
+            8,
+            "FlashMenuBar(0) should preserve unrelated packed color indices"
+        );
+        assert_eq!(
+            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 0, 0),
+            15,
+            "FlashMenuBar(0) should preserve the packed top corner mask"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "a second packed FlashMenuBar(0) call should restore every framebuffer byte"
+        );
+    }
+
+    #[test]
+    fn flashmenubar_zero_8bpp_swaps_bar_and_default_title_colors() {
+        let red = (0xFFFF, 0, 0);
+        let green = (0, 0xFFFF, 0);
+        let blue = (0, 0, 0xFFFF);
+        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 703, 0x306100, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+
+        let entries_ptr = bus.alloc(MC_ENTRY_SIZE as u32);
+        write_mc_entry_colors(&mut bus, entries_ptr, 0, 0, blue, white, green, red);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, entries_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        disp.dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let regions = disp.menu_title_regions();
+        let title_pixel = (1..19)
+            .flat_map(|y| (regions[0].0..regions[0].1).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 210)
+            .expect("precondition: default RGB1 blue title should draw before flashing");
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            35,
+            "precondition: menu-bar RGB4 red should fill the 8bpp bar"
+        );
+        bus.write_byte(base + 5 * row_bytes + 100, 185);
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            210,
+            "FlashMenuBar(0) should replace RGB4 background with default RGB1 title color"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, title_pixel.0, title_pixel.1),
+            35,
+            "FlashMenuBar(0) should replace default RGB1 title pixels with RGB4 background"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, 100, 5),
+            185,
+            "FlashMenuBar(0) should preserve unrelated indexed colors"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            before,
+            "a second 8bpp FlashMenuBar(0) call should restore every framebuffer byte"
+        );
+    }
+
+    #[test]
+    fn flashmenubar_zero_ignores_title_only_background_colors() {
+        let red = (0xFFFF, 0, 0);
+        let green = (0, 0xFFFF, 0);
+        let blue = (0, 0, 0xFFFF);
+        let white = (0xFFFF, 0xFFFF, 0xFFFF);
+
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let menu_id = 704;
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, menu_id, 0x306180, "File");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+
+        let entries_ptr = bus.alloc(MC_ENTRY_SIZE as u32);
+        write_mc_entry_colors(&mut bus, entries_ptr, menu_id, 0, blue, red, green, white);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, entries_ptr);
+        bus.write_word(TEST_SP + 4, 1);
+        disp.dispatch_menu(true, 0x265, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let regions = disp.menu_title_regions();
+        let title_pixel = (1..19)
+            .flat_map(|y| (regions[0].0..regions[0].1).map(move |x| (x, y)))
+            .find(|(x, y)| screen_pixel_index(&bus, base, row_bytes, *x, *y) == 210)
+            .expect("precondition: title-only RGB1 blue should draw");
+        let title_bg_pixel = (regions[0].0 - 2, 5);
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            0,
+            "without MCEntry(0,0), StandardMBDF should keep the full bar standard white"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, title_bg_pixel.0, title_bg_pixel.1,),
+            35,
+            "StandardMBDF should erase the individual title cell to its RGB2 color"
+        );
+        let before = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, 90, 5),
+            255,
+            "FlashMenuBar(0) should use standard black when MCEntry(0,0) is absent"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, title_pixel.0, title_pixel.1),
+            210,
+            "whole-bar flash should preserve a per-title RGB1 color"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, title_bg_pixel.0, title_bg_pixel.1,),
+            35,
+            "whole-bar flash should preserve the per-title RGB2 background"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_bytes(base, (row_bytes * 64) as usize), before);
     }
 
     // Five MenuChoice() Pascal FUNCTION dispatches in sequence preserve
@@ -13526,6 +14786,40 @@ mod tests {
     // save_dropdown_pixels / restore_dropdown_pixels must not overflow
     // when the rect has y < 0 or y >= screen_h. Mirrors the off-screen
     // guards in save_dialog_pixels and save_rect_pixels.
+    #[test]
+    fn save_and_restore_dropdown_pixels_4bpp_round_trip_odd_nibble_bounds() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let (base, row_bytes) = setup_4bpp_menu_screen(&mut disp, &mut bus, 16, 4);
+        let byte_len = row_bytes * 4;
+        for offset in 0..byte_len {
+            bus.write_byte(
+                base + offset,
+                (offset as u8).wrapping_mul(7).wrapping_add(3),
+            );
+        }
+        let before = bus.read_bytes(base, byte_len as usize);
+
+        // The saved pixels span x=3 through the right-hand shadow at x=8.
+        // Both edges share a byte with a pixel outside that span, so four
+        // whole bytes per row must be retained for the two included rows.
+        let rect = (0, 3, 1, 8);
+        let saved = disp.save_dropdown_pixels(&bus, rect);
+        assert_eq!(saved.len(), 2 * 4);
+
+        for y in 0..2u32 {
+            for byte_x in 1..5u32 {
+                bus.write_byte(base + y * row_bytes + byte_x, 0xAA);
+            }
+        }
+        disp.restore_dropdown_pixels(&mut bus, rect, &saved);
+
+        assert_eq!(
+            bus.read_bytes(base, byte_len as usize),
+            before,
+            "4bpp save/restore should preserve both boundary nibbles byte-for-byte"
+        );
+    }
+
     #[test]
     fn save_dropdown_pixels_handles_negative_top_without_overflow() {
         let (mut disp, _cpu, mut bus) = setup();

@@ -596,15 +596,7 @@ impl super::TrapDispatcher {
         u16::from(color.r) + u16::from(color.g) + u16::from(color.b) < 128 * 3
     }
 
-    fn active_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
-        let gdevice_handle = {
-            let current = bus.read_long(0x0CC8); // TheGDevice
-            if current != 0 {
-                current
-            } else {
-                bus.read_long(0x08A4) // MainDevice
-            }
-        };
+    fn gdevice_ctab(bus: &MacMemoryBus, gdevice_handle: u32) -> Option<u32> {
         if gdevice_handle == 0 {
             return None;
         }
@@ -629,6 +621,24 @@ impl super::TrapDispatcher {
             return None;
         }
         Some(ctab)
+    }
+
+    fn active_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
+        let current = bus.read_long(0x0CC8); // TheGDevice
+        let gdevice_handle = if current != 0 {
+            current
+        } else {
+            bus.read_long(0x08A4) // MainDevice
+        };
+        Self::gdevice_ctab(bus, gdevice_handle)
+    }
+
+    fn main_gdevice_ctab(bus: &MacMemoryBus) -> Option<u32> {
+        let main = bus.read_long(0x08A4); // MainDevice
+                                          // Menu chrome is composited into the physical screen. Never fall
+                                          // back to TheGDevice here: it may name an offscreen GWorld whose
+                                          // palette values are unrelated to the packed framebuffer indexes.
+        Self::gdevice_ctab(bus, main)
     }
 
     fn ctab_value_luma(bus: &MacMemoryBus, ctab: u32, wanted_value: u8) -> Option<u32> {
@@ -696,8 +706,7 @@ impl super::TrapDispatcher {
         found.then_some(best_index)
     }
 
-    pub(crate) fn fb_pixel_index_for_rgb(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
-        let ctab = Self::active_gdevice_ctab(bus)?;
+    fn fb_pixel_index_for_rgb_in_ctab(bus: &MacMemoryBus, ctab: u32, rgb: [u16; 3]) -> Option<u8> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
         let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
@@ -751,14 +760,30 @@ impl super::TrapDispatcher {
         best_index
     }
 
-    /// Read back the RGB a pixel value resolves to through the active
-    /// device colour table.
+    pub(crate) fn fb_pixel_index_for_rgb(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
+        let ctab = Self::active_gdevice_ctab(bus)?;
+        Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, rgb)
+    }
+
+    pub(crate) fn fb_main_screen_pixel_index_for_rgb(
+        bus: &MacMemoryBus,
+        rgb: [u16; 3],
+    ) -> Option<u8> {
+        let ctab = Self::main_gdevice_ctab(bus)?;
+        Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, rgb)
+    }
+
+    /// Read back the RGB a pixel value resolves to through a device colour
+    /// table.
     ///
     /// Imaging With QuickDraw 1994 p. 4-82 describes the colour table as
     /// the mapping from pixel values to RGB; this is the inverse of
     /// `fb_pixel_index_for_rgb`.
-    pub(crate) fn fb_rgb_for_pixel_index(bus: &MacMemoryBus, index: u8) -> Option<[u16; 3]> {
-        let ctab = Self::active_gdevice_ctab(bus)?;
+    fn fb_rgb_for_pixel_index_in_ctab(
+        bus: &MacMemoryBus,
+        ctab: u32,
+        index: u8,
+    ) -> Option<[u16; 3]> {
         let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
         let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
@@ -788,6 +813,14 @@ impl super::TrapDispatcher {
         None
     }
 
+    pub(crate) fn fb_main_screen_rgb_for_pixel_index(
+        bus: &MacMemoryBus,
+        index: u8,
+    ) -> Option<[u16; 3]> {
+        let ctab = Self::main_gdevice_ctab(bus)?;
+        Self::fb_rgb_for_pixel_index_in_ctab(bus, ctab, index)
+    }
+
     /// Resolve the pixel value halfway between two colours, the way
     /// `GetGray` does when the Menu Manager dims unavailable content.
     ///
@@ -797,8 +830,9 @@ impl super::TrapDispatcher {
     /// express an intermediate shade. Callers treat `None` the same way
     /// the standard definition procedures treat that FALSE: fall back to
     /// the 50% grey pattern.
-    pub(crate) fn fb_gray_pixel_index_between(
+    fn fb_gray_pixel_index_between_in_ctab(
         bus: &MacMemoryBus,
+        ctab: u32,
         background: [u16; 3],
         foreground: [u16; 3],
     ) -> Option<u8> {
@@ -807,13 +841,32 @@ impl super::TrapDispatcher {
             ((u32::from(background[1]) + u32::from(foreground[1])) / 2) as u16,
             ((u32::from(background[2]) + u32::from(foreground[2])) / 2) as u16,
         ];
-        let gray = Self::fb_pixel_index_for_rgb(bus, midpoint)?;
-        let background_index = Self::fb_pixel_index_for_rgb(bus, background);
-        let foreground_index = Self::fb_pixel_index_for_rgb(bus, foreground);
+        let gray = Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, midpoint)?;
+        let background_index = Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, background);
+        let foreground_index = Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, foreground);
         if Some(gray) == background_index || Some(gray) == foreground_index {
             return None;
         }
         Some(gray)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fb_gray_pixel_index_between(
+        bus: &MacMemoryBus,
+        background: [u16; 3],
+        foreground: [u16; 3],
+    ) -> Option<u8> {
+        let ctab = Self::active_gdevice_ctab(bus)?;
+        Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
+    }
+
+    pub(crate) fn fb_main_screen_gray_pixel_index_between(
+        bus: &MacMemoryBus,
+        background: [u16; 3],
+        foreground: [u16; 3],
+    ) -> Option<u8> {
+        let ctab = Self::main_gdevice_ctab(bus)?;
+        Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
     }
 
     fn logical_white_pixel_index(bus: &MacMemoryBus) -> u8 {
@@ -1520,6 +1573,33 @@ impl super::TrapDispatcher {
                 x,
                 y,
                 black,
+            );
+        }
+    }
+
+    pub(crate) fn fb_hline_index(
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        y: i16,
+        x1: i16,
+        x2: i16,
+        pixel_index: u8,
+    ) {
+        for x in x1..x2 {
+            Self::fb_set_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                pixel_index,
             );
         }
     }
@@ -2249,18 +2329,33 @@ impl super::TrapDispatcher {
                 );
             }
 
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                menu_bar_height - 1,
-                0,
-                screen_width,
-                true,
-            );
+            if let Some(black_index) = Self::menu_standard_pixel_index(bus, pixel_size, true) {
+                Self::fb_hline_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    menu_bar_height - 1,
+                    0,
+                    screen_width,
+                    black_index,
+                );
+            } else {
+                Self::fb_hline(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    menu_bar_height - 1,
+                    0,
+                    screen_width,
+                    true,
+                );
+            }
             Self::fb_draw_menu_bar_rounded_corners(
                 bus,
                 screen_base,
@@ -2289,6 +2384,42 @@ impl super::TrapDispatcher {
             }
             let title = &menu.title;
             let title_width = Self::menu_title_advance(title);
+            let title_bg_index = self.menu_title_background_pixel_index(bus, menu.id, pixel_size);
+            if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
+                // StandardMBDF establishes each title's RGB1/RGB2 pair and
+                // erases the complete title cell to RGB2 before drawing its
+                // text. This cell is also the rectangle later reversed by
+                // HiliteMenu. IM:V 1986 pp. V-232 and V-252 to V-253.
+                if let Some(bg_index) = title_bg_index {
+                    Self::fb_fill_rect_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        1,
+                        x - 9,
+                        menu_bar_height - 1,
+                        x + title_width + 9,
+                        bg_index,
+                    );
+                } else {
+                    Self::fb_fill_rect(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        1,
+                        x - 9,
+                        menu_bar_height - 1,
+                        x + title_width + 9,
+                        false,
+                    );
+                }
+            }
             // HIG 1992 p. 54 says unavailable menu titles remain visible
             // but dimmed; p. 55 says pressing a menu title highlights it.
             // Route title-state chrome through the provider while keeping
@@ -2312,7 +2443,7 @@ impl super::TrapDispatcher {
             // with the 50% grey pattern.
             let dim_title = self.ui_theme_id() == UiThemeId::ClassicSystem7 && !menu.enabled;
             let dim_index = if dim_title {
-                Self::menu_dim_pixel_index(bus, pixel_size, title_index, menu_bar_bg_index)
+                Self::menu_dim_pixel_index(bus, pixel_size, title_index, title_bg_index)
             } else {
                 None
             };
@@ -2372,46 +2503,18 @@ impl super::TrapDispatcher {
                         (text_y + metrics.descent).min(menu_bar_height - 1),
                     )
                 };
-                for py in dim_top..dim_bottom {
-                    for px in x..x.saturating_add(width) {
-                        // Keep the pixels the 50% grey pattern covers — its
-                        // `$AA $55 …` bits are on where x + y is even.
-                        // Imaging With QuickDraw 1994 p. 3-9.
-                        if (px as i32 + py as i32) % 2 == 0 {
-                            continue;
-                        }
-                        match menu_bar_bg_index {
-                            Some(bg_index) => Self::fb_set_pixel_index(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                px,
-                                py,
-                                bg_index,
-                            ),
-                            None => Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                px,
-                                py,
-                                false,
-                            ),
-                        }
-                    }
-                }
+                self.fb_apply_menu_title_dim_pattern(
+                    bus,
+                    (dim_top, x, dim_bottom, x.saturating_add(width)),
+                    title_bg_index,
+                    false,
+                );
             }
             x += width + 13;
         }
     }
 
-    fn is_system_menu_mark_title(title: &str) -> bool {
+    pub(super) fn is_system_menu_mark_title(title: &str) -> bool {
         let mut chars = title.chars();
         matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
     }
@@ -2435,7 +2538,7 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn fb_draw_retro_computer_menu_mark(
+    pub(super) fn fb_draw_retro_computer_menu_mark(
         &self,
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -2449,7 +2552,7 @@ impl super::TrapDispatcher {
         // measured advance while substituting original Systemless artwork.
         // Inside Macintosh Volume I, I-354
         let palette_indices = crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE.map(|rgb| {
-            Self::fb_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
+            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
                 super::pict::closest_clut_index(rgb[0], rgb[1], rgb[2], &self.device_clut)
             })
         });
@@ -2466,7 +2569,7 @@ impl super::TrapDispatcher {
                 }
                 let dst_x = left + dx as i16;
                 let dst_y = top + dy as i16;
-                if pixel_size == 8 {
+                if matches!(pixel_size, 4 | 8) {
                     Self::fb_set_pixel_index(
                         bus,
                         screen_base,
@@ -2481,17 +2584,79 @@ impl super::TrapDispatcher {
                 } else if palette_index == 1 {
                     // In monochrome, retain the dark outline and face while
                     // the light case and screen use the menu-bar background.
-                    Self::fb_set_pixel(
+                    if let Some(black_index) =
+                        Self::menu_standard_pixel_index(bus, pixel_size, true)
+                    {
+                        Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            dst_x,
+                            dst_y,
+                            black_index,
+                        );
+                    } else {
+                        Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            dst_x,
+                            dst_y,
+                            true,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn fb_apply_menu_title_dim_pattern(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+        background_index: Option<u8>,
+        background_black: bool,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let (top, left, bottom, right) = rect;
+        for y in top..bottom {
+            for x in left..right {
+                // Keep the pixels the 50% grey pattern covers — its
+                // `$AA $55 …` bits are on where x + y is even.
+                // Imaging With QuickDraw 1994 p. 3-9.
+                if (x as i32 + y as i32) % 2 == 0 {
+                    continue;
+                }
+                match background_index {
+                    Some(index) => Self::fb_set_pixel_index(
                         bus,
                         screen_base,
                         row_bytes,
                         pixel_size,
                         screen_width,
                         screen_height,
-                        dst_x,
-                        dst_y,
-                        true,
-                    );
+                        x,
+                        y,
+                        index,
+                    ),
+                    None => Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        x,
+                        y,
+                        background_black,
+                    ),
                 }
             }
         }
@@ -2522,29 +2687,35 @@ impl super::TrapDispatcher {
             (0, 3),
             (0, 4),
         ];
+        let black_index = Self::menu_standard_pixel_index(bus, pixel_size, true);
         for &(x, y) in LEFT {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                x,
-                y,
-                true,
-            );
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                screen_width - 1 - x,
-                y,
-                true,
-            );
+            for dst_x in [x, screen_width - 1 - x] {
+                if let Some(pixel_index) = black_index {
+                    Self::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        dst_x,
+                        y,
+                        pixel_index,
+                    );
+                } else {
+                    Self::fb_set_pixel(
+                        bus,
+                        screen_base,
+                        row_bytes,
+                        pixel_size,
+                        screen_width,
+                        screen_height,
+                        dst_x,
+                        y,
+                        true,
+                    );
+                }
+            }
         }
     }
 
@@ -4548,6 +4719,10 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        // The kiosk stage is background chrome. Paint it after permanent
+        // window frames but before any transient dialog/menu overlays so a
+        // dropdown extending into the letterbox margins remains frontmost.
+        self.fill_kiosk_stage_for_centered_game_surface(bus, self.front_window);
         // If a modal dialog is active, restore the rendered snapshot and
         // redraw only dynamic elements (edit text, button flash) on top.
         // Game-managed dialogs (all userItems) handle their own rendering
@@ -4600,15 +4775,6 @@ impl super::TrapDispatcher {
 
                 if let Some(ref popup) = tracking.active_popup {
                     self.draw_menu_dropdown(bus, popup.active_menu, popup.dropdown_rect);
-                    if self.ui_theme_id() == UiThemeId::ClassicSystem7 && popup.highlighted_item > 0
-                    {
-                        self.invert_dropdown_item_rect(
-                            bus,
-                            popup.active_menu,
-                            popup.dropdown_rect,
-                            popup.highlighted_item,
-                        );
-                    }
                 }
             }
         } else {
@@ -4616,26 +4782,77 @@ impl super::TrapDispatcher {
             self.redraw_retained_modal_dialog_click(bus);
         }
 
-        // If a menu dropdown is open, redraw it on top of the menu bar
-        // so that the menu bar redraw doesn't erase it.
-        if let Some(ref tracking) = self.menu_tracking {
-            self.highlight_menu_title(bus, tracking.active_menu);
-            self.draw_menu_dropdown(bus, tracking.active_menu, tracking.dropdown_rect);
-            // During flash, alternate highlight: even remaining = highlighted,
-            // odd remaining = not highlighted. Outside flash, always highlight.
-            let show_highlight = if tracking.flash_remaining > 0 {
-                tracking.flash_remaining % 2 == 0
-            } else {
-                true
-            };
-            if self.ui_theme_id() == UiThemeId::ClassicSystem7
-                && tracking.highlighted_item > 0
-                && show_highlight
-            {
-                self.invert_menu_item(bus, tracking.highlighted_item);
+        // TrackControl popup menus are live overlays, just like ModalDialog's
+        // popup and MenuSelect's pull-downs. Window/chrome compositing above
+        // may cover them, so stamp the current tracking state back on top.
+        if let Some((active_menu, dropdown_rect)) = self
+            .control_tracking
+            .as_ref()
+            .filter(|tracking| tracking.popup_tracking)
+            .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
+        {
+            self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
+        }
+
+        // If MenuSelect has a menu hierarchy open, redraw the root and every
+        // visible child in front-to-back order. During the odd phase of the
+        // selection flash, suppress only the deepest selected row while the
+        // pixels are drawn; the logical tracking state must remain intact.
+        if let Some((active_menu, dropdowns, hidden_depth)) =
+            self.menu_tracking.as_ref().map(|tracking| {
+                let dropdowns = std::iter::once((tracking.active_menu, tracking.dropdown_rect))
+                    .chain(
+                        tracking
+                            .submenus
+                            .iter()
+                            .map(|submenu| (submenu.menu, submenu.dropdown_rect)),
+                    )
+                    .collect::<Vec<_>>();
+                let hide_classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7
+                    && tracking.flash_remaining > 0
+                    && tracking.flash_remaining % 2 != 0;
+                let hidden_depth = hide_classic_highlight.then(|| {
+                    tracking
+                        .submenus
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, submenu)| submenu.highlighted_item > 0)
+                        .map(|(depth, _)| depth + 1)
+                        .unwrap_or(0)
+                });
+                (tracking.active_menu, dropdowns, hidden_depth)
+            })
+        {
+            self.highlight_menu_title(bus, active_menu);
+            let hidden_item = hidden_depth.and_then(|depth| {
+                self.menu_tracking.as_mut().and_then(|tracking| {
+                    if depth == 0 {
+                        let item = tracking.highlighted_item;
+                        tracking.highlighted_item = 0;
+                        (item > 0).then_some((depth, item))
+                    } else {
+                        tracking.submenus.get_mut(depth - 1).and_then(|submenu| {
+                            let item = submenu.highlighted_item;
+                            submenu.highlighted_item = 0;
+                            (item > 0).then_some((depth, item))
+                        })
+                    }
+                })
+            });
+            for (menu, rect) in dropdowns {
+                self.draw_menu_dropdown(bus, menu, rect);
+            }
+            if let Some((depth, item)) = hidden_item {
+                if let Some(tracking) = self.menu_tracking.as_mut() {
+                    if depth == 0 {
+                        tracking.highlighted_item = item;
+                    } else if let Some(submenu) = tracking.submenus.get_mut(depth - 1) {
+                        submenu.highlighted_item = item;
+                    }
+                }
             }
         }
-        self.fill_kiosk_stage_for_centered_game_surface(bus, self.front_window);
         if let Some(tracking) = self.window_tracking.as_ref() {
             self.draw_window_drag_outline(bus, tracking.outline_rect);
         }
@@ -4659,7 +4876,8 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod redraw_chrome_tests {
-    use super::super::dispatch::{DialogItem, ScreenCopyBitsRect};
+    use super::super::dispatch::{ControlTrackingState, DialogItem, ScreenCopyBitsRect};
+    use super::super::menu::{Menu, MenuItem, MenuTrackingState, SubmenuTrackingState};
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
@@ -4709,6 +4927,198 @@ mod redraw_chrome_tests {
             x,
             y,
         )
+    }
+
+    fn overlay_test_menu(
+        id: i16,
+        title: &str,
+        item: &str,
+        visible_in_menu_bar: bool,
+        hierarchical_item: bool,
+    ) -> Menu {
+        Menu {
+            id,
+            title: title.to_owned(),
+            items: vec![MenuItem {
+                text: item.to_owned(),
+                icon: 0,
+                key_equiv: if hierarchical_item { 0x1B } else { 0 },
+                mark: 0,
+                style: 0,
+                enabled: true,
+            }],
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: !visible_in_menu_bar,
+            visible_in_menu_bar,
+        }
+    }
+
+    #[test]
+    fn redraw_chrome_repaints_hierarchical_menus_and_flashes_only_the_leaf() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _, screen_height, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_height), 0);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+        disp.menus = vec![
+            overlay_test_menu(700, "Root", "More", true, true),
+            overlay_test_menu(701, "Child", "Leaf", false, false),
+        ];
+        let root_rect = (20, 10, 38, 100);
+        let child_rect = (24, 140, 42, 230);
+        disp.menu_tracking = Some(MenuTrackingState {
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect: root_rect,
+            submenus: vec![SubmenuTrackingState {
+                menu: 1,
+                parent_item: 1,
+                highlighted_item: 1,
+                saved_pixels: Vec::new(),
+                dropdown_rect: child_rect,
+            }],
+            stack_ptr: 0,
+            flash_remaining: 5,
+            flash_delay: 0,
+            flash_result: (701u32 << 16) | 1,
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert!(
+            screen_pixel_is_black(&disp, &bus, child_rect.1, child_rect.0),
+            "frame compositing should repaint every visible submenu"
+        );
+        assert!(
+            screen_pixel_is_black(&disp, &bus, 70, root_rect.0 + 8),
+            "an odd leaf-flash phase must keep its highlighted parent row visible"
+        );
+        assert!(
+            !screen_pixel_is_black(&disp, &bus, 210, child_rect.0 + 8),
+            "the odd flash phase should draw the selected leaf without highlight"
+        );
+        let tracking = disp.menu_tracking.as_ref().unwrap();
+        assert_eq!(tracking.highlighted_item, 1);
+        assert_eq!(tracking.submenus[0].highlighted_item, 1);
+
+        disp.menu_tracking.as_mut().unwrap().flash_remaining = 6;
+        disp.redraw_chrome(&mut bus);
+        assert!(
+            screen_pixel_is_black(&disp, &bus, 210, child_rect.0 + 8),
+            "the even flash phase should redraw the deepest selected row"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_repaints_live_trackcontrol_popup_menu() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, _, screen_height, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_height), 0);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = true;
+        disp.menus = vec![overlay_test_menu(702, "Popup", "Choice", false, false)];
+        let dropdown_rect = (80, 250, 98, 340);
+        disp.control_tracking = Some(ControlTrackingState {
+            ctrl_handle: 0x1234,
+            ctrl_ptr: 0x5678,
+            popup_tracking: true,
+            active_menu: 0,
+            highlighted_item: 1,
+            saved_pixels: Vec::new(),
+            dropdown_rect,
+            simple_part: 0,
+            simple_screen_rect: (0, 0, 0, 0),
+            simple_highlighted: false,
+            saved_hilite: 0,
+            stack_ptr: 0,
+            scrollbar_action_proc: 0,
+            scrollbar_part: 0,
+            scrollbar_last_action_tick: 0,
+            scrollbar_idle_refires: 0,
+            scrollbar_callback_pending: false,
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert!(
+            screen_pixel_is_black(&disp, &bus, dropdown_rect.1, dropdown_rect.0),
+            "frame compositing should repaint a live popup's border"
+        );
+        assert!(
+            screen_pixel_is_black(&disp, &bus, 320, dropdown_rect.0 + 8),
+            "frame compositing should retain the popup's selected row"
+        );
+        assert_eq!(
+            disp.control_tracking.as_ref().unwrap().highlighted_item,
+            1,
+            "redrawing a popup must not mutate its logical selection"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_places_live_popup_over_the_kiosk_stage() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let (screen_base, row_bytes, screen_width, screen_height, _) = disp.screen_mode;
+        bus.fill_bytes(screen_base, row_bytes * u32::from(screen_height), 0);
+
+        // A 640x480 plainDBox front window centered on the 800x600 screen
+        // activates the black kiosk-stage margins.
+        bus.write_word(PORT_PTR + 8, (-60i16) as u16);
+        bus.write_word(PORT_PTR + 10, (-80i16) as u16);
+        bus.write_word(PORT_PTR + 12, 540);
+        bus.write_word(PORT_PTR + 14, 720);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 480);
+        bus.write_word(PORT_PTR + 22, 640);
+        bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
+        disp.front_window = PORT_PTR;
+        disp.window_list = vec![PORT_PTR];
+        disp.window_bounds = (60, 80, 540, 720);
+        disp.window_proc_id = 2;
+        disp.window_proc_ids.insert(PORT_PTR, 2);
+        disp.menu_bar_hidden = true;
+        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        disp.device_clut[37] = [0, 0, 0];
+
+        disp.menus = vec![overlay_test_menu(703, "Popup", "Choice", false, false)];
+        let dropdown_rect = (100, 10, 118, 70);
+        disp.control_tracking = Some(ControlTrackingState {
+            ctrl_handle: 0x1234,
+            ctrl_ptr: 0x5678,
+            popup_tracking: true,
+            active_menu: 0,
+            highlighted_item: 0,
+            saved_pixels: Vec::new(),
+            dropdown_rect,
+            simple_part: 0,
+            simple_screen_rect: (0, 0, 0, 0),
+            simple_highlighted: false,
+            saved_hilite: 0,
+            stack_ptr: 0,
+            scrollbar_action_proc: 0,
+            scrollbar_part: 0,
+            scrollbar_last_action_tick: 0,
+            scrollbar_idle_refires: 0,
+            scrollbar_callback_pending: false,
+        });
+
+        disp.redraw_chrome(&mut bus);
+
+        assert_eq!(
+            bus.read_byte(screen_base + 108 * row_bytes + 5),
+            37,
+            "precondition: the kiosk pass should fill the exposed left margin"
+        );
+        assert_eq!(
+            bus.read_byte(screen_base + 108 * row_bytes + 60),
+            0,
+            "the live popup's white interior should remain above the black stage"
+        );
+        assert_eq!(screen_width, 800, "test fixture assumes an 800px screen");
     }
 
     #[test]
@@ -4790,6 +5200,27 @@ mod redraw_chrome_tests {
         disp.restore_screen_rect_pixels(&mut bus, saved.0, saved.1, saved.2, saved.3, &saved.4);
         assert_eq!(bus.read_byte(screen_base), 0xA5);
         assert_eq!(bus.read_byte(screen_base + 1), 0x5A);
+    }
+
+    #[test]
+    fn main_screen_color_lookup_never_falls_back_to_thegdevice() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let mut foreign = TrapDispatcher::new();
+        let foreign_base = bus.alloc(16 * 16);
+        foreign.set_screen_mode_for_test(foreign_base, 16, 16, 16, 8);
+        let foreign_device = foreign.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x0CC8, foreign_device); // TheGDevice
+        bus.write_long(0x08A4, 0); // MainDevice
+
+        assert!(
+            TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0, 0xFFFF, 0]).is_some(),
+            "precondition: the foreign active device should have a valid table"
+        );
+        assert_eq!(
+            TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, [0, 0xFFFF, 0]),
+            None,
+            "screen chrome must not resolve through an offscreen TheGDevice when MainDevice is NIL"
+        );
     }
 
     #[test]
