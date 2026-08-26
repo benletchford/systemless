@@ -1193,6 +1193,12 @@ pub enum PpcImportDispatcherTarget {
     DSpShutdown,
     DSpProcessEvent,
     DSpCanUserSelectContext,
+    DSpGetMouse,
+    DSpFindContextFromPoint,
+    DSpContextGlobalToLocal,
+    DSpSetBlankingColor,
+    DSpAltBufferNew,
+    DSpAltBufferGetCGrafPtr,
     DSpContextReserve,
     DSpContextRelease,
     DSpContextSetState,
@@ -2892,6 +2898,7 @@ pub struct PpcHandleStateRecord {
 pub struct PpcControlRecord {
     pub handle: u32,
     pub proc_id: i16,
+    pub popup_menu_id: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3179,6 +3186,7 @@ impl Default for PpcDspContextPlayState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcDrawSprocketState {
     pub started: bool,
+    pub blanking_color: PpcRgbColor,
     pub reserved_context: Option<u32>,
     pub active_context: Option<u32>,
     pub context_state: PpcDspContextPlayState,
@@ -3201,6 +3209,7 @@ impl Default for PpcDrawSprocketState {
     fn default() -> Self {
         Self {
             started: false,
+            blanking_color: PPC_RGB_BLACK,
             reserved_context: None,
             active_context: None,
             context_state: PpcDspContextPlayState::Inactive,
@@ -13827,9 +13836,23 @@ fn dispatcher_target_for_import(
         ("DrawSprocketLib", "DSpCanUserSelectContext") => {
             PpcImportDispatcherTarget::DSpCanUserSelectContext
         }
+        ("DrawSprocketLib", "DSpGetMouse") => PpcImportDispatcherTarget::DSpGetMouse,
+        ("DrawSprocketLib", "DSpFindContextFromPoint") => {
+            PpcImportDispatcherTarget::DSpFindContextFromPoint
+        }
+        ("DrawSprocketLib", "DSpContext_GlobalToLocal") => {
+            PpcImportDispatcherTarget::DSpContextGlobalToLocal
+        }
         ("DrawSprocketLib", "DSpFindBestContext") => PpcImportDispatcherTarget::DSpFindBestContext,
         ("DrawSprocketLib", "DSpUserSelectContext") => {
             PpcImportDispatcherTarget::DSpUserSelectContext
+        }
+        ("DrawSprocketLib", "DSpSetBlankingColor") => {
+            PpcImportDispatcherTarget::DSpSetBlankingColor
+        }
+        ("DrawSprocketLib", "DSpAltBuffer_New") => PpcImportDispatcherTarget::DSpAltBufferNew,
+        ("DrawSprocketLib", "DSpAltBuffer_GetCGrafPtr") => {
+            PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
         }
         ("DrawSprocketLib", "DSpContext_Reserve") => PpcImportDispatcherTarget::DSpContextReserve,
         ("DrawSprocketLib", "DSpContext_Release") => PpcImportDispatcherTarget::DSpContextRelease,
@@ -19191,7 +19214,16 @@ fn dispatch_supported_import(
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
-            let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, dialog);
+            let _ = ppc_draw_dialog(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                screen_clut,
+                vfs_resources,
+                *current_resource_refnum,
+                dialog,
+            );
             Some(match (bounds, items) {
                 (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
                     cpu,
@@ -19210,7 +19242,16 @@ fn dispatch_supported_import(
             // every visible control owned by the window. Dialog controls are
             // represented by the live DITL in the native PPC HLE, and the
             // shared dialog renderer walks that complete list in draw order.
-            let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, cpu.gpr[3]);
+            let _ = ppc_draw_dialog(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                screen_clut,
+                vfs_resources,
+                *current_resource_refnum,
+                cpu.gpr[3],
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
@@ -19220,14 +19261,18 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
+            controls,
             gworlds,
             current_gworld,
             current_gdevice,
             screen_clut,
             *quickdraw_fore_color,
             quickdraw_fore_indices,
+            input,
             event_queue,
             dialog_callback_stack,
+            vfs_resources,
+            *current_resource_refnum,
         )),
         PpcImportDispatcherTarget::SetControlTitle => {
             ppc_set_control_title(
@@ -19251,7 +19296,15 @@ fn dispatch_supported_import(
                     cpu.gpr[4] as u16,
                 );
                 ppc_clamp_control_value(memory, control);
-                let _ = ppc_draw_control(memory, handles, controls, gworlds, control_handle);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    control_handle,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -19266,8 +19319,25 @@ fn dispatch_supported_import(
                 let _ = memory.write_u8(control + 17, cpu.gpr[4] as u8);
                 let owner = memory.read_u32_be(control + 4).unwrap_or(0);
                 let dialog = if owner != 0 { owner } else { *current_gworld };
-                if !ppc_draw_control(memory, handles, controls, gworlds, control_handle) {
-                    let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, dialog);
+                if !ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    control_handle,
+                ) {
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        dialog,
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -20740,6 +20810,15 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DSpCanUserSelectContext => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_can_user_select_context(cpu, memory)),
         )),
+        PpcImportDispatcherTarget::DSpGetMouse => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_dsp_get_mouse(cpu, memory, &input),
+        ))),
+        PpcImportDispatcherTarget::DSpFindContextFromPoint => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_find_context_from_point(cpu, memory)),
+        )),
+        PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_context_global_to_local(cpu, memory)),
+        )),
         PpcImportDispatcherTarget::DSpFindBestContext => {
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_dsp_find_best_context(memory, cpu.gpr[3], cpu.gpr[4], draw_sprocket),
@@ -20747,6 +20826,25 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::DSpUserSelectContext => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_user_select_context(cpu, memory, draw_sprocket)),
+        )),
+        PpcImportDispatcherTarget::DSpSetBlankingColor => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_set_blanking_color(cpu, memory, draw_sprocket)),
+        )),
+        PpcImportDispatcherTarget::DSpAltBufferNew => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_alt_buffer_new(
+                cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                gworlds,
+                *current_gdevice,
+                draw_sprocket,
+            )),
+        )),
+        PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_dsp_alt_buffer_get_cgraf_ptr(cpu, memory, gworlds)),
         )),
         PpcImportDispatcherTarget::DSpContextReserve => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_context_reserve(cpu, memory, draw_sprocket, gworlds)),
@@ -23444,11 +23542,14 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
+            controls,
             gworlds,
             screen_clut,
             current_gworld,
             current_gdevice,
             dialog_callback_stack,
+            vfs_resources,
+            *current_resource_refnum,
         )),
         PpcImportDispatcherTarget::QuickDrawCompatibility => {
             Some(ppc_dispatch_quickdraw_compatibility(
@@ -23759,11 +23860,14 @@ fn ppc_dispatch_dialog_compatibility(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    controls: &[PpcControlRecord],
     gworlds: &mut Vec<PpcGWorldRecord>,
     screen_clut: &[[u16; 3]; 256],
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match binding.symbol_name.as_str() {
@@ -23912,7 +24016,16 @@ fn ppc_dispatch_dialog_compatibility(
             *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
             let bounds = ppc_dialog_global_bounds(memory, gworlds, dialog);
             let items = ppc_dialog_items_for_dialog(memory, handles, dialog);
-            let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, dialog);
+            let _ = ppc_draw_dialog(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                screen_clut,
+                vfs_resources,
+                current_resource_refnum,
+                dialog,
+            );
             match (bounds, items) {
                 (Some(bounds), Some(items)) => ppc_begin_dialog_callbacks(
                     cpu,
@@ -49912,6 +50025,9 @@ fn ppc_selected_dsp_context_attributes(
     selected.back_buffer_best_depth_mask = 1 << back_buffer_depth.trailing_zeros();
     selected.display_depth = display_depth;
     selected.back_buffer_depth = back_buffer_depth;
+    if requested.page_count != 0 {
+        selected.page_count = requested.page_count;
+    }
     selected
 }
 
@@ -50083,7 +50199,7 @@ fn ppc_dsp_get_first_context(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     // Inside Macintosh: Apple Game Sprockets Guide, "Summary of
     // DrawSprocket" (1996), lists DSpGetFirstContext(DisplayIDType,
     // DSpContextReference *) as the start of per-display context enumeration.
-    if display_id != PPC_DSP_DISPLAY_ID {
+    if display_id != 0 && display_id != PPC_DSP_DISPLAY_ID {
         return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
     }
     if memory
@@ -50178,6 +50294,167 @@ fn ppc_dsp_user_select_context(
     result
 }
 
+fn ppc_dsp_set_blanking_color(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    draw_sprocket: &mut PpcDrawSprocketState,
+) -> i16 {
+    // Inside Macintosh: Apple Game Sprockets Guide (1996),
+    // "DSpSetBlankingColor": the RGBColor applies to the blanking window for
+    // every display while any context is active.
+    if cpu.gpr[3] == 0 {
+        return PPC_PARAM_ERR;
+    }
+    let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) else {
+        return PPC_PARAM_ERR;
+    };
+    draw_sprocket.blanking_color = color;
+    PPC_NO_ERR
+}
+
+fn ppc_dsp_get_mouse(cpu: &PpcCpu, memory: &mut PpcSectionMem, input: &PpcInputSnapshot) -> i16 {
+    // DrawSprocket.h: DSpGetMouse reports a global QuickDraw Point.
+    let out_global_point = cpu.gpr[3];
+    if out_global_point == 0 || !ppc_memory_can_write_bytes(memory, out_global_point, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if memory
+        .write_u16_be(out_global_point, input.mouse_v as u16)
+        .is_none()
+        || memory
+            .write_u16_be(out_global_point + 2, input.mouse_h as u16)
+            .is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_dsp_find_context_from_point(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    // Inside Macintosh: Apple Game Sprockets Guide (1996),
+    // "DSpFindContextFromPoint". PowerPC passes the four-byte Point value in r3.
+    let global_v = (cpu.gpr[3] >> 16) as u16 as i16;
+    let global_h = cpu.gpr[3] as u16 as i16;
+    let out_context = cpu.gpr[4];
+    if out_context == 0 || !ppc_memory_can_write_bytes(memory, out_context, 4) {
+        return PPC_PARAM_ERR;
+    }
+    if global_v < 0
+        || global_h < 0
+        || global_v >= PPC_MAIN_SCREEN_HEIGHT as i16
+        || global_h >= PPC_MAIN_SCREEN_WIDTH as i16
+    {
+        return PPC_DSP_CONTEXT_NOT_FOUND_ERR;
+    }
+    if memory.write_u32_be(out_context, PPC_DSP_CONTEXT).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_dsp_context_global_to_local(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    // Systemless currently exposes one DrawSprocket context whose origin is
+    // the main display origin, so global and context-local coordinates match.
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let point = cpu.gpr[4];
+    if point == 0 || !ppc_memory_can_write_bytes(memory, point, 4) {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dsp_alt_buffer_new(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    current_gdevice: u32,
+    draw_sprocket: &PpcDrawSprocketState,
+) -> i16 {
+    if let Some(error) = ppc_dsp_context_error(cpu.gpr[3]) {
+        return error;
+    }
+    let out_alt_buffer = cpu.gpr[6];
+    if out_alt_buffer == 0 || !ppc_memory_can_write_bytes(memory, out_alt_buffer, 4) {
+        return PPC_PARAM_ERR;
+    }
+    let (width, height) = if cpu.gpr[5] == 0 {
+        (
+            draw_sprocket.context_attributes.width,
+            draw_sprocket.context_attributes.height,
+        )
+    } else {
+        let Some(width) = memory.read_u32_be(cpu.gpr[5]) else {
+            return PPC_PARAM_ERR;
+        };
+        let Some(height) = memory.read_u32_be(cpu.gpr[5] + 4) else {
+            return PPC_PARAM_ERR;
+        };
+        let Some(_options) = memory.read_u32_be(cpu.gpr[5] + 8) else {
+            return PPC_PARAM_ERR;
+        };
+        (width, height)
+    };
+    if width == 0 || height == 0 || width > i16::MAX as u32 || height > i16::MAX as u32 {
+        return PPC_PARAM_ERR;
+    }
+
+    let rect_ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, 8, true);
+    if rect_ptr == 0
+        || ppc_write_rect(memory, rect_ptr, 0, 0, height as i16, width as i16).is_none()
+    {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return PPC_MEM_FULL_ERR;
+    }
+    let mut world_cpu = cpu.clone();
+    world_cpu.gpr[3] = out_alt_buffer;
+    world_cpu.gpr[4] = draw_sprocket.context_attributes.display_depth;
+    world_cpu.gpr[5] = rect_ptr;
+    world_cpu.gpr[6] = 0;
+    world_cpu.gpr[7] = current_gdevice;
+    world_cpu.gpr[8] = 0;
+    ppc_new_gworld(
+        &mut world_cpu,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        current_gdevice,
+    )
+}
+
+fn ppc_dsp_alt_buffer_get_cgraf_ptr(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+) -> i16 {
+    if cpu.gpr[4] != PPC_DSP_BUFFER_KIND_NORMAL
+        || cpu.gpr[5] == 0
+        || cpu.gpr[6] == 0
+        || !ppc_memory_can_write_bytes(memory, cpu.gpr[5], 4)
+        || !ppc_memory_can_write_bytes(memory, cpu.gpr[6], 4)
+    {
+        return PPC_PARAM_ERR;
+    }
+    let Some(world) = gworlds.iter().find(|world| world.port == cpu.gpr[3]) else {
+        return PPC_PARAM_ERR;
+    };
+    if memory.write_u32_be(cpu.gpr[5], world.port).is_none()
+        || memory.write_u32_be(cpu.gpr[6], world.gdevice).is_none()
+    {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
 fn ppc_dsp_context_reserve(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -50199,6 +50476,14 @@ fn ppc_dsp_context_reserve(
     if ppc_configure_dsp_framebuffers(memory, gworlds, draw_sprocket.context_attributes).is_none() {
         return PPC_PARAM_ERR;
     }
+    // A one-page DrawSprocket context exposes the displayed page as its
+    // drawing buffer. Multi-page contexts retain the distinct back buffer
+    // that DSpContext_SwapBuffers transfers to the displayed page.
+    draw_sprocket.back_buffer_gworld = if draw_sprocket.context_attributes.page_count == 1 {
+        draw_sprocket.front_buffer_gworld
+    } else {
+        PPC_DSP_BACK_GWORLD
+    };
     draw_sprocket.started = true;
     draw_sprocket.reserved_context = Some(context);
     draw_sprocket.active_context = None;
@@ -50602,8 +50887,14 @@ fn ppc_draw_sprocket_action_name(target: &PpcImportDispatcherTarget) -> Option<&
         PpcImportDispatcherTarget::DSpGetNextContext => Some("get_next_context"),
         PpcImportDispatcherTarget::DSpProcessEvent => Some("process_event"),
         PpcImportDispatcherTarget::DSpCanUserSelectContext => Some("can_user_select_context"),
+        PpcImportDispatcherTarget::DSpGetMouse => Some("get_mouse"),
+        PpcImportDispatcherTarget::DSpFindContextFromPoint => Some("find_context_from_point"),
+        PpcImportDispatcherTarget::DSpContextGlobalToLocal => Some("context_global_to_local"),
         PpcImportDispatcherTarget::DSpFindBestContext => Some("find_best_context"),
         PpcImportDispatcherTarget::DSpUserSelectContext => Some("user_select_context"),
+        PpcImportDispatcherTarget::DSpSetBlankingColor => Some("set_blanking_color"),
+        PpcImportDispatcherTarget::DSpAltBufferNew => Some("alt_buffer_new"),
+        PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr => Some("alt_buffer_get_cgraf_ptr"),
         PpcImportDispatcherTarget::DSpContextReserve => Some("context_reserve"),
         PpcImportDispatcherTarget::DSpContextRelease => Some("context_release"),
         PpcImportDispatcherTarget::DSpContextSetState => Some("context_set_state"),
@@ -50866,11 +51157,11 @@ fn ppc_isp_element_new_virtual_from_needs(
                 element + PPC_ISP_ELEMENT_NEED_RECORD_OFFSET,
                 &draft.need_record,
             )
-            || memory
-                .write_u32_be(
-                    out_elements_ptr + draft.need_index.checked_mul(4).unwrap(),
-                    element,
-                )
+            || draft
+                .need_index
+                .checked_mul(4)
+                .and_then(|offset| out_elements_ptr.checked_add(offset))
+                .and_then(|slot| memory.write_u32_be(slot, element))
                 .is_none()
         {
             return PPC_MEM_FULL_ERR;
@@ -54985,12 +55276,7 @@ fn ppc_initialize_dialog_items(
                         handles,
                         controls,
                         dialog,
-                        (
-                            i16::from_be_bytes([bytes[0], bytes[1]]),
-                            i16::from_be_bytes([bytes[2], bytes[3]]),
-                            i16::from_be_bytes([bytes[4], bytes[5]]),
-                            i16::from_be_bytes([bytes[6], bytes[7]]),
-                        ),
+                        item.rect,
                         &bytes[23..23 + title_len],
                         bytes[10] != 0,
                         i16::from_be_bytes([bytes[8], bytes[9]]),
@@ -57628,8 +57914,11 @@ fn ppc_dialog_item_title(
 fn ppc_draw_dialog(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
     dialog: u32,
 ) -> bool {
     let Some(front) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
@@ -57715,8 +58004,46 @@ fn ppc_draw_dialog(
             PPC_DIALOG_ITEM_ICON => {
                 let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
             }
+            PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
+                let _ = ppc_draw_control_inner(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    item.handle,
+                    true,
+                );
+            }
             _ => {}
         }
+    }
+    // Resource-control DITL entries can retain the resource handle after the
+    // Control Manager has materialized the live control. Draw live pop-up
+    // controls owned by the dialog as a final pass so SetControlValue calls
+    // made before the dialog is positioned cannot leave them missing or at
+    // stale local coordinates.
+    for record in controls {
+        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
+            continue;
+        }
+        let Some(control) = ppc_control_ptr(memory, record.handle) else {
+            continue;
+        };
+        if memory.read_u32_be(control.wrapping_add(PPC_CONTROL_OWNER_OFFSET)) != Some(dialog) {
+            continue;
+        }
+        let _ = ppc_draw_control_inner(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            record.handle,
+            true,
+        );
     }
     let _ = memory.write_u8(dialog + PPC_CWINDOW_VISIBLE_OFFSET, 1);
     true
@@ -57736,6 +58063,75 @@ fn ppc_dialog_item_at_global_point(
         (where_v >= rect.0 && where_v < rect.2 && where_h >= rect.1 && where_h < rect.3)
             .then(|| u16::try_from(index + 1).unwrap_or(u16::MAX))
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_track_dialog_popup(
+    memory: &mut PpcSectionMem,
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    dialog: u32,
+    item_rect: (i16, i16, i16, i16),
+    input: PpcInputSnapshot,
+) -> bool {
+    let Some((record, control)) = controls.iter().find_map(|record| {
+        if !(1008..=1023).contains(&(record.proc_id & 0x0fff)) {
+            return None;
+        }
+        let control = ppc_control_ptr(memory, record.handle)?;
+        (memory.read_u32_be(control + PPC_CONTROL_OWNER_OFFSET) == Some(dialog)
+            && ppc_read_rect(memory, control + PPC_CONTROL_RECT_OFFSET) == Some(item_rect))
+        .then_some((record, control))
+    }) else {
+        return false;
+    };
+    let Some(resource_index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"MENU"),
+        record.popup_menu_id,
+        false,
+    ) else {
+        return false;
+    };
+    let Some((_, _, menu_items)) = ppc_decode_menu_items(&vfs_resources[resource_index].data)
+    else {
+        return false;
+    };
+    let selected = memory
+        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+        .unwrap_or(1)
+        .max(1);
+    let Some(dialog_bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
+        return false;
+    };
+    let global_rect = ppc_dialog_rect_to_global(dialog_bounds, item_rect);
+    if input.mouse_h < global_rect.1 || input.mouse_h >= global_rect.3 {
+        return false;
+    }
+    // Macintosh Toolbox Essentials (1992), pp. 3-104--3-105: the current
+    // item is aligned with the pop-up control while the mouse tracks the
+    // vertically stacked menu. Use the live pointer position so scripted and
+    // interactive drags can choose a different row before the mouse-up event.
+    let menu_top = i32::from(global_rect.0)
+        .saturating_sub(i32::from(selected.saturating_sub(1)).saturating_mul(16));
+    let relative_v = i32::from(input.mouse_v).saturating_sub(menu_top);
+    if relative_v < 0 {
+        return false;
+    }
+    let item = usize::try_from(relative_v / 16).unwrap_or(usize::MAX) + 1;
+    if item == 0 || item > menu_items.len() || !menu_items[item - 1].enabled {
+        return false;
+    }
+    let item = u16::try_from(item).unwrap_or(u16::MAX);
+    if item == selected {
+        return false;
+    }
+    memory
+        .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, item)
+        .is_some()
 }
 
 fn ppc_dialog_cancel_item(
@@ -57763,14 +58159,18 @@ fn ppc_modal_dialog(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    controls: &[PpcControlRecord],
     gworlds: &[PpcGWorldRecord],
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     screen_clut: &[[u16; 3]; 256],
     fore_color: PpcRgbColor,
     fore_indices: &HashMap<u32, u8>,
+    input: PpcInputSnapshot,
     event_queue: &mut VecDeque<PpcQueuedEvent>,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
 ) -> PpcImportAction {
     if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
         return action;
@@ -57826,6 +58226,29 @@ fn ppc_modal_dialog(
                 handled_edit_event = true;
                 None
             } else {
+                if item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_RESOURCE_CONTROL
+                    && ppc_track_dialog_popup(
+                        memory,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                        item.rect,
+                        input,
+                    )
+                {
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
+                }
                 Some(hit)
             }
         }),
@@ -57872,7 +58295,16 @@ fn ppc_modal_dialog(
                 *last_mem_error = result;
                 if result == PPC_NO_ERR {
                     handled_edit_event = true;
-                    let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, dialog);
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
                     ppc_te_draw(
                         memory,
                         handles,
@@ -57889,7 +58321,16 @@ fn ppc_modal_dialog(
             }
         }
         Some(6) => {
-            let _ = ppc_draw_dialog(memory, handles, gworlds, screen_clut, dialog);
+            let _ = ppc_draw_dialog(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                screen_clut,
+                vfs_resources,
+                current_resource_refnum,
+                dialog,
+            );
             return ppc_begin_dialog_callbacks(
                 cpu,
                 memory,
@@ -58013,7 +58454,15 @@ fn ppc_dispatch_legacy_control(
                 ref_con,
             );
             if handle != 0 && cpu.gpr[6] != 0 {
-                let _ = ppc_draw_control(memory, handles, controls, gworlds, handle);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    handle,
+                );
             }
             Some(PpcImportAction::Return(handle))
         }
@@ -58063,7 +58512,15 @@ fn ppc_dispatch_legacy_control(
                 PPC_NO_ERR
             };
             if handle != 0 && bytes[10] != 0 {
-                let _ = ppc_draw_control(memory, handles, controls, gworlds, handle);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    handle,
+                );
             }
             Some(PpcImportAction::Return(handle))
         }
@@ -58112,7 +58569,15 @@ fn ppc_dispatch_legacy_control(
                 };
                 let _ = memory.write_u16_be(control.wrapping_add(offset), value as u16);
                 ppc_clamp_control_value(memory, control);
-                let _ = ppc_draw_control(memory, handles, controls, gworlds, cpu.gpr[3]);
+                let _ = ppc_draw_control(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    cpu.gpr[3],
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -58124,7 +58589,15 @@ fn ppc_dispatch_legacy_control(
                     if visible { 0xff } else { 0 },
                 );
                 if visible {
-                    let _ = ppc_draw_control(memory, handles, controls, gworlds, cpu.gpr[3]);
+                    let _ = ppc_draw_control(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        current_resource_refnum,
+                        cpu.gpr[3],
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -58159,7 +58632,15 @@ fn ppc_dispatch_legacy_control(
                         )
                     };
                     if result.is_some() {
-                        let _ = ppc_draw_control(memory, handles, controls, gworlds, cpu.gpr[3]);
+                        let _ = ppc_draw_control(
+                            memory,
+                            handles,
+                            controls,
+                            gworlds,
+                            vfs_resources,
+                            current_resource_refnum,
+                            cpu.gpr[3],
+                        );
                     }
                 }
             }
@@ -58214,7 +58695,15 @@ fn ppc_dispatch_legacy_control(
             })
         }
         "Draw1Control" => {
-            let _ = ppc_draw_control(memory, handles, controls, gworlds, cpu.gpr[3]);
+            let _ = ppc_draw_control(
+                memory,
+                handles,
+                controls,
+                gworlds,
+                vfs_resources,
+                current_resource_refnum,
+                cpu.gpr[3],
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         _ => None,
@@ -58357,7 +58846,15 @@ fn ppc_new_control_record_values(
         return 0;
     }
     controls.retain(|record| record.handle != handle);
-    controls.push(PpcControlRecord { handle, proc_id });
+    controls.push(PpcControlRecord {
+        handle,
+        proc_id,
+        popup_menu_id: if (1008..=1023).contains(&(proc_id & 0x0fff)) {
+            min
+        } else {
+            0
+        },
+    });
     *last_mem_error = PPC_NO_ERR;
     handle
 }
@@ -58543,12 +59040,56 @@ fn ppc_find_control_at_point(
         })
 }
 
+fn ppc_popup_control_selected_text(
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    menu_id: i16,
+    selected: usize,
+) -> Vec<u8> {
+    ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"MENU"),
+        menu_id,
+        false,
+    )
+    .and_then(|index| ppc_decode_menu_items(&vfs_resources[index].data))
+    .and_then(|(_, _, items)| selected.checked_sub(1).and_then(|i| items.get(i).cloned()))
+    .map(|item| item.text)
+    .unwrap_or_default()
+}
+
 fn ppc_draw_control(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    handle: u32,
+) -> bool {
+    ppc_draw_control_inner(
+        memory,
+        handles,
+        controls,
+        gworlds,
+        vfs_resources,
+        current_resource_refnum,
+        handle,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
     _handles: &[PpcHandleRecord],
     controls: &[PpcControlRecord],
     gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
     handle: u32,
+    draw_dialog_popup: bool,
 ) -> bool {
     let Some(control) = ppc_control_ptr(memory, handle) else {
         return false;
@@ -58567,11 +59108,8 @@ fn ppc_draw_control(
     else {
         return false;
     };
-    let proc_id = controls
-        .iter()
-        .find(|record| record.handle == handle)
-        .map_or(0, |record| record.proc_id)
-        & 0x0fff;
+    let record = controls.iter().find(|record| record.handle == handle);
+    let proc_id = record.map_or(0, |record| record.proc_id) & 0x0fff;
     let mut frame_cpu = PpcCpu::new();
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let framed = match proc_id {
@@ -58650,6 +59188,123 @@ fn ppc_draw_control(
                     (box_right.saturating_sub(2), box_top.saturating_add(2)),
                     PPC_RGB_BLACK,
                     None,
+                );
+            }
+            wrote
+        }
+        1008..=1023 => {
+            // The standard pop-up CDEF is resource ID 63, whose proc IDs
+            // occupy 63 << 4 through 63 << 4 | 15. Its contrlMin field is
+            // the MENU resource ID and contrlValue is the one-based item.
+            let dialog_bounds = memory
+                .read_u16_be(owner + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                .filter(|kind| *kind == 2)
+                .and_then(|_| ppc_dialog_global_bounds(memory, gworlds, owner));
+            if dialog_bounds.is_some() && !draw_dialog_popup {
+                return true;
+            }
+            let (draw_owner, (draw_top, draw_left, draw_bottom, draw_right)) = dialog_bounds
+                .map(|bounds| {
+                    (
+                        PPC_MAIN_GWORLD,
+                        ppc_dialog_rect_to_global(bounds, (top, left, bottom, right)),
+                    )
+                })
+                .unwrap_or((owner, (top, left, bottom, right)));
+            let mut wrote = ppc_paint_rect_bounds(
+                memory,
+                gworlds,
+                draw_owner,
+                (draw_top, draw_left, draw_bottom, draw_right),
+                PPC_RGB_WHITE,
+                None,
+            );
+            for (start, end) in [
+                (
+                    (draw_left, draw_top),
+                    (draw_right.saturating_sub(1), draw_top),
+                ),
+                (
+                    (draw_right.saturating_sub(1), draw_top),
+                    (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
+                ),
+                (
+                    (draw_right.saturating_sub(1), draw_bottom.saturating_sub(1)),
+                    (draw_left, draw_bottom.saturating_sub(1)),
+                ),
+                (
+                    (draw_left, draw_bottom.saturating_sub(1)),
+                    (draw_left, draw_top),
+                ),
+            ] {
+                wrote |= ppc_line_to(memory, gworlds, draw_owner, start, end, PPC_RGB_BLACK, None);
+            }
+            let arrow_left = draw_right.saturating_sub(18).max(draw_left);
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                draw_owner,
+                (arrow_left, draw_top),
+                (arrow_left, draw_bottom.saturating_sub(1)),
+                PPC_RGB_BLACK,
+                None,
+            );
+            let arrow_h = draw_right.saturating_sub(9);
+            let center_v = draw_top.saturating_add(draw_bottom.saturating_sub(draw_top) / 2);
+            for offset in 0..3i16 {
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    draw_owner,
+                    (
+                        arrow_h.saturating_sub(offset),
+                        center_v.saturating_sub(3 - offset),
+                    ),
+                    (
+                        arrow_h.saturating_add(offset),
+                        center_v.saturating_sub(3 - offset),
+                    ),
+                    PPC_RGB_BLACK,
+                    None,
+                );
+                wrote |= ppc_line_to(
+                    memory,
+                    gworlds,
+                    draw_owner,
+                    (
+                        arrow_h.saturating_sub(offset),
+                        center_v.saturating_add(3 - offset),
+                    ),
+                    (
+                        arrow_h.saturating_add(offset),
+                        center_v.saturating_add(3 - offset),
+                    ),
+                    PPC_RGB_BLACK,
+                    None,
+                );
+            }
+            let selected = memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                .unwrap_or(0) as usize;
+            let menu_id = record.map_or(0, |record| record.popup_menu_id);
+            let selected_text = ppc_popup_control_selected_text(
+                vfs_resources,
+                current_resource_refnum,
+                menu_id,
+                selected,
+            );
+            if !selected_text.is_empty() {
+                let _ = ppc_draw_text_bytes(
+                    memory,
+                    gworlds,
+                    draw_owner,
+                    (draw_left.saturating_add(5), draw_top.saturating_add(14)),
+                    PPC_QD_TEXT_FONT_DEFAULT,
+                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    PPC_QD_TEXT_MODE_SRC_OR,
+                    PPC_RGB_BLACK,
+                    None,
+                    &selected_text,
                 );
             }
             wrote
@@ -61642,7 +62297,8 @@ fn ppc_pop_up_menu_select(
         return 0;
     }
     let row_height = 16i32;
-    let menu_top = i32::from(top) - i32::from(pop_up_item.max(0)) * row_height;
+    let menu_top =
+        i32::from(top) - i32::from(pop_up_item.max(1).saturating_sub(1)).saturating_mul(row_height);
     let relative_v = i32::from(input.mouse_v) - menu_top;
     let width = i32::from(memory.read_u16_be(menu + 2).unwrap_or(0).max(32));
     if relative_v < 0
@@ -72636,7 +73292,8 @@ mod tests {
             loaded.controls,
             vec![PpcControlRecord {
                 handle,
-                proc_id: 16
+                proc_id: 16,
+                popup_menu_id: 0,
             }]
         );
     }
@@ -72681,6 +73338,8 @@ mod tests {
             &loaded.handles,
             &loaded.controls,
             &loaded.gworlds,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
             handle,
         ));
 
@@ -75283,12 +75942,36 @@ mod tests {
             PpcImportDispatcherTarget::DSpCanUserSelectContext
         );
         assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpGetMouse"),
+            PpcImportDispatcherTarget::DSpGetMouse
+        );
+        assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpFindContextFromPoint"),
+            PpcImportDispatcherTarget::DSpFindContextFromPoint
+        );
+        assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpContext_GlobalToLocal"),
+            PpcImportDispatcherTarget::DSpContextGlobalToLocal
+        );
+        assert_eq!(
             dispatcher_target_for_import("DrawSprocketLib", "DSpFindBestContext"),
             PpcImportDispatcherTarget::DSpFindBestContext
         );
         assert_eq!(
             dispatcher_target_for_import("DrawSprocketLib", "DSpUserSelectContext"),
             PpcImportDispatcherTarget::DSpUserSelectContext
+        );
+        assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpSetBlankingColor"),
+            PpcImportDispatcherTarget::DSpSetBlankingColor
+        );
+        assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpAltBuffer_New"),
+            PpcImportDispatcherTarget::DSpAltBufferNew
+        );
+        assert_eq!(
+            dispatcher_target_for_import("DrawSprocketLib", "DSpAltBuffer_GetCGrafPtr"),
+            PpcImportDispatcherTarget::DSpAltBufferGetCGrafPtr
         );
         assert_eq!(
             dispatcher_target_for_import("DrawSprocketLib", "DSpContext_Reserve"),
@@ -120118,7 +120801,150 @@ mod tests {
             vec![PpcControlRecord {
                 handle: control_handle,
                 proc_id: 0,
+                popup_menu_id: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn dialog_popup_controls_use_ditl_bounds_and_menu_resource_items() {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&180i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&320i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 18];
+        ditl[6..8].copy_from_slice(&38i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&226i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&58i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&326i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_RESOURCE_CONTROL;
+        ditl[15] = 2;
+        ditl[16..18].copy_from_slice(&200i16.to_be_bytes());
+        let mut cntl = vec![0; 23];
+        cntl[4..6].copy_from_slice(&20i16.to_be_bytes());
+        cntl[6..8].copy_from_slice(&100i16.to_be_bytes());
+        cntl[10] = 1;
+        cntl[14..16].copy_from_slice(&300i16.to_be_bytes());
+        cntl[16..18].copy_from_slice(&1008i16.to_be_bytes());
+        let mut menu = vec![0; 15];
+        menu[0..2].copy_from_slice(&300i16.to_be_bytes());
+        menu[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        for title in [b"Red".as_slice(), b"Orange".as_slice()] {
+            menu.push(title.len() as u8);
+            menu.extend_from_slice(title);
+            menu.extend_from_slice(&[0; 4]);
+        }
+        menu.push(0);
+        for (res_type, res_id, data) in [
+            (*b"DLOG", 128, dlog),
+            (*b"DITL", 128, ditl),
+            (*b"CNTL", 200, cntl),
+            (*b"MENU", 300, menu),
+        ] {
+            loaded.vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: loaded.current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = 128;
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        let dialog = loaded.cpu.gpr[3];
+        let items_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+            .unwrap();
+        let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+        let control_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+        let control = loaded.memory.read_u32_be(control_handle).unwrap();
+        assert_eq!(
+            ppc_read_rect(&mut loaded.memory, control + PPC_CONTROL_RECT_OFFSET),
+            Some((38, 226, 58, 326))
+        );
+        assert_eq!(loaded.controls[0].popup_menu_id, 300);
+        assert_eq!(
+            ppc_popup_control_selected_text(
+                &loaded.vfs_resources,
+                loaded.current_resource_refnum,
+                300,
+                2,
+            ),
+            b"Orange"
+        );
+        loaded
+            .memory
+            .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, 1)
+            .unwrap();
+        assert!(ppc_track_dialog_popup(
+            &mut loaded.memory,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
+            dialog,
+            (38, 226, 58, 326),
+            PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 54,
+                mouse_h: 250,
+                ..PpcInputSnapshot::default()
+            },
+        ));
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn popup_menu_select_aligns_the_requested_one_based_item_with_top() {
+        let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut menu = vec![0; 15];
+        menu[0..2].copy_from_slice(&300i16.to_be_bytes());
+        menu[2..4].copy_from_slice(&80u16.to_be_bytes());
+        menu[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        for title in [b"Red".as_slice(), b"Orange".as_slice()] {
+            menu.push(title.len() as u8);
+            menu.extend_from_slice(title);
+            menu.extend_from_slice(&[0; 4]);
+        }
+        menu.push(0);
+        let menu_handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &menu,
+        );
+        let input = PpcInputSnapshot {
+            mouse_v: 100,
+            mouse_h: 50,
+            ..PpcInputSnapshot::default()
+        };
+
+        assert_eq!(
+            ppc_pop_up_menu_select(&mut loaded.memory, menu_handle, 100, 50, 1, input),
+            (300_u32 << 16) | 1
+        );
+        assert_eq!(
+            ppc_pop_up_menu_select(&mut loaded.memory, menu_handle, 100, 50, 2, input),
+            (300_u32 << 16) | 2
         );
     }
 
@@ -125703,6 +126529,25 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_draw_sprocket_get_first_context_accepts_default_display() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpGetFirstContext");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let context_out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(context_out, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = context_out;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(context_out),
+            Some(PPC_DSP_CONTEXT)
+        );
+    }
+
+    #[test]
     fn hle_import_runner_traces_draw_sprocket_can_user_select_output() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpCanUserSelectContext");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -125821,6 +126666,232 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_handles_draw_sprocket_set_blanking_color() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpSetBlankingColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let color_ptr = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(color_ptr, vec![0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
+        loaded.cpu.gpr[3] = color_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.draw_sprocket.blanking_color,
+            PpcRgbColor {
+                red: 0x1234,
+                green: 0x5678,
+                blue: 0x9abc,
+            }
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_get_mouse_writes_global_point() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpGetMouse");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let point_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(point_ptr, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = point_ptr;
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_v: -12,
+            mouse_h: 345,
+            ..PpcInputSnapshot::default()
+        });
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(point_ptr), Some((-12_i16) as u16));
+        assert_eq!(loaded.memory.read_u16_be(point_ptr + 2), Some(345));
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_get_mouse_rejects_null() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpGetMouse");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_finds_context_from_packed_point() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindContextFromPoint");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let context_out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(context_out, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = (240_u32 << 16) | 320;
+        loaded.cpu.gpr[4] = context_out;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(context_out),
+            Some(PPC_DSP_CONTEXT)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_rejects_point_outside_context() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindContextFromPoint");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let context_out = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(context_out, vec![0xaa; 4]);
+        loaded.cpu.gpr[3] = ((-1_i16 as u16 as u32) << 16) | 20;
+        loaded.cpu.gpr[4] = context_out;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.cpu.gpr[3],
+            ppc_i16_result(PPC_DSP_CONTEXT_NOT_FOUND_ERR)
+        );
+        assert_eq!(loaded.memory.read_u32_be(context_out), Some(0xaaaa_aaaa));
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_global_to_local_preserves_main_display_point() {
+        let pef =
+            synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GlobalToLocal");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let point = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(point, vec![0x00, 0xf0, 0x01, 0x40]);
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = point;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u32_be(point), Some(0x00f0_0140));
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_set_blanking_color_rejects_null() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpSetBlankingColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let original = PpcRgbColor {
+            red: 0x1111,
+            green: 0x2222,
+            blue: 0x3333,
+        };
+        loaded.draw_sprocket.blanking_color = original;
+        loaded.cpu.gpr[3] = 0;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.draw_sprocket.blanking_color, original);
+    }
+
+    #[test]
+    fn hle_import_runner_draw_sprocket_set_blanking_color_rejects_truncated_input() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpSetBlankingColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let color_ptr = PPC_DATA_BASE + 0x1000;
+        let original = PpcRgbColor {
+            red: 0x1111,
+            green: 0x2222,
+            blue: 0x3333,
+        };
+        loaded.draw_sprocket.blanking_color = original;
+        loaded
+            .memory
+            .add_region(color_ptr, vec![0x12, 0x34, 0x56, 0x78]);
+        loaded.cpu.gpr[3] = color_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+        assert_eq!(loaded.draw_sprocket.blanking_color, original);
+    }
+
+    #[test]
+    fn hle_import_runner_creates_draw_sprocket_alt_buffer_with_requested_size() {
+        let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpAltBuffer_New");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let attributes_ptr = PPC_DATA_BASE + 0x1000;
+        let out_alt_buffer_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(attributes_ptr, vec![0; 28]);
+        loaded.memory.add_region(out_alt_buffer_ptr, vec![0; 4]);
+        loaded.memory.write_u32_be(attributes_ptr, 32).unwrap();
+        loaded.memory.write_u32_be(attributes_ptr + 4, 24).unwrap();
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = attributes_ptr;
+        loaded.cpu.gpr[6] = out_alt_buffer_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let alt_buffer = loaded.memory.read_u32_be(out_alt_buffer_ptr).unwrap();
+        let world = loaded
+            .gworlds
+            .iter()
+            .find(|world| world.port == alt_buffer)
+            .unwrap();
+        assert_eq!((world.width, world.height), (32, 24));
+        assert_eq!(
+            world.depth,
+            loaded.draw_sprocket.context_attributes.display_depth
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_gets_draw_sprocket_alt_buffer_port_and_device() {
+        let pef =
+            synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpAltBuffer_GetCGrafPtr");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let port_out_ptr = PPC_DATA_BASE + 0x1000;
+        let device_out_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(port_out_ptr, vec![0; 4]);
+        loaded.memory.add_region(device_out_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = PPC_DSP_BACK_GWORLD;
+        loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
+        loaded.cpu.gpr[5] = port_out_ptr;
+        loaded.cpu.gpr[6] = device_out_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u32_be(port_out_ptr),
+            Some(PPC_DSP_BACK_GWORLD)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(device_out_ptr),
+            Some(PPC_MAIN_GDEVICE)
+        );
+    }
+
+    #[test]
     fn hle_import_runner_handles_draw_sprocket_startup() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpStartup");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -125839,6 +126910,7 @@ mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.draw_sprocket = PpcDrawSprocketState {
             started: true,
+            blanking_color: PPC_RGB_WHITE,
             reserved_context: Some(PPC_DSP_CONTEXT),
             active_context: Some(PPC_DSP_CONTEXT),
             context_state: PpcDspContextPlayState::Active,
@@ -126331,6 +127403,52 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
+    }
+
+    #[test]
+    fn draw_sprocket_one_page_context_draws_into_displayed_buffer() {
+        let pef = synthetic_pef_with_import(b"SetPort");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let attributes_ptr = PPC_DATA_BASE + 0x1000;
+        let back_buffer_out_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(
+            attributes_ptr,
+            vec![0; PPC_DSP_CONTEXT_ATTRIBUTES_SIZE as usize],
+        );
+        loaded.memory.add_region(back_buffer_out_ptr, vec![0; 4]);
+        write_test_dsp_context_attributes(
+            &mut loaded.memory,
+            attributes_ptr,
+            PpcDspContextAttributes {
+                page_count: 1,
+                ..PpcDspContextAttributes::default()
+            },
+        );
+        loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
+        loaded.cpu.gpr[4] = attributes_ptr;
+
+        assert_eq!(
+            ppc_dsp_context_reserve(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.draw_sprocket,
+                &mut loaded.gworlds,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.draw_sprocket.context_attributes.page_count, 1);
+        assert_eq!(loaded.draw_sprocket.back_buffer_gworld, PPC_MAIN_GWORLD);
+
+        loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
+        loaded.cpu.gpr[5] = back_buffer_out_ptr;
+        assert_eq!(
+            ppc_dsp_context_get_back_buffer(&loaded.cpu, &mut loaded.memory, &loaded.draw_sprocket,),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(back_buffer_out_ptr),
+            Some(PPC_MAIN_GWORLD)
+        );
     }
 
     #[test]
