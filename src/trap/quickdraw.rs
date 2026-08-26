@@ -15129,16 +15129,19 @@ impl super::TrapDispatcher {
                         let result = if mode == 0 {
                             DM_SET_DISPLAY_MODE_REJECT_ERR
                         } else {
-                            if depth_mode_ptr != 0 {
-                                bus.write_long(depth_mode_ptr, current_mode);
-                            }
-                            if gd != 0 {
-                                bus.write_long(gd + 42, mode);
-                            }
                             let (width, height) = Self::display_mode_geometry(mode)
                                 .unwrap_or_else(|| self.current_screen_geometry());
-                            self.do_setdepth_with_geometry(cpu, bus, 8, width, height);
-                            0
+                            if self.do_setdepth_with_geometry(cpu, bus, 8, width, height) {
+                                if depth_mode_ptr != 0 {
+                                    bus.write_long(depth_mode_ptr, current_mode);
+                                }
+                                if gd != 0 {
+                                    bus.write_long(gd + 42, mode);
+                                }
+                                0
+                            } else {
+                                -108i16 // memFullErr
+                            }
                         };
                         bus.write_word(sp + 20, result as u16);
                         cpu.write_reg(Register::A7, sp + 20);
@@ -16433,17 +16436,22 @@ impl super::TrapDispatcher {
             return (-50i16) as u16; // paramErr
         };
 
-        if matches!(depth, 1 | 4 | 8) {
+        let applied = if matches!(depth, 1 | 4 | 8) {
             if depth == 8 {
                 if let Some((width, height)) = Self::display_mode_geometry(u32::from(depth_or_mode))
                 {
-                    self.do_setdepth_with_geometry(cpu, bus, depth, width, height);
+                    self.do_setdepth_with_geometry(cpu, bus, depth, width, height)
                 } else {
-                    self.do_setdepth(cpu, bus, depth);
+                    self.do_setdepth(cpu, bus, depth)
                 }
             } else {
-                self.do_setdepth(cpu, bus, depth);
+                self.do_setdepth(cpu, bus, depth)
             }
+        } else {
+            true
+        };
+        if !applied {
+            return (-108i16) as u16; // memFullErr
         }
 
         self.record_gdevice_depth_mode(bus, gdh, depth_or_mode, depth);
@@ -16679,6 +16687,26 @@ impl super::TrapDispatcher {
         entries: u32,
     ) -> u32 {
         self.resize_handle_allocation(bus, ctab_handle, 8 + entries.saturating_mul(8))
+    }
+
+    fn ensure_color_table_capacity(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ctab_handle: u32,
+        entries: u32,
+    ) -> u32 {
+        let ctab_ptr = Self::color_table_ptr(bus, ctab_handle);
+        if ctab_ptr == 0 {
+            return 0;
+        }
+        let required_size = 8 + entries.saturating_mul(8);
+        let Some(current_size) = bus.get_alloc_size(ctab_ptr) else {
+            return 0;
+        };
+        if current_size >= required_size {
+            return ctab_ptr;
+        }
+        self.resize_handle_allocation(bus, ctab_handle, required_size)
     }
 
     fn copy_ctab_to_palette(
@@ -18999,19 +19027,21 @@ impl super::TrapDispatcher {
     /// the pixel depth and color/B&W mode of the requested device.
     /// Systemless currently wires this for the depths its screen renderer
     /// supports directly: 1bpp B&W plus 4bpp and 8bpp indexed color.
+    /// Returns false without changing the display mode when the target color
+    /// tables cannot be grown safely.
     pub(crate) fn do_setdepth<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         depth: u16,
-    ) {
+    ) -> bool {
         self.do_setdepth_with_geometry(
             cpu,
             bus,
             depth,
             REFERENCE_MACHINE_PROFILE.screen_width,
             REFERENCE_MACHINE_PROFILE.screen_height,
-        );
+        )
     }
 
     fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
@@ -19112,7 +19142,7 @@ impl super::TrapDispatcher {
 
         let gdh = self.ensure_main_gdevice(bus);
         let ctab_handle = Self::gdevice_ctab_handle(bus, gdh);
-        let ctab_ptr = Self::color_table_ptr(bus, ctab_handle);
+        let ctab_ptr = self.ensure_color_table_capacity(bus, ctab_handle, entry_count as u32);
         if ctab_ptr == 0 {
             return;
         }
@@ -19155,15 +19185,15 @@ impl super::TrapDispatcher {
                 continue;
             }
 
+            let ctab_handle = bus.read_long(pixmap + 42);
+            let ctab = self.ensure_color_table_capacity(bus, ctab_handle, entry_count as u32);
+            if ctab == 0 {
+                continue;
+            }
             bus.write_word(pixmap + 4, 0x8000 | row_bytes as u16);
             bus.write_word(pixmap + 32, depth);
             bus.write_word(pixmap + 34, 1);
             bus.write_word(pixmap + 36, depth);
-            let ctab_handle = bus.read_long(pixmap + 42);
-            let ctab = Self::color_table_ptr(bus, ctab_handle);
-            if ctab == 0 {
-                continue;
-            }
             bus.write_long(ctab, u32::from(depth));
             bus.write_word(ctab + 6, entry_count as u16 - 1);
             for (index, rgb) in clut.iter().enumerate().take(entry_count) {
@@ -19176,6 +19206,48 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn preflight_setdepth_color_tables(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        screen_base: u32,
+        entry_count: usize,
+    ) -> bool {
+        let main_gdh = self.ensure_main_gdevice(bus);
+        let main_ctab_handle = Self::gdevice_ctab_handle(bus, main_gdh);
+        if Self::color_table_ptr(bus, main_ctab_handle) == 0 {
+            return false;
+        }
+        let mut ctab_handles = vec![main_ctab_handle];
+        let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
+        ports.extend(self.window_list.iter().copied());
+        ports.extend([self.current_port, self.front_window]);
+        ports.sort_unstable();
+        ports.dedup();
+
+        for port in ports {
+            if port == 0 || (bus.read_word(port + 6) & 0xC000) != 0xC000 {
+                continue;
+            }
+            let pixmap_handle = bus.read_long(port + 2);
+            let pixmap = bus.read_long(pixmap_handle);
+            if pixmap == 0
+                || (Self::offscreen_pixmap_base_ptr(bus, pixmap) & 0x3FFF_FFFF) != screen_base
+            {
+                continue;
+            }
+            let ctab_handle = bus.read_long(pixmap + 42);
+            if Self::color_table_ptr(bus, ctab_handle) != 0 {
+                ctab_handles.push(ctab_handle);
+            }
+        }
+
+        ctab_handles.sort_unstable();
+        ctab_handles.dedup();
+        ctab_handles.into_iter().all(|ctab_handle| {
+            self.ensure_color_table_capacity(bus, ctab_handle, entry_count as u32) != 0
+        })
+    }
+
     fn do_setdepth_with_geometry<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -19183,12 +19255,18 @@ impl super::TrapDispatcher {
         depth: u16,
         width: u16,
         height: u16,
-    ) {
+    ) -> bool {
         let Some(row_bytes) = Self::row_bytes_for_depth(width, depth) else {
-            return;
+            return false;
         };
         let ram_size = bus.ram_size();
         let color_screen_base = ram_size - 0x80000;
+        let Some((_, entry_count)) = Self::standard_mac_indexed_clut(depth) else {
+            return false;
+        };
+        if !self.preflight_setdepth_color_tables(bus, color_screen_base, entry_count) {
+            return false;
+        }
         bus.write_long(0x0824, color_screen_base); // ScrnBase
         bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
 
@@ -19225,6 +19303,7 @@ impl super::TrapDispatcher {
             bus.write_byte(color_screen_base + i, clear_byte);
         }
         self.screen_mode = (color_screen_base, row_bytes, width, height, depth);
+        true
     }
 
     pub(super) fn sync_current_port_draw_state(&mut self, bus: &mut MacMemoryBus) {
@@ -37795,6 +37874,41 @@ mod tests {
     }
 
     #[test]
+    fn displaydispatch_set_display_mode_grows_low_depth_color_table() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.read_long(0x0824);
+        let row_bytes = TrapDispatcher::row_bytes_for_depth(800, 1).unwrap();
+        d.set_screen_mode_for_test(screen_base, row_bytes, 800, 600, 1);
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(main_gdh);
+        let pixmap = bus.read_long(bus.read_long(gd + 22));
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let old_ctab = bus.read_long(ctab_handle);
+        let depth_mode = 0x0031_1100u32;
+        let canary = bus.alloc(64);
+        bus.fill_bytes(canary, 64, 0xC3);
+
+        cpu.write_reg(Register::D0, 0x0A11);
+        bus.write_long(TEST_SP, 0);
+        bus.write_long(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 8, depth_mode);
+        bus.write_long(TEST_SP + 12, 0x0000_0080);
+        bus.write_long(TEST_SP + 16, main_gdh);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 20), 0);
+        assert_eq!(bus.read_long(depth_mode), 1);
+        assert_eq!(bus.read_long(gd + 42), 0x0000_0080);
+        let new_ctab = bus.read_long(ctab_handle);
+        assert_ne!(new_ctab, old_ctab);
+        assert_eq!(bus.get_alloc_size(old_ctab), None);
+        assert_eq!(bus.get_alloc_size(new_ctab), Some(8 + 256 * 8));
+        assert_eq!(bus.read_word(new_ctab + 6), 255);
+        assert_eq!(bus.read_bytes(canary, 64), vec![0xC3; 64]);
+    }
+
+    #[test]
     fn displaydispatch_get_display_mode_reports_active_mode_token() {
         let (mut d, mut cpu, mut bus) = setup();
         let main_gdh = d.ensure_main_gdevice(&mut bus);
@@ -38359,6 +38473,391 @@ mod tests {
         );
         assert_eq!(bus.read_long(gd + 42), 4);
         assert_ne!(bus.read_word(gd + 20) & 1, 0);
+    }
+
+    #[test]
+    fn set_depth_grows_main_color_table_before_writing_palette() {
+        for (initial_depth, target_depth) in [(1, 4), (1, 8), (4, 8)] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let screen_base = bus.read_long(0x0824);
+            let initial_row_bytes =
+                TrapDispatcher::row_bytes_for_depth(800, initial_depth).unwrap();
+            d.set_screen_mode_for_test(screen_base, initial_row_bytes, 800, 600, initial_depth);
+
+            let gdh = d.ensure_main_gdevice(&mut bus);
+            bus.write_long(0x08A4, gdh);
+            let gd = bus.read_long(gdh);
+            let pixmap_handle = bus.read_long(gd + 22);
+            let pixmap = bus.read_long(pixmap_handle);
+            let ctab_handle = bus.read_long(pixmap + 42);
+            let old_ctab = bus.read_long(ctab_handle);
+            let old_ctab_size = 8 + (1u32 << initial_depth) * 8;
+            assert_eq!(bus.get_alloc_size(old_ctab), Some(old_ctab_size));
+            let old_flags = bus.read_word(old_ctab + 4);
+
+            // With the compact initial CTab, the allocations that follow it
+            // sit inside the byte range a larger palette write would reach.
+            // Keep an explicit sentinel after the GDevice records as a
+            // regression guard for writes through the stale pointer.
+            let canary = bus.alloc(64);
+            bus.fill_bytes(canary, 64, 0xA5);
+
+            match (initial_depth, target_depth) {
+                (1, 4) => {
+                    cpu.write_reg(Register::D0, 0x000A_0013);
+                    bus.write_word(TEST_SP, 1);
+                    bus.write_word(TEST_SP + 2, 1);
+                    bus.write_word(TEST_SP + 4, target_depth);
+                    bus.write_long(TEST_SP + 6, gdh);
+                    let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+                    assert!(result.unwrap().is_ok());
+                    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+                    assert_eq!(bus.read_word(TEST_SP + 10), 0);
+                }
+                (1, 8) => {
+                    bus.write_word(TEST_SP, 0x0A13);
+                    bus.write_word(TEST_SP + 2, 1);
+                    bus.write_word(TEST_SP + 4, 1);
+                    bus.write_word(TEST_SP + 6, target_depth);
+                    bus.write_long(TEST_SP + 8, gdh);
+                    let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+                    assert!(result.unwrap().is_ok());
+                    assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+                    assert_eq!(bus.read_word(TEST_SP + 12), 0);
+                }
+                _ => assert!(d.do_setdepth(&mut cpu, &mut bus, target_depth)),
+            }
+
+            let new_ctab = bus.read_long(ctab_handle);
+            let (expected_clut, entry_count) =
+                TrapDispatcher::standard_mac_indexed_clut(target_depth).unwrap();
+            assert_ne!(new_ctab, old_ctab, "{initial_depth}→{target_depth} bpp");
+            assert_eq!(
+                bus.get_alloc_size(old_ctab),
+                None,
+                "{initial_depth}→{target_depth} bpp must release the undersized block"
+            );
+            assert_eq!(
+                bus.get_alloc_size(new_ctab),
+                Some(8 + entry_count as u32 * 8),
+                "{initial_depth}→{target_depth} bpp"
+            );
+            assert_eq!(bus.get_alloc_size(ctab_handle), Some(4));
+            assert_eq!(bus.read_long(gdh), gd);
+            assert_eq!(bus.read_long(gd + 22), pixmap_handle);
+            assert_eq!(bus.read_long(pixmap_handle), pixmap);
+            assert_eq!(bus.read_long(pixmap + 42), ctab_handle);
+            assert_eq!(bus.read_long(new_ctab), u32::from(target_depth));
+            assert_eq!(bus.read_word(new_ctab + 4), old_flags);
+            assert_eq!(bus.read_word(new_ctab + 6), entry_count as u16 - 1);
+            for (index, expected) in expected_clut.iter().enumerate().take(entry_count) {
+                let entry = new_ctab + 8 + index as u32 * 8;
+                assert_eq!(bus.read_word(entry), index as u16);
+                assert_eq!(
+                    [
+                        bus.read_word(entry + 2),
+                        bus.read_word(entry + 4),
+                        bus.read_word(entry + 6),
+                    ],
+                    *expected,
+                    "{initial_depth}→{target_depth} bpp entry {index}"
+                );
+            }
+            assert_eq!(
+                TrapDispatcher::fb_main_screen_pixel_index_for_rgb(&bus, expected_clut[9]),
+                Some(9),
+                "menu and window color lookup must follow the relocated table"
+            );
+            assert_eq!(
+                TrapDispatcher::fb_main_screen_rgb_for_pixel_index(&bus, 9),
+                Some(expected_clut[9])
+            );
+            assert_eq!(
+                bus.read_bytes(canary, 64),
+                vec![0xA5; 64],
+                "{initial_depth}→{target_depth} bpp must not overwrite neighboring allocations"
+            );
+        }
+    }
+
+    #[test]
+    fn set_depth_grows_independent_screen_port_color_tables() {
+        for (initial_depth, target_depth) in [(1, 4), (1, 8), (4, 8)] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let screen_base = bus.ram_size() - 0x80000;
+            let initial_row_bytes =
+                TrapDispatcher::row_bytes_for_depth(800, initial_depth).unwrap();
+            let (initial_clut, initial_entries) =
+                TrapDispatcher::standard_mac_indexed_clut(initial_depth).unwrap();
+            let ctab_handle = d.allocate_color_table_handle_with_clut(
+                &mut bus,
+                u32::from(initial_depth),
+                &initial_clut,
+                0x8000,
+            );
+            let old_ctab = bus.read_long(ctab_handle);
+            assert_eq!(
+                bus.get_alloc_size(old_ctab),
+                Some(8 + initial_entries as u32 * 8)
+            );
+            let canary = bus.alloc(64);
+            bus.fill_bytes(canary, 64, 0x5A);
+
+            let pixmap = bus.alloc(50);
+            bus.write_long(pixmap, screen_base);
+            bus.write_word(pixmap + 4, 0x8000 | initial_row_bytes as u16);
+            bus.write_word(pixmap + 32, initial_depth);
+            bus.write_word(pixmap + 34, 1);
+            bus.write_word(pixmap + 36, initial_depth);
+            bus.write_long(pixmap + 42, ctab_handle);
+            let pixmap_handle = bus.alloc(4);
+            bus.write_long(pixmap_handle, pixmap);
+            let port = bus.alloc(170);
+            bus.write_long(port + 2, pixmap_handle);
+            bus.write_word(port + 6, 0xC000);
+            d.cport_ports.insert(port);
+
+            assert!(d.do_setdepth(&mut cpu, &mut bus, target_depth));
+
+            let new_ctab = bus.read_long(ctab_handle);
+            let (expected_clut, entry_count) =
+                TrapDispatcher::standard_mac_indexed_clut(target_depth).unwrap();
+            assert_ne!(new_ctab, old_ctab, "{initial_depth}→{target_depth} bpp");
+            assert_eq!(bus.get_alloc_size(old_ctab), None);
+            assert_eq!(
+                bus.get_alloc_size(new_ctab),
+                Some(8 + entry_count as u32 * 8)
+            );
+            assert_eq!(bus.get_alloc_size(ctab_handle), Some(4));
+            assert_eq!(bus.read_long(new_ctab), u32::from(target_depth));
+            assert_eq!(bus.read_word(new_ctab + 4), 0x8000);
+            assert_eq!(bus.read_word(new_ctab + 6), entry_count as u16 - 1);
+            for (index, expected) in expected_clut.iter().enumerate().take(entry_count) {
+                let entry = new_ctab + 8 + index as u32 * 8;
+                assert_eq!(bus.read_word(entry), index as u16);
+                assert_eq!(
+                    [
+                        bus.read_word(entry + 2),
+                        bus.read_word(entry + 4),
+                        bus.read_word(entry + 6),
+                    ],
+                    *expected,
+                    "{initial_depth}→{target_depth} bpp entry {index}"
+                );
+            }
+            assert_eq!(bus.read_word(pixmap + 32), target_depth);
+            assert_eq!(bus.read_word(pixmap + 36), target_depth);
+            assert_eq!(
+                bus.read_bytes(canary, 64),
+                vec![0x5A; 64],
+                "{initial_depth}→{target_depth} bpp must not overwrite neighboring allocations"
+            );
+        }
+    }
+
+    #[test]
+    fn set_depth_reuses_color_table_capacity_after_decreasing_depth() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let pixmap = bus.read_long(bus.read_long(gd + 22));
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let original_ctab = bus.read_long(ctab_handle);
+        let original_size = bus.get_alloc_size(original_ctab);
+
+        assert!(d.do_setdepth(&mut cpu, &mut bus, 1));
+        assert_eq!(bus.read_long(ctab_handle), original_ctab);
+        assert_eq!(bus.get_alloc_size(original_ctab), original_size);
+        assert_eq!(bus.read_word(original_ctab + 6), 1);
+
+        assert!(d.do_setdepth(&mut cpu, &mut bus, 8));
+        assert_eq!(bus.read_long(ctab_handle), original_ctab);
+        assert_eq!(bus.get_alloc_size(original_ctab), original_size);
+        assert_eq!(bus.read_word(original_ctab + 6), 255);
+    }
+
+    #[test]
+    fn set_depth_allocation_failure_preserves_existing_mode_state() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.read_long(0x0824);
+        let initial_row_bytes = TrapDispatcher::row_bytes_for_depth(800, 1).unwrap();
+        d.set_screen_mode_for_test(screen_base, initial_row_bytes, 800, 600, 1);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let pixmap = bus.read_long(bus.read_long(gd + 22));
+        let ctab_handle = bus.read_long(pixmap + 42);
+        let ctab = bus.read_long(ctab_handle);
+        let ctab_size = bus.get_alloc_size(ctab).unwrap();
+
+        let before_screen_mode = d.screen_mode;
+        let before_device_clut = d.device_clut;
+        let before_color_manager_clut = d.color_manager_clut;
+        let before_screen_base = bus.read_long(0x0824);
+        let before_screen_row = bus.read_word(crate::memory::globals::addr::SCREEN_ROW);
+        let before_screen_bits = bus.read_bytes(crate::memory::globals::addr::SCREEN_BITS, 14);
+        let qd_screen_bits = bus.read_long(cpu.read_reg(Register::A5)).wrapping_sub(122);
+        let before_qd_screen_bits = bus.read_bytes(qd_screen_bits, 14);
+        let before_pixmap = bus.read_bytes(pixmap, 50);
+        let before_gdevice = bus.read_bytes(gd, 50);
+        let before_ctab = bus.read_bytes(ctab, ctab_size as usize);
+
+        let heap_start = bus.heap_bump_ptr();
+        bus.reserve_heap_range(heap_start, bus.application_memory_limit());
+        cpu.write_reg(Register::D0, 0x000A_0013);
+        bus.write_word(TEST_SP, 1);
+        bus.write_word(TEST_SP + 2, 1);
+        bus.write_word(TEST_SP + 4, 8);
+        bus.write_long(TEST_SP + 6, gdh);
+
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(bus.read_word(TEST_SP + 10), (-108i16) as u16);
+        assert_eq!(cpu.read_reg(Register::D0), u32::from((-108i16) as u16));
+        assert_eq!(d.screen_mode, before_screen_mode);
+        assert_eq!(d.device_clut, before_device_clut);
+        assert_eq!(d.color_manager_clut, before_color_manager_clut);
+        assert_eq!(bus.read_long(0x0824), before_screen_base);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::SCREEN_ROW),
+            before_screen_row
+        );
+        assert_eq!(
+            bus.read_bytes(crate::memory::globals::addr::SCREEN_BITS, 14),
+            before_screen_bits
+        );
+        assert_eq!(bus.read_bytes(qd_screen_bits, 14), before_qd_screen_bits);
+        assert_eq!(bus.read_bytes(pixmap, 50), before_pixmap);
+        assert_eq!(bus.read_bytes(gd, 50), before_gdevice);
+        assert_eq!(bus.read_long(ctab_handle), ctab);
+        assert_eq!(bus.get_alloc_size(ctab), Some(ctab_size));
+        assert_eq!(bus.read_bytes(ctab, ctab_size as usize), before_ctab);
+    }
+
+    #[test]
+    fn set_depth_late_allocation_failure_preserves_logical_table_state() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let initial_row_bytes = TrapDispatcher::row_bytes_for_depth(800, 1).unwrap();
+        d.set_screen_mode_for_test(bus.read_long(0x0824), initial_row_bytes, 800, 600, 1);
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let main_pixmap = bus.read_long(bus.read_long(gd + 22));
+        let main_ctab_handle = bus.read_long(main_pixmap + 42);
+        let old_main_ctab = bus.read_long(main_ctab_handle);
+
+        let screen_base = bus.ram_size() - 0x80000;
+        let (initial_clut, _) = TrapDispatcher::standard_mac_indexed_clut(1).unwrap();
+        let port_ctab_handle =
+            d.allocate_color_table_handle_with_clut(&mut bus, 1, &initial_clut, 0x8123);
+        let port_ctab = bus.read_long(port_ctab_handle);
+        let port_pixmap = bus.alloc(50);
+        bus.write_long(port_pixmap, screen_base);
+        bus.write_word(port_pixmap + 4, 0x8000 | initial_row_bytes as u16);
+        bus.write_word(port_pixmap + 32, 1);
+        bus.write_word(port_pixmap + 34, 1);
+        bus.write_word(port_pixmap + 36, 1);
+        bus.write_long(port_pixmap + 42, port_ctab_handle);
+        let port_pixmap_handle = bus.alloc(4);
+        bus.write_long(port_pixmap_handle, port_pixmap);
+        let port = bus.alloc(170);
+        bus.write_long(port + 2, port_pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        d.cport_ports.insert(port);
+
+        let before_screen_mode = d.screen_mode;
+        let before_device_clut = d.device_clut;
+        let before_main_pixmap = bus.read_bytes(main_pixmap, 50);
+        let before_main_ctab = bus.read_bytes(old_main_ctab, 24);
+        let before_port_pixmap = bus.read_bytes(port_pixmap, 50);
+        let before_port_ctab = bus.read_bytes(port_ctab, 24);
+        let heap_start = bus.heap_bump_ptr();
+        let one_8bpp_ctab = 8 + 256 * 8;
+        let heap_limit = bus.application_memory_limit();
+        bus.reserve_heap_range(heap_start + one_8bpp_ctab, heap_limit);
+
+        assert!(!d.do_setdepth(&mut cpu, &mut bus, 8));
+
+        // SetDepth can move a relocatable block while trying to satisfy the
+        // request, but stable handles and logical CTab/display state must
+        // remain valid when a later allocation reports memFullErr.
+        let new_main_ctab = bus.read_long(main_ctab_handle);
+        assert_ne!(new_main_ctab, old_main_ctab);
+        assert_eq!(bus.get_alloc_size(old_main_ctab), None);
+        assert_eq!(bus.get_alloc_size(new_main_ctab), Some(one_8bpp_ctab));
+        assert_eq!(bus.read_bytes(new_main_ctab, 24), before_main_ctab);
+        assert_eq!(bus.read_long(port_ctab_handle), port_ctab);
+        assert_eq!(bus.get_alloc_size(port_ctab), Some(24));
+        assert_eq!(bus.read_bytes(port_ctab, 24), before_port_ctab);
+        assert_eq!(d.screen_mode, before_screen_mode);
+        assert_eq!(d.device_clut, before_device_clut);
+        assert_eq!(bus.read_bytes(main_pixmap, 50), before_main_pixmap);
+        assert_eq!(bus.read_bytes(port_pixmap, 50), before_port_pixmap);
+    }
+
+    #[test]
+    fn set_depth_rejects_allocator_untracked_color_table_without_replacing_it() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let _main_gdh = d.ensure_main_gdevice(&mut bus);
+        let screen_base = bus.ram_size() - 0x80000;
+        let fake_ctab_handle = 0x0028_0000;
+        let fake_ctab = 0x0028_0100;
+        bus.write_long(fake_ctab_handle, fake_ctab);
+        bus.write_long(fake_ctab, 0x1234_5678);
+        bus.write_word(fake_ctab + 4, 0x8123);
+        bus.write_word(fake_ctab + 6, 1);
+        bus.fill_bytes(fake_ctab + 8, 16, 0x6D);
+        assert_eq!(bus.get_alloc_size(fake_ctab), None);
+
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | 800);
+        bus.write_word(pixmap + 32, 8);
+        bus.write_word(pixmap + 34, 1);
+        bus.write_word(pixmap + 36, 8);
+        bus.write_long(pixmap + 42, fake_ctab_handle);
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        let port = bus.alloc(170);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        d.cport_ports.insert(port);
+
+        let before_screen_mode = d.screen_mode;
+        let before_pixmap = bus.read_bytes(pixmap, 50);
+        let before_ctab = bus.read_bytes(fake_ctab, 24);
+
+        assert!(!d.do_setdepth(&mut cpu, &mut bus, 4));
+        assert_eq!(d.screen_mode, before_screen_mode);
+        assert_eq!(bus.read_bytes(pixmap, 50), before_pixmap);
+        assert_eq!(bus.read_long(fake_ctab_handle), fake_ctab);
+        assert_eq!(bus.read_bytes(fake_ctab, 24), before_ctab);
+        assert_eq!(bus.read_word(fake_ctab + 4), 0x8123);
+    }
+
+    #[test]
+    fn set_depth_leaves_nil_color_table_screen_port_unchanged() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.ram_size() - 0x80000;
+        let pixmap = bus.alloc(50);
+        bus.write_long(pixmap, screen_base);
+        bus.write_word(pixmap + 4, 0x8000 | 1_600);
+        bus.write_word(pixmap + 32, 16);
+        bus.write_word(pixmap + 34, 3);
+        bus.write_word(pixmap + 36, 5);
+        bus.write_long(pixmap + 42, 0);
+        let pixmap_handle = bus.alloc(4);
+        bus.write_long(pixmap_handle, pixmap);
+        let port = bus.alloc(170);
+        bus.write_long(port + 2, pixmap_handle);
+        bus.write_word(port + 6, 0xC000);
+        d.cport_ports.insert(port);
+        let before_pixmap = bus.read_bytes(pixmap, 50);
+
+        assert!(d.do_setdepth(&mut cpu, &mut bus, 4));
+
+        assert_eq!(d.screen_mode.4, 4);
+        assert_eq!(bus.read_bytes(pixmap, 50), before_pixmap);
     }
 
     #[test]
