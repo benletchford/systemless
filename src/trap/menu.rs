@@ -821,7 +821,7 @@ impl super::TrapDispatcher {
         pixel_size: u16,
         black: bool,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
         Self::menu_color_rgb_pixel_index(bus, if black { [0; 3] } else { [0xFFFF; 3] })
@@ -905,7 +905,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         pixel_size: u16,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -926,7 +926,7 @@ impl super::TrapDispatcher {
         menu_id: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -949,7 +949,7 @@ impl super::TrapDispatcher {
         menu_id: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -969,7 +969,7 @@ impl super::TrapDispatcher {
         menu_id: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -993,7 +993,7 @@ impl super::TrapDispatcher {
         pixel_size: u16,
         item_rgb_offset: u32,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -1019,7 +1019,7 @@ impl super::TrapDispatcher {
         menu_item: i16,
         pixel_size: u16,
     ) -> Option<u8> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -1070,7 +1070,7 @@ impl super::TrapDispatcher {
         foreground_index: Option<u8>,
         pixel_size: u16,
     ) -> Option<(u8, u8)> {
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return None;
         }
 
@@ -1095,9 +1095,10 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn hilite_packed_4bpp_menu_pixel(
+    fn hilite_packed_menu_pixel(
         bus: &mut MacMemoryBus,
         screen: (u32, u32, i16, i16),
+        pixel_size: u16,
         x: i16,
         y: i16,
         hilite_indexes: (u8, u8),
@@ -1107,21 +1108,24 @@ impl super::TrapDispatcher {
             return;
         }
 
-        // Imaging With QuickDraw 1994 pp. 4-88 to 4-89: 4-bit indexed
-        // pixels are packed high-nibble first. Read only the target pixel,
-        // then use the packed-aware setter so its neighbour survives.
-        let packed = bus.read_byte(screen_base + (y as u32) * row_bytes + (x as u32 / 2));
-        let pixel = if x & 1 == 0 {
-            packed >> 4
-        } else {
-            packed & 0x0F
+        let Some(pixel) = Self::fb_get_pixel_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+        ) else {
+            return;
         };
         let highlighted = Self::menu_hilited_pixel_index(pixel, hilite_indexes.0, hilite_indexes.1);
         Self::fb_set_pixel_index(
             bus,
             screen_base,
             row_bytes,
-            4,
+            pixel_size,
             screen_width,
             screen_height,
             x,
@@ -4389,7 +4393,7 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
-                if matches!(screen_pixel_size, 4 | 8) && layout.pixel_size >= 2 {
+                if matches!(screen_pixel_size, 2 | 4 | 8) && layout.pixel_size >= 2 {
                     let Some(pixel_index) = Self::menu_cicn_pixel_index(
                         bus,
                         layout.pixel_data_ptr,
@@ -5101,20 +5105,21 @@ impl super::TrapDispatcher {
                 && item.enabled
                 && !is_separator;
             let selected_mono = classic_selected && pixel_size == 1;
-            let selected_colors = (classic_selected && matches!(pixel_size, 4 | 8)).then(|| {
-                // IM:V 1986 pp. V-233 and V-249: the standard color MDEF
-                // redraws a selected row with its item/name color (RGB2, or
-                // the default item color) as the background and its menu
-                // background (RGB4) as the foreground for every component.
-                let selected_background = name_pixel_index
-                    .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0; 3]))
-                    .unwrap_or(255);
-                let selected_foreground =
-                    Self::menu_item_background_pixel_index(bus, menu.id, item_no, pixel_size)
-                        .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0xFFFF; 3]))
-                        .unwrap_or(0);
-                (selected_background, selected_foreground)
-            });
+            let selected_colors =
+                (classic_selected && matches!(pixel_size, 2 | 4 | 8)).then(|| {
+                    // IM:V 1986 pp. V-233 and V-249: the standard color MDEF
+                    // redraws a selected row with its item/name color (RGB2, or
+                    // the default item color) as the background and its menu
+                    // background (RGB4) as the foreground for every component.
+                    let selected_background = name_pixel_index
+                        .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0; 3]))
+                        .unwrap_or(255);
+                    let selected_foreground =
+                        Self::menu_item_background_pixel_index(bus, menu.id, item_no, pixel_size)
+                            .or_else(|| Self::menu_color_rgb_pixel_index(bus, [0xFFFF; 3]))
+                            .unwrap_or(0);
+                    (selected_background, selected_foreground)
+                });
             if let Some((selected_background, _)) = selected_colors {
                 Self::fb_fill_rect_index(
                     bus,
@@ -5542,19 +5547,15 @@ impl super::TrapDispatcher {
             }
             let row_start = screen_base + (y as u32) * row_bytes;
             let (byte_left, byte_right) = match pixel_size {
-                1 => {
-                    // 1bpp: pixels packed 8 per byte
+                bits @ (1 | 2 | 4) => {
+                    // Packed indexed pixels occupy each byte from its high
+                    // field downward. Save whole boundary bytes so rectangles
+                    // with non-byte-aligned edges round-trip their neighbours.
+                    // Imaging With QuickDraw (1994), pp. 4-10--4-11.
+                    let pixels_per_byte = 8 / u32::from(bits);
                     (
-                        (left.max(0) as u32) / 8,
-                        (save_right.max(0) as u32).div_ceil(8),
-                    )
-                }
-                4 => {
-                    // 4bpp: pixels packed two per byte, high nibble first.
-                    // Save whole boundary bytes so odd edges round-trip.
-                    (
-                        (left.max(0) as u32) / 2,
-                        (save_right.max(0) as u32).div_ceil(2),
+                        (left.max(0) as u32) / pixels_per_byte,
+                        (save_right.max(0) as u32).div_ceil(pixels_per_byte),
                     )
                 }
                 _ => {
@@ -5583,14 +5584,13 @@ impl super::TrapDispatcher {
         let save_bottom = bottom + 1;
         let save_right = right + 1;
         let (byte_left, byte_right) = match pixel_size {
-            1 => (
-                (left.max(0) as u32) / 8,
-                (save_right.max(0) as u32).div_ceil(8),
-            ),
-            4 => (
-                (left.max(0) as u32) / 2,
-                (save_right.max(0) as u32).div_ceil(2),
-            ),
+            bits @ (1 | 2 | 4) => {
+                let pixels_per_byte = 8 / u32::from(bits);
+                (
+                    (left.max(0) as u32) / pixels_per_byte,
+                    (save_right.max(0) as u32).div_ceil(pixels_per_byte),
+                )
+            }
             _ => (left.max(0) as u32, save_right.max(0) as u32),
         };
         let bx_end = byte_right.min(row_bytes);
@@ -5638,14 +5638,18 @@ impl super::TrapDispatcher {
                     let addr = screen_base + byte_offset;
                     let b = bus.read_byte(addr);
                     bus.write_byte(addr, b ^ (1 << bit));
-                } else if pixel_size == 4 {
+                } else if matches!(pixel_size, 2 | 4) {
                     let indexes = hilite_indexes.unwrap_or((0, 15));
-                    Self::hilite_packed_4bpp_menu_pixel(
+                    Self::hilite_packed_menu_pixel(
                         bus,
                         (screen_base, row_bytes, screen_width, screen_height),
+                        pixel_size,
                         x,
                         y,
-                        indexes,
+                        (
+                            indexes.0 & ((1u16 << pixel_size) - 1) as u8,
+                            indexes.1 & ((1u16 << pixel_size) - 1) as u8,
+                        ),
                     );
                 } else if pixel_size == 8 {
                     let addr = screen_base + (y as u32) * row_bytes + (x as u32);
@@ -5670,7 +5674,7 @@ impl super::TrapDispatcher {
         if menu_bar_height <= 0 {
             return;
         }
-        if !matches!(pixel_size, 1 | 4 | 8) {
+        if !matches!(pixel_size, 1 | 2 | 4 | 8) {
             return;
         }
 
@@ -5838,13 +5842,14 @@ impl super::TrapDispatcher {
                         let addr = screen_base + byte_offset;
                         let b = bus.read_byte(addr);
                         bus.write_byte(addr, b ^ (1 << bit));
-                    } else if pixel_size == 4 {
-                        Self::hilite_packed_4bpp_menu_pixel(
+                    } else if matches!(pixel_size, 2 | 4) {
+                        Self::hilite_packed_menu_pixel(
                             bus,
                             (screen_base, row_bytes, screen_width, screen_height),
+                            pixel_size,
                             x,
                             y,
-                            hilite_indexes.unwrap_or((0, 15)),
+                            hilite_indexes.unwrap_or((0, ((1u16 << pixel_size) - 1) as u8)),
                         );
                     } else if let Some((background, foreground)) = hilite_indexes {
                         let addr = screen_base + (y as u32) * row_bytes + (x as u32);
@@ -5885,7 +5890,7 @@ impl super::TrapDispatcher {
         else {
             return;
         };
-        if !matches!(pixel_size, 4 | 8) {
+        if !matches!(pixel_size, 2 | 4 | 8) {
             return;
         }
         self.fb_draw_retro_computer_menu_mark(
@@ -5904,17 +5909,17 @@ impl super::TrapDispatcher {
             // disabled mark's checkerboard dimming involutive across both
             // HiliteMenu and nonzero FlashMenuBar calls.
             let background_x = title_x - 9;
-            let background_addr = screen_base + row_bytes + (background_x as u32 / 2);
-            let background_index = if pixel_size == 4 {
-                let packed = bus.read_byte(background_addr);
-                if background_x & 1 == 0 {
-                    packed >> 4
-                } else {
-                    packed & 0x0F
-                }
-            } else {
-                bus.read_byte(screen_base + row_bytes + background_x as u32)
-            };
+            let background_index = Self::fb_get_pixel_index(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                background_x,
+                1,
+            )
+            .unwrap_or(0);
             self.fb_apply_menu_title_dim_pattern(
                 bus,
                 (
@@ -6715,6 +6720,33 @@ mod tests {
             "GetItemCmd should succeed"
         );
         (bus.read_word(out_ptr) & 0xFF) as u8
+    }
+
+    #[test]
+    fn packed_two_bit_menu_highlight_preserves_neighboring_pixels() {
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let base = bus.alloc(1);
+        bus.write_byte(base, 0b00_01_10_11);
+
+        super::super::TrapDispatcher::hilite_packed_menu_pixel(
+            &mut bus,
+            (base, 1, 4, 1),
+            2,
+            0,
+            0,
+            (0, 3),
+        );
+        assert_eq!(bus.read_byte(base), 0b11_01_10_11);
+
+        super::super::TrapDispatcher::hilite_packed_menu_pixel(
+            &mut bus,
+            (base, 1, 4, 1),
+            2,
+            3,
+            0,
+            (0, 3),
+        );
+        assert_eq!(bus.read_byte(base), 0b11_01_10_00);
     }
 
     // IM:I I-353: AddResMenu appends named resources of the requested type
@@ -14817,6 +14849,43 @@ mod tests {
             bus.read_bytes(base, byte_len as usize),
             before,
             "4bpp save/restore should preserve both boundary nibbles byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn save_and_restore_dropdown_pixels_2bpp_round_trip_odd_field_bounds() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let row_bytes = 4u32;
+        let height = 4u32;
+        let base = bus.alloc(row_bytes * height);
+        disp.screen_mode = (base, row_bytes, 12, height as u16, 2);
+        for offset in 0..row_bytes * height {
+            bus.write_byte(
+                base + offset,
+                (offset as u8).wrapping_mul(11).wrapping_add(5),
+            );
+        }
+        let before = bus.read_bytes(base, (row_bytes * height) as usize);
+
+        // The rectangle plus its one-pixel shadow spans x=3 through x=8.
+        // At 2bpp that occupies the first three bytes of each included row;
+        // the fourth byte is scanline padding and must remain outside the
+        // snapshot.
+        let rect = (0, 3, 1, 8);
+        let saved = disp.save_dropdown_pixels(&bus, rect);
+        assert_eq!(saved.len(), 2 * 3);
+
+        for y in 0..2u32 {
+            for byte_x in 0..3u32 {
+                bus.write_byte(base + y * row_bytes + byte_x, 0xAA);
+            }
+        }
+        disp.restore_dropdown_pixels(&mut bus, rect, &saved);
+
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * height) as usize),
+            before,
+            "2bpp save/restore should preserve boundary fields without touching row padding"
         );
     }
 

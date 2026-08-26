@@ -1667,8 +1667,10 @@ pub struct FixtureRunnerConfig {
     /// Use the full 32-bit guest address, or mask memory accesses to the low
     /// 24 bits as on classic Macs running in 24-bit addressing mode.
     pub addressing_32_bit: bool,
-    /// Guest-visible indexed screen depth. Supported values are 1, 4, and 8;
-    /// the default remains 8-bit/256-color mode.
+    /// Initial 68K main-framebuffer depth. Supported values are 1, 2, 4, and
+    /// 8; the default remains 8-bit/256-color mode. Native PowerPC launches
+    /// retain their architecture default unless
+    /// [`FixtureRunner::set_powerpc_screen_depth`] is called explicitly.
     pub screen_depth: u16,
 }
 
@@ -1700,12 +1702,13 @@ struct PpcDecodedDoubleBuffer {
 }
 
 impl FixtureRunnerConfig {
-    /// Validate and select one of the indexed display depths supported by the
-    /// main framebuffer.
+    /// Validate and select the initial 68K indexed main-framebuffer depth.
+    /// Use [`FixtureRunner::set_powerpc_screen_depth`] for an explicit native
+    /// PowerPC launch depth.
     pub fn with_screen_depth(mut self, screen_depth: u16) -> std::result::Result<Self, String> {
-        if !matches!(screen_depth, 1 | 4 | 8) {
+        if !matches!(screen_depth, 1 | 2 | 4 | 8) {
             return Err(format!(
-                "unsupported screen depth {screen_depth}; expected 1, 4, or 8"
+                "unsupported screen depth {screen_depth}; expected 1, 2, 4, or 8"
             ));
         }
         self.screen_depth = screen_depth;
@@ -1748,6 +1751,15 @@ pub struct FixtureRunner {
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     config: FixtureRunnerConfig,
+    /// Explicit display depth carried into native PowerPC launches. `None`
+    /// preserves the architecture defaults: 8bpp for 68K and 16bpp for PPC.
+    powerpc_screen_depth_override: Option<u16>,
+    /// Main host PixMap ColorTable retained while a direct-color PowerPC
+    /// framebuffer temporarily requires a NIL `pmTable`.
+    ppc_host_indexed_ctab_handle: u32,
+    /// Owned host-side framebuffer mirror reused across PowerPC depth changes.
+    ppc_host_mirror_base: u32,
+    ppc_host_mirror_capacity: u32,
     prefer_powerpc_executables: bool,
     trace_buffer: std::collections::VecDeque<(u32, u16, u32, u32, u32, u32)>, // (PC, Op, A0, SP, A6, A5)
     /// Set to true when the application calls ExitToShell
@@ -1939,8 +1951,8 @@ impl FixtureRunner {
             ram_size.min(0x0100_0000)
         };
         assert!(
-            matches!(config.screen_depth, 1 | 4 | 8),
-            "screen_depth must be 1, 4, or 8"
+            matches!(config.screen_depth, 1 | 2 | 4 | 8),
+            "screen_depth must be 1, 2, 4, or 8"
         );
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
@@ -1978,6 +1990,10 @@ impl FixtureRunner {
             bus,
             dispatcher,
             config,
+            powerpc_screen_depth_override: None,
+            ppc_host_indexed_ctab_handle: 0,
+            ppc_host_mirror_base: 0,
+            ppc_host_mirror_capacity: 0,
             prefer_powerpc_executables: false,
             trace_buffer: std::collections::VecDeque::with_capacity(2000),
             halted: false,
@@ -2640,6 +2656,39 @@ impl FixtureRunner {
         self.config.arrows_as_numpad
     }
 
+    /// Return the configured initial 68K indexed main-framebuffer depth.
+    /// This does not report an explicit or default native PowerPC depth.
+    pub fn configured_screen_depth(&self) -> u16 {
+        self.config.screen_depth
+    }
+
+    /// Explicitly select the display depth used by subsequently loaded native
+    /// PowerPC applications. Leaving this unset preserves the historical
+    /// 16-bit PowerPC architecture default, independently of the configured
+    /// 68K framebuffer depth.
+    pub fn set_powerpc_screen_depth(
+        &mut self,
+        screen_depth: u16,
+    ) -> std::result::Result<(), String> {
+        if !matches!(screen_depth, 1 | 2 | 4 | 8 | 16) {
+            return Err(format!(
+                "unsupported PowerPC screen depth {screen_depth}; expected 1, 2, 4, 8, or 16"
+            ));
+        }
+        self.powerpc_screen_depth_override = Some(screen_depth);
+        Ok(())
+    }
+
+    /// Return the screen depth to use when the selected executable is native
+    /// PowerPC. The architecture default is 16bpp; only an explicit call to
+    /// [`FixtureRunner::set_powerpc_screen_depth`] overrides it.
+    pub(crate) fn configured_powerpc_screen_depth(&self) -> u32 {
+        u32::from(
+            self.powerpc_screen_depth_override
+                .unwrap_or(DEFAULT_POWERPC_SCREEN_DEPTH as u16),
+        )
+    }
+
     /// Move the mouse without changing the button state. Updates the
     /// dispatcher's tracked position and the six mouse-position
     /// low-memory globals (MTemp / RawMouse / Mouse) so guest code that
@@ -3236,6 +3285,8 @@ impl FixtureRunner {
         let launch_rnd_seed_override = self.launch_rnd_seed_override;
         let launch_ppc_time_base_override = self.launch_ppc_time_base_override;
         let application_partition_size = self.application_partition_size;
+        let powerpc_screen_depth_override = self.powerpc_screen_depth_override;
+        let ppc_host_mirror_capacity = self.ppc_host_mirror_capacity;
         let total_instructions = self.total_instructions;
         let launch_tick = self.guest_tick();
         let launch_time = self.bus.read_long(addr::TIME);
@@ -3270,6 +3321,7 @@ impl FixtureRunner {
         replacement.launch_rnd_seed_override = launch_rnd_seed_override;
         replacement.launch_ppc_time_base_override = launch_ppc_time_base_override;
         replacement.application_partition_size = application_partition_size;
+        replacement.powerpc_screen_depth_override = powerpc_screen_depth_override;
         replacement.total_instructions = total_instructions;
 
         replacement.dispatcher.output_dir = output_dir;
@@ -3292,6 +3344,14 @@ impl FixtureRunner {
             .load_app(&fork)
             .ok_or_else(|| format!("failed to load launched application {normalized:?}"))?;
         replacement.init_app(&app);
+        if ppc_host_mirror_capacity != 0 {
+            let base = replacement.bus.alloc(ppc_host_mirror_capacity);
+            if base == 0 {
+                return Err("failed to preserve the PowerPC host framebuffer mirror".to_string());
+            }
+            replacement.ppc_host_mirror_base = base;
+            replacement.ppc_host_mirror_capacity = ppc_host_mirror_capacity;
+        }
         replacement.bus.write_long(addr::TICKS, launch_tick);
         replacement.bus.write_long(addr::TIME, launch_time);
         replacement.bus.write_long(addr::RND_SEED, launch_rnd_seed);
@@ -7713,18 +7773,14 @@ impl FixtureRunner {
         let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
             return;
         };
-        if primary_buffer.depth == 8 {
+        if matches!(primary_buffer.depth, 1 | 2 | 4 | 8) {
             self.dispatcher.device_clut = ppc_app.screen_clut;
             self.dispatcher.color_manager_clut = ppc_app.color_manager_clut;
             self.dispatcher.device_gamma = ppc_app.device_gamma;
         }
         let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(primary_buffer);
-        let bytes_per_pixel = match primary_buffer.depth {
-            8 => 1,
-            16 => 2,
-            _ => return,
-        };
-        let Some(canvas_row_bytes) = canvas_width.checked_mul(bytes_per_pixel) else {
+        let Some(canvas_row_bytes) = Self::ppc_host_row_bytes(canvas_width, primary_buffer.depth)
+        else {
             return;
         };
         let canvas = PpcFrontBuffer {
@@ -7737,18 +7793,16 @@ impl FixtureRunner {
         let Some(host_base) = self.ensure_ppc_host_screen_mode(canvas) else {
             return;
         };
-        let matte_byte = if primary_buffer.depth == 8 {
-            ppc_app
-                .screen_clut
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, color)| {
-                    u32::from(color[0]) + u32::from(color[1]) + u32::from(color[2])
-                })
-                .map_or(0, |(index, _)| index as u8)
-        } else {
-            0
-        };
+        if primary_buffer.depth <= 8
+            && !self.sync_ppc_host_indexed_color_table(
+                primary_buffer.depth as u16,
+                &ppc_app.screen_clut,
+            )
+        {
+            return;
+        }
+        let matte_byte =
+            Self::ppc_indexed_matte_byte(primary_buffer.depth, &ppc_app.screen_clut).unwrap_or(0);
         let Some(canvas_size) = canvas_row_bytes.checked_mul(canvas_height) else {
             return;
         };
@@ -7784,6 +7838,147 @@ impl FixtureRunner {
         }
     }
 
+    fn ppc_host_row_bytes(width: u32, depth: u32) -> Option<u32> {
+        if !matches!(depth, 1 | 2 | 4 | 8 | 16) {
+            return None;
+        }
+        width.checked_mul(depth)?.checked_add(7)?.checked_div(8)
+    }
+
+    fn sync_ppc_host_indexed_color_table(&mut self, depth: u16, clut: &[[u16; 3]; 256]) -> bool {
+        if !matches!(depth, 1 | 2 | 4 | 8) {
+            return false;
+        }
+        let gdevice_handle = self.dispatcher.ensure_main_gdevice(&mut self.bus);
+        let gdevice = self.bus.read_long(gdevice_handle);
+        if gdevice == 0 {
+            return false;
+        }
+        let pixmap_handle = self.bus.read_long(gdevice + 22);
+        if pixmap_handle == 0 {
+            return false;
+        }
+        let pixmap = self.bus.read_long(pixmap_handle);
+        if pixmap == 0 {
+            return false;
+        }
+        let color_table_handle = self.bus.read_long(pixmap + 42);
+        if color_table_handle == 0 {
+            return false;
+        }
+        let entry_count = 1u32 << depth;
+        let color_table = self.dispatcher.ensure_color_table_capacity(
+            &mut self.bus,
+            color_table_handle,
+            entry_count,
+        );
+        if color_table == 0 {
+            return false;
+        }
+        // An indexed screen PixMap's pmTable is the live mapping from pixel
+        // values to RGB colors. Imaging With QuickDraw (1994), pp. 4-10--4-11
+        // and 4-56--4-57.
+        self.bus.write_long(color_table, u32::from(depth));
+        self.bus.write_word(color_table + 4, 0x8000);
+        self.bus.write_word(color_table + 6, entry_count as u16 - 1);
+        for index in 0..entry_count {
+            let entry = color_table + 8 + index * 8;
+            let rgb = clut[index as usize];
+            self.bus.write_word(entry, 0);
+            self.bus.write_word(entry + 2, rgb[0]);
+            self.bus.write_word(entry + 4, rgb[1]);
+            self.bus.write_word(entry + 6, rgb[2]);
+        }
+        true
+    }
+
+    fn ppc_indexed_matte_byte(depth: u32, clut: &[[u16; 3]; 256]) -> Option<u8> {
+        if !matches!(depth, 1 | 2 | 4 | 8) {
+            return None;
+        }
+        let color_count = 1usize.checked_shl(depth)?;
+        let index = clut
+            .iter()
+            .take(color_count)
+            .enumerate()
+            .min_by_key(|(_, color)| {
+                u32::from(color[0]) + u32::from(color[1]) + u32::from(color[2])
+            })?
+            .0 as u8;
+        let field_mask = ((1u16 << depth) - 1) as u8;
+        let mut packed = 0u8;
+        for field in 0..(8 / depth) {
+            let shift = 8 - depth * (field + 1);
+            packed |= (index & field_mask) << shift;
+        }
+        Some(packed)
+    }
+
+    fn copy_ppc_packed_indexed_row(
+        source: &[u8],
+        depth: u32,
+        width: u32,
+        destination: &mut [u8],
+        destination_x: u32,
+    ) -> bool {
+        if !matches!(depth, 1 | 2 | 4) {
+            return false;
+        }
+        let Some(visible_bits) = width.checked_mul(depth) else {
+            return false;
+        };
+        let Some(source_bytes) = visible_bits.checked_add(7).map(|bits| bits / 8) else {
+            return false;
+        };
+        let Some(destination_start_bit) = destination_x.checked_mul(depth) else {
+            return false;
+        };
+        let Some(destination_end_bit) = destination_start_bit.checked_add(visible_bits) else {
+            return false;
+        };
+        if usize::try_from(source_bytes)
+            .ok()
+            .is_none_or(|bytes| bytes > source.len())
+            || usize::try_from(destination_end_bit.div_ceil(8))
+                .ok()
+                .is_none_or(|bytes| bytes > destination.len())
+        {
+            return false;
+        }
+
+        let mut first_scalar_pixel = 0u32;
+        if destination_start_bit & 7 == 0 {
+            let full_bytes = visible_bits / 8;
+            let Some(source_end) = usize::try_from(full_bytes).ok() else {
+                return false;
+            };
+            let Some(destination_start) = usize::try_from(destination_start_bit / 8).ok() else {
+                return false;
+            };
+            let Some(destination_end) = destination_start.checked_add(source_end) else {
+                return false;
+            };
+            destination[destination_start..destination_end].copy_from_slice(&source[..source_end]);
+            first_scalar_pixel = full_bytes * 8 / depth;
+        }
+
+        let field_mask = ((1u16 << depth) - 1) as u8;
+        for x in first_scalar_pixel..width {
+            let source_bit = x * depth;
+            let source_byte = source[(source_bit / 8) as usize];
+            let source_shift = 8 - depth - (source_bit & 7);
+            let pixel = (source_byte >> source_shift) & field_mask;
+
+            let destination_bit = destination_start_bit + x * depth;
+            let destination_byte = &mut destination[(destination_bit / 8) as usize];
+            let destination_shift = 8 - depth - (destination_bit & 7);
+            let mask = field_mask << destination_shift;
+            *destination_byte =
+                (*destination_byte & !mask) | ((pixel & field_mask) << destination_shift);
+        }
+        true
+    }
+
     fn copy_ppc_front_buffer_rows_to_host(
         bus: &mut MacMemoryBus,
         ppc_app: &mut PpcLoadedApp,
@@ -7793,21 +7988,31 @@ impl FixtureRunner {
         destination_x: u32,
         destination_y: u32,
     ) -> bool {
-        let bytes_per_pixel = match front_buffer.depth {
-            8 => 1,
-            16 => 2,
-            _ => return false,
-        };
-        let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
-            return false;
-        };
         let Some(visible_row_bytes) = Self::ppc_front_buffer_visible_row_bytes(front_buffer) else {
             return false;
         };
-        if destination_x_bytes.saturating_add(visible_row_bytes) > host_row_bytes {
+        let Some(destination_end_bits) = destination_x
+            .checked_add(front_buffer.width)
+            .and_then(|pixels| pixels.checked_mul(front_buffer.depth))
+        else {
+            return false;
+        };
+        let Some(host_row_bits) = host_row_bytes.checked_mul(8) else {
+            return false;
+        };
+        if destination_end_bits > host_row_bits {
             return false;
         }
-        let mut row = vec![0u8; front_buffer.row_bytes as usize];
+        let Ok(source_row_len) = usize::try_from(front_buffer.row_bytes) else {
+            return false;
+        };
+        let Ok(visible_row_len) = usize::try_from(visible_row_bytes) else {
+            return false;
+        };
+        let Ok(host_row_len) = usize::try_from(host_row_bytes) else {
+            return false;
+        };
+        let mut row = vec![0u8; source_row_len];
         for y in 0..front_buffer.height {
             if ppc_app
                 .read_front_buffer_row(front_buffer, y, &mut row)
@@ -7816,7 +8021,7 @@ impl FixtureRunner {
                 return false;
             }
             Self::apply_ppc_draw_sprocket_gamma_fade(
-                &mut row[..visible_row_bytes as usize],
+                &mut row[..visible_row_len],
                 front_buffer.depth,
                 ppc_app.draw_sprocket.last_fade_percent,
                 ppc_app.draw_sprocket.last_fade_zero_color,
@@ -7824,21 +8029,42 @@ impl FixtureRunner {
             let Some(destination_row) = destination_y.checked_add(y) else {
                 return false;
             };
-            bus.write_bytes(
-                host_base + destination_row.saturating_mul(host_row_bytes) + destination_x_bytes,
-                &row[..visible_row_bytes as usize],
-            );
+            let Some(destination_row_addr) = destination_row
+                .checked_mul(host_row_bytes)
+                .and_then(|offset| host_base.checked_add(offset))
+            else {
+                return false;
+            };
+            if matches!(front_buffer.depth, 1 | 2 | 4) {
+                let mut packed_destination = bus.read_bytes(destination_row_addr, host_row_len);
+                if packed_destination.len() != host_row_len
+                    || !Self::copy_ppc_packed_indexed_row(
+                        &row[..visible_row_len],
+                        front_buffer.depth,
+                        front_buffer.width,
+                        &mut packed_destination,
+                        destination_x,
+                    )
+                {
+                    return false;
+                }
+                bus.write_bytes(destination_row_addr, &packed_destination);
+            } else {
+                let bytes_per_pixel = front_buffer.depth / 8;
+                let Some(destination_x_bytes) = destination_x.checked_mul(bytes_per_pixel) else {
+                    return false;
+                };
+                bus.write_bytes(
+                    destination_row_addr + destination_x_bytes,
+                    &row[..visible_row_len],
+                );
+            }
         }
         true
     }
 
     fn ppc_front_buffer_visible_row_bytes(front_buffer: PpcFrontBuffer) -> Option<u32> {
-        let bytes_per_pixel = match front_buffer.depth {
-            8 => 1,
-            16 => 2,
-            _ => return None,
-        };
-        let visible = front_buffer.width.checked_mul(bytes_per_pixel)?;
+        let visible = Self::ppc_host_row_bytes(front_buffer.width, front_buffer.depth)?;
         (visible <= front_buffer.row_bytes).then_some(visible)
     }
 
@@ -7915,19 +8141,42 @@ impl FixtureRunner {
             && base
                 .checked_add(bytes_needed)
                 .is_some_and(|end| end <= self.bus.ram_size());
+        let owned_base_valid = self.ppc_host_mirror_base != 0
+            && self.ppc_host_mirror_capacity >= bytes_needed
+            && self
+                .bus
+                .get_alloc_size(self.ppc_host_mirror_base)
+                .is_some_and(|size| size >= self.ppc_host_mirror_capacity)
+            && self
+                .ppc_host_mirror_base
+                .checked_add(bytes_needed)
+                .is_some_and(|end| end <= self.bus.ram_size());
         if base_valid
             && row_bytes == front_buffer.row_bytes
             && current_width == width
             && current_height == height
             && current_depth == depth
+            && (self.ppc_host_mirror_base == 0
+                || (owned_base_valid && base == self.ppc_host_mirror_base))
         {
             return Some(base);
         }
 
-        let base = self.bus.alloc(bytes_needed);
-        if base == 0 {
-            return None;
-        }
+        let base = if owned_base_valid {
+            self.ppc_host_mirror_base
+        } else {
+            let new_base = self.bus.alloc(bytes_needed);
+            if new_base == 0 {
+                return None;
+            }
+            let old_base = self.ppc_host_mirror_base;
+            self.ppc_host_mirror_base = new_base;
+            self.ppc_host_mirror_capacity = bytes_needed;
+            if old_base != 0 {
+                self.bus.free(old_base);
+            }
+            new_base
+        };
         self.dispatcher.screen_mode = (base, front_buffer.row_bytes, width, height, depth);
         self.write_ppc_host_screen_lowmem(base, front_buffer.row_bytes, width, height, depth);
         Some(base)
@@ -7944,6 +8193,7 @@ impl FixtureRunner {
         use crate::memory::globals::addr;
 
         self.bus.write_long(addr::SCRN_BASE, base);
+        self.bus.write_word(addr::SCREEN_ROW, row_bytes as u16);
         self.bus.write_long(addr::SCREEN_BITS, base);
         self.bus.write_word(addr::SCREEN_BITS + 4, row_bytes as u16);
         self.bus.write_word(addr::SCREEN_BITS + 6, 0);
@@ -7964,18 +8214,49 @@ impl FixtureRunner {
         if pixmap == 0 {
             return;
         }
+        let current_ctab_handle = self.bus.read_long(pixmap + 42);
+        if current_ctab_handle != 0 {
+            self.ppc_host_indexed_ctab_handle = current_ctab_handle;
+        }
+        let ctab_handle = if depth <= 8 {
+            self.ppc_host_indexed_ctab_handle
+        } else {
+            0
+        };
         self.bus.write_long(pixmap, base);
         self.bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
         self.bus.write_word(pixmap + 6, 0);
         self.bus.write_word(pixmap + 8, 0);
         self.bus.write_word(pixmap + 10, height);
         self.bus.write_word(pixmap + 12, width);
+        // Indexed PixMaps use one component whose size equals pixelSize;
+        // 16bpp direct PixMaps use three 5-bit RGB components. Imaging With
+        // QuickDraw (1994), pp. 4-10--4-11.
+        let (pixel_type, component_count, component_size, gdevice_type) = if depth <= 8 {
+            (0, 1, depth, 0)
+        } else {
+            (16, 3, 5, 2)
+        };
+        self.bus.write_word(pixmap + 30, pixel_type);
         self.bus.write_word(pixmap + 32, depth);
-        self.bus.write_word(pixmap + 36, depth);
+        self.bus.write_word(pixmap + 34, component_count);
+        self.bus.write_word(pixmap + 36, component_size);
+        self.bus.write_long(pixmap + 42, ctab_handle);
+        self.bus.write_word(gdevice + 4, gdevice_type);
+        let mut gdevice_flags = self.bus.read_word(gdevice + 20);
+        if depth == 1 {
+            gdevice_flags &= !1;
+        } else {
+            gdevice_flags |= 1;
+        }
+        self.bus.write_word(gdevice + 20, gdevice_flags);
         self.bus.write_word(gdevice + 34, 0);
         self.bus.write_word(gdevice + 36, 0);
         self.bus.write_word(gdevice + 38, height);
         self.bus.write_word(gdevice + 40, width);
+        let depth_mode = crate::display::classic_depth_mode(depth)
+            .expect("validated PPC host depth has a classic Video.h mode");
+        self.bus.write_long(gdevice + 42, u32::from(depth_mode));
     }
 
     fn advance_ticks_for_ppc_cycles(&mut self, cycles: u64, tick_cap: Option<u32>) -> bool {
@@ -10790,7 +11071,7 @@ mod tests {
         assert_eq!(runner.bus.read_word(pixmap + 32), 4);
         assert_eq!(runner.bus.read_word(pixmap + 36), 4);
         assert_eq!(runner.bus.read_word(ctab + 6), 15);
-        assert_eq!(runner.bus.read_long(gdevice + 42), 4);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0082);
         assert!(!runner.bus.addressing_32_bit());
         assert_eq!(runner.dispatcher.mmu_mode, 0);
     }
@@ -10816,13 +11097,80 @@ mod tests {
         assert_eq!(runner.bus.read_word(pixmap + 32), 1);
         assert_eq!(runner.bus.read_word(pixmap + 36), 1);
         assert_eq!(runner.bus.read_word(ctab + 6), 1);
-        assert_eq!(runner.bus.read_long(gdevice + 42), 1);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0080);
+    }
+
+    #[test]
+    fn two_bit_runner_publishes_consistent_screen_metadata() {
+        use crate::memory::globals::addr;
+
+        let config = FixtureRunnerConfig::default()
+            .with_screen_depth(2)
+            .expect("2-bit indexed mode should be supported");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+        let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let gdevice = runner.bus.read_long(gdevice_handle);
+        let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+        let ctab = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
+
+        assert_eq!(runner.configured_screen_depth(), 2);
+        assert_eq!(runner.dispatcher.screen_mode.1, 208);
+        assert_eq!(runner.dispatcher.screen_mode.4, 2);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_ROW), 208);
+        assert_eq!(runner.bus.read_word(addr::SCREEN_BITS + 4), 208);
+        assert_eq!(runner.bus.read_word(pixmap + 4), 0x8000 | 208);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 2);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 2);
+        assert_eq!(runner.bus.read_word(ctab + 6), 3);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0081);
     }
 
     #[test]
     fn runner_config_rejects_nonselectable_screen_depths() {
-        assert!(FixtureRunnerConfig::default().with_screen_depth(2).is_err());
+        assert!(FixtureRunnerConfig::default().with_screen_depth(3).is_err());
         assert!(FixtureRunnerConfig::default().with_screen_depth(5).is_err());
+    }
+
+    #[test]
+    fn runner_config_preserves_architecture_defaults_until_depth_is_explicit() {
+        let default_runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        assert_eq!(default_runner.configured_screen_depth(), 8);
+        assert_eq!(default_runner.configured_powerpc_screen_depth(), 16);
+
+        for depth in [1, 2, 4, 8] {
+            let config = FixtureRunnerConfig::default()
+                .with_screen_depth(depth)
+                .expect("indexed depth should be supported");
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+            assert_eq!(
+                runner.configured_powerpc_screen_depth(),
+                16,
+                "68K config depth {depth} must not become an implicit PPC override"
+            );
+            runner
+                .set_powerpc_screen_depth(depth)
+                .expect("PowerPC indexed depth should be supported");
+            assert_eq!(runner.configured_screen_depth(), depth);
+            assert_eq!(runner.configured_powerpc_screen_depth(), u32::from(depth));
+        }
+
+        let direct_nondefault = FixtureRunner::new(
+            8 * 1024 * 1024,
+            FixtureRunnerConfig {
+                screen_depth: 4,
+                ..FixtureRunnerConfig::default()
+            },
+        );
+        assert_eq!(direct_nondefault.configured_powerpc_screen_depth(), 16);
+
+        let mut explicit_eight =
+            FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        explicit_eight.set_powerpc_screen_depth(8).unwrap();
+        assert_eq!(explicit_eight.configured_powerpc_screen_depth(), 8);
+
+        let mut default_runner =
+            FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        assert!(default_runner.set_powerpc_screen_depth(3).is_err());
     }
 
     #[derive(Clone, Default)]
@@ -14946,10 +15294,18 @@ mod tests {
         );
         assert_eq!(runner.bus.read_word(main_pixmap + 10), height);
         assert_eq!(runner.bus.read_word(main_pixmap + 12), width);
+        assert_eq!(runner.bus.read_word(main_pixmap + 30), 16);
         assert_eq!(runner.bus.read_word(main_pixmap + 32), depth);
-        assert_eq!(runner.bus.read_word(main_pixmap + 36), depth);
+        assert_eq!(runner.bus.read_word(main_pixmap + 34), 3);
+        assert_eq!(runner.bus.read_word(main_pixmap + 36), 5);
+        assert_eq!(runner.bus.read_long(main_pixmap + 42), 0);
+        assert_eq!(runner.bus.read_word(main_gdevice + 4), 2);
         assert_eq!(runner.bus.read_word(main_gdevice + 38), height);
         assert_eq!(runner.bus.read_word(main_gdevice + 40), width);
+        assert_eq!(
+            runner.bus.read_long(main_gdevice + 42),
+            u32::from(crate::display::classic_depth_mode(depth).unwrap())
+        );
 
         let mut ppc_app = runner.ppc_app.take().expect("PPC app should stay loaded");
         ppc_app.draw_sprocket.last_fade_percent = Some(0);
@@ -15222,29 +15578,317 @@ mod tests {
 
     #[test]
     fn ppc_host_sync_excludes_scanline_padding_from_visible_rows() {
-        let indexed = PpcFrontBuffer {
-            base_addr: 0x1000,
-            row_bytes: 656,
-            width: 640,
-            height: 480,
-            depth: 8,
-        };
-        let direct = PpcFrontBuffer {
-            base_addr: 0x2000,
-            row_bytes: 1296,
-            width: 640,
-            height: 480,
-            depth: 16,
-        };
+        for (depth, padded_row_bytes, visible_row_bytes) in [
+            (1, 96, 80),
+            (2, 176, 160),
+            (4, 336, 320),
+            (8, 656, 640),
+            (16, 1296, 1280),
+        ] {
+            let front_buffer = PpcFrontBuffer {
+                base_addr: 0x1000,
+                row_bytes: padded_row_bytes,
+                width: 640,
+                height: 480,
+                depth,
+            };
+            assert_eq!(
+                FixtureRunner::ppc_front_buffer_visible_row_bytes(front_buffer),
+                Some(visible_row_bytes),
+                "{depth}bpp visible row"
+            );
+        }
+    }
 
+    #[test]
+    fn ppc_packed_indexed_row_copy_preserves_neighbors_at_non_byte_offsets() {
+        let mut one_bit = [0u8; 2];
+        assert!(FixtureRunner::copy_ppc_packed_indexed_row(
+            &[0b1010_0000],
+            1,
+            4,
+            &mut one_bit,
+            3,
+        ));
+        assert_eq!(one_bit, [0x14, 0x00]);
+
+        let mut two_bit = [0xffu8; 3];
+        assert!(FixtureRunner::copy_ppc_packed_indexed_row(
+            &[0b00_01_10_11, 0b01_00_00_00],
+            2,
+            5,
+            &mut two_bit,
+            1,
+        ));
+        assert_eq!(two_bit, [0xc6, 0xdf, 0xff]);
+
+        let mut four_bit = [0xaau8; 3];
+        assert!(FixtureRunner::copy_ppc_packed_indexed_row(
+            &[0x12, 0x30],
+            4,
+            3,
+            &mut four_bit,
+            1,
+        ));
+        assert_eq!(four_bit, [0xa1, 0x23, 0xaa]);
+    }
+
+    #[test]
+    fn ppc_indexed_matte_repeats_darkest_representable_clut_index() {
+        for depth in [1u16, 2, 4, 8] {
+            let (clut, _) =
+                TrapDispatcher::standard_mac_indexed_clut(depth).expect("standard indexed depth");
+            assert_eq!(
+                FixtureRunner::ppc_indexed_matte_byte(u32::from(depth), &clut),
+                Some(0xff),
+                "{depth}bpp standard black index"
+            );
+        }
+
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xffff, 0xffff, 0xffff];
+        clut[1] = [0xaaaa, 0xaaaa, 0xaaaa];
+        clut[2] = [0x0000, 0x0000, 0x0000];
+        clut[3] = [0x5555, 0x5555, 0x5555];
+        assert_eq!(FixtureRunner::ppc_indexed_matte_byte(2, &clut), Some(0xaa));
+    }
+
+    #[test]
+    fn ppc_host_clut_sync_grows_a_lower_depth_main_color_table() {
+        let config = FixtureRunnerConfig::default()
+            .with_screen_depth(1)
+            .expect("1bpp mode");
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+        let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let gdevice = runner.bus.read_long(gdevice_handle);
+        let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+        let color_table_handle = runner.bus.read_long(pixmap + 42);
+        let old_color_table = runner.bus.read_long(color_table_handle);
+        let (mut clut, _) = TrapDispatcher::standard_mac_indexed_clut(4).expect("4bpp CLUT");
+        clut[7] = [0x1234, 0x5678, 0x9abc];
+
+        assert!(runner.sync_ppc_host_indexed_color_table(4, &clut));
+
+        let color_table = runner.bus.read_long(color_table_handle);
+        assert_ne!(color_table, old_color_table);
+        assert_eq!(runner.bus.get_alloc_size(old_color_table), None);
+        assert_eq!(runner.bus.get_alloc_size(color_table), Some(8 + 16 * 8));
+        assert_eq!(runner.bus.read_word(color_table + 6), 15);
         assert_eq!(
-            FixtureRunner::ppc_front_buffer_visible_row_bytes(indexed),
-            Some(640)
+            [
+                runner.bus.read_word(color_table + 8 + 7 * 8 + 2),
+                runner.bus.read_word(color_table + 8 + 7 * 8 + 4),
+                runner.bus.read_word(color_table + 8 + 7 * 8 + 6),
+            ],
+            clut[7]
         );
-        assert_eq!(
-            FixtureRunner::ppc_front_buffer_visible_row_bytes(direct),
-            Some(1280)
-        );
+    }
+
+    #[test]
+    fn ppc_host_sync_restores_indexed_pm_table_across_direct_color_transitions() {
+        const WIDTH: u32 = 8;
+        const HEIGHT: u32 = 1;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(PPC_HEAP_BASE, vec![0; 16]);
+        ppc_app.heap_cursor = PPC_HEAP_BASE + 16;
+        ppc_app.gworlds.push(PpcGWorldRecord {
+            port: PPC_MAIN_GWORLD,
+            pixmap_handle: 0,
+            pixmap: 0,
+            base_addr: PPC_HEAP_BASE,
+            gdevice: PPC_MAIN_GDEVICE,
+            width: WIDTH,
+            height: HEIGHT,
+            depth: 16,
+            row_bytes: 16,
+            pixels_locked: false,
+            pixels_no_purge: false,
+        });
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let gdevice_handle = runner.dispatcher.ensure_main_gdevice(&mut runner.bus);
+        let gdevice = runner.bus.read_long(gdevice_handle);
+        let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+        let indexed_ctab_handle = runner.bus.read_long(pixmap + 42);
+        assert_ne!(indexed_ctab_handle, 0);
+
+        runner.sync_ppc_front_buffer_to_host(ppc_app);
+
+        assert_eq!(runner.bus.read_word(pixmap + 30), 16);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 16);
+        assert_eq!(runner.bus.read_word(pixmap + 34), 3);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 5);
+        assert_eq!(runner.bus.read_long(pixmap + 42), 0);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0084);
+        let host_mirror_base = runner.ppc_host_mirror_base;
+        let host_mirror_capacity = runner.ppc_host_mirror_capacity;
+        assert_eq!(runner.dispatcher.screen_mode.0, host_mirror_base);
+        assert_eq!(host_mirror_capacity, 16);
+        assert_eq!(runner.bus.get_alloc_size(host_mirror_base), Some(16));
+        let canary = runner.bus.alloc(8);
+        runner.bus.fill_bytes(canary, 8, 0x5a);
+
+        let (two_bit_clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).expect("2bpp CLUT");
+        ppc_app.screen_clut = two_bit_clut;
+        ppc_app.color_manager_clut = two_bit_clut;
+        ppc_app.gworlds[0].depth = 2;
+        ppc_app.gworlds[0].row_bytes = 2;
+
+        runner.sync_ppc_front_buffer_to_host(ppc_app);
+
+        assert_eq!(runner.bus.read_word(pixmap + 30), 0);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 2);
+        assert_eq!(runner.bus.read_word(pixmap + 34), 1);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 2);
+        assert_eq!(runner.bus.read_long(pixmap + 42), indexed_ctab_handle);
+        let indexed_ctab = runner.bus.read_long(indexed_ctab_handle);
+        assert_ne!(indexed_ctab, 0);
+        assert_eq!(runner.bus.read_word(indexed_ctab + 6), 3);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0081);
+        let heap_after_first_transition = runner.bus.heap_bump_ptr();
+
+        for _ in 0..8 {
+            ppc_app.gworlds[0].depth = 16;
+            ppc_app.gworlds[0].row_bytes = 16;
+            runner.sync_ppc_front_buffer_to_host(ppc_app);
+            assert_eq!(runner.dispatcher.screen_mode.0, host_mirror_base);
+            assert_eq!(runner.ppc_host_mirror_base, host_mirror_base);
+            assert_eq!(runner.ppc_host_mirror_capacity, host_mirror_capacity);
+
+            ppc_app.gworlds[0].depth = 2;
+            ppc_app.gworlds[0].row_bytes = 2;
+            runner.sync_ppc_front_buffer_to_host(ppc_app);
+            assert_eq!(runner.dispatcher.screen_mode.0, host_mirror_base);
+            assert_eq!(runner.ppc_host_mirror_base, host_mirror_base);
+            assert_eq!(runner.ppc_host_mirror_capacity, host_mirror_capacity);
+        }
+
+        ppc_app.gworlds[0].depth = 16;
+        ppc_app.gworlds[0].row_bytes = 16;
+        runner.sync_ppc_front_buffer_to_host(ppc_app);
+
+        assert_eq!(runner.bus.read_word(pixmap + 30), 16);
+        assert_eq!(runner.bus.read_word(pixmap + 32), 16);
+        assert_eq!(runner.bus.read_word(pixmap + 34), 3);
+        assert_eq!(runner.bus.read_word(pixmap + 36), 5);
+        assert_eq!(runner.bus.read_long(pixmap + 42), 0);
+        assert_eq!(runner.ppc_host_indexed_ctab_handle, indexed_ctab_handle);
+        assert_eq!(runner.bus.read_word(indexed_ctab + 6), 3);
+        assert_eq!(runner.bus.read_long(gdevice + 42), 0x0084);
+        assert_eq!(runner.bus.get_alloc_size(host_mirror_base), Some(16));
+        assert_eq!(runner.bus.read_bytes(canary, 8), vec![0x5a; 8]);
+        assert_eq!(runner.bus.heap_bump_ptr(), heap_after_first_transition);
+    }
+
+    #[test]
+    fn ppc_packed_front_buffers_sync_centered_pixels_and_color_state() {
+        const WIDTH: u32 = 513;
+        const HEIGHT: u32 = 342;
+        const CANVAS_WIDTH: u32 = 800;
+        const CANVAS_HEIGHT: u32 = 600;
+        const DESTINATION_X: u32 = (CANVAS_WIDTH - WIDTH) / 2;
+        const DESTINATION_Y: u32 = (CANVAS_HEIGHT - HEIGHT) / 2;
+
+        for (depth, source_pixels) in [
+            (1u16, [1u8, 0, 1, 0]),
+            (2u16, [0u8, 1, 2, 3]),
+            (4u16, [1u8, 2, 3, 0]),
+        ] {
+            let row_bytes = WIDTH.checked_mul(u32::from(depth)).unwrap().div_ceil(8);
+            let mut pixels = vec![0u8; (row_bytes * HEIGHT) as usize];
+            let field_mask = ((1u16 << depth) - 1) as u8;
+            for (x, pixel) in source_pixels.into_iter().enumerate() {
+                let bit = x as u32 * u32::from(depth);
+                let shift = 8 - u32::from(depth) - (bit & 7);
+                pixels[(bit / 8) as usize] |= (pixel & field_mask) << shift;
+            }
+
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app.memory.add_region(PPC_HEAP_BASE, pixels);
+            ppc_app.heap_cursor = PPC_HEAP_BASE + row_bytes * HEIGHT;
+            ppc_app.gworlds.push(PpcGWorldRecord {
+                port: PPC_MAIN_GWORLD,
+                pixmap_handle: 0,
+                pixmap: 0,
+                base_addr: PPC_HEAP_BASE,
+                gdevice: PPC_MAIN_GDEVICE,
+                width: WIDTH,
+                height: HEIGHT,
+                depth: u32::from(depth),
+                row_bytes,
+                pixels_locked: false,
+                pixels_no_purge: false,
+            });
+            let (mut device_clut, _) =
+                TrapDispatcher::standard_mac_indexed_clut(depth).expect("standard indexed depth");
+            device_clut[0][0] = 0xfffe;
+            let mut color_manager_clut = device_clut;
+            color_manager_clut[0][1] = 0xfffd;
+            ppc_app.screen_clut = device_clut;
+            ppc_app.color_manager_clut = color_manager_clut;
+            ppc_app.device_gamma = crate::display::linear_display_gamma();
+
+            let config = FixtureRunnerConfig::default()
+                .with_screen_depth(depth)
+                .expect("packed indexed mode");
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
+            let mut ppc_app = app.ppc.take().expect("PPC app");
+            runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
+
+            let (base, host_row_bytes, width, height, host_depth) = runner.dispatcher.screen_mode;
+            assert_eq!(
+                (width, height, host_depth),
+                (CANVAS_WIDTH as u16, CANVAS_HEIGHT as u16, depth)
+            );
+            assert_eq!(
+                host_row_bytes,
+                CANVAS_WIDTH * u32::from(depth) / 8,
+                "{depth}bpp packed canvas stride"
+            );
+            assert_eq!(runner.dispatcher.device_clut, device_clut);
+            assert_eq!(runner.dispatcher.color_manager_clut, color_manager_clut);
+            assert_eq!(
+                runner.dispatcher.device_gamma,
+                crate::display::linear_display_gamma()
+            );
+            let gdevice = runner.bus.read_long(runner.dispatcher.main_gdevice_handle);
+            let pixmap = runner.bus.read_long(runner.bus.read_long(gdevice + 22));
+            let color_table = runner.bus.read_long(runner.bus.read_long(pixmap + 42));
+            assert_eq!(runner.bus.read_word(color_table + 6), (1u16 << depth) - 1);
+            for index in [0u32, (1u32 << depth) - 1] {
+                let entry = color_table + 8 + index * 8;
+                assert_eq!(
+                    [
+                        runner.bus.read_word(entry + 2),
+                        runner.bus.read_word(entry + 4),
+                        runner.bus.read_word(entry + 6),
+                    ],
+                    device_clut[index as usize],
+                    "{depth}bpp host GDevice CLUT entry {index}"
+                );
+            }
+
+            let pixel_at = |x: u32| {
+                let bit = x * u32::from(depth);
+                let packed = runner
+                    .bus
+                    .read_byte(base + DESTINATION_Y * host_row_bytes + bit / 8);
+                let shift = 8 - u32::from(depth) - (bit & 7);
+                (packed >> shift) & field_mask
+            };
+            assert_eq!(pixel_at(DESTINATION_X - 1), field_mask);
+            for (offset, expected) in source_pixels.into_iter().enumerate() {
+                assert_eq!(
+                    pixel_at(DESTINATION_X + offset as u32),
+                    expected,
+                    "{depth}bpp source pixel {offset}"
+                );
+            }
+            assert_eq!(pixel_at(DESTINATION_X + WIDTH), field_mask);
+        }
     }
 
     #[test]

@@ -706,8 +706,14 @@ impl super::TrapDispatcher {
         found.then_some(best_index)
     }
 
-    fn fb_pixel_index_for_rgb_in_ctab(bus: &MacMemoryBus, ctab: u32, rgb: [u16; 3]) -> Option<u8> {
-        let count = u32::from(bus.read_word(ctab + 6)).min(255) + 1;
+    fn fb_pixel_index_for_rgb_in_ctab_with_entry_count(
+        bus: &MacMemoryBus,
+        ctab: u32,
+        rgb: [u16; 3],
+        entry_count: usize,
+    ) -> Option<u8> {
+        let entry_count = entry_count.clamp(1, 256);
+        let count = (u32::from(bus.read_word(ctab + 6)).min(255) + 1).min(entry_count as u32);
         let device_table = (bus.read_word(ctab + 4) & 0x8000) != 0;
 
         // Imaging With QuickDraw 1994 p. 4-82 describes inverse-table
@@ -715,8 +721,9 @@ impl super::TrapDispatcher {
         // values. Keep canonical endpoints pinned when the active table has
         // the standard white/black entries, then prefer exact matches before
         // falling back to nearest Euclidean distance in 16-bit RGB space.
-        if rgb == [0, 0, 0] && Self::ctab_value_luma(bus, ctab, 255) == Some(0) {
-            return Some(255);
+        let terminal_index = (entry_count - 1) as u8;
+        if rgb == [0, 0, 0] && Self::ctab_value_luma(bus, ctab, terminal_index) == Some(0) {
+            return Some(terminal_index);
         }
         if rgb == [0xFFFF, 0xFFFF, 0xFFFF]
             && Self::ctab_value_luma(bus, ctab, 0) == Some(0xFFFF * 3)
@@ -733,7 +740,7 @@ impl super::TrapDispatcher {
             } else {
                 bus.read_word(entry)
             };
-            if value > 255 {
+            if usize::from(value) >= entry_count {
                 continue;
             }
             let entry_rgb = [
@@ -760,6 +767,10 @@ impl super::TrapDispatcher {
         best_index
     }
 
+    fn fb_pixel_index_for_rgb_in_ctab(bus: &MacMemoryBus, ctab: u32, rgb: [u16; 3]) -> Option<u8> {
+        Self::fb_pixel_index_for_rgb_in_ctab_with_entry_count(bus, ctab, rgb, 256)
+    }
+
     pub(crate) fn fb_pixel_index_for_rgb(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
         let ctab = Self::active_gdevice_ctab(bus)?;
         Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, rgb)
@@ -771,6 +782,15 @@ impl super::TrapDispatcher {
     ) -> Option<u8> {
         let ctab = Self::main_gdevice_ctab(bus)?;
         Self::fb_pixel_index_for_rgb_in_ctab(bus, ctab, rgb)
+    }
+
+    fn fb_main_screen_pixel_index_for_rgb_with_entry_count(
+        bus: &MacMemoryBus,
+        rgb: [u16; 3],
+        entry_count: usize,
+    ) -> Option<u8> {
+        let ctab = Self::main_gdevice_ctab(bus)?;
+        Self::fb_pixel_index_for_rgb_in_ctab_with_entry_count(bus, ctab, rgb, entry_count)
     }
 
     /// Read back the RGB a pixel value resolves to through a device colour
@@ -892,15 +912,38 @@ impl super::TrapDispatcher {
         Self::best_luma_pixel_index(bus, ctab, false).unwrap_or(255)
     }
 
-    fn logical_mono_pixel_indexes(bus: &MacMemoryBus) -> (u8, u8) {
-        (
-            Self::logical_white_pixel_index(bus),
-            Self::logical_black_pixel_index(bus),
-        )
+    pub(crate) fn fb_get_pixel_index(
+        bus: &MacMemoryBus,
+        screen_base: u32,
+        row_bytes: u32,
+        pixel_size: u16,
+        screen_width: i16,
+        screen_height: i16,
+        x: i16,
+        y: i16,
+    ) -> Option<u8> {
+        if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
+            return None;
+        }
+        match pixel_size {
+            8 => Some(bus.read_byte(screen_base + y as u32 * row_bytes + x as u32)),
+            bits @ (1 | 2 | 4) => {
+                // QuickDraw lays the leftmost image bits into the high-order
+                // positions of each word; packed indexed pixels follow that
+                // same left-to-right ordering. Imaging With QuickDraw (1994),
+                // pp. 2-8 and 4-10--4-11.
+                let bits = u32::from(bits);
+                let pixels_per_byte = 8 / bits;
+                let byte_offset = y as u32 * row_bytes + x as u32 / pixels_per_byte;
+                let shift = 8 - bits - (x as u32 % pixels_per_byte) * bits;
+                Some((bus.read_byte(screen_base + byte_offset) >> shift) & ((1u8 << bits) - 1))
+            }
+            _ => None,
+        }
     }
 
     /// Set a single pixel in the framebuffer (screen coordinates).
-    /// Works for 1bpp, 4bpp, and 8bpp screen modes.
+    /// Works for 1bpp, 2bpp, 4bpp, and 8bpp screen modes.
     pub(crate) fn fb_set_pixel(
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -912,41 +955,22 @@ impl super::TrapDispatcher {
         y: i16,
         black: bool,
     ) {
-        if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
-            return;
-        }
-        if pixel_size == 8 {
-            let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-            bus.write_byte(
-                addr,
-                if black {
-                    Self::logical_black_pixel_index(bus)
-                } else {
-                    Self::logical_white_pixel_index(bus)
-                },
-            );
-        } else if pixel_size == 4 {
-            let addr = screen_base + (y as u32) * row_bytes + (x as u32 / 2);
-            let shift = if x & 1 == 0 { 4 } else { 0 };
-            let mask = 0x0F << shift;
-            let index = if black {
-                Self::logical_black_pixel_index(bus)
-            } else {
-                Self::logical_white_pixel_index(bus)
-            } & 0x0F;
-            let byte = bus.read_byte(addr);
-            bus.write_byte(addr, (byte & !mask) | (index << shift));
+        let pixel_index = if black {
+            Self::logical_black_pixel_index(bus)
         } else {
-            let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
-            let bit = 7 - (x as u32 % 8);
-            let addr = screen_base + byte_offset;
-            let b = bus.read_byte(addr);
-            if black {
-                bus.write_byte(addr, b | (1 << bit));
-            } else {
-                bus.write_byte(addr, b & !(1 << bit));
-            }
-        }
+            Self::logical_white_pixel_index(bus)
+        };
+        Self::fb_set_pixel_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+            pixel_index,
+        );
     }
 
     pub(crate) fn fb_set_pixel_index(
@@ -960,36 +984,26 @@ impl super::TrapDispatcher {
         y: i16,
         pixel_index: u8,
     ) {
-        if pixel_size == 4 {
-            if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
-                return;
-            }
-            let addr = screen_base + (y as u32) * row_bytes + (x as u32 / 2);
-            let shift = if x & 1 == 0 { 4 } else { 0 };
-            let mask = 0x0F << shift;
-            let byte = bus.read_byte(addr);
-            bus.write_byte(addr, (byte & !mask) | ((pixel_index & 0x0F) << shift));
-            return;
-        }
-        if pixel_size != 8 {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                x,
-                y,
-                pixel_index != 0,
-            );
-            return;
-        }
         if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
             return;
         }
-        let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-        bus.write_byte(addr, pixel_index);
+        match pixel_size {
+            8 => {
+                let addr = screen_base + y as u32 * row_bytes + x as u32;
+                bus.write_byte(addr, pixel_index);
+            }
+            bits @ (1 | 2 | 4) => {
+                let bits = u32::from(bits);
+                let pixels_per_byte = 8 / bits;
+                let addr = screen_base + y as u32 * row_bytes + x as u32 / pixels_per_byte;
+                let shift = 8 - bits - (x as u32 % pixels_per_byte) * bits;
+                let field_mask = ((1u16 << bits) - 1) as u8;
+                let mask = field_mask << shift;
+                let byte = bus.read_byte(addr);
+                bus.write_byte(addr, (byte & !mask) | ((pixel_index & field_mask) << shift));
+            }
+            _ => {}
+        }
     }
 
     pub(crate) fn fb_fill_rect_index(
@@ -1005,7 +1019,7 @@ impl super::TrapDispatcher {
         right: i16,
         pixel_index: u8,
     ) {
-        if pixel_size == 4 {
+        if matches!(pixel_size, 2 | 4) {
             for y in top..bottom {
                 for x in left..right {
                     Self::fb_set_pixel_index(
@@ -1337,19 +1351,21 @@ impl super::TrapDispatcher {
         if x < 0 || y < 0 || x >= screen_width || y >= screen_height {
             return false;
         }
-        if pixel_size == 8 {
-            let addr = screen_base + (y as u32) * row_bytes + (x as u32);
-            bus.read_byte(addr) == Self::logical_black_pixel_index(bus)
-        } else if pixel_size == 4 {
-            let addr = screen_base + (y as u32) * row_bytes + (x as u32 / 2);
-            let shift = if x & 1 == 0 { 4 } else { 0 };
-            ((bus.read_byte(addr) >> shift) & 0x0F) == (Self::logical_black_pixel_index(bus) & 0x0F)
-        } else {
-            let byte_offset = (y as u32) * row_bytes + (x as u32 / 8);
-            let bit = 7 - (x as u32 % 8);
-            let addr = screen_base + byte_offset;
-            (bus.read_byte(addr) & (1 << bit)) != 0
-        }
+        let field_mask = match pixel_size {
+            1 | 2 | 4 => ((1u16 << pixel_size) - 1) as u8,
+            8 => u8::MAX,
+            _ => return false,
+        };
+        Self::fb_get_pixel_index(
+            bus,
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+            x,
+            y,
+        ) == Some(Self::logical_black_pixel_index(bus) & field_mask)
     }
 
     fn visible_window_count(&self, bus: &MacMemoryBus) -> usize {
@@ -1689,7 +1705,7 @@ impl super::TrapDispatcher {
         let gh = glyph.height as usize;
         let metrics = synthetic_italic
             .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
-        let text_index = if matches!(pixel_size, 4 | 8) {
+        let text_index = if matches!(pixel_size, 2 | 4 | 8) {
             Some(pixel_index_override.unwrap_or_else(|| {
                 if black {
                     Self::logical_black_pixel_index(bus)
@@ -1729,10 +1745,17 @@ impl super::TrapDispatcher {
                     for dst_col in dst_start..dst_end {
                         let px = gx + dst_col + slant;
                         if let Some(text_index) = text_index {
-                            if px >= 0 && py >= 0 && px < screen_width && py < screen_height {
-                                let addr = screen_base + (py as u32) * row_bytes + (px as u32);
-                                bus.write_byte(addr, text_index);
-                            }
+                            Self::fb_set_pixel_index(
+                                bus,
+                                screen_base,
+                                row_bytes,
+                                pixel_size,
+                                screen_width,
+                                screen_height,
+                                px,
+                                py,
+                                text_index,
+                            );
                         } else {
                             Self::fb_set_pixel(
                                 bus,
@@ -2370,9 +2393,7 @@ impl super::TrapDispatcher {
         let font_id: i16 = 0;
         let font_size: i16 = 12;
         let metrics = get_font_metrics(font_id, font_size);
-        // Vertically center text: baseline = top_margin + ascent
-        let text_height = metrics.ascent + metrics.descent;
-        let text_y = (menu_bar_height - text_height) / 2 + metrics.ascent;
+        let text_y = Self::menu_bar_title_baseline(menu_bar_height);
 
         // Draw visible menu titles from the current menu list. InsertMenu
         // with beforeID=-1 installs a submenu/popup in the current menu
@@ -2538,6 +2559,13 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
+        let metrics = get_font_metrics(0, 12);
+        // Vertically center text: baseline = top margin + ascent.
+        let text_height = metrics.ascent + metrics.descent;
+        (menu_bar_height - text_height) / 2 + metrics.ascent
+    }
+
     pub(super) fn fb_draw_retro_computer_menu_mark(
         &self,
         bus: &mut MacMemoryBus,
@@ -2558,7 +2586,16 @@ impl super::TrapDispatcher {
         });
 
         let left = x;
-        let top = 3;
+        let metrics = get_font_metrics(0, 12);
+        // Align the artwork to the same centered system-font baseline as an
+        // ordinary title. This preserves the reference y=3 placement for a
+        // 20-pixel bar while following a live MBarHeight. Clip to the menu
+        // bar interior so a short bar cannot paint the window/desktop below.
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let top = Self::menu_bar_title_baseline(menu_bar_height)
+            .saturating_sub(metrics.ascent)
+            .saturating_add(1);
+        let menu_bar_bottom = menu_bar_height.saturating_sub(1).max(0);
         for (dy, row) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
             .into_iter()
             .enumerate()
@@ -2569,7 +2606,10 @@ impl super::TrapDispatcher {
                 }
                 let dst_x = left + dx as i16;
                 let dst_y = top + dy as i16;
-                if matches!(pixel_size, 4 | 8) {
+                if dst_y < 0 || dst_y >= menu_bar_bottom {
+                    continue;
+                }
+                if matches!(pixel_size, 2 | 4 | 8) {
                     Self::fb_set_pixel_index(
                         bus,
                         screen_base,
@@ -2734,7 +2774,7 @@ impl super::TrapDispatcher {
             }
             return;
         }
-        if !matches!(pixel_size, 4 | 8) || screen_w == 0 || screen_h == 0 {
+        if !matches!(pixel_size, 1 | 2 | 4 | 8) || screen_w == 0 || screen_h == 0 {
             if trace {
                 eprintln!(
                     "[BLIT] skip: screen mode mismatch (pixel_size={}, w={}, h={})",
@@ -2834,63 +2874,54 @@ impl super::TrapDispatcher {
         };
 
         // Read window content bounds (portRect in GrafPort at offset +16)
-        let wr_top = bus.read_word(port + 16) as i16;
-        let wr_left = bus.read_word(port + 18) as i16;
-        let wr_bottom = bus.read_word(port + 20) as i16;
-        let wr_right = bus.read_word(port + 22) as i16;
+        let wr_top = i32::from(bus.read_word(port + 16) as i16);
+        let wr_left = i32::from(bus.read_word(port + 18) as i16);
+        let wr_bottom = i32::from(bus.read_word(port + 20) as i16);
+        let wr_right = i32::from(bus.read_word(port + 22) as i16);
 
-        let w = (wr_right - wr_left) as u32;
-        let h = (wr_bottom - wr_top) as u32;
-        if w == 0 || h == 0 {
+        let w = wr_right - wr_left;
+        let h = wr_bottom - wr_top;
+        if w <= 0 || h <= 0 {
             return;
         }
+        let w = w as u32;
+        let h = h as u32;
 
         let (global_top, global_left, _, _) = self.window_global_port_rect(bus, port);
         let (pb_top, pb_left, pb_bottom, pb_right) = self.port_bounds_rect(bus, port);
+        let pb_top = i32::from(pb_top);
+        let pb_left = i32::from(pb_left);
+        let pb_bottom = i32::from(pb_bottom);
+        let pb_right = i32::from(pb_right);
 
-        let src_y_offset = (wr_top.wrapping_sub(pb_top)).max(0) as u32;
-        let src_x_offset = (wr_left.wrapping_sub(pb_left)).max(0) as u32;
-        let dst_y = global_top.max(0) as u32;
-        let dst_x = global_left.max(0) as u32;
-
-        // 1bpp source → 8bpp screen via per-pixel bit extraction.
-        // For each source bit, resolve logical white/black through the
-        // active GDevice ColorTable. Applications can repurpose 0xFF away
-        // from black while still expecting mono source bits to scan out black.
-        if port_pixel_size == 1 && pixel_size == 8 {
-            let (white_index, black_index) = Self::logical_mono_pixel_indexes(bus);
-            // Games may set portRect MUCH larger than the actual BitMap
-            // bounds (e.g. StuntCopter: portRect=(0,0..567,791) but
-            // BitMap=(0,0..261,426)). Clamp source reads to the BitMap
-            // bounds so we don't walk past valid source data into adjacent
-            // rows. Without this, the per-row stride bug produces
-            // horizontally-doubled or tiled content.
-            let bitmap_w = (pb_right - pb_left).max(0) as u32;
-            let bitmap_h = (pb_bottom - pb_top).max(0) as u32;
-            let row_count = h.min((screen_h as u32).saturating_sub(dst_y)).min(bitmap_h);
-            let col_count = w.min((screen_w as u32).saturating_sub(dst_x)).min(bitmap_w);
-            for row in 0..row_count {
-                let src_row_addr = port_base + (src_y_offset + row) * port_rb;
-                let dst_row_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-                for col in 0..col_count {
-                    let src_bit_x = src_x_offset + col;
-                    let src_byte = bus.read_byte(src_row_addr + src_bit_x / 8);
-                    let bit = (src_byte >> (7 - (src_bit_x & 7))) & 1;
-                    let dst_idx = if bit == 0 { white_index } else { black_index };
-                    bus.write_byte(dst_row_addr + col, dst_idx);
-                }
-            }
-            return;
-        }
-
-        // Same-depth fast path. Anything that's neither matched-depth nor
-        // 1bpp→8bpp falls through to a no-op.
-        if port_pixel_size != pixel_size as u32 {
-            return;
-        }
+        let src_y_offset = (wr_top - pb_top).max(0) as u32;
+        let src_x_offset = (wr_left - pb_left).max(0) as u32;
+        let dst_y = i32::from(global_top).max(0) as u32;
+        let dst_x = i32::from(global_left).max(0) as u32;
 
         let row_count = h.min((screen_h as u32).saturating_sub(dst_y));
         let col_count = w.min((screen_w as u32).saturating_sub(dst_x));
+        let bitmap_w = (pb_right - pb_left).max(0) as u32;
+        let bitmap_h = (pb_bottom - pb_top).max(0) as u32;
+        let (bounded_row_count, mut bounded_col_count) = if bitmap_w != 0 && bitmap_h != 0 {
+            (
+                row_count.min(bitmap_h.saturating_sub(src_y_offset)),
+                col_count.min(bitmap_w.saturating_sub(src_x_offset)),
+            )
+        } else {
+            // A few legacy HLE fixtures and malformed ports omit PixMap
+            // bounds while still providing a valid base, stride, and
+            // portRect. Retain their portRect fallback without weakening the
+            // bounds guard for well-formed guest PixMaps.
+            (row_count, col_count)
+        };
+        if matches!(port_pixel_size, 1 | 2 | 4 | 8) {
+            let source_row_pixels = port_rb.saturating_mul(8) / port_pixel_size;
+            bounded_col_count =
+                bounded_col_count.min(source_row_pixels.saturating_sub(src_x_offset));
+        }
+        let destination_row_pixels = screen_rb.saturating_mul(8) / u32::from(pixel_size);
+        bounded_col_count = bounded_col_count.min(destination_row_pixels.saturating_sub(dst_x));
 
         // Color QuickDraw treats PixMap pixels through their pmTable. When
         // HLE composites a front-window offscreen CGrafPort to the screen,
@@ -2916,11 +2947,12 @@ impl super::TrapDispatcher {
                     &dst_clut,
                     screen_ctab_handle,
                     8,
+                    8,
                 );
-                for row in 0..row_count {
+                for row in 0..bounded_row_count {
                     let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
                     let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-                    for col in 0..col_count {
+                    for col in 0..bounded_col_count {
                         let src_idx = bus.read_byte(src_addr + col);
                         bus.write_byte(dst_addr + col, translation[src_idx as usize]);
                     }
@@ -2929,26 +2961,111 @@ impl super::TrapDispatcher {
             }
         }
 
-        if port_pixel_size == 4 {
+        // Indexed windows can remain at their original PixMap depth while
+        // SetDepth changes the screen. Read and write each side using its own
+        // packing geometry, and translate colors through the active screen
+        // table whenever their depths differ. Imaging With QuickDraw (1994),
+        // pp. 4-27--4-28 and 4-81--4-82.
+        if matches!(port_pixel_size, 1 | 2 | 4 | 8) && matches!(pixel_size, 1 | 2 | 4 | 8) {
+            let row_count = bounded_row_count;
+            let col_count = bounded_col_count;
+            let screen_ctab_handle = Self::gdevice_ctab_handle(bus, self.main_gdevice_handle);
+            let packed_translation = {
+                let needs_mono_translation = port_pixel_size == 1 || pixel_size == 1;
+                let needs_depth_translation = port_pixel_size != u32::from(pixel_size);
+                let different_color_spaces = if is_cgraf_port {
+                    let src_ctab_seed = Self::ctab_seed(bus, port_ctab_handle);
+                    let dst_ctab_seed = Self::ctab_seed(bus, screen_ctab_handle);
+                    port_ctab_handle != 0
+                        && screen_ctab_handle != 0
+                        && port_ctab_handle != screen_ctab_handle
+                        && matches!((src_ctab_seed, dst_ctab_seed), (Some(src), Some(dst)) if src != 0 && src != dst)
+                        && self.device_clut == self.color_manager_clut
+                } else {
+                    false
+                };
+                if needs_mono_translation || needs_depth_translation || different_color_spaces {
+                    let src_clut = if port_pixel_size == 1 && !is_cgraf_port {
+                        let mut clut = [[0u16; 3]; 256];
+                        clut[0] = [0xffff, 0xffff, 0xffff];
+                        clut
+                    } else {
+                        self.read_port_clut(bus, port_ctab_handle)
+                    };
+                    let dst_clut = self.read_port_clut(bus, screen_ctab_handle);
+                    let mut translation = self.build_palette_translation(
+                        bus,
+                        &src_clut,
+                        &dst_clut,
+                        screen_ctab_handle,
+                        port_pixel_size,
+                        u32::from(pixel_size),
+                    );
+                    if port_pixel_size == 1 || pixel_size == 1 {
+                        let src_entry_count = 1usize << port_pixel_size;
+                        let dst_entry_count = 1usize << pixel_size;
+                        for (index, rgb) in src_clut.iter().take(src_entry_count).enumerate() {
+                            if let Some(pixel) =
+                                Self::fb_main_screen_pixel_index_for_rgb_with_entry_count(
+                                    bus,
+                                    *rgb,
+                                    dst_entry_count,
+                                )
+                            {
+                                translation[index] = pixel;
+                            }
+                        }
+                    }
+                    Some(translation)
+                } else {
+                    None
+                }
+            };
+            let src_pixels_per_byte = 8 / port_pixel_size;
+            let src_field_mask = ((1u16 << port_pixel_size) - 1) as u8;
+            let dst_pixel_size = u32::from(pixel_size);
+            let dst_pixels_per_byte = 8 / dst_pixel_size;
+            let dst_field_mask = ((1u16 << dst_pixel_size) - 1) as u8;
             for row in 0..row_count {
                 let src_row = port_base + (src_y_offset + row) * port_rb;
                 let dst_row = screen_base + (dst_y + row) * screen_rb;
                 for col in 0..col_count {
                     let src_x = src_x_offset + col;
-                    let src_byte = bus.read_byte(src_row + src_x / 2);
-                    let src_index = if src_x & 1 == 0 {
-                        src_byte >> 4
+                    let src_index = if port_pixel_size == 8 {
+                        bus.read_byte(src_row + src_x)
                     } else {
-                        src_byte & 0x0F
+                        let src_byte = bus.read_byte(src_row + src_x / src_pixels_per_byte);
+                        let src_shift =
+                            8 - port_pixel_size - (src_x % src_pixels_per_byte) * port_pixel_size;
+                        (src_byte >> src_shift) & src_field_mask
                     };
+                    // Window Manager compositing observes each PixMap's
+                    // pmTable just like indexed CopyBits. Restrict inverse
+                    // matching to the entries representable at the packed
+                    // destination depth; raw index copying is valid only when
+                    // the two tables identify the same color space. Imaging
+                    // With QuickDraw (1994), pp. 4-27--4-28 and 4-81--4-82.
+                    let dst_index = packed_translation
+                        .as_ref()
+                        .map_or(src_index, |translation| translation[src_index as usize]);
                     let dst_x = dst_x + col;
-                    let dst_addr = dst_row + dst_x / 2;
-                    let dst_shift = if dst_x & 1 == 0 { 4 } else { 0 };
-                    let dst_mask = 0x0F << dst_shift;
-                    let dst_byte = bus.read_byte(dst_addr);
-                    bus.write_byte(dst_addr, (dst_byte & !dst_mask) | (src_index << dst_shift));
+                    if dst_pixel_size == 8 {
+                        bus.write_byte(dst_row + dst_x, dst_index);
+                    } else {
+                        debug_assert!(dst_index <= dst_field_mask);
+                        let dst_addr = dst_row + dst_x / dst_pixels_per_byte;
+                        let dst_shift =
+                            8 - dst_pixel_size - (dst_x % dst_pixels_per_byte) * dst_pixel_size;
+                        let dst_mask = dst_field_mask << dst_shift;
+                        let dst_byte = bus.read_byte(dst_addr);
+                        bus.write_byte(dst_addr, (dst_byte & !dst_mask) | (dst_index << dst_shift));
+                    }
                 }
             }
+            return;
+        }
+
+        if port_pixel_size != pixel_size as u32 {
             return;
         }
 
@@ -3440,7 +3557,7 @@ impl super::TrapDispatcher {
             && !hardware_palette_active
         {
             let translation =
-                self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle, 8);
+                self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle, 8, 8);
             for row in 0..row_count {
                 let src_addr = candidate.base + row * candidate.row_bytes;
                 let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
@@ -4894,6 +5011,13 @@ mod redraw_chrome_tests {
     const CLIP_RGN: u32 = 0x182200;
     const WINDOW_VISIBLE_OFFSET: u32 = 110;
 
+    #[test]
+    fn menu_bar_title_baseline_tracks_live_height() {
+        assert_eq!(TrapDispatcher::menu_bar_title_baseline(12), 11);
+        assert_eq!(TrapDispatcher::menu_bar_title_baseline(20), 14);
+        assert_eq!(TrapDispatcher::menu_bar_title_baseline(30), 19);
+    }
+
     fn set_window_structure_rect(
         bus: &mut crate::memory::MacMemoryBus,
         window_ptr: u32,
@@ -5200,6 +5324,60 @@ mod redraw_chrome_tests {
         disp.restore_screen_rect_pixels(&mut bus, saved.0, saved.1, saved.2, saved.3, &saved.4);
         assert_eq!(bus.read_byte(screen_base), 0xA5);
         assert_eq!(bus.read_byte(screen_base + 1), 0x5A);
+    }
+
+    #[test]
+    fn indexed_framebuffer_helpers_preserve_adjacent_two_bit_pixels() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(1);
+        bus.write_byte(screen_base, 0b11_10_01_00);
+
+        TrapDispatcher::fb_set_pixel_index(&mut bus, screen_base, 1, 2, 4, 1, 1, 0, 1);
+        assert_eq!(bus.read_byte(screen_base), 0b11_01_01_00);
+
+        TrapDispatcher::fb_fill_rect_index(&mut bus, screen_base, 1, 2, 4, 1, 0, 2, 1, 4, 2);
+        assert_eq!(bus.read_byte(screen_base), 0b11_01_10_10);
+        assert_eq!(
+            (0..4)
+                .map(|x| TrapDispatcher::fb_get_pixel_index(&bus, screen_base, 1, 2, 4, 1, x, 0,))
+                .collect::<Vec<_>>(),
+            vec![Some(3), Some(1), Some(2), Some(2)]
+        );
+    }
+
+    #[test]
+    fn two_bit_indexed_glyph_draw_writes_fields_not_whole_bytes() {
+        let (_disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(2);
+        bus.write_byte(screen_base, 0b01_01_01_01);
+        let glyph = super::Glyph {
+            width: 2,
+            height: 1,
+            advance: 2,
+            origin_x: 0,
+            origin_y: 0,
+            data_offset: 0,
+        };
+
+        TrapDispatcher::fb_draw_glyph_bitmap_with_slant(
+            &mut bus,
+            screen_base,
+            2,
+            2,
+            8,
+            1,
+            1,
+            0,
+            &glyph,
+            &[0xff, 0xff],
+            None,
+            0,
+            Some(3),
+            true,
+        );
+
+        assert_eq!(bus.read_byte(screen_base), 0b01_11_11_01);
+        assert_eq!(bus.read_byte(screen_base + 1), 0x00);
     }
 
     #[test]
@@ -6859,11 +7037,146 @@ mod redraw_chrome_tests {
     }
 
     #[test]
+    fn redraw_chrome_blit_1bpp_to_1bpp_preserves_odd_edges_and_padding() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(8);
+        disp.screen_mode = (screen_base, 4, 16, 1, 1);
+        let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(1).unwrap();
+        disp.color_manager_clut = screen_clut;
+        disp.device_clut = screen_clut;
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let offscreen_base = bus.alloc(8);
+        bus.write_long(PORT_PTR + 2, offscreen_base);
+        bus.write_word(PORT_PTR + 6, 3);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, (-1i16) as u16);
+        bus.write_word(PORT_PTR + 12, 1);
+        bus.write_word(PORT_PTR + 14, 9);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 1);
+        bus.write_word(PORT_PTR + 22, 8);
+        let source = [0xad, 0x7f, 0xcd];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 8, 0xaa);
+        disp.front_window = PORT_PTR;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![0xad, 0x2a, 0xaa, 0xaa]);
+        assert_eq!(bus.read_bytes(screen_base + 4, 4), vec![0xaa; 4]);
+        assert_eq!(bus.read_bytes(offscreen_base, 3), source);
+    }
+
+    #[test]
+    fn redraw_chrome_blit_1bpp_to_2bpp_uses_destination_packing_and_palette() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(8);
+        disp.screen_mode = (screen_base, 4, 12, 1, 2);
+        let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
+        disp.color_manager_clut = screen_clut;
+        disp.device_clut = screen_clut;
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let offscreen_base = bus.alloc(8);
+        bus.write_long(PORT_PTR + 2, offscreen_base);
+        bus.write_word(PORT_PTR + 6, 3);
+        bus.write_word(PORT_PTR + 8, 0);
+        bus.write_word(PORT_PTR + 10, (-1i16) as u16);
+        bus.write_word(PORT_PTR + 12, 1);
+        bus.write_word(PORT_PTR + 14, 9);
+        bus.write_word(PORT_PTR + 16, 0);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 20, 1);
+        bus.write_word(PORT_PTR + 22, 8);
+        let source = [0xad, 0x7f, 0xcd];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 8, 0xaa);
+        disp.front_window = PORT_PTR;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        let expected = [0u8, 3, 0, 3, 3, 0, 3, 0];
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, screen_base, 4, 2, 12, 1, 0, 0),
+            Some(2)
+        );
+        for (offset, expected) in expected.into_iter().enumerate() {
+            assert_eq!(
+                TrapDispatcher::fb_get_pixel_index(
+                    &bus,
+                    screen_base,
+                    4,
+                    2,
+                    12,
+                    1,
+                    offset as i16 + 1,
+                    0,
+                ),
+                Some(expected)
+            );
+        }
+        for x in 9..12 {
+            assert_eq!(
+                TrapDispatcher::fb_get_pixel_index(&bus, screen_base, 4, 2, 12, 1, x, 0),
+                Some(2)
+            );
+        }
+        assert_eq!(bus.read_byte(screen_base + 3), 0xaa);
+        assert_eq!(bus.read_bytes(screen_base + 4, 4), vec![0xaa; 4]);
+        assert_eq!(bus.read_bytes(offscreen_base, 3), source);
+    }
+
+    #[test]
+    fn redraw_chrome_blit_2bpp_to_1bpp_translates_colors_and_preserves_canaries() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+        let screen_base = bus.alloc(8);
+        disp.screen_mode = (screen_base, 4, 16, 1, 1);
+        let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(1).unwrap();
+        disp.color_manager_clut = screen_clut;
+        disp.device_clut = screen_clut;
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let (src_clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
+        let src_ctab_handle = make_ctab_handle(&mut bus, &src_clut, 0x2000_0002);
+        let offscreen_base = bus.alloc(8);
+        let pixmap_handle =
+            install_8bpp_cgrafport(&mut bus, offscreen_base, 4, 10, 1, src_ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 8, (-1i16) as u16);
+        bus.write_word(pixmap + 12, 9);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(pixmap + 36, 2);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 22, 8);
+        let source = [0x8c, 0xf3, 0x2a, 0xcd];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 8, 0xaa);
+        disp.front_window = PORT_PTR;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![0xad, 0x2a, 0xaa, 0xaa]);
+        assert_eq!(bus.read_bytes(screen_base + 4, 4), vec![0xaa; 4]);
+        assert_eq!(bus.read_bytes(offscreen_base, 4), source);
+    }
+
+    #[test]
     fn redraw_chrome_blit_8bpp_to_8bpp_translates_port_ctab_to_screen() {
         let (mut disp, _cpu, mut bus) = setup_with_port();
 
-        let screen_base = bus.alloc(64 * 64);
-        disp.screen_mode = (screen_base, 64, 64, 64, 8);
+        let screen_base = bus.alloc(70 * 64);
+        disp.screen_mode = (screen_base, 70, 70, 64, 8);
         bus.write_long(0x0824, screen_base);
 
         let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
@@ -6877,11 +7190,13 @@ mod redraw_chrome_tests {
 
         let offscreen_base = bus.alloc(64 * 64);
         install_8bpp_cgrafport(&mut bus, offscreen_base, 64, 64, 64, src_ctab_handle);
+        bus.write_word(PORT_PTR + 22, 70);
 
         bus.write_byte(offscreen_base + 5 * 64 + 10, 42);
         bus.write_byte(offscreen_base + 5 * 64 + 11, 8);
-        bus.write_byte(screen_base + 5 * 64 + 10, 0xAA);
-        bus.write_byte(screen_base + 5 * 64 + 11, 0xAA);
+        bus.write_byte(screen_base + 5 * 70 + 10, 0xAA);
+        bus.write_byte(screen_base + 5 * 70 + 11, 0xAA);
+        bus.fill_bytes(screen_base + 5 * 70 + 64, 6, 0xA5);
 
         disp.front_window = PORT_PTR;
         disp.window_bounds = (0, 0, 64, 64);
@@ -6890,14 +7205,19 @@ mod redraw_chrome_tests {
         disp.blit_window_to_screen(&mut bus);
 
         assert_eq!(
-            bus.read_byte(screen_base + 5 * 64 + 10),
+            bus.read_byte(screen_base + 5 * 70 + 10),
             7,
             "8bpp window blit must translate source CTab index 42 to the screen index for its RGB"
         );
         assert_eq!(
-            bus.read_byte(screen_base + 5 * 64 + 11),
+            bus.read_byte(screen_base + 5 * 70 + 11),
             8,
             "same-RGB entries should remain stable through the translation table"
+        );
+        assert_eq!(
+            bus.read_bytes(screen_base + 5 * 70 + 64, 6),
+            vec![0xA5; 6],
+            "an oversized portRect must not read past the source PixMap bounds"
         );
     }
 
@@ -6930,6 +7250,283 @@ mod redraw_chrome_tests {
             bus.read_bytes(screen_base + 4, 4),
             vec![0x00, 0x00, 0x00, 0x00]
         );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_2bpp_to_2bpp_copies_packed_pixels() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(2 * 2);
+        disp.screen_mode = (screen_base, 2, 8, 2, 2);
+        bus.write_long(0x0824, screen_base);
+
+        let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
+        let ctab_handle = make_ctab_handle(&mut bus, &clut, 2);
+        // Reserve more than the four visible bytes: a four-byte allocation is
+        // the in-memory shape of a classic Handle and the PixMap base resolver
+        // intentionally treats it as one.  The extra guard bytes keep this
+        // fixture focused on packed-pixel copying.
+        let offscreen_base = bus.alloc(2 * 2 + 4);
+        let pixmap_handle = install_8bpp_cgrafport(&mut bus, offscreen_base, 2, 8, 2, ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(pixmap + 36, 2);
+
+        bus.write_bytes(offscreen_base, &[0b00_01_10_11, 0b11_10_01_00]);
+        bus.fill_bytes(screen_base, 2 * 2, 0xaa);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 2, 8);
+        disp.window_proc_id = 1;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 2),
+            vec![0b00_01_10_11, 0b11_10_01_00]
+        );
+        assert_eq!(bus.read_bytes(screen_base + 2, 2), vec![0x00, 0x00]);
+    }
+
+    #[test]
+    fn redraw_chrome_blit_2bpp_clamps_oversized_port_rect_to_pixmap_bounds() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(8);
+        disp.screen_mode = (screen_base, 4, 12, 1, 2);
+        bus.write_long(0x0824, screen_base);
+        let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).unwrap();
+        disp.color_manager_clut = clut;
+        disp.device_clut = clut;
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let ctab_handle = make_ctab_handle(&mut bus, &clut, 2);
+        let offscreen_base = bus.alloc(8);
+        let pixmap_handle = install_8bpp_cgrafport(&mut bus, offscreen_base, 3, 8, 1, ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(pixmap + 36, 2);
+        bus.write_word(PORT_PTR + 22, 12);
+        let source = [0b00_01_10_11, 0b11_10_01_00, 0xcd];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 8, 0xaa);
+        disp.front_window = PORT_PTR;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 4),
+            vec![source[0], source[1], 0xaa, 0xaa]
+        );
+        assert_eq!(bus.read_bytes(screen_base + 4, 4), vec![0xaa; 4]);
+        assert_eq!(bus.read_bytes(offscreen_base, 3), source);
+    }
+
+    #[test]
+    fn window_blit_clamps_extreme_bounds_to_indexed_source_and_destination_rows() {
+        for depth in [1u16, 2, 4, 8] {
+            let (mut disp, _cpu, mut bus) = setup_with_port();
+            let screen_base = bus.alloc(8);
+            disp.screen_mode = (screen_base, 1, 16, 1, depth);
+            bus.write_long(0x0824, screen_base);
+            let (screen_clut, _) = TrapDispatcher::standard_mac_indexed_clut(depth).unwrap();
+            disp.color_manager_clut = screen_clut;
+            disp.device_clut = screen_clut;
+            let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+            bus.write_long(0x08A4, gdevice_handle);
+            bus.write_long(0x0CC8, gdevice_handle);
+            let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
+
+            let (source_ctab_handle, source_pixel, expected_first) = if depth == 8 {
+                let mut source_clut = screen_clut;
+                source_clut[42] = screen_clut[7];
+                (make_ctab_handle(&mut bus, &source_clut, 0x1234_5678), 42, 7)
+            } else {
+                (screen_ctab_handle, 0, 0)
+            };
+            let offscreen_base = bus.alloc(8);
+            let pixmap_handle =
+                install_8bpp_cgrafport(&mut bus, offscreen_base, 1, 16, 1, source_ctab_handle);
+            let pixmap = bus.read_long(pixmap_handle);
+            bus.write_word(pixmap + 32, depth);
+            bus.write_word(pixmap + 36, depth);
+            if depth == 1 {
+                // Exercise the full signed QuickDraw coordinate span. The
+                // declared geometry is deliberately much wider than either
+                // one-byte row and must not overflow i16 arithmetic.
+                bus.write_word(pixmap + 8, i16::MIN as u16);
+                bus.write_word(pixmap + 12, i16::MAX as u16);
+                bus.write_word(PORT_PTR + 18, i16::MIN as u16);
+                bus.write_word(PORT_PTR + 22, i16::MAX as u16);
+            }
+            let source = [source_pixel, 0xCD, 0xCD, 0xCD];
+            bus.write_bytes(offscreen_base, &source);
+            bus.fill_bytes(screen_base, 8, 0xAA);
+            disp.front_window = PORT_PTR;
+
+            disp.blit_window_to_screen(&mut bus);
+
+            assert_eq!(
+                bus.read_byte(screen_base),
+                expected_first,
+                "{depth}bpp blit should still copy the representable first row byte"
+            );
+            assert_eq!(
+                bus.read_bytes(screen_base + 1, 7),
+                vec![0xAA; 7],
+                "{depth}bpp destination padding must remain untouched"
+            );
+            assert_eq!(bus.read_bytes(offscreen_base, 4), source);
+        }
+    }
+
+    #[test]
+    fn redraw_chrome_blit_2bpp_translates_different_pixmap_tables() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(2);
+        disp.screen_mode = (screen_base, 2, 8, 1, 2);
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdevice_handle);
+        let screen_ctab = bus.read_long(screen_ctab_handle);
+        bus.write_long(screen_ctab, 0x2222_0002);
+
+        let mut dst_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        dst_clut[1] = [0x1234, 0x5678, 0x9abc];
+        disp.color_manager_clut = dst_clut;
+        disp.device_clut = dst_clut;
+        let mut src_clut = dst_clut;
+        src_clut[3] = dst_clut[1];
+        src_clut[1] = [0xffff, 0, 0];
+        let src_ctab_handle = make_ctab_handle(&mut bus, &src_clut, 0x1111_0002);
+
+        let offscreen_base = bus.alloc(2);
+        let pixmap_handle =
+            install_8bpp_cgrafport(&mut bus, offscreen_base, 2, 8, 1, src_ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(pixmap + 36, 2);
+        bus.write_bytes(offscreen_base, &[0xff, 0xff]);
+        bus.fill_bytes(screen_base, 2, 0xaa);
+        disp.front_window = PORT_PTR;
+        disp.window_bounds = (0, 0, 1, 8);
+        disp.window_proc_id = 1;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(
+            bus.read_bytes(screen_base, 2),
+            vec![0x55, 0x55],
+            "source index 3 must map to the active 2bpp destination's exact color at index 1"
+        );
+    }
+
+    #[test]
+    fn redraw_chrome_blit_2bpp_to_8bpp_translates_pixels_without_touching_padding() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(16);
+        disp.screen_mode = (screen_base, 16, 12, 1, 8);
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let mut dst_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let destination_indices = [10u8, 20, 30, 40];
+        let colors = [
+            [0x1111, 0x2222, 0x3333],
+            [0x4444, 0x5555, 0x6666],
+            [0x7777, 0x8888, 0x9999],
+            [0xaaaa, 0xbbbb, 0xcccc],
+        ];
+        for (index, color) in destination_indices.into_iter().zip(colors) {
+            dst_clut[index as usize] = color;
+        }
+        disp.color_manager_clut = dst_clut;
+        disp.device_clut = dst_clut;
+
+        let mut src_clut = [[0u16; 3]; 256];
+        src_clut[..4].copy_from_slice(&colors);
+        let src_ctab_handle = make_ctab_handle(&mut bus, &src_clut, 0x2000_0002);
+        let offscreen_base = bus.alloc(8);
+        let pixmap_handle =
+            install_8bpp_cgrafport(&mut bus, offscreen_base, 3, 6, 1, src_ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 8, (-1i16) as u16);
+        bus.write_word(pixmap + 12, 5);
+        bus.write_word(pixmap + 32, 2);
+        bus.write_word(pixmap + 36, 2);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 22, 5);
+
+        let source = [0b11_00_01_10, 0b11_01_00_00, 0xcc];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 16, 0xa5);
+        disp.front_window = PORT_PTR;
+        disp.window_proc_id = 1;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(bus.read_byte(screen_base), 0xa5);
+        assert_eq!(bus.read_bytes(screen_base + 1, 5), vec![10, 20, 30, 40, 20]);
+        assert_eq!(bus.read_bytes(screen_base + 6, 10), vec![0xa5; 10]);
+        assert_eq!(bus.read_bytes(offscreen_base, 3), source);
+    }
+
+    #[test]
+    fn redraw_chrome_blit_4bpp_to_2bpp_preserves_odd_edges_and_row_padding() {
+        let (mut disp, _cpu, mut bus) = setup_with_port();
+
+        let screen_base = bus.alloc(8);
+        disp.screen_mode = (screen_base, 4, 12, 1, 2);
+        bus.write_long(0x0824, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+
+        let colors = [
+            [0xffff, 0xffff, 0xffff],
+            [0xffff, 0, 0],
+            [0, 0xffff, 0],
+            [0, 0, 0],
+        ];
+        let mut dst_clut = [[0u16; 3]; 256];
+        dst_clut[..4].copy_from_slice(&colors);
+        disp.color_manager_clut = dst_clut;
+        disp.device_clut = dst_clut;
+
+        let mut src_clut = [[0u16; 3]; 256];
+        for (index, color) in src_clut[..16].iter_mut().enumerate() {
+            *color = colors[index % colors.len()];
+        }
+        let src_ctab_handle = make_ctab_handle(&mut bus, &src_clut, 0x4000_0004);
+        let offscreen_base = bus.alloc(10);
+        let pixmap_handle =
+            install_8bpp_cgrafport(&mut bus, offscreen_base, 6, 10, 1, src_ctab_handle);
+        let pixmap = bus.read_long(pixmap_handle);
+        bus.write_word(pixmap + 8, (-1i16) as u16);
+        bus.write_word(pixmap + 12, 9);
+        bus.write_word(pixmap + 32, 4);
+        bus.write_word(pixmap + 36, 4);
+        bus.write_word(PORT_PTR + 18, 0);
+        bus.write_word(PORT_PTR + 22, 8);
+
+        let source = [0xf0, 0x12, 0x31, 0x23, 0x0f, 0xcd];
+        bus.write_bytes(offscreen_base, &source);
+        bus.fill_bytes(screen_base, 8, 0xaa);
+        disp.front_window = PORT_PTR;
+        disp.window_proc_id = 1;
+
+        disp.blit_window_to_screen(&mut bus);
+
+        assert_eq!(bus.read_bytes(screen_base, 4), vec![0x86, 0xdb, 0x2a, 0xaa]);
+        assert_eq!(bus.read_bytes(screen_base + 4, 4), vec![0xaa; 4]);
+        assert_eq!(bus.read_bytes(offscreen_base, 6), source);
     }
 
     #[test]

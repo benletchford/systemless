@@ -141,9 +141,9 @@ struct Cli {
     #[arg(long)]
     addressing_24_bit: bool,
 
-    /// Guest indexed display depth
-    #[arg(long, value_name = "BITS", default_value_t = 8, value_parser = parse_screen_depth)]
-    screen_depth: u16,
+    /// Override the guest framebuffer depth (defaults to 8-bit for 68K and 16-bit for PPC)
+    #[arg(long, value_name = "BITS", value_parser = parse_screen_depth)]
+    screen_depth: Option<u16>,
 
     /// Integer host-pixel scale (1 is one host pixel per guest pixel)
     #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_display_scale)]
@@ -159,9 +159,10 @@ struct Cli {
 fn parse_screen_depth(value: &str) -> Result<u16, String> {
     match value {
         "1" => Ok(1),
+        "2" => Ok(2),
         "4" => Ok(4),
         "8" => Ok(8),
-        _ => Err("screen depth must be 1, 4, or 8".to_string()),
+        _ => Err("screen depth must be 1, 2, 4, or 8".to_string()),
     }
 }
 
@@ -623,8 +624,8 @@ struct App {
     arrows_as_numpad: bool,
     /// Start the guest with 24-bit rather than 32-bit address translation.
     addressing_24_bit: bool,
-    /// Indexed guest framebuffer depth.
-    screen_depth: u16,
+    /// Explicit guest framebuffer depth, or architecture defaults.
+    screen_depth: Option<u16>,
     /// Explicit integer host-pixel scale. Physical sizing keeps compositor
     /// DPI from silently changing the requested guest-to-host ratio.
     display_scale: u32,
@@ -654,7 +655,7 @@ impl App {
             arrows_as_numpad,
             native_integrations,
             addressing_24_bit,
-            screen_depth,
+            Some(screen_depth),
             1,
         )
     }
@@ -664,7 +665,7 @@ impl App {
         arrows_as_numpad: bool,
         native_integrations: bool,
         addressing_24_bit: bool,
-        screen_depth: u16,
+        screen_depth: Option<u16>,
         display_scale: u32,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
@@ -806,8 +807,12 @@ impl App {
             return;
         }
 
-        let mut runner =
-            game::new_runner_with_configuration(!self.addressing_24_bit, self.screen_depth);
+        let mut runner = match self.screen_depth {
+            Some(screen_depth) => {
+                game::new_runner_with_configuration(!self.addressing_24_bit, screen_depth)
+            }
+            None => game::new_runner_with_addressing(!self.addressing_24_bit),
+        };
         #[cfg(target_os = "macos")]
         if self.native_integrations {
             runner.set_menu_bar_policy(MenuBarPolicy::ForceHidden);
@@ -2362,7 +2367,7 @@ fn run_gui(
     arrows_as_numpad: bool,
     native_integrations: bool,
     addressing_24_bit: bool,
-    screen_depth: u16,
+    screen_depth: Option<u16>,
     display_scale: u32,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
@@ -2483,13 +2488,16 @@ fn run_headless(
     game_path: &std::path::Path,
     max_instructions: usize,
     addressing_24_bit: bool,
-    screen_depth: u16,
+    screen_depth: Option<u16>,
     script: &[ScriptedInput],
 ) {
     eprintln!("[HEADLESS] Starting: {}", game_path.display());
     eprintln!("[HEADLESS] Max instructions: {}", max_instructions);
 
-    let mut runner = game::new_runner_with_configuration(!addressing_24_bit, screen_depth);
+    let mut runner = match screen_depth {
+        Some(screen_depth) => game::new_runner_with_configuration(!addressing_24_bit, screen_depth),
+        None => game::new_runner_with_addressing(!addressing_24_bit),
+    };
     let app = game::load_game_from_path(&mut runner, game_path).expect("Failed to load game");
     let mut save_store = DesktopSaveStore::for_loaded_archive(game_path, &mut runner);
     eprintln!(
@@ -3043,7 +3051,7 @@ mod tests {
         assert!(!cli.literal_arrows);
         assert!(cli.prefer_powerpc);
         assert!(cli.addressing_24_bit);
-        assert_eq!(cli.screen_depth, 4);
+        assert_eq!(cli.screen_depth, Some(4));
         assert_eq!(cli.display_scale, 2);
         assert_eq!(cli.max_instructions, Some(1234));
     }
@@ -3053,6 +3061,7 @@ mod tests {
         let cli = Cli::try_parse_from(["systemless", "game.sit"])
             .expect("default display scale should parse");
         assert_eq!(cli.display_scale, 1);
+        assert_eq!(cli.screen_depth, None);
         assert_eq!(
             guest_scaled_physical_size(800, 600, cli.display_scale),
             winit::dpi::PhysicalSize::new(800, 600)
@@ -3068,7 +3077,15 @@ mod tests {
         let cli = Cli::try_parse_from(["systemless", "--screen-depth", "1", "game.sit"])
             .expect("one-bit display depth should parse");
 
-        assert_eq!(cli.screen_depth, 1);
+        assert_eq!(cli.screen_depth, Some(1));
+    }
+
+    #[test]
+    fn cli_accepts_two_bit_screen_depth() {
+        let cli = Cli::try_parse_from(["systemless", "--screen-depth", "2", "game.sit"])
+            .expect("two-bit display depth should parse");
+
+        assert_eq!(cli.screen_depth, Some(2));
     }
 
     #[test]

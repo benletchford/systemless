@@ -48,21 +48,29 @@ pub const MAX_INSTRUCTIONS_PER_FRAME: usize = 2_000_000;
 
 /// Create a new FixtureRunner with standard configuration.
 pub fn new_runner() -> FixtureRunner {
-    new_runner_with_configuration(true, 8)
+    new_runner_with_addressing(true)
 }
 
 /// Create a runner in either the default 32-bit addressing mode or classic
 /// 24-bit mode, where the upper address byte is ignored by memory accesses.
 pub fn new_runner_with_addressing(addressing_32_bit: bool) -> FixtureRunner {
-    new_runner_with_configuration(addressing_32_bit, 8)
+    let config = FixtureRunnerConfig {
+        load_address: 0x10000,
+        max_instructions: MAX_INSTRUCTIONS_PER_FRAME,
+        addressing_32_bit,
+        ..FixtureRunnerConfig::default()
+    };
+    FixtureRunner::new(RAM_SIZE as usize, config)
 }
 
-/// Create a standard runner with the requested indexed screen depth.
+/// Create a standard runner with one explicit indexed depth for both 68K and
+/// native PowerPC launches.
 pub fn new_runner_with_screen_depth(screen_depth: u16) -> FixtureRunner {
     new_runner_with_configuration(true, screen_depth)
 }
 
-/// Create a standard runner with explicit addressing and display modes.
+/// Create a standard runner with explicit addressing and one indexed display
+/// depth applied to both 68K and native PowerPC launches.
 pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16) -> FixtureRunner {
     let config = FixtureRunnerConfig {
         load_address: 0x10000,
@@ -72,7 +80,11 @@ pub fn new_runner_with_configuration(addressing_32_bit: bool, screen_depth: u16)
     }
     .with_screen_depth(screen_depth)
     .expect("frontend selected an unsupported screen depth");
-    FixtureRunner::new(RAM_SIZE as usize, config)
+    let mut runner = FixtureRunner::new(RAM_SIZE as usize, config);
+    runner
+        .set_powerpc_screen_depth(screen_depth)
+        .expect("frontend selected an unsupported PowerPC screen depth");
+    runner
 }
 
 /// Load an application from BinHex, MacBinary, StuffIt, web-pack, or raw
@@ -2267,7 +2279,7 @@ fn load_selected_executable(
             }
             let mut ppc_config =
                 crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
-            ppc_config.screen_depth = crate::runner::DEFAULT_POWERPC_SCREEN_DEPTH;
+            ppc_config.screen_depth = runner.configured_powerpc_screen_depth();
             let mut loaded = crate::loader::ppc::load_pef_application_with_config(pef, ppc_config)
                 .map_err(|error| {
                     format!(
@@ -3105,6 +3117,24 @@ fn read_u32_be(buf: &[u8], offset: &mut usize) -> Result<u32, String> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn frontend_runner_constructors_preserve_defaults_and_explicit_depths() {
+        let default_runner = new_runner();
+        assert_eq!(default_runner.configured_screen_depth(), 8);
+        assert_eq!(default_runner.configured_powerpc_screen_depth(), 16);
+
+        let addressed_default = new_runner_with_addressing(false);
+        assert_eq!(addressed_default.configured_screen_depth(), 8);
+        assert_eq!(addressed_default.configured_powerpc_screen_depth(), 16);
+        assert!(!addressed_default.bus().addressing_32_bit());
+
+        for depth in [1, 2, 4, 8] {
+            let runner = new_runner_with_screen_depth(depth);
+            assert_eq!(runner.configured_screen_depth(), depth);
+            assert_eq!(runner.configured_powerpc_screen_depth(), u32::from(depth));
+        }
+    }
 
     #[test]
     fn parallel_fork_decode_matches_the_sequential_loop() {
