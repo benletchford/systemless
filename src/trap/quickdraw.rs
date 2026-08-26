@@ -19939,6 +19939,13 @@ impl super::TrapDispatcher {
             Self::build_region_membership_cache(bus, vis_rgn_handle, clip_t, clip_b);
         let clip_membership =
             Self::build_region_membership_cache(bus, clip_rgn_handle, clip_t, clip_b);
+        // The copy rect was clipped to each region's bounding box above, so
+        // only a region with scan-line data can still exclude a pixel; a
+        // rectangular region needs no per-pixel test (and, uncached, that
+        // test re-read the region header for every pixel).
+        let vis_test = Self::region_needs_pixel_test(bus, vis_rgn_handle);
+        let clip_test = Self::region_needs_pixel_test(bus, clip_rgn_handle);
+        let mask_test = Self::region_needs_pixel_test(bus, mask_rgn);
 
         let trace_probes = if trace_menu_redraw_enabled() {
             trace_menu_probe_points()
@@ -20190,31 +20197,37 @@ impl super::TrapDispatcher {
                 {
                     continue;
                 }
-                if !Self::region_contains_point_cached(
-                    bus,
-                    vis_rgn_handle,
-                    vis_membership.as_ref(),
-                    dy,
-                    dx,
-                ) {
+                if vis_test
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        vis_rgn_handle,
+                        vis_membership.as_ref(),
+                        dy,
+                        dx,
+                    )
+                {
                     continue;
                 }
-                if !Self::region_contains_point_cached(
-                    bus,
-                    clip_rgn_handle,
-                    clip_membership.as_ref(),
-                    dy,
-                    dx,
-                ) {
+                if clip_test
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        clip_rgn_handle,
+                        clip_membership.as_ref(),
+                        dy,
+                        dx,
+                    )
+                {
                     continue;
                 }
-                if !Self::region_contains_point_cached(
-                    bus,
-                    mask_rgn,
-                    mask_membership.as_ref(),
-                    dy,
-                    dx,
-                ) {
+                if mask_test
+                    && !Self::region_contains_point_cached(
+                        bus,
+                        mask_rgn,
+                        mask_membership.as_ref(),
+                        dy,
+                        dx,
+                    )
+                {
                     continue;
                 }
 
@@ -21181,6 +21194,22 @@ impl super::TrapDispatcher {
         *clip_b = (*clip_b).min(bottom);
         *clip_r = (*clip_r).min(right);
         *clip_b > *clip_t && *clip_r > *clip_l
+    }
+
+    /// Whether a region can exclude pixels that lie inside its bounding
+    /// box. A region whose data is only the 10-byte header is exactly its
+    /// bounding rectangle (Inside Macintosh Volume I, I-141), so a caller
+    /// that already clipped to that rectangle can skip the per-pixel
+    /// membership test. An unreadable region keeps the test, which then
+    /// rejects every pixel as before.
+    fn region_needs_pixel_test(bus: &MacMemoryBus, rgn_handle: u32) -> bool {
+        if rgn_handle == 0 {
+            return false;
+        }
+        match Self::region_ptr_and_size(bus, rgn_handle) {
+            Some((_, rgn_size)) => rgn_size > REGION_HEADER_SIZE,
+            None => true,
+        }
     }
 
     pub(super) fn region_is_complex(bus: &MacMemoryBus, rgn_handle: u32) -> bool {
