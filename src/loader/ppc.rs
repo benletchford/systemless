@@ -312,6 +312,7 @@ pub const PPC_QD_TEXT_SIZE_SYSTEM: i16 = 0;
 const PPC_MENU_TITLE_ORIGIN_H: i16 = 18;
 const PPC_MENU_TITLE_HIT_LEFT: i16 = 11;
 const PPC_MENU_TITLE_SPACING: i16 = 13;
+const PPC_MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 const PPC_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
 const PPC_QD_PEN_MODE_PAT_COPY: i16 = 8;
 const PPC_CGRAF_PORT_PN_LOC_OFFSET: u32 = 48;
@@ -15703,36 +15704,56 @@ fn dispatch_supported_import(
             // menu records themselves. Preserve the current list Handle when
             // one exists, matching the manager-owned MenuList identity.
             if toolbox_startup.current_menu_bar != 0 {
-                *last_mem_error = ppc_replace_menu_list(
+                let mb_res_id = ppc_menu_list_definition(memory, toolbox_startup.current_menu_bar)
+                    .map(|menu_list| menu_list.mb_res_id)
+                    .unwrap_or_default();
+                *last_mem_error = ppc_replace_menu_list_definition(
                     memory,
                     heap_cursor,
                     heap_limit,
                     handles,
                     toolbox_startup.current_menu_bar,
-                    &[],
+                    &PpcMenuListDefinition {
+                        mb_res_id,
+                        ..PpcMenuListDefinition::default()
+                    },
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetMenuBar => {
             let source = cpu.gpr[3];
-            let Some(menus) = ppc_menu_list_handles(memory, source) else {
+            let Some(menu_list) = ppc_menu_list_definition(memory, source) else {
                 *last_mem_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::ReturnPreserve);
             };
-            let installed = ppc_alloc_menu_list_handle(
-                &menus,
+            if toolbox_startup.current_menu_bar == 0 {
+                toolbox_startup.current_menu_bar = ppc_alloc_menu_list_handle(
+                    &[],
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    free_handle_blocks,
+                );
+                if toolbox_startup.current_menu_bar == 0 {
+                    *last_mem_error = PPC_MEM_FULL_ERR;
+                    return Some(PpcImportAction::ReturnPreserve);
+                }
+            }
+            *last_mem_error = ppc_replace_menu_list_definition(
                 memory,
                 heap_cursor,
                 heap_limit,
                 handles,
-                free_handle_blocks,
+                toolbox_startup.current_menu_bar,
+                &menu_list,
             );
-            if installed == 0 {
-                *last_mem_error = PPC_MEM_FULL_ERR;
-            } else {
-                toolbox_startup.current_menu_bar = installed;
-                *last_mem_error = PPC_NO_ERR;
+            if *last_mem_error == PPC_NO_ERR {
+                let _ = memory.write_u32_be(
+                    crate::memory::globals::addr::MENU_LIST,
+                    toolbox_startup.current_menu_bar,
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -19358,6 +19379,51 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::InitMenus => {
             toolbox_startup.menus_initialized = true;
+            // Inside Macintosh Volume V (1986), pp. V-228--V-230: the first
+            // InitMenus call allocates the stable DynamicMenuList whose handle
+            // is published in the MenuList low-memory global. Later calls do
+            // not replace that manager-owned handle.
+            if toolbox_startup.current_menu_bar == 0 {
+                toolbox_startup.current_menu_bar = ppc_alloc_menu_list_handle(
+                    &[],
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    free_handle_blocks,
+                );
+                *last_mem_error = if toolbox_startup.current_menu_bar == 0 {
+                    PPC_MEM_FULL_ERR
+                } else {
+                    PPC_NO_ERR
+                };
+            } else {
+                // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104:
+                // InitMenus restores the standard MBDF and an empty menu list.
+                // Reinitialization reuses the existing MenuList handle.
+                *last_mem_error = ppc_replace_menu_list_definition(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    toolbox_startup.current_menu_bar,
+                    &PpcMenuListDefinition::default(),
+                );
+            }
+            if toolbox_startup.current_menu_bar != 0 {
+                let _ = memory.write_u32_be(
+                    crate::memory::globals::addr::MENU_LIST,
+                    toolbox_startup.current_menu_bar,
+                );
+                if !toolbox_startup.host_menu_bar_hidden {
+                    let _ = ppc_draw_menu_bar(
+                        memory,
+                        gworlds,
+                        toolbox_startup.current_menu_bar,
+                        screen_clut,
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEInit => {
@@ -61735,6 +61801,39 @@ struct PpcMenuItemDefinition {
     enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcMenuListEntry {
+    handle: u32,
+    value: i16,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PpcMenuListDefinition {
+    last_right: i16,
+    mb_res_id: i16,
+    regular: Vec<PpcMenuListEntry>,
+    menu_title_save: u32,
+    hierarchical: Vec<PpcMenuListEntry>,
+}
+
+impl PpcMenuListDefinition {
+    fn regular_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
+        self.regular.iter().map(|entry| entry.handle)
+    }
+
+    fn hierarchical_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
+        self.hierarchical.iter().map(|entry| entry.handle)
+    }
+
+    fn handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
+        self.regular_handles().chain(self.hierarchical_handles())
+    }
+
+    fn contains_handle(&self, handle: u32) -> bool {
+        self.handles().any(|candidate| candidate == handle)
+    }
+}
+
 fn ppc_menu_handle_bytes(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -62205,24 +62304,18 @@ fn ppc_menu_item_enabled(memory: &mut PpcSectionMem, menu_handle: u32, item: i16
 }
 
 fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_handle: u32) -> GuestMenuSnapshot {
-    let handles = ppc_menu_list_handles(memory, menu_list_handle).unwrap_or_default();
-    let mut submenu_ids = std::collections::HashSet::new();
-    for &menu_handle in &handles {
-        for item in 1..=ppc_count_menu_items(memory, menu_handle) as i16 {
-            let Some((address, len)) = ppc_menu_item(memory, menu_handle, item) else {
-                continue;
-            };
-            let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
-            if command == 0x1b {
-                let submenu_id = memory.read_u8(address + 3 + u32::from(len)).unwrap_or(0);
-                submenu_ids.insert(i16::from(submenu_id));
-            }
-        }
-    }
+    let menu_list = ppc_menu_list_definition(memory, menu_list_handle).unwrap_or_default();
+    let entries = menu_list
+        .regular_handles()
+        .map(|handle| (handle, false))
+        .chain(
+            menu_list
+                .hierarchical_handles()
+                .map(|handle| (handle, true)),
+        );
 
-    let menus = handles
-        .into_iter()
-        .filter_map(|menu_handle| {
+    let menus = entries
+        .filter_map(|(menu_handle, hierarchical)| {
             let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
             let id = memory.read_u16_be(menu)? as i16;
             let title_bytes = ppc_read_pascal_string(memory, menu + 14)?;
@@ -62232,7 +62325,6 @@ fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_handle: u32) ->
                 decode_mac_roman(&title_bytes)
             };
             let enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
-            let hierarchical = submenu_ids.contains(&id);
             let items = (1..=ppc_count_menu_items(memory, menu_handle) as i16)
                 .filter_map(|number| {
                     let (address, len) = ppc_menu_item(memory, menu_handle, number)?;
@@ -62347,7 +62439,7 @@ fn ppc_menu_handle_at_title_point(
 ) -> Option<(u32, i16)> {
     let initial_h = initial_point as u16 as i16;
     let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
-    for menu_handle in ppc_menu_list_handles(memory, menu_list_handle)? {
+    for menu_handle in ppc_menu_list_definition(memory, menu_list_handle)?.regular_handles() {
         let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
         let title = ppc_read_pascal_string(memory, menu + 14)?;
         let title_right = title_left
@@ -62588,11 +62680,11 @@ fn ppc_menu_select(
     input: PpcInputSnapshot,
 ) -> u32 {
     let initial_h = initial_point as u16 as i16;
-    let Some(menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
+    let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return 0;
     };
     let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
-    for menu_handle in menus {
+    for menu_handle in menu_list.regular_handles() {
         let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
@@ -62672,17 +62764,17 @@ fn ppc_get_menu_bar(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
-    let menus = if current_menu_bar == 0 {
-        Vec::new()
+    let menu_list = if current_menu_bar == 0 {
+        PpcMenuListDefinition::default()
     } else {
-        let Some(menus) = ppc_menu_list_handles(memory, current_menu_bar) else {
+        let Some(menu_list) = ppc_menu_list_definition(memory, current_menu_bar) else {
             *last_mem_error = PPC_PARAM_ERR;
             return 0;
         };
-        menus
+        menu_list
     };
-    let handle = ppc_alloc_menu_list_handle(
-        &menus,
+    let handle = ppc_alloc_menu_list_definition_handle(
+        &menu_list,
         memory,
         heap_cursor,
         heap_limit,
@@ -62705,19 +62797,44 @@ fn ppc_alloc_menu_list_handle(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
-    let count = menu_handles.len().min(u16::MAX as usize);
-    let mut menu_list = Vec::with_capacity(2 + count * 4);
-    menu_list.extend_from_slice(&(count as u16).to_be_bytes());
-    for handle in menu_handles.iter().take(count) {
-        menu_list.extend_from_slice(&handle.to_be_bytes());
-    }
+    let mut menu_list = PpcMenuListDefinition {
+        regular: menu_handles
+            .iter()
+            .take(PPC_MAX_MENU_LIST_ENTRIES)
+            .map(|handle| PpcMenuListEntry {
+                handle: *handle,
+                value: 0,
+            })
+            .collect(),
+        ..PpcMenuListDefinition::default()
+    };
+    ppc_relayout_menu_list(memory, &mut menu_list);
+    ppc_alloc_menu_list_definition_handle(
+        &menu_list,
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        free_handle_blocks,
+    )
+}
+
+fn ppc_alloc_menu_list_definition_handle(
+    menu_list: &PpcMenuListDefinition,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+) -> u32 {
+    let bytes = ppc_menu_list_bytes(menu_list);
     ppc_alloc_recyclable_handle_with_bytes(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         free_handle_blocks,
-        &menu_list,
+        &bytes,
     )
 }
 
@@ -62795,31 +62912,115 @@ fn ppc_get_new_mbar(
 }
 
 fn ppc_menu_list_handles(memory: &mut PpcSectionMem, menu_list_handle: u32) -> Option<Vec<u32>> {
+    Some(
+        ppc_menu_list_definition(memory, menu_list_handle)?
+            .handles()
+            .collect(),
+    )
+}
+
+fn ppc_menu_list_definition(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+) -> Option<PpcMenuListDefinition> {
     let list = memory
         .read_u32_be(menu_list_handle)
         .filter(|ptr| *ptr != 0)?;
-    let count = usize::from(memory.read_u16_be(list)?).min(1024);
-    let mut menus = Vec::with_capacity(count);
-    for index in 0..count {
-        let address = list.checked_add(2 + u32::try_from(index).ok()?.checked_mul(4)?)?;
-        menus.push(memory.read_u32_be(address)?);
+
+    // Inside Macintosh Volume V (1986), pp. V-228--V-230: DynamicMenuList
+    // has a six-byte header, six bytes per regular MenuRec, a six-byte
+    // hierarchical header, then six bytes per HMenuRec. `lastMenu` and
+    // `lastHMenu` are zero for an empty partition and advance by six for
+    // each entry, locating the last record in their respective arrays.
+    let regular_bytes = usize::from(memory.read_u16_be(list)?);
+    if regular_bytes % 6 != 0 || regular_bytes / 6 > PPC_MAX_MENU_LIST_ENTRIES {
+        return None;
     }
-    Some(menus)
+    let regular_count = regular_bytes / 6;
+    let mut regular = Vec::with_capacity(regular_count);
+    for index in 0..regular_count {
+        let address = list.checked_add(6 + u32::try_from(index.checked_mul(6)?).ok()?)?;
+        regular.push(PpcMenuListEntry {
+            handle: memory.read_u32_be(address)?,
+            value: memory.read_u16_be(address.checked_add(4)?)? as i16,
+        });
+    }
+
+    let hierarchical_header = list.checked_add(6 + u32::try_from(regular_bytes).ok()?)?;
+    let hierarchical_bytes = usize::from(memory.read_u16_be(hierarchical_header)?);
+    if hierarchical_bytes % 6 != 0 || hierarchical_bytes / 6 > PPC_MAX_MENU_LIST_ENTRIES {
+        return None;
+    }
+    let hierarchical_count = hierarchical_bytes / 6;
+    let mut hierarchical = Vec::with_capacity(hierarchical_count);
+    let hierarchical_start = hierarchical_header.checked_add(6)?;
+    for index in 0..hierarchical_count {
+        let address = hierarchical_start.checked_add(u32::try_from(index.checked_mul(6)?).ok()?)?;
+        hierarchical.push(PpcMenuListEntry {
+            handle: memory.read_u32_be(address)?,
+            value: memory.read_u16_be(address.checked_add(4)?)? as i16,
+        });
+    }
+
+    Some(PpcMenuListDefinition {
+        last_right: memory.read_u16_be(list.checked_add(2)?)? as i16,
+        mb_res_id: memory.read_u16_be(list.checked_add(4)?)? as i16,
+        regular,
+        menu_title_save: memory.read_u32_be(hierarchical_header.checked_add(2)?)?,
+        hierarchical,
+    })
 }
 
-fn ppc_replace_menu_list(
+fn ppc_menu_list_bytes(menu_list: &PpcMenuListDefinition) -> Vec<u8> {
+    let regular_count = menu_list.regular.len().min(PPC_MAX_MENU_LIST_ENTRIES);
+    let hierarchical_count = menu_list.hierarchical.len().min(PPC_MAX_MENU_LIST_ENTRIES);
+    let mut bytes = Vec::with_capacity(12 + 6 * (regular_count + hierarchical_count));
+    bytes.extend_from_slice(&((regular_count * 6) as u16).to_be_bytes());
+    bytes.extend_from_slice(&menu_list.last_right.to_be_bytes());
+    bytes.extend_from_slice(&menu_list.mb_res_id.to_be_bytes());
+    for entry in menu_list.regular.iter().take(regular_count) {
+        bytes.extend_from_slice(&entry.handle.to_be_bytes());
+        bytes.extend_from_slice(&entry.value.to_be_bytes());
+    }
+    bytes.extend_from_slice(&((hierarchical_count * 6) as u16).to_be_bytes());
+    bytes.extend_from_slice(&menu_list.menu_title_save.to_be_bytes());
+    for entry in menu_list.hierarchical.iter().take(hierarchical_count) {
+        bytes.extend_from_slice(&entry.handle.to_be_bytes());
+        bytes.extend_from_slice(&entry.value.to_be_bytes());
+    }
+    bytes
+}
+
+fn ppc_relayout_menu_list(memory: &mut PpcSectionMem, menu_list: &mut PpcMenuListDefinition) {
+    let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
+    for entry in &mut menu_list.regular {
+        entry.value = title_left;
+        let advance = memory
+            .read_u32_be(entry.handle)
+            .filter(|menu| *menu != 0)
+            .and_then(|menu| ppc_read_pascal_string(memory, menu.checked_add(14)?))
+            .map(|title| ppc_menu_title_advance(&title))
+            .unwrap_or(0);
+        title_left = title_left
+            .saturating_add(advance)
+            .saturating_add(PPC_MENU_TITLE_SPACING);
+    }
+    menu_list.last_right = if menu_list.regular.is_empty() {
+        0
+    } else {
+        title_left
+    };
+}
+
+fn ppc_replace_menu_list_definition(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     handles: &mut [PpcHandleRecord],
     menu_list_handle: u32,
-    menus: &[u32],
+    menu_list: &PpcMenuListDefinition,
 ) -> i16 {
-    let mut bytes = Vec::with_capacity(2 + menus.len() * 4);
-    bytes.extend_from_slice(&(menus.len().min(u16::MAX as usize) as u16).to_be_bytes());
-    for menu in menus.iter().take(u16::MAX as usize) {
-        bytes.extend_from_slice(&menu.to_be_bytes());
-    }
+    let bytes = ppc_menu_list_bytes(menu_list);
     ppc_replace_menu_bytes(
         memory,
         heap_cursor,
@@ -62849,49 +63050,77 @@ fn ppc_insert_menu(
         return PPC_PARAM_ERR;
     }
     if *current_menu_bar == 0 {
-        *current_menu_bar = ppc_alloc_recyclable_handle_with_bytes(
+        *current_menu_bar = ppc_alloc_menu_list_handle(
+            &[],
             memory,
             heap_cursor,
             heap_limit,
             handles,
             free_handle_blocks,
-            &[0, 0],
         );
         if *current_menu_bar == 0 {
             return PPC_MEM_FULL_ERR;
         }
     }
-    let Some(mut menus) = ppc_menu_list_handles(memory, *current_menu_bar) else {
+    let Some(mut menu_list) = ppc_menu_list_definition(memory, *current_menu_bar) else {
         return PPC_PARAM_ERR;
     };
-    if menus.contains(&menu_handle) {
+    if menu_list.contains_handle(menu_handle) {
+        let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, *current_menu_bar);
         return PPC_NO_ERR;
     }
-    let insertion = if before_id > 0 {
-        menus
-            .iter()
-            .position(|candidate| {
-                memory
-                    .read_u32_be(*candidate)
-                    .and_then(|menu| memory.read_u16_be(menu))
-                    .map(|id| id as i16)
-                    == Some(before_id)
-            })
-            .unwrap_or(menus.len())
+    let partition_full = if before_id == -1 {
+        menu_list.hierarchical.len() >= PPC_MAX_MENU_LIST_ENTRIES
     } else {
-        // This compact menu-list representation keeps submenus in the same
-        // ordered array; -1 therefore appends to its logical submenu tail.
-        menus.len()
+        menu_list.regular.len() >= PPC_MAX_MENU_LIST_ENTRIES
     };
-    menus.insert(insertion, menu_handle);
-    ppc_replace_menu_list(
+    if partition_full {
+        // MTE 1992 p. 3-108: InsertMenu is a no-op when the list is full.
+        return PPC_NO_ERR;
+    }
+
+    if before_id == -1 {
+        menu_list.hierarchical.push(PpcMenuListEntry {
+            handle: menu_handle,
+            value: 0,
+        });
+    } else {
+        let insertion = if before_id == 0 {
+            menu_list.regular.len()
+        } else {
+            menu_list
+                .regular
+                .iter()
+                .position(|candidate| {
+                    memory
+                        .read_u32_be(candidate.handle)
+                        .and_then(|menu| memory.read_u16_be(menu))
+                        .map(|id| id as i16)
+                        == Some(before_id)
+                })
+                .unwrap_or(menu_list.regular.len())
+        };
+        menu_list.regular.insert(
+            insertion,
+            PpcMenuListEntry {
+                handle: menu_handle,
+                value: 0,
+            },
+        );
+    }
+    ppc_relayout_menu_list(memory, &mut menu_list);
+    let result = ppc_replace_menu_list_definition(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         *current_menu_bar,
-        &menus,
-    )
+        &menu_list,
+    );
+    if result == PPC_NO_ERR {
+        let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, *current_menu_bar);
+    }
+    result
 }
 
 fn ppc_delete_menu(
@@ -62905,41 +63134,54 @@ fn ppc_delete_menu(
     if menu_list_handle == 0 {
         return PPC_NO_ERR;
     }
-    let Some(mut menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
+    let Some(mut menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return PPC_PARAM_ERR;
     };
-    let Some(index) = menus.iter().rposition(|candidate| {
-        memory
-            .read_u32_be(*candidate)
-            .and_then(|menu| memory.read_u16_be(menu))
-            .map(|id| id as i16)
-            == Some(menu_id)
-    }) else {
-        return PPC_NO_ERR;
+    let matching_index = |entries: &[PpcMenuListEntry], memory: &mut PpcSectionMem| {
+        entries.iter().position(|candidate| {
+            memory
+                .read_u32_be(candidate.handle)
+                .and_then(|menu| memory.read_u16_be(menu))
+                .map(|id| id as i16)
+                == Some(menu_id)
+        })
     };
-    menus.remove(index);
-    ppc_replace_menu_list(
+    let removed = if let Some(index) = matching_index(&menu_list.hierarchical, memory) {
+        menu_list.hierarchical.remove(index);
+        true
+    } else if let Some(index) = matching_index(&menu_list.regular, memory) {
+        menu_list.regular.remove(index);
+        true
+    } else {
+        false
+    };
+    if !removed {
+        return PPC_NO_ERR;
+    }
+    ppc_relayout_menu_list(memory, &mut menu_list);
+    ppc_replace_menu_list_definition(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         menu_list_handle,
-        &menus,
+        &menu_list,
     )
 }
 
 fn ppc_get_menu_handle(memory: &mut PpcSectionMem, menu_list_handle: u32, menu_id: i16) -> u32 {
-    let Some(menu_list) = memory.read_u32_be(menu_list_handle).filter(|ptr| *ptr != 0) else {
+    let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return 0;
     };
-    let count = usize::from(memory.read_u16_be(menu_list).unwrap_or(0)).min(1024);
-    for index in 0..count {
-        let Some(entry_addr) = menu_list.checked_add(2 + index as u32 * 4) else {
-            break;
-        };
-        let Some(menu_handle) = memory.read_u32_be(entry_addr).filter(|handle| *handle != 0) else {
+    // Inside Macintosh Volume V (1986), p. V-245: resolve the hierarchical
+    // portion first so a submenu can safely share an ID with a regular menu.
+    for menu_handle in menu_list
+        .hierarchical_handles()
+        .chain(menu_list.regular_handles())
+    {
+        if menu_handle == 0 {
             continue;
-        };
+        }
         let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
@@ -62980,18 +63222,14 @@ fn ppc_draw_menu_bar(
         }
     }
 
-    let Some(menu_list) = memory.read_u32_be(menu_list_handle).filter(|ptr| *ptr != 0) else {
+    let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return true;
     };
-    let count = usize::from(memory.read_u16_be(menu_list).unwrap_or(0)).min(64);
     let mut title_h = PPC_MENU_TITLE_ORIGIN_H;
-    for index in 0..count {
-        let Some(entry_addr) = menu_list.checked_add(2 + index as u32 * 4) else {
-            break;
-        };
-        let Some(menu_handle) = memory.read_u32_be(entry_addr).filter(|handle| *handle != 0) else {
+    for menu_handle in menu_list.regular_handles().take(64) {
+        if menu_handle == 0 {
             continue;
-        };
+        }
         let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
@@ -71488,13 +71726,13 @@ mod tests {
         memory.add_region(menu, vec![0; 64]);
         memory.add_region(output, vec![0; 256]);
         memory.add_region(menu_list_handle, vec![0; 4]);
-        memory.add_region(menu_list, vec![0; 6]);
+        memory.add_region(menu_list, vec![0; 18]);
         memory.write_u32_be(menu_handle, menu).unwrap();
         memory.write_u16_be(menu, 128).unwrap();
         memory.write_u32_be(menu + 10, 0b111).unwrap();
         memory.write_u32_be(menu_list_handle, menu_list).unwrap();
-        memory.write_u16_be(menu_list, 1).unwrap();
-        memory.write_u32_be(menu_list + 2, menu_handle).unwrap();
+        memory.write_u16_be(menu_list, 6).unwrap();
+        memory.write_u32_be(menu_list + 6, menu_handle).unwrap();
         memory.write_u8(menu + 14, 4).unwrap();
         memory.write_bytes(menu + 15, b"Test").unwrap();
         memory.write_u8(menu + 19, 3).unwrap();
@@ -71530,6 +71768,438 @@ mod tests {
         cpu.gpr[5] = output;
         ppc_get_item_cmd(&cpu, &mut memory);
         assert_eq!(memory.read_u16_be(output), Some(0x1b));
+    }
+
+    // IM:V 1986 pp. V-228--V-230 and MTE 1992 pp. 3-108--3-109:
+    // InsertMenu(-1) records a submenu in the hierarchical portion of the
+    // DynamicMenuList. It remains searchable, but never becomes a menu title.
+    #[test]
+    fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let regular_title = scratch;
+        let hierarchical_title = scratch + 0x20;
+        let regular_items = scratch + 0x40;
+        let hierarchical_items = scratch + 0x60;
+        loaded.memory.add_region(scratch, vec![0; 0x100]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            regular_title,
+            b"File"
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            hierarchical_title,
+            b"Recent"
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            regular_items,
+            b"Open/O"
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            hierarchical_items,
+            b"Document/D"
+        ));
+
+        let regular = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            128,
+            regular_title,
+        );
+        let hierarchical = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            200,
+            hierarchical_title,
+        );
+        assert_ne!(regular, 0);
+        assert_ne!(hierarchical, 0);
+        assert_eq!(
+            ppc_insert_menu_items(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                regular,
+                regular_items,
+                i16::MAX,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_insert_menu_items(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                hierarchical,
+                hierarchical_items,
+                i16::MAX,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_insert_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                &mut loaded.free_handle_blocks,
+                &mut loaded.toolbox_startup.current_menu_bar,
+                regular,
+                0,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_insert_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                &mut loaded.free_handle_blocks,
+                &mut loaded.toolbox_startup.current_menu_bar,
+                hierarchical,
+                -1,
+            ),
+            PPC_NO_ERR
+        );
+
+        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        assert_ne!(menu_list_handle, 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_LIST),
+            Some(menu_list_handle)
+        );
+        let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(menu_list), Some(6));
+        assert_eq!(loaded.memory.read_u32_be(menu_list + 6), Some(regular));
+        assert_eq!(
+            loaded.memory.read_u16_be(menu_list + 10),
+            Some(PPC_MENU_TITLE_HIT_LEFT as u16)
+        );
+        assert_eq!(loaded.memory.read_u16_be(menu_list + 12), Some(6));
+        assert_eq!(loaded.memory.read_u32_be(menu_list + 14), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(menu_list + 18),
+            Some(hierarchical)
+        );
+        assert_eq!(loaded.memory.read_u16_be(menu_list + 22), Some(0));
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == menu_list_handle)
+                .map(|record| record.size),
+            Some(24)
+        );
+
+        let definition = ppc_menu_list_definition(&mut loaded.memory, menu_list_handle).unwrap();
+        assert_eq!(
+            definition.regular,
+            vec![PpcMenuListEntry {
+                handle: regular,
+                value: PPC_MENU_TITLE_HIT_LEFT,
+            }]
+        );
+        assert_eq!(
+            definition.hierarchical,
+            vec![PpcMenuListEntry {
+                handle: hierarchical,
+                value: 0,
+            }]
+        );
+        let snapshot = ppc_guest_menu_snapshot(&mut loaded.memory, menu_list_handle);
+        assert_eq!(snapshot.menus.len(), 2);
+        assert!(!snapshot.menus[0].hierarchical);
+        assert!(snapshot.menus[0].visible_in_menu_bar);
+        assert!(snapshot.menus[1].hierarchical);
+        assert!(!snapshot.menus[1].visible_in_menu_bar);
+        assert_eq!(
+            ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
+            hierarchical
+        );
+        assert_eq!(
+            ppc_menu_key(&mut loaded.memory, menu_list_handle, b'd'),
+            (200 << 16) | 1
+        );
+
+        let first_non_title_h = definition.last_right.saturating_add(1);
+        assert_eq!(
+            ppc_menu_handle_at_title_point(
+                &mut loaded.memory,
+                menu_list_handle,
+                first_non_title_h as u16 as u32,
+            ),
+            None
+        );
+        assert_eq!(
+            ppc_menu_select(
+                &mut loaded.memory,
+                menu_list_handle,
+                first_non_title_h as u16 as u32,
+                PpcInputSnapshot {
+                    mouse_v: 21,
+                    mouse_h: first_non_title_h,
+                    ..PpcInputSnapshot::default()
+                },
+            ),
+            0
+        );
+
+        let menu_bar_bytes = 20 * ppc_main_screen_row_bytes();
+        assert!(loaded
+            .memory
+            .write_bytes(PPC_MAIN_SCREEN_BASE, &vec![0x55; menu_bar_bytes as usize])
+            .is_some());
+        assert!(ppc_draw_menu_bar(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            menu_list_handle,
+            &loaded.screen_clut,
+        ));
+        let with_hierarchical =
+            ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, menu_bar_bytes)
+                .unwrap();
+        let regular_only = ppc_alloc_menu_list_definition_handle(
+            &PpcMenuListDefinition {
+                last_right: definition.last_right,
+                regular: definition.regular.clone(),
+                ..PpcMenuListDefinition::default()
+            },
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_ne!(regular_only, 0);
+        assert!(loaded
+            .memory
+            .write_bytes(PPC_MAIN_SCREEN_BASE, &vec![0x55; menu_bar_bytes as usize])
+            .is_some());
+        assert!(ppc_draw_menu_bar(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            regular_only,
+            &loaded.screen_clut,
+        ));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, menu_bar_bytes,),
+            Some(with_hierarchical)
+        );
+
+        let before_duplicate =
+            ppc_menu_list_definition(&mut loaded.memory, menu_list_handle).unwrap();
+        assert_eq!(
+            ppc_insert_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                &mut loaded.free_handle_blocks,
+                &mut loaded.toolbox_startup.current_menu_bar,
+                hierarchical,
+                0,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, menu_list_handle),
+            Some(before_duplicate),
+            "reinserting a current menu must be a no-op"
+        );
+    }
+
+    // MTE 1992 pp. 3-109--3-110: DeleteMenu resolves duplicate IDs in the
+    // hierarchical section before it considers regular menu-bar entries.
+    #[test]
+    fn native_delete_menu_prefers_hierarchical_id_collisions() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 0x40]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch,
+            b"Regular"
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x20,
+            b"Submenu"
+        ));
+        let regular = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            200,
+            scratch,
+        );
+        let hierarchical = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            200,
+            scratch + 0x20,
+        );
+        for (handle, before_id) in [(regular, 0), (hierarchical, -1)] {
+            assert_eq!(
+                ppc_insert_menu(
+                    &mut loaded.memory,
+                    &mut loaded.heap_cursor,
+                    loaded.heap_limit,
+                    &mut loaded.handles,
+                    &mut loaded.free_handle_blocks,
+                    &mut loaded.toolbox_startup.current_menu_bar,
+                    handle,
+                    before_id,
+                ),
+                PPC_NO_ERR
+            );
+        }
+        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        assert_eq!(
+            ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
+            hierarchical,
+            "GetMenuHandle must resolve the hierarchical collision first"
+        );
+
+        assert_eq!(
+            ppc_delete_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                menu_list_handle,
+                200,
+            ),
+            PPC_NO_ERR
+        );
+        let after_hierarchical_delete =
+            ppc_menu_list_definition(&mut loaded.memory, menu_list_handle).unwrap();
+        assert_eq!(
+            after_hierarchical_delete
+                .regular_handles()
+                .collect::<Vec<_>>(),
+            vec![regular]
+        );
+        assert!(after_hierarchical_delete.hierarchical.is_empty());
+        assert_eq!(
+            ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
+            regular
+        );
+
+        assert_eq!(
+            ppc_delete_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                menu_list_handle,
+                200,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_menu_list_handles(&mut loaded.memory, menu_list_handle),
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn native_insert_menu_does_not_evict_entries_from_a_full_partition() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(scratch, vec![0; 0x40]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch,
+            b"Existing"
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x20,
+            b"Insert"
+        ));
+        let existing = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            200,
+            scratch,
+        );
+        let insertion = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            201,
+            scratch + 0x20,
+        );
+        let mut regular = vec![
+            PpcMenuListEntry {
+                handle: 0xdead_0000,
+                value: 0,
+            };
+            PPC_MAX_MENU_LIST_ENTRIES - 1
+        ];
+        regular.push(PpcMenuListEntry {
+            handle: existing,
+            value: 0,
+        });
+        let full = PpcMenuListDefinition {
+            regular,
+            ..PpcMenuListDefinition::default()
+        };
+        let current = ppc_alloc_menu_list_definition_handle(
+            &full,
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_ne!(current, 0);
+        loaded.toolbox_startup.current_menu_bar = current;
+
+        assert_eq!(
+            ppc_insert_menu(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                &mut loaded.free_handle_blocks,
+                &mut loaded.toolbox_startup.current_menu_bar,
+                insertion,
+                200,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, current),
+            Some(full)
+        );
     }
 
     #[test]
@@ -71626,7 +72296,7 @@ mod tests {
         let menu_list_handle = loaded.cpu.gpr[3];
         loaded.toolbox_startup.current_menu_bar = menu_list_handle;
         let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
-        assert_eq!(loaded.memory.read_u16_be(menu_list), Some(2));
+        assert_eq!(loaded.memory.read_u16_be(menu_list), Some(12));
         assert_ne!(
             ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128),
             0
@@ -71909,6 +72579,182 @@ mod tests {
         assert_eq!(
             ppc_menu_list_handles(&mut loaded.memory, current),
             Some(Vec::new())
+        );
+        assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_menu_bar_snapshot_clear_and_restore_round_trips_both_partitions() {
+        let pef = synthetic_pef_with_import(b"GetMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let original = PpcMenuListDefinition {
+            last_right: 87,
+            mb_res_id: 0x108,
+            regular: vec![
+                PpcMenuListEntry {
+                    handle: 0x1111_0000,
+                    value: 11,
+                },
+                PpcMenuListEntry {
+                    handle: 0x2222_0000,
+                    value: 43,
+                },
+            ],
+            menu_title_save: 0x3333_0000,
+            hierarchical: vec![PpcMenuListEntry {
+                handle: 0x4444_0000,
+                value: 0,
+            }],
+        };
+        let current = ppc_alloc_menu_list_definition_handle(
+            &original,
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_ne!(current, 0);
+        loaded.toolbox_startup.current_menu_bar = current;
+        loaded
+            .memory
+            .write_u32_be(crate::memory::globals::addr::MENU_LIST, current)
+            .unwrap();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let saved = loaded.cpu.gpr[3];
+        assert_ne!(saved, 0);
+        assert_ne!(saved, current);
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, saved),
+            Some(original.clone())
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ClearMenuBar;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_LIST),
+            Some(current)
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, current),
+            Some(PpcMenuListDefinition {
+                mb_res_id: original.mb_res_id,
+                ..PpcMenuListDefinition::default()
+            })
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, saved),
+            Some(original.clone()),
+            "ClearMenuBar must not mutate a caller-owned snapshot"
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetMenuBar;
+        loaded.cpu.gpr[3] = saved;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, current),
+            Some(original.clone())
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, saved),
+            Some(original)
+        );
+        assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+    }
+
+    // MTE 1992 pp. 3-103--3-104: repeated InitMenus calls reuse the current
+    // MenuList allocation but reset it to the empty standard-menu definition.
+    #[test]
+    fn native_init_menus_publishes_and_reinitializes_a_stable_menu_list() {
+        let pef = synthetic_pef_with_import(b"InitMenus");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_menu_bar_hidden = true;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(loaded.toolbox_startup.menus_initialized);
+        let current = loaded.toolbox_startup.current_menu_bar;
+        assert_ne!(current, 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_LIST),
+            Some(current)
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, current),
+            Some(PpcMenuListDefinition::default())
+        );
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == current)
+                .map(|record| record.size),
+            Some(12)
+        );
+
+        let nonstandard = PpcMenuListDefinition {
+            last_right: 75,
+            mb_res_id: 0x108,
+            regular: vec![PpcMenuListEntry {
+                handle: 0x1111_0000,
+                value: 11,
+            }],
+            menu_title_save: 0x2222_0000,
+            hierarchical: vec![PpcMenuListEntry {
+                handle: 0x3333_0000,
+                value: 0,
+            }],
+        };
+        assert_eq!(
+            ppc_replace_menu_list_definition(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                current,
+                &nonstandard,
+            ),
+            PPC_NO_ERR
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_LIST),
+            Some(current)
+        );
+        assert_eq!(
+            ppc_menu_list_definition(&mut loaded.memory, current),
+            Some(PpcMenuListDefinition::default())
         );
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
     }
