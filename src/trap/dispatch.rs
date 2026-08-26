@@ -59,6 +59,13 @@ pub(crate) struct PendingFileCompletion {
     pub(crate) result: i16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingNotificationResponse {
+    pub(crate) notification_record: u32,
+    pub(crate) response_addr: u32,
+    pub(crate) ready_tick: u32,
+}
+
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
 // to toggle these at runtime cannot — values are read ONCE at first call.
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -611,6 +618,9 @@ pub(crate) struct ControlTrackingState {
     pub scrollbar_last_action_tick: u32,
     pub scrollbar_idle_refires: u8,
     pub scrollbar_callback_pending: bool,
+    pub cdef_test_callback_pending: bool,
+    pub cdef_draw_callback_pending: bool,
+    pub cdef_finish_part: Option<u16>,
 }
 
 /// Retained state for DragWindow while the mouse button remains down.
@@ -1395,6 +1405,12 @@ pub struct TrapDispatcher {
     /// so these records are synthesized on demand. Inside Macintosh Volume I
     /// (1985), pp. I-495..I-505.
     pub(crate) system_intl_cache: HashMap<i16, u32>,
+    /// Cache of the standard System-file `'PAT#'` ID 0 resource. QuickDraw
+    /// and application definition procedures use this list for the classic
+    /// 8-by-8 monochrome fill patterns. Systemless does not mount a System
+    /// file, so the list is synthesized on demand. Imaging With QuickDraw
+    /// (1994), pp. 3-127..3-128 and 3-141.
+    pub(crate) system_pattern_list_cache: HashMap<i16, u32>,
     /// Cache of synthesized built-in system cursor blocks for
     /// GetCursor ($A9B9). On real Mac the standard cursor IDs (1
     /// iBeamCursor, 2 crossCursor, 3 plusCursor, 4 watchCursor per
@@ -1485,6 +1501,10 @@ pub struct TrapDispatcher {
     /// Completed asynchronous File Manager requests awaiting `ioResult`
     /// publication and optional completion-procedure delivery.
     pub(crate) pending_file_completions: VecDeque<PendingFileCompletion>,
+    /// Installed Notification Manager requests and response procedures waiting
+    /// to run after the foreground trap returns.
+    pub(crate) installed_notifications: HashSet<u32>,
+    pub(crate) pending_notification_responses: VecDeque<PendingNotificationResponse>,
     /// Set of VFS keys whose `ioFlAttrib` lock bit is set.
     /// Maintained by SetFilLock/HSetFLock ($A041/$A241) and
     /// RstFilLock/HRstFLock ($A042/$A242); read by
@@ -3115,6 +3135,7 @@ impl TrapDispatcher {
             fired_oapp_handler: false,
             system_str_cache: HashMap::new(),
             system_intl_cache: HashMap::new(),
+            system_pattern_list_cache: HashMap::new(),
             system_cursor_cache: HashMap::new(),
             system_clut_cache: HashMap::new(),
             system_wctb_cache: HashMap::new(),
@@ -3140,6 +3161,8 @@ impl TrapDispatcher {
             file_positions: HashMap::new(),
             recent_file_read: None,
             pending_file_completions: VecDeque::new(),
+            installed_notifications: HashSet::new(),
+            pending_notification_responses: VecDeque::new(),
             locked_files: HashSet::new(),
             next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
@@ -3438,13 +3461,15 @@ impl TrapDispatcher {
         self.region_tracking.is_some()
     }
 
-    /// Whether TrackControl has redirected execution into a guest scrollbar
-    /// action procedure. The runner must let that callback return to the
-    /// retained A968 trap instead of immediately rewinding over it.
+    /// Whether TrackControl has redirected execution into a guest callback.
+    /// The runner must let that callback return to the retained A968 trap
+    /// instead of immediately rewinding over it.
     pub(crate) fn is_control_action_callback_pending(&self) -> bool {
-        self.control_tracking
-            .as_ref()
-            .is_some_and(|tracking| tracking.scrollbar_callback_pending)
+        self.control_tracking.as_ref().is_some_and(|tracking| {
+            tracking.scrollbar_callback_pending
+                || tracking.cdef_test_callback_pending
+                || tracking.cdef_draw_callback_pending
+        })
     }
 
     /// Shared check used by both dispatch.rs (auto-pop push-back) and
@@ -5851,6 +5876,72 @@ impl TrapDispatcher {
         Some(ptr)
     }
 
+    /// Allocate and cache the standard monochrome pattern list. A `PAT#`
+    /// resource starts with a big-endian count followed by packed eight-byte
+    /// `Pattern` records. ID 0 is the system pattern palette used by classic
+    /// Control Definition Functions and by `GetIndPattern`.
+    pub(crate) fn synthesize_system_pattern_list(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        res_id: i16,
+    ) -> Option<u32> {
+        if res_id != 0 {
+            return None;
+        }
+        if let Some(&ptr) = self.system_pattern_list_cache.get(&res_id) {
+            return Some(ptr);
+        }
+
+        const PATTERNS: [[u8; 8]; 38] = [
+            [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            [0xDD, 0xFF, 0x77, 0xFF, 0xDD, 0xFF, 0x77, 0xFF],
+            [0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77, 0xDD, 0x77],
+            [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+            [0x55, 0xFF, 0x55, 0xFF, 0x55, 0xFF, 0x55, 0xFF],
+            [0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA],
+            [0xEE, 0xDD, 0xBB, 0x77, 0xEE, 0xDD, 0xBB, 0x77],
+            [0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x88],
+            [0xB1, 0x30, 0x03, 0x1B, 0xD8, 0xC0, 0x0C, 0x8D],
+            [0x80, 0x10, 0x02, 0x20, 0x01, 0x08, 0x40, 0x04],
+            [0xFF, 0x88, 0x88, 0x88, 0xFF, 0x88, 0x88, 0x88],
+            [0xFF, 0x80, 0x80, 0x80, 0xFF, 0x08, 0x08, 0x08],
+            [0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x80, 0x40, 0x20, 0x00, 0x02, 0x04, 0x08, 0x00],
+            [0x82, 0x44, 0x39, 0x44, 0x82, 0x01, 0x01, 0x01],
+            [0xF8, 0x74, 0x22, 0x47, 0x8F, 0x17, 0x22, 0x71],
+            [0x55, 0xA0, 0x40, 0x40, 0x55, 0x0A, 0x04, 0x04],
+            [0x20, 0x50, 0x88, 0x88, 0x88, 0x88, 0x05, 0x02],
+            [0xBF, 0x00, 0xBF, 0xBF, 0xB0, 0xB0, 0xB0, 0xB0],
+            [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            [0x80, 0x00, 0x08, 0x00, 0x80, 0x00, 0x08, 0x00],
+            [0x88, 0x00, 0x22, 0x00, 0x88, 0x00, 0x22, 0x00],
+            [0x88, 0x22, 0x88, 0x22, 0x88, 0x22, 0x88, 0x22],
+            [0xAA, 0x00, 0xAA, 0x00, 0xAA, 0x00, 0xAA, 0x00],
+            [0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00],
+            [0x11, 0x22, 0x44, 0x88, 0x11, 0x22, 0x44, 0x88],
+            [0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00],
+            [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80],
+            [0xAA, 0x00, 0x80, 0x00, 0x88, 0x00, 0x80, 0x00],
+            [0xFF, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80],
+            [0x08, 0x1C, 0x22, 0xC1, 0x80, 0x01, 0x02, 0x04],
+            [0x88, 0x14, 0x22, 0x41, 0x88, 0x00, 0xAA, 0x00],
+            [0x40, 0xA0, 0x00, 0x00, 0x04, 0x0A, 0x00, 0x00],
+            [0x03, 0x84, 0x48, 0x30, 0x0C, 0x02, 0x01, 0x01],
+            [0x80, 0x80, 0x41, 0x3E, 0x08, 0x08, 0x14, 0xE3],
+            [0x10, 0x20, 0x54, 0xAA, 0xFF, 0x02, 0x04, 0x08],
+            [0x77, 0x89, 0x8F, 0x8F, 0x77, 0x98, 0xF8, 0xF8],
+            [0x00, 0x08, 0x14, 0x2A, 0x55, 0x2A, 0x14, 0x08],
+        ];
+
+        let ptr = bus.alloc(2 + PATTERNS.len() as u32 * 8);
+        bus.write_word(ptr, PATTERNS.len() as u16);
+        for (index, pattern) in PATTERNS.iter().enumerate() {
+            bus.write_bytes(ptr + 2 + index as u32 * 8, pattern);
+        }
+        self.system_pattern_list_cache.insert(res_id, ptr);
+        Some(ptr)
+    }
+
     /// Allocate (and cache) a synthetic System-file `'clut'` resource for
     /// the standard indexed color-table IDs. The resource body is a
     /// ColorTable record, matching what `GetCTable(depth)` exposes through
@@ -7285,6 +7376,9 @@ mod tests {
             scrollbar_last_action_tick: 0,
             scrollbar_idle_refires: 0,
             scrollbar_callback_pending: false,
+            cdef_test_callback_pending: false,
+            cdef_draw_callback_pending: false,
+            cdef_finish_part: None,
         });
     }
 

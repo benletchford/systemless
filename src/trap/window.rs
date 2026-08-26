@@ -2522,10 +2522,15 @@ impl super::TrapDispatcher {
         if the_window == old_front {
             // BringToFront can place another window visually ahead without
             // changing activation. Selecting the already-active window still
-            // has to restore it to the head of WindowList.
-            self.track_window_front(bus, the_window);
-            if let Some(content) = self.window_content_rect(bus, the_window) {
-                self.invalidate_window_rect(bus, the_window, content);
+            // has to restore it to the head of WindowList. When it is already
+            // there, SelectWindow is a true no-op: manufacturing a full update
+            // event makes applications that select their event window on each
+            // pass repaint continuously. Inside Macintosh Volume I, p. I-286.
+            if self.window_list.first().copied() != Some(the_window) {
+                self.track_window_front(bus, the_window);
+                if let Some(content) = self.window_content_rect(bus, the_window) {
+                    self.invalidate_window_rect(bus, the_window, content);
+                }
             }
             return;
         }
@@ -8416,6 +8421,8 @@ mod tests {
         disp.front_window = win_a;
         bus.write_byte(win_a + 110u32, 0xFF);
         bus.write_byte(win_a + 111u32, 0xFF);
+        let (_, update_rgn_data) =
+            setup_full_window_with_regions(&mut bus, win_a, 10, 20, 110, 220);
 
         let sp = TEST_SP - 4;
         cpu.write_reg(Register::A7, sp);
@@ -8429,6 +8436,14 @@ mod tests {
             queue_len_before,
             "SelectWindow on already-front window must not queue any events per IM:I I-286"
         );
+        assert_eq!(
+            bus.read_word(update_rgn_data + 2),
+            0,
+            "SelectWindow on the already-frontmost window must not dirty its content"
+        );
+        assert_eq!(bus.read_word(update_rgn_data + 4), 0);
+        assert_eq!(bus.read_word(update_rgn_data + 6), 0);
+        assert_eq!(bus.read_word(update_rgn_data + 8), 0);
     }
 
     #[test]

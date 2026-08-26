@@ -77,10 +77,9 @@ pub mod addr {
     /// returned zero, to surface "which disabled item did the user click?"
     /// for help/explanation UI. Per IM:V V-248 + MTb 1992 3-118 (the
     /// canonical EQU at IM:V V-571 line 8689: `MenuDisable EQU $0B54`).
-    /// Systemless's HLE reads this lowmem word directly in MenuChoice; it
-    /// still does not synthesize the MDEF cursor-tracking writes that
-    /// classic ROMs receive, so tests seed the value explicitly when they
-    /// need a deterministic result.
+    /// Systemless's HLE reads this lowmem word directly in MenuChoice.
+    /// Popup-control MDEF tracking updates it as the cursor changes items;
+    /// direct MenuSelect/MenuKey tests may seed it for deterministic results.
     /// Inside Macintosh Volume V, V-248 (MenuChoice routine description)
     /// and V-571 (assembly globals table); Macintosh Toolbox Essentials
     /// 1992, 3-118..3-119 (MenuChoice canonical chapter).
