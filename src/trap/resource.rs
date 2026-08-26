@@ -4257,10 +4257,13 @@ impl super::TrapDispatcher {
             // FUNCTION PBHGetVInfo (paramBlock: HParmBlkPtr; async: Boolean): OSErr;
             // Inside Macintosh Volume II, II-104; HFS variant Files 1992,
             // 2-144 (subsection begins line 8018; trap macro `_HGetVolInfo`
-            // per line 8077).
-            // The OS-trap dispatcher masks `trap & 0x00FF`, so $A207
-            // PBHGetVInfo and $A007 PBGetVInfo land on the same low
-            // byte and share this arm.
+            // per line 8077). Inside Macintosh Volume IV (1986),
+            // IV-129–IV-130 shows that PBGetVInfo's classic block ends at
+            // ioVFrBlk (offset 62), while PBHGetVInfo's larger block adds
+            // ioVSigWord and the other HFS fields beginning at offset 64.
+            // The dispatcher masks `trap & 0x00FF`, so A007/A207/A607 share
+            // this prefix arm; retain the extended tail only for an original
+            // trap word carrying the HFS bit.
             //
             // PBGetVInfo ($A007): Returns mounted volume info and free-space figures
             // PBHGetVInfo ($A207): HFS variant aliased onto $A007
@@ -4410,13 +4413,15 @@ impl super::TrapDispatcher {
                 bus.write_word(pb + 56, allocation_start); // ioAlBlSt
                 bus.write_long(pb + 58, next_catalog_id); // ioVNxtCNID
                 bus.write_word(pb + 62, free_blocks); // ioVFrBlk
-                bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
+                if self.current_trap_word & 0x0200 != 0 {
+                    bus.write_word(pb + 64, 0x4244); // ioVSigWord (HFS)
 
-                // The extracted volume is a File Manager abstraction, not a
-                // claim about the source image's physical device or driver.
-                bus.write_word(pb + 66, 0); // ioVDrvInfo
-                bus.write_word(pb + 68, 0); // ioVDRefNum
-                bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
+                    // The extracted volume is a File Manager abstraction, not a
+                    // claim about the source image's physical device or driver.
+                    bus.write_word(pb + 66, 0); // ioVDrvInfo
+                    bus.write_word(pb + 68, 0); // ioVDRefNum
+                    bus.write_word(pb + 70, 0); // ioVFSID (File Manager)
+                }
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
@@ -15161,6 +15166,68 @@ mod tests {
         // Volume name
         let len = bus.read_byte(name_buf) as usize;
         assert_eq!(len, 11);
+    }
+
+    #[test]
+    fn pb_get_vinfo_preserves_bytes_after_classic_volume_parameter_block() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 28, 1);
+        bus.write_long(pb + 64, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA007, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 64), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn pb_get_vinfo_async_trap_word_preserves_bytes_after_classic_volume_parameter_block() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 28, 1);
+        bus.write_long(pb + 64, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA407, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(pb + 64), 0xCAFE_BABE);
+    }
+
+    #[test]
+    fn pb_hget_vinfo_populates_extended_volume_parameter_fields() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 28, 1);
+        bus.write_long(pb + 64, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA207, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 64), 0x4244);
+        assert_eq!(bus.read_word(pb + 66), 0);
+        assert_eq!(bus.read_word(pb + 68), 0);
+        assert_eq!(bus.read_word(pb + 70), 0);
+    }
+
+    #[test]
+    fn pb_hget_vinfo_async_trap_word_also_populates_extended_fields() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 28, 1);
+        bus.write_long(pb + 64, 0xCAFE_BABE);
+
+        call_trap_word(&mut disp, 0xA607, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 64), 0x4244);
+        assert_eq!(bus.read_word(pb + 66), 0);
+        assert_eq!(bus.read_word(pb + 68), 0);
+        assert_eq!(bus.read_word(pb + 70), 0);
     }
 
     #[test]
