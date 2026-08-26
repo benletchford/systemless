@@ -15104,6 +15104,7 @@ impl super::TrapDispatcher {
                         if new_main != 0 {
                             self.main_gdevice_handle = new_main;
                             self.current_gdevice = new_main;
+                            bus.write_long(0x08A4, new_main); // MainDevice
                             bus.write_long(0x0CC8, new_main);
                         }
                         bus.write_word(sp + 8, 0);
@@ -37701,6 +37702,36 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 10), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_long(display_id_ptr), 1);
+    }
+
+    #[test]
+    fn displaydispatch_set_main_display_synchronizes_device_state_and_low_memory() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let old_main = d.ensure_main_gdevice(&mut bus);
+        let new_main = d.allocate_detached_gdevice(&mut bus);
+        assert_ne!(new_main, old_main);
+        bus.write_long(0x08A4, old_main); // MainDevice
+        bus.write_long(0x0CC8, old_main); // TheGDevice
+
+        cpu.write_reg(Register::D0, 0x0410);
+        bus.write_long(TEST_SP, 0); // displayState
+        bus.write_long(TEST_SP + 4, new_main);
+        bus.write_word(TEST_SP + 8, 0xA55A);
+        let result = d.dispatch_quickdraw(true, 0x3EB, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(d.main_gdevice_handle, new_main);
+        assert_eq!(d.current_gdevice, new_main);
+        assert_eq!(bus.read_long(0x08A4), new_main);
+        assert_eq!(bus.read_long(0x0CC8), new_main);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        let get_main = d.dispatch_quickdraw(true, 0x22A, &mut cpu, &mut bus);
+        assert!(get_main.unwrap().is_ok());
+        assert_eq!(bus.read_long(TEST_SP), new_main);
     }
 
     #[test]

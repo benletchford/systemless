@@ -10347,8 +10347,6 @@ impl super::TrapDispatcher {
 
         let dropdown_rect = self.popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
         let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
-        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
-
         if let Some(tracking) = self.dialog_tracking.as_mut() {
             tracking.active_popup = Some(DialogPopupTrackingState {
                 item_no,
@@ -10359,10 +10357,11 @@ impl super::TrapDispatcher {
                 saved_pixels,
                 dropdown_rect,
             });
-            true
         } else {
-            false
+            return false;
         }
+        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+        true
     }
 
     fn dialog_popup_item_at_point(&self, bus: &MacMemoryBus, mouse_x: i16, mouse_y: i16) -> i16 {
@@ -10407,23 +10406,14 @@ impl super::TrapDispatcher {
             if new_item != old_item {
                 let popup_state = self
                     .dialog_tracking
-                    .as_ref()
-                    .and_then(|tracking| tracking.active_popup.as_ref())
-                    .map(|popup| (popup.active_menu, popup.dropdown_rect));
-                if let Some((active_menu, dropdown_rect)) = popup_state {
-                    if old_item > 0 {
-                        self.invert_dropdown_item_rect(bus, active_menu, dropdown_rect, old_item);
-                    }
-                    if let Some(popup) = self
-                        .dialog_tracking
-                        .as_mut()
-                        .and_then(|tracking| tracking.active_popup.as_mut())
-                    {
+                    .as_mut()
+                    .and_then(|tracking| tracking.active_popup.as_mut())
+                    .map(|popup| {
                         popup.highlighted_item = new_item;
-                    }
-                    if new_item > 0 {
-                        self.invert_dropdown_item_rect(bus, active_menu, dropdown_rect, new_item);
-                    }
+                        (popup.active_menu, popup.dropdown_rect)
+                    });
+                if let Some((active_menu, dropdown_rect)) = popup_state {
+                    self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
                 }
             }
             return;

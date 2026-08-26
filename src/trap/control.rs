@@ -821,13 +821,6 @@ impl super::TrapDispatcher {
         0
     }
 
-    fn invert_control_tracking_item(&self, bus: &mut MacMemoryBus, item: i16) {
-        let Some(tracking) = self.control_tracking.as_ref() else {
-            return;
-        };
-        self.invert_dropdown_item_rect(bus, tracking.active_menu, tracking.dropdown_rect, item);
-    }
-
     fn set_control_tracking_highlight(&mut self, bus: &mut MacMemoryBus, item: i16) {
         let Some(old_item) = self
             .control_tracking
@@ -837,19 +830,6 @@ impl super::TrapDispatcher {
             return;
         };
         if old_item == item {
-            return;
-        }
-
-        if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 {
-            if old_item > 0 {
-                self.invert_control_tracking_item(bus, old_item);
-            }
-            if let Some(tracking) = self.control_tracking.as_mut() {
-                tracking.highlighted_item = item;
-            }
-            if item > 0 {
-                self.invert_control_tracking_item(bus, item);
-            }
             return;
         }
 
@@ -3531,7 +3511,6 @@ impl super::TrapDispatcher {
                                         let dropdown_rect = self
                                             .popup_control_dropdown_rect(bus, ctrl_ptr, menu_idx);
                                         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
-                                        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
                                         self.control_tracking = Some(ControlTrackingState {
                                             ctrl_handle,
                                             ctrl_ptr,
@@ -3551,6 +3530,7 @@ impl super::TrapDispatcher {
                                             scrollbar_idle_refires: 0,
                                             scrollbar_callback_pending: false,
                                         });
+                                        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
                                         self.record_trackcontrol_input_trace(
                                             bus,
                                             "start",
