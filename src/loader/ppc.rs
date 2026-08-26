@@ -57,6 +57,7 @@ pub const PPC_MAIN_GDEVICE: u32 = 0x02f0_0100;
 pub const PPC_DSP_BACK_GWORLD: u32 = 0x0501_0000;
 pub const PPC_DATA_BASE: u32 = 0x0200_0000;
 pub const PPC_HEAP_BASE: u32 = 0x0300_0000;
+const PPC_APPLICATION_PARTITION_SIZE: usize = (PPC_HEAP_BASE - PPC_CODE_BASE) as usize;
 const PPC_HEAP_ALIGNMENT: u32 = 16;
 pub const PPC_STACK_TOP: u32 = 0x0500_0000;
 pub const PPC_DEFAULT_STACK_SIZE: u32 = 64 * 1024;
@@ -12663,6 +12664,12 @@ pub fn load_pef_application_with_config(
         PPC_CLASSIC_APP_MEMORY_BASE,
         vec![0u8; PPC_CLASSIC_APP_MEMORY_SIZE],
     );
+    // Inside Macintosh: Memory (1992), pp. 1-4 and 1-7, describes the
+    // application partition as contiguous storage containing the process's
+    // code and data. Back the native partition before overlaying the
+    // exact PEF sections so ordinary partition slack remains addressable while
+    // each section retains its declared contents and permissions.
+    memory.add_region(PPC_CODE_BASE, vec![0u8; PPC_APPLICATION_PARTITION_SIZE]);
     for section in mapped_sections {
         if section.section_kind == SECTION_KIND_CODE
             || section.section_kind == SECTION_KIND_CONSTANT
@@ -20574,7 +20581,10 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::Random => {
-            Some(PpcImportAction::Return(u32::from(ppc_random(memory))))
+            let seed_addr = ppc_quickdraw_random_seed_addr(memory, toolbox_startup);
+            Some(PpcImportAction::Return(u32::from(ppc_random(
+                memory, seed_addr,
+            ))))
         }
         PpcImportDispatcherTarget::BitAnd => Some(PpcImportAction::Return(cpu.gpr[3] & cpu.gpr[4])),
         PpcImportDispatcherTarget::BitOr => Some(PpcImportAction::Return(cpu.gpr[3] | cpu.gpr[4])),
@@ -20761,7 +20771,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::StdRand => Some(PpcImportAction::Return(u32::from(
-            ppc_random(memory) & 0x7fff,
+            ppc_random(memory, PPC_RAND_SEED_ADDR) & 0x7fff,
         ))),
         PpcImportDispatcherTarget::P2CStr => {
             ppc_p2cstr(cpu, memory);
@@ -38713,11 +38723,25 @@ fn ppc_param_text(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, param_text: &mut
     }
 }
 
-fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
-    let old_seed = memory.read_u32_be(PPC_RAND_SEED_ADDR).unwrap_or(1);
+fn ppc_quickdraw_random_seed_addr(
+    memory: &mut PpcSectionMem,
+    toolbox_startup: &PpcToolboxStartupState,
+) -> u32 {
+    if toolbox_startup.init_graf_count != 0 {
+        if let Some(seed_addr) = toolbox_startup.init_graf_global_ptr.checked_sub(126) {
+            if ppc_memory_can_write_bytes(memory, seed_addr, 4) {
+                return seed_addr;
+            }
+        }
+    }
+    PPC_RAND_SEED_ADDR
+}
+
+fn ppc_random(memory: &mut PpcSectionMem, seed_addr: u32) -> u16 {
+    let old_seed = memory.read_u32_be(seed_addr).unwrap_or(1);
     let seed = if old_seed == 0 { 1 } else { old_seed };
     let new_seed = ((u64::from(seed) * 16_807) % 2_147_483_647) as u32;
-    let _ = memory.write_u32_be(PPC_RAND_SEED_ADDR, new_seed);
+    let _ = memory.write_u32_be(seed_addr, new_seed);
     let result = new_seed as u16;
     if result == 0x8000 {
         0
@@ -53582,10 +53606,31 @@ fn ppc_plot_cicon(
 ) -> bool {
     let rect_ptr = cpu.gpr[3];
     let icon_handle = cpu.gpr[4];
-    let (Some(port_dst_rect), Some(icon_ptr)) = (
+    let (Some(port_dst_rect), Some(_)) = (
         ppc_read_rect(memory, rect_ptr),
         memory.read_u32_be(icon_handle).filter(|ptr| *ptr != 0),
     ) else {
+        return false;
+    };
+    ppc_plot_cicon_rect(
+        memory,
+        gworlds,
+        current_gworld,
+        screen_clut,
+        port_dst_rect,
+        icon_handle,
+    )
+}
+
+fn ppc_plot_cicon_rect(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    screen_clut: &[[u16; 3]; 256],
+    port_dst_rect: (i16, i16, i16, i16),
+    icon_handle: u32,
+) -> bool {
+    let Some(icon_ptr) = memory.read_u32_be(icon_handle).filter(|ptr| *ptr != 0) else {
         return false;
     };
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
@@ -55301,15 +55346,41 @@ fn ppc_initialize_dialog_items(
                     .and_then(|bytes| bytes.try_into().ok())
                     .map(i16::from_be_bytes)
                     .unwrap_or(0);
-                let resource_type = if base_type == PPC_DIALOG_ITEM_ICON {
-                    u32::from_be_bytes(*b"ICON")
-                } else {
-                    u32::from_be_bytes(*b"PICT")
-                };
-                if let Some(index) = ppc_vfs_resource_index(
+                // Imaging With QuickDraw, “The Color Icon Resource”: on a
+                // color device, Dialog Manager prefers a same-ID `cicn` over
+                // `ICON`.
+                if base_type == PPC_DIALOG_ITEM_ICON
+                    && ppc_vfs_resource_index(
+                        vfs_resources,
+                        current_resource_refnum,
+                        u32::from_be_bytes(*b"cicn"),
+                        resource_id,
+                        false,
+                    )
+                    .is_some()
+                {
+                    let mut icon_cpu = PpcCpu::new();
+                    icon_cpu.gpr[3] = resource_id as u16 as u32;
+                    ppc_get_cicon(
+                        &icon_cpu,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        handles,
+                        free_handle_blocks,
+                        vfs_resources,
+                        current_resource_refnum,
+                        last_resource_error,
+                    )
+                } else if let Some(index) = ppc_vfs_resource_index(
                     vfs_resources,
                     current_resource_refnum,
-                    resource_type,
+                    if base_type == PPC_DIALOG_ITEM_ICON {
+                        u32::from_be_bytes(*b"ICON")
+                    } else {
+                        u32::from_be_bytes(*b"PICT")
+                    },
                     resource_id,
                     false,
                 ) {
@@ -57423,9 +57494,9 @@ fn ppc_new_pixmap(
     current_gdevice: u32,
 ) -> u32 {
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-85--4-86:
-    // NewPixMap clones the current device PixMap except for its ColorTable.
-    // It allocates that handle but deliberately leaves the table uninitialized;
-    // the application must install a table that describes its pixels.
+    // NewPixMap initializes from the current device PixMap and retains its
+    // baseAddr. It installs a private minimal ColorTable and the prescribed
+    // 72-dpi resolution defaults.
     let source_pixmap = memory
         .read_u32_be(current_gdevice)
         .filter(|device| *device != 0)
@@ -57463,7 +57534,6 @@ fn ppc_new_pixmap(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    pixmap_bytes[0..4].copy_from_slice(&0u32.to_be_bytes());
     pixmap_bytes[22..26].copy_from_slice(&0x0048_0000u32.to_be_bytes());
     pixmap_bytes[26..30].copy_from_slice(&0x0048_0000u32.to_be_bytes());
     pixmap_bytes[42..46].copy_from_slice(&ctable_handle.to_be_bytes());
@@ -57835,6 +57905,52 @@ fn ppc_frame_front_rect(
     wrote
 }
 
+fn ppc_draw_front_oval(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    frame_only: bool,
+) -> bool {
+    let top = i32::from(rect.0);
+    let left = i32::from(rect.1);
+    let bottom = i32::from(rect.2);
+    let right = i32::from(rect.3);
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0 || height <= 0 {
+        return false;
+    }
+    let pixel = match front.depth {
+        8 => u16::from(ppc_rgb_color_to_8bpp_index(color)),
+        16 => ppc_rgb_color_to_rgb555(color),
+        _ => return false,
+    };
+    let center_x2 = left * 2 + width;
+    let center_y2 = top * 2 + height;
+    let inner_width = (width - 2).max(0);
+    let inner_height = (height - 2).max(0);
+    let mut wrote = false;
+    for y in top.max(0)..bottom.min(front.height as i32) {
+        for x in left.max(0)..right.min(front.width as i32) {
+            let dx2 = 2 * x + 1 - center_x2;
+            let dy2 = 2 * y + 1 - center_y2;
+            let outer = i64::from(dx2) * i64::from(dx2) * i64::from(height).pow(2)
+                + i64::from(dy2) * i64::from(dy2) * i64::from(width).pow(2)
+                <= i64::from(width).pow(2) * i64::from(height).pow(2);
+            let inner = inner_width > 0
+                && inner_height > 0
+                && i64::from(dx2) * i64::from(dx2) * i64::from(inner_height).pow(2)
+                    + i64::from(dy2) * i64::from(dy2) * i64::from(inner_width).pow(2)
+                    <= i64::from(inner_width).pow(2) * i64::from(inner_height).pow(2);
+            if outer && (!frame_only || !inner) {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front, (x, y), pixel);
+            }
+        }
+    }
+    wrote
+}
+
 fn ppc_draw_dialog_text(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -57946,7 +58062,7 @@ fn ppc_draw_dialog(
     for (index, item) in items.iter().enumerate() {
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
         match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
-            PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
+            PPC_DIALOG_ITEM_BUTTON => {
                 let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_WHITE);
                 let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
                 if index + 1 == default_item {
@@ -57981,6 +58097,70 @@ fn ppc_draw_dialog(
                     &title,
                 );
             }
+            PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
+                let indicator_size = 12.min(rect.2.saturating_sub(rect.0).max(1));
+                let indicator_top = rect.0.saturating_add(
+                    rect.2.saturating_sub(rect.0).saturating_sub(indicator_size) / 2,
+                );
+                let indicator = (
+                    indicator_top,
+                    rect.1,
+                    indicator_top.saturating_add(indicator_size),
+                    rect.1.saturating_add(indicator_size),
+                );
+                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_RADIO {
+                    let _ = ppc_draw_front_oval(memory, front, indicator, PPC_RGB_BLACK, true);
+                } else {
+                    let _ = ppc_frame_front_rect(memory, front, indicator, PPC_RGB_BLACK, 1);
+                }
+                let selected = memory
+                    .read_u32_be(item.handle)
+                    .filter(|ptr| *ptr != 0)
+                    .and_then(|ptr| memory.read_u16_be(ptr + PPC_CONTROL_VALUE_OFFSET))
+                    .unwrap_or(0)
+                    != 0;
+                if selected {
+                    if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_RADIO {
+                        let dot = (
+                            indicator.0.saturating_add(3),
+                            indicator.1.saturating_add(3),
+                            indicator.2.saturating_sub(3),
+                            indicator.3.saturating_sub(3),
+                        );
+                        let _ = ppc_draw_front_oval(memory, front, dot, PPC_RGB_BLACK, false);
+                    } else {
+                        let _ = ppc_fill_front_rect(
+                            memory,
+                            front,
+                            (
+                                indicator.0.saturating_add(3),
+                                indicator.1.saturating_add(3),
+                                indicator.2.saturating_sub(3),
+                                indicator.3.saturating_sub(3),
+                            ),
+                            PPC_RGB_BLACK,
+                        );
+                    }
+                }
+                let title = ppc_dialog_item_title(memory, handles, item);
+                let title_h = rect.1.saturating_add(indicator_size).saturating_add(4);
+                let title_v = rect
+                    .0
+                    .saturating_add(rect.2.saturating_sub(rect.0).saturating_add(9) / 2)
+                    .min(rect.2.saturating_sub(1));
+                let _ = ppc_draw_text_bytes(
+                    memory,
+                    gworlds,
+                    PPC_MAIN_GWORLD,
+                    (title_h, title_v),
+                    PPC_QD_TEXT_FONT_DEFAULT,
+                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    PPC_QD_TEXT_MODE_SRC_OR,
+                    PPC_RGB_BLACK,
+                    None,
+                    &title,
+                );
+            }
             PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
                 if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_EDIT_TEXT {
@@ -58002,7 +58182,21 @@ fn ppc_draw_dialog(
                 }
             }
             PPC_DIALOG_ITEM_ICON => {
-                let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+                // Macintosh Toolbox Essentials (1992), pp. 6-120--6-121,
+                // permits icon items in a DITL. Color QuickDraw-era resource
+                // files commonly supply the same ID as a `cicn`; GetNewDialog
+                // installs the live color icon and Dialog Manager plots it in
+                // the item's rectangle.
+                if !ppc_plot_cicon_rect(
+                    memory,
+                    gworlds,
+                    PPC_MAIN_GWORLD,
+                    screen_clut,
+                    rect,
+                    item.handle,
+                ) {
+                    let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+                }
             }
             PPC_DIALOG_ITEM_RESOURCE_CONTROL => {
                 let _ = ppc_draw_control_inner(
@@ -71206,6 +71400,8 @@ mod tests {
     use crate::managers::resource::serialize_resource_fork;
     use ppc::PpcMemory;
 
+    const PPC_TEST_UNMAPPED_BASE: u32 = 0x0600_0000;
+
     fn test_q3_object(object: u32, object_type: u32) -> PpcQ3ObjectRecord {
         PpcQ3ObjectRecord {
             object,
@@ -78327,6 +78523,46 @@ mod tests {
     }
 
     #[test]
+    fn random_advances_the_initialized_application_quickdraw_seed() {
+        let pef = synthetic_pef_with_import(b"InitGraf");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let global_ptr = PPC_DATA_BASE + 0x2000;
+        let seed_addr = global_ptr - 126;
+        loaded
+            .memory
+            .write_u32_be(PPC_RAND_SEED_ADDR, 0x1234_5678)
+            .unwrap();
+        loaded.cpu.gpr[3] = global_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.memory.read_u32_be(seed_addr), Some(1));
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Random;
+        for expected_seed in [
+            16_807,
+            282_475_249,
+            1_622_650_073,
+            984_943_658,
+            1_144_108_930,
+        ] {
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.memory.read_u32_be(seed_addr), Some(expected_seed));
+            assert_eq!(loaded.cpu.gpr[3], u32::from(expected_seed as u16));
+        }
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_RAND_SEED_ADDR),
+            Some(0x1234_5678)
+        );
+    }
+
+    #[test]
     fn hle_import_runner_tracks_more_masters_requests() {
         let pef = synthetic_pef_with_import(b"MoreMasters");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -79727,9 +79963,9 @@ mod tests {
         assert_eq!(loaded.memory.read_u32_be(valid_size_out_ptr), Some(6));
         assert_eq!(loaded.memory.read_u32_be(buffer_size_out_ptr), Some(8));
 
-        let invalid_buffer_out_ptr = PPC_DATA_BASE + 0x1120;
-        let invalid_valid_size_out_ptr = PPC_DATA_BASE + 0x1130;
-        let invalid_buffer_size_out_ptr = PPC_DATA_BASE + 0x1140;
+        let invalid_buffer_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1120;
+        let invalid_valid_size_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1130;
+        let invalid_buffer_size_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1140;
         loaded
             .memory
             .add_region(invalid_buffer_out_ptr, vec![0xaa; 4]);
@@ -80695,9 +80931,9 @@ mod tests {
             Some(BLR)
         );
 
-        let invalid_draw_contexts_out_ptr = PPC_DATA_BASE + 0x1100;
-        let invalid_engines_out_ptr = PPC_DATA_BASE + 0x1200;
-        let invalid_count_out_ptr = PPC_DATA_BASE + 0x1300;
+        let invalid_draw_contexts_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
+        let invalid_engines_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
+        let invalid_count_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
         loaded
             .memory
             .add_region(invalid_draw_contexts_out_ptr, vec![0xaa; 4]);
@@ -81671,7 +81907,7 @@ mod tests {
         let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3Object_Dispose");
         let mut loaded = load_pef_application(&pef).unwrap();
         let first_error_out_ptr = PPC_DATA_BASE + 0x1000;
-        let short_first_error_out_ptr = PPC_DATA_BASE + 0x1100;
+        let short_first_error_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(first_error_out_ptr, vec![0xaa; 4]);
         loaded
             .memory
@@ -82482,7 +82718,7 @@ mod tests {
         for (index, (target, object, arg4, output_gpr, size, sentinel)) in
             invalid_getters.iter().enumerate()
         {
-            let invalid_output_ptr = PPC_DATA_BASE + 0x5000 + (index as u32) * 0x400;
+            let invalid_output_ptr = PPC_TEST_UNMAPPED_BASE + 0x5000 + (index as u32) * 0x400;
             loaded
                 .memory
                 .add_region(invalid_output_ptr, vec![*sentinel; (*size - 1) as usize]);
@@ -82697,7 +82933,7 @@ mod tests {
         for (index, (target, object, arg4, output_gpr, sentinel, retained_object)) in
             invalid_getters.iter().enumerate()
         {
-            let invalid_output_ptr = PPC_DATA_BASE + 0x7000 + (index as u32) * 0x100;
+            let invalid_output_ptr = PPC_TEST_UNMAPPED_BASE + 0x7000 + (index as u32) * 0x100;
             loaded
                 .memory
                 .add_region(invalid_output_ptr, vec![*sentinel; 3]);
@@ -83347,8 +83583,8 @@ mod tests {
         let vector3_left_ptr = scratch_ptr + 0x20;
         let vector3_right_ptr = scratch_ptr + 0x40;
         let vector3_third_ptr = scratch_ptr + 0x60;
-        let short_vector2_out = PPC_DATA_BASE + 0x4000;
-        let short_vector3_out = PPC_DATA_BASE + 0x4100;
+        let short_vector2_out = PPC_TEST_UNMAPPED_BASE + 0x4000;
+        let short_vector3_out = PPC_TEST_UNMAPPED_BASE + 0x4100;
         loaded.memory.add_region(scratch_ptr, vec![0; 0x100]);
         loaded.memory.add_region(
             short_vector2_out,
@@ -90390,7 +90626,7 @@ mod tests {
             ),
         ];
         for (index, (target, size, sentinel)) in invalid_getters.iter().enumerate() {
-            let invalid_output_ptr = PPC_DATA_BASE + 0x1400 + (index as u32) * 0x100;
+            let invalid_output_ptr = PPC_TEST_UNMAPPED_BASE + 0x1400 + (index as u32) * 0x100;
             loaded
                 .memory
                 .add_region(invalid_output_ptr, vec![*sentinel; (*size - 1) as usize]);
@@ -91176,7 +91412,7 @@ mod tests {
                 &mut loaded,
                 target.clone(),
                 *light,
-                PPC_DATA_BASE + 0x1400 + (index as u32) * 0x100,
+                PPC_TEST_UNMAPPED_BASE + 0x1400 + (index as u32) * 0x100,
                 *size,
                 *sentinel,
             );
@@ -91774,7 +92010,7 @@ mod tests {
                 &mut loaded,
                 target.clone(),
                 *light,
-                PPC_DATA_BASE + 0x1400 + (index as u32) * 0x100,
+                PPC_TEST_UNMAPPED_BASE + 0x1400 + (index as u32) * 0x100,
                 *size,
                 *sentinel,
             );
@@ -104053,7 +104289,7 @@ mod tests {
         );
 
         let mut loaded = load_pef_application(&pef).unwrap();
-        let short_word_response_ptr = PPC_DATA_BASE + 0x1100;
+        let short_word_response_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded
             .memory
             .add_region(short_word_response_ptr, vec![0xee; 2]);
@@ -104073,7 +104309,7 @@ mod tests {
         );
 
         let mut loaded = load_pef_application(&pef).unwrap();
-        let short_name_response_ptr = PPC_DATA_BASE + 0x1200;
+        let short_name_response_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
         loaded
             .memory
             .add_region(short_name_response_ptr, vec![0xdd; 4]);
@@ -104092,7 +104328,7 @@ mod tests {
         );
 
         let mut loaded = load_pef_application(&pef).unwrap();
-        let invalid_engine_response_ptr = PPC_DATA_BASE + 0x1300;
+        let invalid_engine_response_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
         loaded
             .memory
             .add_region(invalid_engine_response_ptr, vec![0xcc; 4]);
@@ -105795,13 +106031,13 @@ mod tests {
     fn hle_import_runner_prevalidates_quicktime_output_buffers() {
         let pef = synthetic_pef_with_library_import(b"QuickTimeLib", b"GetGraphicsImporterForFile");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let importer_out_ptr = PPC_DATA_BASE + 0x1000;
-        let bounds_ptr = PPC_DATA_BASE + 0x1100;
-        let ref_num_out_ptr = PPC_DATA_BASE + 0x1200;
-        let movie_out_ptr = PPC_DATA_BASE + 0x1300;
-        let res_id_ptr = PPC_DATA_BASE + 0x1400;
-        let data_ref_changed_ptr = PPC_DATA_BASE + 0x1500;
-        let box_ptr = PPC_DATA_BASE + 0x1600;
+        let importer_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let bounds_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
+        let ref_num_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
+        let movie_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
+        let res_id_ptr = PPC_TEST_UNMAPPED_BASE + 0x1400;
+        let data_ref_changed_ptr = PPC_TEST_UNMAPPED_BASE + 0x1500;
+        let box_ptr = PPC_TEST_UNMAPPED_BASE + 0x1600;
         loaded.memory.add_region(importer_out_ptr, vec![0xd1; 3]);
         loaded.memory.add_region(bounds_ptr, vec![0xd2; 7]);
         loaded.memory.add_region(ref_num_out_ptr, vec![0xd3; 1]);
@@ -110417,8 +110653,8 @@ mod tests {
     fn invalid_palette_reactivation_is_atomic() {
         let pef = synthetic_pef_with_import(b"ActivatePalette");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let handle = PPC_DATA_BASE + 0x5c00;
-        let palette = PPC_DATA_BASE + 0x5d00;
+        let handle = PPC_TEST_UNMAPPED_BASE + 0x5c00;
+        let palette = PPC_TEST_UNMAPPED_BASE + 0x5d00;
         loaded.memory.add_region(handle, vec![0; 4]);
         loaded.memory.add_region(palette, vec![0; 32]);
         loaded.memory.write_u32_be(handle, palette).unwrap();
@@ -111571,7 +111807,8 @@ mod tests {
     }
 
     #[test]
-    fn hle_import_runner_new_pixmap_allocates_an_uninitialized_color_table() {
+    fn hle_import_runner_new_pixmap_clones_device_base_and_allocates_an_uninitialized_color_table()
+    {
         let pef = synthetic_pef_with_import(b"NewPixMap");
         let mut loaded = load_pef_application(&pef).unwrap();
 
@@ -111581,6 +111818,26 @@ mod tests {
         let pixmap_handle = loaded.cpu.gpr[3];
         assert_ne!(pixmap_handle, 0);
         let pixmap = loaded.memory.read_u32_be(pixmap_handle).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(pixmap),
+            loaded.memory.read_u32_be(PPC_MAIN_PIXMAP)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(pixmap + 4),
+            loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 4)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(pixmap + 6),
+            loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 6)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(pixmap + 10),
+            loaded.memory.read_u32_be(PPC_MAIN_PIXMAP + 10)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(pixmap + 32),
+            loaded.memory.read_u16_be(PPC_MAIN_PIXMAP + 32)
+        );
         let private_handle = loaded.memory.read_u32_be(pixmap + 42).unwrap();
         assert_ne!(private_handle, 0);
         assert_ne!(private_handle, PPC_MAIN_CTABLE_HANDLE);
@@ -113939,7 +114196,7 @@ mod tests {
     fn hle_import_runner_quickdraw_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"GetForeColor");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let color_ptr = PPC_DATA_BASE + 0x1000;
+        let color_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(color_ptr, vec![0xab; 4]);
         loaded.cpu.gpr[3] = color_ptr;
 
@@ -113951,7 +114208,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"GetPort");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let port_ptr = PPC_DATA_BASE + 0x1080;
+        let port_ptr = PPC_TEST_UNMAPPED_BASE + 0x1080;
         loaded.memory.add_region(port_ptr, vec![0xba; 2]);
         loaded.cpu.gpr[3] = port_ptr;
 
@@ -113963,7 +114220,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"GetGWorld");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let scratch = PPC_DATA_BASE + 0x1100;
+        let scratch = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(scratch, vec![0xcc; 6]);
         loaded.cpu.gpr[3] = scratch;
         loaded.cpu.gpr[4] = scratch + 4;
@@ -113978,7 +114235,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"DMGetGDeviceByDisplayID");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let gdevice_ptr = PPC_DATA_BASE + 0x1180;
+        let gdevice_ptr = PPC_TEST_UNMAPPED_BASE + 0x1180;
         loaded.memory.add_region(gdevice_ptr, vec![0xcd; 2]);
         loaded.cpu.gpr[3] = PPC_DSP_DISPLAY_ID;
         loaded.cpu.gpr[4] = gdevice_ptr;
@@ -113992,7 +114249,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"SetRect");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let rect_ptr = PPC_DATA_BASE + 0x1200;
+        let rect_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
         loaded.memory.add_region(rect_ptr, vec![0xdd; 4]);
         loaded.cpu.gpr[3] = rect_ptr;
         loaded.cpu.gpr[4] = 20;
@@ -114008,7 +114265,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"OffsetRect");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let rect_ptr = PPC_DATA_BASE + 0x1300;
+        let rect_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
         loaded.memory.add_region(rect_ptr, vec![0xee; 4]);
         loaded.cpu.gpr[3] = rect_ptr;
         loaded.cpu.gpr[4] = 3;
@@ -114070,7 +114327,7 @@ mod tests {
     fn hle_import_runner_find_folder_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"FindFolder");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let scratch = PPC_DATA_BASE + 0x1000;
+        let scratch = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(scratch, vec![0x44; 4]);
         loaded.cpu.gpr[3] = 0xffff_8000;
         loaded.cpu.gpr[4] = u32::from_be_bytes(*b"pref");
@@ -116000,7 +116257,7 @@ mod tests {
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = name_ptr;
         loaded.cpu.gpr[4] = vref_ptr;
-        loaded.cpu.gpr[5] = PPC_DATA_BASE + 0x5000;
+        loaded.cpu.gpr[5] = PPC_TEST_UNMAPPED_BASE + 0x5000;
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -116057,7 +116314,7 @@ mod tests {
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
-        loaded.cpu.gpr[3] = PPC_DATA_BASE + 0x5000;
+        loaded.cpu.gpr[3] = PPC_TEST_UNMAPPED_BASE + 0x5000;
         loaded.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -116431,7 +116688,7 @@ mod tests {
     fn hle_import_runner_pb_set_cat_info_prevalidates_result_writeback() {
         let pef = synthetic_pef_with_import(b"PBSetCatInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let pb = PPC_DATA_BASE + 0x1000;
+        let pb = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(pb, vec![0; 17]);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
@@ -116664,8 +116921,8 @@ mod tests {
     fn hle_import_runner_file_open_and_position_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"FSpOpenDF");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let spec_ptr = PPC_DATA_BASE + 0x1000;
-        let ref_num_out_ptr = PPC_DATA_BASE + 0x1100;
+        let spec_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let ref_num_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(spec_ptr, vec![0; 70]);
         loaded.memory.add_region(ref_num_out_ptr, vec![0xee; 1]);
         write_ppc_fsspec(
@@ -116691,7 +116948,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let out_ptr = PPC_DATA_BASE + 0x1200;
+        let out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
         loaded.memory.add_region(out_ptr, vec![0xab; 2]);
         loaded.files.push(PpcFileRecord {
             ref_num: PPC_FIRST_FILE_REF_NUM,
@@ -118581,8 +118838,8 @@ mod tests {
     fn hle_import_runner_fs_read_output_is_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"FSRead");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let count_ptr = PPC_DATA_BASE + 0x1000;
-        let buffer_ptr = PPC_DATA_BASE + 0x1100;
+        let count_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let buffer_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(count_ptr, vec![0; 4]);
         loaded.memory.add_region(buffer_ptr, vec![0xbb; 2]);
         loaded.files.push(PpcFileRecord {
@@ -118756,8 +119013,8 @@ mod tests {
     fn hle_import_runner_fs_write_source_is_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"FSWrite");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let count_ptr = PPC_DATA_BASE + 0x1000;
-        let buffer_ptr = PPC_DATA_BASE + 0x1100;
+        let count_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let buffer_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(count_ptr, vec![0; 4]);
         loaded.memory.add_region(buffer_ptr, vec![b'x', b'y']);
         loaded.files.push(PpcFileRecord {
@@ -119267,7 +119524,7 @@ mod tests {
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.last_resource_error = PPC_NO_ERR;
-        loaded.cpu.gpr[3] = PPC_DATA_BASE + 0x5000;
+        loaded.cpu.gpr[3] = PPC_TEST_UNMAPPED_BASE + 0x5000;
         loaded.cpu.gpr[4] = 128;
         loaded.cpu.gpr[5] = 1;
 
@@ -119316,7 +119573,7 @@ mod tests {
     fn hle_import_runner_get_res_info_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"GetResInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let scratch = PPC_DATA_BASE + 0x2100;
+        let scratch = PPC_TEST_UNMAPPED_BASE + 0x2100;
         let handle = scratch + 0x40;
         let id_ptr = scratch;
         let type_ptr = scratch + 4;
@@ -120732,6 +120989,72 @@ mod tests {
     }
 
     #[test]
+    fn get_new_dialog_uses_and_draws_matching_color_icon_resources() {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[4..6].copy_from_slice(&20i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&20i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 18];
+        ditl[6..8].copy_from_slice(&1i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&2i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&2i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&10i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_ICON;
+        ditl[15] = 2;
+        ditl[16..18].copy_from_slice(&128i16.to_be_bytes());
+        for (res_type, data) in [
+            (*b"DLOG", dlog),
+            (*b"DITL", ditl),
+            (*b"ICON", vec![0xff; 128]),
+            (*b"cicn", test_one_bit_cicon()),
+        ] {
+            loaded.vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: loaded.current_resource_refnum,
+                path: "Game".to_string(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.run_with_hle_imports(64);
+        let dialog = loaded.cpu.gpr[3];
+        let items_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+            .unwrap();
+        let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+        let icon_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+        assert_ne!(icon_handle, 0);
+        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = dialog;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawDialog;
+        loaded.run_with_hle_imports(64);
+
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let red_index = pict::closest_clut_index(0xffff, 0, 0, &loaded.screen_clut);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
+            Some(u16::from(red_index))
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (6, 1)),
+            Some(0xff)
+        );
+    }
+
+    #[test]
     fn get_new_dialog_installs_owned_control_records_in_the_live_ditl() {
         let pef = synthetic_pef_with_import(b"GetNewDialog");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -121018,8 +121341,11 @@ mod tests {
         let scratch = PPC_DATA_BASE + 0x1000;
         let item_type_ptr = scratch;
         let item_handle_ptr = scratch + 4;
-        let item_rect_ptr = scratch + 8;
-        loaded.memory.add_region(scratch, vec![0xee; 12]);
+        let item_rect_ptr = PPC_CODE_BASE - 4;
+        loaded.memory.add_region(scratch, vec![0xee; 8]);
+        // The four-byte sentinel is writable, but a Rect would cross into
+        // the read-only application code mapping.
+        loaded.memory.add_region(item_rect_ptr, vec![0xee; 4]);
         loaded.last_mem_error = PPC_MEM_FULL_ERR;
         let heap_cursor = loaded.heap_cursor;
         loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x100;
@@ -124838,7 +125164,7 @@ mod tests {
     fn hle_import_runner_event_time_outputs_are_all_or_nothing() {
         let pef = synthetic_pef_with_import(b"GetKeys");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let key_map_ptr = PPC_DATA_BASE + 0x1000;
+        let key_map_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         let mut input = PpcInputSnapshot::default();
         input.key_map[(PPC_KEY_LEFT / 8) as usize] |= 1u8 << (PPC_KEY_LEFT % 8);
         loaded.set_input_snapshot(input);
@@ -124855,7 +125181,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"Microseconds");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let microseconds_ptr = PPC_DATA_BASE + 0x1100;
+        let microseconds_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(microseconds_ptr, vec![0xdd; 4]);
         loaded.cpu.gpr[3] = microseconds_ptr;
 
@@ -124870,7 +125196,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"GetDateTime");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let secs_ptr = PPC_DATA_BASE + 0x1180;
+        let secs_ptr = PPC_TEST_UNMAPPED_BASE + 0x1180;
         loaded.memory.add_region(secs_ptr, vec![0xbb; 2]);
         loaded.cpu.gpr[3] = secs_ptr;
 
@@ -124882,7 +125208,7 @@ mod tests {
 
         let pef = synthetic_pef_with_import(b"GetNextEvent");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let event_ptr = PPC_DATA_BASE + 0x1200;
+        let event_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
         loaded.memory.add_region(event_ptr, vec![0xee; 4]);
         loaded.cpu.gpr[3] = 0xffff;
         loaded.cpu.gpr[4] = event_ptr;
@@ -126468,7 +126794,7 @@ mod tests {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpFindBestContext");
         let mut loaded = load_pef_application(&pef).unwrap();
         let attributes_ptr = PPC_DATA_BASE + 0x1000;
-        let context_out_ptr = PPC_DATA_BASE + 0x1100;
+        let context_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(
             attributes_ptr,
             vec![0; PPC_DSP_CONTEXT_ATTRIBUTES_SIZE as usize],
@@ -126587,7 +126913,7 @@ mod tests {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpCanUserSelectContext");
         let mut loaded = load_pef_application(&pef).unwrap();
         let attributes_ptr = PPC_DATA_BASE + 0x1000;
-        let can_select_out_ptr = PPC_DATA_BASE + 0x1100;
+        let can_select_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded.memory.add_region(
             attributes_ptr,
             vec![0; PPC_DSP_CONTEXT_ATTRIBUTES_SIZE as usize],
@@ -126809,7 +127135,7 @@ mod tests {
     fn hle_import_runner_draw_sprocket_set_blanking_color_rejects_truncated_input() {
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpSetBlankingColor");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let color_ptr = PPC_DATA_BASE + 0x1000;
+        let color_ptr = PPC_TEST_UNMAPPED_BASE + 0x1600;
         let original = PpcRgbColor {
             red: 0x1111,
             green: 0x2222,
@@ -127322,7 +127648,7 @@ mod tests {
         let pef =
             synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetFrontBuffer");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let front_buffer_out_ptr = PPC_DATA_BASE + 0x1000;
+        let front_buffer_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded
             .memory
             .add_region(front_buffer_out_ptr, vec![0xaa; 2]);
@@ -127339,7 +127665,7 @@ mod tests {
 
         let pef = synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetDisplayID");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let display_id_out_ptr = PPC_DATA_BASE + 0x1000;
+        let display_id_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(display_id_out_ptr, vec![0xbb; 2]);
         loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
         loaded.cpu.gpr[4] = display_id_out_ptr;
@@ -127355,7 +127681,7 @@ mod tests {
         let pef =
             synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetBackBuffer");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let back_buffer_out_ptr = PPC_DATA_BASE + 0x1000;
+        let back_buffer_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(back_buffer_out_ptr, vec![0xcc; 2]);
         loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
         loaded.cpu.gpr[4] = PPC_DSP_BUFFER_KIND_NORMAL;
@@ -127819,7 +128145,7 @@ mod tests {
         let pef =
             synthetic_pef_with_library_import(b"DrawSprocketLib", b"DSpContext_GetAttributes");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let attributes_ptr = PPC_DATA_BASE + 0x1000;
+        let attributes_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
         loaded.memory.add_region(attributes_ptr, vec![0xaa; 4]);
         loaded.cpu.gpr[3] = PPC_DSP_CONTEXT;
         loaded.cpu.gpr[4] = attributes_ptr;
@@ -128054,8 +128380,8 @@ mod tests {
             b"ISpElement_NewVirtualFromNeeds",
         );
         let mut loaded = load_pef_application(&pef).unwrap();
-        let needs_ptr = PPC_DATA_BASE + 0x1000;
-        let elements_out_ptr = PPC_DATA_BASE + 0x1100;
+        let needs_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let elements_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
         loaded
             .memory
             .add_region(needs_ptr, vec![0; PPC_ISP_NEED_SIZE as usize]);
@@ -128401,10 +128727,10 @@ mod tests {
     fn hle_import_runner_prevalidates_input_sprocket_output_buffers() {
         let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpDevices_Extract");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let short_count_ptr = PPC_DATA_BASE + 0x1000;
-        let valid_count_ptr = PPC_DATA_BASE + 0x1100;
-        let short_buffer_ptr = PPC_DATA_BASE + 0x1200;
-        let short_state_ptr = PPC_DATA_BASE + 0x1300;
+        let short_count_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let valid_count_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
+        let short_buffer_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
+        let short_state_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
         let element = PPC_HEAP_BASE;
         loaded.memory.add_region(short_count_ptr, vec![0xb1; 3]);
         loaded.memory.add_region(valid_count_ptr, vec![0xb2; 4]);
@@ -129484,13 +129810,13 @@ mod tests {
     fn hle_import_runner_prevalidates_sound_manager_output_buffers() {
         let pef = synthetic_pef_with_import(b"SndSoundManagerVersion");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let version_ptr = PPC_DATA_BASE + 0x1000;
-        let volume_ptr = PPC_DATA_BASE + 0x1100;
-        let channel_out_ptr = PPC_DATA_BASE + 0x1200;
-        let status_ptr = PPC_DATA_BASE + 0x1300;
-        let cmd_ptr = PPC_DATA_BASE + 0x1400;
-        let rate_ptr = PPC_DATA_BASE + 0x1500;
-        let offset_ptr = PPC_DATA_BASE + 0x1600;
+        let version_ptr = PPC_TEST_UNMAPPED_BASE + 0x1000;
+        let volume_ptr = PPC_TEST_UNMAPPED_BASE + 0x1100;
+        let channel_out_ptr = PPC_TEST_UNMAPPED_BASE + 0x1200;
+        let status_ptr = PPC_TEST_UNMAPPED_BASE + 0x1300;
+        let cmd_ptr = PPC_TEST_UNMAPPED_BASE + 0x1400;
+        let rate_ptr = PPC_TEST_UNMAPPED_BASE + 0x1500;
+        let offset_ptr = PPC_TEST_UNMAPPED_BASE + 0x1600;
         loaded.memory.add_region(version_ptr, vec![0xa1; 3]);
         loaded.memory.add_region(volume_ptr, vec![0xa2; 3]);
         loaded.memory.add_region(channel_out_ptr, vec![0xa3; 3]);
@@ -130358,6 +130684,25 @@ mod tests {
 
     fn synthetic_pef() -> Vec<u8> {
         synthetic_pef_with_import(b"TestImport")
+    }
+
+    #[test]
+    fn pef_data_sections_live_in_zeroed_application_partition_storage() {
+        let data = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+        let mut loaded = load_pef_application(&synthetic_pef_with_loader_and_data(
+            synthetic_loader(b"InterfaceLib", b"TestImport"),
+            &data,
+        ))
+        .unwrap();
+
+        assert_eq!(loaded.memory.read_u8(PPC_DATA_BASE + 7), Some(0x88));
+        let slack = PPC_DATA_BASE + 0x1000;
+        assert_eq!(loaded.memory.read_u32_be(slack), Some(0));
+        assert_eq!(loaded.memory.write_u32_be(slack, 0x1234_5678), Some(()));
+        assert_eq!(loaded.memory.read_u32_be(slack), Some(0x1234_5678));
+        assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE - 4), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(PPC_CODE_BASE - 4), None);
+        assert_eq!(loaded.memory.write_u32_be(PPC_CODE_BASE, 0), None);
     }
 
     fn assert_ppc_bytes_equal(memory: &mut PpcSectionMem, start: u32, len: u32, expected: u8) {
