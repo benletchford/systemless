@@ -86,10 +86,15 @@ fragment float4 guest_raster_fragment(
         uchar packed = framebuffer[y * frame.row_bytes + x / 2];
         uint index = (x & 1) == 0 ? packed >> 4 : packed & 0x0F;
         argb = palette[index];
+    } else if (frame.pixel_size == 2) {
+        uchar packed = framebuffer[y * frame.row_bytes + x / 4];
+        uint shift = 6 - 2 * (x & 3);
+        uint index = (packed >> shift) & 0x03;
+        argb = palette[index];
     } else {
         uchar packed = framebuffer[y * frame.row_bytes + x / 8];
-        bool black = (packed & (0x80 >> (x & 7))) != 0;
-        argb = black ? 0xFF000000 : 0xFFFFFFFF;
+        uint index = (packed >> (7 - (x & 7))) & 0x01;
+        argb = palette[index];
     }
 
     int cursor_x = int(x) - frame.cursor_left;

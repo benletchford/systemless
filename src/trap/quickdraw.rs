@@ -3443,6 +3443,7 @@ impl super::TrapDispatcher {
                             dst_clut,
                             dst_ctab_handle,
                             src_info.pixel_size,
+                            dst_info.pixel_size,
                         )),
                         _ => None,
                     }
@@ -3635,11 +3636,25 @@ impl super::TrapDispatcher {
                         palette_translation.is_some(),
                     );
                 }
+                let destination_entry_count =
+                    Self::indexed_ctab_entry_count(dst_info.pixel_size) as usize;
                 let fg_index = dst_clut.as_ref().map(|clut| {
-                    self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_fg_rgb)
+                    self.palette_index_for_rgb_with_entry_count(
+                        bus,
+                        dst_ctab_handle,
+                        clut,
+                        copy_fg_rgb,
+                        destination_entry_count,
+                    )
                 });
                 let bg_index = dst_clut.as_ref().map(|clut| {
-                    self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb)
+                    self.palette_index_for_rgb_with_entry_count(
+                        bus,
+                        dst_ctab_handle,
+                        clut,
+                        copy_bg_rgb,
+                        destination_entry_count,
+                    )
                 });
                 let transparent_src_indices = if mode_base == 36 {
                     self.copy_bits_transparent_source_indices(
@@ -3829,12 +3844,13 @@ impl super::TrapDispatcher {
                                 ) else {
                                     continue;
                                 };
-                                let mapped = self.palette_index_for_rgb(
+                                let mapped = self.palette_index_for_rgb_with_entry_count(
                                     bus,
                                     dst_ctab_handle,
                                     dst_clut,
                                     result_rgb,
-                                ) & pixel_mask;
+                                    1usize << dst_bits,
+                                );
                                 let shifted_mask = pixel_mask << dst_shift;
                                 bus.write_byte(
                                     dst_addr,
@@ -3870,6 +3886,7 @@ impl super::TrapDispatcher {
                                     dst_ctab_handle,
                                     src_clut,
                                     dst_clut,
+                                    1usize << dst_bits,
                                     palette_translation,
                                     shared_indexed_pixel_mask,
                                     mode_base,
@@ -3915,6 +3932,7 @@ impl super::TrapDispatcher {
                                     dst_ctab_handle,
                                     src_clut,
                                     dst_clut,
+                                    256,
                                     palette_translation,
                                     None,
                                     mode_base,
@@ -3972,6 +3990,7 @@ impl super::TrapDispatcher {
                                     dst_ctab_handle,
                                     src_clut,
                                     dst_clut,
+                                    256,
                                     palette_translation,
                                     shared_indexed_pixel_mask,
                                     mode_base,
@@ -6361,7 +6380,8 @@ impl super::TrapDispatcher {
                     let flags = bus.read_word(sp);
                     let which_flags = bus.read_word(sp + 2);
                     let depth = bus.read_word(sp + 4);
-                    let mode_id = Self::has_depth_mode_id(depth, which_flags, flags);
+                    let gd = bus.read_long(sp + 6);
+                    let mode_id = self.has_depth_mode_id(bus, gd, depth, which_flags, flags);
                     bus.write_word(sp + 10, mode_id);
                     cpu.write_reg(Register::A7, sp + 10);
                     return Some(Ok(()));
@@ -6371,9 +6391,11 @@ impl super::TrapDispatcher {
                     // FUNCTION SetDepth(gd: GDHandle; depth, whichFlags,
                     //                   flags: Integer): OSErr;
                     // IM:VI VI-21-12
+                    let flags = bus.read_word(sp);
+                    let which_flags = bus.read_word(sp + 2);
                     let depth = bus.read_word(sp + 4);
                     let gd = bus.read_long(sp + 6);
-                    let result = self.set_depth_or_mode(cpu, bus, gd, depth);
+                    let result = self.set_depth_or_mode(cpu, bus, gd, depth, which_flags, flags);
                     bus.write_word(sp + 10, result);
                     cpu.write_reg(Register::A7, sp + 10);
                     cpu.write_reg(Register::D0, result as i32 as u32);
@@ -6628,7 +6650,7 @@ impl super::TrapDispatcher {
                     // nonzero mode ID when supported.
                     //
                     // Systemless exposes the common classic Mac display
-                    // depths as device capabilities. 1bpp, 4bpp, and 8bpp are
+                    // depths as device capabilities. 1bpp, 2bpp, 4bpp, and 8bpp are
                     // wired to screenBits/screen_mode; other supported depths
                     // are recorded at the GDevice level without changing the
                     // backing framebuffer.
@@ -6636,8 +6658,8 @@ impl super::TrapDispatcher {
                         let flags = bus.read_word(sp + 2);
                         let which_flags = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
-                        let _gd = bus.read_long(sp + 8);
-                        let mode_id = Self::has_depth_mode_id(depth, which_flags, flags);
+                        let gd = bus.read_long(sp + 8);
+                        let mode_id = self.has_depth_mode_id(bus, gd, depth, which_flags, flags);
                         bus.write_word(sp + 12, mode_id);
                         cpu.write_reg(Register::A7, sp + 12);
                     }
@@ -6648,16 +6670,17 @@ impl super::TrapDispatcher {
                     //
                     // Stack: same layout as HasDepth (10-byte arg block).
                     // Result is OSErr (Integer). Systemless updates screenBits
-                    // and screen_mode for the wired 1bpp/4bpp/8bpp paths, and
+                    // and screen_mode for the wired 1bpp/2bpp/4bpp/8bpp paths, and
                     // records other supported depth requests on the GDevice
                     // without changing the backing framebuffer.
                     //
                     0x0A13 => {
-                        let _flags = bus.read_word(sp + 2);
-                        let _which = bus.read_word(sp + 4);
+                        let flags = bus.read_word(sp + 2);
+                        let which_flags = bus.read_word(sp + 4);
                         let depth = bus.read_word(sp + 6);
                         let gd = bus.read_long(sp + 8);
-                        let result = self.set_depth_or_mode(cpu, bus, gd, depth);
+                        let result =
+                            self.set_depth_or_mode(cpu, bus, gd, depth, which_flags, flags);
                         bus.write_word(sp + 12, result);
                         cpu.write_reg(Register::A7, sp + 12);
                         cpu.write_reg(Register::D0, result as i32 as u32);
@@ -14009,6 +14032,7 @@ impl super::TrapDispatcher {
                             dst_clut,
                             dst_ctab_handle,
                             src_info.pixel_size,
+                            dst_info.pixel_size,
                         ))
                     }
                     _ => None,
@@ -14971,6 +14995,8 @@ impl super::TrapDispatcher {
                                 let vp_block = list + VP_BLOCK_OFFSET;
                                 let name = list + NAME_OFFSET;
                                 let (_, row_bytes, width, height, pixel_size) = self.screen_mode;
+                                let depth_mode =
+                                    crate::display::classic_depth_mode(pixel_size).unwrap_or(0);
 
                                 bus.write_long(list, u32::from_be_bytes(*b"DML1"));
                                 bus.write_long(list + 4, display_id);
@@ -14981,7 +15007,7 @@ impl super::TrapDispatcher {
                                 bus.write_long(entry + 20, 1);
                                 bus.write_long(entry + 24, name);
 
-                                bus.write_word(switch_info, 0x85);
+                                bus.write_word(switch_info, depth_mode);
                                 bus.write_long(switch_info + 2, 0x80);
                                 bus.write_long(switch_info + 8, self.screen_mode.0);
 
@@ -14989,7 +15015,7 @@ impl super::TrapDispatcher {
                                 bus.write_long(resolution + 8, u32::from(width));
                                 bus.write_long(resolution + 12, u32::from(height));
                                 bus.write_long(resolution + 16, 60 << 16);
-                                bus.write_long(resolution + 20, 0x85);
+                                bus.write_long(resolution + 20, u32::from(depth_mode));
                                 bus.write_long(timing, 0x80);
 
                                 bus.write_long(depth_block, 1);
@@ -15115,7 +15141,7 @@ impl super::TrapDispatcher {
                     //                  UInt32 reserved, Handle displayState) -> OSErr.
                     // Abuse uses this after accepting the 640x480/256-colour
                     // switch dialog. The single-screen HLE keeps the active
-                    // framebuffer, writes the current device mode to depthMode
+                    // framebuffer, writes the selected device mode to depthMode
                     // for nonzero requests, and routes mode 0 through the
                     // BasiliskII rejection path that leaves depthMode alone,
                     // keeps the main GDevice gdMode unchanged, and does not
@@ -15125,18 +15151,19 @@ impl super::TrapDispatcher {
                         let mode = bus.read_long(sp + 12);
                         let gdh = bus.read_long(sp + 16);
                         let gd = if gdh != 0 { bus.read_long(gdh) } else { 0 };
-                        let current_mode = if gd != 0 { bus.read_long(gd + 42) } else { 0 };
                         let result = if mode == 0 {
                             DM_SET_DISPLAY_MODE_REJECT_ERR
                         } else {
                             let (width, height) = Self::display_mode_geometry(mode)
                                 .unwrap_or_else(|| self.current_screen_geometry());
                             if self.do_setdepth_with_geometry(cpu, bus, 8, width, height) {
+                                let depth_mode = crate::display::classic_depth_mode(8)
+                                    .expect("8-bit display mode is defined by Video.h");
                                 if depth_mode_ptr != 0 {
-                                    bus.write_long(depth_mode_ptr, current_mode);
+                                    bus.write_long(depth_mode_ptr, u32::from(depth_mode));
                                 }
                                 if gd != 0 {
-                                    bus.write_long(gd + 42, mode);
+                                    bus.write_long(gd + 42, u32::from(depth_mode));
                                 }
                                 0
                             } else {
@@ -15166,11 +15193,10 @@ impl super::TrapDispatcher {
                     // DMGetDisplayMode(GDHandle theDevice, VDSwitchInfoPtr switchInfo)
                     // -> OSErr. VDSwitchInfoRec layout from Video.h:
                     //   csMode.w, csData.l, csPage.w, csBaseAddr.l, csReserved.l.
-                    // BasiliskII/System 7.5.3 reports csMode=$0085 and
-                    // csData=$00000080 for the main 8bpp display. Systemless
-                    // returns its guest framebuffer base instead of Basilisk's
-                    // physical `$A0000000` so callers that use the returned
-                    // pointer stay inside emulated RAM.
+                    // Video.h defines csMode as the active depth-mode token;
+                    // csData is the separate timing/display-mode ID. Systemless
+                    // returns its guest framebuffer base so callers that use
+                    // the returned pointer stay inside emulated RAM.
                     0x043E => {
                         let switch_info = bus.read_long(sp);
                         let device_gdh = bus.read_long(sp + 4);
@@ -15180,10 +15206,12 @@ impl super::TrapDispatcher {
                             self.ensure_main_gdevice(bus)
                         };
                         let gd = if gdh != 0 { bus.read_long(gdh) } else { 0 };
-                        let current_mode = if gd != 0 {
+                        let current_depth_mode = if gd != 0 {
                             bus.read_long(gd + 42)
                         } else {
-                            0x0000_0085
+                            crate::display::classic_depth_mode(self.screen_mode.4)
+                                .map(u32::from)
+                                .unwrap_or(0)
                         };
                         if switch_info != 0 {
                             let mut screen_base = self.screen_mode.0;
@@ -15200,7 +15228,7 @@ impl super::TrapDispatcher {
                                     REFERENCE_MACHINE_PROFILE.screen_depth,
                                 );
                             }
-                            bus.write_word(switch_info, current_mode as u16);
+                            bus.write_word(switch_info, current_depth_mode as u16);
                             bus.write_long(switch_info + 2, 0x0000_0080);
                             bus.write_word(switch_info + 6, 0);
                             bus.write_long(switch_info + 8, screen_base);
@@ -16129,15 +16157,12 @@ impl super::TrapDispatcher {
         bus.write_word(gd + 36, 0); // gdRect.left
         bus.write_word(gd + 38, screen_height);
         bus.write_word(gd + 40, screen_width);
-        // Keep the legacy 800x600 token for the default 8-bit mode. For a
-        // frontend-selected packed depth, expose that depth as the active
-        // Graphics Devices mode identifier so gdMode agrees with pixelSize.
-        let display_mode = if screen_depth == 8 {
-            0x0000_0085
-        } else {
-            u32::from(screen_depth)
-        };
-        bus.write_long(gd + 42, display_mode);
+        // Video.h depth-mode tokens are distinct from PixMap pixelSize and
+        // Display Manager timing IDs. Imaging With QuickDraw (1994),
+        // pp. 5-33--5-35, permits the HasDepth mode to be passed to SetDepth.
+        let depth_mode = crate::display::classic_depth_mode(screen_depth)
+            .expect("validated screen depth has a classic Video.h mode");
+        bus.write_long(gd + 42, u32::from(depth_mode));
 
         let gd_handle = bus.alloc(4);
         bus.write_long(gd_handle, gd);
@@ -16217,32 +16242,60 @@ impl super::TrapDispatcher {
         bus.write_word(gd + 20, flags);
     }
 
-    fn has_depth_mode_id(depth: u16, which_flags: u16, flags: u16) -> u16 {
-        // HasDepth's flags bit 0 is the color-device constraint. Classic
-        // color hardware can also advertise indexed grayscale monitor modes
-        // such as 4-bit "16 grays" and 8-bit "256 grays"; Glider PRO checks
-        // those modes before showing its color-depth dialog.
-        if which_flags & 1 != 0 && flags & 1 == 0 {
-            return match depth {
-                1 | 2 | 4 | 8 => depth,
-                _ => 0,
-            };
-        }
-
-        if Self::supported_depth_from_mode(depth).is_some() {
-            depth
+    fn gdevice_depth_flags(&mut self, bus: &mut MacMemoryBus, gdh: u32) -> Option<(u32, u16)> {
+        let gdh = if gdh == 0 {
+            self.ensure_main_gdevice(bus)
         } else {
-            0
+            gdh
+        };
+        let gd = bus.read_long(gdh);
+        (gd != 0).then(|| (gdh, bus.read_word(gd + 20)))
+    }
+
+    fn supported_depth_personality(
+        depth_or_mode: u16,
+        which_flags: u16,
+        flags: u16,
+        current_flags: u16,
+    ) -> Option<(u16, bool)> {
+        let depth = Self::supported_depth_from_mode(depth_or_mode)?;
+        let is_color = if which_flags & 1 != 0 {
+            flags & 1 != 0
+        } else {
+            match depth {
+                1 => false,
+                16 | 32 => true,
+                _ => current_flags & 1 != 0,
+            }
+        };
+        if (depth == 1 && is_color) || (matches!(depth, 16 | 32) && !is_color) {
+            return None;
         }
+        let fixed_mask = which_flags & !1;
+        if current_flags & fixed_mask != flags & fixed_mask {
+            return None;
+        }
+        Some((depth, is_color))
+    }
+
+    fn has_depth_mode_id(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        gdh: u32,
+        depth_or_mode: u16,
+        which_flags: u16,
+        flags: u16,
+    ) -> u16 {
+        let Some((_, current_flags)) = self.gdevice_depth_flags(bus, gdh) else {
+            return 0;
+        };
+        Self::supported_depth_personality(depth_or_mode, which_flags, flags, current_flags)
+            .and_then(|(depth, _)| crate::display::classic_depth_mode(depth))
+            .unwrap_or(0)
     }
 
     fn supported_depth_from_mode(depth_or_mode: u16) -> Option<u16> {
-        match depth_or_mode {
-            1 | 2 | 4 | 8 | 16 | 32 => Some(depth_or_mode),
-            // Display Manager mode tokens already used by the HLE paths.
-            0x0080 | 0x0085 => Some(8),
-            _ => None,
-        }
+        crate::display::classic_pixel_size(depth_or_mode)
     }
 
     fn palette_dispatch_selector(d0: u32) -> u16 {
@@ -16403,8 +16456,8 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
         gdh: u32,
-        mode: u16,
         depth: u16,
+        is_color: bool,
     ) {
         let gdh = if gdh != 0 {
             gdh
@@ -16416,10 +16469,13 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let Some(mode) = crate::display::classic_depth_mode(depth) else {
+            return;
+        };
         bus.write_long(gd + 42, u32::from(mode));
         let mut flags = bus.read_word(gd + 20);
         flags &= !1;
-        if depth > 1 {
+        if is_color {
             flags |= 1;
         }
         bus.write_word(gd + 20, flags);
@@ -16431,21 +16487,30 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         gdh: u32,
         depth_or_mode: u16,
+        which_flags: u16,
+        flags: u16,
     ) -> u16 {
-        let Some(depth) = Self::supported_depth_from_mode(depth_or_mode) else {
+        let Some((gdh, current_flags)) = self.gdevice_depth_flags(bus, gdh) else {
+            return (-50i16) as u16; // paramErr
+        };
+        let Some((depth, is_color)) =
+            Self::supported_depth_personality(depth_or_mode, which_flags, flags, current_flags)
+        else {
             return (-50i16) as u16; // paramErr
         };
 
-        let applied = if matches!(depth, 1 | 4 | 8) {
+        let applied = if matches!(depth, 1 | 2 | 4 | 8) {
             if depth == 8 {
                 if let Some((width, height)) = Self::display_mode_geometry(u32::from(depth_or_mode))
                 {
-                    self.do_setdepth_with_geometry(cpu, bus, depth, width, height)
+                    self.do_setdepth_with_geometry_and_personality(
+                        cpu, bus, depth, width, height, is_color,
+                    )
                 } else {
-                    self.do_setdepth(cpu, bus, depth)
+                    self.do_setdepth_with_personality(cpu, bus, depth, is_color)
                 }
             } else {
-                self.do_setdepth(cpu, bus, depth)
+                self.do_setdepth_with_personality(cpu, bus, depth, is_color)
             }
         } else {
             true
@@ -16454,7 +16519,7 @@ impl super::TrapDispatcher {
             return (-108i16) as u16; // memFullErr
         }
 
-        self.record_gdevice_depth_mode(bus, gdh, depth_or_mode, depth);
+        self.record_gdevice_depth_mode(bus, gdh, depth, is_color);
         0
     }
 
@@ -16689,7 +16754,7 @@ impl super::TrapDispatcher {
         self.resize_handle_allocation(bus, ctab_handle, 8 + entries.saturating_mul(8))
     }
 
-    fn ensure_color_table_capacity(
+    pub(crate) fn ensure_color_table_capacity(
         &mut self,
         bus: &mut MacMemoryBus,
         ctab_handle: u32,
@@ -19026,27 +19091,135 @@ impl super::TrapDispatcher {
     /// Imaging With QuickDraw 1994 pp. 5-34..5-35: SetDepth changes
     /// the pixel depth and color/B&W mode of the requested device.
     /// Systemless currently wires this for the depths its screen renderer
-    /// supports directly: 1bpp B&W plus 4bpp and 8bpp indexed color.
+    /// supports directly: 1bpp B&W plus 2bpp, 4bpp, and 8bpp indexed color.
     /// Returns false without changing the display mode when the target color
     /// tables cannot be grown safely.
+    #[cfg(test)]
     pub(crate) fn do_setdepth<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
         depth: u16,
     ) -> bool {
-        self.do_setdepth_with_geometry(
+        self.do_setdepth_with_personality(cpu, bus, depth, depth > 1)
+    }
+
+    fn do_setdepth_with_personality<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        depth: u16,
+        is_color: bool,
+    ) -> bool {
+        self.do_setdepth_with_geometry_and_personality(
             cpu,
             bus,
             depth,
             REFERENCE_MACHINE_PROFILE.screen_width,
             REFERENCE_MACHINE_PROFILE.screen_height,
+            is_color,
         )
+    }
+
+    fn standard_screen_depth_clut(depth: u16, is_color: bool) -> Option<([[u16; 3]; 256], usize)> {
+        let (mut clut, entry_count) = Self::standard_mac_indexed_clut(depth)?;
+        if !is_color {
+            let last = u32::try_from(entry_count.checked_sub(1)?).ok()?;
+            for (index, color) in clut.iter_mut().take(entry_count).enumerate() {
+                let index = u32::try_from(index).ok()?;
+                let component = ((last - index) * u32::from(u16::MAX) / last) as u16;
+                *color = [component; 3];
+            }
+        } else if depth == 2 {
+            // The standard 2-bit color screen table uses its spare entry for
+            // the System 7 highlight green; the grayscale personality keeps
+            // all four entries on the white-to-black ramp. Inside Macintosh:
+            // Volume VI (1991), pp. 17-17--17-18.
+            (clut, _) = Self::standard_mac_enhanced_clut(2, (0, 0x8000, 0))?;
+        }
+        Some((clut, entry_count))
+    }
+
+    fn do_setdepth_with_geometry<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        depth: u16,
+        width: u16,
+        height: u16,
+    ) -> bool {
+        self.do_setdepth_with_geometry_and_personality(cpu, bus, depth, width, height, depth > 1)
+    }
+
+    fn do_setdepth_with_geometry_and_personality<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        depth: u16,
+        width: u16,
+        height: u16,
+        is_color: bool,
+    ) -> bool {
+        let Some(row_bytes) = Self::row_bytes_for_depth(width, depth) else {
+            return false;
+        };
+        let ram_size = bus.ram_size();
+        let color_screen_base = ram_size - 0x80000;
+        let Some((_, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
+            return false;
+        };
+        if !self.preflight_setdepth_color_tables(bus, color_screen_base, entry_count) {
+            return false;
+        }
+        bus.write_long(0x0824, color_screen_base); // ScrnBase
+        bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
+
+        let sb = crate::memory::globals::addr::SCREEN_BITS;
+        bus.write_long(sb, color_screen_base);
+        bus.write_word(sb + 4, row_bytes as u16);
+        bus.write_word(sb + 6, 0);
+        bus.write_word(sb + 8, 0);
+        bus.write_word(sb + 10, height);
+        bus.write_word(sb + 12, width);
+
+        // Also update the QD globals copy of screenBits.
+        let a5 = cpu.read_reg(Register::A5);
+        let global_ptr = bus.read_long(a5);
+        if global_ptr != 0 {
+            let sb = global_ptr.wrapping_sub(122);
+            bus.write_long(sb, color_screen_base);
+            bus.write_word(sb + 4, row_bytes as u16);
+            bus.write_word(sb + 6, 0);
+            bus.write_word(sb + 8, 0);
+            bus.write_word(sb + 10, height);
+            bus.write_word(sb + 12, width);
+        }
+
+        self.sync_main_gdevice_geometry(bus, width, height, row_bytes, depth, is_color);
+        self.install_standard_depth_clut(bus, depth, is_color);
+        self.sync_screen_backed_cgrafports_depth(
+            bus,
+            color_screen_base,
+            row_bytes,
+            depth,
+            is_color,
+        );
+
+        // System 7.5.3 clears an 8bpp mode to 0xFF, as covered by the strict
+        // SetDepth oracle. Packed 1/2/4bpp modes clear to index 0; in the
+        // standard low-depth tables that is white.
+        let clear_byte = if depth == 8 { 0xFF } else { 0x00 };
+        for i in 0..(row_bytes * u32::from(height)) {
+            bus.write_byte(color_screen_base + i, clear_byte);
+        }
+        self.screen_mode = (color_screen_base, row_bytes, width, height, depth);
+        true
     }
 
     fn row_bytes_for_depth(width: u16, depth: u16) -> Option<u32> {
         match depth {
             1 => Some(u32::from(width).div_ceil(8)),
+            2 => Some(u32::from(width).div_ceil(4).next_multiple_of(2)),
             4 => Some(u32::from(width).div_ceil(2).next_multiple_of(2)),
             8 => Some(u32::from(width)),
             _ => None,
@@ -19055,10 +19228,11 @@ impl super::TrapDispatcher {
 
     fn display_mode_geometry(mode: u32) -> Option<(u16, u16)> {
         match mode {
-            // Video.h / Display Manager mode token observed from BasiliskII
-            // when games request the 640x480 8bpp switch.
+            // Display Manager timing/display-mode ID observed from BasiliskII
+            // when games request the 640x480 switch. This occupies `csData`,
+            // separate from the Video.h depth token in `csMode`.
             0x0000_0080 => Some((640, 480)),
-            // Default 800x600 8bpp mode token used by the single-screen HLE.
+            // Default 800x600 timing/display-mode ID used by the single-screen HLE.
             0x0000_0085 => Some((
                 REFERENCE_MACHINE_PROFILE.screen_width,
                 REFERENCE_MACHINE_PROFILE.screen_height,
@@ -19086,6 +19260,7 @@ impl super::TrapDispatcher {
         height: u16,
         row_bytes: u32,
         depth: u16,
+        is_color: bool,
     ) {
         let gdh = self.ensure_main_gdevice(bus);
         let gd = bus.read_long(gdh);
@@ -19121,9 +19296,8 @@ impl super::TrapDispatcher {
             }
         }
         let mut flags = bus.read_word(gd + 20);
-        if depth == 1 {
-            flags &= !0x0001;
-        } else {
+        flags &= !0x0001;
+        if is_color {
             flags |= 0x0001;
         }
         bus.write_word(gd + 20, flags);
@@ -19133,8 +19307,8 @@ impl super::TrapDispatcher {
         bus.write_word(gd + 40, width);
     }
 
-    fn install_standard_depth_clut(&mut self, bus: &mut MacMemoryBus, depth: u16) {
-        let Some((clut, entry_count)) = Self::standard_mac_indexed_clut(depth) else {
+    fn install_standard_depth_clut(&mut self, bus: &mut MacMemoryBus, depth: u16, is_color: bool) {
+        let Some((clut, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
             return;
         };
         self.device_clut = clut;
@@ -19163,8 +19337,9 @@ impl super::TrapDispatcher {
         screen_base: u32,
         row_bytes: u32,
         depth: u16,
+        is_color: bool,
     ) {
-        let Some((clut, entry_count)) = Self::standard_mac_indexed_clut(depth) else {
+        let Some((clut, entry_count)) = Self::standard_screen_depth_clut(depth, is_color) else {
             return;
         };
         let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
@@ -19246,64 +19421,6 @@ impl super::TrapDispatcher {
         ctab_handles.into_iter().all(|ctab_handle| {
             self.ensure_color_table_capacity(bus, ctab_handle, entry_count as u32) != 0
         })
-    }
-
-    fn do_setdepth_with_geometry<C: CpuOps>(
-        &mut self,
-        cpu: &mut C,
-        bus: &mut MacMemoryBus,
-        depth: u16,
-        width: u16,
-        height: u16,
-    ) -> bool {
-        let Some(row_bytes) = Self::row_bytes_for_depth(width, depth) else {
-            return false;
-        };
-        let ram_size = bus.ram_size();
-        let color_screen_base = ram_size - 0x80000;
-        let Some((_, entry_count)) = Self::standard_mac_indexed_clut(depth) else {
-            return false;
-        };
-        if !self.preflight_setdepth_color_tables(bus, color_screen_base, entry_count) {
-            return false;
-        }
-        bus.write_long(0x0824, color_screen_base); // ScrnBase
-        bus.write_word(crate::memory::globals::addr::SCREEN_ROW, row_bytes as u16);
-
-        let sb = crate::memory::globals::addr::SCREEN_BITS;
-        bus.write_long(sb, color_screen_base);
-        bus.write_word(sb + 4, row_bytes as u16);
-        bus.write_word(sb + 6, 0);
-        bus.write_word(sb + 8, 0);
-        bus.write_word(sb + 10, height);
-        bus.write_word(sb + 12, width);
-
-        // Also update the QD globals copy of screenBits.
-        let a5 = cpu.read_reg(Register::A5);
-        let global_ptr = bus.read_long(a5);
-        if global_ptr != 0 {
-            let sb = global_ptr.wrapping_sub(122);
-            bus.write_long(sb, color_screen_base);
-            bus.write_word(sb + 4, row_bytes as u16);
-            bus.write_word(sb + 6, 0);
-            bus.write_word(sb + 8, 0);
-            bus.write_word(sb + 10, height);
-            bus.write_word(sb + 12, width);
-        }
-
-        self.sync_main_gdevice_geometry(bus, width, height, row_bytes, depth);
-        self.install_standard_depth_clut(bus, depth);
-        self.sync_screen_backed_cgrafports_depth(bus, color_screen_base, row_bytes, depth);
-
-        // System 7.5.3 clears an 8bpp mode to 0xFF, as covered by the strict
-        // SetDepth oracle. Packed 1/2/4bpp modes clear to index 0; in the
-        // standard low-depth tables that is white.
-        let clear_byte = if depth == 8 { 0xFF } else { 0x00 };
-        for i in 0..(row_bytes * u32::from(height)) {
-            bus.write_byte(color_screen_base + i, clear_byte);
-        }
-        self.screen_mode = (color_screen_base, row_bytes, width, height, depth);
-        true
     }
 
     pub(super) fn sync_current_port_draw_state(&mut self, bus: &mut MacMemoryBus) {
@@ -19877,6 +19994,7 @@ impl super::TrapDispatcher {
                     dst_clut,
                     dst_ctab_handle,
                     src_info.pixel_size,
+                    dst_info.pixel_size,
                 )),
                 _ => None,
             }
@@ -19921,12 +20039,25 @@ impl super::TrapDispatcher {
                 dst_ctab_seed,
             );
         }
-        let fg_index = dst_clut
-            .as_ref()
-            .map(|clut| self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_fg_rgb));
-        let bg_index = dst_clut
-            .as_ref()
-            .map(|clut| self.palette_index_for_rgb(bus, dst_ctab_handle, clut, copy_bg_rgb));
+        let destination_entry_count = Self::indexed_ctab_entry_count(dst_info.pixel_size) as usize;
+        let fg_index = dst_clut.as_ref().map(|clut| {
+            self.palette_index_for_rgb_with_entry_count(
+                bus,
+                dst_ctab_handle,
+                clut,
+                copy_fg_rgb,
+                destination_entry_count,
+            )
+        });
+        let bg_index = dst_clut.as_ref().map(|clut| {
+            self.palette_index_for_rgb_with_entry_count(
+                bus,
+                dst_ctab_handle,
+                clut,
+                copy_bg_rgb,
+                destination_entry_count,
+            )
+        });
         let transparent_src_indices = if mode_base == 36 {
             self.copy_bits_transparent_source_indices(
                 bus,
@@ -20129,9 +20260,13 @@ impl super::TrapDispatcher {
                         ) else {
                             continue;
                         };
-                        let mapped =
-                            self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, result_rgb)
-                                & pixel_mask;
+                        let mapped = self.palette_index_for_rgb_with_entry_count(
+                            bus,
+                            dst_ctab_handle,
+                            dst_clut,
+                            result_rgb,
+                            1usize << dst_bits,
+                        );
                         let shifted_mask = pixel_mask << dst_shift;
                         bus.write_byte(
                             dst_addr,
@@ -20164,6 +20299,7 @@ impl super::TrapDispatcher {
                             dst_ctab_handle,
                             src_clut,
                             dst_clut,
+                            1usize << dst_bits,
                             palette_translation,
                             shared_indexed_pixel_mask,
                             mode_base,
@@ -20201,6 +20337,7 @@ impl super::TrapDispatcher {
                             dst_ctab_handle,
                             src_clut,
                             dst_clut,
+                            256,
                             palette_translation,
                             None,
                             mode_base,
@@ -20229,6 +20366,7 @@ impl super::TrapDispatcher {
                             dst_ctab_handle,
                             src_clut,
                             dst_clut,
+                            256,
                             palette_translation,
                             shared_indexed_pixel_mask,
                             mode_base,
@@ -22136,6 +22274,16 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn nearest_palette_index(clut: &[[u16; 3]; 256], rgb: [u16; 3]) -> u8 {
+        Self::nearest_palette_index_with_entry_count(clut, rgb, 256)
+    }
+
+    fn nearest_palette_index_with_entry_count(
+        clut: &[[u16; 3]; 256],
+        rgb: [u16; 3],
+        entry_count: usize,
+    ) -> u8 {
+        let entry_count = entry_count.clamp(1, 256);
+        let terminal_index = entry_count - 1;
         // QuickDraw's inverse tables reserve exact white/black for the first
         // and last CLUT entries when the endpoints are white/black, rather
         // than returning an arbitrary duplicate color-cube entry. During
@@ -22143,26 +22291,30 @@ impl super::TrapDispatcher {
         // canonical black drawing pinned to entry 255 in that collapsed case.
         // Imaging With QuickDraw 1994, p. 4-82
         // references/executor/src/quickdraw/qColorMgr.cpp (MakeITable)
-        if rgb == [0, 0, 0] && clut[255] == [0, 0, 0] {
-            return 255;
+        if rgb == [0, 0, 0] && clut[terminal_index] == [0, 0, 0] {
+            return terminal_index as u8;
         }
         if rgb == [0xFFFF, 0xFFFF, 0xFFFF] && clut[0] == [0xFFFF, 0xFFFF, 0xFFFF] {
             return 0;
         }
-        if rgb == clut[255] {
-            return 255;
+        if rgb == clut[terminal_index] {
+            return terminal_index as u8;
         }
         if rgb == clut[0] {
             return 0;
         }
 
-        if let Some((index, _)) = clut.iter().enumerate().find(|(_, entry)| **entry == rgb) {
+        if let Some((index, _)) = clut[..entry_count]
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| **entry == rgb)
+        {
             return index as u8;
         }
 
         let mut best_index = 0u8;
         let mut best_distance = u64::MAX;
-        for (index, entry) in clut.iter().enumerate() {
+        for (index, entry) in clut[..entry_count].iter().enumerate() {
             let dr = i64::from(entry[0]) - i64::from(rgb[0]);
             let dg = i64::from(entry[1]) - i64::from(rgb[1]);
             let db = i64::from(entry[2]) - i64::from(rgb[2]);
@@ -22182,9 +22334,12 @@ impl super::TrapDispatcher {
         dst_clut: &[[u16; 3]; 256],
         dst_ctab_handle: u32,
         src_pixel_size: u32,
+        dst_pixel_size: u32,
     ) -> [u8; 256] {
         let mut translation = [0u8; 256];
+        let dst_entry_count = Self::indexed_ctab_entry_count(dst_pixel_size) as usize;
         if src_pixel_size == 4
+            && dst_pixel_size == 8
             && Self::uses_standard_mac_4bpp_gworld_clut(src_clut)
             && Self::uses_canonical_system_8bpp_clut(dst_clut)
         {
@@ -22202,10 +22357,16 @@ impl super::TrapDispatcher {
             return translation;
         }
         for (index, rgb) in src_clut.iter().enumerate() {
-            translation[index] = if dst_clut[index] == *rgb {
+            translation[index] = if index < dst_entry_count && dst_clut[index] == *rgb {
                 index as u8
             } else {
-                self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, *rgb)
+                self.palette_index_for_rgb_with_entry_count(
+                    bus,
+                    dst_ctab_handle,
+                    dst_clut,
+                    *rgb,
+                    dst_entry_count,
+                )
             };
         }
         translation
@@ -22242,6 +22403,7 @@ impl super::TrapDispatcher {
         dst_ctab_handle: u32,
         src_clut: Option<&[[u16; 3]; 256]>,
         dst_clut: Option<&[[u16; 3]; 256]>,
+        dst_entry_count: usize,
         palette_translation: Option<&[u8; 256]>,
         shared_indexed_pixel_mask: Option<u8>,
         mode_base: u16,
@@ -22275,7 +22437,15 @@ impl super::TrapDispatcher {
         let dst_rgb = dst_clut[dst_pixel as usize];
         let is_black = src_rgb == [0, 0, 0];
         let is_white = src_rgb == [0xFFFF, 0xFFFF, 0xFFFF];
-        let map_rgb = |rgb| self.palette_index_for_rgb(bus, dst_ctab_handle, dst_clut, rgb);
+        let map_rgb = |rgb| {
+            self.palette_index_for_rgb_with_entry_count(
+                bus,
+                dst_ctab_handle,
+                dst_clut,
+                rgb,
+                dst_entry_count,
+            )
+        };
 
         match mode_base {
             0 => Some(raw_source()),
@@ -23051,6 +23221,7 @@ impl super::TrapDispatcher {
         bus: &MacMemoryBus,
         ctab_handle: u32,
         rgb: [u16; 3],
+        entry_count: usize,
     ) -> Option<u8> {
         if ctab_handle == 0 {
             return None;
@@ -23060,17 +23231,26 @@ impl super::TrapDispatcher {
             return None;
         }
 
+        let entry_count = entry_count.clamp(1, 256) as u32;
         let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        for i in 0..=ct_size.min(255) {
+        let device_table = bus.read_word(ctab_ptr + 4) & 0x8000 != 0;
+        for i in 0..=ct_size.min(entry_count - 1) {
             let entry = ctab_ptr + 8 + i * 8;
-            let value = bus.read_word(entry) as u8;
+            // Device ColorTables are positional: the entry ordinal is the
+            // pixel value, while image tables use ColorSpec.value. Inside
+            // Macintosh Volume V (1986), pp. V-57--V-58.
+            let value = if device_table {
+                i as u16
+            } else {
+                bus.read_word(entry)
+            };
             let entry_rgb = [
                 bus.read_word(entry + 2),
                 bus.read_word(entry + 4),
                 bus.read_word(entry + 6),
             ];
-            if entry_rgb == rgb {
-                return Some(value);
+            if entry_rgb == rgb && u32::from(value) < entry_count {
+                return Some(value as u8);
             }
         }
         None
@@ -23083,16 +23263,28 @@ impl super::TrapDispatcher {
         clut: &[[u16; 3]; 256],
         rgb: [u16; 3],
     ) -> u8 {
+        self.palette_index_for_rgb_with_entry_count(bus, ctab_handle, clut, rgb, 256)
+    }
+
+    fn palette_index_for_rgb_with_entry_count(
+        &self,
+        bus: &MacMemoryBus,
+        ctab_handle: u32,
+        clut: &[[u16; 3]; 256],
+        rgb: [u16; 3],
+        entry_count: usize,
+    ) -> u8 {
         let screen_ctab_handle = if self.main_gdevice_handle != 0 {
             Self::gdevice_ctab_handle(bus, self.main_gdevice_handle)
         } else {
             0
         };
         if ctab_handle != 0 && ctab_handle != screen_ctab_handle {
-            Self::palette_exact_match_index(bus, ctab_handle, rgb)
-                .unwrap_or_else(|| Self::nearest_palette_index(clut, rgb))
+            Self::palette_exact_match_index(bus, ctab_handle, rgb, entry_count).unwrap_or_else(
+                || Self::nearest_palette_index_with_entry_count(clut, rgb, entry_count),
+            )
         } else {
-            Self::nearest_palette_index(clut, rgb)
+            Self::nearest_palette_index_with_entry_count(clut, rgb, entry_count)
         }
     }
 
@@ -34854,12 +35046,161 @@ mod tests {
         let src = TrapDispatcher::standard_mac_4bpp_gworld_clut();
         let dst = TrapDispatcher::standard_mac_8bpp_clut();
 
-        let translation = d.build_palette_translation(&bus, &src, &dst, 0, 4);
+        let translation = d.build_palette_translation(&bus, &src, &dst, 0, 4, 8);
 
         assert_eq!(
             &translation[..16],
             &[0, 5, 23, 216, 32, 176, 236, 192, 227, 203, 137, 94, 43, 249, 252, 255]
         );
+    }
+
+    #[test]
+    fn copy_bits_four_bit_destination_ignores_exact_matches_outside_active_table() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let src_pixmap = 0x31E000u32;
+        let dst_pixmap = 0x31E100u32;
+        let src_base = 0x31F000u32;
+        let dst_base = 0x31F100u32;
+        let src_ctab_handle = 0x320000u32;
+        let dst_ctab_handle = 0x321000u32;
+        let src_rect = 0x322000u32;
+        let dst_rect = 0x322010u32;
+        let target = (0x4000, 0x4000, 0x4000);
+
+        let source_entries = (0..16u16)
+            .map(|index| {
+                if index == 3 {
+                    (index, target.0, target.1, target.2)
+                } else {
+                    (index, 0xFFFF, 0, 0)
+                }
+            })
+            .collect::<Vec<_>>();
+        write_color_table(&mut bus, src_ctab_handle, 0x1111_1111, &source_entries);
+
+        let destination_entries = (0..=252u16)
+            .map(|index| match index {
+                5 => (index, 0x4100, 0x4100, 0x4100),
+                252 => (index, target.0, target.1, target.2),
+                _ => (index, 0xFFFF, 0, 0),
+            })
+            .collect::<Vec<_>>();
+        write_color_table(&mut bus, dst_ctab_handle, 0x2222_2222, &destination_entries);
+
+        write_pixmap_indexed(&mut bus, src_pixmap, src_base, 1, 1, 1, 4, src_ctab_handle);
+        write_pixmap_indexed(&mut bus, dst_pixmap, dst_base, 1, 1, 1, 4, dst_ctab_handle);
+        bus.write_byte(src_base, 0x30);
+        bus.write_byte(dst_base, 0x0A);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(dst_base), 0x5A);
+    }
+
+    #[test]
+    fn copy_bits_packed_device_ctable_uses_entry_ordinals_with_zero_values() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let target = (0x4000, 0x4000, 0x4000);
+
+        for (case, depth, target_index) in [(0u32, 2u16, 2u8), (1, 4, 5)] {
+            let root = 0x330000 + case * 0x4000;
+            let src_pixmap = root + 0x100;
+            let dst_pixmap = root + 0x200;
+            let src_base = root + 0x300;
+            let dst_base = root + 0x310;
+            let src_ctab_handle = root + 0x1000;
+            let dst_ctab_handle = root + 0x2000;
+            let rect = root + 0x3000;
+            let entry_count = 1u16 << depth;
+            let source_index = 1u8;
+
+            let source_entries = (0..entry_count)
+                .map(|index| {
+                    if index == u16::from(source_index) {
+                        (index, target.0, target.1, target.2)
+                    } else {
+                        (index, 0xFFFF, 0, 0)
+                    }
+                })
+                .collect::<Vec<_>>();
+            write_color_table(
+                &mut bus,
+                src_ctab_handle,
+                0x1111_1111 + case,
+                &source_entries,
+            );
+
+            let destination_entries = (0..entry_count)
+                .map(|index| {
+                    if index == u16::from(target_index) {
+                        (0, target.0, target.1, target.2)
+                    } else {
+                        (0, 0xFFFF, 0, 0)
+                    }
+                })
+                .collect::<Vec<_>>();
+            write_color_table(
+                &mut bus,
+                dst_ctab_handle,
+                0x2222_2222 + case,
+                &destination_entries,
+            );
+            let dst_ctab = bus.read_long(dst_ctab_handle);
+            bus.write_word(dst_ctab + 4, 0x8000);
+
+            write_pixmap_indexed(
+                &mut bus,
+                src_pixmap,
+                src_base,
+                1,
+                1,
+                1,
+                depth,
+                src_ctab_handle,
+            );
+            write_pixmap_indexed(
+                &mut bus,
+                dst_pixmap,
+                dst_base,
+                1,
+                1,
+                1,
+                depth,
+                dst_ctab_handle,
+            );
+            let shift = 8 - depth;
+            let trailing_canary = ((1u16 << shift) - 1) as u8;
+            bus.write_byte(src_base, source_index << shift);
+            bus.write_byte(dst_base, trailing_canary);
+            write_rect(&mut bus, rect, 0, 0, 1, 1);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_long(TEST_SP, 0);
+            bus.write_word(TEST_SP + 4, 0); // srcCopy
+            bus.write_long(TEST_SP + 6, rect);
+            bus.write_long(TEST_SP + 10, rect);
+            bus.write_long(TEST_SP + 14, dst_pixmap);
+            bus.write_long(TEST_SP + 18, src_pixmap);
+
+            let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+
+            assert!(result.unwrap().is_ok());
+            assert_eq!(
+                bus.read_byte(dst_base),
+                (target_index << shift) | trailing_canary,
+                "{depth}bpp device ColorTable"
+            );
+        }
     }
 
     #[test]
@@ -37828,7 +38169,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
-        assert_eq!(bus.read_word(switch_info), 0x0085);
+        assert_eq!(bus.read_word(switch_info), 0x0083);
         assert_eq!(bus.read_long(switch_info + 2), 0x0000_0080);
         assert_eq!(bus.read_word(switch_info + 6), 0);
         assert_eq!(bus.read_long(switch_info + 8), d.screen_mode.0);
@@ -37858,8 +38199,8 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 20);
         assert_eq!(bus.read_word(TEST_SP + 20), 0);
-        assert_eq!(bus.read_long(depth_mode), 0x0000_0085);
-        assert_eq!(bus.read_long(gd + 42), 0x0000_0080);
+        assert_eq!(bus.read_long(depth_mode), 0x0000_0083);
+        assert_eq!(bus.read_long(gd + 42), 0x0000_0083);
         assert_eq!(d.screen_mode.2, 640);
         assert_eq!(d.screen_mode.3, 480);
         assert_eq!(d.screen_mode.4, 8);
@@ -37898,8 +38239,8 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_word(TEST_SP + 20), 0);
-        assert_eq!(bus.read_long(depth_mode), 1);
-        assert_eq!(bus.read_long(gd + 42), 0x0000_0080);
+        assert_eq!(bus.read_long(depth_mode), 0x0000_0083);
+        assert_eq!(bus.read_long(gd + 42), 0x0000_0083);
         let new_ctab = bus.read_long(ctab_handle);
         assert_ne!(new_ctab, old_ctab);
         assert_eq!(bus.get_alloc_size(old_ctab), None);
@@ -37937,7 +38278,7 @@ mod tests {
         assert!(get_result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
-        assert_eq!(bus.read_word(switch_info), 0x0080);
+        assert_eq!(bus.read_word(switch_info), 0x0083);
     }
 
     #[test]
@@ -37987,7 +38328,7 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 20), (-330i16) as u16);
         assert_eq!(cpu.read_reg(Register::D0), (-330i32) as u32);
         assert_eq!(bus.read_long(depth_mode), 0xCAFEBABEu32);
-        assert_eq!(bus.read_long(gd + 42), 0x0000_0085);
+        assert_eq!(bus.read_long(gd + 42), 0x0000_0083);
         assert_eq!(
             bus.read_long(screen_bits_ptr),
             screen_base_before,
@@ -38229,7 +38570,7 @@ mod tests {
         // a nonzero mode ID when the requested depth is supported.
         // Stack: SP+0=selector, SP+2=flags, SP+4=whichFlags, SP+6=depth,
         //        SP+8=gd, SP+12=result. Pops 12 bytes.
-        for depth in [1, 2, 4, 8] {
+        for depth in [1, 2, 4, 8, 16, 32] {
             let (mut d, mut cpu, mut bus) = setup();
             bus.write_word(TEST_SP, 0x0A14); // selector
             bus.write_word(TEST_SP + 2, 1); // flags (color)
@@ -38239,7 +38580,26 @@ mod tests {
             let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-            assert_ne!(bus.read_word(TEST_SP + 12), 0);
+            let mode = bus.read_word(TEST_SP + 12);
+            assert_eq!(mode, crate::display::classic_depth_mode(depth).unwrap());
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 0x0A13); // SetDepth selector
+            bus.write_word(TEST_SP + 2, 1); // flags (color)
+            bus.write_word(TEST_SP + 4, 0); // whichFlags
+            bus.write_word(TEST_SP + 6, mode); // feed HasDepth's mode back
+            bus.write_long(TEST_SP + 8, 0); // main gd
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_word(TEST_SP + 12), 0, "SetDepth mode {mode:#06x}");
+            let gdevice_handle = d.ensure_main_gdevice(&mut bus);
+            let gdevice = bus.read_long(gdevice_handle);
+            assert_eq!(bus.read_long(gdevice + 42), u32::from(mode));
+            if depth <= 8 {
+                let pixmap = bus.read_long(bus.read_long(gdevice + 22));
+                assert_eq!(bus.read_word(pixmap + 32), depth);
+                assert_eq!(d.screen_mode.4, depth);
+            }
         }
     }
 
@@ -38257,7 +38617,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(bus.read_word(TEST_SP + 10), 32);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0x0085);
     }
 
     #[test]
@@ -38276,7 +38636,10 @@ mod tests {
             let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-            assert_eq!(bus.read_word(TEST_SP + 10), depth);
+            assert_eq!(
+                bus.read_word(TEST_SP + 10),
+                crate::display::classic_depth_mode(depth).unwrap()
+            );
         }
     }
 
@@ -38293,7 +38656,10 @@ mod tests {
             let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
             assert!(result.unwrap().is_ok());
             assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
-            assert_eq!(bus.read_word(TEST_SP + 12), depth);
+            assert_eq!(
+                bus.read_word(TEST_SP + 12),
+                crate::display::classic_depth_mode(depth).unwrap()
+            );
         }
     }
 
@@ -38313,7 +38679,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(bus.read_word(TEST_SP + 10), 4);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0x0082);
     }
 
     #[test]
@@ -38331,7 +38697,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
-        assert_eq!(bus.read_word(TEST_SP + 10), 8);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0x0083);
     }
 
     #[test]
@@ -38412,6 +38778,100 @@ mod tests {
     }
 
     #[test]
+    fn set_depth_two_wires_packed_screen_and_color_table() {
+        // Imaging With QuickDraw (1994), pp. 4-10--4-11 and 5-34--5-35:
+        // 2bpp is an indexed device depth, and SetDepth imposes the selected
+        // depth on the device rather than merely recording its mode token.
+        let (mut d, mut cpu, mut bus) = setup();
+        let main_gdh = d.ensure_main_gdevice(&mut bus);
+        let main_gd = bus.read_long(main_gdh);
+        let main_pm = bus.read_long(bus.read_long(main_gd + 22));
+
+        bus.write_word(TEST_SP, 0x0A13); // selector
+        bus.write_word(TEST_SP + 2, 1); // flags: color
+        bus.write_word(TEST_SP + 4, 1); // whichFlags: gdDevType
+        bus.write_word(TEST_SP + 6, 2); // depth: 2bpp indexed
+        bus.write_long(TEST_SP + 8, main_gdh);
+        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_word(TEST_SP + 12), 0);
+        assert_eq!(d.screen_mode.1, 200);
+        assert_eq!(d.screen_mode.4, 2);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::SCREEN_BITS + 4),
+            200
+        );
+        assert_eq!(bus.read_word(main_pm + 4), 0x8000 | 200);
+        assert_eq!(bus.read_word(main_pm + 32), 2);
+        assert_eq!(bus.read_word(main_pm + 36), 2);
+        let ctab = bus.read_long(bus.read_long(main_pm + 42));
+        assert_eq!(bus.read_word(ctab + 6), 3);
+        assert_eq!(d.device_clut[0], [0xffff, 0xffff, 0xffff]);
+        assert_eq!(d.device_clut[3], [0x0000, 0x0000, 0x0000]);
+        assert_ne!(bus.read_word(main_gd + 20) & 1, 0);
+    }
+
+    #[test]
+    fn two_bit_has_depth_mode_round_trips_grayscale_and_color_personalities() {
+        for is_color in [false, true] {
+            let (mut d, mut cpu, mut bus) = setup();
+            let main_gdh = d.ensure_main_gdevice(&mut bus);
+            let main_gd = bus.read_long(main_gdh);
+            let main_pm = bus.read_long(bus.read_long(main_gd + 22));
+
+            cpu.write_reg(Register::D0, 0x0A14);
+            bus.write_word(TEST_SP, u16::from(is_color));
+            bus.write_word(TEST_SP + 2, 1); // whichFlags: gdDevType
+            bus.write_word(TEST_SP + 4, 2);
+            bus.write_long(TEST_SP + 6, main_gdh);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            let mode = bus.read_word(TEST_SP + 10);
+            assert_eq!(mode, 0x0081);
+
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0A13);
+            bus.write_word(TEST_SP, u16::from(is_color));
+            bus.write_word(TEST_SP + 2, 1);
+            bus.write_word(TEST_SP + 4, mode);
+            bus.write_long(TEST_SP + 6, main_gdh);
+            let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(bus.read_word(TEST_SP + 10), 0);
+
+            assert_eq!(bus.read_long(main_gd + 42), u32::from(mode));
+            assert_eq!(bus.read_word(main_gd + 20) & 1 != 0, is_color);
+            assert_eq!(bus.read_word(main_pm + 32), 2);
+            let (expected, entry_count) =
+                TrapDispatcher::standard_screen_depth_clut(2, is_color).unwrap();
+            let ctab = bus.read_long(bus.read_long(main_pm + 42));
+            assert_eq!(bus.read_word(ctab + 6), entry_count as u16 - 1);
+            for (index, color) in expected.iter().enumerate().take(entry_count) {
+                let entry = ctab + 8 + index as u32 * 8;
+                assert_eq!(
+                    [
+                        bus.read_word(entry + 2),
+                        bus.read_word(entry + 4),
+                        bus.read_word(entry + 6),
+                    ],
+                    *color
+                );
+            }
+            assert_eq!(d.device_clut, expected);
+            assert_eq!(d.color_manager_clut, expected);
+            assert_eq!(
+                expected[2],
+                if is_color {
+                    [0x0000, 0x8000, 0x0000]
+                } else {
+                    [0x5555, 0x5555, 0x5555]
+                }
+            );
+        }
+    }
+
+    #[test]
     fn set_depth_accepts_packed_long_d0_selector() {
         // IM:VI Table C-3 lists SetDepth as selector $0A13. Normalize the
         // longword D0 form ($000A0013) before falling back to the legacy
@@ -38471,7 +38931,7 @@ mod tests {
             bus.read_byte(d.screen_mode.0 + d.screen_mode.1 * 600 - 1),
             0x00
         );
-        assert_eq!(bus.read_long(gd + 42), 4);
+        assert_eq!(bus.read_long(gd + 42), 0x0082);
         assert_ne!(bus.read_word(gd + 20) & 1, 0);
     }
 
@@ -38907,23 +39367,35 @@ mod tests {
     fn set_depth_accepts_has_depth_mode_id_without_rewiring_unrendered_framebuffer() {
         // HasDepth's result can be passed back to SetDepth. Systemless records
         // the requested display mode on the GDevice but keeps the real
-        // framebuffer in its wired shape for non-1/4/8bpp requests.
+        // framebuffer in its wired shape for non-1/2/4/8bpp requests.
         let (mut d, mut cpu, mut bus) = setup();
         let gdh = d.ensure_main_gdevice(&mut bus);
         let before_screen_mode = d.screen_mode;
-        bus.write_word(TEST_SP, 0x0A13); // selector
+
+        bus.write_word(TEST_SP, 0x0A14); // HasDepth selector
         bus.write_word(TEST_SP + 2, 1); // flags (color)
         bus.write_word(TEST_SP + 4, 1); // whichFlags: color flag matters
-        bus.write_word(TEST_SP + 6, 32); // HasDepth mode ID for 32bpp
+        bus.write_word(TEST_SP + 6, 32); // requested pixel depth
         bus.write_long(TEST_SP + 8, gdh); // gd
-        let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
+        let has_depth = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(has_depth.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        let mode = bus.read_word(TEST_SP + 12);
+        assert_eq!(mode, 0x0085);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x0A13); // SetDepth selector
+        bus.write_word(TEST_SP + 2, 1);
+        bus.write_word(TEST_SP + 4, 1);
+        bus.write_word(TEST_SP + 6, mode);
+        bus.write_long(TEST_SP + 8, gdh);
+        let set_depth = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
+        assert!(set_depth.unwrap().is_ok());
         assert_eq!(bus.read_word(TEST_SP + 12), 0); // noErr
         assert_eq!(d.screen_mode, before_screen_mode);
 
         let gd = bus.read_long(gdh);
-        assert_eq!(bus.read_long(gd + 42), 32);
+        assert_eq!(bus.read_long(gd + 42), 0x0085);
         assert_ne!(bus.read_word(gd + 20) & 1, 0);
     }
 

@@ -951,10 +951,9 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
-        debug_assert!(matches!(depth, 1 | 4 | 8));
+        debug_assert!(matches!(depth, 1 | 2 | 4 | 8));
         let profile = crate::machine_profile::reference_machine_profile();
-        let visible_row_bytes =
-            (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
+        let visible_row_bytes = (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
         let row_bytes = (visible_row_bytes / 16 + 1) * 16;
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);

@@ -9945,7 +9945,14 @@ impl super::TrapDispatcher {
             && !skip_canonical_to_screen
             && !hardware_palette_active
         {
-            Some(self.build_palette_translation(bus, &src_clut, &dst_clut, screen_ctab_handle, 8))
+            Some(self.build_palette_translation(
+                bus,
+                &src_clut,
+                &dst_clut,
+                screen_ctab_handle,
+                8,
+                8,
+            ))
         } else {
             None
         };

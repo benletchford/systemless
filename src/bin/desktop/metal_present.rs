@@ -675,9 +675,9 @@ impl MetalPresenter {
         let screen_height = u32::from(height);
         let (content_left, content_top, width, height) = content_rect;
         let (drawable_width, drawable_height) = drawable_size;
-        if !matches!(pixel_size, 1 | 4 | 8) {
+        let Some(packed_content_left) = guest_packed_content_left(pixel_size, content_left) else {
             return Ok(false);
-        }
+        };
         if content_left.saturating_add(width) > screen_width
             || content_top.saturating_add(height) > screen_height
         {
@@ -704,11 +704,6 @@ impl MetalPresenter {
         let (mut uniforms, cursor_data) = cursor
             .map(|(image, position)| guest_cursor_data(Some(image), position))
             .unwrap_or_else(|| guest_cursor_data(None, (0, 0)));
-        let packed_content_left = match pixel_size {
-            1 => content_left & 7,
-            4 => content_left & 1,
-            _ => 0,
-        };
         let packed_origin_left = content_left - packed_content_left;
         uniforms.row_bytes = u32::try_from(visible_layout.visible_row_bytes)
             .map_err(|_| "visible guest row stride exceeds Metal's limit".to_string())?;
@@ -1081,6 +1076,16 @@ fn guest_frame_byte_len(row_bytes: u32, screen_height: u32) -> Option<usize> {
         .checked_mul(screen_height as usize)
 }
 
+fn guest_packed_content_left(pixel_size: u16, content_left: u32) -> Option<u32> {
+    match pixel_size {
+        1 => Some(content_left & 7),
+        2 => Some(content_left & 3),
+        4 => Some(content_left & 1),
+        8 => Some(0),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct GuestVisibleByteLayout {
     first_row_offset: usize,
@@ -1099,7 +1104,7 @@ fn guest_visible_byte_layout(
 ) -> Option<GuestVisibleByteLayout> {
     let row_stride = usize::try_from(row_bytes).ok()?;
     let (first_byte, byte_end) = match pixel_size {
-        1 | 4 => {
+        1 | 2 | 4 => {
             let pixels_per_byte = 8 / u32::from(pixel_size);
             (
                 usize::try_from(left / pixels_per_byte).ok()?,
@@ -1202,8 +1207,9 @@ fn copy_guest_visible_pixels_to_ptr(
 mod tests {
     use super::{
         aspect_fit_viewport, copy_guest_visible_pixels, guest_cursor_data,
-        guest_visible_byte_layout, guest_visible_pixels_equal, replace_pending_guest_frame,
-        GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata, GuestFrameUniforms,
+        guest_packed_content_left, guest_visible_byte_layout, guest_visible_pixels_equal,
+        replace_pending_guest_frame, GuestCursorData, GuestFrameMailboxState, GuestFrameMetadata,
+        GuestFrameUniforms,
     };
     use systemless::display::CursorImage;
 
@@ -1232,6 +1238,35 @@ mod tests {
         assert_eq!(layout.row_stride, 400);
         assert_eq!(layout.visible_row_bytes, 160);
         assert_eq!(layout.row_count, 20);
+    }
+
+    #[test]
+    fn cropped_two_bit_presentation_keeps_msb_aligned_metadata_and_rows() {
+        let layout = guest_visible_byte_layout(200, 2, 5, 10, 319, 20).unwrap();
+        assert_eq!(guest_packed_content_left(2, 5), Some(1));
+        assert_eq!(layout.first_row_offset, 2_001);
+        assert_eq!(layout.row_stride, 200);
+        assert_eq!(layout.visible_row_bytes, 80);
+        assert_eq!(layout.row_count, 20);
+    }
+
+    #[test]
+    fn guest_shader_decodes_two_bit_and_monochrome_pixels_through_the_palette() {
+        let shader = include_str!("metal_present.metal");
+        let (_, after_two_bit_header) = shader
+            .split_once("} else if (frame.pixel_size == 2) {")
+            .expect("guest shader must have an explicit 2bpp branch");
+        let (two_bit_branch, monochrome_branch) = after_two_bit_header
+            .split_once("} else {")
+            .expect("guest shader must retain a final 1bpp branch");
+
+        assert!(two_bit_branch.contains("x / 4"));
+        assert!(two_bit_branch.contains("6 - 2 * (x & 3)"));
+        assert!(two_bit_branch.contains("& 0x03"));
+        assert!(two_bit_branch.contains("argb = palette[index]"));
+        assert!(monochrome_branch.contains("x / 8"));
+        assert!(monochrome_branch.contains("7 - (x & 7)"));
+        assert!(monochrome_branch.contains("argb = palette[index]"));
     }
 
     #[test]

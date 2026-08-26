@@ -1,14 +1,12 @@
 //! Shared framebuffer rendering for all Systemless frontends.
 //!
 //! Produces RGBA pixel buffers from guest screen memory, supporting 1bpp
-//! monochrome plus 4bpp and 8bpp indexed-color modes.
+//! monochrome plus 2bpp, 4bpp, and 8bpp indexed-color modes.
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 
 const BLACK_ARGB: u32 = 0xFF000000;
 const WHITE_ARGB: u32 = 0xFFFFFFFF;
-const BLACK_RGBA_WORD: u32 = u32::from_le_bytes([0x00, 0x00, 0x00, 0xFF]);
-const WHITE_RGBA_WORD: u32 = u32::from_le_bytes([0xFF, 0xFF, 0xFF, 0xFF]);
 const COMPACT_MAC_VIEWPORT_WIDTH: usize = 512;
 const COMPACT_MAC_VIEWPORT_HEIGHT: usize = 342;
 const COMPACT_MAC_VIEWPORT_SIDE_PAD: usize = 1;
@@ -23,6 +21,40 @@ pub type RgbaPalette = [u32; 256];
 /// Per-channel display transfer tables applied after truncating a 16-bit
 /// QuickDraw color component to its most-significant byte.
 pub type DisplayGamma = [[u8; 256]; 3];
+
+/// Return the classic video-driver depth-mode token for a pixel size.
+///
+/// Universal Interfaces `Video.h` defines the consecutive `oneBitMode`
+/// through `thirtyTwoBitMode` values. `gdMode`, `VDSwitchInfo.csMode`, and
+/// Display Manager `DepthMode` values use these tokens; PixMap `pixelSize`
+/// remains the literal number of bits per pixel. Imaging With QuickDraw
+/// (1994), pp. 5-33--5-35, requires the mode returned by `HasDepth` to be
+/// accepted by `SetDepth`.
+pub(crate) const fn classic_depth_mode(pixel_size: u16) -> Option<u16> {
+    match pixel_size {
+        1 => Some(0x0080),
+        2 => Some(0x0081),
+        4 => Some(0x0082),
+        8 => Some(0x0083),
+        16 => Some(0x0084),
+        32 => Some(0x0085),
+        _ => None,
+    }
+}
+
+/// Decode either a literal pixel size or a classic video depth-mode token.
+pub(crate) const fn classic_pixel_size(depth_or_mode: u16) -> Option<u16> {
+    match depth_or_mode {
+        1 | 2 | 4 | 8 | 16 | 32 => Some(depth_or_mode),
+        0x0080 => Some(1),
+        0x0081 => Some(2),
+        0x0082 => Some(4),
+        0x0083 => Some(8),
+        0x0084 => Some(16),
+        0x0085 => Some(32),
+        _ => None,
+    }
+}
 
 /// Return the modeled display transfer table used before a guest installs one
 /// through the video driver's `cscSetGamma` control call.
@@ -90,7 +122,8 @@ impl CursorImage {
 
 /// Render the current screen to an RGBA pixel buffer (4 bytes per pixel).
 ///
-/// Uses `ram_slice()` for bulk memory access. Supports 1bpp, 4bpp, and 8bpp modes.
+/// Uses `ram_slice()` for bulk memory access. Supports 1bpp, 2bpp, 4bpp,
+/// 8bpp, and 16bpp modes.
 /// The returned buffer has dimensions `width * height * 4` bytes.
 pub fn render_screen(
     bus: &MacMemoryBus,
@@ -138,7 +171,7 @@ pub fn render_screen_into_with_gamma(
     device_gamma: &DisplayGamma,
     pixels: &mut Vec<u8>,
 ) {
-    if matches!(screen_mode.4, 1 | 4 | 8) {
+    if matches!(screen_mode.4, 1 | 2 | 4 | 8) {
         let palette = rgba_palette_from_clut_with_gamma(device_clut, device_gamma);
         render_screen_with_rgba_palette_into(bus, screen_mode, &palette, pixels);
     } else {
@@ -176,21 +209,52 @@ pub fn render_screen_with_rgba_palette_into(
     let w = scrn_w as u32;
     let h = scrn_h as u32;
     pixels.resize((w * h * 4) as usize, 0);
+    fill_black_rgba(pixels);
 
-    if w == 0 || h == 0 || row_bytes == 0 {
-        pixels.fill(0);
+    let Some(framebuffer_len) = validated_screen_framebuffer_len(bus, screen_mode) else {
+        return;
+    };
+    if w == 0 || h == 0 {
         return;
     }
 
-    let fb = bus.ram_slice(scrn_base, row_bytes * h);
+    let fb = bus.ram_slice(scrn_base, framebuffer_len);
 
     match pixel_size {
         16 => render_16bpp_rgba_rows(fb, row_bytes, w, h, pixels),
         8 => render_8bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
         4 => render_4bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
-        _ => render_1bpp_rgba_rows(fb, row_bytes, w, h, pixels),
+        2 => render_2bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
+        _ => render_1bpp_rgba_rows(fb, row_bytes, w, h, palette, pixels),
     }
     normalize_centered_compact_mac_viewport_margins_rgba(pixels, w as usize, h as usize);
+}
+
+fn validated_screen_framebuffer_len(
+    bus: &MacMemoryBus,
+    screen_mode: (u32, u32, u16, u16, u16),
+) -> Option<u32> {
+    let (base, row_bytes, width, height, pixel_size) = screen_mode;
+    if width == 0 || height == 0 {
+        return Some(0);
+    }
+    let bits_per_row = u32::from(width).checked_mul(u32::from(pixel_size))?;
+    let minimum_row_bytes = match pixel_size {
+        1 | 2 | 4 | 8 | 16 => bits_per_row.checked_add(7)? / 8,
+        _ => return None,
+    };
+    if row_bytes < minimum_row_bytes {
+        return None;
+    }
+    let framebuffer_len = row_bytes.checked_mul(u32::from(height))?;
+    let framebuffer_end = u64::from(base).checked_add(u64::from(framebuffer_len))?;
+    (framebuffer_end <= u64::from(bus.ram_size())).then_some(framebuffer_len)
+}
+
+fn fill_black_rgba(pixels: &mut [u8]) {
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&[0, 0, 0, 0xFF]);
+    }
 }
 
 fn normalize_centered_compact_mac_viewport_margins_rgba(
@@ -564,7 +628,40 @@ fn render_4bpp_rgba_rows(
 }
 
 #[inline]
-fn render_1bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut [u8]) {
+fn render_2bpp_rgba_rows(
+    fb: &[u8],
+    row_bytes: u32,
+    w: u32,
+    h: u32,
+    palette: &RgbaPalette,
+    pixels: &mut [u8],
+) {
+    let dst = pixels.as_mut_ptr().cast::<u32>();
+    let w = w as usize;
+    let row_bytes = row_bytes as usize;
+    for gy in 0..h as usize {
+        let src_row = &fb[gy * row_bytes..];
+        let dst_row = unsafe { dst.add(gy * w) };
+        for gx in 0..w {
+            let packed = src_row[gx / 4];
+            let shift = 6 - 2 * (gx & 3);
+            let index = (packed >> shift) & 0x03;
+            unsafe {
+                std::ptr::write_unaligned(dst_row.add(gx), palette[index as usize]);
+            }
+        }
+    }
+}
+
+#[inline]
+fn render_1bpp_rgba_rows(
+    fb: &[u8],
+    row_bytes: u32,
+    w: u32,
+    h: u32,
+    palette: &RgbaPalette,
+    pixels: &mut [u8],
+) {
     let dst = pixels.as_mut_ptr().cast::<u32>();
     let w = w as usize;
     let row_bytes = row_bytes as usize;
@@ -574,13 +671,9 @@ fn render_1bpp_rgba_rows(fb: &[u8], row_bytes: u32, w: u32, h: u32, pixels: &mut
         for gx in 0..w {
             let byte = src_row[gx / 8];
             let bit = 7 - (gx & 7);
-            let rgba = if (byte & (1 << bit)) != 0 {
-                BLACK_RGBA_WORD
-            } else {
-                WHITE_RGBA_WORD
-            };
+            let index = (byte >> bit) & 1;
             unsafe {
-                std::ptr::write_unaligned(dst_row.add(gx), rgba);
+                std::ptr::write_unaligned(dst_row.add(gx), palette[index as usize]);
             }
         }
     }
@@ -622,6 +715,7 @@ pub fn screen_pixel_rgb_with_gamma(
     if x >= w || y >= h || row_bytes == 0 {
         return None;
     }
+    validated_screen_framebuffer_len(bus, screen_mode)?;
 
     match pixel_size {
         16 => {
@@ -643,15 +737,19 @@ pub fn screen_pixel_rgb_with_gamma(
             };
             Some(clut_to_rgba8_with_gamma(device_clut, device_gamma, pixel))
         }
+        2 => {
+            let addr = scrn_base + y * row_bytes + x / 4;
+            let packed = bus.read_byte(addr);
+            let shift = 6 - 2 * (x & 3);
+            let pixel = (packed >> shift) & 0x03;
+            Some(clut_to_rgba8_with_gamma(device_clut, device_gamma, pixel))
+        }
         1 => {
             let addr = scrn_base + y * row_bytes + x / 8;
             let byte = bus.read_byte(addr);
             let bit = 7 - (x % 8);
-            if (byte & (1 << bit)) != 0 {
-                Some([0, 0, 0])
-            } else {
-                Some([255, 255, 255])
-            }
+            let pixel = (byte >> bit) & 1;
+            Some(clut_to_rgba8_with_gamma(device_clut, device_gamma, pixel))
         }
         _ => None,
     }
@@ -690,13 +788,16 @@ pub fn render_screen_argb_with_gamma(
     let len = w.saturating_mul(h);
 
     pixels.resize(len, BLACK_ARGB);
+    pixels.fill(BLACK_ARGB);
 
     if w == 0 || h == 0 || row_bytes == 0 {
-        pixels.fill(BLACK_ARGB);
         return;
     }
 
-    let fb = bus.ram_slice(scrn_base, row_bytes * scrn_h as u32);
+    let Some(framebuffer_len) = validated_screen_framebuffer_len(bus, screen_mode) else {
+        return;
+    };
+    let fb = bus.ram_slice(scrn_base, framebuffer_len);
 
     let palette = argb_palette_from_clut_with_gamma(device_clut, device_gamma);
     match pixel_size {
@@ -736,6 +837,18 @@ pub fn render_screen_argb_with_gamma(
                 }
             }
         }
+        2 => {
+            for gy in 0..h {
+                let row_start = gy * row_bytes as usize;
+                let dst_row = &mut pixels[gy * w..(gy + 1) * w];
+                for gx in 0..w {
+                    let packed = fb[row_start + gx / 4];
+                    let shift = 6 - 2 * (gx & 3);
+                    let index = (packed >> shift) & 0x03;
+                    dst_row[gx] = palette[index as usize];
+                }
+            }
+        }
         _ => {
             for gy in 0..h {
                 let row_start = gy * row_bytes as usize;
@@ -743,11 +856,8 @@ pub fn render_screen_argb_with_gamma(
                 for gx in 0..w {
                     let byte = fb[row_start + (gx / 8)];
                     let bit = 7 - (gx % 8);
-                    dst_row[gx] = if (byte & (1 << bit)) != 0 {
-                        BLACK_ARGB
-                    } else {
-                        WHITE_ARGB
-                    };
+                    let index = (byte >> bit) & 1;
+                    dst_row[gx] = palette[index as usize];
                 }
             }
         }
@@ -1542,13 +1652,31 @@ const MAC_ROM_GAMMA_LUT: [u8; 256] = [
 #[cfg(test)]
 mod tests {
     use super::{
-        argb_palette_from_clut, argb_palette_from_clut_with_gamma, clut_component_to_u8,
-        clut_to_argb, normalize_centered_compact_mac_viewport_margins_rgba, render_cursor,
-        render_cursor_argb, render_screen_argb, render_screen_into,
-        render_screen_with_rgba_palette_into, rgba_palette_from_clut, screen_pixel_rgb,
-        screen_pixel_rgb_with_gamma, CursorImage,
+        argb_palette_from_clut, argb_palette_from_clut_with_gamma, classic_depth_mode,
+        classic_pixel_size, clut_component_to_u8, clut_to_argb,
+        normalize_centered_compact_mac_viewport_margins_rgba, render_cursor, render_cursor_argb,
+        render_screen_argb, render_screen_into, render_screen_with_rgba_palette_into,
+        rgba_palette_from_clut, screen_pixel_rgb, screen_pixel_rgb_with_gamma, CursorImage,
     };
     use crate::memory::{MacMemoryBus, MemoryBus};
+
+    #[test]
+    fn classic_video_depth_modes_round_trip_every_supported_pixel_size() {
+        for (pixel_size, mode) in [
+            (1, 0x0080),
+            (2, 0x0081),
+            (4, 0x0082),
+            (8, 0x0083),
+            (16, 0x0084),
+            (32, 0x0085),
+        ] {
+            assert_eq!(classic_depth_mode(pixel_size), Some(mode));
+            assert_eq!(classic_pixel_size(pixel_size), Some(pixel_size));
+            assert_eq!(classic_pixel_size(mode), Some(pixel_size));
+        }
+        assert_eq!(classic_depth_mode(3), None);
+        assert_eq!(classic_pixel_size(0x0086), None);
+    }
 
     #[test]
     fn clut_component_applies_the_modeled_device_default() {
@@ -1667,6 +1795,75 @@ mod tests {
             screen_pixel_rgb(&bus, (base, 2, 4, 1, 4), &clut, 1, 0),
             Some([0, 255, 0])
         );
+    }
+
+    #[test]
+    fn render_screen_into_2bpp_decodes_high_to_low_fields() {
+        let mut bus = MacMemoryBus::new(1024);
+        let base = 128;
+        bus.write_byte(base, 0b00_01_10_11);
+        bus.write_byte(base + 1, 0xff);
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xffff, 0xffff, 0xffff];
+        clut[1] = [0xffff, 0x0000, 0x0000];
+        clut[2] = [0x0000, 0xffff, 0x0000];
+        clut[3] = [0x0000, 0x0000, 0xffff];
+
+        let mut rgba = Vec::new();
+        render_screen_into(&bus, (base, 2, 4, 1, 2), &clut, &mut rgba);
+        assert_eq!(
+            rgba,
+            vec![
+                0xff, 0xff, 0xff, 0xff, //
+                0xff, 0x00, 0x00, 0xff, //
+                0x00, 0xff, 0x00, 0xff, //
+                0x00, 0x00, 0xff, 0xff,
+            ]
+        );
+
+        let mut argb = Vec::new();
+        render_screen_argb(&bus, (base, 2, 4, 1, 2), &clut, &mut argb);
+        assert_eq!(
+            argb,
+            vec![0xffff_ffff, 0xffff_0000, 0xff00_ff00, 0xff00_00ff]
+        );
+        for (x, expected) in [
+            [0xff, 0xff, 0xff],
+            [0xff, 0x00, 0x00],
+            [0x00, 0xff, 0x00],
+            [0x00, 0x00, 0xff],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                screen_pixel_rgb(&bus, (base, 2, 4, 1, 2), &clut, x as u32, 0),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_two_bit_screen_modes_render_black_without_reading_past_ram() {
+        let bus = MacMemoryBus::new(64);
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xFFFF, 0x0000, 0x0000];
+        let malformed_modes = [
+            (60, 1, 5, 1, 2), // Five pixels need two source bytes.
+            (63, 2, 4, 2, 2), // Rows fit, but base + length exceeds RAM.
+        ];
+
+        for screen_mode in malformed_modes {
+            let pixel_count = usize::from(screen_mode.2) * usize::from(screen_mode.3);
+            let mut rgba = vec![0xE7; pixel_count * 4];
+            render_screen_into(&bus, screen_mode, &clut, &mut rgba);
+            assert_eq!(rgba, vec![0, 0, 0, 0xFF].repeat(pixel_count));
+
+            let mut argb = vec![0xFFFF_00FF; pixel_count];
+            render_screen_argb(&bus, screen_mode, &clut, &mut argb);
+            assert_eq!(argb, vec![0xFF00_0000; pixel_count]);
+            assert_eq!(screen_pixel_rgb(&bus, screen_mode, &clut, 0, 0), None);
+        }
     }
 
     #[test]
@@ -1842,11 +2039,13 @@ mod tests {
     }
 
     #[test]
-    fn render_screen_into_1bpp_writes_rgba_bytes() {
+    fn one_bit_host_rendering_uses_swapped_custom_palette() {
         let mut bus = MacMemoryBus::new(1024);
         let base = 128;
         bus.write_byte(base, 0b1010_0000);
-        let clut = [[0u16; 3]; 256];
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0x0000, 0x0000, 0x0000];
+        clut[1] = [0xFFFF, 0x0000, 0x0000];
 
         let mut pixels = Vec::new();
         render_screen_into(&bus, (base, 1, 4, 1, 1), &clut, &mut pixels);
@@ -1854,11 +2053,26 @@ mod tests {
         assert_eq!(
             pixels,
             vec![
-                0x00, 0x00, 0x00, 0xFF, //
-                0xFF, 0xFF, 0xFF, 0xFF, //
-                0x00, 0x00, 0x00, 0xFF, //
-                0xFF, 0xFF, 0xFF, 0xFF,
+                0xFF, 0x00, 0x00, 0xFF, // bit 1 -> custom red
+                0x00, 0x00, 0x00, 0xFF, // bit 0 -> custom black
+                0xFF, 0x00, 0x00, 0xFF, //
+                0x00, 0x00, 0x00, 0xFF,
             ]
+        );
+
+        let mut argb = Vec::new();
+        render_screen_argb(&bus, (base, 1, 4, 1, 1), &clut, &mut argb);
+        assert_eq!(
+            argb,
+            vec![0xFFFF_0000, 0xFF00_0000, 0xFFFF_0000, 0xFF00_0000]
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 0, 0),
+            Some([255, 0, 0])
+        );
+        assert_eq!(
+            screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 1, 0),
+            Some([0, 0, 0])
         );
     }
 
@@ -1900,7 +2114,9 @@ mod tests {
         let mut bus = MacMemoryBus::new(1024);
         let base = 128;
         bus.write_byte(base, 0b1010_0000);
-        let clut = [[0u16; 3]; 256];
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
+        clut[1] = [0x0000, 0x0000, 0x0000];
 
         assert_eq!(
             screen_pixel_rgb(&bus, (base, 1, 4, 1, 1), &clut, 0, 0),
