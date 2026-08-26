@@ -161,6 +161,69 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Save portions of a control rectangle that are outside its owner's
+    /// current visible region. Standard CDEFs draw through the owner's
+    /// GrafPort and are clipped by `visRgn`; several HLE control renderers
+    /// write screen pixels directly, so those pixels need the same clipping
+    /// guarantee when a front window overlaps a background control.
+    /// Inside Macintosh Volume I (1985), pp. I-145 and I-326;
+    /// Macintosh Toolbox Essentials (1992), pp. 4-69 to 4-70.
+    fn save_control_pixels_outside_owner_visibility(
+        &self,
+        bus: &MacMemoryBus,
+        owner: u32,
+        rect: (i16, i16, i16, i16),
+    ) -> Vec<(i16, i16, i16, i16, Vec<u8>)> {
+        if owner == 0 {
+            return Vec::new();
+        }
+        let vis_rgn = bus.read_long(owner + 24);
+        if vis_rgn == 0 {
+            return Vec::new();
+        }
+        let Some((top, left, width, height, pixels)) = self.save_screen_rect_pixels(bus, rect)
+        else {
+            return Vec::new();
+        };
+        let (bounds_top, bounds_left) = self.port_bounds_top_left(bus, owner);
+        let visible_at = |bus: &MacMemoryBus, y: i16, x: i16| {
+            Self::region_contains_point(
+                bus,
+                vis_rgn,
+                y.wrapping_add(bounds_top),
+                x.wrapping_add(bounds_left),
+            )
+        };
+
+        let mut saved_runs = Vec::new();
+        for row in 0..height {
+            let y = top + row;
+            let mut column = 0i16;
+            while column < width {
+                let x = left + column;
+                if visible_at(bus, y, x) {
+                    column += 1;
+                    continue;
+                }
+                let run_start = column;
+                column += 1;
+                while column < width && !visible_at(bus, y, left + column) {
+                    column += 1;
+                }
+                let start = row as usize * width as usize + run_start as usize;
+                let end = row as usize * width as usize + column as usize;
+                saved_runs.push((
+                    y,
+                    left + run_start,
+                    column - run_start,
+                    1,
+                    pixels[start..end].to_vec(),
+                ));
+            }
+        }
+        saved_runs
+    }
+
     fn read_pascal_string(bus: &MacMemoryBus, str_ptr: u32) -> Vec<u8> {
         if str_ptr == 0 {
             return Vec::new();
@@ -1319,6 +1382,11 @@ impl super::TrapDispatcher {
         let abs_left = scr_left + r_left;
         let abs_bottom = scr_top + r_bottom;
         let abs_right = scr_left + r_right;
+        let occluded_pixels = self.save_control_pixels_outside_owner_visibility(
+            bus,
+            window_ptr,
+            (abs_top, abs_left, abs_bottom, abs_right),
+        );
 
         match proc_id {
             0 => {
@@ -1537,6 +1605,9 @@ impl super::TrapDispatcher {
         self.pn_size = saved_pn_size;
         self.pn_mode = saved_pn_mode;
         self.pn_pat = saved_pn_pat;
+        for (top, left, width, height, pixels) in occluded_pixels {
+            self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
+        }
         if self.current_port != saved_port || self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
         }
@@ -7044,6 +7115,90 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(disp.current_gdevice, gdevice_before);
+    }
+
+    #[test]
+    fn background_scrollbar_drawing_is_clipped_behind_front_window() {
+        // Standard CDEF drawing is clipped by the owner window's visRgn.
+        // A background window's scrollbar must therefore never paint through
+        // a front window even though the HLE scrollbar renderer writes direct
+        // framebuffer pixels. IM:I I-145 and I-326; MTE 1992 pp. 4-69..4-70.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = 0x300000u32;
+        disp.set_screen_mode_for_test(screen_base, 320, 320, 240, 8);
+        bus.write_long(0x0824, screen_base);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let back = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            back,
+            screen_base,
+            40,
+            40,
+            220,
+            280,
+            "Back",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        let front = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            front,
+            screen_base,
+            90,
+            90,
+            200,
+            220,
+            "Front",
+            0,
+            true,
+            false,
+            false,
+            0,
+        );
+        assert_eq!(disp.window_list, vec![front, back]);
+
+        // Back-local (60,40..76,200) maps to global (100,80..116,240),
+        // crossing straight through the front content.
+        let (_handle, ctrl_ptr) =
+            alloc_scrollbar_control(&mut disp, &mut bus, (60, 40, 76, 200), 0xFF, 0, 5, 0, 10);
+        bus.write_long(ctrl_ptr + 4, back);
+
+        for y in 100u32..116 {
+            for x in 90u32..220 {
+                bus.write_byte(screen_base + y * 320 + x, 0x4D);
+            }
+        }
+        // An uncovered portion should still prove the scrollbar was drawn.
+        for y in 100u32..116 {
+            for x in 80u32..90 {
+                bus.write_byte(screen_base + y * 320 + x, 0x4D);
+            }
+        }
+
+        disp.draw_control(&mut cpu, &mut bus, ctrl_ptr);
+
+        for y in 100u32..116 {
+            for x in 90u32..220 {
+                assert_eq!(
+                    bus.read_byte(screen_base + y * 320 + x),
+                    0x4D,
+                    "background scrollbar painted through front window at ({x},{y})"
+                );
+            }
+        }
+        assert!(
+            (100u32..116)
+                .any(|y| { (80u32..90).any(|x| bus.read_byte(screen_base + y * 320 + x) != 0x4D) }),
+            "visible portion of the background scrollbar should still draw"
+        );
     }
 
     #[test]

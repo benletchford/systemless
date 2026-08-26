@@ -4639,6 +4639,13 @@ impl super::TrapDispatcher {
         if let Some(tracking) = self.window_tracking.as_ref() {
             self.draw_window_drag_outline(bus, tracking.outline_rect);
         }
+        if let Some(tracking) = self
+            .go_away_tracking
+            .as_ref()
+            .filter(|tracking| tracking.highlighted)
+        {
+            self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+        }
         if let Some((rect, pattern)) = self.region_tracking.as_ref().and_then(|tracking| {
             tracking
                 .outline_rect

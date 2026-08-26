@@ -65,7 +65,6 @@ use winit::window::WindowId;
 /// Initial screen dimensions: 800x600 8bpp color mode by default.
 const INITIAL_SCREEN_WIDTH: u32 = 800;
 const INITIAL_SCREEN_HEIGHT: u32 = 600;
-const SCALE: u32 = 1;
 /// Frame duration at 60.15 Hz (Compact Mac VBL rate).
 const FRAME_DURATION: std::time::Duration = std::time::Duration::from_micros(16_625);
 const MIN_RENDER_HEADROOM: std::time::Duration = std::time::Duration::from_micros(1_500);
@@ -146,6 +145,10 @@ struct Cli {
     #[arg(long, value_name = "BITS", default_value_t = 8, value_parser = parse_screen_depth)]
     screen_depth: u16,
 
+    /// Integer host-pixel scale (1 is one host pixel per guest pixel)
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_display_scale)]
+    display_scale: u32,
+
     /// Replay input events from a script during a headless run. Events are
     /// scheduled by retired instruction count, so a run replays identically
     /// every time and two builds can be compared on matched work.
@@ -160,6 +163,28 @@ fn parse_screen_depth(value: &str) -> Result<u16, String> {
         "8" => Ok(8),
         _ => Err("screen depth must be 1, 4, or 8".to_string()),
     }
+}
+
+fn parse_display_scale(value: &str) -> Result<u32, String> {
+    let scale = value
+        .parse::<u32>()
+        .map_err(|_| "display scale must be an integer from 1 through 8".to_string())?;
+    if (1..=8).contains(&scale) {
+        Ok(scale)
+    } else {
+        Err("display scale must be an integer from 1 through 8".to_string())
+    }
+}
+
+fn guest_scaled_physical_size(
+    width: u32,
+    height: u32,
+    display_scale: u32,
+) -> winit::dpi::PhysicalSize<u32> {
+    winit::dpi::PhysicalSize::new(
+        width.saturating_mul(display_scale),
+        height.saturating_mul(display_scale),
+    )
 }
 
 /// One scripted input, delivered once the run has retired `at`
@@ -600,6 +625,9 @@ struct App {
     addressing_24_bit: bool,
     /// Indexed guest framebuffer depth.
     screen_depth: u16,
+    /// Explicit integer host-pixel scale. Physical sizing keeps compositor
+    /// DPI from silently changing the requested guest-to-host ratio.
+    display_scale: u32,
     #[cfg(target_os = "macos")]
     native_integrations: bool,
     #[cfg(target_os = "macos")]
@@ -613,12 +641,31 @@ struct App {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(
         game_path: PathBuf,
         arrows_as_numpad: bool,
         native_integrations: bool,
         addressing_24_bit: bool,
         screen_depth: u16,
+    ) -> Self {
+        Self::new_with_display_scale(
+            game_path,
+            arrows_as_numpad,
+            native_integrations,
+            addressing_24_bit,
+            screen_depth,
+            1,
+        )
+    }
+
+    fn new_with_display_scale(
+        game_path: PathBuf,
+        arrows_as_numpad: bool,
+        native_integrations: bool,
+        addressing_24_bit: bool,
+        screen_depth: u16,
+        display_scale: u32,
     ) -> Self {
         #[cfg(not(target_os = "macos"))]
         let _ = native_integrations;
@@ -702,6 +749,7 @@ impl App {
             arrows_as_numpad,
             addressing_24_bit,
             screen_depth,
+            display_scale,
             #[cfg(target_os = "macos")]
             native_integrations,
             #[cfg(target_os = "macos")]
@@ -2091,9 +2139,10 @@ impl ApplicationHandler for App {
             let window_title = "Systemless - Macintosh Emulator";
             let window_attrs = Window::default_attributes()
                 .with_title(window_title)
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    initial_size.0 * SCALE,
-                    initial_size.1 * SCALE,
+                .with_inner_size(guest_scaled_physical_size(
+                    initial_size.0,
+                    initial_size.1,
+                    self.display_scale,
                 ))
                 .with_resizable(true);
             let window_attrs = platform_window_attrs(window_attrs);
@@ -2291,8 +2340,11 @@ impl ApplicationHandler for App {
                 self.current_screen_width = sw;
                 self.current_screen_height = sh;
                 if let Some(window) = &self.window {
-                    let _ = window
-                        .request_inner_size(winit::dpi::LogicalSize::new(sw * SCALE, sh * SCALE));
+                    let _ = window.request_inner_size(guest_scaled_physical_size(
+                        sw,
+                        sh,
+                        self.display_scale,
+                    ));
                 }
                 self.force_next_render = true;
             }
@@ -2311,6 +2363,7 @@ fn run_gui(
     native_integrations: bool,
     addressing_24_bit: bool,
     screen_depth: u16,
+    display_scale: u32,
 ) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     eprintln!(
@@ -2322,12 +2375,13 @@ fn run_gui(
         }
     );
 
-    let mut app = App::new(
+    let mut app = App::new_with_display_scale(
         game_path,
         arrows_as_numpad,
         native_integrations,
         addressing_24_bit,
         screen_depth,
+        display_scale,
     );
     // `run_app` is the first point at which `resumed` can create a native
     // window. Finish archive decompression and guest initialization before
@@ -2566,6 +2620,7 @@ fn main() {
             native_integrations,
             cli.addressing_24_bit,
             cli.screen_depth,
+            cli.display_scale,
         );
     }
 }
@@ -2973,6 +3028,8 @@ mod tests {
             "--addressing-24-bit",
             "--screen-depth",
             "4",
+            "--display-scale",
+            "2",
             "--max-instructions",
             "1234",
             "game.sit",
@@ -2987,7 +3044,23 @@ mod tests {
         assert!(cli.prefer_powerpc);
         assert!(cli.addressing_24_bit);
         assert_eq!(cli.screen_depth, 4);
+        assert_eq!(cli.display_scale, 2);
         assert_eq!(cli.max_instructions, Some(1234));
+    }
+
+    #[test]
+    fn cli_defaults_to_one_physical_host_pixel_per_guest_pixel() {
+        let cli = Cli::try_parse_from(["systemless", "game.sit"])
+            .expect("default display scale should parse");
+        assert_eq!(cli.display_scale, 1);
+        assert_eq!(
+            guest_scaled_physical_size(800, 600, cli.display_scale),
+            winit::dpi::PhysicalSize::new(800, 600)
+        );
+
+        let invalid = Cli::try_parse_from(["systemless", "--display-scale", "0", "game.sit"])
+            .expect_err("zero display scale should be rejected");
+        assert_eq!(invalid.kind(), ErrorKind::ValueValidation);
     }
 
     #[test]

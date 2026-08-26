@@ -15909,7 +15909,9 @@ impl super::TrapDispatcher {
             // the insertion point just past it. Backspace ($08) deletes the
             // selection or the character before the insertion point.
             // PROCEDURE TEKey(key: CHAR; hTE: TEHandle);
-            // Inside Macintosh Volume I, I-385; Text 1993, 2-81
+            // Inside Macintosh Volume I, I-385; Inside Macintosh: Text
+            // (1993), pp. 2-81 to 2-82. In addition to editing the TERec,
+            // TEKey "redraws the text as necessary" before it returns.
             //
             // TEKey ($A9DC): Inserts character at insertion point, replaces selection; backspace deletes. IM:I I-385
             (true, 0x1DC) => {
@@ -15960,6 +15962,12 @@ impl super::TrapDispatcher {
                         // Insert printable character (replacing selection if any)
                         self.te_insert_text(bus, te_handle, &[key]);
                     }
+
+                    // TEKey is a drawing operation as well as an editing
+                    // operation. Applications do not need to follow every
+                    // key with TEUpdate; the TextEdit Manager redraws the
+                    // affected text and insertion point itself.
+                    self.draw_te_contents(cpu, bus, te_handle, true);
                 }
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
@@ -35946,6 +35954,37 @@ mod tests {
             2
         );
         assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 2);
+    }
+
+    #[test]
+    fn tekey_redraws_the_edited_text_before_returning() {
+        // Inside Macintosh: Text (1993), pp. 2-81 to 2-82: TEKey redraws
+        // the text as necessary. A dialog event loop may therefore call
+        // TEKey without a subsequent TEUpdate and still expects the typed
+        // character to become visible immediately.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"");
+        let (screen_base, row_bytes, width, height, _) = disp.screen_mode;
+        let screen_len = row_bytes * height as u32;
+        let before = bus.read_bytes(screen_base, screen_len as usize);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, u16::from(b'W'));
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"W".to_vec()
+        );
+        assert_ne!(
+            bus.read_bytes(screen_base, screen_len as usize),
+            before,
+            "TEKey must paint the changed TextEdit record before returning ({}x{})",
+            width,
+            height
+        );
     }
 
     #[test]
