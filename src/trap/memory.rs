@@ -3423,31 +3423,56 @@ impl super::TrapDispatcher {
             // NMInstall ($A05E)
             // Installs a notification request.
             // FUNCTION NMInstall(nmReqPtr: NMRecPtr): OSErr;
-            // Inside Macintosh Volume VI (1991), p. 24-10
-            //
-            // A0 = NMRecPtr. Returns noErr — notifications are not displayed
-            // in the emulator, but we accept the request silently.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::nminstall_returns_noerr_for_nominal_notification_request
-            //   src/trap/memory.rs::tests::nminstall_uses_a0_nmrecptr_register_calling_convention
-            // NMInstall ($A05E): Returns noErr on nominal requests; per IM:VI 24-10
+            // Inside Macintosh Volume VI, VI-24-10
             (false, 0x5E) => {
-                cpu.write_reg(Register::D0, 0); // noErr
+                const NM_TYPE: u16 = 8;
+                const NM_TYP_ERR: i16 = -299;
+
+                let nm_rec = cpu.read_reg(Register::A0);
+                if bus.read_word(nm_rec + 4) != NM_TYPE {
+                    cpu.write_reg(Register::D0, NM_TYP_ERR as i32 as u32);
+                    return Some(Ok(()));
+                }
+
+                if self.installed_notifications.insert(nm_rec) {
+                    let response_addr = bus.read_long(nm_rec + 28);
+                    if response_addr == u32::MAX {
+                        self.installed_notifications.remove(&nm_rec);
+                    } else if response_addr != 0 {
+                        self.pending_notification_responses.push_back(
+                            super::dispatch::PendingNotificationResponse {
+                                notification_record: nm_rec,
+                                response_addr,
+                                ready_tick: self.tick_count.wrapping_add(1),
+                            },
+                        );
+                    }
+                }
+                cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
 
             // NMRemove ($A05F)
             // Removes a notification request.
             // FUNCTION NMRemove(nmReqPtr: NMRecPtr): OSErr;
-            // Inside Macintosh Volume VI (1991), p. 24-11
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::nmremove_returns_noerr_for_nominal_notification_request
-            //   src/trap/memory.rs::tests::nmremove_uses_a0_nmrecptr_register_calling_convention
-            // NMRemove ($A05F): Returns noErr on nominal requests; per IM:VI 24-11
+            // Inside Macintosh Volume VI, VI-24-11
             (false, 0x5F) => {
-                cpu.write_reg(Register::D0, 0); // noErr
+                const NM_TYPE: u16 = 8;
+                const NM_TYP_ERR: i16 = -299;
+                const Q_ERR: i16 = -1;
+
+                let nm_rec = cpu.read_reg(Register::A0);
+                let result = if bus.read_word(nm_rec + 4) != NM_TYPE {
+                    NM_TYP_ERR
+                } else if self.installed_notifications.remove(&nm_rec) {
+                    self.pending_notification_responses
+                        .retain(|pending| pending.notification_record != nm_rec);
+                    bus.write_long(nm_rec, 0);
+                    0
+                } else {
+                    Q_ERR
+                };
+                cpu.write_reg(Register::D0, result as i32 as u32);
                 Ok(())
             }
 
@@ -8364,6 +8389,11 @@ mod tests {
         bus.write_word(nm_rec + 4, 8); // qType = ORD(nmType)
         cpu.write_reg(Register::A0, nm_rec);
 
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
         let result = dispatcher.dispatch_memory(false, 0x5F, &mut cpu, &mut bus);
         assert!(result.is_some(), "NMRemove should be handled");
         assert!(result.unwrap().is_ok(), "NMRemove should return cleanly");
@@ -8385,6 +8415,11 @@ mod tests {
         bus.write_long(sp_before, 0xC0DE_CAFE);
         cpu.write_reg(Register::A0, nm_rec);
 
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
         let result = dispatcher.dispatch_memory(false, 0x5F, &mut cpu, &mut bus);
         assert!(result.is_some(), "NMRemove should be handled");
         assert!(result.unwrap().is_ok(), "NMRemove should return cleanly");
@@ -8403,6 +8438,73 @@ mod tests {
             0,
             "NMRemove should return noErr"
         );
+    }
+
+    #[test]
+    fn notification_manager_validates_type_and_queue_membership() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(32);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -299);
+
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -299);
+
+        bus.write_word(nm_rec + 4, 8);
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -1);
+    }
+
+    #[test]
+    fn nminstall_queues_response_and_nmremove_cancels_it() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(32);
+        bus.write_word(nm_rec + 4, 8);
+        bus.write_long(nm_rec + 28, 0x0012_3456);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(dispatcher.installed_notifications.contains(&nm_rec));
+        assert_eq!(dispatcher.pending_notification_responses.len(), 1);
+
+        dispatcher
+            .dispatch_memory(false, 0x5F, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(!dispatcher.installed_notifications.contains(&nm_rec));
+        assert!(dispatcher.pending_notification_responses.is_empty());
+    }
+
+    #[test]
+    fn nminstall_auto_removes_minus_one_response() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let nm_rec = bus.alloc(32);
+        bus.write_word(nm_rec + 4, 8);
+        bus.write_long(nm_rec + 28, u32::MAX);
+        cpu.write_reg(Register::A0, nm_rec);
+
+        dispatcher
+            .dispatch_memory(false, 0x5E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert!(!dispatcher.installed_notifications.contains(&nm_rec));
+        assert!(dispatcher.pending_notification_responses.is_empty());
     }
 
     #[test]

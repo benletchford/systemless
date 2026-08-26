@@ -13,12 +13,18 @@ use super::globals::LowMemGlobals;
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
 const SYNTHETIC_RESERVE_BYTES: u32 = 64 * 1024;
+// Keep the boot-ROM shadow deliberately narrow: bytes outside these witnessed
+// or synthetic HLE words retain the bus's existing unmapped-zero behavior.
 // System 7.5.3 on the Quadra 650 leaves exception vector 0 pointing to
-// $40810000. A BasiliskII oracle capture of that ROM establishes the word at
-// offset 6 as $0372. Keep the shadow deliberately narrow: bytes outside this
-// witnessed range retain the bus's existing unmapped-zero behavior.
-const BOOT_ROM_SHADOW_BASE: u32 = 0x4081_0006;
-const BOOT_ROM_SHADOW: [u8; 2] = 0x0372u16.to_be_bytes();
+// $40810000; a BasiliskII oracle capture establishes the word at offset 6 as
+// $0372. The two RTE words let the runner retain ROM-shaped exception-vector
+// values while safely resuming after the post-instruction exceptions it
+// handles (Zero Divide, CHK, and TRAPV).
+const BOOT_ROM_WORD_SHADOWS: &[(u32, u16)] = &[
+    (0x4080_26F8, 0x4E73),
+    (0x4080_26FA, 0x4E73),
+    (0x4081_0006, 0x0372),
+];
 // Release-mode tracer for writes to a guest address range. Use to
 // localize the source of unexpected pixel writes in the framebuffer
 // or to any other narrow guest memory range. Format:
@@ -768,8 +774,10 @@ impl RamStorage {
 impl MacMemoryBus {
     #[inline]
     fn boot_rom_shadow_byte(address: u32) -> Option<u8> {
-        let offset = address.checked_sub(BOOT_ROM_SHADOW_BASE)? as usize;
-        BOOT_ROM_SHADOW.get(offset).copied()
+        BOOT_ROM_WORD_SHADOWS.iter().find_map(|&(base, word)| {
+            let offset = address.checked_sub(base)?;
+            (offset < 2).then(|| word.to_be_bytes()[offset as usize])
+        })
     }
 
     pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
@@ -953,8 +961,7 @@ impl MacMemoryBus {
     pub(crate) fn configure_screen_depth(&mut self, depth: u16) {
         debug_assert!(matches!(depth, 1 | 4 | 8));
         let profile = crate::machine_profile::reference_machine_profile();
-        let visible_row_bytes =
-            (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
+        let visible_row_bytes = (u32::from(profile.screen_width) * u32::from(depth)).div_ceil(8);
         let row_bytes = (visible_row_bytes / 16 + 1) * 16;
         self.write_word(super::globals::addr::SCREEN_ROW, row_bytes as u16);
         self.write_word(super::globals::addr::SCREEN_BITS + 4, row_bytes as u16);
@@ -1975,6 +1982,16 @@ mod tests {
         assert_eq!(bus.read_word(0x4081_0006), 0x0372);
         assert_eq!(bus.read_byte(0x4081_0005), 0);
         assert_eq!(bus.read_byte(0x4081_0008), 0);
+    }
+
+    #[test]
+    fn boot_rom_shadow_exposes_post_instruction_rte_handlers() {
+        let bus = MacMemoryBus::new(1024);
+
+        assert_eq!(bus.read_word(0x4080_26F8), 0x4E73);
+        assert_eq!(bus.read_word(0x4080_26FA), 0x4E73);
+        assert_eq!(bus.read_byte(0x4080_26F7), 0);
+        assert_eq!(bus.read_byte(0x4080_26FC), 0);
     }
 
     #[test]

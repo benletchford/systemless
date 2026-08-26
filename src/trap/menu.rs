@@ -1730,15 +1730,18 @@ impl super::TrapDispatcher {
                             continue;
                         };
 
-                        let menu_ptr = bus.alloc(256);
+                        // A MENU resource is variable-sized. The fixed header
+                        // is followed by the title and every item record, so a
+                        // perfectly ordinary menu can exceed 256 bytes. Copy
+                        // the complete record and its terminating zero byte;
+                        // truncating it lets CountMItems walk into the next
+                        // heap allocation.
+                        let res_size = menu_resource_size(bus, menu_res_ptr) as u32;
+                        let menu_ptr = bus.alloc(res_size);
                         let menu_handle = bus.alloc(4);
                         bus.write_long(menu_handle, menu_ptr);
-                        let res_size = menu_resource_size(bus, menu_res_ptr);
-                        for j in 0..res_size.min(256) {
-                            bus.write_byte(
-                                menu_ptr + j as u32,
-                                bus.read_byte(menu_res_ptr + j as u32),
-                            );
+                        for j in 0..res_size {
+                            bus.write_byte(menu_ptr + j, bus.read_byte(menu_res_ptr + j));
                         }
 
                         let mut parsed = parse_menu_resource(bus, menu_ptr, menu_handle);
@@ -3750,9 +3753,9 @@ impl super::TrapDispatcher {
             // high-order word is the menu ID and the low-order word is
             // the item number. The Menu Manager stores that packed result
             // in lowmem global MenuDisable ($0B54); the trap simply reads
-            // the current longword and returns it. Systemless's HLE does not
-            // synthesize the MDEF cursor-tracking writes, so tests seed the
-            // lowmem global directly to exercise the read path.
+            // the current longword and returns it. Popup-control tracking
+            // publishes its MDEF choice there; direct MenuSelect/MenuKey
+            // tests may also seed the global to exercise this read path.
             //
             // Tool-bit Pascal FUNCTION calling convention: A7 unchanged
             // across the C-level call sequence (caller pre-push of 4-byte
@@ -7818,6 +7821,71 @@ mod tests {
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 129),
             0,
             "SetMenuBar should install Edit menu from MBAR"
+        );
+    }
+
+    #[test]
+    fn getnewmbar_preserves_menu_records_larger_than_256_bytes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu_id = 640i16;
+        let title = b"League";
+        let item = b"Twenty character item";
+        let item_count = 12u16;
+        let menu_size = 15 + title.len() + item_count as usize * (1 + item.len() + 4) + 1;
+        assert!(menu_size > 256);
+
+        let menu_ptr = bus.alloc(menu_size as u32);
+        bus.write_word(menu_ptr, menu_id as u16);
+        bus.write_long(menu_ptr + 6, 0);
+        bus.write_long(menu_ptr + 10, 0xFFFF_FFFF);
+        bus.write_byte(menu_ptr + 14, title.len() as u8);
+        bus.write_bytes(menu_ptr + 15, title);
+        let mut offset = 15 + title.len() as u32;
+        for _ in 0..item_count {
+            bus.write_byte(menu_ptr + offset, item.len() as u8);
+            bus.write_bytes(menu_ptr + offset + 1, item);
+            offset += 1 + item.len() as u32;
+            bus.fill_zeros(menu_ptr + offset, 4);
+            offset += 4;
+        }
+        bus.write_byte(menu_ptr + offset, 0);
+
+        let mbar_ptr = seed_mbar_resource(&mut bus, &[menu_id]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MBAR", 902), mbar_ptr),
+                        ((*b"MENU", menu_id), menu_ptr),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 902);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let menu_list_handle = bus.read_long(TEST_SP + 2);
+        let menu_list_ptr = bus.read_long(menu_list_handle);
+        let copied_menu_handle = bus.read_long(menu_list_ptr + 2);
+        let copied_menu_ptr = bus.read_long(copied_menu_handle);
+        assert_eq!(bus.get_alloc_size(copied_menu_ptr), Some(menu_size as u32));
+        assert_eq!(bus.read_byte(copied_menu_ptr + menu_size as u32 - 1), 0);
+        assert_eq!(
+            count_menu_items_from_memory(&bus, copied_menu_handle),
+            item_count,
+            "CountMItems must stop at the copied MENU terminator"
         );
     }
 

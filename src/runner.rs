@@ -102,6 +102,11 @@ const APPLICATION_RESOURCE_REFNUM: u16 = 2;
 const HFS_FCB_SIZE: u16 = 94;
 const HFS_FCB_BUFFER_SIZE: u16 = 2 + HFS_FCB_SIZE;
 const HFS_VCB_SIZE: u32 = 178;
+// Synthetic RTE bodies shadowed in the boot-ROM address space. Keeping these
+// vectors ROM-shaped matters independently of taking an exception: classic
+// software can inspect the vector table as ordinary low memory.
+const BOOT_ROM_RTE_HANDLER: u32 = 0x4080_26F8;
+const BOOT_ROM_TRAPV_RTE_HANDLER: u32 = 0x4080_26FA;
 // Sound 1994, pp. 2-146–2-148: a doubleback routine refills an exhausted
 // buffer before returning. Keep a bounded safety limit, but allow callbacks
 // that do substantially more work than a normal foreground interpreter batch.
@@ -1519,6 +1524,7 @@ enum ActiveInterruptCallbackSource {
     SoundFileCompletion,
     SoundDoubleBack,
     FileCompletion,
+    NotificationResponse,
     DialogDrawProc,
     DialogFilterProc,
     MenuHook,
@@ -1842,6 +1848,9 @@ pub struct FixtureRunner {
     /// Guest-memory trampoline used to invoke File Manager asynchronous
     /// completion procedures.
     file_completion_trampoline: u32,
+    /// Guest-memory trampoline used to invoke Notification Manager response
+    /// procedures.
+    notification_response_trampoline: u32,
     /// Guest-memory address of the dialog userItem draw proc trampoline (26 bytes).
     /// Allocated once on first use and reused for all subsequent draw proc calls.
     dialog_draw_trampoline: u32,
@@ -2008,6 +2017,7 @@ impl FixtureRunner {
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
             file_completion_trampoline: 0,
+            notification_response_trampoline: 0,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
             menu_hook_trampoline: 0,
@@ -5020,6 +5030,7 @@ impl FixtureRunner {
             // completed request before the foreground application can inspect
             // or reuse its parameter block.
             if !sound_work_only && self.active_interrupt_callback.is_none() {
+                self.fire_notification_response_callback();
                 self.fire_file_completion_callback();
                 self.fire_adb_callback();
             }
@@ -9078,6 +9089,50 @@ impl FixtureRunner {
         true
     }
 
+    /// Deliver one Pascal Notification Manager response procedure with its
+    /// NMRecPtr argument on the stack. The response procedure removes that
+    /// argument and the Notification Manager does not set up A5 before calling.
+    /// Inside Macintosh Volume VI, VI-24-8 to VI-24-10.
+    fn fire_notification_response_callback(&mut self) -> bool {
+        if self.active_interrupt_callback.is_some() {
+            return false;
+        }
+
+        let Some(response) = self
+            .dispatcher
+            .pending_notification_responses
+            .front()
+            .copied()
+        else {
+            return false;
+        };
+        if self.dispatcher.tick_count < response.ready_tick {
+            return false;
+        }
+        self.dispatcher.pending_notification_responses.pop_front();
+        if !self
+            .dispatcher
+            .installed_notifications
+            .contains(&response.notification_record)
+        {
+            return false;
+        }
+
+        if self.notification_response_trampoline == 0 {
+            let tramp = self.bus.alloc_synthetic(14);
+            self.bus.write_word(tramp, 0x2F3C); // MOVE.L #NMRecPtr,-(SP)
+            self.bus.write_word(tramp + 6, 0x4EB9); // JSR abs.L
+            self.bus.write_word(tramp + 12, 0x4E75); // RTS
+            self.notification_response_trampoline = tramp;
+        }
+
+        let tramp = self.notification_response_trampoline;
+        self.bus.write_long(tramp + 2, response.notification_record);
+        self.bus.write_long(tramp + 8, response.response_addr);
+        self.inject_interrupt_callback(ActiveInterruptCallbackSource::NotificationResponse, tramp);
+        true
+    }
+
     /// Deliver one pending ADB Talk-register-0 packet to the service routine
     /// installed through SetADBInfo.
     ///
@@ -10408,7 +10463,7 @@ fn load_app_generic<M: MemoryBus>(
         bus.write_long((vector as u32) * 4, handler);
     }
 
-    // Install default RTE stubs for the "post-instruction" exception
+    // Install default RTE handlers for the "post-instruction" exception
     // vectors that real Mac OS would route to SysError. Because these
     // exceptions all stack the PC of the *next* instruction (per
     // M68000PRM, "Group 2 — internal" — vectors 5/6/7 advance PC past
@@ -10425,10 +10480,13 @@ fn load_app_generic<M: MemoryBus>(
     // instruction), so RTE-ing would re-execute it and loop forever.
     // Properly handling those requires a skip-the-instruction stub
     // which is a separate undertaking.
-    bus.write_word(0x00FE, 0x4E73); // RTE
-    bus.write_long(0x0014, 0x0000_00FE); // ZeroDivide vector
-    bus.write_long(0x0018, 0x0000_00FE); // CHK vector
-    bus.write_long(0x001C, 0x0000_00FE); // TRAPV vector
+    // The bus supplies synthetic RTE words at these otherwise-unmapped ROM
+    // addresses. Do not point the vectors at a low-memory stub: applications
+    // are allowed to inspect the table, and a low address changes the bytes
+    // they observe from the ROM-shaped values present on a booted Mac.
+    bus.write_long(0x0014, BOOT_ROM_RTE_HANDLER); // ZeroDivide vector
+    bus.write_long(0x0018, BOOT_ROM_RTE_HANDLER); // CHK vector
+    bus.write_long(0x001C, BOOT_ROM_TRAPV_RTE_HANDLER); // TRAPV vector
 
     // Load DATA 0 into A5 world (initialized globals)
     // DATA goes below A5 at address (A5 - below_a5) = load_address
@@ -17153,6 +17211,57 @@ mod tests {
     }
 
     #[test]
+    fn notification_response_receives_record_and_can_remove_itself() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let interrupted_pc = 0x0001_0000;
+        let interrupted_sp = 0x007F_FFC0;
+        let nm_rec = runner.bus.alloc(36);
+        let response_addr = runner.bus.alloc(14);
+
+        runner.bus.write_word(nm_rec + 4, 8);
+        runner.bus.write_long(nm_rec + 28, response_addr);
+        runner.bus.write_word(response_addr, 0x206F); // MOVEA.L 4(SP),A0
+        runner.bus.write_word(response_addr + 2, 4);
+        runner.bus.write_word(response_addr + 4, 0xA05F); // NMRemove
+        runner.bus.write_word(response_addr + 6, 0x225F); // MOVEA.L (SP)+,A1
+        runner.bus.write_word(response_addr + 8, 0x588F); // ADDQ.L #4,SP
+        runner.bus.write_word(response_addr + 10, 0x4ED1); // JMP (A1)
+        for offset in (0..20).step_by(2) {
+            runner.bus.write_word(interrupted_pc + offset, 0x4E71); // NOP
+        }
+        runner.cpu.write_reg(Register::PC, interrupted_pc);
+        runner.cpu.write_reg(Register::A7, interrupted_sp);
+        runner.cpu.write_reg(Register::A0, nm_rec);
+        runner
+            .dispatcher
+            .dispatch_memory(false, 0x5E, &mut runner.cpu, &mut runner.bus)
+            .unwrap()
+            .unwrap();
+        runner.dispatcher.tick_count = 1;
+
+        assert!(runner.fire_notification_response_callback());
+        assert!(matches!(
+            runner.active_interrupt_callback.map(|active| active.source),
+            Some(ActiveInterruptCallbackSource::NotificationResponse)
+        ));
+        assert!(
+            runner
+                .bus
+                .get_alloc_size(runner.notification_response_trampoline)
+                .is_none(),
+            "Systemless-owned response trampoline must stay outside the guest heap"
+        );
+
+        let (_, running) = runner.run_steps(12, None);
+
+        assert!(running);
+        assert!(runner.active_interrupt_callback.is_none());
+        assert!(!runner.dispatcher.installed_notifications.contains(&nm_rec));
+        assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+        assert!(!runner.is_halted());
+    }
+
+    #[test]
     fn adb_mouse_callback_uses_documented_registers_and_restores_foreground() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let interrupted_pc = 0x0001_0000;
@@ -21503,8 +21612,8 @@ mod tests {
     }
 
     /// Running a `DIVU.W D0,D1` with `D0 = 0` must not halt the
-    /// runner. The `load_app_generic` loader installs an RTE stub at
-    /// `$00FE` and points vector 5 (`$14`) at it; the m68k crate's
+    /// runner. The `load_app_generic` loader points vector 5 (`$14`) at a
+    /// synthetic RTE word in the boot-ROM shadow; the m68k crate's
     /// zero-divide trap stacks the *next* PC and jumps to that vector,
     /// so RTE-ing returns past the DIVU and execution continues.
     /// Inside Macintosh Volume I, I-103 (Exception Vector Table);
@@ -21514,9 +21623,8 @@ mod tests {
     fn zero_divide_rte_handler_resumes_after_divu_by_zero() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        // Mirror what load_app_generic installs: RTE stub + vector.
-        runner.bus.write_word(0x00FE, 0x4E73); // RTE
-        runner.bus.write_long(0x0014, 0x0000_00FE);
+        // Mirror what load_app_generic installs.
+        runner.bus.write_long(0x0014, BOOT_ROM_RTE_HANDLER);
 
         let prog = 0x0010_0000u32;
         runner.bus.write_word(prog, 0x82C0); // DIVU.W D0, D1
@@ -21528,8 +21636,8 @@ mod tests {
         runner.cpu.write_reg(Register::D0, 0);
         runner.cpu.write_reg(Register::D1, 100);
 
-        // 1 step: DIVU.W traps, vectors to $00FE.
-        // 2nd step: RTE at $00FE pops SR/PC, returns past DIVU.
+        // 1 step: DIVU.W traps, vectors to the ROM shadow.
+        // 2nd step: RTE pops SR/PC, returns past DIVU.
         // 3rd step: NOP at prog+2.
         let (steps, running) = runner.run_steps(3, None);
 
@@ -21547,7 +21655,7 @@ mod tests {
         );
     }
 
-    /// CHK exception (vector 6) shares the same `$00FE` RTE stub as
+    /// CHK exception (vector 6) shares the same boot-ROM RTE word as
     /// the zero-divide handler. A `CHK.W #5, D0` with `D0 = 100`
     /// exceeds the bound and triggers the trap; on a real Mac the
     /// handler calls SysError, on Systemless we silently RTE so D0 is
@@ -21557,8 +21665,7 @@ mod tests {
     fn chk_rte_handler_resumes_after_bounds_violation() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        runner.bus.write_word(0x00FE, 0x4E73); // RTE
-        runner.bus.write_long(0x0018, 0x0000_00FE); // CHK vector
+        runner.bus.write_long(0x0018, BOOT_ROM_RTE_HANDLER); // CHK vector
 
         let prog = 0x0010_0000u32;
         runner.bus.write_word(prog, 0x41BC); // CHK.W #imm, D0
@@ -21569,7 +21676,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
         runner.cpu.write_reg(Register::D0, 100);
 
-        // 1 step: CHK fires (100 > 5), vectors to $00FE.
+        // 1 step: CHK fires, vectors to the ROM shadow.
         // 2nd step: RTE pops SR/PC, returns past CHK.
         // 3rd step: NOP executes.
         let (steps, running) = runner.run_steps(3, None);
@@ -21584,7 +21691,7 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::D0), 100);
     }
 
-    /// TRAPV (vector 7) shares the `$00FE` RTE stub. Pre-set the V
+    /// TRAPV (vector 7) uses the adjacent boot-ROM RTE word. Pre-set the V
     /// flag in CCR via the m68k API and execute TRAPV; the trap fires
     /// because V is set, vectors to the RTE stub, and resumes at the
     /// next instruction. Inside Macintosh Volume I, I-103.
@@ -21592,8 +21699,7 @@ mod tests {
     fn trapv_rte_handler_resumes_when_v_flag_is_set() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
 
-        runner.bus.write_word(0x00FE, 0x4E73); // RTE
-        runner.bus.write_long(0x001C, 0x0000_00FE); // TRAPV vector
+        runner.bus.write_long(0x001C, BOOT_ROM_TRAPV_RTE_HANDLER); // TRAPV vector
 
         let prog = 0x0010_0000u32;
         runner.bus.write_word(prog, 0x4E76); // TRAPV

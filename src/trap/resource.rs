@@ -1763,6 +1763,19 @@ impl super::TrapDispatcher {
                     }
                 }
 
+                if res_type == *b"PAT#" {
+                    if let Some(ptr) = self.synthesize_system_pattern_list(bus, res_id) {
+                        let handle = self
+                            .get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, 0);
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, 0);
+                        bus.write_word(0x0A60, 0); // ResErr = noErr
+                        bus.write_long(sp + 6, handle);
+                        cpu.write_reg(Register::A7, sp + 6);
+                        return Some(Ok(()));
+                    }
+                }
+
                 if res_type == *b"clut" {
                     if let Some(ptr) = self.synthesize_system_clut(bus, res_id) {
                         if trace_getresource_enabled() {
@@ -8475,6 +8488,44 @@ impl super::TrapDispatcher {
         filename: &str,
         fdir_index: i16,
     ) -> Option<super::dispatch::VfsCatalogEntry> {
+        // ioNamePtr accepts full and partial HFS pathnames, not only a leaf
+        // name. Resolve those pathnames before the directory-local lookup so
+        // callers can obtain the catalog ID for (for example)
+        // "MacintoshHD:Game:Data:". Files 1992, 2-27 to 2-30 and 2-190.
+        if fdir_index == 0 && filename.contains(':') {
+            let target = self.vfs_key_for_fsspec(vref, dir_id, filename)?;
+
+            let mut directory_paths: Vec<String> = self.vfs_directories.keys().cloned().collect();
+            directory_paths.sort_unstable();
+            if let Some(path) = directory_paths
+                .into_iter()
+                .find(|path| path.eq_ignore_ascii_case(&target))
+            {
+                let directory = self.vfs_directories.get(&path)?;
+                return Some(super::dispatch::VfsCatalogEntry {
+                    name: super::TrapDispatcher::hfs_name_from_vfs_component(&directory.name),
+                    path,
+                    is_directory: true,
+                });
+            }
+
+            let path = self
+                .vfs
+                .keys()
+                .chain(self.vfs_rsrc.keys())
+                .filter(|path| path.eq_ignore_ascii_case(&target))
+                .min()
+                .cloned()?;
+            self.vfs_file_metadata(&path)?;
+            return Some(super::dispatch::VfsCatalogEntry {
+                name: super::TrapDispatcher::hfs_name_from_vfs_component(
+                    super::TrapDispatcher::vfs_basename(&path),
+                ),
+                path,
+                is_directory: false,
+            });
+        }
+
         for candidate_dir_id in self.hfs_lookup_directory_ids(vref, dir_id) {
             if let Some(entry) = self.lookup_catalog_entry(candidate_dir_id, filename, fdir_index) {
                 return Some(entry);
@@ -8513,7 +8564,6 @@ impl super::TrapDispatcher {
         }
         None
     }
-
 
     fn find_vfs_directory_for_hfs_lookup(
         &mut self,
@@ -9140,6 +9190,37 @@ mod tests {
         assert_eq!(bus.read_word(black + 2), 0, "entry 255 red");
         assert_eq!(bus.read_word(black + 4), 0, "entry 255 green");
         assert_eq!(bus.read_word(black + 6), 0, "entry 255 blue");
+    }
+
+    #[test]
+    fn get_resource_synthesizes_standard_system_pattern_list() {
+        // Imaging With QuickDraw (1994), pp. 3-127..3-128 and 3-141:
+        // PAT# stores a count followed by one-based eight-byte patterns.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PAT#"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+
+        let handle = bus.read_long(TEST_SP + 6);
+        assert_ne!(handle, 0);
+        assert_eq!(disp.resource_handle_files.get(&handle), Some(&0));
+        assert_eq!(bus.read_word(0x0A60), 0);
+
+        let patterns = bus.read_long(handle);
+        assert_eq!(bus.get_alloc_size(patterns), Some(2 + 38 * 8));
+        assert_eq!(bus.read_word(patterns), 38);
+        assert_eq!(bus.read_bytes(patterns + 2, 8), &[0xFF; 8]);
+        assert_eq!(
+            bus.read_bytes(patterns + 2 + 37 * 8, 8),
+            &[0x00, 0x08, 0x14, 0x2A, 0x55, 0x2A, 0x14, 0x08]
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"PAT#"));
+        call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 6), handle);
     }
 
     #[test]
@@ -15805,6 +15886,36 @@ mod tests {
             "ioDrNmFls counts the Ben file in the Pilots directory"
         );
         assert_eq!(bus.read_long(pb + 100), app_dir_id);
+    }
+
+    #[test]
+    fn fsdispatch_pbgetcatinfo_resolves_full_hfs_directory_pathname() {
+        // Files 1992, 2-27 to 2-30: ioNamePtr may contain a full pathname
+        // beginning with the volume name. PBGetCatInfo must resolve every
+        // component and return the leaf directory's catalog information.
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let game_dir_id = disp.ensure_vfs_directory("Baseball");
+        let data_dir_id = disp.ensure_vfs_directory("Baseball/Data");
+        disp.vfs
+            .insert("Baseball/Data/FILENEW.BMP".to_string(), vec![0x42]);
+
+        let pb = 0x300000u32;
+        let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"MacintoshHD:Baseball:Data:");
+        bus.write_word(pb + 16, 0x3FFF);
+        bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
+        bus.write_word(pb + 28, 0);
+        bus.write_long(pb + 48, 2);
+        cpu.write_reg(Register::D0, 9);
+
+        call(&mut disp, false, 0x60, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, 0);
+        assert_eq!(bus.read_word(pb + 16) as i16, 0);
+        assert_eq!(bus.read_pstring(name_ptr), b"Data".to_vec());
+        assert_eq!(bus.read_byte(pb + 30), 0x10);
+        assert_eq!(bus.read_long(pb + 48), data_dir_id);
+        assert_eq!(bus.read_long(pb + 100), game_dir_id);
     }
 
     #[test]

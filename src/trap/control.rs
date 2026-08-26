@@ -256,11 +256,16 @@ impl super::TrapDispatcher {
     }
 
     fn control_def_proc_handle(&mut self, bus: &mut MacMemoryBus, proc_id: i16) -> u32 {
-        if proc_id <= 0 {
+        if proc_id == 0 {
             return 0;
         }
 
-        let cdef_id = proc_id >> 4;
+        // The encoded procedure ID is a 16-bit bit field: the upper 12 bits
+        // select the CDEF resource and the low 4 bits select its variant.
+        // Extracting the resource ID must therefore use a logical shift;
+        // valid IDs 2048...4095 set the sign bit of an INTEGER procID.
+        // Inside Macintosh Volume I (1985), p. I-323.
+        let cdef_id = ((proc_id as u16) >> 4) as i16;
         self.find_or_load_resource_any(bus, *b"CDEF", cdef_id)
             .map(|(_, ptr)| ptr)
             .map(|ptr| self.get_or_create_resource_handle(bus, *b"CDEF", cdef_id, ptr))
@@ -840,6 +845,20 @@ impl super::TrapDispatcher {
             return;
         }
 
+        let menu_choice = self
+            .control_tracking
+            .as_ref()
+            .and_then(|tracking| self.menus.get(tracking.active_menu))
+            .map(|menu| {
+                if item > 0 {
+                    (u32::from(menu.id as u16) << 16) | u32::from(item as u16)
+                } else {
+                    0
+                }
+            })
+            .unwrap_or(0);
+        bus.write_long(addr::MENU_DISABLE, menu_choice);
+
         if self.ui_theme_id() == crate::ui_theme::UiThemeId::ClassicSystem7 {
             if old_item > 0 {
                 self.invert_control_tracking_item(bus, old_item);
@@ -874,10 +893,17 @@ impl super::TrapDispatcher {
         self.restore_dropdown_pixels(bus, tracking.dropdown_rect, &tracking.saved_pixels);
 
         let part = if selected_item > 0 {
+            let menu_choice = self
+                .menus
+                .get(tracking.active_menu)
+                .map(|menu| (u32::from(menu.id as u16) << 16) | u32::from(selected_item as u16))
+                .unwrap_or(0);
+            bus.write_long(addr::MENU_DISABLE, menu_choice);
             self.write_control_value(bus, tracking.ctrl_handle, selected_item);
             self.draw_control(cpu, bus, tracking.ctrl_ptr);
             10u16
         } else {
+            bus.write_long(addr::MENU_DISABLE, 0);
             0u16
         };
         self.record_trackcontrol_input_trace(
@@ -920,26 +946,58 @@ impl super::TrapDispatcher {
         else {
             return;
         };
-        bus.write_byte(ctrl_ptr + 17, if highlighted { 1 } else { saved_hilite });
-        self.draw_control(cpu, bus, ctrl_ptr);
+        let ctrl_handle = self
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.ctrl_handle)
+            .unwrap_or(0);
+        let application_cdef = self.control_uses_application_def_proc(bus, ctrl_ptr);
+        let part = self
+            .control_tracking
+            .as_ref()
+            .map(|tracking| tracking.simple_part)
+            .unwrap_or(0);
+        bus.write_byte(
+            ctrl_ptr + 17,
+            if highlighted {
+                if application_cdef {
+                    part as u8
+                } else {
+                    1
+                }
+            } else {
+                saved_hilite
+            },
+        );
+        if application_cdef {
+            let callback_return_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+            cpu.write_reg(Register::PC, callback_return_pc);
+            if self.arm_control_def_messages(
+                cpu,
+                bus,
+                ctrl_handle,
+                &[(Self::CDEF_DRAW_CNTL_MSG, u32::from(part), None)],
+            ) {
+                if let Some(tracking) = self.control_tracking.as_mut() {
+                    tracking.cdef_draw_callback_pending = true;
+                }
+            } else {
+                cpu.write_reg(Register::PC, callback_return_pc.wrapping_add(2));
+                self.draw_control(cpu, bus, ctrl_ptr);
+            }
+        } else {
+            self.draw_control(cpu, bus, ctrl_ptr);
+        }
         if let Some(tracking) = self.control_tracking.as_mut() {
             tracking.simple_highlighted = highlighted;
         }
     }
 
-    fn finish_simple_control_tracking<C: CpuOps>(
-        &mut self,
-        cpu: &mut C,
-        bus: &mut MacMemoryBus,
-        inside: bool,
-    ) {
+    fn complete_simple_control_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         let Some(tracking) = self.control_tracking.take() else {
             return;
         };
-        bus.write_byte(tracking.ctrl_ptr + 17, tracking.saved_hilite);
-        self.draw_control(cpu, bus, tracking.ctrl_ptr);
-
-        let part = if inside { tracking.simple_part } else { 0 };
+        let part = tracking.cdef_finish_part.unwrap_or(0);
         self.record_trackcontrol_input_trace(
             bus,
             "tracking_finish",
@@ -948,14 +1006,58 @@ impl super::TrapDispatcher {
             0,
             Some(part),
             None,
-            if inside {
-                "simple_part_selected"
-            } else {
+            if part == 0 {
                 "simple_no_selection"
+            } else {
+                "simple_part_selected"
             },
         );
         bus.write_word(tracking.stack_ptr + 12, part);
         cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+    }
+
+    fn finish_simple_control_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        inside: bool,
+    ) {
+        let Some((ctrl_handle, ctrl_ptr, saved_hilite, simple_part)) =
+            self.control_tracking.as_ref().map(|tracking| {
+                (
+                    tracking.ctrl_handle,
+                    tracking.ctrl_ptr,
+                    tracking.saved_hilite,
+                    tracking.simple_part,
+                )
+            })
+        else {
+            return;
+        };
+        let part = if inside { simple_part } else { 0 };
+        bus.write_byte(ctrl_ptr + 17, saved_hilite);
+        if let Some(tracking) = self.control_tracking.as_mut() {
+            tracking.cdef_finish_part = Some(part);
+        }
+        if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+            let callback_return_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
+            cpu.write_reg(Register::PC, callback_return_pc);
+            if self.arm_control_def_messages(
+                cpu,
+                bus,
+                ctrl_handle,
+                &[(Self::CDEF_DRAW_CNTL_MSG, u32::from(simple_part), None)],
+            ) {
+                if let Some(tracking) = self.control_tracking.as_mut() {
+                    tracking.cdef_draw_callback_pending = true;
+                }
+                return;
+            }
+            cpu.write_reg(Register::PC, callback_return_pc.wrapping_add(2));
+        } else {
+            self.draw_control(cpu, bus, ctrl_ptr);
+        }
+        self.complete_simple_control_tracking(cpu, bus);
     }
 
     fn standard_scrollbar_testcontrol_part_code(
@@ -1813,12 +1915,16 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        if inactive && pixel_size == 8 {
+        if pixel_size == 8 {
             // Control drawing writes directly to the screen framebuffer, so
             // resolve against the same live device CLUT used by screenshots
             // instead of TheGDevice, which games may leave on an offscreen
             // palette while redrawing dialogs.
-            let ink = self.inactive_control_title_index();
+            let ink = if inactive {
+                self.inactive_control_title_index()
+            } else {
+                super::pict::closest_clut_index(0, 0, 0, &self.device_clut)
+            };
             Self::fb_draw_string_styled_index(
                 bus,
                 screen_base,
@@ -3268,6 +3374,49 @@ impl super::TrapDispatcher {
                 if self
                     .control_tracking
                     .as_ref()
+                    .is_some_and(|tracking| tracking.cdef_test_callback_pending)
+                {
+                    let (stack_ptr, ctrl_ptr) = self
+                        .control_tracking
+                        .as_ref()
+                        .map(|tracking| (tracking.stack_ptr, tracking.ctrl_ptr))
+                        .unwrap_or((0, 0));
+                    let part = bus.read_word(stack_ptr + 12);
+                    if let Some(tracking) = self.control_tracking.as_mut() {
+                        tracking.cdef_test_callback_pending = false;
+                        tracking.simple_part = part;
+                    }
+                    if part == 0 {
+                        if let Some(tracking) = self.control_tracking.as_mut() {
+                            tracking.cdef_finish_part = Some(0);
+                        }
+                        self.complete_simple_control_tracking(cpu, bus);
+                    } else {
+                        debug_assert_ne!(ctrl_ptr, 0);
+                        self.redraw_simple_control_tracking_state(cpu, bus, true);
+                    }
+                    return Some(Ok(()));
+                }
+                if self
+                    .control_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.cdef_draw_callback_pending)
+                {
+                    let finish_pending = self
+                        .control_tracking
+                        .as_ref()
+                        .is_some_and(|tracking| tracking.cdef_finish_part.is_some());
+                    if let Some(tracking) = self.control_tracking.as_mut() {
+                        tracking.cdef_draw_callback_pending = false;
+                    }
+                    if finish_pending {
+                        self.complete_simple_control_tracking(cpu, bus);
+                    }
+                    return Some(Ok(()));
+                }
+                if self
+                    .control_tracking
+                    .as_ref()
                     .is_some_and(|tracking| tracking.scrollbar_action_proc != 0)
                 {
                     if self
@@ -3512,6 +3661,9 @@ impl super::TrapDispatcher {
                                                 scrollbar_last_action_tick: self.tick_count,
                                                 scrollbar_idle_refires: 0,
                                                 scrollbar_callback_pending: true,
+                                                cdef_test_callback_pending: false,
+                                                cdef_draw_callback_pending: false,
+                                                cdef_finish_part: None,
                                             });
                                             return Some(Ok(()));
                                         }
@@ -3550,6 +3702,9 @@ impl super::TrapDispatcher {
                                             scrollbar_last_action_tick: 0,
                                             scrollbar_idle_refires: 0,
                                             scrollbar_callback_pending: false,
+                                            cdef_test_callback_pending: false,
+                                            cdef_draw_callback_pending: false,
+                                            cdef_finish_part: None,
                                         });
                                         self.record_trackcontrol_input_trace(
                                             bus,
@@ -3571,11 +3726,17 @@ impl super::TrapDispatcher {
                                 // Preserve the old immediate path when the
                                 // mouse is already up; scripted callers that
                                 // model a real mouse-down take the refire path.
+                                let application_cdef =
+                                    self.control_uses_application_def_proc(bus, ctrl_ptr);
                                 if self.mouse_button
                                     && action_proc == 0
-                                    && matches!(proc_id, 0 | 1 | 2)
+                                    && (matches!(proc_id, 0 | 1 | 2) || application_cdef)
                                 {
-                                    let part = self.standard_testcontrol_part_code(ctrl_ptr);
+                                    let part = if application_cdef {
+                                        0
+                                    } else {
+                                        self.standard_testcontrol_part_code(ctrl_ptr)
+                                    };
                                     let window_ptr = bus.read_long(ctrl_ptr + 4);
                                     let (scr_top, scr_left, _, _) =
                                         Self::dialog_screen_bounds(bus, window_ptr);
@@ -3603,8 +3764,40 @@ impl super::TrapDispatcher {
                                         scrollbar_last_action_tick: 0,
                                         scrollbar_idle_refires: 0,
                                         scrollbar_callback_pending: false,
+                                        cdef_test_callback_pending: false,
+                                        cdef_draw_callback_pending: false,
+                                        cdef_finish_part: None,
                                     });
-                                    self.redraw_simple_control_tracking_state(cpu, bus, true);
+                                    if application_cdef {
+                                        let point =
+                                            ((pt_v as u16 as u32) << 16) | pt_h as u16 as u32;
+                                        let callback_return_pc =
+                                            cpu.read_reg(Register::PC).wrapping_sub(2);
+                                        cpu.write_reg(Register::PC, callback_return_pc);
+                                        if self.arm_control_def_messages(
+                                            cpu,
+                                            bus,
+                                            ctrl_handle,
+                                            &[(Self::CDEF_TEST_CNTL_MSG, point, Some(sp + 12))],
+                                        ) {
+                                            if let Some(tracking) = self.control_tracking.as_mut() {
+                                                tracking.cdef_test_callback_pending = true;
+                                            }
+                                        } else {
+                                            cpu.write_reg(
+                                                Register::PC,
+                                                callback_return_pc.wrapping_add(2),
+                                            );
+                                            if let Some(tracking) = self.control_tracking.as_mut() {
+                                                tracking.simple_part = 10;
+                                            }
+                                            self.redraw_simple_control_tracking_state(
+                                                cpu, bus, true,
+                                            );
+                                        }
+                                    } else {
+                                        self.redraw_simple_control_tracking_state(cpu, bus, true);
+                                    }
                                     self.record_trackcontrol_input_trace(
                                         bus,
                                         "start",
@@ -3719,6 +3912,14 @@ impl super::TrapDispatcher {
                             self.draw_control(cpu, bus, ctrl_ptr);
                         }
                     }
+
+                    if self.dialog_items.contains_key(&window_ptr) {
+                        // DrawControls is an application-owned dialog
+                        // composition. ModalDialog handles events; it must not
+                        // replace these pixels with a fresh synthesized shell
+                        // on first entry. Inside Macintosh Volume I, p. I-415.
+                        self.dialogs_drawn_by_app.insert(window_ptr);
+                    }
                 }
 
                 cpu.write_reg(Register::A7, sp + 4);
@@ -3808,6 +4009,7 @@ impl super::TrapDispatcher {
 
                 let mut found_handle: u32 = 0;
                 let mut found_part: u16 = 0;
+                let mut cdef_test_handle: u32 = 0;
 
                 // Walk the control list starting at window+140 (wControlList)
                 // Macintosh TB Essentials 1992, 4-67
@@ -3834,11 +4036,11 @@ impl super::TrapDispatcher {
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
                                 found_handle = ctrl_handle;
-                                // Return part code 10 (kControlButtonPart) for
-                                // simple button controls. The proper approach
-                                // would call the CDEF's testCntl, but for HLE
-                                // we return a generic hit indicator.
-                                found_part = 10;
+                                if self.control_uses_application_def_proc(bus, ctrl_ptr) {
+                                    cdef_test_handle = ctrl_handle;
+                                } else {
+                                    found_part = 10;
+                                }
                                 break;
                             }
                         }
@@ -3853,6 +4055,16 @@ impl super::TrapDispatcher {
                 }
                 bus.write_word(sp + 12, found_part);
                 cpu.write_reg(Register::A7, sp + 12);
+
+                if cdef_test_handle != 0 {
+                    let point = ((pt_v as u16 as u32) << 16) | pt_h as u16 as u32;
+                    self.arm_control_def_messages(
+                        cpu,
+                        bus,
+                        cdef_test_handle,
+                        &[(Self::CDEF_TEST_CNTL_MSG, point, Some(sp + 12))],
+                    );
+                }
 
                 Ok(())
             }
@@ -4703,15 +4915,20 @@ mod tests {
     }
 
     #[test]
-    fn newcontrol_custom_cdef_arms_init_then_draw_pascal_callbacks() {
+    fn newcontrol_resolves_high_bit_cdef_id_and_arms_pascal_callbacks() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = 0x300000u32;
         let return_pc = 0x1234_5678;
         let window_ptr = bus.alloc(200);
         let bounds_ptr = bus.alloc(8);
         let title_ptr = bus.alloc(16);
-        let proc_id = (160i16 << 4) | 5;
-        let cdef_proc = disp.install_test_resource(&mut bus, *b"CDEF", 160, &[0x4E, 0x56, 0, 0]);
+        // Resource ID 3006 sets the sign bit when encoded into a 16-bit
+        // procID. The Control Manager still treats the upper 12 bits as the
+        // unsigned CDEF resource ID. Inside Macintosh Volume I, p. I-323.
+        let cdef_id = 3006;
+        let proc_id = (((cdef_id as u16) << 4) | 5) as i16;
+        let cdef_proc =
+            disp.install_test_resource(&mut bus, *b"CDEF", cdef_id, &[0x4E, 0x56, 0, 0]);
 
         for (offset, value) in [10i16, 20, 40, 100].into_iter().enumerate() {
             bus.write_word(bounds_ptr + offset as u32 * 2, value as u16);
@@ -5554,6 +5771,32 @@ mod tests {
             "inactive radio title must not leave black glyph pixels"
         );
 
+        // Active labels use the same framebuffer path. Keep the GDevice's
+        // notion of black deliberately stale and verify that label ink still
+        // follows the live device CLUT used by screen export.
+        let stale_black_entry = ctab + 8 + 1 * 8;
+        bus.write_word(stale_black_entry + 2, 0);
+        bus.write_word(stale_black_entry + 4, 0);
+        bus.write_word(stale_black_entry + 6, 0);
+        bus.write_word(black_entry + 2, 0x2020);
+        bus.write_word(black_entry + 4, 0x4040);
+        bus.write_word(black_entry + 6, 0x6060);
+        for offset in 0..(row_bytes * 128) {
+            bus.write_byte(screen_base + offset, 0);
+        }
+        bus.write_byte(control_ptrs[0] + 17, 0);
+        disp.draw_control(&mut cpu, &mut bus, control_ptrs[0]);
+        assert!(
+            count_pixel_index(&bus, screen_base, row_bytes, 20, 35, 40, 118, 255) > 12,
+            "active checkbox title should draw with the live device black index"
+        );
+        assert_eq!(
+            count_pixel_index(&bus, screen_base, row_bytes, 20, 35, 40, 118, 1),
+            0,
+            "active checkbox title must not use stale GDevice black"
+        );
+        bus.write_byte(control_ptrs[0] + 17, 255);
+
         // A custom palette with only neutral white/black endpoints still
         // maps grayishTextOr's blend to a visible tinted intermediate entry.
         disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
@@ -5923,6 +6166,115 @@ mod tests {
         assert!(trace.contains("part=10 highlighted_item=none outcome=simple_part_selected"));
     }
 
+    #[test]
+    fn track_control_application_cdef_retains_trap_through_press_and_release_draws() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let trap_pc = 0x0012_3454;
+        let window = disp.current_port;
+        let cdef_id = 160;
+        let proc_id = (cdef_id << 4) | 5;
+        let cdef_proc =
+            disp.install_test_resource(&mut bus, *b"CDEF", cdef_id, &[0x4E, 0x56, 0, 0]);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            window,
+            (20, 20, 40, 80),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+
+        disp.mouse_button = true;
+        disp.mouse_pos = (30, 30);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0);
+        bus.write_word(sp + 4, 30);
+        bus.write_word(sp + 6, 30);
+        bus.write_long(sp + 8, ctrl_handle);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = disp.control_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(bus.read_long(sp - 4), trap_pc);
+        assert_eq!(bus.read_long(trampoline + 16), ctrl_handle);
+        assert_eq!(bus.read_word(trampoline + 22), 1);
+        assert_eq!(bus.read_long(trampoline + 26), (30 << 16) | 30);
+        assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 0);
+        assert!(
+            disp.control_tracking
+                .as_ref()
+                .unwrap()
+                .cdef_test_callback_pending
+        );
+        assert!(disp.is_control_action_callback_pending());
+
+        // The CDEF-selected part starts a pressed-state draw, also returning
+        // to the retained trap rather than to its caller.
+        bus.write_word(sp + 12, 10);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.control_tracking.is_some());
+        assert!(disp.is_control_action_callback_pending());
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_word(trampoline + 22), 0);
+        assert_eq!(bus.read_long(trampoline + 26), 10);
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 10);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.control_tracking.is_some());
+        assert!(!disp.is_control_action_callback_pending());
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+
+        // Mouse-up restores the hilite through a second guest CDEF draw, then
+        // completes the Pascal result only after that callback has returned.
+        disp.mouse_button = false;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_long(sp - 4), trap_pc);
+        assert_eq!(bus.read_byte(ctrl_ptr + 17), 0);
+        assert_eq!(bus.read_word(sp + 12), 10);
+        assert_eq!(
+            disp.control_tracking.as_ref().unwrap().cdef_finish_part,
+            Some(10)
+        );
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+        disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.control_tracking.is_none());
+        assert_eq!(bus.read_word(sp + 12), 10);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
     fn trackcontrol_button_release_result_for_theme(
         theme_id: UiThemeId,
         release_inside: bool,
@@ -6189,6 +6541,11 @@ mod tests {
                 .map(|tracking| tracking.highlighted_item),
             Some(2)
         );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            (900u32 << 16) | 2,
+            "popup MDEF tracking should publish MenuChoice state"
+        );
 
         disp.mouse_button = false;
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
@@ -6198,6 +6555,10 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            (900u32 << 16) | 2
+        );
         assert!(disp.control_tracking.is_none());
         let trace = disp.input_trace_text();
         assert!(trace.contains("A968 action=start start=(15,25)"));
@@ -6415,6 +6776,24 @@ mod tests {
     }
 
     #[test]
+    fn drawcontrols_marks_dialog_composition_for_modal_preservation() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let sp = 0x300000u32;
+        let a5 = cpu.read_reg(Register::A5);
+        let qd_globals = bus.read_long(a5);
+        let dialog_ptr = bus.read_long(qd_globals);
+        disp.dialog_items.insert(dialog_ptr, Vec::new());
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, dialog_ptr);
+        disp.dispatch_control(true, 0x169, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(disp.dialogs_drawn_by_app.contains(&dialog_ptr));
+    }
+
+    #[test]
     fn drawcontrols_dispatches_visible_application_cdefs_in_control_list_draw_order() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let sp = 0x300000u32;
@@ -6516,6 +6895,59 @@ mod tests {
         assert_eq!(bus.read_long(which_ctrl_out), ctrl_handle);
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
+    fn findcontrol_application_cdef_arms_test_message_for_native_part_code() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let return_pc = 0x1234_5678;
+        let window_ptr = bus.alloc(200);
+        let which_ctrl_out = bus.alloc(4);
+        let cdef_id = 160;
+        let proc_id = (cdef_id << 4) | 5;
+        let cdef_proc =
+            disp.install_test_resource(&mut bus, *b"CDEF", cdef_id, &[0x4E, 0x56, 0, 0]);
+        let ctrl_ptr = bus.alloc(296);
+        let ctrl_handle = bus.alloc(4);
+        bus.write_long(ctrl_handle, ctrl_ptr);
+        disp.initialize_control_record(
+            &mut bus,
+            ctrl_ptr,
+            0,
+            (10, 20, 30, 60),
+            b"",
+            true,
+            0,
+            0,
+            1,
+            proc_id,
+            0,
+        );
+        bus.write_long(window_ptr + 140, ctrl_handle);
+
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, which_ctrl_out);
+        bus.write_long(sp + 4, window_ptr);
+        bus.write_word(sp + 8, 15);
+        bus.write_word(sp + 10, 25);
+        bus.write_word(sp + 12, 0xBEEF);
+
+        disp.dispatch_control(true, 0x16C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = disp.control_def_trampoline;
+        assert_eq!(bus.read_long(which_ctrl_out), ctrl_handle);
+        assert_eq!(bus.read_word(sp + 12), 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_long(sp + 8), return_pc);
+        assert_eq!(bus.read_word(trampoline + 22), 1);
+        assert_eq!(bus.read_long(trampoline + 26), (15 << 16) | 25);
+        assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
+        assert_eq!(bus.read_long(trampoline + 40), sp + 12);
     }
 
     #[test]
