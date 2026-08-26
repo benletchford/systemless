@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.5](https://github.com/benletchford/systemless/compare/v0.20.4...v0.20.5) (2026-08-26)
+
+
+### Bug Fixes
+
+* **quickdraw:** grow color tables before depth changes ([528d7e9](https://github.com/benletchford/systemless/commit/528d7e9007737de9451af19ebd97127ad395f07e))
+
 ## [0.20.4](https://github.com/benletchford/systemless/compare/v0.20.3...v0.20.4) (2026-08-26)
 
 
