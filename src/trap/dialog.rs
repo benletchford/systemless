@@ -7405,6 +7405,13 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
         // Top edge
         Self::fb_hline(
             bus,
@@ -7432,33 +7439,9 @@ impl super::TrapDispatcher {
             true,
         );
         // Left edge
-        for y in top..bottom {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                left,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(bus, screen, left, top, bottom, true);
         // Right edge
-        for y in top..bottom {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                right - 1,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(bus, screen, right - 1, top, bottom, true);
     }
 
     fn fill_dialog_rect(

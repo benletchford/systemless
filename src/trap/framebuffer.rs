@@ -1591,6 +1591,53 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Vertical line of `black` pixels at column `x` from `top` (inclusive)
+    /// to `bottom` (exclusive), clipped to the screen. `screen` is
+    /// (base, row bytes, pixel size, width, height). On an 8-bit screen the
+    /// colour is resolved once and the column is written with one strided
+    /// bus fill; other depths set pixels one at a time.
+    pub(crate) fn fb_vline(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, u16, i16, i16),
+        x: i16,
+        top: i16,
+        bottom: i16,
+        black: bool,
+    ) {
+        let (screen_base, row_bytes, pixel_size, screen_width, screen_height) = screen;
+        if pixel_size == 8 {
+            if x < 0 || x >= screen_width {
+                return;
+            }
+            let top = top.max(0);
+            let bottom = bottom.min(screen_height);
+            if top >= bottom {
+                return;
+            }
+            let index = if black {
+                Self::logical_black_pixel_index(bus)
+            } else {
+                Self::logical_white_pixel_index(bus)
+            };
+            let start = screen_base + top as u32 * row_bytes + x as u32;
+            bus.fill_bytes_strided(start, row_bytes, (bottom - top) as u32, index);
+            return;
+        }
+        for y in top..bottom {
+            Self::fb_set_pixel(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                black,
+            );
+        }
+    }
+
     pub(crate) fn fb_hline_index(
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -1681,6 +1728,62 @@ impl super::TrapDispatcher {
         );
     }
 
+    /// 8-bit glyph painter shared by the plain, clipped and plain-styled
+    /// text paths: per glyph row, one bulk read of the covered destination
+    /// span, the glyph's set pixels (coverage >= 128) applied against the
+    /// host buffer, one bulk write; rows with no set pixel in view touch the
+    /// bus not at all. `origin` is the glyph box's top-left on screen;
+    /// `clip` is (top, left, bottom, right) in screen coordinates and is
+    /// intersected with the screen.
+    fn fb_blit_glyph_rows_8bpp(
+        bus: &mut MacMemoryBus,
+        screen: (u32, u32, i16, i16),
+        origin: (i16, i16),
+        glyph: &Glyph,
+        data: &[u8],
+        clip: (i16, i16, i16, i16),
+        index: u8,
+    ) {
+        let (screen_base, row_bytes, screen_width, screen_height) = screen;
+        let (gx, gy) = origin;
+        let gw = glyph.width as usize;
+        let gh = glyph.height as usize;
+        if gw == 0 || gh == 0 {
+            return;
+        }
+        let (clip_top, clip_left, clip_bottom, clip_right) = clip;
+        let clip_top = i32::from(clip_top.max(0));
+        let clip_left = i32::from(clip_left.max(0));
+        let clip_bottom = i32::from(clip_bottom.min(screen_height));
+        let clip_right = i32::from(clip_right.min(screen_width));
+        let col_start = (clip_left - i32::from(gx)).max(0);
+        let col_end = (clip_right - i32::from(gx)).min(gw as i32);
+        if col_start >= col_end {
+            return;
+        }
+        let width = (col_end - col_start) as usize;
+        let mut span = vec![0u8; width];
+        for row in 0..gh {
+            let py = i32::from(gy) + row as i32;
+            if py < clip_top || py >= clip_bottom {
+                continue;
+            }
+            let row_off = glyph.data_offset + row * gw + col_start as usize;
+            let set = |col: usize| data.get(row_off + col).is_some_and(|&c| c >= 128);
+            if !(0..width).any(set) {
+                continue;
+            }
+            let start = screen_base + py as u32 * row_bytes + (i32::from(gx) + col_start) as u32;
+            bus.read_bytes_into(start, &mut span);
+            for (col, dst) in span.iter_mut().enumerate() {
+                if set(col) {
+                    *dst = index;
+                }
+            }
+            bus.write_bytes(start, &span);
+        }
+    }
+
     fn fb_draw_glyph_bitmap_with_slant(
         bus: &mut MacMemoryBus,
         screen_base: u32,
@@ -1701,6 +1804,29 @@ impl super::TrapDispatcher {
         let gy = y + glyph.origin_y as i16;
         let gw = glyph.width as usize;
         let gh = glyph.height as usize;
+        // Unslanted, unstretched glyphs on an 8-bit screen go row by row.
+        if pixel_size == 8
+            && synthetic_italic.is_none()
+            && (style & (TEXT_STYLE_EXTEND | TEXT_STYLE_CONDENSE)) == 0
+        {
+            let index = pixel_index_override.unwrap_or_else(|| {
+                if black {
+                    Self::logical_black_pixel_index(bus)
+                } else {
+                    Self::logical_white_pixel_index(bus)
+                }
+            });
+            Self::fb_blit_glyph_rows_8bpp(
+                bus,
+                (screen_base, row_bytes, screen_width, screen_height),
+                (gx, gy),
+                glyph,
+                data,
+                (0, 0, screen_height, screen_width),
+                index,
+            );
+            return;
+        }
         let metrics = synthetic_italic
             .map(|(font_id, font_size)| (font_id, font_size, get_font_metrics(font_id, font_size)));
         let text_index = if matches!(pixel_size, 2 | 4 | 8) {
@@ -1917,6 +2043,35 @@ impl super::TrapDispatcher {
             return 6;
         };
 
+        // Without a per-glyph style bit the styled painter's pixel set is
+        // exactly the glyph bitmap; on an 8-bit screen let the row painter
+        // write it instead of building the set.
+        const PER_GLYPH_STYLE: u8 = TEXT_STYLE_BOLD
+            | TEXT_STYLE_ITALIC
+            | TEXT_STYLE_OUTLINE
+            | TEXT_STYLE_SHADOW
+            | TEXT_STYLE_CONDENSE
+            | TEXT_STYLE_EXTEND;
+        if pixel_size == 8 && (style & PER_GLYPH_STYLE) == 0 {
+            Self::fb_draw_glyph_bitmap_with_slant(
+                bus,
+                screen_base,
+                row_bytes,
+                pixel_size,
+                screen_width,
+                screen_height,
+                x,
+                y,
+                glyph,
+                data,
+                None,
+                0,
+                pixel_index_override,
+                black,
+            );
+            return Self::fb_styled_glyph_advance(glyph, style);
+        }
+
         let glyph_y = if (style & TEXT_STYLE_SHADOW) != 0 {
             y - 1
         } else {
@@ -2039,12 +2194,25 @@ impl super::TrapDispatcher {
         font_id: i16,
         font_size: i16,
         clip: (i16, i16, i16, i16),
+        text_index: Option<u8>,
     ) -> i16 {
         let Some((glyph, data)) = get_glyph(font_id, font_size, ch) else {
             return 6;
         };
         let gx = x + glyph.origin_x as i16;
         let gy = y + glyph.origin_y as i16;
+        if let Some(index) = text_index.filter(|_| pixel_size == 8) {
+            Self::fb_blit_glyph_rows_8bpp(
+                bus,
+                (screen_base, row_bytes, screen_width, screen_height),
+                (gx, gy),
+                glyph,
+                data,
+                clip,
+                index,
+            );
+            return glyph.advance as i16;
+        }
         let gw = glyph.width as usize;
         let gh = glyph.height as usize;
         let (clip_top, clip_left, clip_bottom, clip_right) = clip;
@@ -2091,6 +2259,8 @@ impl super::TrapDispatcher {
         font_size: i16,
         clip: (i16, i16, i16, i16),
     ) -> i16 {
+        // Resolve the text colour once per string, not once per pixel.
+        let text_index = (pixel_size == 8).then(|| Self::logical_black_pixel_index(bus));
         let mut cx = x;
         for ch in s.chars() {
             cx += Self::fb_draw_char_clipped(
@@ -2106,6 +2276,7 @@ impl super::TrapDispatcher {
                 font_id,
                 font_size,
                 clip,
+                text_index,
             );
         }
         cx - x
@@ -3791,6 +3962,13 @@ impl super::TrapDispatcher {
         }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
 
         // Title bar area: drawn ABOVE the content rect
@@ -3851,30 +4029,8 @@ impl super::TrapDispatcher {
             true,
         );
         // Left and right border of title bar
-        for y in tb_top..=tb_bottom {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                tb_left,
-                y,
-                true,
-            );
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                tb_right - 1,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(bus, screen, tb_left, tb_top, tb_bottom + 1, true);
+        Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
         // Calculate title text area if we have a title
         let font_id: i16 = 0; // Chicago
@@ -3958,37 +4114,20 @@ impl super::TrapDispatcher {
                     cb_left + cb_size,
                     true,
                 );
-                for y in cb_top..(cb_top + cb_size) {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        cb_left,
-                        y,
-                        true,
-                    );
-                }
+                Self::fb_vline(bus, screen, cb_left, cb_top, cb_top + cb_size, true);
 
                 // Bottom-right Γ: 8-tall right edge + 8-wide bottom edge,
                 // inset 2 from the top-left and 1 from the bottom-right.
                 let inner_right = cb_left + cb_size - 2; // x=cb_left+9
                 let inner_bottom = cb_top + cb_size - 2; // y=cb_top+9
-                for y in (cb_top + 2)..(cb_top + cb_size - 1) {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        inner_right,
-                        y,
-                        true,
-                    );
-                }
+                Self::fb_vline(
+                    bus,
+                    screen,
+                    inner_right,
+                    cb_top + 2,
+                    cb_top + cb_size - 1,
+                    true,
+                );
                 Self::fb_hline(
                     bus,
                     screen_base,
@@ -4108,30 +4247,8 @@ impl super::TrapDispatcher {
         }
 
         // Draw window content area border
-        for y in wind_top..wind_bottom {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                wind_left - 1,
-                y,
-                true,
-            );
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                wind_right,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(bus, screen, wind_left - 1, wind_top, wind_bottom, true);
+        Self::fb_vline(bus, screen, wind_right, wind_top, wind_bottom, true);
         // Bottom border line
         Self::fb_hline(
             bus,
@@ -4147,19 +4264,14 @@ impl super::TrapDispatcher {
         );
 
         // Shadow effect
-        for y in tb_top..=(wind_bottom + 1) {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                wind_right + 1,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(
+            bus,
+            screen,
+            wind_right + 1,
+            tb_top,
+            (wind_bottom + 1) + 1,
+            true,
+        );
         Self::fb_hline(
             bus,
             screen_base,
@@ -4181,6 +4293,13 @@ impl super::TrapDispatcher {
     pub(crate) fn draw_grow_icon(&self, bus: &mut MacMemoryBus, window_ptr: u32) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
         // Read portRect (top, left, bottom, right) from the window record
         let port_top = bus.read_word(window_ptr + 16) as i16;
         let port_left = bus.read_word(window_ptr + 18) as i16;
@@ -4219,19 +4338,7 @@ impl super::TrapDispatcher {
         let border_right = content_right + 1;
 
         // Vertical scroll separator (full content height)
-        for y in content_top..content_bottom {
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                sep_x,
-                y,
-                true,
-            );
-        }
+        Self::fb_vline(bus, screen, sep_x, content_top, content_bottom, true);
         // Horizontal scroll separator (border to border)
         Self::fb_hline(
             bus,
@@ -4261,6 +4368,13 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
         // Top edge: 2 rows (pen at top extends to top+1)
         for dy in 0..2i16 {
             Self::fb_hline(
@@ -4291,35 +4405,11 @@ impl super::TrapDispatcher {
         );
         // Left edge: 2 columns (pen at left extends to left+1)
         for dx in 0..2i16 {
-            for y in top..bottom {
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    left + dx,
-                    y,
-                    true,
-                );
-            }
+            Self::fb_vline(bus, screen, left + dx, top, bottom, true);
         }
         // Right edge: 2 columns (right-2 and right-1, both inside the rect)
         for dx in 0..2i16 {
-            for y in top..bottom {
-                Self::fb_set_pixel(
-                    bus,
-                    screen_base,
-                    row_bytes,
-                    pixel_size,
-                    screen_width,
-                    screen_height,
-                    right - 2 + dx,
-                    y,
-                    true,
-                );
-            }
+            Self::fb_vline(bus, screen, right - 2 + dx, top, bottom, true);
         }
     }
 
@@ -6244,6 +6334,233 @@ mod redraw_chrome_tests {
                 );
             }
         }
+    }
+
+    /// 800x600 8bpp screen with the standard colour table, every byte set
+    /// to a sentinel index that is neither white nor black.
+    fn text_fixture() -> (TrapDispatcher, crate::memory::MacMemoryBus, u32) {
+        let (mut disp, _cpu, mut bus) = super::super::test_helpers::setup();
+        let screen_base = bus.alloc(800 * 600);
+        disp.screen_mode = (screen_base, 800, 800, 600, 8);
+        bus.write_long(crate::memory::globals::addr::SCRN_BASE, screen_base);
+        let gdevice_handle = disp.ensure_main_gdevice(&mut bus);
+        bus.write_long(0x08A4, gdevice_handle);
+        bus.write_long(0x0CC8, gdevice_handle);
+        bus.fill_bytes(screen_base, 800 * 600, 0x11);
+        (disp, bus, screen_base)
+    }
+
+    fn screen_bytes(bus: &crate::memory::MacMemoryBus, screen_base: u32) -> Vec<u8> {
+        bus.read_bytes(screen_base, 800 * 600)
+    }
+
+    /// The per-pixel string painter this change replaced on 8-bit screens:
+    /// every glyph pixel with coverage >= 128 set through
+    /// `fb_set_pixel_index`, optionally restricted to `clip`.
+    fn reference_draw_string(
+        bus: &mut crate::memory::MacMemoryBus,
+        screen_base: u32,
+        x: i16,
+        y: i16,
+        s: &str,
+        clip: Option<(i16, i16, i16, i16)>,
+        index: u8,
+    ) {
+        let mut cx = x;
+        for ch in s.chars() {
+            let Some((glyph, data)) = crate::quickdraw::text::get_glyph(0, 12, ch) else {
+                cx += 6;
+                continue;
+            };
+            let gx = cx + glyph.origin_x as i16;
+            let gy = y + glyph.origin_y as i16;
+            let gw = glyph.width as usize;
+            for row in 0..glyph.height as usize {
+                for col in 0..gw {
+                    let byte_idx = glyph.data_offset + row * gw + col;
+                    if byte_idx >= data.len() || data[byte_idx] < 128 {
+                        continue;
+                    }
+                    let (px, py) = (gx + col as i16, gy + row as i16);
+                    if let Some((t, l, b, r)) = clip {
+                        if py < t || py >= b || px < l || px >= r {
+                            continue;
+                        }
+                    }
+                    TrapDispatcher::fb_set_pixel_index(
+                        bus,
+                        screen_base,
+                        800,
+                        8,
+                        800,
+                        600,
+                        px,
+                        py,
+                        index,
+                    );
+                }
+            }
+            cx += glyph.advance as i16;
+        }
+    }
+
+    #[test]
+    fn glyph_row_blit_matches_the_per_pixel_painter() {
+        let (_disp, mut bus, screen_base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        // Fully inside, off the left and top edges, and off the right and
+        // bottom edges.
+        let cases = [(100i16, 100i16), (-4, 3), (790, 596)];
+        for (x, y) in cases {
+            TrapDispatcher::fb_draw_string(
+                &mut bus,
+                screen_base,
+                800,
+                8,
+                800,
+                600,
+                x,
+                y,
+                "Gate!",
+                0,
+                12,
+            );
+        }
+        let fast = screen_bytes(&bus, screen_base);
+        bus.fill_bytes(screen_base, 800 * 600, 0x11);
+        for (x, y) in cases {
+            reference_draw_string(&mut bus, screen_base, x, y, "Gate!", None, black);
+        }
+        let reference = screen_bytes(&bus, screen_base);
+        assert!(
+            fast == reference,
+            "row-blitted text must equal the per-pixel painter"
+        );
+        let painted = fast.iter().filter(|&&b| b == black).count();
+        assert!(
+            painted > 50,
+            "the strings drew something ({painted} pixels)"
+        );
+    }
+
+    #[test]
+    fn clipped_glyph_row_blit_matches_the_per_pixel_painter() {
+        let (_disp, mut bus, screen_base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        // A clip that cuts through the glyph boxes on every side: glyph rows
+        // sit above the baseline `y`, so derive the band from the 'G' glyph.
+        let (g, _) = crate::quickdraw::text::get_glyph(0, 12, 'G').expect("glyph");
+        let g_top = 100 + g.origin_y as i16;
+        let clip = (g_top + 2, 104i16, g_top + g.height as i16 - 2, 128i16);
+        TrapDispatcher::fb_draw_string_clipped(
+            &mut bus,
+            screen_base,
+            800,
+            8,
+            800,
+            600,
+            100,
+            100,
+            "Gate!",
+            0,
+            12,
+            clip,
+        );
+        let fast = screen_bytes(&bus, screen_base);
+        bus.fill_bytes(screen_base, 800 * 600, 0x11);
+        reference_draw_string(&mut bus, screen_base, 100, 100, "Gate!", Some(clip), black);
+        let reference = screen_bytes(&bus, screen_base);
+        assert!(
+            fast == reference,
+            "clipped row-blitted text must equal the per-pixel painter"
+        );
+        let painted = fast.iter().filter(|&&b| b == black).count();
+        assert!(
+            painted > 10,
+            "the clip left something visible ({painted} pixels)"
+        );
+        let unclipped = {
+            bus.fill_bytes(screen_base, 800 * 600, 0x11);
+            reference_draw_string(&mut bus, screen_base, 100, 100, "Gate!", None, black);
+            screen_bytes(&bus, screen_base)
+                .iter()
+                .filter(|&&b| b == black)
+                .count()
+        };
+        assert!(painted < unclipped, "the clip removed something");
+    }
+
+    #[test]
+    fn plain_styled_text_matches_the_plain_painter() {
+        let (_disp, mut bus, screen_base) = text_fixture();
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        TrapDispatcher::fb_draw_string_styled_index(
+            &mut bus,
+            screen_base,
+            800,
+            8,
+            800,
+            600,
+            40,
+            40,
+            "File Edit",
+            0,
+            12,
+            0,
+            black,
+        );
+        let styled = screen_bytes(&bus, screen_base);
+        bus.fill_bytes(screen_base, 800 * 600, 0x11);
+        TrapDispatcher::fb_draw_string(
+            &mut bus,
+            screen_base,
+            800,
+            8,
+            800,
+            600,
+            40,
+            40,
+            "File Edit",
+            0,
+            12,
+        );
+        let plain = screen_bytes(&bus, screen_base);
+        assert!(
+            styled == plain,
+            "style 0 through the styled painter equals the plain painter"
+        );
+        assert!(plain.contains(&black));
+    }
+
+    #[test]
+    fn fb_vline_matches_the_per_pixel_loop_and_clips() {
+        let (_disp, mut bus, screen_base) = text_fixture();
+        let screen = (screen_base, 800u32, 8u16, 800i16, 600i16);
+        let cases = [
+            (10i16, -5i16, 20i16, true),
+            (799, 590, 700, true),
+            (800, 0, 10, true),
+            (-1, 0, 10, true),
+            (50, 30, 30, true),
+            (60, 40, 30, true),
+            (70, 10, 40, false),
+        ];
+        for &(x, top, bottom, black) in &cases {
+            TrapDispatcher::fb_vline(&mut bus, screen, x, top, bottom, black);
+        }
+        let fast = screen_bytes(&bus, screen_base);
+        bus.fill_bytes(screen_base, 800 * 600, 0x11);
+        for &(x, top, bottom, black) in &cases {
+            for y in top..bottom {
+                TrapDispatcher::fb_set_pixel(&mut bus, screen_base, 800, 8, 800, 600, x, y, black);
+            }
+        }
+        let reference = screen_bytes(&bus, screen_base);
+        assert!(fast == reference, "fb_vline must equal the per-pixel loop");
+        let black = TrapDispatcher::logical_black_pixel_index(&bus);
+        let white = TrapDispatcher::logical_white_pixel_index(&bus);
+        assert_eq!(fast.iter().filter(|&&b| b == black).count(), 20 + 10);
+        assert_eq!(fast.iter().filter(|&&b| b == white).count(), 30);
     }
 
     #[test]
