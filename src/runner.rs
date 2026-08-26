@@ -18579,8 +18579,9 @@ mod tests {
         assert!(runner.idle_cycle_probe.is_some());
         assert!(runner.bus.fast_mem_window().is_none());
 
-        // The "cycle" writes far more than a wait ever does.
-        for offset in 0..(2 * crate::memory::bus::WRITE_PROBE_MAX_ENTRIES as u32) {
+        // The "cycle" writes far more than a wait ever does: the journal
+        // counts 32-bit words, so this touches twice the cap in words.
+        for offset in 0..(8 * crate::memory::bus::WRITE_PROBE_MAX_ENTRIES as u32) {
             runner.bus.write_byte(work + offset, 0xAA);
         }
         assert!(

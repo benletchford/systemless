@@ -508,9 +508,9 @@ pub struct MacMemoryBus {
     write_probe_overflowed: bool,
 }
 
-/// An exact-state probe journals the bytes an idle cycle writes: a spilled
+/// An exact-state probe journals the words an idle cycle writes: a spilled
 /// register or two, an event record, a saved keymap -- tens of bytes, a few
-/// hundred at most. A journal past this many distinct addresses is not
+/// hundred at most. A journal past this many distinct words is not
 /// watching a wait; it is watching real work, and while it stays open every
 /// guest store pays a hash insert and fastmem is suspended for the whole
 /// core. Past the cap the probe is voided on the spot so normal fast paths
@@ -654,8 +654,12 @@ impl Hasher for AddressHasher {
     }
 }
 
-/// Original bytes of the addresses written during an exact-state probe.
-type WriteProbeJournal = HashMap<u32, u8, BuildHasherDefault<AddressHasher>>;
+/// Original contents of the aligned 32-bit words a probe's writes touched,
+/// keyed by the word's address. One insert per word instead of one per
+/// byte; the bytes of a word a write did not touch cannot change while a
+/// probe is armed (every writer goes through the bus and fastmem is
+/// withdrawn), so comparing them at the end is harmless.
+type WriteProbeJournal = HashMap<u32, u32, BuildHasherDefault<AddressHasher>>;
 
 /// RAM storage - either a stable owned allocation or borrowed slice.
 enum RamStorage {
@@ -1048,13 +1052,16 @@ impl MacMemoryBus {
         let dst = translated_dst.unwrap_or(dst);
         let src_end = (src as u64).saturating_add(count as u64);
         let dst_end = (dst as u64).saturating_add(count as u64);
-        if fast
+        if (fast || self.only_write_probe_blocks_fast_path())
             && translated_src.is_some()
             && translated_dst.is_some()
             && !self.readonly_code_overlaps(dst, count)
             && src_end <= self.ram_size as u64
             && dst_end <= self.ram_size as u64
         {
+            if !fast {
+                self.record_write_probe_range(dst, count);
+            }
             let ram_size_usize = self.ram_size as usize;
             if let Some(ram) = self.ram.slice_at_mut(0, ram_size_usize) {
                 let src_range = (src as usize)..(src as usize + count_usize);
@@ -1237,7 +1244,7 @@ impl MacMemoryBus {
         let unchanged = !self.write_probe_invalid
             && original
                 .iter()
-                .all(|(&address, &value)| self.ram.get_in_bounds(address as usize) == value);
+                .all(|(&word, &value)| self.ram.read_long_in_bounds(word as usize) == value);
         self.write_probe_spare = original;
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
@@ -1251,26 +1258,57 @@ impl MacMemoryBus {
         }
     }
 
+    /// True when an armed write probe is the only thing keeping a
+    /// multi-byte write off its fast path: no framebuffer-write tracer and
+    /// (in debug builds) no watchpoint, both of which need to observe each
+    /// byte through `write_byte`. The probe only needs the words journaled
+    /// before the write, which the caller does.
     #[inline]
-    fn record_write_probe_byte(&mut self, address: u32) {
-        if self.write_probe_original.is_none() {
+    fn only_write_probe_blocks_fast_path(&self) -> bool {
+        #[cfg(debug_assertions)]
+        if WATCHPOINT_ARMED.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.write_probe_original.is_some() && fb_write_trace_range().is_none()
+    }
+
+    /// Journal the aligned words covering `len` bytes at the translated
+    /// `address`. Must run before the write.
+    #[inline]
+    fn record_write_probe_range(&mut self, address: u32, len: u32) {
+        if self.write_probe_original.is_none() || len == 0 {
             return;
         }
-        if address >= self.ram_size {
+        let end = u64::from(address) + u64::from(len);
+        if end > u64::from(self.ram_size) {
             self.write_probe_invalid = true;
             return;
         }
-        let original = self.ram.get_in_bounds(address as usize);
-        let journal = self
-            .write_probe_original
-            .as_mut()
-            .expect("write probe checked above");
-        journal.entry(address).or_insert(original);
-        if journal.len() > WRITE_PROBE_MAX_ENTRIES {
-            // Too much written for a wait cycle: void the probe now so the
-            // fast paths (and fastmem) come back for the work in progress.
-            self.park_write_probe_journal();
-            self.write_probe_overflowed = true;
+        let last = ((end - 1) as u32) & !3;
+        let mut word = address & !3;
+        loop {
+            if u64::from(word) + 4 > u64::from(self.ram_size) {
+                self.write_probe_invalid = true;
+                return;
+            }
+            let original = self.ram.read_long_in_bounds(word as usize);
+            let journal = self
+                .write_probe_original
+                .as_mut()
+                .expect("write probe checked above");
+            journal.entry(word).or_insert(original);
+            if journal.len() > WRITE_PROBE_MAX_ENTRIES {
+                // Too much written for a wait cycle: void the probe now so
+                // the fast paths (and fastmem) come back for the work in
+                // progress.
+                self.park_write_probe_journal();
+                self.write_probe_overflowed = true;
+                return;
+            }
+            if word == last {
+                return;
+            }
+            word += 4;
         }
     }
 
@@ -1600,6 +1638,12 @@ impl MacMemoryBus {
                 .copy_bytes_in_bounds(src as usize, dst as usize, len as usize);
             return true;
         }
+        if self.only_write_probe_blocks_fast_path() && !self.readonly_code_overlaps(dst, len) {
+            self.record_write_probe_range(dst, len);
+            self.ram
+                .copy_bytes_in_bounds(src as usize, dst as usize, len as usize);
+            return true;
+        }
         for offset in 0..len {
             let byte = self.read_byte(src.wrapping_add(offset));
             self.write_byte(dst.wrapping_add(offset), byte);
@@ -1632,6 +1676,12 @@ impl MacMemoryBus {
             return false;
         }
         if fast {
+            self.ram
+                .copy_mapped_bytes_in_bounds(src as usize, dst as usize, len as usize, map);
+            return true;
+        }
+        if self.only_write_probe_blocks_fast_path() && !self.readonly_code_overlaps(dst, len) {
+            self.record_write_probe_range(dst, len);
             self.ram
                 .copy_mapped_bytes_in_bounds(src as usize, dst as usize, len as usize, map);
             return true;
@@ -1824,7 +1874,7 @@ impl MemoryBus for MacMemoryBus {
         if self.readonly_code_overlaps(address, 1) {
             return;
         }
-        self.record_write_probe_byte(address);
+        self.record_write_probe_range(address, 1);
         maybe_log_mem_write(address, 1, value as u32);
 
         // Optional release-mode FB-write tracer. Cheap when unset (one
@@ -2002,10 +2052,18 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        if fast && translated.is_some_and(|address| (address as u64) + 2 <= self.ram_size as u64) {
-            let address = translated.unwrap();
-            self.ram.write_word_in_bounds(address as usize, value);
-            return;
+        if let Some(address) =
+            translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
+        {
+            if fast {
+                self.ram.write_word_in_bounds(address as usize, value);
+                return;
+            }
+            if self.only_write_probe_blocks_fast_path() {
+                self.record_write_probe_range(address, 2);
+                self.ram.write_word_in_bounds(address as usize, value);
+                return;
+            }
         }
         self.write_byte(address, (value >> 8) as u8);
         self.write_byte(address.wrapping_add(1), value as u8);
@@ -2029,10 +2087,18 @@ impl MemoryBus for MacMemoryBus {
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
-        if fast && translated.is_some_and(|address| (address as u64) + 4 <= self.ram_size as u64) {
-            let address = translated.unwrap();
-            self.ram.write_long_in_bounds(address as usize, value);
-            return;
+        if let Some(address) =
+            translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
+        {
+            if fast {
+                self.ram.write_long_in_bounds(address as usize, value);
+                return;
+            }
+            if self.only_write_probe_blocks_fast_path() {
+                self.record_write_probe_range(address, 4);
+                self.ram.write_long_in_bounds(address as usize, value);
+                return;
+            }
         }
         self.write_word(address, (value >> 16) as u16);
         self.write_word(address.wrapping_add(2), value as u16);
@@ -2099,9 +2165,16 @@ impl MemoryBus for MacMemoryBus {
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(data.len() as u64);
-        if fast && translated.is_some() && end <= self.ram_size as u64 {
-            self.ram.write_bytes_in_bounds(address as usize, data);
-            return;
+        if translated.is_some() && end <= self.ram_size as u64 {
+            if fast {
+                self.ram.write_bytes_in_bounds(address as usize, data);
+                return;
+            }
+            if self.only_write_probe_blocks_fast_path() {
+                self.record_write_probe_range(address, data.len() as u32);
+                self.ram.write_bytes_in_bounds(address as usize, data);
+                return;
+            }
         }
         for (i, &byte) in data.iter().enumerate() {
             self.write_byte(address.wrapping_add(i as u32), byte);
@@ -2123,10 +2196,18 @@ impl MemoryBus for MacMemoryBus {
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if fast && translated.is_some() && end <= self.ram_size as u64 {
-            self.ram
-                .fill_zeros_in_bounds(address as usize, len as usize);
-            return;
+        if translated.is_some() && end <= self.ram_size as u64 {
+            if fast {
+                self.ram
+                    .fill_zeros_in_bounds(address as usize, len as usize);
+                return;
+            }
+            if self.only_write_probe_blocks_fast_path() {
+                self.record_write_probe_range(address, len);
+                self.ram
+                    .fill_zeros_in_bounds(address as usize, len as usize);
+                return;
+            }
         }
         for i in 0..len {
             self.write_byte(address.wrapping_add(i), 0);
@@ -2148,10 +2229,18 @@ impl MemoryBus for MacMemoryBus {
         let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
         let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
-        if fast && translated.is_some() && end <= self.ram_size as u64 {
-            self.ram
-                .fill_bytes_in_bounds(address as usize, len as usize, value);
-            return;
+        if translated.is_some() && end <= self.ram_size as u64 {
+            if fast {
+                self.ram
+                    .fill_bytes_in_bounds(address as usize, len as usize, value);
+                return;
+            }
+            if self.only_write_probe_blocks_fast_path() {
+                self.record_write_probe_range(address, len);
+                self.ram
+                    .fill_bytes_in_bounds(address as usize, len as usize, value);
+                return;
+            }
         }
         for i in 0..len {
             self.write_byte(address.wrapping_add(i), value);
@@ -2270,6 +2359,123 @@ mod tests {
     }
 
     #[test]
+    fn armed_probe_journals_every_write_size_and_bulk_path() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.fill_bytes(0x100, 0x200, 0x11);
+        // A source span the copies read from, distinct from what they overwrite.
+        for (i, address) in (0x1F0u32..0x200).enumerate() {
+            bus.write_byte(address, 0x80 + i as u8);
+        }
+        type Case = (&'static str, Box<dyn Fn(&mut MacMemoryBus)>);
+        let cases: Vec<Case> = vec![
+            ("byte", Box::new(|b| b.write_byte(0x103, 0x22))),
+            ("word", Box::new(|b| b.write_word(0x106, 0x2233))),
+            ("long", Box::new(|b| b.write_long(0x10A, 0x2233_4455))),
+            (
+                "write_bytes",
+                Box::new(|b| b.write_bytes(0x121, &[1, 2, 3, 4, 5])),
+            ),
+            ("fill_bytes", Box::new(|b| b.fill_bytes(0x141, 7, 0x33))),
+            ("fill_zeros", Box::new(|b| b.fill_zeros(0x161, 3))),
+            ("block_move", Box::new(|b| b.block_move(0x1F0, 0x181, 9))),
+            (
+                "copy_ram_bytes",
+                Box::new(|b| {
+                    assert!(b.copy_ram_bytes(0x1F0, 0x1A1, 6));
+                }),
+            ),
+            (
+                "copy_mapped",
+                Box::new(|b| {
+                    let mut map = [0u8; 256];
+                    map[0x11] = 0x44;
+                    assert!(b.copy_mapped_ram_bytes(0x100, 0x1C1, 6, &map));
+                }),
+            ),
+        ];
+        for (name, write) in &cases {
+            let before = bus.read_bytes(0x100, 0x200);
+            bus.begin_write_probe();
+            write(&mut bus);
+            assert!(!bus.finish_write_probe_unchanged(), "{name}: change seen");
+            bus.write_bytes(0x100, &before);
+            bus.begin_write_probe();
+            write(&mut bus);
+            bus.write_bytes(0x100, &before);
+            assert!(
+                bus.finish_write_probe_unchanged(),
+                "{name}: restore accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn armed_probe_fast_paths_match_the_byte_path() {
+        let mut fast = MacMemoryBus::new(4096);
+        let mut slow = MacMemoryBus::new(4096);
+        for bus in [&mut fast, &mut slow] {
+            bus.fill_bytes(0x100, 0x300, 0x11);
+            for (i, address) in (0x200u32..0x210).enumerate() {
+                bus.write_byte(address, i as u8);
+            }
+            bus.protect_readonly_code(0x342, 1);
+            bus.begin_write_probe();
+        }
+        // Multi-byte and bulk writes on the armed-probe fast paths...
+        fast.write_word(0x120, 0xCAFE);
+        fast.write_long(0x124, 0xDEAD_BEEF);
+        fast.write_bytes(0x131, &[9, 8, 7]);
+        fast.fill_bytes(0x141, 5, 0x55);
+        fast.fill_zeros(0x151, 2);
+        fast.block_move(0x200, 0x204, 8); // overlapping, forward
+        fast.block_move(0x204, 0x201, 8); // overlapping, backward
+        assert!(fast.copy_ram_bytes(0x200, 0x220, 16));
+        let mut map = [0u8; 256];
+        for (i, entry) in map.iter_mut().enumerate() {
+            *entry = (i as u8).wrapping_mul(3);
+        }
+        assert!(fast.copy_mapped_ram_bytes(0x200, 0x240, 16, &map));
+        fast.write_long(0x340, 0x0102_0304); // crosses read-only: skipped whole
+                                             // ...versus the byte-at-a-time reference on the other bus.
+        for (address, byte) in [
+            (0x120u32, 0xCAu8),
+            (0x121, 0xFE),
+            (0x124, 0xDE),
+            (0x125, 0xAD),
+            (0x126, 0xBE),
+            (0x127, 0xEF),
+            (0x131, 9),
+            (0x132, 8),
+            (0x133, 7),
+        ] {
+            slow.write_byte(address, byte);
+        }
+        for address in 0x141..0x146 {
+            slow.write_byte(address, 0x55);
+        }
+        for address in 0x151..0x153 {
+            slow.write_byte(address, 0);
+        }
+        let snapshot: Vec<u8> = (0..8).map(|i| slow.read_byte(0x200 + i)).collect();
+        for (i, byte) in snapshot.iter().enumerate() {
+            slow.write_byte(0x204 + i as u32, *byte);
+        }
+        let snapshot: Vec<u8> = (0..8).map(|i| slow.read_byte(0x204 + i)).collect();
+        for (i, byte) in snapshot.iter().enumerate() {
+            slow.write_byte(0x201 + i as u32, *byte);
+        }
+        for i in 0..16u32 {
+            let byte = slow.read_byte(0x200 + i);
+            slow.write_byte(0x220 + i, byte);
+            slow.write_byte(0x240 + i, map[byte as usize]);
+        }
+        assert_eq!(fast.read_bytes(0x100, 0x300), slow.read_bytes(0x100, 0x300));
+        assert_eq!(fast.read_long(0x340), 0x1111_1111, "read-only untouched");
+        assert!(!fast.finish_write_probe_unchanged());
+        assert!(!slow.finish_write_probe_unchanged());
+    }
+
+    #[test]
     fn write_probe_journal_is_reused_without_stale_entries() {
         let mut bus = MacMemoryBus::new(1024);
         bus.write_long(0x100, 0x1122_3344);
@@ -2302,15 +2508,15 @@ mod tests {
         assert!(bus.fast_mem_window().is_none());
         // Restore-perfect writes to as many distinct addresses as the cap
         // admits keep the probe alive and verifiable...
-        for address in 0..WRITE_PROBE_MAX_ENTRIES as u32 {
-            bus.write_byte(0x1000 + address, 0);
+        for word in 0..WRITE_PROBE_MAX_ENTRIES as u32 {
+            bus.write_byte(0x1000 + word * 4, 0);
         }
         assert!(bus.fast_mem_window().is_none());
         assert!(!bus.take_write_probe_overflow());
         // ...one more distinct address is more than a wait cycle writes:
         // the journal is dropped on the spot, the fast paths (and fastmem)
         // return, and the probe can no longer verify.
-        bus.write_byte(0x1000 + WRITE_PROBE_MAX_ENTRIES as u32, 0);
+        bus.write_byte(0x1000 + WRITE_PROBE_MAX_ENTRIES as u32 * 4, 0);
         assert!(bus.fast_mem_window().is_some());
         assert!(!bus.finish_write_probe_unchanged());
         assert!(bus.take_write_probe_overflow());
