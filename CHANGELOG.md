@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.2](https://github.com/benletchford/systemless/compare/v0.20.1...v0.20.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* complete powerpc drawsprocket compatibility ([#835](https://github.com/benletchford/systemless/issues/835)) ([174c117](https://github.com/benletchford/systemless/commit/174c1173a294e11d6fa3d5c8204c2d6f6e676372))
+* restore authentic classic window and menu behavior ([#834](https://github.com/benletchford/systemless/issues/834)) ([768bf31](https://github.com/benletchford/systemless/commit/768bf31e7d405d33dd46cccc57412bfd67b08e4c))
+
 ## [0.20.1](https://github.com/benletchford/systemless/compare/v0.20.0...v0.20.1) (2026-08-25)
 
 
