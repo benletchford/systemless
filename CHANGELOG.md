@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.6](https://github.com/benletchford/systemless/compare/v0.20.5...v0.20.6) (2026-08-26)
+
+
+### Bug Fixes
+
+* **ppc:** keep display depth state coherent ([500a700](https://github.com/benletchford/systemless/commit/500a700a3ab32c56d2e61903706d98a8b55b6f24))
+
 ## [0.20.5](https://github.com/benletchford/systemless/compare/v0.20.4...v0.20.5) (2026-08-26)
 
 
