@@ -90,6 +90,8 @@ struct MenuCIconLayout {
     pixel_size: u16,
     mask_data_ptr: u32,
     bmap_data_ptr: u32,
+    ctab_ptr: u32,
+    ctab_entries: u16,
     pixel_data_ptr: u32,
 }
 
@@ -2237,6 +2239,13 @@ impl super::TrapDispatcher {
                         .iter()
                         .position(|m| m.handle == menu_handle || m.id == menu_id)
                     {
+                        // Popup menus bypass `open_menu_dropdown`, so fault
+                        // their item-icon resources in here before sizing and
+                        // drawing. Macintosh Toolbox Essentials (1992),
+                        // pp. 3-46 and 3-137 to 3-138: the standard MDEF
+                        // resolves item icon number + 256, with `cicn`
+                        // taking precedence over the monochrome families.
+                        self.preload_menu_item_icon_resources(bus, menu_idx);
                         let (dd_rect, highlighted_item) =
                             self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item);
 
@@ -3846,8 +3855,34 @@ impl super::TrapDispatcher {
             pixel_size,
             mask_data_ptr,
             bmap_data_ptr,
+            ctab_ptr,
+            ctab_entries: (ct_size + 1) as u16,
             pixel_data_ptr,
         })
+    }
+
+    fn menu_cicn_rgb_for_index(
+        bus: &MacMemoryBus,
+        layout: MenuCIconLayout,
+        pixel_index: u8,
+    ) -> Option<[u16; 3]> {
+        let device_table = (bus.read_word(layout.ctab_ptr + 4) & 0x8000) != 0;
+        for ordinal in 0..u32::from(layout.ctab_entries) {
+            let entry = layout.ctab_ptr + 8 + ordinal * 8;
+            let value = if device_table {
+                ordinal as u16
+            } else {
+                bus.read_word(entry)
+            };
+            if value == u16::from(pixel_index) {
+                return Some([
+                    bus.read_word(entry + 2),
+                    bus.read_word(entry + 4),
+                    bus.read_word(entry + 6),
+                ]);
+            }
+        }
+        None
     }
 
     fn menu_cicn_pixel_index(
@@ -4217,12 +4252,29 @@ impl super::TrapDispatcher {
                     ) else {
                         continue;
                     };
+                    // A `cicn` pixel is an index into the icon's own
+                    // ColorTable, not a destination-device pixel value.
+                    // PlotCIcon remaps those colors to the current depth and
+                    // color table. More Macintosh Toolbox (1993), pp. 5-25
+                    // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
+                    let destination_index = Self::menu_cicn_rgb_for_index(bus, layout, pixel_index)
+                        .map(|rgb| {
+                            Self::fb_pixel_index_for_rgb(bus, rgb).unwrap_or_else(|| {
+                                super::pict::closest_clut_index(
+                                    rgb[0],
+                                    rgb[1],
+                                    rgb[2],
+                                    &self.device_clut,
+                                )
+                            })
+                        })
+                        .unwrap_or(pixel_index);
                     let dst_x = left + dx;
                     let dst_y = top + dy;
                     if dst_x >= 0 && dst_y >= 0 && dst_x < screen_width && dst_y < screen_height {
                         bus.write_byte(
                             screen_base + (dst_y as u32) * row_bytes + dst_x as u32,
-                            pixel_index,
+                            destination_index,
                         );
                     }
                     continue;
@@ -5856,6 +5908,47 @@ mod tests {
             }
             data[bmap_row] = 0x30;
             data[pixel_row] = 0x30;
+        }
+        data
+    }
+
+    fn cicn_source_with_solid_4bpp_color(source_index: u8, rgb: [u16; 3]) -> Vec<u8> {
+        let width = 16u16;
+        let height = 16u16;
+        let pm_row_bytes = 8usize;
+        let mask_row_bytes = 2usize;
+        let mask_size = mask_row_bytes * usize::from(height);
+        let bmap_size = mask_size;
+        let ctab_offset = 82 + mask_size + bmap_size;
+        let pixel_offset = ctab_offset + 16;
+        let mut data = vec![0u8; pixel_offset + pm_row_bytes * usize::from(height)];
+
+        write_be_word(&mut data, 4, 0x8000 | pm_row_bytes as u16);
+        write_be_word(&mut data, 10, height);
+        write_be_word(&mut data, 12, width);
+        write_be_word(&mut data, 32, 4);
+        write_be_word(&mut data, 34, 1);
+        write_be_word(&mut data, 36, 4);
+
+        write_be_word(&mut data, 54, mask_row_bytes as u16);
+        write_be_word(&mut data, 60, height);
+        write_be_word(&mut data, 62, width);
+        write_be_word(&mut data, 68, mask_row_bytes as u16);
+        write_be_word(&mut data, 74, height);
+        write_be_word(&mut data, 76, width);
+
+        write_be_word(&mut data, ctab_offset + 6, 0);
+        write_be_word(&mut data, ctab_offset + 8, u16::from(source_index));
+        write_be_word(&mut data, ctab_offset + 10, rgb[0]);
+        write_be_word(&mut data, ctab_offset + 12, rgb[1]);
+        write_be_word(&mut data, ctab_offset + 14, rgb[2]);
+
+        let packed = (source_index << 4) | source_index;
+        for row in 0..usize::from(height) {
+            data[82 + row * mask_row_bytes] = 0xFF;
+            data[82 + row * mask_row_bytes + 1] = 0xFF;
+            data[pixel_offset + row * pm_row_bytes..pixel_offset + (row + 1) * pm_row_bytes]
+                .fill(packed);
         }
         data
     }
@@ -10657,6 +10750,33 @@ mod tests {
     }
 
     #[test]
+    fn draw_menu_dropdown_remaps_cicn_color_table_to_current_device() {
+        let rect = (20, 20, 38, 110);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 128, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 622, 0x302F00, "Color");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x302F40, "Crop");
+        disp.menus[0].items[0].icon = 7;
+        let icon = cicn_source_with_solid_4bpp_color(3, [0, 0xFFFF, 0]);
+        disp.install_test_resource(&mut bus, *b"cicn", 263, &icon);
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let mapped_green =
+            super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0, 0xFFFF, 0])
+                .expect("active device should represent green");
+        assert_ne!(
+            mapped_green, 3,
+            "precondition: source icon index must differ from the device index"
+        );
+        assert_eq!(
+            screen_pixel_index(&bus, base, row_bytes, rect.1 + 4, rect.0 + 2),
+            mapped_green,
+            "cicn pixels should be mapped through their own ColorTable instead of copied as raw indexes"
+        );
+    }
+
+    #[test]
     fn draw_menu_bar_8bpp_uses_menucinfo_bar_and_title_colors() {
         let file_id = 622;
         let edit_id = 623;
@@ -12815,6 +12935,56 @@ mod tests {
         assert!(
             disp.dispatch_menu(true, 0x00B, cpu, bus).unwrap().is_ok(),
             "PopUpMenuSelect should succeed"
+        );
+    }
+
+    #[test]
+    fn popupmenuselect_faults_in_cicn_items_before_sizing_and_drawing() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 64;
+        let base = bus.alloc(row_bytes * 160);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 160, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 160);
+        disp.menu_bar_hidden = false;
+        disp.mouse_button = true;
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 733, 0x30BE00, "Crops");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x30BE40, "Corn;Wheat");
+        // Item icon 19 resolves to resource 275. Leave its key-equivalent
+        // byte at zero; without the color icon this would be mis-sized as a
+        // 34-pixel normal ICON row.
+        disp.menus[0].items[0].icon = 19;
+        let cicn = cicn_source_with_left_stripe(16, 16);
+        disp.install_test_resource(&mut bus, *b"cicn", 275, &cicn);
+        disp.resources
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut(&0)
+            .unwrap()
+            .loaded
+            .insert((*b"cicn", 275), 0);
+        assert!(
+            disp.find_loaded_resource_any(*b"cicn", 275).is_none(),
+            "precondition: the color icon should be nonresident"
+        );
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
+
+        dispatch_popupmenuselect_start(&mut disp, &mut cpu, &mut bus, menu, 50, 40, 0);
+
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        assert_eq!(
+            rect.2 - rect.0,
+            16 + 16 + 2,
+            "popup geometry should use the loaded 16-pixel cicn rows"
+        );
+        assert!(
+            disp.find_loaded_resource_any(*b"cicn", 275).is_some(),
+            "PopUpMenuSelect should materialize a nonresident item icon"
+        );
+        assert!(
+            screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 4, rect.0 + 2),
+            "the popup should draw the application color icon"
         );
     }
 

@@ -630,6 +630,19 @@ pub(crate) struct WindowTrackingState {
     pub command_down: bool,
 }
 
+/// Retained state for TrackGoAway while the mouse button remains down.
+/// The Window Manager keeps control, toggles the close-box highlight as the
+/// cursor crosses its region, and returns only after mouse-up.
+/// Macintosh Toolbox Essentials (1992), pp. 4-103 to 4-104.
+#[derive(Clone, Debug)]
+pub(crate) struct GoAwayTrackingState {
+    pub window_ptr: u32,
+    pub stack_ptr: u32,
+    pub hit_rect: (i16, i16, i16, i16),
+    pub highlight_rect: (i16, i16, i16, i16),
+    pub highlighted: bool,
+}
+
 /// Retained state shared by DragGrayRgn and DragTheRgn while the mouse
 /// button remains down. Both routines own a synchronous tracking loop and
 /// return only after release.
@@ -1684,6 +1697,8 @@ pub struct TrapDispatcher {
     pub(crate) control_tracking: Option<ControlTrackingState>,
     /// Active DragWindow tracking state.
     pub(crate) window_tracking: Option<WindowTrackingState>,
+    /// Active TrackGoAway close-box tracking state.
+    pub(crate) go_away_tracking: Option<GoAwayTrackingState>,
     /// Active DragGrayRgn / DragTheRgn tracking state.
     pub(crate) region_tracking: Option<RegionTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
@@ -3196,6 +3211,7 @@ impl TrapDispatcher {
             pending_native_menu_event_tick: None,
             control_tracking: None,
             window_tracking: None,
+            go_away_tracking: None,
             region_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),
@@ -3412,6 +3428,11 @@ impl TrapDispatcher {
         self.window_tracking.is_some()
     }
 
+    /// Whether TrackGoAway is actively tracking the close box.
+    pub fn is_go_away_tracking(&self) -> bool {
+        self.go_away_tracking.is_some()
+    }
+
     /// Whether DragGrayRgn or DragTheRgn is actively tracking the mouse.
     pub fn is_region_tracking(&self) -> bool {
         self.region_tracking.is_some()
@@ -3439,6 +3460,7 @@ impl TrapDispatcher {
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
         let is_control_refire = trap_no_autopop == 0xA968;
         let is_window_refire = trap_no_autopop == 0xA925;
+        let is_go_away_refire = trap_no_autopop == 0xA91E;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
@@ -3446,6 +3468,7 @@ impl TrapDispatcher {
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))
             || (is_control_refire && self.is_control_tracking())
             || (is_window_refire && self.is_window_tracking())
+            || (is_go_away_refire && self.is_go_away_tracking())
             || (is_region_refire && self.is_region_tracking())
     }
 
@@ -7279,6 +7302,16 @@ mod tests {
         });
     }
 
+    fn install_go_away_tracking(disp: &mut TrapDispatcher) {
+        disp.go_away_tracking = Some(GoAwayTrackingState {
+            window_ptr: 0,
+            stack_ptr: 0,
+            hit_rect: (0, 0, 18, 18),
+            highlight_rect: (3, 8, 14, 19),
+            highlighted: true,
+        });
+    }
+
     fn install_region_tracking(disp: &mut TrapDispatcher) {
         disp.region_tracking = Some(RegionTrackingState {
             stack_ptr: 0,
@@ -7645,6 +7678,7 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xA987)); // NoteAlert
         assert!(!disp.is_tracking_refire(0xA988)); // CautionAlert
         assert!(!disp.is_tracking_refire(0xA968)); // TrackControl
+        assert!(!disp.is_tracking_refire(0xA91E)); // TrackGoAway
         assert!(!disp.is_tracking_refire(0xA925)); // DragWindow
         assert!(!disp.is_tracking_refire(0xA905)); // DragGrayRgn
         assert!(!disp.is_tracking_refire(0xA926)); // DragTheRgn
@@ -7693,6 +7727,14 @@ mod tests {
         install_window_tracking(&mut disp);
         assert!(disp.is_tracking_refire(0xA925));
         assert!(disp.is_tracking_refire(0xAD25));
+    }
+
+    #[test]
+    fn is_tracking_refire_true_for_trackgoaway_when_close_box_tracking() {
+        let mut disp = TrapDispatcher::new();
+        install_go_away_tracking(&mut disp);
+        assert!(disp.is_tracking_refire(0xA91E));
+        assert!(disp.is_tracking_refire(0xAD1E));
     }
 
     #[test]

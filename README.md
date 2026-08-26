@@ -106,7 +106,12 @@ Common runner options:
 ```sh
 systemless --headless --max-instructions 5000000 path/to/app.sit
 systemless --arrows-as-numpad path/to/game.sit
+systemless --display-scale 2 path/to/game.sit
 ```
+
+Desktop windows default to a physical 1:1 guest-to-host pixel ratio. Use
+`--display-scale` with an integer from 1 through 8 for explicit pixel-perfect
+enlargement.
 
 The desktop runner uses the canonical machine profile automatically. On macOS,
 guest menus are mirrored into the native menu bar and the guest's application

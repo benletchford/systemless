@@ -1662,6 +1662,84 @@ impl super::TrapDispatcher {
         matches!(proc_id, 0 | 4 | 8 | 12 | 16)
     }
 
+    /// Standard document WDEF close-box regions in global coordinates.
+    ///
+    /// The hit region is the 18-by-18 upper-left title-bar cell used by the
+    /// Window Manager. The visible System 7 close-box glyph is the inset
+    /// 11-by-11 shape drawn by `draw_window_chrome`.
+    fn standard_go_away_rects(
+        &self,
+        bus: &MacMemoryBus,
+        window_ptr: u32,
+    ) -> Option<((i16, i16, i16, i16), (i16, i16, i16, i16))> {
+        if window_ptr == 0
+            || !self.window_is_active_for_standard_go_away(bus, window_ptr)
+            || bus.read_byte(window_ptr + Self::WINDOW_HILITED_OFFSET) == 0
+            || bus.read_byte(window_ptr + Self::WINDOW_GO_AWAY_FLAG_OFFSET) == 0
+        {
+            return None;
+        }
+        let proc_id = self.window_proc_ids.get(&window_ptr).copied().unwrap_or(0);
+        if !Self::window_is_document_proc(proc_id) {
+            return None;
+        }
+
+        let (top, left, _, _) = self.window_global_port_rect(bus, window_ptr);
+        let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
+        let title_top = top.saturating_sub(18).max(menu_bar_height);
+        let hit_rect = (title_top, left, top, left.saturating_add(18));
+
+        // Keep this geometry identical to draw_window_chrome's standard
+        // document close box: title top is contentTop-19, followed by one
+        // interior pixel and vertical centering of an 11-pixel glyph.
+        let chrome_top = top.saturating_sub(19).max(menu_bar_height);
+        let chrome_bottom = top.saturating_sub(1);
+        let interior_top = chrome_top.saturating_add(1);
+        let interior_height = chrome_bottom.saturating_sub(interior_top);
+        let glyph_top = interior_top.saturating_add((interior_height - 11) / 2);
+        let glyph_left = left.saturating_add(8);
+        let highlight_rect = (
+            glyph_top,
+            glyph_left,
+            glyph_top.saturating_add(11),
+            glyph_left.saturating_add(11),
+        );
+        Some((hit_rect, highlight_rect))
+    }
+
+    fn window_is_active_for_standard_go_away(&self, bus: &MacMemoryBus, window_ptr: u32) -> bool {
+        let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
+        for &candidate in &self.window_list {
+            if candidate == ghost_window || !self.window_visible(bus, candidate) {
+                continue;
+            }
+            if candidate == window_ptr {
+                return true;
+            }
+            if !self.window_is_custom_utility_layer_candidate(bus, candidate) {
+                return false;
+            }
+        }
+        false
+    }
+
+    pub(super) fn toggle_standard_go_away_highlight(
+        &self,
+        bus: &mut MacMemoryBus,
+        rect: (i16, i16, i16, i16),
+    ) {
+        // The standard WDEF toggles the close box with an XOR mask. Expanding
+        // by one feeds the exact glyph bounds through invert_button_rect,
+        // whose edge inset is otherwise intended for dialog buttons.
+        self.invert_button_rect(
+            bus,
+            rect.0.saturating_sub(1),
+            rect.1.saturating_sub(1),
+            rect.2.saturating_add(1),
+            rect.3.saturating_add(1),
+        );
+    }
+
     fn window_uses_save_under(&self, proc_id: i16) -> bool {
         !Self::window_is_document_proc(proc_id)
     }
@@ -1907,6 +1985,18 @@ impl super::TrapDispatcher {
             let (top, left, bottom, right) = self.window_global_port_rect(bus, window_ptr);
             if Self::point_in_rect(pt_v, pt_h, (top, left, bottom, right)) {
                 return (3, window_ptr);
+            }
+
+            // Only the active window exposes an operable go-away region.
+            // FindWindow returns inGoAway (6) for that region; applications
+            // then call TrackGoAway to own the click through mouse-up.
+            // Inside Macintosh Volume I (1985), pp. I-287 to I-288;
+            // Macintosh Toolbox Essentials (1992), pp. 4-43 to 4-46.
+            if self
+                .standard_go_away_rects(bus, window_ptr)
+                .is_some_and(|(hit_rect, _)| Self::point_in_rect(pt_v, pt_h, hit_rect))
+            {
+                return (6, window_ptr);
             }
 
             // The title/drag region sits above the content rect for ordinary
@@ -2725,6 +2815,13 @@ impl super::TrapDispatcher {
         {
             self.dialog_tracking = None;
         }
+        if self
+            .go_away_tracking
+            .as_ref()
+            .is_some_and(|tracking| tracking.window_ptr == window_ptr)
+        {
+            self.go_away_tracking = None;
+        }
         if self.front_window == window_ptr {
             // Promote the first VISIBLE window remaining in the list.
             // CloseWindow and DisposeWindow both route through
@@ -3342,7 +3439,7 @@ impl super::TrapDispatcher {
         window_ptr: u32,
         visible: bool,
     ) {
-        if !visible {
+        if !visible || !self.window_original_pixmaps.contains_key(&window_ptr) {
             return;
         }
 
@@ -3353,6 +3450,9 @@ impl super::TrapDispatcher {
         }
 
         let (top, left, bottom, right) = self.window_port_rect(bus, window_ptr);
+        let old_port = self.current_port;
+        let old_gdevice = self.current_gdevice;
+        self.set_current_port_state(bus, cpu, window_ptr, None);
         self.draw_rect(
             cpu,
             bus,
@@ -3364,6 +3464,7 @@ impl super::TrapDispatcher {
             },
             ShapeOp::Erase,
         );
+        self.set_current_port_state(bus, cpu, old_port, Some(old_gdevice));
     }
 
     pub(crate) fn dispatch_window<C: CpuOps>(
@@ -3935,6 +4036,7 @@ impl super::TrapDispatcher {
                     self.set_window_vis_from_content(bus, the_window, true);
                     if !was_visible {
                         self.save_window_under_pixels(bus, the_window);
+                        self.paint_new_window_content(bus, cpu, the_window, true);
                     }
                     if !was_visible {
                         if was_front {
@@ -3970,34 +4072,6 @@ impl super::TrapDispatcher {
                         if self.window_uses_custom_def_proc(bus, the_window) {
                             arm_custom_wdef_draw = !was_visible;
                         } else {
-                            let proc_id =
-                                self.window_proc_ids.get(&the_window).copied().unwrap_or(0);
-                            if !was_visible && matches!(proc_id, 1..=3) {
-                                if let Some((top, left, bottom, right)) =
-                                    self.window_content_global_rect(bus, the_window)
-                                {
-                                    let (
-                                        screen_base,
-                                        row_bytes,
-                                        screen_width,
-                                        screen_height,
-                                        pixel_size,
-                                    ) = self.get_screen_params();
-                                    Self::fb_fill_rect(
-                                        bus,
-                                        screen_base,
-                                        row_bytes,
-                                        pixel_size,
-                                        screen_width,
-                                        screen_height,
-                                        top,
-                                        left,
-                                        bottom,
-                                        right,
-                                        false,
-                                    );
-                                }
-                            }
                             self.draw_single_window_chrome_inline(bus, the_window, hilited);
                         }
                     }
@@ -4482,18 +4556,10 @@ impl super::TrapDispatcher {
             //     FUNCTION-typed traps; PROCEDUREs (DragWindow) just call
             //     MoveWindow at the final location
             //
-            // HLE compromise: DragWindow, DragGrayRgn, and DragTheRgn retain
-            // their traps across host presentation boundaries and follow the
-            // live mouse with the documented outline. TrackGoAway and
-            // GrowWindow still model only terminal state. Optional DragHook
-            // and region actionProc callbacks are not yet dispatched.
-            //
-            // The current behavior is:
-            //   - TrackGoAway → FALSE (user didn't release inside the
-            //     close box — equivalent to "user pressed close box but
-            //     dragged out before releasing"; correct semantic since
-            //     no click has actually happened yet from Systemless's
-            //     event model)
+            // The retained HLE behavior is:
+            //   - TrackGoAway → retain until release, toggle the standard
+            //     WDEF close-box highlight as the cursor crosses its hit
+            //     region, and return whether release occurred inside
             //   - DragWindow  → retain until release, then move by the
             //     release-start delta via MoveWindow semantics when the
             //     release point is inside boundsRect
@@ -4673,12 +4739,71 @@ impl super::TrapDispatcher {
 
             // TrackGoAway ($A91E)
             // FUNCTION TrackGoAway(theWindow: WindowPtr; thePt: Point): BOOLEAN;
-            // Inside Macintosh Volume I, I-294
-            // TrackGoAway ($A91E): Pops 8 args bytes + writes FALSE to 2-byte BOOLEAN result slot @ sp+8 per IM:I I-294 "TrackGoAway returns TRUE if the mouse is inside the go-away region when the mouse button is released, and FALSE otherwise" — HLE has no go-away-region hit-test / WaitMouseUp loop so FALSE matches "user pressed close box but didn't release inside it"
+            // Retains its Pascal frame through the Window Manager's tracking
+            // loop, toggles the standard WDEF's close-box XOR highlight, and
+            // writes TRUE iff mouse-up occurs inside the go-away region.
+            // Inside Macintosh Volume I (1985), pp. I-288 and I-294;
+            // Macintosh Toolbox Essentials (1992), pp. 4-103 to 4-104.
             (true, 0x11E) => {
+                if let Some(mut tracking) = self.go_away_tracking.take() {
+                    let mouse = self.window_tracking_mouse_pos(bus);
+                    let inside = Self::point_in_rect(mouse.0, mouse.1, tracking.hit_rect);
+                    if self.window_tracking_button_down(bus) {
+                        if inside != tracking.highlighted {
+                            self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+                            tracking.highlighted = inside;
+                        }
+                        cpu.write_reg(Register::A7, tracking.stack_ptr);
+                        self.go_away_tracking = Some(tracking);
+                        return Some(Ok(()));
+                    }
+
+                    if tracking.highlighted {
+                        self.toggle_standard_go_away_highlight(bus, tracking.highlight_rect);
+                    }
+                    // Mouse-up belongs to TrackGoAway's private loop rather
+                    // than the application's next Event Manager call.
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    // Mac Pascal BOOLEAN occupies the high byte of its
+                    // two-byte result slot (TRUE = $0100).
+                    bus.write_word(tracking.stack_ptr + 8, if inside { 0x0100 } else { 0 });
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 8);
+                    return Some(Ok(()));
+                }
+
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp + 8, 0);
-                cpu.write_reg(Register::A7, sp + 8);
+                let the_window = bus.read_long(sp + 4);
+                let initial_point = (bus.read_word(sp) as i16, bus.read_word(sp + 2) as i16);
+                let Some((hit_rect, highlight_rect)) = self.standard_go_away_rects(bus, the_window)
+                else {
+                    bus.write_word(sp + 8, 0);
+                    cpu.write_reg(Register::A7, sp + 8);
+                    return Some(Ok(()));
+                };
+
+                if !Self::point_in_rect(initial_point.0, initial_point.1, hit_rect)
+                    || !self.window_tracking_button_down(bus)
+                {
+                    bus.write_word(sp + 8, 0);
+                    cpu.write_reg(Register::A7, sp + 8);
+                    return Some(Ok(()));
+                }
+
+                let mouse = self.window_tracking_mouse_pos(bus);
+                let highlighted = Self::point_in_rect(mouse.0, mouse.1, hit_rect);
+                if highlighted {
+                    self.toggle_standard_go_away_highlight(bus, highlight_rect);
+                }
+                self.go_away_tracking = Some(super::dispatch::GoAwayTrackingState {
+                    window_ptr: the_window,
+                    stack_ptr: sp,
+                    hit_rect,
+                    highlight_rect,
+                    highlighted,
+                });
+                cpu.write_reg(Register::A7, sp);
                 Ok(())
             }
 
@@ -4746,10 +4871,11 @@ impl super::TrapDispatcher {
                 let show_flag = bus.read_byte(sp) != 0;
                 let the_window = bus.read_long(sp + 2);
                 if the_window != 0 {
+                    let was_visible = self.window_visible(bus, the_window);
                     if !show_flag {
                         self.dialog_visible_snapshots.remove(&the_window);
                     }
-                    let exposed_rect = (!show_flag && self.window_visible(bus, the_window))
+                    let exposed_rect = (!show_flag && was_visible)
                         .then(|| self.window_structure_rect(bus, the_window))
                         .flatten();
                     let windows_behind = if exposed_rect.is_some() {
@@ -4763,6 +4889,19 @@ impl super::TrapDispatcher {
                     );
                     self.set_window_vis_from_content(bus, the_window, show_flag);
                     if show_flag {
+                        if !was_visible {
+                            self.save_window_under_pixels(bus, the_window);
+                            self.paint_new_window_content(bus, cpu, the_window, true);
+                        }
+                        if self.front_window == 0 || !self.window_visible(bus, self.front_window) {
+                            // ShowHide deliberately leaves z-order and
+                            // activation events alone (IM:I I-285), but the
+                            // Window Manager's internal active-window cache
+                            // must recover after the last visible window was
+                            // hidden and a window is later revealed.
+                            self.front_window = self.front_window_for_internal_state(bus);
+                            self.sync_cached_front_window_render_state(bus);
+                        }
                         if let Some(content_rect) = self.window_content_global_rect(bus, the_window)
                         {
                             Self::write_region_handle_rect(
@@ -8399,6 +8538,54 @@ mod tests {
     }
 
     #[test]
+    fn showwindow_erases_newly_exposed_content_with_window_background() {
+        // PaintOne erases exposed content before the application receives its
+        // update event. Inside Macintosh Volume I (1985), pp. I-278, I-296.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            screen_base,
+            100,
+            200,
+            300,
+            500,
+            "Hidden",
+            4,
+            false,
+            false,
+            true,
+            0,
+        );
+        let probe = screen_base + 150 * 800 + 323;
+        bus.write_byte(probe, 0x42);
+
+        let previous_port = disp.current_port;
+        let sp = TEST_SP - 4;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, window);
+        dispatch(&mut disp, 0x115, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(
+            bus.read_byte(probe),
+            0x42,
+            "ShowWindow must erase stale pixels across the whole revealed content area"
+        );
+        assert_eq!(
+            disp.current_port, previous_port,
+            "Window Manager painting must restore the application's current port"
+        );
+    }
+
+    #[test]
     fn showwindow_hidden_frontmost_window_queues_activate_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         let window = bus.alloc(256);
@@ -9027,6 +9214,59 @@ mod tests {
             disp.window_update_rect(&bus, window),
             Some((100, 200, 300, 500)),
             "ShowHide(TRUE) should invalidate revealed content in global coordinates"
+        );
+    }
+
+    #[test]
+    fn showhide_true_erases_content_and_recovers_stale_front_window_cache() {
+        // ShowHide does not reorder or generate activation events, but showing
+        // a window still runs the Window Manager's PaintOne erase and makes a
+        // visible window available to its internal front-window state.
+        // Inside Macintosh Volume I (1985), pp. I-278, I-285, I-296.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(800 * 600);
+        bus.write_long(crate::memory::globals::addr::SCREEN_BITS, screen_base);
+        disp.set_screen_mode_for_test(screen_base, 800, 800, 600, 8);
+
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            screen_base,
+            100,
+            200,
+            300,
+            500,
+            "Hidden",
+            4,
+            false,
+            false,
+            true,
+            0,
+        );
+        disp.front_window = 0;
+        disp.event_queue.clear();
+        let probe = screen_base + 150 * 800 + 323;
+        bus.write_byte(probe, 0x42);
+
+        let sp = TEST_SP - 6;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_byte(sp, 1);
+        bus.write_long(sp + 2, window);
+        dispatch(&mut disp, 0x108, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(
+            bus.read_byte(probe),
+            0x42,
+            "ShowHide(TRUE) must erase stale pixels before the application's update"
+        );
+        assert_eq!(disp.front_window, window);
+        assert!(
+            disp.event_queue.iter().all(|event| event.what != 8),
+            "ShowHide must not synthesize activate or deactivate events"
         );
     }
 
@@ -9871,6 +10111,119 @@ mod tests {
         // Verify whichWindow was written
         let which_window = bus.read_long(wnd_ptr_ptr);
         assert_eq!(which_window, window_addr);
+    }
+
+    #[test]
+    fn findwindow_reports_ingoaway_for_active_document_close_box() {
+        // MTE 1992 pp. 4-43 to 4-46: the active document window's close
+        // region is reported as inGoAway (6), not inDrag (4).
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            100,
+            260,
+            360,
+            "Document",
+            0,
+            true,
+            false,
+            true,
+            0,
+        );
+        disp.front_window = window;
+        disp.window_list = vec![window];
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+
+        let which_window = bus.alloc(4);
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, which_window);
+        bus.write_word(sp + 4, 85); // inside [contentTop-18, contentTop)
+        bus.write_word(sp + 6, 105); // inside [contentLeft, contentLeft+18)
+        bus.write_word(sp + 8, 0);
+
+        dispatch(&mut disp, 0x12C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 6);
+        assert_eq!(bus.read_long(which_window), window);
+    }
+
+    #[test]
+    fn findwindow_reports_ingoaway_for_active_document_behind_floating_utility() {
+        // Floating utility windows stay visually above the active document;
+        // they do not disable that document's close box. Macintosh Human
+        // Interface Guidelines (1992), pp. 137, 144.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        install_wdef_resource(&mut disp, &mut bus, 200);
+
+        let utility = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            utility,
+            disp.screen_mode.0,
+            300,
+            300,
+            380,
+            500,
+            "",
+            200i16 << 4,
+            true,
+            false,
+            false,
+            0,
+        );
+        let document = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            document,
+            disp.screen_mode.0,
+            100,
+            100,
+            260,
+            360,
+            "Document",
+            4,
+            true,
+            false,
+            true,
+            0,
+        );
+        disp.apply_behind_parameter(&mut bus, document, utility);
+
+        assert_eq!(disp.window_list, vec![utility, document]);
+        assert_eq!(disp.front_window, document);
+        assert_eq!(
+            bus.read_byte(document + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET),
+            0xFF
+        );
+
+        let which_window = bus.alloc(4);
+        let sp = TEST_SP - 10;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, which_window);
+        bus.write_word(sp + 4, 85);
+        bus.write_word(sp + 6, 105);
+        bus.write_word(sp + 8, 0);
+
+        dispatch(&mut disp, 0x12C, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(sp + 8), 6);
+        assert_eq!(bus.read_long(which_window), document);
     }
 
     #[test]
@@ -12110,7 +12463,7 @@ mod tests {
 
     // IM:I p.I-294 (signature/call-frame summary on p.I-91):
     // TrackGoAway returns TRUE only when mouse-up lands inside the go-away
-    // box; no-tracking path returns FALSE and still consumes its arguments.
+    // box; an invalid/no-tracking call returns FALSE and still consumes args.
     #[test]
     fn trackgoaway_returns_false_and_consumes_window_and_point_arguments() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -12125,6 +12478,116 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(bus.read_word(TEST_SP), 0);
+    }
+
+    #[test]
+    fn trackgoaway_retains_until_mouseup_and_returns_true_inside_close_box() {
+        // MTE 1992 pp. 4-103 to 4-104: TrackGoAway keeps control while the
+        // button is held, highlights inside the region, removes highlighting
+        // at release, and returns TRUE for an inside release.
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            100,
+            260,
+            360,
+            "Document",
+            0,
+            true,
+            false,
+            true,
+            0,
+        );
+        disp.front_window = window;
+        disp.window_list = vec![window];
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 85);
+        bus.write_word(sp + 2, 105);
+        bus.write_long(sp + 4, window);
+        bus.write_word(sp + 8, 0xDEAD);
+        disp.push_mouse_down(85, 105);
+        disp.event_queue.pop_front(); // application already received mouseDown
+
+        dispatch(&mut disp, 0x11E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.go_away_tracking.is_some());
+        assert!(disp.is_tracking_refire(0xA91E));
+
+        disp.push_mouse_up(85, 105);
+        dispatch(&mut disp, 0x11E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 0x0100);
+        assert!(disp.go_away_tracking.is_none());
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+    }
+
+    #[test]
+    fn trackgoaway_unhighlights_and_returns_false_after_dragging_out() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let window = bus.alloc(256);
+        disp.init_cgraf_window(
+            &mut bus,
+            &mut cpu,
+            window,
+            disp.screen_mode.0,
+            100,
+            100,
+            260,
+            360,
+            "Document",
+            0,
+            true,
+            false,
+            true,
+            0,
+        );
+        disp.front_window = window;
+        disp.window_list = vec![window];
+        bus.write_byte(
+            window + super::super::TrapDispatcher::WINDOW_HILITED_OFFSET,
+            0xFF,
+        );
+
+        let sp = TEST_SP - 8;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 85);
+        bus.write_word(sp + 2, 105);
+        bus.write_long(sp + 4, window);
+        disp.push_mouse_down(85, 105);
+        disp.event_queue.pop_front();
+        dispatch(&mut disp, 0x11E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        disp.set_mouse_position(130, 200);
+        dispatch(&mut disp, 0x11E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(!disp.go_away_tracking.as_ref().unwrap().highlighted);
+
+        disp.push_mouse_up(130, 200);
+        dispatch(&mut disp, 0x11E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 0);
     }
 
     // ---------------------------------------------------------------
