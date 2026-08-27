@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/benletchford/systemless/compare/v0.21.1...v0.21.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* **menu:** preserve PPC submenu title semantics ([#898](https://github.com/benletchford/systemless/issues/898)) ([67946fb](https://github.com/benletchford/systemless/commit/67946fb8aff01e82cce372558123f570465a6c12))
+
 ## [0.21.1](https://github.com/benletchford/systemless/compare/v0.21.0...v0.21.1) (2026-08-27)
 
 
