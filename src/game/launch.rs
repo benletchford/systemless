@@ -10,10 +10,10 @@ use crate::loader::cfrg::{
 };
 use crate::loader::pef::{parse_pef_header, parse_pef_loader_header, resolve_pef_main_entry};
 use crate::loader::ppc::{
-    PpcCfmLibraryFragment, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord,
-    PpcVfsResourceRecord,
+    PpcApplicationPartition, PpcCfmLibraryFragment, PpcVfsDirectory, PpcVfsFileRecord,
+    PpcVfsResourceFileRecord, PpcVfsResourceRecord,
 };
-use crate::loader::LoadedApp;
+use crate::loader::{ApplicationSizeResource, LoadedApp};
 use crate::managers::resource::ResourceFork;
 use crate::memory::MemoryBus;
 use crate::runner::{FixtureRunner, FixtureRunnerConfig};
@@ -2268,13 +2268,19 @@ fn load_selected_executable(
             let mut ppc_config =
                 crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
             ppc_config.screen_depth = crate::runner::DEFAULT_POWERPC_SCREEN_DEPTH;
-            let mut loaded = crate::loader::ppc::load_pef_application_with_config(pef, ppc_config)
-                .map_err(|error| {
-                    format!(
-                        "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
-                        executable.name
-                    )
-                })?;
+            let application_partition =
+                ppc_application_partition(runner.application_partition_size(), &rsrc)?;
+            let mut loaded = crate::loader::ppc::load_pef_application_with_config_and_partition(
+                pef,
+                ppc_config,
+                Some(application_partition),
+            )
+            .map_err(|error| {
+                format!(
+                    "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+                    executable.name
+                )
+            })?;
             let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
             loaded.seed_cfm_library_fragments(library_fragments);
             loaded.seed_vfs_directories(
@@ -2291,6 +2297,60 @@ fn load_selected_executable(
             Ok(LoadedApp::from_ppc(loaded))
         }
     }
+}
+
+fn ppc_application_partition(
+    override_size: Option<u32>,
+    rsrc: &[u8],
+) -> Result<PpcApplicationPartition, String> {
+    const DEFAULT_PARTITION_SIZE: u32 = 512 * 1024;
+
+    let fork = ResourceFork::parse(rsrc);
+    let size = |id| -> Result<Option<ApplicationSizeResource>, String> {
+        let Some(fork) = fork.as_ref() else {
+            return Ok(None);
+        };
+        let Some(resource) = fork.get(*b"SIZE", id) else {
+            return Ok(None);
+        };
+        ApplicationSizeResource::parse(&resource.data)
+            .map(Some)
+            .ok_or_else(|| format!("Malformed SIZE resource ID {id}"))
+    };
+    let preferred_record = if override_size.is_some() {
+        None
+    } else {
+        match size(0)? {
+            Some(size) => Some(size),
+            None => size(-1)?,
+        }
+    };
+    let minimum_record = match size(1)? {
+        Some(size) => Some(size),
+        None => size(-1)?,
+    };
+
+    // Macintosh Toolbox Essentials (1992), pp. 2-115--2-116: System 7.1
+    // resolves the preferred size from ID 0 and the minimum from ID 1,
+    // independently falling each back to the developer's ID -1 resource.
+    // A resource-less application receives the Process Manager's 512 KiB
+    // default partition. A frontend override models Finder's preferred-size
+    // setting; it must still satisfy the independently resolved minimum.
+    let partition = PpcApplicationPartition {
+        preferred_size: override_size
+            .or_else(|| preferred_record.map(|size| size.preferred_size))
+            .unwrap_or(DEFAULT_PARTITION_SIZE),
+        minimum_size: minimum_record
+            .map(|size| size.minimum_size)
+            .unwrap_or(DEFAULT_PARTITION_SIZE),
+    };
+    if partition.preferred_size < partition.minimum_size {
+        return Err(format!(
+            "Application SIZE preferred partition ({}) is below its minimum ({})",
+            partition.preferred_size, partition.minimum_size
+        ));
+    }
+    Ok(partition)
 }
 
 fn merge_launch_resource_companions(
@@ -3228,6 +3288,156 @@ mod tests {
         assert!(packed
             .windows(b"HFS+ Disk Image/Level001".len())
             .any(|window| window == b"HFS+ Disk Image/Level001"));
+    }
+
+    #[test]
+    fn ppc_partition_resolves_finder_preferred_and_minimum_independently() {
+        fn size_bytes(preferred: u32, minimum: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(10);
+            bytes.extend_from_slice(&0u16.to_be_bytes());
+            bytes.extend_from_slice(&preferred.to_be_bytes());
+            bytes.extend_from_slice(&minimum.to_be_bytes());
+            bytes
+        }
+
+        let rsrc = crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: -1,
+                name: Vec::new(),
+                data: size_bytes(0x0030_0000, 0x0020_0000),
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 0,
+                name: Vec::new(),
+                // ID 0 contributes only preferred; its poisoned minimum must
+                // not invalidate the selected field.
+                data: size_bytes(0x0050_0000, 0x0090_0000),
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 1,
+                name: Vec::new(),
+                // ID 1 contributes only minimum; its poisoned preferred must
+                // likewise be ignored.
+                data: size_bytes(0x0010_0000, 0x0030_0000),
+                attrs: 0,
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            ppc_application_partition(None, &rsrc),
+            Ok(PpcApplicationPartition {
+                preferred_size: 0x0050_0000,
+                minimum_size: 0x0030_0000,
+            })
+        );
+        let mut runner = new_runner();
+        runner.set_application_partition_size(Some(0x0060_0000));
+        assert_eq!(
+            ppc_application_partition(runner.application_partition_size(), &rsrc),
+            Ok(PpcApplicationPartition {
+                preferred_size: 0x0060_0000,
+                minimum_size: 0x0030_0000,
+            })
+        );
+
+        let missing_finder_minimum = crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: -1,
+                name: Vec::new(),
+                data: size_bytes(0x0030_0000, 0x0020_0000),
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 0,
+                name: Vec::new(),
+                data: size_bytes(0x0040_0000, 0),
+                attrs: 0,
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            ppc_application_partition(None, &missing_finder_minimum),
+            Ok(PpcApplicationPartition {
+                preferred_size: 0x0040_0000,
+                minimum_size: 0x0020_0000,
+            })
+        );
+
+        assert_eq!(
+            ppc_application_partition(None, &empty_resource_fork_bytes()),
+            Ok(PpcApplicationPartition {
+                preferred_size: 512 * 1024,
+                minimum_size: 512 * 1024,
+            })
+        );
+        assert_eq!(
+            ppc_application_partition(None, b"not a resource fork"),
+            Ok(PpcApplicationPartition {
+                preferred_size: 512 * 1024,
+                minimum_size: 512 * 1024,
+            })
+        );
+    }
+
+    #[test]
+    fn ppc_partition_rejects_malformed_selected_resource_and_invalid_pair() {
+        fn size_bytes(preferred: u32, minimum: u32) -> Vec<u8> {
+            let mut bytes = Vec::with_capacity(10);
+            bytes.extend_from_slice(&0u16.to_be_bytes());
+            bytes.extend_from_slice(&preferred.to_be_bytes());
+            bytes.extend_from_slice(&minimum.to_be_bytes());
+            bytes
+        }
+
+        let malformed = crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: -1,
+                name: Vec::new(),
+                data: size_bytes(0x0030_0000, 0x0020_0000),
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 0,
+                name: Vec::new(),
+                data: vec![0; 9],
+                attrs: 0,
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            ppc_application_partition(None, &malformed),
+            Err("Malformed SIZE resource ID 0".to_string())
+        );
+
+        let invalid_pair = crate::managers::resource::serialize_resource_fork(&[
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 0,
+                name: Vec::new(),
+                data: size_bytes(0x0010_0000, 0),
+                attrs: 0,
+            },
+            crate::managers::resource::ResourceForkEntry {
+                res_type: *b"SIZE",
+                id: 1,
+                name: Vec::new(),
+                data: size_bytes(0, 0x0020_0000),
+                attrs: 0,
+            },
+        ])
+        .unwrap();
+        assert!(ppc_application_partition(None, &invalid_pair)
+            .unwrap_err()
+            .contains("below its minimum"));
     }
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {

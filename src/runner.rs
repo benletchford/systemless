@@ -7268,6 +7268,16 @@ impl FixtureRunner {
                 }
                 completed.push((index, playback.channel));
             }
+            for (index, _) in &completed {
+                if let Some(decoded) = ppc_app
+                    .sound
+                    .decoded_file_playbacks
+                    .iter_mut()
+                    .find(|decoded| decoded.file_playback_index as usize == *index)
+                {
+                    decoded.samples.clear();
+                }
+            }
             completed
         };
 
@@ -7332,6 +7342,17 @@ impl FixtureRunner {
                 }
                 playback.active = false;
                 playback.paused = false;
+                if let Some(decoded) =
+                    ppc_app
+                        .sound
+                        .decoded_file_playbacks
+                        .iter_mut()
+                        .find(|decoded| {
+                            decoded.file_playback_index as usize == record.file_playback_index
+                        })
+                {
+                    decoded.samples.clear();
+                }
                 if playback.async_play && playback.completion != 0 {
                     let scheduled_tick = if playback.timing_valid {
                         playback.due_tick
@@ -12692,6 +12713,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -12719,6 +12742,7 @@ mod tests {
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -13298,6 +13322,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -13325,6 +13351,7 @@ mod tests {
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -13793,6 +13820,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert!(ppc_app.sound.decoded_file_playbacks[0].samples.is_empty());
         assert!(ppc_app.sound.pending_completions.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
@@ -13927,6 +13955,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert!(ppc_app.sound.decoded_file_playbacks[0].samples.is_empty());
         assert!(ppc_app.sound.pending_completions.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
@@ -14201,6 +14230,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -14228,6 +14259,7 @@ mod tests {
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -14362,6 +14394,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -14389,6 +14423,7 @@ mod tests {
             color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             aliases: Vec::new(),
             gworlds: Vec::new(),
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -14755,6 +14790,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE + 8,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -14809,6 +14846,7 @@ mod tests {
                     pixels_no_purge: false,
                 },
             ],
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,
@@ -15034,6 +15072,8 @@ mod tests {
             heap_base: PPC_HEAP_BASE,
             heap_cursor: PPC_HEAP_BASE + 8 * 16,
             heap_limit: PPC_STACK_BASE,
+            application_heap_ceiling: PPC_STACK_BASE,
+            memory_manager: Default::default(),
             last_mem_error: 0,
             heap_maximized: false,
             master_pointer_blocks_requested: 0,
@@ -15073,6 +15113,7 @@ mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }],
+            window_manager: Default::default(),
             q3_objects: Vec::new(),
             q3_object_refs: Vec::new(),
             next_q3_object: 0,

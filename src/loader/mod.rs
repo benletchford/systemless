@@ -13,8 +13,9 @@ pub mod ppc;
 /// Application `'SIZE'` resource data used by the Process Manager to
 /// choose the app's launch partition. The standard application resource
 /// is ID -1 and stores a 16-bit mode flag word followed by preferred
-/// and minimum partition sizes. Finder may write an ID 0 resource that
-/// overrides the developer-provided ID -1 resource at launch.
+/// and minimum partition sizes. Finder may write ID 0 for the preferred
+/// size and, on System 7.1 and later, ID 1 for the minimum size; either
+/// missing value falls back to the developer-provided ID -1 resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplicationSizeResource {
     pub flags: u16,
