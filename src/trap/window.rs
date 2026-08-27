@@ -1658,6 +1658,61 @@ impl super::TrapDispatcher {
         self.draw_window_drag_outline(bus, tracking.outline_rect);
     }
 
+    fn window_grow_dimensions(
+        content: (i16, i16, i16, i16),
+        size_rect: (i16, i16, i16, i16),
+        mouse: (i16, i16),
+    ) -> (i16, i16) {
+        let min_height = size_rect.0.max(1);
+        let min_width = size_rect.1.max(1);
+        let max_height = size_rect.2.max(min_height);
+        let max_width = size_rect.3.max(min_width);
+        (
+            mouse
+                .0
+                .saturating_sub(content.0)
+                .clamp(min_height, max_height),
+            mouse
+                .1
+                .saturating_sub(content.1)
+                .clamp(min_width, max_width),
+        )
+    }
+
+    fn refresh_window_grow_outline(
+        &self,
+        bus: &mut MacMemoryBus,
+        tracking: &mut super::dispatch::GrowWindowTrackingState,
+        mouse: (i16, i16),
+    ) {
+        self.restore_window_drag_outline_pixels(bus, &tracking.outline_saved_pixels);
+        let (height, width) =
+            Self::window_grow_dimensions(tracking.original_content_rect, tracking.size_rect, mouse);
+        let old_height = tracking
+            .original_content_rect
+            .2
+            .saturating_sub(tracking.original_content_rect.0);
+        let old_width = tracking
+            .original_content_rect
+            .3
+            .saturating_sub(tracking.original_content_rect.1);
+        tracking.outline_rect = (
+            tracking.original_outline_rect.0,
+            tracking.original_outline_rect.1,
+            tracking
+                .original_outline_rect
+                .2
+                .saturating_add(height.saturating_sub(old_height)),
+            tracking
+                .original_outline_rect
+                .3
+                .saturating_add(width.saturating_sub(old_width)),
+        );
+        tracking.outline_saved_pixels =
+            self.save_window_drag_outline_pixels(bus, tracking.outline_rect);
+        self.draw_window_drag_outline(bus, tracking.outline_rect);
+    }
+
     pub(crate) fn window_is_document_proc(proc_id: i16) -> bool {
         matches!(proc_id, 0 | 4 | 8 | 12 | 16)
     }
@@ -4809,12 +4864,103 @@ impl super::TrapDispatcher {
 
             // GrowWindow ($A92B)
             // FUNCTION GrowWindow(theWindow: WindowPtr; startPt: Point; sizeRect: Rect): LongInt;
-            // Inside Macintosh Volume I, I-298 (assembly summary IM:I I-91 with PEA sizeRect)
-            // GrowWindow ($A92B): Pops 12 args bytes (theWindow 4 + startPt 4 + sizeRect ptr 4) + writes 0 to 4-byte LONGINT result slot @ sp+12 per IM:I I-298 "GrowWindow returns 0 if the user releases the mouse button without moving it"; HLE has no grow-region hit-test / WaitMouseUp loop so 0 matches "user released without growing"
+            // Retain the Pascal frame through mouse-up, track the proposed
+            // structure outline, and return packed height/width. Inside
+            // Macintosh Volume I (1985), pp. I-297--I-299.
             (true, 0x12B) => {
+                if let Some(mut tracking) = self.grow_window_tracking.take() {
+                    let mouse = self.window_tracking_mouse_pos(bus);
+                    let valid_surface = self.screen_mode == tracking.screen_mode;
+                    let valid_window = self.window_list.contains(&tracking.window_ptr)
+                        && self.window_visible(bus, tracking.window_ptr)
+                        && self.window_global_port_rect(bus, tracking.window_ptr)
+                            == tracking.original_content_rect;
+                    if self.window_tracking_button_down(bus) && valid_surface && valid_window {
+                        self.refresh_window_grow_outline(bus, &mut tracking, mouse);
+                        cpu.write_reg(Register::A7, tracking.stack_ptr);
+                        self.grow_window_tracking = Some(tracking);
+                        return Some(Ok(()));
+                    }
+
+                    if valid_surface {
+                        self.restore_window_drag_outline_pixels(
+                            bus,
+                            &tracking.outline_saved_pixels,
+                        );
+                    }
+                    if let Some(index) = self.event_queue.iter().position(|event| event.what == 2) {
+                        self.event_queue.remove(index);
+                    }
+                    let result = if valid_surface && valid_window {
+                        let (height, width) = Self::window_grow_dimensions(
+                            tracking.original_content_rect,
+                            tracking.size_rect,
+                            mouse,
+                        );
+                        let old_height = tracking
+                            .original_content_rect
+                            .2
+                            .saturating_sub(tracking.original_content_rect.0);
+                        let old_width = tracking
+                            .original_content_rect
+                            .3
+                            .saturating_sub(tracking.original_content_rect.1);
+                        if height == old_height && width == old_width {
+                            0
+                        } else {
+                            (u32::from(height as u16) << 16) | u32::from(width as u16)
+                        }
+                    } else {
+                        0
+                    };
+                    bus.write_long(tracking.stack_ptr + 12, result);
+                    cpu.write_reg(Register::A7, tracking.stack_ptr + 12);
+                    return Some(Ok(()));
+                }
+
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_long(sp + 12, 0);
-                cpu.write_reg(Register::A7, sp + 12);
+                let size_rect_ptr = bus.read_long(sp);
+                let window_ptr = bus.read_long(sp + 8);
+                if window_ptr == 0
+                    || size_rect_ptr == 0
+                    || !self.window_list.contains(&window_ptr)
+                    || !self.window_visible(bus, window_ptr)
+                    || !self.window_tracking_button_down(bus)
+                {
+                    bus.write_long(sp + 12, 0);
+                    cpu.write_reg(Register::A7, sp + 12);
+                    return Some(Ok(()));
+                }
+                let original_content_rect = self.window_global_port_rect(bus, window_ptr);
+                let original_outline_rect = self
+                    .window_structure_rect(bus, window_ptr)
+                    .unwrap_or_else(|| {
+                        self.window_structure_global_rect_for_window(
+                            bus,
+                            window_ptr,
+                            original_content_rect,
+                        )
+                    });
+                let size_rect = (
+                    bus.read_word(size_rect_ptr) as i16,
+                    bus.read_word(size_rect_ptr + 2) as i16,
+                    bus.read_word(size_rect_ptr + 4) as i16,
+                    bus.read_word(size_rect_ptr + 6) as i16,
+                );
+                let mouse = self.window_tracking_mouse_pos(bus);
+                let mut tracking = super::dispatch::GrowWindowTrackingState {
+                    window_ptr,
+                    stack_ptr: sp,
+                    screen_mode: self.screen_mode,
+                    original_content_rect,
+                    original_outline_rect,
+                    size_rect,
+                    outline_rect: original_outline_rect,
+                    outline_saved_pixels: Vec::new(),
+                };
+                self.refresh_window_grow_outline(bus, &mut tracking, mouse);
+                self.grow_window_tracking = Some(tracking);
+                cpu.write_reg(Register::A7, sp);
                 Ok(())
             }
 
@@ -12611,6 +12757,241 @@ mod tests {
 
         let grow_result = bus.read_long(TEST_SP);
         assert_eq!(grow_result, 0, "GrowWindow should return 0");
+    }
+
+    #[test]
+    fn growwindow_retains_clamps_and_returns_release_dimensions() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window: u32 = 0x250000;
+        setup_window_with_regions(&mut bus, window, 0, 0, 100, 200);
+        bus.write_word(window + 6, 0);
+        bus.write_word(window + 8, (-40i16) as u16);
+        bus.write_word(window + 10, (-20i16) as u16);
+        bus.write_word(window + 12, 560);
+        bus.write_word(window + 14, 780);
+        bus.write_byte(window + 110, 0xFF);
+        disp.window_list = vec![window];
+        disp.front_window = window;
+        disp.window_bounds = (40, 20, 140, 220);
+
+        let size_rect = 0x280000;
+        bus.write_word(size_rect, 50);
+        bus.write_word(size_rect + 2, 80);
+        bus.write_word(size_rect + 4, 180);
+        bus.write_word(size_rect + 6, 260);
+        let sp = TEST_SP - 12;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A0, 0x1111_2222);
+        cpu.write_reg(Register::A1, 0x3333_4444);
+        cpu.write_reg(Register::D1, 0x5555_6666);
+        bus.write_long(sp, size_rect);
+        bus.write_long(sp + 4, 0x008C_00DC);
+        bus.write_long(sp + 8, window);
+        bus.write_long(sp + 12, 0xDEAD_BEEF);
+        disp.push_mouse_down(140, 220);
+        disp.event_queue.pop_front();
+        assert!(disp.window_visible(&bus, window));
+        assert!(disp.window_tracking_button_down(&bus));
+        let (screen_base, row_bytes, _, screen_height, _) = disp.screen_mode;
+        let screen_len = row_bytes * u32::from(screen_height);
+        let original_screen: Vec<u8> = (0..screen_len)
+            .map(|offset| bus.read_byte(screen_base + offset))
+            .collect();
+
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert!(disp.grow_window_tracking.is_some());
+        assert!(disp.is_tracking_refire(0xA92B));
+        assert!(disp.is_tracking_refire(0xAD2B));
+        assert!(!disp.is_tracking_refire(0xA925));
+
+        disp.set_mouse_position(400, 600);
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let tracking = disp.grow_window_tracking.as_ref().unwrap();
+        let old_height = tracking.original_content_rect.2 - tracking.original_content_rect.0;
+        let old_width = tracking.original_content_rect.3 - tracking.original_content_rect.1;
+        assert_eq!(
+            tracking.outline_rect.2 - tracking.original_outline_rect.2,
+            180 - old_height
+        );
+        assert_eq!(
+            tracking.outline_rect.3 - tracking.original_outline_rect.3,
+            260 - old_width
+        );
+        assert!(!tracking.outline_saved_pixels.is_empty());
+
+        disp.push_mouse_up(190, 300);
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_long(sp + 12), (150u32 << 16) | 260);
+        assert!(disp.grow_window_tracking.is_none());
+        assert!(disp.event_queue.iter().all(|event| event.what != 2));
+        assert_eq!(cpu.read_reg(Register::A0), 0x1111_2222);
+        assert_eq!(cpu.read_reg(Register::A1), 0x3333_4444);
+        assert_eq!(cpu.read_reg(Register::D1), 0x5555_6666);
+        assert_eq!(disp.window_bounds, (40, 20, 140, 220));
+        assert_eq!(
+            (0..screen_len)
+                .map(|offset| bus.read_byte(screen_base + offset))
+                .collect::<Vec<_>>(),
+            original_screen
+        );
+    }
+
+    #[test]
+    fn growwindow_restores_framebuffer_bytes_at_supported_depths() {
+        for depth in [1u16, 2, 4, 8] {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let screen_base = 0x340000;
+            let screen_width = 320u16;
+            let screen_height = 240u16;
+            let row_bytes = (u32::from(screen_width) * u32::from(depth)).div_ceil(8);
+            disp.set_screen_mode_for_test(
+                screen_base,
+                row_bytes,
+                screen_width,
+                screen_height,
+                depth,
+            );
+            bus.write_long(0x0824, screen_base);
+            bus.write_word(0x0828, row_bytes as u16);
+            let screen_len = row_bytes * u32::from(screen_height);
+            for offset in 0..screen_len {
+                bus.write_byte(
+                    screen_base + offset,
+                    (offset as u8).wrapping_mul(37).wrapping_add(depth as u8),
+                );
+            }
+            let original_screen: Vec<u8> = (0..screen_len)
+                .map(|offset| bus.read_byte(screen_base + offset))
+                .collect();
+
+            let window = 0x250000;
+            setup_window_with_regions(&mut bus, window, 0, 0, 100, 200);
+            bus.write_word(window + 6, 0);
+            bus.write_word(window + 8, (-40i16) as u16);
+            bus.write_word(window + 10, (-20i16) as u16);
+            bus.write_word(window + 12, 200);
+            bus.write_word(window + 14, 300);
+            bus.write_byte(window + 110, 0xFF);
+            disp.window_list = vec![window];
+            disp.front_window = window;
+
+            let size_rect = 0x280000;
+            bus.write_word(size_rect, 50);
+            bus.write_word(size_rect + 2, 80);
+            bus.write_word(size_rect + 4, 180);
+            bus.write_word(size_rect + 6, 260);
+            let sp = TEST_SP - 12;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, size_rect);
+            bus.write_long(sp + 4, 0x008C_00DC);
+            bus.write_long(sp + 8, window);
+
+            disp.push_mouse_down(140, 220);
+            disp.event_queue.pop_front();
+            dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            disp.set_mouse_position(170, 260);
+            dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            disp.push_mouse_up(170, 260);
+            dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(
+                (0..screen_len)
+                    .map(|offset| bus.read_byte(screen_base + offset))
+                    .collect::<Vec<_>>(),
+                original_screen,
+                "GrowWindow must restore every framebuffer byte at {depth}bpp"
+            );
+        }
+    }
+
+    #[test]
+    fn growwindow_returns_zero_for_unchanged_size() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = 0x250000;
+        setup_window_with_regions(&mut bus, window, 0, 0, 100, 200);
+        bus.write_word(window + 6, 0);
+        bus.write_word(window + 8, (-40i16) as u16);
+        bus.write_word(window + 10, (-20i16) as u16);
+        bus.write_word(window + 12, 560);
+        bus.write_word(window + 14, 780);
+        bus.write_byte(window + 110, 0xFF);
+        disp.window_list = vec![window];
+
+        let size_rect = 0x280000;
+        bus.write_word(size_rect, 50);
+        bus.write_word(size_rect + 2, 80);
+        bus.write_word(size_rect + 4, 180);
+        bus.write_word(size_rect + 6, 260);
+        let sp = TEST_SP - 12;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, size_rect);
+        bus.write_long(sp + 4, 0x008C_00DC);
+        bus.write_long(sp + 8, window);
+
+        disp.push_mouse_down(140, 220);
+        disp.event_queue.pop_front();
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        disp.push_mouse_up(140, 220);
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_long(sp + 12), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert!(disp.grow_window_tracking.is_none());
+    }
+
+    #[test]
+    fn growwindow_cancels_if_window_is_disposed_while_tracking() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let window = 0x250000;
+        setup_window_with_regions(&mut bus, window, 0, 0, 100, 200);
+        bus.write_word(window + 6, 0);
+        bus.write_byte(window + 110, 0xFF);
+        disp.window_list = vec![window];
+
+        let size_rect = 0x280000;
+        bus.write_word(size_rect, 50);
+        bus.write_word(size_rect + 2, 80);
+        bus.write_word(size_rect + 4, 180);
+        bus.write_word(size_rect + 6, 260);
+        let sp = TEST_SP - 12;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, size_rect);
+        bus.write_long(sp + 4, 0x0064_00C8);
+        bus.write_long(sp + 8, window);
+
+        disp.push_mouse_down(100, 200);
+        disp.event_queue.pop_front();
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.grow_window_tracking.is_some());
+
+        disp.window_list.clear();
+        dispatch(&mut disp, 0x12B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_long(sp + 12), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert!(disp.grow_window_tracking.is_none());
     }
 
     // IM:IV IV-50: TrackBox returns FALSE when mouse-up is outside the

@@ -2944,6 +2944,7 @@ impl FixtureRunner {
             || self.dispatcher.is_dialog_tracking()
             || self.dispatcher.is_control_tracking()
             || self.dispatcher.is_window_tracking()
+            || self.dispatcher.is_grow_window_tracking()
             || self.dispatcher.is_region_tracking()
     }
 
@@ -5736,6 +5737,7 @@ impl FixtureRunner {
                             && !self.dispatcher.is_dialog_tracking()
                             && !self.dispatcher.is_control_tracking()
                             && !self.dispatcher.is_window_tracking()
+                            && !self.dispatcher.is_grow_window_tracking()
                             && !self.dispatcher.is_region_tracking()
                         {
                             self.dispatcher.game_trap_count += 1;
