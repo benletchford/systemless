@@ -2720,7 +2720,11 @@ pub struct PpcMenuTrackingState {
     front_buffer: PpcFrontBuffer,
     saved_pixels: Vec<u16>,
     item_appearances: Vec<PpcTrackedMenuItemAppearance>,
-    submenu: Option<PpcSubmenuTrackingState>,
+    // Open hierarchical panes ordered from the root menu's child to the
+    // deepest descendant. MenuSelect searches installed submenu records by
+    // ID while traversing the hierarchy. Macintosh Toolbox Essentials
+    // (1992), pp. 3-53--3-55 and 3-115--3-116.
+    submenus: Vec<PpcSubmenuTrackingState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66031,7 +66035,7 @@ fn ppc_begin_tracked_menu_with_appearances(
         front_buffer: front,
         saved_pixels,
         item_appearances,
-        submenu: None,
+        submenus: Vec::new(),
     })
 }
 
@@ -66067,7 +66071,7 @@ fn ppc_restore_menu_tracking(
     front: PpcFrontBuffer,
     state: &PpcMenuTrackingState,
 ) {
-    if let Some(submenu) = state.submenu.as_ref() {
+    for submenu in state.submenus.iter().rev() {
         ppc_restore_tracked_menu(memory, front, submenu);
     }
     ppc_restore_tracked_menu(memory, front, state);
@@ -66554,6 +66558,14 @@ fn ppc_submenu_handle_for_item(
         })
 }
 
+fn ppc_menu_item_is_hierarchical(memory: &mut PpcSectionMem, menu_handle: u32, item: i16) -> bool {
+    let command = ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
+        .and_then(|address| memory.read_u8(address));
+    let submenu_id = ppc_menu_item_attribute_address(memory, menu_handle, item, 2)
+        .and_then(|address| memory.read_u8(address));
+    command == Some(0x1b) && submenu_id.is_some_and(|submenu_id| submenu_id != 0)
+}
+
 #[cfg(test)]
 fn ppc_begin_submenu_tracking(
     memory: &mut PpcSectionMem,
@@ -66646,9 +66658,101 @@ fn ppc_begin_submenu_tracking_with_resources(
     })
 }
 
-fn ppc_close_tracked_submenu(memory: &mut PpcSectionMem, state: &mut PpcMenuTrackingState) {
-    if let Some(submenu) = state.submenu.take() {
+fn ppc_close_tracked_submenus_from(
+    memory: &mut PpcSectionMem,
+    state: &mut PpcMenuTrackingState,
+    depth: usize,
+) {
+    for submenu in state.submenus.split_off(depth).into_iter().rev() {
         ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
+    }
+}
+
+fn ppc_ensure_tracked_submenu(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    state: &mut PpcMenuTrackingState,
+    parent_depth: Option<usize>,
+    parent_item: i16,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+) {
+    let child_depth = parent_depth.map_or(0, |depth| depth.saturating_add(1));
+    let parent_menu_handle = parent_depth
+        .and_then(|depth| state.submenus.get(depth))
+        .map(|submenu| submenu.menu_handle)
+        .unwrap_or(state.menu_handle);
+    let Some(submenu_handle) =
+        ppc_submenu_handle_for_item(memory, menu_list_handle, parent_menu_handle, parent_item)
+    else {
+        ppc_close_tracked_submenus_from(memory, state, child_depth);
+        return;
+    };
+
+    // A malformed circular hierarchy must not grow the visible chain on
+    // every tracking refire. Macintosh Toolbox Essentials (1992), p. 3-138,
+    // explicitly rejects circular hierarchical menu definitions.
+    let repeats_ancestor = submenu_handle == state.menu_handle
+        || state
+            .submenus
+            .iter()
+            .take(child_depth)
+            .any(|submenu| submenu.menu_handle == submenu_handle);
+    if repeats_ancestor {
+        ppc_close_tracked_submenus_from(memory, state, child_depth);
+        return;
+    }
+    let already_open = state.submenus.get(child_depth).is_some_and(|submenu| {
+        submenu.menu_handle == submenu_handle && submenu.parent_item == parent_item
+    });
+    if already_open {
+        return;
+    }
+
+    ppc_close_tracked_submenus_from(memory, state, child_depth);
+    let submenu = if let Some(depth) = parent_depth {
+        let Some(parent) = state.submenus.get(depth).cloned() else {
+            return;
+        };
+        ppc_begin_submenu_tracking_with_resources(
+            memory,
+            menu_list_handle,
+            state.front_buffer,
+            &parent,
+            parent_item,
+            resources,
+            current_resource_refnum,
+        )
+    } else {
+        ppc_begin_submenu_tracking_with_resources(
+            memory,
+            menu_list_handle,
+            state.front_buffer,
+            state,
+            parent_item,
+            resources,
+            current_resource_refnum,
+        )
+    };
+    if let Some(submenu) = submenu {
+        state.submenus.push(submenu);
+    }
+}
+
+fn ppc_draw_open_tracked_submenus(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    state: &PpcMenuTrackingState,
+) {
+    for submenu in &state.submenus {
+        ppc_draw_tracked_menu(
+            memory,
+            gworlds,
+            screen_clut,
+            submenu,
+            submenu.highlighted_item,
+        );
     }
 }
 
@@ -66663,55 +66767,52 @@ fn ppc_update_menu_tracking(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
-    if let Some(submenu_item) = state
-        .submenu
-        .as_ref()
-        .and_then(|submenu| ppc_menu_tracking_hit(memory, submenu, input))
-    {
-        if let Some(submenu) = state.submenu.as_mut() {
-            submenu.highlighted_item = submenu_item;
-            ppc_draw_tracked_menu(memory, gworlds, screen_clut, submenu, submenu_item);
+    let hit_submenu = (0..state.submenus.len()).rev().find_map(|depth| {
+        ppc_menu_tracking_hit(memory, &state.submenus[depth], input).map(|item| (depth, item))
+    });
+    if let Some((depth, submenu_item)) = hit_submenu {
+        let changed = state.submenus[depth].highlighted_item != submenu_item;
+        if changed {
+            ppc_close_tracked_submenus_from(memory, state, depth + 1);
+            state.submenus[depth].highlighted_item = submenu_item;
         }
+        if submenu_item > 0 {
+            ppc_ensure_tracked_submenu(
+                memory,
+                menu_list_handle,
+                state,
+                Some(depth),
+                submenu_item,
+                resources,
+                current_resource_refnum,
+            );
+        } else {
+            ppc_close_tracked_submenus_from(memory, state, depth + 1);
+        }
+        ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
         return;
     }
 
     let root_item = ppc_menu_tracking_hit(memory, state, input).unwrap_or(0);
-    let submenu_handle = (root_item > 0)
-        .then(|| {
-            ppc_submenu_handle_for_item(memory, menu_list_handle, state.menu_handle, root_item)
-        })
-        .flatten();
-    let keep_submenu = state.submenu.as_ref().is_some_and(|submenu| {
-        submenu.parent_item == root_item && Some(submenu.menu_handle) == submenu_handle
-    });
-    if !keep_submenu {
-        ppc_close_tracked_submenu(memory, state);
+    if state.highlighted_item != root_item {
+        ppc_close_tracked_submenus_from(memory, state, 0);
+        state.highlighted_item = root_item;
     }
-    state.highlighted_item = root_item;
     ppc_draw_tracked_menu(memory, gworlds, screen_clut, state, root_item);
-
-    if submenu_handle.is_some() && state.submenu.is_none() {
-        if let Some(submenu) = ppc_begin_submenu_tracking_with_resources(
+    if root_item > 0 {
+        ppc_ensure_tracked_submenu(
             memory,
             menu_list_handle,
-            state.front_buffer,
             state,
+            None,
             root_item,
             resources,
             current_resource_refnum,
-        ) {
-            ppc_draw_tracked_menu(memory, gworlds, screen_clut, &submenu, 0);
-            state.submenu = Some(submenu);
-        }
-    } else if let Some(submenu) = state.submenu.as_ref() {
-        ppc_draw_tracked_menu(
-            memory,
-            gworlds,
-            screen_clut,
-            submenu,
-            submenu.highlighted_item,
         );
+    } else {
+        ppc_close_tracked_submenus_from(memory, state, 0);
     }
+    ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
 }
 
 fn ppc_tracked_menu_selection(
@@ -66719,14 +66820,20 @@ fn ppc_tracked_menu_selection(
     state: &PpcMenuTrackingState,
     input: PpcInputSnapshot,
 ) -> Option<(u32, i16)> {
-    if let Some((submenu, item)) = state.submenu.as_ref().and_then(|submenu| {
+    if let Some((submenu, item)) = state.submenus.iter().rev().find_map(|submenu| {
         let item = ppc_menu_tracking_item(memory, submenu, input);
         (item > 0).then_some((submenu, item))
     }) {
-        return Some((submenu.menu_handle, item));
+        return (!ppc_menu_item_is_hierarchical(memory, submenu.menu_handle, item))
+            .then_some((submenu.menu_handle, item));
     }
     let item = ppc_menu_tracking_item(memory, state, input);
-    (item > 0).then_some((state.menu_handle, item))
+    (item > 0)
+        .then(|| {
+            (!ppc_menu_item_is_hierarchical(memory, state.menu_handle, item))
+                .then_some((state.menu_handle, item))
+        })
+        .flatten()
 }
 
 #[cfg(test)]
@@ -77661,7 +77768,7 @@ mod tests {
             loaded.current_resource_refnum,
         );
         let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
-        let child = tracking.submenu.as_ref().expect("submenu did not open");
+        let child = tracking.submenus.first().expect("submenu did not open");
         assert_eq!(tracking.highlighted_item, 2);
         assert_eq!(child.popup_top, parent_top);
     }
@@ -77993,7 +78100,7 @@ mod tests {
                 parent_hover,
             );
             let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
-            let child = tracking.submenu.as_ref().expect("submenu did not open");
+            let child = tracking.submenus.first().expect("submenu did not open");
             assert_eq!(tracking.highlighted_item, 1);
             assert_eq!(child.menu_handle, submenu);
             assert_eq!(child.parent_item, 1);
@@ -78022,7 +78129,7 @@ mod tests {
                     .toolbox_startup
                     .menu_tracking
                     .as_ref()
-                    .and_then(|state| state.submenu.as_ref())
+                    .and_then(|state| state.submenus.first())
                     .map(|child| child.highlighted_item),
                 Some(0),
             );
@@ -78097,7 +78204,7 @@ mod tests {
                 .toolbox_startup
                 .menu_tracking
                 .as_ref()
-                .is_some_and(|state| state.submenu.is_some()));
+                .is_some_and(|state| !state.submenus.is_empty()));
             assert_eq!(
                 ppc_finish_menu_bar_tracking(
                     &mut loaded.memory,
@@ -78148,6 +78255,218 @@ mod tests {
             parent.popup_left - flipped.popup_width + 1,
         );
         ppc_restore_tracked_menu(&mut loaded.memory, front, &flipped);
+    }
+
+    #[test]
+    fn menu_tracking_selects_nested_submenus_and_restores_every_depth() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        install_test_menu(
+            &mut loaded,
+            scratch,
+            128,
+            b"Game",
+            b"Options/\x1b!\xc9;Cancel",
+        );
+        loaded.memory.add_region(scratch + 0x200, vec![0; 0x400]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x200,
+            b"Options",
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x280,
+            b"Speed/\x1b!\xca;Plain",
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x300,
+            b"Speed",
+        ));
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            scratch + 0x380,
+            b"Cycle/\x1b!\xc9;Fast",
+        ));
+        let options = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            201,
+            scratch + 0x200,
+        );
+        let speed = ppc_new_menu(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+            202,
+            scratch + 0x300,
+        );
+        for (menu, items) in [(options, scratch + 0x280), (speed, scratch + 0x380)] {
+            assert_ne!(menu, 0);
+            assert_eq!(
+                ppc_insert_menu_items(
+                    &mut loaded.memory,
+                    &mut loaded.heap_cursor,
+                    loaded.heap_limit,
+                    &mut loaded.handles,
+                    menu,
+                    items,
+                    i16::MAX,
+                ),
+                PPC_NO_ERR,
+            );
+            assert_eq!(
+                ppc_insert_menu(
+                    &mut loaded.memory,
+                    &mut loaded.heap_cursor,
+                    loaded.heap_limit,
+                    &mut loaded.handles,
+                    &mut loaded.free_handle_blocks,
+                    &mut loaded.toolbox_startup.current_menu_bar,
+                    menu,
+                    -1,
+                ),
+                PPC_NO_ERR,
+            );
+        }
+
+        for depth in [1, 2, 4, 8, 16] {
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let active_len = front.row_bytes * front.height;
+            let pattern = (0..usize::try_from(active_len).unwrap())
+                .map(|index| (index as u8).wrapping_mul(43).wrapping_add(depth as u8))
+                .collect::<Vec<_>>();
+            loaded
+                .memory
+                .write_bytes(front.base_addr, &pattern)
+                .unwrap();
+            assert!(ppc_draw_menu_bar(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                loaded.toolbox_startup.current_menu_bar,
+                &loaded.screen_clut,
+            ));
+            let before =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, active_len).unwrap();
+
+            let track = |loaded: &mut PpcLoadedApp, point: (i16, i16)| {
+                ppc_track_menu_while_held(
+                    &mut loaded.memory,
+                    &loaded.gworlds,
+                    &loaded.screen_clut,
+                    &mut loaded.toolbox_startup,
+                    12,
+                    PpcInputSnapshot {
+                        mouse_button: true,
+                        mouse_v: point.0,
+                        mouse_h: point.1,
+                        ..PpcInputSnapshot::default()
+                    },
+                );
+            };
+            track(&mut loaded, (10, 12));
+            let root = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            track(&mut loaded, (root.popup_top + 8, root.popup_left + 20));
+            let first = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(first.submenus.len(), 1);
+            assert_eq!(first.submenus[0].menu_handle, options);
+            let options_pane = first.submenus[0].clone();
+            track(
+                &mut loaded,
+                (options_pane.popup_top + 8, options_pane.popup_left + 20),
+            );
+            let nested = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(nested.submenus.len(), 2);
+            assert_eq!(nested.submenus[0].highlighted_item, 1);
+            assert_eq!(nested.submenus[1].menu_handle, speed);
+
+            track(
+                &mut loaded,
+                (
+                    options_pane.popup_top + 2 + 16 + 8,
+                    options_pane.popup_left + 20,
+                ),
+            );
+            let switched = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(switched.submenus.len(), 1);
+            assert_eq!(switched.submenus[0].highlighted_item, 2);
+            track(
+                &mut loaded,
+                (options_pane.popup_top + 8, options_pane.popup_left + 20),
+            );
+            let reopened = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(reopened.submenus.len(), 2);
+            let speed_pane = reopened.submenus[1].clone();
+
+            track(
+                &mut loaded,
+                (speed_pane.popup_top + 8, speed_pane.popup_left + 20),
+            );
+            let cycle = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(cycle.submenus.len(), 2, "circular submenu grew the chain");
+            assert_eq!(cycle.submenus[1].highlighted_item, 1);
+            assert_eq!(
+                ppc_tracked_menu_selection(
+                    &mut loaded.memory,
+                    &cycle,
+                    PpcInputSnapshot {
+                        mouse_v: speed_pane.popup_top + 8,
+                        mouse_h: speed_pane.popup_left + 20,
+                        ..PpcInputSnapshot::default()
+                    },
+                ),
+                None,
+                "hierarchical parent became selectable",
+            );
+
+            let leaf = PpcInputSnapshot {
+                mouse_v: speed_pane.popup_top + 2 + 16 + 8,
+                mouse_h: speed_pane.popup_left + 20,
+                ..PpcInputSnapshot::default()
+            };
+            track(&mut loaded, (leaf.mouse_v, leaf.mouse_h));
+            assert_eq!(
+                ppc_finish_menu_bar_tracking(
+                    &mut loaded.memory,
+                    &loaded.gworlds,
+                    &loaded.screen_clut,
+                    &mut loaded.toolbox_startup,
+                    leaf,
+                ),
+                Some((202 << 16) | 2),
+            );
+            ppc_set_menu_title_highlight(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                loaded.toolbox_startup.current_menu_bar,
+                0,
+                &loaded.screen_clut,
+                false,
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, active_len),
+                Some(before),
+                "{depth}bpp nested menu did not restore every saved pane",
+            );
+        }
     }
 
     #[test]
@@ -137324,7 +137643,7 @@ mod tests {
             front_buffer: ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap(),
             saved_pixels: vec![0; 33 * 21],
             item_appearances: Vec::new(),
-            submenu: None,
+            submenus: Vec::new(),
         };
         loaded.toolbox_startup.menu_tracking = Some(tracking.clone());
         loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 128).unwrap();
