@@ -64473,6 +64473,48 @@ fn ppc_redraw_tracked_menu(
     true
 }
 
+fn ppc_begin_menu_bar_tracking(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    menu_handle: u32,
+    title_left: i16,
+) -> Option<PpcMenuTrackingState> {
+    ppc_calc_menu_size(memory, menu_handle);
+    let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
+    let front_width = ppc_u32_to_i16_saturating(front.width);
+    let front_height = ppc_u32_to_i16_saturating(front.height);
+    if menu_bar_height <= 0 || menu_bar_height >= front_height || front_width <= 1 {
+        return None;
+    }
+    let desired_width = i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).unwrap_or(i16::MAX);
+    let popup_width = desired_width.min(front_width.saturating_sub(1)).max(1);
+    let popup_left = title_left
+        .max(0)
+        .min(front_width.saturating_sub(popup_width.saturating_add(1)));
+    let popup_top = menu_bar_height;
+    let desired_height = i16::try_from(
+        ppc_count_menu_items(memory, menu_handle)
+            .saturating_mul(16)
+            .saturating_add(4),
+    )
+    .unwrap_or(i16::MAX);
+    let popup_height = desired_height
+        .min(front_height.saturating_sub(popup_top).saturating_sub(1))
+        .max(1);
+    ppc_begin_tracked_menu(
+        memory,
+        front,
+        PpcMenuTrackingKind::MenuBar,
+        menu_handle,
+        popup_left,
+        popup_top,
+        popup_width,
+        popup_height,
+        0,
+    )
+}
+
 fn ppc_track_menu_while_held(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -64508,72 +64550,27 @@ fn ppc_track_menu_while_held(
             return;
         }
         ppc_restore_tracked_menu(memory, front, &previous);
-        startup.menu_tracking = Some(previous);
+        // MenuSelect keeps tracking while the button is held. Crossing an
+        // enabled regular title closes the old dropdown and opens the new
+        // title's menu. Macintosh Toolbox Essentials (1992), p. 3-115.
+        let live_point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
+        let switched = ppc_menu_handle_at_title_point(memory, startup.current_menu_bar, live_point)
+            .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle)
+            .and_then(|(menu_handle, title_left)| {
+                ppc_begin_menu_bar_tracking(memory, front, menu_handle, title_left)
+            });
+        startup.menu_tracking = Some(switched.unwrap_or(previous));
     } else {
         let Some((menu_handle, title_left)) =
             ppc_menu_handle_at_title_point(memory, startup.current_menu_bar, initial_point)
         else {
             return;
         };
-        ppc_calc_menu_size(memory, menu_handle);
-        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+        let Some(state) = ppc_begin_menu_bar_tracking(memory, front, menu_handle, title_left)
+        else {
             return;
         };
-        let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-        let front_width = ppc_u32_to_i16_saturating(front.width);
-        let front_height = ppc_u32_to_i16_saturating(front.height);
-        if menu_bar_height <= 0 || menu_bar_height >= front_height || front_width <= 1 {
-            return;
-        }
-        let desired_width =
-            i16::try_from(memory.read_u16_be(menu + 2).unwrap_or(64).max(32)).unwrap_or(i16::MAX);
-        let popup_width = desired_width.min(front_width.saturating_sub(1)).max(1);
-        let popup_left = title_left
-            .max(0)
-            .min(front_width.saturating_sub(popup_width.saturating_add(1)));
-        let popup_top = menu_bar_height;
-        let desired_height = i16::try_from(
-            ppc_count_menu_items(memory, menu_handle)
-                .saturating_mul(16)
-                .saturating_add(4),
-        )
-        .unwrap_or(i16::MAX);
-        let popup_height = desired_height
-            .min(front_height.saturating_sub(popup_top).saturating_sub(1))
-            .max(1);
-        let saved_width = popup_width.saturating_add(1);
-        let saved_height = popup_height.saturating_add(1);
-        let mut saved_pixels = Vec::with_capacity(
-            usize::try_from(i32::from(saved_width) * i32::from(saved_height)).unwrap_or(0),
-        );
-        for y in 0..i32::from(saved_height) {
-            for x in 0..i32::from(saved_width) {
-                saved_pixels.push(
-                    ppc_quickdraw_read_pixel(
-                        memory,
-                        front,
-                        (i32::from(popup_left) + x, i32::from(popup_top) + y),
-                    )
-                    .unwrap_or(0),
-                );
-            }
-        }
-        startup.menu_tracking = Some(PpcMenuTrackingState {
-            kind: PpcMenuTrackingKind::MenuBar,
-            menu_handle,
-            popup_left,
-            popup_top,
-            popup_width,
-            popup_height,
-            highlighted_item: 0,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-            saved_width,
-            saved_height,
-            front_buffer: front,
-            saved_pixels,
-        });
+        startup.menu_tracking = Some(state);
     }
     let active_menu_id = startup.menu_tracking.as_ref().and_then(|state| {
         memory
@@ -126733,6 +126730,219 @@ mod tests {
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0x55aa));
         }
+    }
+
+    #[test]
+    fn hle_import_runner_menu_select_switches_titles_and_restores_supported_depths() {
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let file_menu =
+            install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        let edit_menu =
+            install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1400, 129, b"Edit", b"Cut");
+        let disabled_menu =
+            install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1800, 130, b"View", b"Zoom");
+        ppc_set_menu_item_enabled(&mut loaded.memory, disabled_menu, 0, false);
+
+        let file_left = PPC_MENU_TITLE_HIT_LEFT;
+        let edit_left = file_left
+            .saturating_add(ppc_menu_title_advance(b"File"))
+            .saturating_add(PPC_MENU_TITLE_SPACING);
+        let disabled_left = edit_left
+            .saturating_add(ppc_menu_title_advance(b"Edit"))
+            .saturating_add(PPC_MENU_TITLE_SPACING);
+        let point = |v: i16, h: i16| (u32::from(v as u16) << 16) | u32::from(h as u16);
+        assert_eq!(
+            ppc_menu_handle_at_title_point(
+                &mut loaded.memory,
+                loaded.toolbox_startup.current_menu_bar,
+                point(10, edit_left + 2),
+            ),
+            Some((edit_menu, edit_left)),
+        );
+        assert_eq!(
+            ppc_menu_handle_at_title_point(
+                &mut loaded.memory,
+                loaded.toolbox_startup.current_menu_bar,
+                point(10, disabled_left + 2),
+            ),
+            None,
+        );
+
+        for depth in [1, 2, 4, 8, 16] {
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let framebuffer_len = front.row_bytes * front.height;
+            let pattern = (0..usize::try_from(framebuffer_len).unwrap())
+                .map(|index| (index as u8).wrapping_mul(31).wrapping_add(depth as u8) ^ 0x6d)
+                .collect::<Vec<_>>();
+            loaded
+                .memory
+                .write_bytes(front.base_addr, &pattern)
+                .unwrap();
+            assert!(ppc_draw_menu_bar(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                loaded.toolbox_startup.current_menu_bar,
+                &loaded.screen_clut,
+            ));
+            let before =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MenuSelect;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = point(10, file_left + 2);
+            let original_sp = loaded.cpu.gpr[1];
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 10,
+                mouse_h: file_left + 2,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .menu_tracking
+                    .as_ref()
+                    .map(|state| state.menu_handle),
+                Some(file_menu),
+            );
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 10,
+                mouse_h: edit_left + 2,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .menu_tracking
+                    .as_ref()
+                    .map(|state| state.menu_handle),
+                Some(edit_menu),
+            );
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
+
+            for (mouse_h, expected_menu, expected_id) in [
+                (file_left + 2, file_menu, 128),
+                (edit_left + 2, edit_menu, 129),
+            ] {
+                loaded.set_input_snapshot(PpcInputSnapshot {
+                    mouse_button: true,
+                    mouse_v: 10,
+                    mouse_h,
+                    ..PpcInputSnapshot::default()
+                });
+                let probe = loaded.run_with_hle_imports(64);
+                assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+                assert_eq!(
+                    loaded
+                        .toolbox_startup
+                        .menu_tracking
+                        .as_ref()
+                        .map(|state| state.menu_handle),
+                    Some(expected_menu),
+                );
+                assert_eq!(
+                    loaded.memory.read_u16_be(PPC_THE_MENU_ADDR),
+                    Some(expected_id),
+                );
+            }
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 10,
+                mouse_h: disabled_left + 2,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .menu_tracking
+                    .as_ref()
+                    .map(|state| state.menu_handle),
+                Some(edit_menu),
+                "{depth}bpp disabled title became active",
+            );
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 100,
+                mouse_h: i16::try_from(front.width).unwrap_or(i16::MAX) - 1,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(before),
+                "{depth}bpp switched dropdowns did not restore the framebuffer",
+            );
+        }
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MenuSelect;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = point(10, file_left + 2);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 10,
+            mouse_h: file_left + 2,
+            ..PpcInputSnapshot::default()
+        });
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 10,
+            mouse_h: edit_left + 2,
+            ..PpcInputSnapshot::default()
+        });
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let switched = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: switched.popup_top + 6,
+            mouse_h: switched.popup_left + 4,
+            ..PpcInputSnapshot::default()
+        });
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
+        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
     }
 
     #[test]
