@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.13](https://github.com/benletchford/systemless/compare/v0.20.12...v0.20.13) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** retain window drag tracking ([#877](https://github.com/benletchford/systemless/issues/877)) ([ac34046](https://github.com/benletchford/systemless/commit/ac340467aa59c9358a010b3fe8b8a6321755f29c))
+
 ## [0.20.12](https://github.com/benletchford/systemless/compare/v0.20.11...v0.20.12) (2026-08-27)
 
 
