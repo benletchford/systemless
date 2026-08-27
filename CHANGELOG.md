@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.17](https://github.com/benletchford/systemless/compare/v0.20.16...v0.20.17) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** track hierarchical submenus ([#889](https://github.com/benletchford/systemless/issues/889)) ([578d6a3](https://github.com/benletchford/systemless/commit/578d6a3385970fa300ff9adccdb0c8331463271d))
+
 ## [0.20.16](https://github.com/benletchford/systemless/compare/v0.20.15...v0.20.16) (2026-08-27)
 
 
