@@ -3273,6 +3273,14 @@ const PPC_RGB_WHITE: PpcRgbColor = PpcRgbColor {
     green: 0xffff,
     blue: 0xffff,
 };
+// The standard MDEF asks GetGray for the midpoint between its white menu
+// background and black item ink when drawing disabled rows. Inside Macintosh
+// Volume V (1986), p. V-142; Macintosh Toolbox Essentials (1992), p. 3-150.
+const PPC_RGB_MENU_GRAY: PpcRgbColor = PpcRgbColor {
+    red: 0x7fff,
+    green: 0x7fff,
+    blue: 0x7fff,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcDspGammaFadeKind {
@@ -49519,24 +49527,52 @@ fn ppc_draw_text_bytes(
     bytes: &[u8],
 ) -> i16 {
     let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
+    ppc_draw_text_chars(
+        memory,
+        gworlds,
+        current_gworld,
+        pen,
+        text_font,
+        text_size,
+        text_mode,
+        color,
+        explicit_index,
+        bytes.iter().map(|byte| char::from(*byte)),
+    );
+    advance
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_text_chars(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    pen: (i16, i16),
+    text_font: i16,
+    text_size: i16,
+    text_mode: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    chars: impl IntoIterator<Item = char>,
+) {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
-        return advance;
+        return;
     };
     let front_buffer = surface.front_buffer;
     if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
-        return advance;
+        return;
     }
     let Some(color_pixel) =
         ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
     else {
-        return advance;
+        return;
     };
 
     let (local_h, local_v) = surface.local_point((i32::from(pen.0), i32::from(pen.1)));
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let mut base_advance = 0i32;
-    for ch in bytes {
-        if let Some((glyph, data)) = get_glyph(text_font, face.size, *ch as char) {
+    for ch in chars {
+        if let Some((glyph, data)) = get_glyph(text_font, face.size, ch) {
             let width = glyph.width as usize;
             let height = glyph.height as usize;
             for row in 0..height {
@@ -49572,8 +49608,6 @@ fn ppc_draw_text_bytes(
             base_advance = base_advance.saturating_add(6);
         }
     }
-
-    advance
 }
 
 fn ppc_paint_rect(
@@ -64873,10 +64907,24 @@ fn ppc_calc_menu_size(memory: &mut PpcSectionMem, menu_handle: u32) {
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
         );
+        let command = ppc_menu_item_attribute_address(memory, menu_handle, item as i16, 1)
+            .and_then(|address| memory.read_u8(address))
+            .unwrap_or(0);
+        // The standard MDEF reserves the right-side indicator column in
+        // addition to the text margins. Command-key glyph pairs need the
+        // widest column; hierarchical items reserve the triangle column.
+        // Macintosh Toolbox Essentials (1992), pp. 3-12--3-13.
+        let chrome_width = if command > 0x20 {
+            53
+        } else if command == 0x1b {
+            42
+        } else {
+            30
+        };
         width = width.max(
             u16::try_from(advance.max(0))
                 .unwrap_or(u16::MAX)
-                .saturating_add(30),
+                .saturating_add(chrome_width),
         );
     }
     let height = count.saturating_mul(16).saturating_add(4);
@@ -65405,14 +65453,43 @@ fn ppc_draw_tracked_menu(
             black,
         );
     }
+    let popup_bottom = state.popup_top.saturating_add(state.popup_height);
     for item in 1..=ppc_count_menu_items(memory, state.menu_handle) as i16 {
         let Some((address, len)) = ppc_menu_item(memory, state.menu_handle, item) else {
             continue;
         };
         let text = ppc_memory_read_bytes(memory, address + 1, u32::from(len)).unwrap_or_default();
         let row_top = state.popup_top.saturating_add(2 + (item - 1) * 16);
-        if text == b"-" {
+        if row_top >= popup_bottom.saturating_sub(1) {
+            break;
+        }
+        let row_bottom = row_top.saturating_add(16).min(popup_bottom - 1);
+        let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
+        let mark = memory.read_u8(address + 3 + u32::from(len)).unwrap_or(0);
+        let is_separator = text == b"-";
+        let is_hierarchical = command == 0x1b && mark != 0;
+        let has_command_key = command > 0x20;
+        let dimmed = !ppc_menu_item_enabled(memory, state.menu_handle, item) || is_separator;
+        let highlighted = item == selected && !dimmed;
+        let color = if highlighted {
+            PPC_RGB_WHITE
+        } else if dimmed && front.depth != 1 {
+            PPC_RGB_MENU_GRAY
+        } else {
+            PPC_RGB_BLACK
+        };
+        let content_pixel = ppc_physical_screen_color_pixel(front, color, screen_clut)
+            .unwrap_or(if highlighted { white } else { black });
+        let explicit_index = ppc_indexed_depth_entry_count(front.depth)
+            .and_then(|_| u8::try_from(content_pixel).ok());
+
+        if is_separator {
             for x in 4..state.popup_width.saturating_sub(4) {
+                if front.depth == 1
+                    && (state.popup_left.saturating_add(x) + row_top.saturating_add(7)) & 1 != 0
+                {
+                    continue;
+                }
                 let _ = ppc_quickdraw_write_raw_pixel(
                     memory,
                     front,
@@ -65420,20 +65497,39 @@ fn ppc_draw_tracked_menu(
                         i32::from(state.popup_left.saturating_add(x)),
                         i32::from(row_top + 7),
                     ),
-                    black,
+                    content_pixel,
                 );
             }
             continue;
         }
-        let highlighted = item == selected;
-        let color = if highlighted {
-            PPC_RGB_WHITE
-        } else {
-            PPC_RGB_BLACK
-        };
-        let explicit_index = ppc_indexed_depth_entry_count(front.depth)
-            .and_then(|_| ppc_physical_screen_color_pixel(front, color, screen_clut))
-            .and_then(|pixel| u8::try_from(pixel).ok());
+
+        // Standard menu items reserve a left mark/icon column. A submenu's
+        // mark byte is its menu ID, so it is represented by the triangle on
+        // the right instead of being drawn as a marking character.
+        // Macintosh Toolbox Essentials (1992), pp. 3-12--3-13.
+        if mark != 0 && !is_hierarchical {
+            let mark_char = if mark == 0x12 {
+                '\u{2713}'
+            } else {
+                char::from(mark)
+            };
+            ppc_draw_text_chars(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                (
+                    state.popup_left.saturating_add(3),
+                    row_top.saturating_add(12),
+                ),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+                PPC_QD_TEXT_MODE_SRC_OR,
+                color,
+                explicit_index,
+                std::iter::once(mark_char),
+            );
+        }
+
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
         let _ = ppc_draw_text_bytes(
             memory,
@@ -65450,6 +65546,68 @@ fn ppc_draw_tracked_menu(
             explicit_index,
             &text,
         );
+
+        if is_hierarchical {
+            let mid_y = row_top.saturating_add(8);
+            for dx in 0..7i16 {
+                let x = state
+                    .popup_left
+                    .saturating_add(state.popup_width)
+                    .saturating_sub(12)
+                    .saturating_add(dx);
+                let half_height = dx.min(6 - dx);
+                for dy in -half_height..=half_height {
+                    let _ = ppc_quickdraw_write_raw_pixel(
+                        memory,
+                        front,
+                        (i32::from(x), i32::from(mid_y.saturating_add(dy))),
+                        content_pixel,
+                    );
+                }
+            }
+        } else if has_command_key {
+            ppc_draw_text_chars(
+                memory,
+                gworlds,
+                PPC_MAIN_GWORLD,
+                (
+                    state
+                        .popup_left
+                        .saturating_add(state.popup_width)
+                        .saturating_sub(25),
+                    row_top.saturating_add(12),
+                ),
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+                mode,
+                color,
+                explicit_index,
+                ['\u{2318}', char::from(command)],
+            );
+        }
+
+        // On a one-bit device the standard MDEF dims the complete item with
+        // the 50-percent gray pattern because no intermediate color exists.
+        // Macintosh Toolbox Essentials (1992), pp. 3-13 and 3-150.
+        if dimmed && front.depth == 1 {
+            for y in row_top..row_bottom {
+                for x in state.popup_left.saturating_add(1)
+                    ..state
+                        .popup_left
+                        .saturating_add(state.popup_width)
+                        .saturating_sub(1)
+                {
+                    if (x + y) & 1 != 0 {
+                        let _ = ppc_quickdraw_write_raw_pixel(
+                            memory,
+                            front,
+                            (i32::from(x), i32::from(y)),
+                            white,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -75701,10 +75859,245 @@ mod tests {
     }
 
     #[test]
+    fn tracked_menu_draws_standard_item_chrome_and_dims_disabled_rows() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"File",
+            b"Checked!\x12;Command/C;Disabled/C!\x12(;-;Parent/\x1b!\xc9",
+        );
+        ppc_calc_menu_size(&mut loaded.memory, menu);
+
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert!(ppc_draw_menu_bar(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            loaded.toolbox_startup.current_menu_bar,
+            &loaded.screen_clut,
+        ));
+        let framebuffer_len = front.row_bytes * front.height;
+        let before =
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
+        ppc_track_menu_while_held(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            &mut loaded.toolbox_startup,
+            12,
+            PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 10,
+                mouse_h: 12,
+                ..PpcInputSnapshot::default()
+            },
+        );
+        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let command_text_advance = ppc_text_bytes_advance_for_font(
+            b"Command",
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        );
+        assert!(
+            tracking.popup_width >= command_text_advance.saturating_add(53),
+            "command-key column overlaps item text"
+        );
+        let black =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+        let white =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+        let gray =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_MENU_GRAY, &loaded.screen_clut).unwrap();
+        let glyph_pixels = |ch| {
+            let (glyph, data) = get_glyph(PPC_QD_TEXT_FONT_DEFAULT, 12, ch).unwrap();
+            let mut pixels = Vec::new();
+            for row in 0..glyph.height as usize {
+                for col in 0..glyph.width as usize {
+                    let index = glyph.data_offset + row * glyph.width as usize + col;
+                    if index < data.len() && data[index] >= 128 {
+                        pixels.push((
+                            i32::from(glyph.origin_x) + col as i32,
+                            i32::from(glyph.origin_y) + row as i32,
+                        ));
+                    }
+                }
+            }
+            pixels
+        };
+        let assert_glyph_color =
+            |memory: &mut PpcSectionMem, origin: (i32, i32), ch: char, pixel: u16| {
+                let glyph = glyph_pixels(ch);
+                assert!(!glyph.is_empty());
+                assert!(glyph.iter().all(|(dx, dy)| {
+                    ppc_quickdraw_read_pixel(memory, front, (origin.0 + dx, origin.1 + dy))
+                        == Some(pixel)
+                }));
+            };
+
+        let row_top = |item: i16| tracking.popup_top + 2 + (item - 1) * 16;
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + 3),
+                i32::from(row_top(1) + 12),
+            ),
+            '\u{2713}',
+            black,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + tracking.popup_width - 25),
+                i32::from(row_top(2) + 12),
+            ),
+            '\u{2318}',
+            black,
+        );
+        let command_symbol_advance = i32::from(
+            get_glyph(PPC_QD_TEXT_FONT_DEFAULT, 12, '\u{2318}')
+                .unwrap()
+                .0
+                .advance,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
+                i32::from(row_top(2) + 12),
+            ),
+            'C',
+            black,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + 18),
+                i32::from(row_top(3) + 12),
+            ),
+            'D',
+            gray,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + 3),
+                i32::from(row_top(3) + 12),
+            ),
+            '\u{2713}',
+            gray,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + tracking.popup_width - 25),
+                i32::from(row_top(3) + 12),
+            ),
+            '\u{2318}',
+            gray,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
+                i32::from(row_top(3) + 12),
+            ),
+            'C',
+            gray,
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (
+                    i32::from(tracking.popup_left + 10),
+                    i32::from(row_top(4) + 7),
+                ),
+            ),
+            Some(gray)
+        );
+        let hierarchy_ink = (0..7i16)
+            .flat_map(|dx| (-3..=3).map(move |dy| (dx, dy)))
+            .filter(|(dx, dy)| {
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    (
+                        i32::from(tracking.popup_left + tracking.popup_width - 12 + *dx),
+                        i32::from(row_top(5) + 8 + *dy),
+                    ),
+                ) == Some(black)
+            })
+            .count();
+        assert!(hierarchy_ink >= 7, "hierarchical indicator did not draw");
+
+        let disabled_hover = PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: row_top(3) + 4,
+            mouse_h: tracking.popup_left + 20,
+            ..PpcInputSnapshot::default()
+        };
+        assert_eq!(
+            ppc_menu_tracking_item(&mut loaded.memory, &tracking, disabled_hover),
+            0
+        );
+
+        let selected = PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: row_top(1) + 4,
+            mouse_h: tracking.popup_left + 20,
+            ..PpcInputSnapshot::default()
+        };
+        ppc_track_menu_while_held(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            &mut loaded.toolbox_startup,
+            12,
+            selected,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(tracking.popup_left + 3),
+                i32::from(row_top(1) + 12),
+            ),
+            '\u{2713}',
+            white,
+        );
+
+        assert_eq!(
+            ppc_finish_menu_bar_tracking(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &loaded.screen_clut,
+                &mut loaded.toolbox_startup,
+                PpcInputSnapshot {
+                    mouse_v: tracking.popup_top + 8,
+                    mouse_h: tracking.popup_left - 1,
+                    ..PpcInputSnapshot::default()
+                },
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+            Some(before)
+        );
+    }
+
+    #[test]
     fn menu_tracking_round_trips_unaligned_popup_boundaries_at_supported_depths() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
-        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"File",
+            b"Open/O!\x12;Disabled(;-;Parent/\x1b!\xc9",
+        );
         let item_glyph_pixels = {
             let (glyph, data) = get_glyph(PPC_QD_TEXT_FONT_DEFAULT, 12, 'O').unwrap();
             let mut pixels = Vec::new();
