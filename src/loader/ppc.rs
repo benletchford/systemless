@@ -17385,11 +17385,11 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, true);
-            if window == *current_gworld {
-                let _ = ppc_set_window_hilited(memory, window, true);
-            }
+            ppc_transition_front_window_chrome(memory, gworlds, previous_front);
             if !was_visible {
-                ppc_draw_existing_window_frame(memory, gworlds, window);
+                if ppc_front_visible_window(memory, gworlds) != Some(window) {
+                    ppc_draw_existing_window_frame(memory, gworlds, window);
+                }
                 ppc_enqueue_window_update_event(event_queue, window, input);
             }
             if ppc_front_visible_window(memory, gworlds) != previous_front {
@@ -17418,10 +17418,8 @@ fn dispatch_supported_import(
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
             let next_front = ppc_front_visible_window(memory, gworlds);
+            ppc_transition_front_window_chrome(memory, gworlds, previous_front);
             if next_front != previous_front {
-                if let Some(next_front) = next_front {
-                    let _ = ppc_set_window_hilited(memory, next_front, true);
-                }
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -17447,8 +17445,11 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, visible);
+            ppc_transition_front_window_chrome(memory, gworlds, previous_front);
             if visible && !was_visible {
-                ppc_draw_existing_window_frame(memory, gworlds, window);
+                if ppc_front_visible_window(memory, gworlds) != Some(window) {
+                    ppc_draw_existing_window_frame(memory, gworlds, window);
+                }
             }
             if ppc_front_visible_window(memory, gworlds) != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -17490,6 +17491,7 @@ fn dispatch_supported_import(
                         || gworld.port == PPC_DSP_BACK_GWORLD
                         || gworld.port != window
                 });
+                ppc_transition_front_window_chrome(memory, gworlds, previous_front);
                 if *current_gworld == window {
                     *current_gworld = gworlds
                         .iter()
@@ -17675,11 +17677,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SelectWindow => {
             if cpu.gpr[3] != 0 {
                 let previous_front = ppc_front_visible_window(memory, gworlds);
-                if let Some(previous_front) = previous_front {
-                    let _ = ppc_set_window_hilited(memory, previous_front, false);
-                }
                 ppc_reorder_window(gworlds, cpu.gpr[3], 0, true);
-                let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
+                if previous_front == Some(cpu.gpr[3]) {
+                    let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
+                    ppc_redraw_visible_window_frame(memory, gworlds, cpu.gpr[3]);
+                } else {
+                    ppc_transition_front_window_chrome(memory, gworlds, previous_front);
+                }
                 *current_gworld = cpu.gpr[3];
                 *current_gdevice =
                     ppc_gworld_device(gworlds, *current_gworld).unwrap_or(*current_gdevice);
@@ -46749,10 +46753,15 @@ fn ppc_draw_standard_window_frame(
 ) {
     // Macintosh Toolbox Essentials (1992), pp. 4-24--4-27: the standard
     // document WDEF owns an 18-pixel title bar and one-pixel structure frame.
+    let active = memory
+        .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
+        .unwrap_or(0)
+        != 0;
+    let is_movable_dialog = ppc_window_proc_id(memory, window) == 5;
+    let has_close_box = active && !is_movable_dialog && go_away;
     let white = PPC_RGB_WHITE;
     for (rect, color) in [
         ((-18, 0, 0, width), white),
-        ((-18, -1, -17, width.saturating_add(1)), PPC_RGB_BLACK),
         ((-1, -1, 0, width.saturating_add(1)), PPC_RGB_BLACK),
         ((-18, -1, height.saturating_add(1), 0), PPC_RGB_BLACK),
         (
@@ -46776,15 +46785,15 @@ fn ppc_draw_standard_window_frame(
     ] {
         let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, color, None);
     }
-    if go_away {
-        for rect in [
-            (-15, 4, -14, 15),
-            (-5, 4, -4, 15),
-            (-15, 4, -4, 5),
-            (-15, 14, -4, 15),
-        ] {
-            let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
-        }
+    if is_movable_dialog {
+        let _ = ppc_paint_rect_bounds(
+            memory,
+            gworlds,
+            window,
+            (-18, -1, -17, width.saturating_add(1)),
+            PPC_RGB_BLACK,
+            None,
+        );
     }
     let title = memory
         .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
@@ -46793,8 +46802,85 @@ fn ppc_draw_standard_window_frame(
         .filter(|ptr| *ptr != 0)
         .and_then(|ptr| ppc_read_pstring_bytes(memory, ptr))
         .unwrap_or_default();
+    let title_width =
+        ppc_text_bytes_advance_for_font(&title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+    let title_h = width.saturating_sub(title_width) / 2;
+    let (title_clear_left, title_clear_right) = if title.is_empty() {
+        (width, width)
+    } else {
+        (
+            title_h.saturating_sub(6),
+            title_h.saturating_add(title_width).saturating_add(6),
+        )
+    };
+
+    if has_close_box {
+        let close_top = -15;
+        let close_left = 8;
+        for rect in [
+            (close_top, close_left, close_top + 1, close_left + 11),
+            (close_top, close_left, close_top + 11, close_left + 1),
+            (
+                close_top + 2,
+                close_left + 9,
+                close_top + 10,
+                close_left + 10,
+            ),
+            (
+                close_top + 9,
+                close_left + 2,
+                close_top + 10,
+                close_left + 10,
+            ),
+        ] {
+            let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
+        }
+    }
+
+    if active {
+        let stripe_left = 1;
+        let stripe_right = width.saturating_sub(1);
+        let (close_gap_left, close_gap_right) = if has_close_box {
+            (7, 20)
+        } else {
+            (stripe_right, stripe_right)
+        };
+        for top in [-17, -15, -13] {
+            if has_close_box {
+                let _ = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    window,
+                    (top, stripe_left, top + 1, close_gap_left),
+                    PPC_RGB_BLACK,
+                    None,
+                );
+            }
+            let left_start = if has_close_box {
+                close_gap_right
+            } else {
+                stripe_left
+            };
+            for (left, right) in [
+                (left_start, title_clear_left),
+                (title_clear_right, stripe_right),
+            ] {
+                if left >= right {
+                    continue;
+                }
+                let _ = ppc_paint_rect_bounds(
+                    memory,
+                    gworlds,
+                    window,
+                    (top, left, top + 1, right),
+                    PPC_RGB_BLACK,
+                    None,
+                );
+            }
+        }
+    }
+
     if !title.is_empty() {
-        let title_h = if go_away { 20 } else { 7 };
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,
@@ -46829,6 +46915,35 @@ fn ppc_draw_existing_window_frame(
         ppc_draw_standard_window_frame(memory, gworlds, window, width, height, go_away);
     } else if proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, window, height, width);
+    }
+}
+
+fn ppc_redraw_visible_window_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+) {
+    if gworlds.iter().any(|record| record.port == window) && ppc_window_is_visible(memory, window) {
+        ppc_draw_existing_window_frame(memory, gworlds, window);
+    }
+}
+
+fn ppc_transition_front_window_chrome(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    previous_front: Option<u32>,
+) {
+    let next_front = ppc_front_visible_window(memory, gworlds);
+    if previous_front == next_front {
+        return;
+    }
+    if let Some(previous) = previous_front {
+        let _ = ppc_set_window_hilited(memory, previous, false);
+        ppc_redraw_visible_window_frame(memory, gworlds, previous);
+    }
+    if let Some(next) = next_front {
+        let _ = ppc_set_window_hilited(memory, next, true);
+        ppc_redraw_visible_window_frame(memory, gworlds, next);
     }
 }
 
@@ -61267,7 +61382,7 @@ fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         "SetWTitle" => {
-            let _ = ppc_set_window_title(
+            let changed = ppc_set_window_title(
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -61276,6 +61391,9 @@ fn ppc_dispatch_legacy_window(
                 cpu.gpr[3],
                 cpu.gpr[4],
             );
+            if changed {
+                ppc_redraw_visible_window_frame(memory, gworlds, cpu.gpr[3]);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         "DisposeWindow" => {
@@ -61302,6 +61420,7 @@ fn ppc_dispatch_legacy_window(
                 current_gdevice,
                 window,
             );
+            ppc_transition_front_window_chrome(memory, gworlds, previous_front);
             if let Some(pixmap_handle) = disposed_pixmap_handle {
                 toolbox_startup
                     .indexed_screen_ctables
@@ -61356,6 +61475,7 @@ fn ppc_dispatch_legacy_window(
         }
         "HiliteWindow" => {
             let _ = ppc_set_window_hilited(memory, cpu.gpr[3], cpu.gpr[4] != 0);
+            ppc_redraw_visible_window_frame(memory, gworlds, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         "BringToFront" => {
@@ -61492,6 +61612,7 @@ fn ppc_new_window_from_cpu(
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
 ) -> u32 {
+    let previous_front = ppc_front_visible_window(memory, gworlds);
     let window = ppc_new_cwindow(
         cpu,
         memory,
@@ -61540,7 +61661,8 @@ fn ppc_new_window_from_cpu(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
-    if cpu.gpr[6] != 0 {
+    ppc_transition_front_window_chrome(memory, gworlds, previous_front);
+    if cpu.gpr[6] != 0 && ppc_front_visible_window(memory, gworlds) != Some(window) {
         ppc_draw_existing_window_frame(memory, gworlds, window);
     }
     *last_mem_error = PPC_NO_ERR;
@@ -111659,21 +111781,22 @@ mod tests {
                 "{depth}bpp document top frame did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(
-                    &mut loaded.memory,
-                    front,
-                    surface.local_point((150, -10)),
-                ),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(white),
                 "{depth}bpp title bar did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((4, -15)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                Some(black),
+                "{depth}bpp active title stripes did not draw",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((8, -15)),),
                 Some(black),
                 "{depth}bpp close box did not draw",
             );
-            let title_ink = (-17..-2)
-                .flat_map(|v| (20..100).map(move |h| (h, v)))
+            let title_ink = (-12..-4)
+                .flat_map(|v| (100..200).map(move |h| (h, v)))
                 .filter(|&point| {
                     ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point(point))
                         == Some(black)
@@ -111681,9 +111804,154 @@ mod tests {
                 .count();
             assert!(title_ink > 0, "{depth}bpp title text did not draw");
             assert_eq!(
+                loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
+                Some(1),
+                "{depth}bpp front window was not activated",
+            );
+            assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, outside),
                 Some(outside_before),
                 "{depth}bpp frame changed a pixel outside the structure region",
+            );
+
+            let frame_before_title =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 20, b"X");
+            loaded.imports[0].symbol_name = "SetWTitle".to_string();
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch + 20;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+            let frame_after_title =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+            assert_ne!(
+                frame_after_title, frame_before_title,
+                "{depth}bpp SetWTitle did not redraw visible chrome",
+            );
+            let title_handle = loaded
+                .memory
+                .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
+                .unwrap();
+            let title_ptr = loaded.memory.read_u32_be(title_handle).unwrap();
+            assert_eq!(
+                ppc_read_pstring_bytes(&mut loaded.memory, title_ptr),
+                Some(b"X".to_vec()),
+            );
+
+            loaded.imports[0].symbol_name = "HiliteWindow".to_string();
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+            assert_eq!(
+                loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
+                Some(0),
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                Some(white),
+                "{depth}bpp inactive title retained stripes",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((8, -15)),),
+                Some(white),
+                "{depth}bpp inactive title retained its close box",
+            );
+
+            loaded.cpu.gpr[4] = 1;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                Some(black),
+                "{depth}bpp reactivated title did not restore stripes",
+            );
+
+            loaded.cpu.gpr[3] = window;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::HideWindow);
+            let hidden_frame =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 20, b"Hidden");
+            loaded.imports[0].symbol_name = "SetWTitle".to_string();
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = scratch + 20;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(hidden_frame.clone()),
+                "{depth}bpp SetWTitle repainted a hidden window",
+            );
+            loaded.cpu.gpr[3] = window;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
+            assert_ne!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(hidden_frame),
+                "{depth}bpp ShowWindow did not paint the deferred title",
+            );
+
+            ppc_write_rect(&mut loaded.memory, scratch, 250, 350, 350, 550).unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Second");
+            loaded.imports[0].symbol_name = "NewCWindow".to_string();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = scratch + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = u32::MAX;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+            let second = loaded.cpu.gpr[3];
+            let second_surface =
+                ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, second).unwrap();
+            assert_eq!(
+                loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
+                Some(0),
+                "{depth}bpp previous front window stayed active",
+            );
+            assert_eq!(
+                loaded.memory.read_u8(second + PPC_CWINDOW_HILITED_OFFSET),
+                Some(1),
+                "{depth}bpp new front window was not activated",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                Some(white),
+                "{depth}bpp previous title was not visibly deactivated",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    second_surface.local_point((30, -17)),
+                ),
+                Some(black),
+                "{depth}bpp new title was not visibly activated",
+            );
+
+            loaded.cpu.gpr[3] = window;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
+            assert_eq!(
+                loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
+                Some(1),
+            );
+            assert_eq!(
+                loaded.memory.read_u8(second + PPC_CWINDOW_HILITED_OFFSET),
+                Some(0),
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                Some(black),
+                "{depth}bpp selected title was not visibly activated",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(
+                    &mut loaded.memory,
+                    front,
+                    second_surface.local_point((30, -17)),
+                ),
+                Some(white),
+                "{depth}bpp prior title was not visibly deactivated by SelectWindow",
             );
         }
     }
