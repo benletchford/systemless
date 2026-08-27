@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.9](https://github.com/benletchford/systemless/compare/v0.20.8...v0.20.9) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** switch tracked menu bar titles ([bd0fa9a](https://github.com/benletchford/systemless/commit/bd0fa9a0a82770265882d46137a4332a6420d33b))
+
 ## [0.20.8](https://github.com/benletchford/systemless/compare/v0.20.7...v0.20.8) (2026-08-27)
 
 
