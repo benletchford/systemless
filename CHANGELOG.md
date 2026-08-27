@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.15](https://github.com/benletchford/systemless/compare/v0.20.14...v0.20.15) (2026-08-27)
+
+
+### Bug Fixes
+
+* **68k:** retain window grow tracking ([80a4ef2](https://github.com/benletchford/systemless/commit/80a4ef20667769afdaa8eadc2606bdfb9cab4592)), closes [#882](https://github.com/benletchford/systemless/issues/882)
+
 ## [0.20.14](https://github.com/benletchford/systemless/compare/v0.20.13...v0.20.14) (2026-08-27)
 
 
