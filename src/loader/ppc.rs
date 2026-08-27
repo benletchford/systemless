@@ -2718,6 +2718,22 @@ pub struct PpcMenuTrackingState {
     saved_pixels: Vec<u16>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcGoAwayCall {
+    window: u32,
+    start_point: u32,
+    stack_pointer: u32,
+    return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcGoAwayTrackingState {
+    call: PpcGoAwayCall,
+    surface: PpcQuickDrawSurface,
+    saved_pixels: Vec<u16>,
+    highlighted: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPaletteAllocation {
     palette: u32,
@@ -2779,6 +2795,7 @@ pub struct PpcToolboxStartupState {
     pub cursor_hot_h: i16,
     pub pending_native_menu_selection: Option<(i16, i16)>,
     pub menu_tracking: Option<PpcMenuTrackingState>,
+    go_away_tracking: Option<PpcGoAwayTrackingState>,
     pub text_edit_initialized: bool,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
@@ -2832,6 +2849,7 @@ impl Default for PpcToolboxStartupState {
             cursor_hot_h: 0,
             pending_native_menu_selection: None,
             menu_tracking: None,
+            go_away_tracking: None,
             text_edit_initialized: false,
             dialogs_initialized: false,
             dialog_resume_proc: 0,
@@ -51855,6 +51873,7 @@ fn ppc_set_depth(
         .as_ref()
         .is_some_and(|state| state.kind == PpcMenuTrackingKind::MenuBar);
     toolbox_startup.menu_tracking = None;
+    toolbox_startup.go_away_tracking = None;
     if tracking_owned_menu_bar {
         let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     }
@@ -61562,12 +61581,8 @@ fn ppc_dispatch_legacy_window(
             };
             Some(PpcImportAction::Return(packed))
         }
-        "TrackBox" | "TrackGoAway" => {
-            let part = if binding.symbol_name == "TrackGoAway" {
-                6
-            } else {
-                cpu.gpr[5] as u16 as i16
-            };
+        "TrackBox" => {
+            let part = cpu.gpr[5] as u16 as i16;
             let inside = ppc_window_part_contains_point(
                 memory,
                 gworlds,
@@ -61578,6 +61593,14 @@ fn ppc_dispatch_legacy_window(
             );
             Some(PpcImportAction::Return(u32::from(inside)))
         }
+        "TrackGoAway" => Some(ppc_dispatch_track_go_away(
+            cpu,
+            memory,
+            gworlds,
+            toolbox_startup,
+            event_queue,
+            input,
+        )),
         "ZoomWindow" => {
             ppc_zoom_window(cpu, memory, gworlds);
             Some(PpcImportAction::ReturnPreserve)
@@ -61854,6 +61877,170 @@ fn ppc_window_part_contains_point(
         }
         _ => false,
     }
+}
+
+fn ppc_go_away_call(cpu: &PpcCpu) -> PpcGoAwayCall {
+    PpcGoAwayCall {
+        window: cpu.gpr[3],
+        start_point: cpu.gpr[4],
+        stack_pointer: cpu.gpr[1],
+        return_address: cpu.lr,
+    }
+}
+
+fn ppc_go_away_window_is_trackable(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    window: u32,
+) -> bool {
+    let proc_id = ppc_window_proc_id(memory, window);
+    gworlds.iter().any(|record| record.port == window)
+        && ppc_front_visible_window(memory, gworlds) == Some(window)
+        && ppc_window_is_visible(memory, window)
+        && memory
+            .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
+            .unwrap_or(0)
+            != 0
+        && memory
+            .read_u8(window.wrapping_add(PPC_CWINDOW_GO_AWAY_OFFSET))
+            .unwrap_or(0)
+            != 0
+        && ppc_window_proc_has_title_bar(proc_id)
+        && proc_id != 5
+}
+
+fn ppc_go_away_highlight_pixels(
+    memory: &mut PpcSectionMem,
+    surface: PpcQuickDrawSurface,
+) -> Option<Vec<u16>> {
+    let mut pixels = Vec::with_capacity(121);
+    for v in -15..-4 {
+        for h in 8..19 {
+            pixels.push(ppc_quickdraw_read_pixel(
+                memory,
+                surface.front_buffer,
+                surface.local_point((h, v)),
+            )?);
+        }
+    }
+    Some(pixels)
+}
+
+fn ppc_draw_go_away_tracking_feedback(
+    memory: &mut PpcSectionMem,
+    state: &PpcGoAwayTrackingState,
+    highlighted: bool,
+) {
+    let mask = match state.surface.front_buffer.depth {
+        1 => 0x0001,
+        2 => 0x0003,
+        4 => 0x000f,
+        8 => 0x00ff,
+        16 => 0x7fff,
+        _ => return,
+    };
+    for ((h, v), pixel) in (-15..-4)
+        .flat_map(|v| (8..19).map(move |h| (h, v)))
+        .zip(state.saved_pixels.iter().copied())
+    {
+        let value = if highlighted { pixel ^ mask } else { pixel };
+        let _ = ppc_quickdraw_write_raw_pixel(
+            memory,
+            state.surface.front_buffer,
+            state.surface.local_point((h, v)),
+            value,
+        );
+    }
+}
+
+fn ppc_dispatch_track_go_away(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    input: PpcInputSnapshot,
+) -> PpcImportAction {
+    // TrackGoAway owns a synchronous Window Manager tracking loop. Retain the
+    // import frame until mouse-up and toggle the WDEF close-box feedback as
+    // the pointer crosses its hit region. Macintosh Toolbox Essentials
+    // (1992), pp. 4-103--4-104.
+    let call = ppc_go_away_call(cpu);
+    if let Some(state) = startup.go_away_tracking.as_ref() {
+        if state.call != call {
+            return PpcImportAction::Return(0);
+        }
+        let live_surface = ppc_live_quickdraw_surface(memory, gworlds, call.window);
+        if live_surface != Some(state.surface) {
+            startup.go_away_tracking = None;
+            return PpcImportAction::Return(0);
+        }
+        if !ppc_go_away_window_is_trackable(memory, gworlds, call.window) {
+            let state = startup.go_away_tracking.take().unwrap();
+            ppc_draw_go_away_tracking_feedback(memory, &state, false);
+            return PpcImportAction::Return(0);
+        }
+
+        let inside = ppc_window_part_contains_point(
+            memory,
+            gworlds,
+            call.window,
+            6,
+            input.mouse_v,
+            input.mouse_h,
+        );
+        if input.mouse_button {
+            let mut state = startup.go_away_tracking.take().unwrap();
+            if state.highlighted != inside {
+                ppc_draw_go_away_tracking_feedback(memory, &state, inside);
+                state.highlighted = inside;
+            }
+            startup.go_away_tracking = Some(state);
+            return PpcImportAction::Yield(u64::MAX);
+        }
+
+        let state = startup.go_away_tracking.take().unwrap();
+        ppc_draw_go_away_tracking_feedback(memory, &state, false);
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        return PpcImportAction::Return(u32::from(inside));
+    }
+
+    if startup.menu_tracking.is_some()
+        || !input.mouse_button
+        || !ppc_go_away_window_is_trackable(memory, gworlds, call.window)
+    {
+        return PpcImportAction::Return(0);
+    }
+    let start_v = (call.start_point >> 16) as u16 as i16;
+    let start_h = call.start_point as u16 as i16;
+    if !ppc_window_part_contains_point(memory, gworlds, call.window, 6, start_v, start_h) {
+        return PpcImportAction::Return(0);
+    }
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, call.window) else {
+        return PpcImportAction::Return(0);
+    };
+    let Some(saved_pixels) = ppc_go_away_highlight_pixels(memory, surface) else {
+        return PpcImportAction::Return(0);
+    };
+    let highlighted = ppc_window_part_contains_point(
+        memory,
+        gworlds,
+        call.window,
+        6,
+        input.mouse_v,
+        input.mouse_h,
+    );
+    let state = PpcGoAwayTrackingState {
+        call,
+        surface,
+        saved_pixels,
+        highlighted,
+    };
+    ppc_draw_go_away_tracking_feedback(memory, &state, highlighted);
+    startup.go_away_tracking = Some(state);
+    PpcImportAction::Yield(u64::MAX)
 }
 
 fn ppc_zoom_window(cpu: &PpcCpu, memory: &mut PpcSectionMem, gworlds: &mut [PpcGWorldRecord]) {
@@ -111952,6 +112139,187 @@ mod tests {
                 ),
                 Some(white),
                 "{depth}bpp prior title was not visibly deactivated by SelectWindow",
+            );
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_track_go_away_retains_restores_and_uses_release_point() {
+        for depth in [1, 2, 4, 8, 16] {
+            let pef = synthetic_pef_with_import(b"NewCWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+
+            let scratch = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(scratch, vec![0; 32]);
+            ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Document");
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = scratch + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = u32::MAX;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+            let window = loaded.cpu.gpr[3];
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let framebuffer_len = front.row_bytes * front.height;
+            let baseline =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+
+            loaded.imports[0].symbol_name = "TrackGoAway".to_string();
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (90u32 << 16) | 108;
+            let original_sp = loaded.cpu.gpr[1];
+            let original_start = loaded.cpu.gpr[4];
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(loaded.cpu.pc, loaded.import_trap_base);
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(loaded.cpu.gpr[3], window);
+            assert_eq!(loaded.cpu.gpr[4], original_start);
+            assert!(loaded.toolbox_startup.go_away_tracking.is_some());
+            assert_ne!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp close-box feedback did not draw",
+            );
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 120,
+                mouse_h: 140,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp moving outside did not restore the close box",
+            );
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 90,
+                where_h: 108,
+                modifiers: 0,
+            });
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 1, "{depth}bpp inside release");
+            assert!(loaded.toolbox_startup.go_away_tracking.is_none());
+            assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp accepted tracking did not restore pixels",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = original_start;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 120,
+                mouse_h: 140,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 0, "{depth}bpp outside release");
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp cancelled tracking did not restore pixels",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (120u32 << 16) | 140;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 0, "{depth}bpp invalid start");
+            assert!(loaded.toolbox_startup.go_away_tracking.is_none());
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp invalid start changed pixels",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = original_start;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 108,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert!(loaded
+                .memory
+                .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0)
+                .is_some());
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 0, "{depth}bpp hidden cancellation");
+            assert!(loaded.toolbox_startup.go_away_tracking.is_none());
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline),
+                "{depth}bpp hidden cancellation did not restore pixels",
             );
         }
     }
