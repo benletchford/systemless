@@ -202,6 +202,9 @@ cargo check --no-default-features
 cargo package
 ```
 
+The legacy HLE route baseline is reproducible with the Rust command documented
+in [`docs/runtime-route-inventory.md`](docs/runtime-route-inventory.md).
+
 The off-by-default `test-support` feature exposes `scripted_traces`, the
 deterministic trap-replay test scaffolding. It is kept out of the published
 public API; enable it only when running tests.
