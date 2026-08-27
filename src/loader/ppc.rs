@@ -16130,11 +16130,11 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::MenuKey => {
             let result = ppc_menu_key(memory, toolbox_startup.current_menu_bar, cpu.gpr[3] as u8);
-            ppc_set_menu_title_highlight(
+            ppc_set_menu_command_highlight(
                 memory,
                 gworlds,
                 toolbox_startup.current_menu_bar,
-                (result >> 16) as u16 as i16,
+                result,
                 screen_clut,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -16166,11 +16166,11 @@ fn dispatch_supported_import(
                 } else {
                     0
                 };
-                ppc_set_menu_title_highlight(
+                ppc_set_menu_command_highlight(
                     memory,
                     gworlds,
                     toolbox_startup.current_menu_bar,
-                    (result >> 16) as u16 as i16,
+                    result,
                     screen_clut,
                     toolbox_startup.host_menu_bar_hidden,
                 );
@@ -16196,24 +16196,31 @@ fn dispatch_supported_import(
                     Some(PpcImportAction::Return(0))
                 }
             } else {
-                let result = ppc_finish_menu_bar_tracking(
+                let result = if let Some(result) = ppc_finish_menu_bar_tracking(
                     memory,
                     gworlds,
                     screen_clut,
                     toolbox_startup,
                     input,
-                )
-                .unwrap_or_else(|| {
-                    ppc_menu_select(memory, toolbox_startup.current_menu_bar, cpu.gpr[3], input)
-                });
-                ppc_set_menu_title_highlight(
-                    memory,
-                    gworlds,
-                    toolbox_startup.current_menu_bar,
-                    (result >> 16) as u16 as i16,
-                    screen_clut,
-                    toolbox_startup.host_menu_bar_hidden,
-                );
+                ) {
+                    result
+                } else {
+                    let result = ppc_menu_select(
+                        memory,
+                        toolbox_startup.current_menu_bar,
+                        cpu.gpr[3],
+                        input,
+                    );
+                    ppc_set_menu_command_highlight(
+                        memory,
+                        gworlds,
+                        toolbox_startup.current_menu_bar,
+                        result,
+                        screen_clut,
+                        toolbox_startup.host_menu_bar_hidden,
+                    );
+                    result
+                };
                 Some(PpcImportAction::Return(result))
             }
         }
@@ -67047,30 +67054,21 @@ fn ppc_finish_menu_bar_tracking(
                 .map(|menu_id| (u32::from(menu_id) << 16) | u32::from(item as u16))
         })
         .unwrap_or(0);
-    let title_menu_id = (result != 0)
-        .then(|| {
-            memory
-                .read_u32_be(state.menu_handle)
-                .filter(|menu| *menu != 0)
-                .and_then(|menu| memory.read_u16_be(menu))
-                .map(|menu_id| menu_id as i16)
-        })
-        .flatten()
-        .unwrap_or(0);
     if let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) {
         if front == state.front_buffer {
             ppc_restore_menu_tracking(memory, front, &state);
         }
     }
     // Macintosh Toolbox Essentials (1992), pp. 3-89 and 3-115--3-116: a
-    // valid MenuSelect result leaves its title highlighted, while releasing
-    // over a disabled item, divider, the menu bar, or no menu returns zero.
-    // In the latter cases no menu remains current in TheMenu.
-    ppc_set_menu_title_highlight(
+    // valid MenuSelect result leaves the originating regular title visibly
+    // highlighted, but TheMenu contains the selected submenu's ID. Releasing
+    // over a disabled item, divider, the menu bar, or no menu clears both.
+    // Macintosh Toolbox Essentials (1992), pp. 3-115--3-116.
+    ppc_set_menu_command_highlight(
         memory,
         gworlds,
         startup.current_menu_bar,
-        title_menu_id,
+        result,
         screen_clut,
         startup.host_menu_bar_hidden,
     );
@@ -67623,6 +67621,49 @@ fn ppc_regular_menu_contains_id(
     contains
 }
 
+fn ppc_root_menu_id_for_selection(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    selected_menu_id: i16,
+) -> i16 {
+    // A submenu command names its owning submenu in TheMenu, while the
+    // visible highlight remains on the regular title that began the path.
+    // Follow the installed hierarchy back to that title and contain malformed
+    // circular graphs. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119
+    // and 3-138.
+    let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
+        return 0;
+    };
+    for root_handle in menu_list.regular_handles() {
+        let Some(root) = memory.read_u32_be(root_handle).filter(|menu| *menu != 0) else {
+            continue;
+        };
+        let root_id = memory.read_u16_be(root).unwrap_or(0) as i16;
+        let mut pending = vec![root_handle];
+        let mut visited = Vec::new();
+        while let Some(menu_handle) = pending.pop() {
+            if visited.contains(&menu_handle) {
+                continue;
+            }
+            visited.push(menu_handle);
+            let Some(menu) = memory.read_u32_be(menu_handle).filter(|menu| *menu != 0) else {
+                continue;
+            };
+            if memory.read_u16_be(menu).map(|id| id as i16) == Some(selected_menu_id) {
+                return root_id;
+            }
+            for item in 1..=ppc_count_menu_items(memory, menu_handle) {
+                if let Some(submenu_handle) =
+                    ppc_submenu_handle_for_item(memory, menu_list_handle, menu_handle, item as i16)
+                {
+                    pending.push(submenu_handle);
+                }
+            }
+        }
+    }
+    0
+}
+
 fn ppc_set_menu_title_highlight(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -67646,6 +67687,31 @@ fn ppc_set_menu_title_highlight(
     if !menu_bar_hidden {
         let _ = ppc_draw_menu_bar(memory, gworlds, menu_list_handle, screen_clut);
     }
+}
+
+fn ppc_set_menu_command_highlight(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    menu_list_handle: u32,
+    result: u32,
+    screen_clut: &[[u16; 3]; 256],
+    menu_bar_hidden: bool,
+) {
+    let selected_menu_id = (result >> 16) as u16 as i16;
+    let root_menu_id = ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
+    ppc_set_menu_title_highlight(
+        memory,
+        gworlds,
+        menu_list_handle,
+        root_menu_id,
+        screen_clut,
+        menu_bar_hidden,
+    );
+    // The highlighted artwork belongs to the originating regular title, but
+    // TheMenu identifies the menu that owns the chosen item, including a
+    // hierarchical submenu. Macintosh Toolbox Essentials (1992), pp.
+    // 3-115--3-119.
+    let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, selected_menu_id as u16);
 }
 
 fn ppc_reverse_menu_title_cell(
@@ -67759,9 +67825,13 @@ fn ppc_draw_menu_bar(
     let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return true;
     };
-    // DrawMenuBar redraws the title recorded in TheMenu as highlighted after
-    // drawing the remaining titles. Inside Macintosh Volume V (1986), p. V-250.
-    let highlighted_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
+    // DrawMenuBar redraws the title represented by TheMenu as highlighted
+    // after drawing the remaining titles. For a submenu-valued TheMenu this
+    // is the originating regular title. Inside Macintosh Volume V (1986),
+    // p. V-250; Macintosh Toolbox Essentials (1992), pp. 3-115--3-119.
+    let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
+    let highlighted_menu_id =
+        ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
     let mut highlighted_title_drawn = false;
     let mut title_h = PPC_MENU_TITLE_ORIGIN_H;
     let menu_bar_height = i16::try_from(height).unwrap_or(i16::MAX);
@@ -78160,7 +78230,32 @@ mod tests {
                 ),
                 Some((201 << 16) | 1),
             );
-            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(201));
+            let highlighted = ppc_memory_read_bytes(
+                &mut loaded.memory,
+                front.base_addr,
+                u32::try_from(active_len).unwrap(),
+            )
+            .unwrap();
+            assert_ne!(
+                highlighted, before,
+                "{depth}bpp root title was not highlighted"
+            );
+            assert!(ppc_draw_menu_bar(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                loaded.toolbox_startup.current_menu_bar,
+                &loaded.screen_clut,
+            ));
+            assert_eq!(
+                ppc_memory_read_bytes(
+                    &mut loaded.memory,
+                    front.base_addr,
+                    u32::try_from(active_len).unwrap(),
+                ),
+                Some(highlighted),
+                "{depth}bpp DrawMenuBar lost the root title for submenu TheMenu",
+            );
             ppc_set_menu_title_highlight(
                 &mut loaded.memory,
                 &loaded.gworlds,
@@ -78288,7 +78383,7 @@ mod tests {
         assert!(ppc_write_pstring_bytes(
             &mut loaded.memory,
             scratch + 0x380,
-            b"Cycle/\x1b!\xc9;Fast",
+            b"Cycle/\x1b!\xc9;Fast/F",
         ));
         let options = ppc_new_menu(
             &mut loaded.memory,
@@ -78334,6 +78429,13 @@ mod tests {
                     -1,
                 ),
                 PPC_NO_ERR,
+            );
+        }
+        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        for (selected, expected_root) in [(128, 128), (201, 128), (202, 128), (999, 0)] {
+            assert_eq!(
+                ppc_root_menu_id_for_selection(&mut loaded.memory, menu_list_handle, selected,),
+                expected_root,
             );
         }
 
@@ -78453,6 +78555,7 @@ mod tests {
                 ),
                 Some((202 << 16) | 2),
             );
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));
             ppc_set_menu_title_highlight(
                 &mut loaded.memory,
                 &loaded.gworlds,
@@ -78467,6 +78570,16 @@ mod tests {
                 "{depth}bpp nested menu did not restore every saved pane",
             );
         }
+
+        loaded.cpu.gpr[3] = u32::from(b'f');
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuKey);
+        assert_eq!(loaded.cpu.gpr[3], (202 << 16) | 2);
+        assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));
+
+        loaded.toolbox_startup.pending_native_menu_selection = Some((202, 2));
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuSelect);
+        assert_eq!(loaded.cpu.gpr[3], (202 << 16) | 2);
+        assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));
     }
 
     #[test]
