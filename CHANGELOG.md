@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.10](https://github.com/benletchford/systemless/compare/v0.20.9...v0.20.10) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** honor WIND color window state ([c247da7](https://github.com/benletchford/systemless/commit/c247da75cdb39b458347ea66daed933cbf2de439))
+
 ## [0.20.9](https://github.com/benletchford/systemless/compare/v0.20.8...v0.20.9) (2026-08-27)
 
 
