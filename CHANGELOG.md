@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.8](https://github.com/benletchford/systemless/compare/v0.20.7...v0.20.8) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** track popup menus until mouse-up ([d49dbe6](https://github.com/benletchford/systemless/commit/d49dbe656d8aede595d740a7868e0a01e7fc8f02))
+
 ## [0.20.7](https://github.com/benletchford/systemless/compare/v0.20.6...v0.20.7) (2026-08-26)
 
 
