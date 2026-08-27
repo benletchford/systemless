@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.16](https://github.com/benletchford/systemless/compare/v0.20.15...v0.20.16) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** render standard menu item chrome ([#886](https://github.com/benletchford/systemless/issues/886)) ([bdbc688](https://github.com/benletchford/systemless/commit/bdbc68860fd4535e844f7ee6393b1324ca24a9ea))
+
 ## [0.20.15](https://github.com/benletchford/systemless/compare/v0.20.14...v0.20.15) (2026-08-27)
 
 
