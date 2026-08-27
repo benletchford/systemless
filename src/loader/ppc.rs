@@ -2754,6 +2754,25 @@ struct PpcDragWindowTrackingState {
     saved_pixels: Vec<(i32, i32, u16)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcGrowWindowCall {
+    window: u32,
+    start_point: u32,
+    size_rect_ptr: u32,
+    stack_pointer: u32,
+    return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcGrowWindowTrackingState {
+    call: PpcGrowWindowCall,
+    front_buffer: PpcFrontBuffer,
+    original_content: (i16, i16, i16, i16),
+    size_limits: (i16, i16, i16, i16),
+    outline: (i16, i16, i16, i16),
+    saved_pixels: Vec<(i32, i32, u16)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPaletteAllocation {
     palette: u32,
@@ -2817,6 +2836,7 @@ pub struct PpcToolboxStartupState {
     pub menu_tracking: Option<PpcMenuTrackingState>,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
+    grow_window_tracking: Option<PpcGrowWindowTrackingState>,
     pub text_edit_initialized: bool,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
@@ -2872,6 +2892,7 @@ impl Default for PpcToolboxStartupState {
             menu_tracking: None,
             go_away_tracking: None,
             drag_window_tracking: None,
+            grow_window_tracking: None,
             text_edit_initialized: false,
             dialogs_initialized: false,
             dialog_resume_proc: 0,
@@ -51897,6 +51918,7 @@ fn ppc_set_depth(
     toolbox_startup.menu_tracking = None;
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
+    toolbox_startup.grow_window_tracking = None;
     if tracking_owned_menu_bar {
         let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     }
@@ -61564,31 +61586,15 @@ fn ppc_dispatch_legacy_window(
             screen_clut,
             input,
         )),
-        "GrowWindow" => {
-            let Some((top, left, bottom, right)) =
-                ppc_dialog_global_bounds(memory, gworlds, cpu.gpr[3])
-            else {
-                return Some(PpcImportAction::Return(0));
-            };
-            let (min_height, min_width, max_height, max_width) =
-                ppc_read_rect(memory, cpu.gpr[5]).unwrap_or((1, 1, i16::MAX, i16::MAX));
-            let height = input
-                .mouse_v
-                .saturating_sub(top)
-                .clamp(min_height, max_height);
-            let width = input
-                .mouse_h
-                .saturating_sub(left)
-                .clamp(min_width, max_width);
-            let old_height = bottom.saturating_sub(top);
-            let old_width = right.saturating_sub(left);
-            let packed = if width == old_width && height == old_height {
-                0
-            } else {
-                (u32::from(height as u16) << 16) | u32::from(width as u16)
-            };
-            Some(PpcImportAction::Return(packed))
-        }
+        "GrowWindow" => Some(ppc_dispatch_grow_window(
+            cpu,
+            memory,
+            gworlds,
+            toolbox_startup,
+            event_queue,
+            screen_clut,
+            input,
+        )),
         "TrackBox" => {
             let part = cpu.gpr[5] as u16 as i16;
             let inside = ppc_window_part_contains_point(
@@ -62103,6 +62109,196 @@ fn ppc_dispatch_drag_window(
         (input.mouse_v, input.mouse_h),
     );
     startup.drag_window_tracking = Some(state);
+    PpcImportAction::Yield(u64::MAX)
+}
+
+fn ppc_grow_window_call(cpu: &PpcCpu) -> PpcGrowWindowCall {
+    PpcGrowWindowCall {
+        window: cpu.gpr[3],
+        start_point: cpu.gpr[4],
+        size_rect_ptr: cpu.gpr[5],
+        stack_pointer: cpu.gpr[1],
+        return_address: cpu.lr,
+    }
+}
+
+fn ppc_grow_window_dimensions(
+    content: (i16, i16, i16, i16),
+    limits: (i16, i16, i16, i16),
+    mouse: (i16, i16),
+) -> (i16, i16) {
+    let min_height = limits.0.max(1);
+    let min_width = limits.1.max(1);
+    let max_height = limits.2.max(min_height);
+    let max_width = limits.3.max(min_width);
+    (
+        mouse
+            .0
+            .saturating_sub(content.0)
+            .clamp(min_height, max_height),
+        mouse
+            .1
+            .saturating_sub(content.1)
+            .clamp(min_width, max_width),
+    )
+}
+
+fn ppc_restore_grow_window_outline(memory: &mut PpcSectionMem, state: &PpcGrowWindowTrackingState) {
+    for (x, y, pixel) in state.saved_pixels.iter().copied() {
+        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+    }
+}
+
+fn ppc_refresh_grow_window_outline(
+    memory: &mut PpcSectionMem,
+    screen_clut: &[[u16; 3]; 256],
+    state: &mut PpcGrowWindowTrackingState,
+    mouse: (i16, i16),
+) {
+    ppc_restore_grow_window_outline(memory, state);
+    let (height, width) =
+        ppc_grow_window_dimensions(state.original_content, state.size_limits, mouse);
+    let proposed_content = (
+        state.original_content.0,
+        state.original_content.1,
+        state.original_content.0.saturating_add(height),
+        state.original_content.1.saturating_add(width),
+    );
+    state.outline = ppc_window_structure_bounds(
+        ppc_window_proc_id(memory, state.call.window),
+        proposed_content,
+    );
+    state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
+        .into_iter()
+        .filter_map(|(x, y)| {
+            ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
+        })
+        .collect();
+    let Some(black) =
+        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
+    else {
+        return;
+    };
+    let Some(white) =
+        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_WHITE, screen_clut)
+    else {
+        return;
+    };
+    for (x, y, _) in state.saved_pixels.iter().copied() {
+        let pixel = if (x + y).rem_euclid(2) == 0 {
+            black
+        } else {
+            white
+        };
+        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+    }
+}
+
+fn ppc_dispatch_grow_window(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    screen_clut: &[[u16; 3]; 256],
+    input: PpcInputSnapshot,
+) -> PpcImportAction {
+    // GrowWindow owns the mouse through release and returns a proposed size;
+    // the caller applies that size separately with SizeWindow. Inside
+    // Macintosh Volume I (1985), pp. I-297--I-299.
+    let call = ppc_grow_window_call(cpu);
+    if let Some(state) = startup.grow_window_tracking.as_ref() {
+        if state.call != call {
+            return PpcImportAction::Return(0);
+        }
+        let live_front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+        let valid_window = gworlds.iter().any(|record| record.port == call.window)
+            && ppc_window_is_visible(memory, call.window)
+            && ppc_dialog_global_bounds(memory, gworlds, call.window)
+                == Some(state.original_content);
+        if live_front != Some(state.front_buffer) {
+            startup.grow_window_tracking = None;
+            return PpcImportAction::Return(0);
+        }
+        if !valid_window {
+            let state = startup.grow_window_tracking.take().unwrap();
+            ppc_restore_grow_window_outline(memory, &state);
+            return PpcImportAction::Return(0);
+        }
+        if input.mouse_button {
+            let mut state = startup.grow_window_tracking.take().unwrap();
+            ppc_refresh_grow_window_outline(
+                memory,
+                screen_clut,
+                &mut state,
+                (input.mouse_v, input.mouse_h),
+            );
+            startup.grow_window_tracking = Some(state);
+            return PpcImportAction::Yield(u64::MAX);
+        }
+
+        let state = startup.grow_window_tracking.take().unwrap();
+        ppc_restore_grow_window_outline(memory, &state);
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        let (height, width) = ppc_grow_window_dimensions(
+            state.original_content,
+            state.size_limits,
+            (input.mouse_v, input.mouse_h),
+        );
+        let old_height = state
+            .original_content
+            .2
+            .saturating_sub(state.original_content.0);
+        let old_width = state
+            .original_content
+            .3
+            .saturating_sub(state.original_content.1);
+        let result = if height == old_height && width == old_width {
+            0
+        } else {
+            (u32::from(height as u16) << 16) | u32::from(width as u16)
+        };
+        return PpcImportAction::Return(result);
+    }
+
+    if startup.menu_tracking.is_some()
+        || startup.go_away_tracking.is_some()
+        || startup.drag_window_tracking.is_some()
+        || !input.mouse_button
+        || call.window == 0
+    {
+        return PpcImportAction::Return(0);
+    }
+    let (Some(size_limits), Some(original_content), Some(front_buffer)) = (
+        ppc_read_rect(memory, call.size_rect_ptr),
+        ppc_dialog_global_bounds(memory, gworlds, call.window),
+        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
+    ) else {
+        return PpcImportAction::Return(0);
+    };
+    if !ppc_window_is_visible(memory, call.window) {
+        return PpcImportAction::Return(0);
+    }
+    let mut state = PpcGrowWindowTrackingState {
+        call,
+        front_buffer,
+        original_content,
+        size_limits,
+        outline: ppc_window_structure_bounds(
+            ppc_window_proc_id(memory, call.window),
+            original_content,
+        ),
+        saved_pixels: Vec::new(),
+    };
+    ppc_refresh_grow_window_outline(
+        memory,
+        screen_clut,
+        &mut state,
+        (input.mouse_v, input.mouse_h),
+    );
+    startup.grow_window_tracking = Some(state);
     PpcImportAction::Yield(u64::MAX)
 }
 
@@ -112724,6 +112920,145 @@ mod tests {
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(baseline),
                 "{depth}bpp hidden cancellation did not restore the framebuffer",
+            );
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_grow_window_retains_clamps_and_uses_release_size() {
+        for depth in [1, 2, 4, 8, 16] {
+            let pef = synthetic_pef_with_import(b"NewCWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+
+            let scratch = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(scratch, vec![0; 40]);
+            ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Document");
+            ppc_write_rect(&mut loaded.memory, scratch + 24, 50, 80, 180, 260).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = scratch + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = u32::MAX;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+            let window = loaded.cpu.gpr[3];
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let framebuffer_len = front.row_bytes * front.height;
+            let pattern = (0..framebuffer_len)
+                .map(|index| (index as u8).wrapping_mul(29).wrapping_add(depth as u8))
+                .collect::<Vec<_>>();
+            loaded
+                .memory
+                .write_bytes(front.base_addr, &pattern)
+                .unwrap();
+            let baseline =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+
+            loaded.imports[0].symbol_name = "GrowWindow".to_string();
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (200u32 << 16) | 300;
+            loaded.cpu.gpr[5] = scratch + 24;
+            let original_sp = loaded.cpu.gpr[1];
+            let original_args = [loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]];
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 200,
+                mouse_h: 300,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(
+                [loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]],
+                original_args,
+            );
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 350,
+                mouse_h: 500,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .grow_window_tracking
+                    .as_ref()
+                    .unwrap()
+                    .outline,
+                (82, 99, 281, 361),
+                "{depth}bpp held size did not clamp to maximums",
+            );
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 250,
+                where_h: 380,
+                modifiers: 0,
+            });
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 250,
+                mouse_h: 380,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], (150u32 << 16) | 260);
+            assert!(loaded.toolbox_startup.grow_window_tracking.is_none());
+            assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
+            assert_eq!(
+                ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((100, 100, 200, 300)),
+                "{depth}bpp GrowWindow resized instead of returning a proposal",
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp accepted grow did not restore the framebuffer",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (200u32 << 16) | 300;
+            loaded.cpu.gpr[5] = scratch + 24;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 220,
+                mouse_h: 320,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 200,
+                mouse_h: 300,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(loaded.cpu.gpr[3], 0, "{depth}bpp unchanged size sentinel");
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline),
+                "{depth}bpp unchanged grow did not restore the framebuffer",
             );
         }
     }
