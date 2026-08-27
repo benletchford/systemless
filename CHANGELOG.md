@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/benletchford/systemless/compare/v0.20.17...v0.21.0) (2026-08-27)
+
+
+### Features
+
+* **menu:** support styled and icon PPC items ([#892](https://github.com/benletchford/systemless/issues/892)) ([16dd023](https://github.com/benletchford/systemless/commit/16dd02336365f39f2f1e27643617d781b9f9e3f1))
+
 ## [0.20.17](https://github.com/benletchford/systemless/compare/v0.20.16...v0.20.17) (2026-08-27)
 
 
