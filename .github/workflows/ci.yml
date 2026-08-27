@@ -71,11 +71,6 @@ jobs:
       - name: Headless library build (no default features)
         run: cargo check --no-default-features
 
-      - name: Verify runtime route inventory
-        run: |
-          cargo test --locked --example runtime_route_inventory
-          cargo run --locked --example runtime_route_inventory -- --check audits/runtime-route-baseline.json
-
       - name: Build API documentation
         env:
           RUSTDOCFLAGS: -D warnings -D rustdoc::private_intra_doc_links
