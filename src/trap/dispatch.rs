@@ -643,6 +643,21 @@ pub(crate) struct GoAwayTrackingState {
     pub highlighted: bool,
 }
 
+/// Retained state for GrowWindow while the mouse button remains down.
+/// The Window Manager tracks a gray proposed structure outline and returns
+/// packed dimensions only after mouse-up.
+#[derive(Clone, Debug)]
+pub(crate) struct GrowWindowTrackingState {
+    pub window_ptr: u32,
+    pub stack_ptr: u32,
+    pub screen_mode: (u32, u32, u16, u16, u16),
+    pub original_content_rect: (i16, i16, i16, i16),
+    pub original_outline_rect: (i16, i16, i16, i16),
+    pub size_rect: (i16, i16, i16, i16),
+    pub outline_rect: (i16, i16, i16, i16),
+    pub outline_saved_pixels: Vec<(i16, i16, i16, i16, Vec<u8>)>,
+}
+
 /// Retained state shared by DragGrayRgn and DragTheRgn while the mouse
 /// button remains down. Both routines own a synchronous tracking loop and
 /// return only after release.
@@ -1699,6 +1714,8 @@ pub struct TrapDispatcher {
     pub(crate) window_tracking: Option<WindowTrackingState>,
     /// Active TrackGoAway close-box tracking state.
     pub(crate) go_away_tracking: Option<GoAwayTrackingState>,
+    /// Active GrowWindow size tracking state.
+    pub(crate) grow_window_tracking: Option<GrowWindowTrackingState>,
     /// Active DragGrayRgn / DragTheRgn tracking state.
     pub(crate) region_tracking: Option<RegionTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
@@ -3212,6 +3229,7 @@ impl TrapDispatcher {
             control_tracking: None,
             window_tracking: None,
             go_away_tracking: None,
+            grow_window_tracking: None,
             region_tracking: None,
             underline_info: None,
             mouse_pos: (0, 0),
@@ -3433,6 +3451,11 @@ impl TrapDispatcher {
         self.go_away_tracking.is_some()
     }
 
+    /// Whether GrowWindow is actively tracking a proposed size.
+    pub fn is_grow_window_tracking(&self) -> bool {
+        self.grow_window_tracking.is_some()
+    }
+
     /// Whether DragGrayRgn or DragTheRgn is actively tracking the mouse.
     pub fn is_region_tracking(&self) -> bool {
         self.region_tracking.is_some()
@@ -3461,6 +3484,7 @@ impl TrapDispatcher {
         let is_control_refire = trap_no_autopop == 0xA968;
         let is_window_refire = trap_no_autopop == 0xA925;
         let is_go_away_refire = trap_no_autopop == 0xA91E;
+        let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && self.is_menu_tracking())
             || (is_dialog_refire && self.is_dialog_tracking())
@@ -3469,6 +3493,7 @@ impl TrapDispatcher {
             || (is_control_refire && self.is_control_tracking())
             || (is_window_refire && self.is_window_tracking())
             || (is_go_away_refire && self.is_go_away_tracking())
+            || (is_grow_window_refire && self.is_grow_window_tracking())
             || (is_region_refire && self.is_region_tracking())
     }
 
@@ -7680,6 +7705,7 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xA968)); // TrackControl
         assert!(!disp.is_tracking_refire(0xA91E)); // TrackGoAway
         assert!(!disp.is_tracking_refire(0xA925)); // DragWindow
+        assert!(!disp.is_tracking_refire(0xA92B)); // GrowWindow
         assert!(!disp.is_tracking_refire(0xA905)); // DragGrayRgn
         assert!(!disp.is_tracking_refire(0xA926)); // DragTheRgn
 
@@ -7688,6 +7714,7 @@ mod tests {
         assert!(!disp.is_tracking_refire(0xAC0B));
         assert!(!disp.is_tracking_refire(0xAD91));
         assert!(!disp.is_tracking_refire(0xAD68));
+        assert!(!disp.is_tracking_refire(0xAD2B));
     }
 
     #[test]
