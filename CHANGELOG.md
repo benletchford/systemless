@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.12](https://github.com/benletchford/systemless/compare/v0.20.11...v0.20.12) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** retain close box tracking ([#874](https://github.com/benletchford/systemless/issues/874)) ([b6a63c2](https://github.com/benletchford/systemless/commit/b6a63c2a5692505c6c9714f9df154664d2b83ce0))
+
 ## [0.20.11](https://github.com/benletchford/systemless/compare/v0.20.10...v0.20.11) (2026-08-27)
 
 
