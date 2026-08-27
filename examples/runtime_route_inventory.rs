@@ -6,20 +6,6 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TRAP_DISPATCHERS: &[&str] = &[
-    "dispatch_memory",
-    "dispatch_event",
-    "dispatch_resource",
-    "dispatch_quickdraw",
-    "dispatch_menu",
-    "dispatch_window",
-    "dispatch_control",
-    "dispatch_dialog",
-    "dispatch_sound",
-    "dispatch_toolbox",
-    "dispatch_sane",
-];
-
 #[derive(Clone, Debug)]
 struct TrapClaim {
     dispatcher: String,
@@ -47,7 +33,7 @@ struct Report {
 
 #[derive(Serialize)]
 struct M68kInventory {
-    dispatcher_order: &'static [&'static str],
+    dispatcher_order: Vec<String>,
     canonical_claim_count: usize,
     unique_canonical_claim_count: usize,
     os_unique_claim_count: usize,
@@ -81,14 +67,24 @@ struct M68kFallbackSignals {
 #[derive(Serialize)]
 struct PpcInventory {
     source: String,
+    mapper_function: String,
+    target_type: String,
     enum_variant_count: usize,
     mapping_arm_count_including_wildcard: usize,
     exact_library_symbol_tuple_count: usize,
-    distinct_mapped_target_count_excluding_unsupported: usize,
+    distinct_mapped_target_count_excluding_fallback: usize,
     helper_disabled_arm_count: usize,
-    fallback_target: Option<&'static str>,
+    disabled_guard_helpers: Vec<DisabledGuardHelper>,
+    fallback_target: Option<String>,
+    fallback_target_production_reference_count: usize,
     compatibility_targets: Vec<String>,
-    production_target_reference_counts: BTreeMap<&'static str, usize>,
+    compatibility_target_production_reference_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Serialize)]
+struct DisabledGuardHelper {
+    name: String,
+    mapper_reference_count: usize,
 }
 
 fn mask_non_code(source: &str, keep_strings: bool) -> String {
@@ -284,15 +280,81 @@ fn relative(root: &Path, path: &Path) -> Result<String, String> {
         .replace('\\', "/"))
 }
 
+fn top_level_statement_end(masked: &str, start: usize) -> Option<usize> {
+    let mut braces = 0usize;
+    let mut parentheses = 0usize;
+    let mut brackets = 0usize;
+    for (offset, byte) in masked.as_bytes()[start..].iter().enumerate() {
+        match byte {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'(' => parentheses += 1,
+            b')' => parentheses = parentheses.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b';' if braces == 0 && parentheses == 0 && brackets == 0 => {
+                return Some(start + offset + 1)
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn discover_trap_dispatchers_from_source(source: &str) -> Result<Vec<String>, String> {
+    let production = mask_non_code(before_tests(source), false);
+    let assignment = Regex::new(r"\blet\s+[a-z_][A-Za-z0-9_]*\s*=\s*self\b").unwrap();
+    let call = Regex::new(
+        r"\.\s*([a-z_][A-Za-z0-9_]*)\s*\(\s*is_tool\s*,\s*trap_num\s*,\s*cpu\s*,\s*bus\s*\)",
+    )
+    .unwrap();
+    let mut candidates = Vec::new();
+    for found in assignment.find_iter(&production) {
+        let Some(end) = top_level_statement_end(&production, found.end()) else {
+            continue;
+        };
+        let statement = &production[found.start()..end];
+        if !statement.contains("UnimplementedTrap") || !statement.contains(".unwrap_or_else") {
+            continue;
+        }
+        let dispatchers = call
+            .captures_iter(statement)
+            .map(|captures| captures[1].to_string())
+            .collect::<Vec<_>>();
+        if dispatchers.len() < 2
+            || statement.matches(".or_else").count() != dispatchers.len().saturating_sub(1)
+        {
+            continue;
+        }
+        if dispatchers.iter().collect::<BTreeSet<_>>().len() != dispatchers.len() {
+            return Err("68K first-match chain contains a duplicate dispatcher call".to_string());
+        }
+        candidates.push(dispatchers);
+    }
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        count => Err(format!(
+            "expected one 68K first-match dispatcher chain, found {count}"
+        )),
+    }
+}
+
+fn discover_trap_dispatchers(root: &Path) -> Result<Vec<String>, String> {
+    let source =
+        fs::read_to_string(root.join("src/trap/dispatch.rs")).map_err(|error| error.to_string())?;
+    discover_trap_dispatchers_from_source(&source)
+}
+
 fn trap_claims(root: &Path) -> Result<Vec<TrapClaim>, String> {
     let tuple = Regex::new(r"\(\s*(true|false)\s*,\s*(0x[0-9A-Fa-f]+)\s*\)").unwrap();
     let trap_match = Regex::new(r"\bmatch\s*\(\s*is_tool\s*,\s*trap_num\s*\)\s*\{").unwrap();
     let mut claims = Vec::new();
-    let mut remaining: BTreeSet<_> = TRAP_DISPATCHERS.iter().copied().collect();
+    let dispatchers = discover_trap_dispatchers(root)?;
+    let mut remaining: BTreeSet<_> = dispatchers.iter().cloned().collect();
     for path in rust_trap_files(root)? {
         let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
         let code = mask_non_code(&source, false);
-        for dispatcher in TRAP_DISPATCHERS {
+        for dispatcher in &dispatchers {
             let declaration = Regex::new(&format!(
                 r"\bfn\s+{}\s*(?:<[^{{>]*>)?\s*\(",
                 regex::escape(dispatcher)
@@ -324,7 +386,7 @@ fn trap_claims(root: &Path) -> Result<Vec<TrapClaim>, String> {
                 let captures = tuple.captures(found_claim.as_str()).unwrap();
                 let absolute = match_open + 1 + found_claim.start();
                 claims.push(TrapClaim {
-                    dispatcher: (*dispatcher).to_string(),
+                    dispatcher: dispatcher.clone(),
                     file: relative(root, &path)?,
                     line: source.as_bytes()[..absolute]
                         .iter()
@@ -343,7 +405,7 @@ fn trap_claims(root: &Path) -> Result<Vec<TrapClaim>, String> {
     }
     claims.sort_by_key(|claim| {
         (
-            TRAP_DISPATCHERS
+            dispatchers
                 .iter()
                 .position(|dispatcher| *dispatcher == claim.dispatcher)
                 .expect("claim dispatcher comes from the configured chain"),
@@ -361,12 +423,92 @@ fn before_tests(source: &str) -> &str {
         .map_or(source, |found| &source[..found.start()])
 }
 
+struct PpcMapperDiscovery {
+    function_name: String,
+    target_type: String,
+    match_open: usize,
+    match_close: usize,
+}
+
+fn discover_ppc_mapper(source: &str) -> Result<PpcMapperDiscovery, String> {
+    let production = before_tests(source);
+    let code = mask_non_code(production, false);
+    let function = Regex::new(
+        r"(?s)\bfn\s+([a-z_][A-Za-z0-9_]*)\s*\(([^{};]*)\)\s*->\s*([A-Z][A-Za-z0-9_]*)\s*\{",
+    )
+    .unwrap();
+    let string_parameter = Regex::new(r"\b([a-z_][A-Za-z0-9_]*)\s*:\s*&\s*str\b").unwrap();
+    let mut candidates = Vec::new();
+    for captures in function.captures_iter(&code) {
+        let parameters = string_parameter
+            .captures_iter(&captures[2])
+            .map(|parameter| parameter[1].to_string())
+            .collect::<Vec<_>>();
+        if parameters.len() != 2 {
+            continue;
+        }
+        let whole = captures.get(0).unwrap();
+        let function_open = whole.end() - 1;
+        let function_close = matching_brace(&code, function_open)?;
+        let function_code = &code[function_open + 1..function_close];
+        let import_match = Regex::new(&format!(
+            r"\bmatch\s*\(\s*{}\s*,\s*{}\s*\)\s*\{{",
+            regex::escape(&parameters[0]),
+            regex::escape(&parameters[1])
+        ))
+        .unwrap();
+        let Some(found_match) = import_match.find(function_code) else {
+            continue;
+        };
+        let match_open = function_open + 1 + found_match.end() - 1;
+        let match_close = matching_brace(&code, match_open)?;
+        if top_level_token_count(&code[match_open + 1..match_close], b"=>") < 2 {
+            continue;
+        }
+        candidates.push(PpcMapperDiscovery {
+            function_name: captures[1].to_string(),
+            target_type: captures[3].to_string(),
+            match_open,
+            match_close,
+        });
+    }
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        count => Err(format!(
+            "expected one PowerPC library/symbol mapper, found {count}"
+        )),
+    }
+}
+
+fn constant_false_helpers(source: &str) -> Result<Vec<String>, String> {
+    let code = mask_non_code(before_tests(source), false);
+    let function =
+        Regex::new(r"(?s)\bfn\s+([a-z_][A-Za-z0-9_]*)\s*\([^{};]*\)\s*->\s*bool\s*\{").unwrap();
+    let mut helpers = Vec::new();
+    for captures in function.captures_iter(&code) {
+        let whole = captures.get(0).unwrap();
+        let opening = whole.end() - 1;
+        let closing = matching_brace(&code, opening)?;
+        if code[opening + 1..closing].trim() == "false" {
+            helpers.push(captures[1].to_string());
+        }
+    }
+    helpers.sort();
+    helpers.dedup();
+    Ok(helpers)
+}
+
 fn ppc_inventory(root: &Path) -> Result<PpcInventory, String> {
     let path = root.join("src/loader/ppc.rs");
     let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let mapper = discover_ppc_mapper(&source)?;
     let (enum_start, enum_end) = named_body(
         &source,
-        &Regex::new(r"\bpub\s+enum\s+PpcImportDispatcherTarget\b").unwrap(),
+        &Regex::new(&format!(
+            r"\bpub\s+enum\s+{}\b",
+            regex::escape(&mapper.target_type)
+        ))
+        .unwrap(),
     )?;
     let enum_body = mask_non_code(&source[enum_start..enum_end], false);
     let variant = Regex::new(r"(?m)^\s*([A-Z][A-Za-z0-9_]*)\b").unwrap();
@@ -375,20 +517,7 @@ fn ppc_inventory(root: &Path) -> Result<PpcInventory, String> {
         .map(|captures| captures[1].to_string())
         .collect::<Vec<_>>();
 
-    let (function_start, function_end) = named_body(
-        &source,
-        &Regex::new(r"\bfn\s+dispatcher_target_for_import\s*\(").unwrap(),
-    )?;
-    let function_code = mask_non_code(&source[function_start..function_end], false);
-    let import_match =
-        Regex::new(r"\bmatch\s*\(\s*library_name\s*,\s*symbol_name\s*\)\s*\{").unwrap();
-    let found_match = import_match
-        .find(&function_code)
-        .ok_or_else(|| "PowerPC import mapper match not found".to_string())?;
-    let match_open = function_start + found_match.end() - 1;
-    let source_code = mask_non_code(&source, false);
-    let match_close = matching_brace(&source_code, match_open)?;
-    let match_source = &source[match_open + 1..match_close];
+    let match_source = &source[mapper.match_open + 1..mapper.match_close];
     let match_code = mask_non_code(match_source, true);
     let match_structure = mask_non_code(match_source, false);
 
@@ -402,48 +531,83 @@ fn ppc_inventory(root: &Path) -> Result<PpcInventory, String> {
     );
     let exact_pair_count = pair_depths.into_iter().filter(|depth| *depth == 0).count();
 
-    let target = Regex::new(r"PpcImportDispatcherTarget::([A-Za-z0-9_]+)").unwrap();
+    let target = Regex::new(&format!(
+        r"{}::([A-Za-z0-9_]+)",
+        regex::escape(&mapper.target_type)
+    ))
+    .unwrap();
     let mapped_targets = target
         .captures_iter(&match_code)
         .map(|captures| captures[1].to_string())
         .collect::<BTreeSet<_>>();
-    let compatibility_targets = variants
+    let compatibility_targets: Vec<String> = variants
         .iter()
         .filter(|name| name.ends_with("Compatibility"))
         .cloned()
         .collect();
+    let fallback_pattern = Regex::new(&format!(
+        r"(?m)^\s*_\s*=>\s*{}::([A-Za-z0-9_]+)",
+        regex::escape(&mapper.target_type)
+    ))
+    .unwrap();
+    let fallback_target = fallback_pattern
+        .captures(&match_code)
+        .map(|captures| captures[1].to_string());
+    let disabled_guard_helpers = constant_false_helpers(&source)?
+        .into_iter()
+        .filter_map(|name| {
+            let references = Regex::new(&format!(r"\b{}\s*\(", regex::escape(&name)))
+                .unwrap()
+                .find_iter(&match_structure)
+                .count();
+            (references != 0).then_some(DisabledGuardHelper {
+                name,
+                mapper_reference_count: references,
+            })
+        })
+        .collect::<Vec<_>>();
     let production = mask_non_code(before_tests(&source), false);
-    let mut production_target_reference_counts = BTreeMap::new();
-    for name in ["ReturnNoErr", "NoOpPreserve", "Unsupported"] {
-        let expression = Regex::new(&format!(
-            r"PpcImportDispatcherTarget::{}\b",
+    let target_reference_count = |name: &str| {
+        Regex::new(&format!(
+            r"{}::{}\b",
+            regex::escape(&mapper.target_type),
             regex::escape(name)
         ))
-        .unwrap();
-        production_target_reference_counts.insert(name, expression.find_iter(&production).count());
-    }
+        .unwrap()
+        .find_iter(&production)
+        .count()
+    };
+    let fallback_target_production_reference_count =
+        fallback_target.as_deref().map_or(0, target_reference_count);
+    let compatibility_target_production_reference_counts = compatibility_targets
+        .iter()
+        .map(|name| (name.clone(), target_reference_count(name)))
+        .collect();
     Ok(PpcInventory {
         source: relative(root, &path)?,
+        mapper_function: mapper.function_name,
+        target_type: mapper.target_type,
         enum_variant_count: variants.len(),
         mapping_arm_count_including_wildcard: top_level_token_count(&match_structure, b"=>"),
         exact_library_symbol_tuple_count: exact_pair_count,
-        distinct_mapped_target_count_excluding_unsupported: mapped_targets
+        distinct_mapped_target_count_excluding_fallback: mapped_targets
             .iter()
-            .filter(|name| name.as_str() != "Unsupported")
+            .filter(|name| Some(name.as_str()) != fallback_target.as_deref())
             .count(),
-        helper_disabled_arm_count: Regex::new(r"\bis_quickdraw_3d_status_success_import\s*\(")
-            .unwrap()
-            .find_iter(&match_code)
-            .count(),
-        fallback_target: mapped_targets
-            .contains("Unsupported")
-            .then_some("Unsupported"),
+        helper_disabled_arm_count: disabled_guard_helpers
+            .iter()
+            .map(|helper| helper.mapper_reference_count)
+            .sum(),
+        disabled_guard_helpers,
+        fallback_target,
+        fallback_target_production_reference_count,
         compatibility_targets,
-        production_target_reference_counts,
+        compatibility_target_production_reference_counts,
     })
 }
 
 fn generate(root: &Path) -> Result<Report, String> {
+    let dispatcher_order = discover_trap_dispatchers(root)?;
     let claims = trap_claims(root)?;
     let mut occurrences: BTreeMap<u16, Vec<&TrapClaim>> = BTreeMap::new();
     let mut os_claims = BTreeSet::new();
@@ -503,13 +667,13 @@ fn generate(root: &Path) -> Result<Report, String> {
     }
 
     Ok(Report {
-        schema_version: 1,
+        schema_version: 2,
         report_kind: "legacy_runtime_route_inventory",
         coverage_warning:
             "Source-route counts are not API catalogue, semantic coverage, or completion evidence.",
         source_sha256,
         m68k: M68kInventory {
-            dispatcher_order: TRAP_DISPATCHERS,
+            dispatcher_order,
             canonical_claim_count: claims.len(),
             unique_canonical_claim_count: occurrences.len(),
             os_unique_claim_count: os_claims.len(),
@@ -598,22 +762,67 @@ mod tests {
     }
 
     #[test]
-    fn preserves_dispatch_order_and_alternative_claims() {
+    fn discovers_renamed_and_inserted_dispatchers_in_chain_order() {
+        let source = r#"
+            fn dispatch(&mut self, is_tool: bool, trap_num: u16, cpu: &mut Cpu, bus: &mut Bus) {
+                let route = self.alpha(is_tool, trap_num, cpu, bus)
+                    .or_else(|| self.inserted(is_tool, trap_num, cpu, bus))
+                    .or_else(|| self.renamed(is_tool, trap_num, cpu, bus))
+                    .unwrap_or_else(|| Err(Error::UnimplementedTrap(trap)));
+            }
+        "#;
+        assert_eq!(
+            discover_trap_dispatchers_from_source(source).unwrap(),
+            vec!["alpha", "inserted", "renamed"]
+        );
+    }
+
+    #[test]
+    fn discovers_powerpc_mapper_type_and_constant_false_helpers() {
+        let source = r#"
+            pub enum RenamedTarget { Available, Missing }
+            fn unavailable_guard(_library: &str) -> bool { false }
+            fn renamed_mapper(left: &str, right: &str) -> RenamedTarget {
+                match (left, right) {
+                    (library, "Known") if unavailable_guard(library) => RenamedTarget::Available,
+                    _ => RenamedTarget::Missing,
+                }
+            }
+        "#;
+        let mapper = discover_ppc_mapper(source).unwrap();
+        assert_eq!(mapper.function_name, "renamed_mapper");
+        assert_eq!(mapper.target_type, "RenamedTarget");
+        assert_eq!(
+            constant_false_helpers(source).unwrap(),
+            vec!["unavailable_guard"]
+        );
+    }
+
+    #[test]
+    fn preserves_discovered_dispatch_order_and_alternative_claims() {
         let temporary =
             env::temp_dir().join(format!("systemless-route-inventory-{}", std::process::id()));
         let trap_directory = temporary.join("src/trap");
         fs::create_dir_all(&trap_directory).unwrap();
-        let mut source = String::new();
-        for dispatcher in TRAP_DISPATCHERS {
-            let arms = if *dispatcher == TRAP_DISPATCHERS[0] {
-                "(false, 0x70) | (true, 0x001) => {},"
-            } else {
-                "_ => {},"
-            };
-            source.push_str(&format!(
-                "fn {dispatcher}(is_tool: bool, trap_num: u16) {{ match (is_tool, trap_num) {{ {arms} }} }}\n"
-            ));
-        }
+        let source = r#"
+            fn dispatch(&mut self, is_tool: bool, trap_num: u16, cpu: &mut Cpu, bus: &mut Bus) {
+                let route = self.alpha(is_tool, trap_num, cpu, bus)
+                    .or_else(|| self.beta(is_tool, trap_num, cpu, bus))
+                    .unwrap_or_else(|| Err(Error::UnimplementedTrap(trap)));
+            }
+            fn alpha(is_tool: bool, trap_num: u16) {
+                match (is_tool, trap_num) {
+                    (false, 0x70) | (true, 0x001) => {},
+                    _ => {},
+                }
+            }
+            fn beta(is_tool: bool, trap_num: u16) {
+                match (is_tool, trap_num) {
+                    (false, 0x71) => {},
+                    _ => {},
+                }
+            }
+        "#;
         fs::write(trap_directory.join("dispatch.rs"), source).unwrap();
         let claims = trap_claims(&temporary).unwrap();
         fs::remove_dir_all(&temporary).unwrap();
@@ -622,7 +831,7 @@ mod tests {
                 .iter()
                 .map(TrapClaim::canonical_word)
                 .collect::<Vec<_>>(),
-            vec![0xA070, 0xA801]
+            vec![0xA070, 0xA801, 0xA071]
         );
     }
 }

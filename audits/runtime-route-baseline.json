@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "report_kind": "legacy_runtime_route_inventory",
   "coverage_warning": "Source-route counts are not API catalogue, semantic coverage, or completion evidence.",
   "source_sha256": {
-    "examples/runtime_route_inventory.rs": "ebecf8f7e5299abe66b2700771cb9f86e723207c3d1a5bbdfd4117633aaa19fe",
+    "examples/runtime_route_inventory.rs": "4f8673335a1e20594fe8cfffd8980dce83fc083056ea2ce34865a83b1269dd0b",
     "src/loader/ppc.rs": "a8c81f6beb7cc86763b68ac599bf0d4fe6e593f88121156fcf2681640cf71a6b",
     "src/trap/cinepak.rs": "5400e1450016b01e9a9113a2e498bc3a5d23b0106023dd8a589f7e056350f900",
     "src/trap/control.rs": "2b3be73d55ef213f467a48bc6518c71e9df537841623db2507119d104b840076",
@@ -76,12 +76,21 @@
   },
   "powerpc": {
     "source": "src/loader/ppc.rs",
+    "mapper_function": "dispatcher_target_for_import",
+    "target_type": "PpcImportDispatcherTarget",
     "enum_variant_count": 872,
     "mapping_arm_count_including_wildcard": 890,
     "exact_library_symbol_tuple_count": 738,
-    "distinct_mapped_target_count_excluding_unsupported": 869,
+    "distinct_mapped_target_count_excluding_fallback": 869,
     "helper_disabled_arm_count": 1,
+    "disabled_guard_helpers": [
+      {
+        "name": "is_quickdraw_3d_status_success_import",
+        "mapper_reference_count": 1
+      }
+    ],
     "fallback_target": "Unsupported",
+    "fallback_target_production_reference_count": 4,
     "compatibility_targets": [
       "StdIoCompatibility",
       "AppleEventCompatibility",
@@ -101,10 +110,24 @@
       "StdCCompatibility",
       "ObjectSupportCompatibility"
     ],
-    "production_target_reference_counts": {
-      "NoOpPreserve": 5,
-      "ReturnNoErr": 4,
-      "Unsupported": 4
+    "compatibility_target_production_reference_counts": {
+      "AppleEventCompatibility": 2,
+      "AppleTalkCompatibility": 2,
+      "DialogCompatibility": 2,
+      "FileCompatibility": 2,
+      "InputSprocketCompatibility": 2,
+      "MathCompatibility": 2,
+      "ObjectSupportCompatibility": 2,
+      "PrintingCompatibility": 2,
+      "QuickDrawCompatibility": 2,
+      "QuickTimeCompatibility": 2,
+      "SlotCompatibility": 2,
+      "SoundInputCompatibility": 2,
+      "SpeechCompatibility": 2,
+      "StandardFileCompatibility": 2,
+      "StdCCompatibility": 2,
+      "StdIoCompatibility": 2,
+      "SystemCompatibility": 2
     }
   }
 }
