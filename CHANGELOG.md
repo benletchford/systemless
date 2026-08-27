@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.7](https://github.com/benletchford/systemless/compare/v0.20.6...v0.20.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* support PPC packed indexed display depths ([17fb5af](https://github.com/benletchford/systemless/commit/17fb5afdc7c475c8572b5ce4b8eb502890c7af02))
+
 ## [0.20.6](https://github.com/benletchford/systemless/compare/v0.20.5...v0.20.6) (2026-08-26)
 
 
