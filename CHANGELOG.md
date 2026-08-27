@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/benletchford/systemless/compare/v0.21.2...v0.21.3) (2026-08-27)
+
+
+### Reverts
+
+* remove runtime route inventory from master ([#907](https://github.com/benletchford/systemless/issues/907)) ([dca0110](https://github.com/benletchford/systemless/commit/dca0110c949ee7ded4b403dc236bc29c26038a14))
+
 ## [0.21.2](https://github.com/benletchford/systemless/compare/v0.21.1...v0.21.2) (2026-08-27)
 
 
