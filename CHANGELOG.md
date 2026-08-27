@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.11](https://github.com/benletchford/systemless/compare/v0.20.10...v0.20.11) (2026-08-27)
+
+
+### Bug Fixes
+
+* **ppc:** synchronize window activation chrome ([dd1c399](https://github.com/benletchford/systemless/commit/dd1c39993b0c566e4fe4000eab4a9f59fdf447e7))
+
 ## [0.20.10](https://github.com/benletchford/systemless/compare/v0.20.9...v0.20.10) (2026-08-27)
 
 
