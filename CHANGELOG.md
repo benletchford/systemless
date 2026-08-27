@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/benletchford/systemless/compare/v0.21.0...v0.21.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **menu:** track nested PPC submenus ([#895](https://github.com/benletchford/systemless/issues/895)) ([ba73e2c](https://github.com/benletchford/systemless/commit/ba73e2c28c3adaf4ee69ecd69fbe0f80aa159166))
+
 ## [0.21.0](https://github.com/benletchford/systemless/compare/v0.20.17...v0.21.0) (2026-08-27)
 
 
