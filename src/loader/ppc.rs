@@ -2734,6 +2734,26 @@ struct PpcGoAwayTrackingState {
     highlighted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcDragWindowCall {
+    window: u32,
+    start_point: u32,
+    bounds_ptr: u32,
+    stack_pointer: u32,
+    return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcDragWindowTrackingState {
+    call: PpcDragWindowCall,
+    front_buffer: PpcFrontBuffer,
+    original_content: (i16, i16, i16, i16),
+    original_structure: (i16, i16, i16, i16),
+    bounds: (i16, i16, i16, i16),
+    outline: (i16, i16, i16, i16),
+    saved_pixels: Vec<(i32, i32, u16)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPaletteAllocation {
     palette: u32,
@@ -2796,6 +2816,7 @@ pub struct PpcToolboxStartupState {
     pub pending_native_menu_selection: Option<(i16, i16)>,
     pub menu_tracking: Option<PpcMenuTrackingState>,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
+    drag_window_tracking: Option<PpcDragWindowTrackingState>,
     pub text_edit_initialized: bool,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
@@ -2850,6 +2871,7 @@ impl Default for PpcToolboxStartupState {
             pending_native_menu_selection: None,
             menu_tracking: None,
             go_away_tracking: None,
+            drag_window_tracking: None,
             text_edit_initialized: false,
             dialogs_initialized: false,
             dialog_resume_proc: 0,
@@ -51874,6 +51896,7 @@ fn ppc_set_depth(
         .is_some_and(|state| state.kind == PpcMenuTrackingKind::MenuBar);
     toolbox_startup.menu_tracking = None;
     toolbox_startup.go_away_tracking = None;
+    toolbox_startup.drag_window_tracking = None;
     if tracking_owned_menu_bar {
         let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     }
@@ -61531,31 +61554,16 @@ fn ppc_dispatch_legacy_window(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "DragWindow" => {
-            let start_v = (cpu.gpr[4] >> 16) as u16 as i16;
-            let start_h = cpu.gpr[4] as u16 as i16;
-            let cursor_v = input.mouse_v;
-            let cursor_h = input.mouse_h;
-            let allowed =
-                ppc_read_rect(memory, cpu.gpr[5]).is_none_or(|(top, left, bottom, right)| {
-                    cursor_v >= top && cursor_v < bottom && cursor_h >= left && cursor_h < right
-                });
-            if allowed {
-                if let Some((top, left, _, _)) =
-                    ppc_dialog_global_bounds(memory, gworlds, cpu.gpr[3])
-                {
-                    let mut move_cpu = cpu.clone();
-                    move_cpu.gpr[4] =
-                        left.saturating_add(cursor_h.saturating_sub(start_h)) as u16 as u32;
-                    move_cpu.gpr[5] =
-                        top.saturating_add(cursor_v.saturating_sub(start_v)) as u16 as u32;
-                    move_cpu.gpr[6] = 1;
-                    let _ = ppc_move_window(&move_cpu, memory, gworlds);
-                    *current_gworld = cpu.gpr[3];
-                }
-            }
-            Some(PpcImportAction::ReturnPreserve)
-        }
+        "DragWindow" => Some(ppc_dispatch_drag_window(
+            cpu,
+            memory,
+            gworlds,
+            current_gworld,
+            toolbox_startup,
+            event_queue,
+            screen_clut,
+            input,
+        )),
         "GrowWindow" => {
             let Some((top, left, bottom, right)) =
                 ppc_dialog_global_bounds(memory, gworlds, cpu.gpr[3])
@@ -61877,6 +61885,225 @@ fn ppc_window_part_contains_point(
         }
         _ => false,
     }
+}
+
+fn ppc_drag_window_call(cpu: &PpcCpu) -> PpcDragWindowCall {
+    PpcDragWindowCall {
+        window: cpu.gpr[3],
+        start_point: cpu.gpr[4],
+        bounds_ptr: cpu.gpr[5],
+        stack_pointer: cpu.gpr[1],
+        return_address: cpu.lr,
+    }
+}
+
+fn ppc_point_in_rect(point: (i16, i16), rect: (i16, i16, i16, i16)) -> bool {
+    point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
+}
+
+fn ppc_offset_rect_bounds(
+    rect: (i16, i16, i16, i16),
+    delta_v: i16,
+    delta_h: i16,
+) -> (i16, i16, i16, i16) {
+    (
+        rect.0.saturating_add(delta_v),
+        rect.1.saturating_add(delta_h),
+        rect.2.saturating_add(delta_v),
+        rect.3.saturating_add(delta_h),
+    )
+}
+
+fn ppc_drag_outline_points(front: PpcFrontBuffer, rect: (i16, i16, i16, i16)) -> Vec<(i32, i32)> {
+    let (top, left, bottom, right) = (
+        i32::from(rect.0),
+        i32::from(rect.1),
+        i32::from(rect.2),
+        i32::from(rect.3),
+    );
+    if bottom <= top || right <= left {
+        return Vec::new();
+    }
+    let width = i32::try_from(front.width).unwrap_or(i32::MAX);
+    let height = i32::try_from(front.height).unwrap_or(i32::MAX);
+    let mut points = Vec::new();
+    for x in left.max(0)..right.min(width) {
+        for y in [top, bottom - 1] {
+            if y >= 0 && y < height {
+                points.push((x, y));
+            }
+        }
+    }
+    for y in (top + 1).max(0)..(bottom - 1).min(height) {
+        for x in [left, right - 1] {
+            if x >= 0 && x < width {
+                points.push((x, y));
+            }
+        }
+    }
+    points
+}
+
+fn ppc_restore_drag_window_outline(memory: &mut PpcSectionMem, state: &PpcDragWindowTrackingState) {
+    for (x, y, pixel) in state.saved_pixels.iter().copied() {
+        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+    }
+}
+
+fn ppc_refresh_drag_window_outline(
+    memory: &mut PpcSectionMem,
+    screen_clut: &[[u16; 3]; 256],
+    state: &mut PpcDragWindowTrackingState,
+    mouse: (i16, i16),
+) {
+    ppc_restore_drag_window_outline(memory, state);
+    let start = (
+        (state.call.start_point >> 16) as u16 as i16,
+        state.call.start_point as u16 as i16,
+    );
+    state.outline = ppc_offset_rect_bounds(
+        state.original_structure,
+        mouse.0.wrapping_sub(start.0),
+        mouse.1.wrapping_sub(start.1),
+    );
+    state.saved_pixels = ppc_drag_outline_points(state.front_buffer, state.outline)
+        .into_iter()
+        .filter_map(|(x, y)| {
+            ppc_quickdraw_read_pixel(memory, state.front_buffer, (x, y)).map(|pixel| (x, y, pixel))
+        })
+        .collect();
+    let Some(black) =
+        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_BLACK, screen_clut)
+    else {
+        return;
+    };
+    let Some(white) =
+        ppc_physical_screen_color_pixel(state.front_buffer, PPC_RGB_WHITE, screen_clut)
+    else {
+        return;
+    };
+    for (x, y, _) in state.saved_pixels.iter().copied() {
+        let pixel = if (x + y).rem_euclid(2) == 0 {
+            black
+        } else {
+            white
+        };
+        let _ = ppc_quickdraw_write_raw_pixel(memory, state.front_buffer, (x, y), pixel);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_drag_window(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &mut [PpcGWorldRecord],
+    current_gworld: &mut u32,
+    startup: &mut PpcToolboxStartupState,
+    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    screen_clut: &[[u16; 3]; 256],
+    input: PpcInputSnapshot,
+) -> PpcImportAction {
+    // DragWindow owns a synchronous Window Manager loop and moves only a
+    // gray structure-region outline until mouse-up. Macintosh Toolbox
+    // Essentials (1992), pp. 4-94--4-95.
+    let call = ppc_drag_window_call(cpu);
+    if let Some(state) = startup.drag_window_tracking.as_ref() {
+        if state.call != call {
+            return PpcImportAction::ReturnPreserve;
+        }
+        let live_front = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD);
+        let valid_window = gworlds.iter().any(|record| record.port == call.window)
+            && ppc_window_is_visible(memory, call.window)
+            && ppc_dialog_global_bounds(memory, gworlds, call.window)
+                == Some(state.original_content);
+        if live_front != Some(state.front_buffer) {
+            startup.drag_window_tracking = None;
+            return PpcImportAction::ReturnPreserve;
+        }
+        if !valid_window {
+            let state = startup.drag_window_tracking.take().unwrap();
+            ppc_restore_drag_window_outline(memory, &state);
+            return PpcImportAction::ReturnPreserve;
+        }
+
+        if input.mouse_button {
+            let mut state = startup.drag_window_tracking.take().unwrap();
+            ppc_refresh_drag_window_outline(
+                memory,
+                screen_clut,
+                &mut state,
+                (input.mouse_v, input.mouse_h),
+            );
+            startup.drag_window_tracking = Some(state);
+            return PpcImportAction::Yield(u64::MAX);
+        }
+
+        let state = startup.drag_window_tracking.take().unwrap();
+        ppc_restore_drag_window_outline(memory, &state);
+        if let Some(index) = event_queue.iter().position(|event| event.what == 2) {
+            event_queue.remove(index);
+        }
+        let release = (input.mouse_v, input.mouse_h);
+        let start = (
+            (call.start_point >> 16) as u16 as i16,
+            call.start_point as u16 as i16,
+        );
+        if release != start && ppc_point_in_rect(release, state.bounds) {
+            let mut move_cpu = cpu.clone();
+            move_cpu.gpr[4] = state
+                .original_content
+                .1
+                .saturating_add(release.1.wrapping_sub(start.1))
+                as u16 as u32;
+            move_cpu.gpr[5] = state
+                .original_content
+                .0
+                .saturating_add(release.0.wrapping_sub(start.0))
+                as u16 as u32;
+            move_cpu.gpr[6] = 1;
+            if ppc_move_window(&move_cpu, memory, gworlds).is_some() {
+                *current_gworld = call.window;
+            }
+        }
+        return PpcImportAction::ReturnPreserve;
+    }
+
+    if startup.menu_tracking.is_some()
+        || startup.go_away_tracking.is_some()
+        || !input.mouse_button
+        || call.window == 0
+    {
+        return PpcImportAction::ReturnPreserve;
+    }
+    let (Some(bounds), Some(original_content), Some(front_buffer)) = (
+        ppc_read_rect(memory, call.bounds_ptr),
+        ppc_dialog_global_bounds(memory, gworlds, call.window),
+        ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD),
+    ) else {
+        return PpcImportAction::ReturnPreserve;
+    };
+    if !ppc_window_is_visible(memory, call.window) {
+        return PpcImportAction::ReturnPreserve;
+    }
+    let original_structure =
+        ppc_window_structure_bounds(ppc_window_proc_id(memory, call.window), original_content);
+    let mut state = PpcDragWindowTrackingState {
+        call,
+        front_buffer,
+        original_content,
+        original_structure,
+        bounds,
+        outline: original_structure,
+        saved_pixels: Vec::new(),
+    };
+    ppc_refresh_drag_window_outline(
+        memory,
+        screen_clut,
+        &mut state,
+        (input.mouse_v, input.mouse_h),
+    );
+    startup.drag_window_tracking = Some(state);
+    PpcImportAction::Yield(u64::MAX)
 }
 
 fn ppc_go_away_call(cpu: &PpcCpu) -> PpcGoAwayCall {
@@ -112320,6 +112547,183 @@ mod tests {
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(baseline),
                 "{depth}bpp hidden cancellation did not restore pixels",
+            );
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_drag_window_retains_outline_and_moves_on_valid_release() {
+        for depth in [1, 2, 4, 8, 16] {
+            let pef = synthetic_pef_with_import(b"NewCWindow");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+
+            let scratch = PPC_DATA_BASE + 0x1000;
+            loaded.memory.add_region(scratch, vec![0; 40]);
+            ppc_write_rect(&mut loaded.memory, scratch, 100, 100, 200, 300).unwrap();
+            ppc_write_pstring_bytes(&mut loaded.memory, scratch + 8, b"Document");
+            ppc_write_rect(&mut loaded.memory, scratch + 24, 20, 0, 480, 640).unwrap();
+            loaded.cpu.gpr[3] = 0;
+            loaded.cpu.gpr[4] = scratch;
+            loaded.cpu.gpr[5] = scratch + 8;
+            loaded.cpu.gpr[6] = 1;
+            loaded.cpu.gpr[7] = 0;
+            loaded.cpu.gpr[8] = u32::MAX;
+            loaded.cpu.gpr[9] = 1;
+            loaded.cpu.gpr[10] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
+            let window = loaded.cpu.gpr[3];
+            let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+            let framebuffer_len = front.row_bytes * front.height;
+            let pattern = (0..framebuffer_len)
+                .map(|index| (index as u8).wrapping_mul(37).wrapping_add(depth as u8))
+                .collect::<Vec<_>>();
+            loaded
+                .memory
+                .write_bytes(front.base_addr, &pattern)
+                .unwrap();
+            let baseline =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
+                    .unwrap();
+
+            loaded.imports[0].symbol_name = "DragWindow".to_string();
+            loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::LegacyWindow;
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (90u32 << 16) | 150;
+            loaded.cpu.gpr[5] = scratch + 24;
+            let original_sp = loaded.cpu.gpr[1];
+            let original_args = [loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]];
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 90,
+                mouse_h: 150,
+                ..PpcInputSnapshot::default()
+            });
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(loaded.cpu.pc, loaded.import_trap_base);
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(
+                [loaded.cpu.gpr[3], loaded.cpu.gpr[4], loaded.cpu.gpr[5]],
+                original_args,
+            );
+            assert!(loaded.toolbox_startup.drag_window_tracking.is_some());
+            assert_ne!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp initial drag outline did not draw",
+            );
+
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 120,
+                mouse_h: 180,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert_eq!(
+                loaded
+                    .toolbox_startup
+                    .drag_window_tracking
+                    .as_ref()
+                    .unwrap()
+                    .outline,
+                (112, 129, 231, 331),
+            );
+            loaded.event_queue.push_back(PpcQueuedEvent {
+                what: 2,
+                message: 0,
+                where_v: 130,
+                where_h: 190,
+                modifiers: 0,
+            });
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 130,
+                mouse_h: 190,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert!(loaded.toolbox_startup.drag_window_tracking.is_none());
+            assert!(!loaded.event_queue.iter().any(|event| event.what == 2));
+            assert_eq!(
+                ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((140, 140, 240, 340)),
+                "{depth}bpp valid release did not apply the final delta",
+            );
+            assert_eq!(loaded.current_gworld, window);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp accepted drag did not restore the framebuffer",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (130u32 << 16) | 190;
+            loaded.cpu.gpr[5] = scratch + 24;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 150,
+                mouse_h: 210,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: false,
+                mouse_v: 10,
+                mouse_h: 10,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(
+                ppc_dialog_global_bounds(&mut loaded.memory, &loaded.gworlds, window),
+                Some((140, 140, 240, 340)),
+                "{depth}bpp out-of-bounds release moved the window",
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline.clone()),
+                "{depth}bpp cancelled drag did not restore the framebuffer",
+            );
+
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = window;
+            loaded.cpu.gpr[4] = (130u32 << 16) | 190;
+            loaded.cpu.gpr[5] = scratch + 24;
+            loaded.set_input_snapshot(PpcInputSnapshot {
+                mouse_button: true,
+                mouse_v: 130,
+                mouse_h: 190,
+                ..PpcInputSnapshot::default()
+            });
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+            assert!(loaded
+                .memory
+                .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 0)
+                .is_some());
+            let probe = loaded.run_with_hle_imports(64);
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert!(loaded.toolbox_startup.drag_window_tracking.is_none());
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
+                Some(baseline),
+                "{depth}bpp hidden cancellation did not restore the framebuffer",
             );
         }
     }
