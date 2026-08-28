@@ -3360,9 +3360,6 @@ impl FixtureRunner {
         replacement.dispatcher.tick_count = launch_tick;
         if let Some(ppc_app) = replacement.ppc_app.as_mut() {
             ppc_app.set_tick_count(launch_tick);
-            let _ = ppc_app.memory.write_u32_be(addr::TICKS, launch_tick);
-            let _ = ppc_app.memory.write_u32_be(addr::TIME, launch_time);
-            let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, launch_rnd_seed);
         }
         replacement.dispatcher.mouse_pos = mouse_pos;
         replacement.dispatcher.mouse_button = mouse_button;
@@ -3933,15 +3930,13 @@ impl FixtureRunner {
         self.bus.write_long(addr::TICKS, launch_ticks);
         self.dispatcher.tick_count = launch_ticks;
         ppc_app.set_tick_count(launch_ticks);
-        let _ = ppc_app.memory.write_u32_be(addr::TICKS, launch_ticks);
         let time = self
             .app_start_time
             .unwrap_or_else(current_mac_epoch_seconds);
         self.bus.write_long(addr::TIME, time);
-        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
         let rnd_seed = self.launch_rnd_seed_override.unwrap_or(time);
         self.bus.write_long(addr::RND_SEED, rnd_seed);
-        let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, rnd_seed);
+        self.share_ppc_runtime_globals(&mut ppc_app);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }
@@ -3987,6 +3982,29 @@ impl FixtureRunner {
         self.ppc_sound_synced_file_playback_count = 0;
         self.ppc_sound_host_playbacks.clear();
         self.ppc_app = Some(ppc_app);
+    }
+
+    fn share_ppc_runtime_globals(&mut self, ppc_app: &mut PpcLoadedApp) {
+        use crate::memory::globals::addr;
+
+        // RndSeed is the system random-number seed (Inside Macintosh Volume I,
+        // I-195). The Vertical Retrace Manager updates Ticks and the one-second
+        // interrupt updates Time (Inside Macintosh Volume II, II-202 and
+        // II-378). These bytes describe one running Macintosh, so native and
+        // 68k callers must observe one backing allocation rather than values
+        // copied at CPU-slice boundaries.
+        for address in [addr::RND_SEED, addr::TICKS, addr::TIME] {
+            let region = self
+                .bus
+                .shared_ram_region(address, 4)
+                .expect("FixtureRunner owns stable guest RAM");
+            // SAFETY: both adapters remain private children of this runner;
+            // every execution and presentation entry point requires a mutable
+            // runner borrow, so their access cannot overlap.
+            unsafe {
+                ppc_app.memory.add_shared_region(address, region);
+            }
+        }
     }
 
     /// Mix and queue audio samples without full frame finalization.
@@ -6067,7 +6085,7 @@ impl FixtureRunner {
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         ppc_app.set_input_snapshot(input);
         self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
-        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
+        self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
         let remaining_cycles =
             (i64::from(self.tick_budget).clamp(0, i64::from(cycles_per_tick))) as u32;
@@ -6109,7 +6127,6 @@ impl FixtureRunner {
 
         self.total_instructions = self.total_instructions.saturating_add(cycles);
         self.dispatcher.instruction_count = self.total_instructions;
-        self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
         self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
         let (vbl_probes, timer_probes) = if exited_via_ppc_exit_to_shell {
             (Vec::new(), Vec::new())
@@ -6167,7 +6184,7 @@ impl FixtureRunner {
             .iter()
             .map(|probe| probe.invocation.cycles)
             .sum::<u64>();
-        self.sync_ppc_low_memory_after_execution(&mut ppc_app);
+        self.prepare_ppc_execution_clock(&mut ppc_app);
         self.total_instructions = self
             .total_instructions
             .saturating_add(vbl_cycles)
@@ -6342,27 +6359,12 @@ impl FixtureRunner {
         )
     }
 
-    fn sync_ppc_low_memory_before_execution(&self, ppc_app: &mut PpcLoadedApp) {
+    fn prepare_ppc_execution_clock(&self, ppc_app: &mut PpcLoadedApp) {
         use crate::memory::globals::addr;
 
-        let ticks = self.bus.read_long(addr::TICKS);
-        let time = self.bus.read_long(addr::TIME);
-        let rnd_seed = self.bus.read_long(addr::RND_SEED);
-        ppc_app.set_tick_count(ticks);
-        let _ = ppc_app.memory.write_u32_be(addr::TICKS, ticks);
-        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
-        let _ = ppc_app.memory.write_u32_be(addr::RND_SEED, rnd_seed);
-    }
-
-    fn sync_ppc_low_memory_after_execution(&mut self, ppc_app: &mut PpcLoadedApp) {
-        use crate::memory::globals::addr;
-
-        let ticks = self.dispatcher.tick_count;
-        let time = self.bus.read_long(addr::TIME);
-        ppc_app.set_tick_count(ticks);
-        let _ = ppc_app.memory.write_u32_be(addr::TICKS, ticks);
-        let _ = ppc_app.memory.write_u32_be(addr::TIME, time);
-        self.sync_ppc_rnd_seed_to_bus(ppc_app);
+        // The guest-visible clock bytes are shared memory. Keep only the
+        // CPU-local HLE timing base aligned with that canonical TickCount.
+        ppc_app.set_tick_count(self.bus.read_long(addr::TICKS));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -6410,14 +6412,6 @@ impl FixtureRunner {
             ));
         }
         (vbl_probes, timer_probes)
-    }
-
-    fn sync_ppc_rnd_seed_to_bus(&mut self, ppc_app: &mut PpcLoadedApp) {
-        use crate::memory::globals::addr;
-
-        if let Some(rnd_seed) = ppc_app.memory.read_u32_be(addr::RND_SEED) {
-            self.bus.write_long(addr::RND_SEED, rnd_seed);
-        }
     }
 
     fn sync_ppc_event_state_after_execution(
@@ -7501,7 +7495,7 @@ impl FixtureRunner {
             return;
         };
         self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
-        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
+        self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
@@ -7544,7 +7538,6 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
-            self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
             self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
             self.sync_ppc_event_queue_before_execution(
@@ -7552,7 +7545,7 @@ impl FixtureRunner {
                 input_offset_v,
                 input_offset_h,
             );
-            self.sync_ppc_low_memory_before_execution(&mut ppc_app);
+            self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
             if let Some(playback) =
@@ -7616,7 +7609,7 @@ impl FixtureRunner {
             return;
         };
         self.sync_ppc_event_queue_before_execution(&mut ppc_app, input_offset_v, input_offset_h);
-        self.sync_ppc_low_memory_before_execution(&mut ppc_app);
+        self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
@@ -7645,7 +7638,6 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
-            self.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
             self.sync_ppc_event_state_after_execution(&ppc_app, input_offset_v, input_offset_h);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
             self.sync_ppc_event_queue_before_execution(
@@ -7653,7 +7645,7 @@ impl FixtureRunner {
                 input_offset_v,
                 input_offset_h,
             );
-            self.sync_ppc_low_memory_before_execution(&mut ppc_app);
+            self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let callback_failed = invocation.unsupported_import_index.is_some()
                 || !matches!(invocation.result, PpcRunResult::Halted { .. });
@@ -11646,7 +11638,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_slice_synchronizes_low_memory_time_after_sixtieth_tick() {
+    fn ppc_slice_shares_low_memory_time_after_sixtieth_tick() {
         use crate::memory::globals::addr;
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -11791,7 +11783,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_slice_synchronizes_rnd_seed_in_both_directions() {
+    fn ppc_slice_shares_rnd_seed_in_both_directions() {
         use crate::memory::globals::addr;
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -11838,7 +11830,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_rnd_seed_phase_preserves_intervening_runner_mutation() {
+    fn ppc_runtime_globals_have_immediate_bidirectional_visibility() {
         use crate::memory::globals::addr;
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -11852,21 +11844,17 @@ mod tests {
         runner.init_app(&app);
         let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
 
-        ppc_app
-            .memory
-            .write_u32_be(addr::RND_SEED, 0x1234_5678)
-            .unwrap();
-        runner.sync_ppc_rnd_seed_to_bus(&mut ppc_app);
-        assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1234_5678);
+        for (address, ppc_value, runner_value) in [
+            (addr::RND_SEED, 0x1234_5678, 0x89ab_cdef),
+            (addr::TICKS, 0x1122_3344, 0x5566_7788),
+            (addr::TIME, 0x1020_3040, 0x5060_7080),
+        ] {
+            ppc_app.memory.write_u32_be(address, ppc_value).unwrap();
+            assert_eq!(runner.bus.read_long(address), ppc_value);
 
-        // Model a runner-side tick callback changing Random's authoritative
-        // low-memory seed between PPC execution phases.
-        runner.bus.write_long(addr::RND_SEED, 0x89ab_cdef);
-        runner.sync_ppc_low_memory_before_execution(&mut ppc_app);
-        assert_eq!(
-            ppc_app.memory.read_u32_be(addr::RND_SEED),
-            Some(0x89ab_cdef)
-        );
+            runner.bus.write_long(address, runner_value);
+            assert_eq!(ppc_app.memory.read_u32_be(address), Some(runner_value));
+        }
     }
 
     #[test]
