@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/benletchford/systemless/compare/v0.23.0...v0.23.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **memory:** share input globals across CPU backends ([#925](https://github.com/benletchford/systemless/issues/925)) ([86b63b6](https://github.com/benletchford/systemless/commit/86b63b6553ab76c2b70964e27d2782dd8f31b9bf))
+
 ## [0.23.0](https://github.com/benletchford/systemless/compare/v0.22.0...v0.23.0) (2026-08-28)
 
 
