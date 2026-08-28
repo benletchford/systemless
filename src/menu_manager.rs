@@ -498,6 +498,100 @@ pub(crate) fn standard_menu_icon_resource_id(icon: u8, command: u8) -> Option<i1
     (icon != 0 && command != 0x1C).then(|| i16::from(icon).saturating_add(256))
 }
 
+/// Offsets and geometry decoded from one compiled color-icon resource.
+///
+/// A `cicn` stores a 50-byte PixMap, two 14-byte BitMaps, a four-byte data
+/// Handle placeholder, then mask, monochrome, ColorTable, and pixel payloads.
+/// Offsets remain relative to the resource so adapters can use either guest
+/// pointers or host slices. Inside Macintosh: Imaging With QuickDraw (1994),
+/// pp. 4-105--4-106.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ColorIconLayout {
+    pub(crate) width: i16,
+    pub(crate) height: i16,
+    pub(crate) pixel_row_bytes: usize,
+    pub(crate) mask_row_bytes: usize,
+    pub(crate) bitmap_row_bytes: usize,
+    pub(crate) pixel_size: u16,
+    pub(crate) mask_offset: usize,
+    pub(crate) bitmap_offset: usize,
+    pub(crate) color_table_offset: usize,
+    pub(crate) color_table_entries: usize,
+    pub(crate) pixel_data_offset: usize,
+}
+
+impl ColorIconLayout {
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        Self::decode_with(|offset| bytes.get(offset).copied(), Some(bytes.len()))
+    }
+
+    /// Decode through an adapter byte reader. `length` is optional for guest
+    /// allocations whose owner cannot report a bound; when supplied, every
+    /// derived inline payload must fit inside it.
+    pub(crate) fn decode_with(
+        mut read: impl FnMut(usize) -> Option<u8>,
+        length: Option<usize>,
+    ) -> Option<Self> {
+        const HEADER_SIZE: usize = 82;
+        if length.is_some_and(|length| length < HEADER_SIZE) {
+            return None;
+        }
+        let mut read_u16 = |offset: usize| {
+            Some(u16::from_be_bytes([
+                read(offset)?,
+                read(offset.checked_add(1)?)?,
+            ]))
+        };
+        let top = read_u16(6)? as i16;
+        let left = read_u16(8)? as i16;
+        let bottom = read_u16(10)? as i16;
+        let right = read_u16(12)? as i16;
+        let width = right.checked_sub(left)?;
+        let height = bottom.checked_sub(top)?;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let pixel_row_bytes = usize::from(read_u16(4)? & 0x3FFF);
+        let mask_row_bytes = usize::from(read_u16(54)? & 0x3FFF);
+        let bitmap_row_bytes = usize::from(read_u16(68)? & 0x3FFF);
+        let pixel_size = read_u16(32)?;
+        if pixel_row_bytes == 0 || mask_row_bytes == 0 {
+            return None;
+        }
+        let height = usize::try_from(height).ok()?;
+        let mask_offset = HEADER_SIZE;
+        let bitmap_offset = mask_offset.checked_add(mask_row_bytes.checked_mul(height)?)?;
+        let color_table_offset =
+            bitmap_offset.checked_add(bitmap_row_bytes.checked_mul(height)?)?;
+        let color_table_size_offset = color_table_offset.checked_add(6)?;
+        if let Some(length) = length {
+            if color_table_size_offset.checked_add(2)? > length {
+                return None;
+            }
+        }
+        let color_table_entries = usize::from(read_u16(color_table_size_offset)?).checked_add(1)?;
+        let pixel_data_offset = color_table_offset
+            .checked_add(8usize.checked_add(color_table_entries.checked_mul(8)?)?)?;
+        let end = pixel_data_offset.checked_add(pixel_row_bytes.checked_mul(height)?)?;
+        if length.is_some_and(|length| end > length) {
+            return None;
+        }
+        Some(Self {
+            width,
+            height: i16::try_from(height).ok()?,
+            pixel_row_bytes,
+            mask_row_bytes,
+            bitmap_row_bytes,
+            pixel_size,
+            mask_offset,
+            bitmap_offset,
+            color_table_offset,
+            color_table_entries,
+            pixel_data_offset,
+        })
+    }
+}
+
 /// Horizontal inputs resolved by an architecture adapter for one standard
 /// menu item. Text and icon resource measurement remain presentation work;
 /// the standard MDEF's column policy belongs to the Menu Manager.
@@ -2283,6 +2377,58 @@ mod tests {
         );
         assert_eq!(standard_menu_icon_resource_id(7, 0), Some(263));
         assert_eq!(standard_menu_icon_resource_id(7, 0x1C), None);
+    }
+
+    #[test]
+    fn compiled_color_icon_layout_is_shared_between_gateways() {
+        let mut bytes = vec![0; 104];
+        let mut write_u16 = |offset: usize, value: u16| {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        };
+        write_u16(4, 2);
+        write_u16(10, 1);
+        write_u16(12, 16);
+        write_u16(32, 1);
+        write_u16(54, 2);
+        write_u16(68, 2);
+        write_u16(92, 0);
+
+        let expected = ColorIconLayout {
+            width: 16,
+            height: 1,
+            pixel_row_bytes: 2,
+            mask_row_bytes: 2,
+            bitmap_row_bytes: 2,
+            pixel_size: 1,
+            mask_offset: 82,
+            bitmap_offset: 84,
+            color_table_offset: 86,
+            color_table_entries: 1,
+            pixel_data_offset: 102,
+        };
+        assert_eq!(ColorIconLayout::decode(&bytes), Some(expected));
+        assert_eq!(
+            ColorIconLayout::decode_with(|offset| bytes.get(offset).copied(), Some(bytes.len())),
+            Some(expected),
+        );
+        assert_eq!(ColorIconLayout::decode(&bytes[..103]), None);
+        bytes[4..6].copy_from_slice(&0u16.to_be_bytes());
+        assert_eq!(ColorIconLayout::decode(&bytes), None);
+
+        let mut largest_table = vec![0; 86 + 8 + 65_536 * 8 + 2];
+        largest_table[4..6].copy_from_slice(&2u16.to_be_bytes());
+        largest_table[10..12].copy_from_slice(&1u16.to_be_bytes());
+        largest_table[12..14].copy_from_slice(&16u16.to_be_bytes());
+        largest_table[32..34].copy_from_slice(&1u16.to_be_bytes());
+        largest_table[54..56].copy_from_slice(&2u16.to_be_bytes());
+        largest_table[68..70].copy_from_slice(&2u16.to_be_bytes());
+        largest_table[92..94].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert_eq!(
+            ColorIconLayout::decode(&largest_table)
+                .expect("the maximum compiled ColorTable remains representable")
+                .color_table_entries,
+            65_536,
+        );
     }
 
     #[test]

@@ -9,10 +9,11 @@ use crate::menu_manager::{
     standard_menu_icon_kind, standard_menu_icon_resource_id,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
-    MenuBarResource as SharedMenuBarResource, MenuBarTitleRegion as SharedMenuBarTitleRegion,
-    MenuItems as SharedMenuItems, MenuKeyItem as SharedMenuKeyItem,
-    MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList, MenuRow as SharedMenuRow,
-    MenuRows as SharedMenuRows, MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
+    ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
+    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuItems as SharedMenuItems,
+    MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
+    MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
+    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState as SharedMenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth,
     SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
@@ -142,21 +143,6 @@ const MENU_ROW_HEIGHT: i16 = 16;
 const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
 const MENU_NORMAL_ICON_SIZE: i16 = 32;
 const MENU_NORMAL_ICON_TEXT_LEFT_OFFSET: i16 = 51;
-
-#[derive(Clone, Copy, Debug)]
-struct MenuCIconLayout {
-    width: i16,
-    height: i16,
-    pm_row_bytes: u32,
-    mask_row_bytes: u32,
-    bmap_row_bytes: u32,
-    pixel_size: u16,
-    mask_data_ptr: u32,
-    bmap_data_ptr: u32,
-    ctab_ptr: u32,
-    ctab_entries: u16,
-    pixel_data_ptr: u32,
-}
 
 /// Compute the size of a MENU resource in guest memory by scanning through it.
 /// MENU format: menuID(2), menuWidth(2), menuHeight(2), menuProc(4), enableFlags(4),
@@ -3640,81 +3626,30 @@ impl super::TrapDispatcher {
         item.key_equiv > 0x20
     }
 
-    fn menu_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<MenuCIconLayout> {
-        if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 82) {
-            return None;
-        }
-
-        // Imaging With QuickDraw 1994 p. 4-106: a compiled 'cicn'
-        // resource starts with a 50-byte PixMap, 14-byte mask BitMap,
-        // 14-byte 1-bit fallback BitMap, 4-byte iconData handle, then
-        // mask bits, fallback bitmap bits, ColorTable, and PixMap data.
-        let pm_row_bytes = (bus.read_word(icon_ptr + 4) & 0x3FFF) as u32;
-        let pm_top = bus.read_word(icon_ptr + 6) as i16;
-        let pm_left = bus.read_word(icon_ptr + 8) as i16;
-        let pm_bottom = bus.read_word(icon_ptr + 10) as i16;
-        let pm_right = bus.read_word(icon_ptr + 12) as i16;
-        let pixel_size = bus.read_word(icon_ptr + 32);
-        let mask_row_bytes = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
-        let bmap_row_bytes = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
-
-        let width = pm_right - pm_left;
-        let height = pm_bottom - pm_top;
-        if width <= 0 || height <= 0 || pm_row_bytes == 0 || mask_row_bytes == 0 {
-            return None;
-        }
-
-        let height_u32 = height as u32;
-        let mask_data_size = mask_row_bytes.checked_mul(height_u32)?;
-        let bmap_data_size = bmap_row_bytes.checked_mul(height_u32)?;
-        let mask_data_ptr = icon_ptr + 82;
-        let bmap_data_ptr = mask_data_ptr.checked_add(mask_data_size)?;
-        let ctab_ptr = bmap_data_ptr.checked_add(bmap_data_size)?;
-
-        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
-            let resource_end = icon_ptr.checked_add(resource_size)?;
-            if ctab_ptr.checked_add(8)? > resource_end {
-                return None;
-            }
-        }
-
-        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        let ctab_total_bytes = 8u32.checked_add((ct_size + 1).checked_mul(8)?)?;
-        let pixel_data_ptr = ctab_ptr.checked_add(ctab_total_bytes)?;
-
-        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
-            let resource_end = icon_ptr.checked_add(resource_size)?;
-            let pixel_data_size = pm_row_bytes.checked_mul(height_u32)?;
-            if pixel_data_ptr.checked_add(pixel_data_size)? > resource_end {
-                return None;
-            }
-        }
-
-        Some(MenuCIconLayout {
-            width,
-            height,
-            pm_row_bytes,
-            mask_row_bytes,
-            bmap_row_bytes,
-            pixel_size,
-            mask_data_ptr,
-            bmap_data_ptr,
-            ctab_ptr,
-            ctab_entries: (ct_size + 1) as u16,
-            pixel_data_ptr,
-        })
+    fn menu_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<SharedColorIconLayout> {
+        SharedColorIconLayout::decode_with(
+            |offset| {
+                let offset = u32::try_from(offset).ok()?;
+                Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+            },
+            bus.get_alloc_size(icon_ptr).map(|size| size as usize),
+        )
     }
 
     fn menu_cicn_rgb_for_index(
         bus: &MacMemoryBus,
-        layout: MenuCIconLayout,
+        icon_ptr: u32,
+        layout: SharedColorIconLayout,
         pixel_index: u8,
     ) -> Option<[u16; 3]> {
-        let device_table = (bus.read_word(layout.ctab_ptr + 4) & 0x8000) != 0;
-        for ordinal in 0..u32::from(layout.ctab_entries) {
-            let entry = layout.ctab_ptr + 8 + ordinal * 8;
+        let color_table_ptr =
+            icon_ptr.checked_add(u32::try_from(layout.color_table_offset).ok()?)?;
+        let device_table = (bus.read_word(color_table_ptr.checked_add(4)?) & 0x8000) != 0;
+        for ordinal in 0..layout.color_table_entries {
+            let entry_offset = 8usize.checked_add(ordinal.checked_mul(8)?)?;
+            let entry = color_table_ptr.checked_add(u32::try_from(entry_offset).ok()?)?;
             let value = if device_table {
-                ordinal as u16
+                u16::try_from(ordinal).ok()?
             } else {
                 bus.read_word(entry)
             };
@@ -4034,6 +3969,31 @@ impl super::TrapDispatcher {
         let Some(layout) = Self::menu_cicn_layout(bus, icon_ptr) else {
             return;
         };
+        let Some(mask_data_ptr) = u32::try_from(layout.mask_offset)
+            .ok()
+            .and_then(|offset| icon_ptr.checked_add(offset))
+        else {
+            return;
+        };
+        let Some(bitmap_data_ptr) = u32::try_from(layout.bitmap_offset)
+            .ok()
+            .and_then(|offset| icon_ptr.checked_add(offset))
+        else {
+            return;
+        };
+        let Some(pixel_data_ptr) = u32::try_from(layout.pixel_data_offset)
+            .ok()
+            .and_then(|offset| icon_ptr.checked_add(offset))
+        else {
+            return;
+        };
+        let (Ok(pixel_row_bytes), Ok(mask_row_bytes), Ok(bitmap_row_bytes)) = (
+            u32::try_from(layout.pixel_row_bytes),
+            u32::try_from(layout.mask_row_bytes),
+            u32::try_from(layout.bitmap_row_bytes),
+        ) else {
+            return;
+        };
         let (screen_base, row_bytes, screen_width, screen_height, screen_pixel_size) =
             self.get_screen_params();
         let screen = (
@@ -4048,8 +4008,7 @@ impl super::TrapDispatcher {
             for dx in 0..layout.width {
                 let sx = dx as u32;
                 let sy = dy as u32;
-                let mask_byte =
-                    bus.read_byte(layout.mask_data_ptr + sy * layout.mask_row_bytes + sx / 8);
+                let mask_byte = bus.read_byte(mask_data_ptr + sy * mask_row_bytes + sx / 8);
                 if (mask_byte & (0x80 >> (sx % 8))) == 0 {
                     continue;
                 }
@@ -4057,8 +4016,8 @@ impl super::TrapDispatcher {
                 if matches!(screen_pixel_size, 2 | 4 | 8) && layout.pixel_size >= 2 {
                     let Some(pixel_index) = Self::menu_cicn_pixel_index(
                         bus,
-                        layout.pixel_data_ptr,
-                        layout.pm_row_bytes,
+                        pixel_data_ptr,
+                        pixel_row_bytes,
                         layout.pixel_size,
                         sx,
                         sy,
@@ -4070,20 +4029,21 @@ impl super::TrapDispatcher {
                     // PlotCIcon remaps those colors to the current depth and
                     // color table. More Macintosh Toolbox (1993), pp. 5-25
                     // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
-                    let destination_index = Self::menu_cicn_rgb_for_index(bus, layout, pixel_index)
-                        .map(|rgb| {
-                            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(
-                                || {
-                                    super::pict::closest_clut_index(
-                                        rgb[0],
-                                        rgb[1],
-                                        rgb[2],
-                                        &self.device_clut,
-                                    )
-                                },
-                            )
-                        })
-                        .unwrap_or(pixel_index);
+                    let destination_index =
+                        Self::menu_cicn_rgb_for_index(bus, icon_ptr, layout, pixel_index)
+                            .map(|rgb| {
+                                Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(
+                                    || {
+                                        super::pict::closest_clut_index(
+                                            rgb[0],
+                                            rgb[1],
+                                            rgb[2],
+                                            &self.device_clut,
+                                        )
+                                    },
+                                )
+                            })
+                            .unwrap_or(pixel_index);
                     let dst_x = left + dx;
                     let dst_y = top + dy;
                     Self::fb_set_pixel_index(
@@ -4100,17 +4060,17 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
-                let source_data_ptr = if layout.bmap_row_bytes != 0 {
-                    layout.bmap_data_ptr
+                let source_data_ptr = if bitmap_row_bytes != 0 {
+                    bitmap_data_ptr
                 } else {
-                    layout.pixel_data_ptr
+                    pixel_data_ptr
                 };
-                let source_row_bytes = if layout.bmap_row_bytes != 0 {
-                    layout.bmap_row_bytes
+                let source_row_bytes = if bitmap_row_bytes != 0 {
+                    bitmap_row_bytes
                 } else {
-                    layout.pm_row_bytes
+                    pixel_row_bytes
                 };
-                let source_pixel_size = if layout.bmap_row_bytes != 0 {
+                let source_pixel_size = if bitmap_row_bytes != 0 {
                     1
                 } else {
                     layout.pixel_size

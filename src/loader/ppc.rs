@@ -25,11 +25,11 @@ use crate::menu_manager::{
     merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
     standard_menu_bar_title_baseline, standard_menu_height, standard_menu_icon_kind,
     standard_menu_icon_resource_id, standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout, MenuBarResource, MenuBarTitleRegion,
-    MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
-    MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition,
-    TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
+    MenuBarTitleRegion, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
+    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
+    MenuTrackingKind, MenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth,
+    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
     STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
     STANDARD_SYSTEM_MENU_MARK_ADVANCE,
@@ -65768,71 +65768,10 @@ fn ppc_check_menu_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     });
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcCIconSliceLayout {
-    width: i16,
-    height: i16,
-    pixel_row_bytes: usize,
-    mask_row_bytes: usize,
-    bitmap_row_bytes: usize,
-    pixel_size: u16,
-    mask_offset: usize,
-    bitmap_offset: usize,
-    color_table_offset: usize,
-    color_table_entries: usize,
-    pixel_data_offset: usize,
-}
-
 fn ppc_slice_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes(
         bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
     ))
-}
-
-fn ppc_menu_cicon_layout(bytes: &[u8]) -> Option<PpcCIconSliceLayout> {
-    // A compiled 'cicn' contains a 50-byte PixMap, 14-byte mask BitMap,
-    // 14-byte monochrome BitMap, a 4-byte data Handle placeholder, then the
-    // three inline payloads. Imaging With QuickDraw (1994), pp. 4-105--4-106.
-    let top = ppc_slice_u16(bytes, 6)? as i16;
-    let left = ppc_slice_u16(bytes, 8)? as i16;
-    let bottom = ppc_slice_u16(bytes, 10)? as i16;
-    let right = ppc_slice_u16(bytes, 12)? as i16;
-    let width = right.checked_sub(left)?;
-    let height = bottom.checked_sub(top)?;
-    if width <= 0 || height <= 0 {
-        return None;
-    }
-    let pixel_row_bytes = usize::from(ppc_slice_u16(bytes, 4)? & 0x3fff);
-    let mask_row_bytes = usize::from(ppc_slice_u16(bytes, 54)? & 0x3fff);
-    let bitmap_row_bytes = usize::from(ppc_slice_u16(bytes, 68)? & 0x3fff);
-    let pixel_size = ppc_slice_u16(bytes, 32)?;
-    if pixel_row_bytes == 0 || mask_row_bytes == 0 {
-        return None;
-    }
-    let height_usize = usize::try_from(height).ok()?;
-    let mask_offset = 82usize;
-    let bitmap_offset = mask_offset.checked_add(mask_row_bytes.checked_mul(height_usize)?)?;
-    let color_table_offset =
-        bitmap_offset.checked_add(bitmap_row_bytes.checked_mul(height_usize)?)?;
-    let color_table_entries = usize::from(ppc_slice_u16(bytes, color_table_offset + 6)?) + 1;
-    let pixel_data_offset =
-        color_table_offset.checked_add(8usize.checked_add(color_table_entries.checked_mul(8)?)?)?;
-    let pixel_data_size = pixel_row_bytes.checked_mul(height_usize)?;
-    (bytes.len() >= pixel_data_offset.checked_add(pixel_data_size)?).then_some(
-        PpcCIconSliceLayout {
-            width,
-            height,
-            pixel_row_bytes,
-            mask_row_bytes,
-            bitmap_row_bytes,
-            pixel_size,
-            mask_offset,
-            bitmap_offset,
-            color_table_offset,
-            color_table_entries,
-            pixel_data_offset,
-        },
-    )
 }
 
 fn ppc_menu_resource_data<'a>(
@@ -65877,7 +65816,7 @@ fn ppc_menu_item_appearance(
         .and_then(|resource_id| {
             ppc_menu_resource_data(resources, current_resource_refnum, b"cicn", resource_id)
         })
-        .and_then(|data| ppc_menu_cicon_layout(data).map(|layout| (data, layout)));
+        .and_then(|data| ColorIconLayout::decode(data).map(|layout| (data, layout)));
     let icon_kind = standard_menu_icon_kind(
         icon,
         command,
@@ -66572,7 +66511,7 @@ fn ppc_menu_packed_pixel(
     }
 }
 
-fn ppc_menu_cicon_rgb(data: &[u8], layout: PpcCIconSliceLayout, value: u16) -> Option<PpcRgbColor> {
+fn ppc_menu_cicon_rgb(data: &[u8], layout: ColorIconLayout, value: u16) -> Option<PpcRgbColor> {
     if layout.pixel_size == 16 {
         return Some(PpcRgbColor {
             red: ((value >> 10) & 0x1f) * 0x842,
@@ -66644,7 +66583,7 @@ fn ppc_draw_tracked_menu_icon(
             }
         }
         PpcTrackedMenuIcon::CIcon(data) => {
-            let Some(layout) = ppc_menu_cicon_layout(data) else {
+            let Some(layout) = ColorIconLayout::decode(data) else {
                 return;
             };
             for y in 0..usize::try_from(layout.height).unwrap_or_default() {
@@ -66894,24 +66833,16 @@ fn ppc_draw_tracked_menu(
                 icon_left,
                 content_pixel,
             );
-            text_left = match icon {
-                PpcTrackedMenuIcon::CIcon(data) => icon_left.saturating_add(
-                    ppc_menu_cicon_layout(data)
-                        .map(|layout| layout.width.max(16))
-                        .unwrap_or(16),
-                ),
-                PpcTrackedMenuIcon::Icon { reduced: false, .. } => {
-                    state.popup_left().saturating_add(51)
-                }
-                PpcTrackedMenuIcon::Icon { reduced: true, .. }
-                | PpcTrackedMenuIcon::SmallIcon(_) => icon_left.saturating_add(16),
-            };
-        } else {
-            let icon_number = memory.read_u8(address + 1 + u32::from(len)).unwrap_or(0);
-            if icon_number != 0 && (command == 0 || command > 0x20) {
-                text_left = state.popup_left().saturating_add(51);
-            }
         }
+        text_left = match appearance.map(|appearance| appearance.icon_kind) {
+            Some(StandardMenuIconKind::Normal) => state.popup_left().saturating_add(51),
+            Some(
+                kind @ (StandardMenuIconKind::Color { .. }
+                | StandardMenuIconKind::Reduced
+                | StandardMenuIconKind::Small),
+            ) => icon_left.saturating_add(kind.width()),
+            Some(StandardMenuIconKind::None) | None => text_left,
+        };
 
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
         let _ = ppc_draw_text_bytes_styled(
