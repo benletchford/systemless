@@ -159,8 +159,15 @@ const PPC_EXCEPTION_MACHINE_INFORMATION_SIZE: u32 = 64;
 const PPC_EXCEPTION_REGISTER_INFORMATION_SIZE: u32 = 256;
 const PPC_EXCEPTION_FPU_INFORMATION_SIZE: u32 = 264;
 const PPC_EXCEPTION_VECTOR_INFORMATION_SIZE: u32 = 532;
+const PPC_EXCEPTION_MEMORY_INFORMATION_SIZE: u32 = 16;
+// Universal Interfaces 3.4, MachineExceptions.h defines these exception and
+// reference-kind values. Mac OS 8.1 reports status 5 for an unmapped access.
 const PPC_ILLEGAL_INSTRUCTION_EXCEPTION: u32 = 1;
 const PPC_TRAP_EXCEPTION: u32 = 2;
+const PPC_UNMAPPED_MEMORY_EXCEPTION: u32 = 4;
+const PPC_UNMAPPED_MEMORY_ERROR: u32 = 5;
+const PPC_WRITE_REFERENCE: u32 = 0;
+const PPC_READ_REFERENCE: u32 = 1;
 const PPC_MIXED_MODE_TRAP: u16 = 0xAAFE;
 const PPC_ROUTINE_DESCRIPTOR_VERSION: u8 = 7;
 const PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE: u32 = 12;
@@ -2668,14 +2675,21 @@ pub(crate) struct PpcDialogCallbackState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PpcNativeExceptionCause {
+    Processor(PpcException),
+    UnmappedMemory { address: u32, was_write: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PpcNativeExceptionContext {
-    exception: PpcException,
+    cause: PpcNativeExceptionCause,
     pc: u32,
     information: u32,
     machine_state: u32,
     register_image: u32,
     fpu_image: u32,
     vector_image: u32,
+    memory_information: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8731,7 +8745,28 @@ impl PpcLoadedApp {
                             self.stack_base,
                             native_exception_handler.get(),
                             pc,
-                            exception,
+                            PpcNativeExceptionCause::Processor(exception),
+                        ) else {
+                            break ppc_run_result_with_cycles(step_result, total_cycles);
+                        };
+                        native_exception_stack.push(context);
+                    }
+                    PpcRunResult::MemoryFault {
+                        pc,
+                        addr,
+                        was_write,
+                        ..
+                    } if native_exception_handler.get() != 0 => {
+                        let Some(context) = ppc_begin_native_exception(
+                            &mut self.cpu,
+                            &mut self.memory,
+                            self.stack_base,
+                            native_exception_handler.get(),
+                            pc,
+                            PpcNativeExceptionCause::UnmappedMemory {
+                                address: addr,
+                                was_write,
+                            },
                         ) else {
                             break ppc_run_result_with_cycles(step_result, total_cycles);
                         };
@@ -8749,11 +8784,7 @@ impl PpcLoadedApp {
                             continue;
                         }
                         native_exception_stack.clear();
-                        break PpcRunResult::Exception {
-                            pc: context.pc,
-                            exception: context.exception,
-                            cycles: total_cycles,
-                        };
+                        break ppc_native_exception_result(context, total_cycles);
                     }
                     PpcRunResult::CycleLimit { .. } => {
                         break ppc_run_result_with_cycles(step_result, total_cycles);
@@ -75899,6 +75930,31 @@ fn ppc_native_exception_kind(exception: PpcException) -> Option<u32> {
     }
 }
 
+fn ppc_native_exception_cause_kind(cause: PpcNativeExceptionCause) -> Option<u32> {
+    match cause {
+        PpcNativeExceptionCause::Processor(exception) => ppc_native_exception_kind(exception),
+        PpcNativeExceptionCause::UnmappedMemory { .. } => Some(PPC_UNMAPPED_MEMORY_EXCEPTION),
+    }
+}
+
+fn ppc_native_exception_result(context: PpcNativeExceptionContext, cycles: u64) -> PpcRunResult {
+    match context.cause {
+        PpcNativeExceptionCause::Processor(exception) => PpcRunResult::Exception {
+            pc: context.pc,
+            exception,
+            cycles,
+        },
+        PpcNativeExceptionCause::UnmappedMemory { address, was_write } => {
+            PpcRunResult::MemoryFault {
+                pc: context.pc,
+                addr: address,
+                was_write,
+                cycles,
+            }
+        }
+    }
+}
+
 fn ppc_write_exception_wide(memory: &mut PpcSectionMem, addr: u32, value: u32) -> Option<()> {
     memory.write_u32_be(addr, 0)?;
     memory.write_u32_be(addr.checked_add(4)?, value)?;
@@ -75915,9 +75971,9 @@ fn ppc_begin_native_exception(
     stack_base: u32,
     handler: u32,
     pc: u32,
-    exception: PpcException,
+    cause: PpcNativeExceptionCause,
 ) -> Option<PpcNativeExceptionContext> {
-    let kind = ppc_native_exception_kind(exception)?;
+    let kind = ppc_native_exception_cause_kind(cause)?;
     // InstallExceptionHandler accepts an ExceptionHandlerTPP: a native
     // transition vector containing the entry point and TOC, not a UPP.
     // Inside Macintosh: PowerPC System Software (1994), p. 4-17
@@ -75931,7 +75987,11 @@ fn ppc_begin_native_exception(
         .checked_add(PPC_EXCEPTION_MACHINE_INFORMATION_SIZE)?
         .checked_add(PPC_EXCEPTION_REGISTER_INFORMATION_SIZE)?
         .checked_add(PPC_EXCEPTION_FPU_INFORMATION_SIZE)?
-        .checked_add(PPC_EXCEPTION_VECTOR_INFORMATION_SIZE)?;
+        .checked_add(PPC_EXCEPTION_VECTOR_INFORMATION_SIZE)?
+        .checked_add(match cause {
+            PpcNativeExceptionCause::UnmappedMemory { .. } => PPC_EXCEPTION_MEMORY_INFORMATION_SIZE,
+            PpcNativeExceptionCause::Processor(_) => 0,
+        })?;
     let frame_and_records = PPC_INITIAL_STACK_FRAME_SIZE.checked_add(records_size)?;
     let callback_sp = cpu.gpr[1]
         .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
@@ -75948,6 +76008,12 @@ fn ppc_begin_native_exception(
     let register_image = machine_state.checked_add(PPC_EXCEPTION_MACHINE_INFORMATION_SIZE)?;
     let fpu_image = register_image.checked_add(PPC_EXCEPTION_REGISTER_INFORMATION_SIZE)?;
     let vector_image = fpu_image.checked_add(PPC_EXCEPTION_FPU_INFORMATION_SIZE)?;
+    let memory_information = match cause {
+        PpcNativeExceptionCause::UnmappedMemory { .. } => {
+            Some(vector_image.checked_add(PPC_EXCEPTION_VECTOR_INFORMATION_SIZE)?)
+        }
+        PpcNativeExceptionCause::Processor(_) => None,
+    };
     if !ppc_zero_guest_bytes(memory, callback_sp, frame_and_records) {
         return None;
     }
@@ -75959,8 +76025,30 @@ fn ppc_begin_native_exception(
     memory.write_u32_be(information + 4, machine_state)?;
     memory.write_u32_be(information + 8, register_image)?;
     memory.write_u32_be(information + 12, fpu_image)?;
-    memory.write_u32_be(information + 16, 0)?;
+    memory.write_u32_be(information + 16, memory_information.unwrap_or(0))?;
     memory.write_u32_be(information + 20, vector_image)?;
+
+    if let (
+        PpcNativeExceptionCause::UnmappedMemory { address, was_write },
+        Some(memory_information),
+    ) = (cause, memory_information)
+    {
+        // MemoryExceptionInformation describes the affected area, logical
+        // address, status, and reference kind. This HLE has one application
+        // address space, identified by its nonzero stack-area base.
+        // Inside Macintosh: PowerPC System Software (1994), pp. 4-11, 4-15
+        memory.write_u32_be(memory_information, stack_base)?;
+        memory.write_u32_be(memory_information + 4, address)?;
+        memory.write_u32_be(memory_information + 8, PPC_UNMAPPED_MEMORY_ERROR)?;
+        memory.write_u32_be(
+            memory_information + 12,
+            if was_write {
+                PPC_WRITE_REFERENCE
+            } else {
+                PPC_READ_REFERENCE
+            },
+        )?;
+    }
 
     ppc_write_exception_wide(memory, machine_state, cpu.ctr)?;
     ppc_write_exception_wide(memory, machine_state + 8, cpu.lr)?;
@@ -75996,13 +76084,14 @@ fn ppc_begin_native_exception(
     ppc_install_native_call_arguments(cpu, memory, &[information])?;
 
     Some(PpcNativeExceptionContext {
-        exception,
+        cause,
         pc,
         information,
         machine_state,
         register_image,
         fpu_image,
         vector_image,
+        memory_information,
     })
 }
 
@@ -76011,13 +76100,11 @@ fn ppc_restore_native_exception(
     memory: &mut PpcSectionMem,
     context: PpcNativeExceptionContext,
 ) -> Option<()> {
-    if memory.read_u32_be(context.information + 4)? != context.machine_state
-        || memory.read_u32_be(context.information + 8)? != context.register_image
-        || memory.read_u32_be(context.information + 12)? != context.fpu_image
-        || memory.read_u32_be(context.information + 20)? != context.vector_image
-    {
-        return None;
-    }
+    let frame_is_valid = memory.read_u32_be(context.information + 4)? == context.machine_state
+        && memory.read_u32_be(context.information + 8)? == context.register_image
+        && memory.read_u32_be(context.information + 12)? == context.fpu_image
+        && memory.read_u32_be(context.information + 16)? == context.memory_information.unwrap_or(0)
+        && memory.read_u32_be(context.information + 20)? == context.vector_image;
     cpu.ctr = ppc_read_exception_wide(memory, context.machine_state)?;
     cpu.lr = ppc_read_exception_wide(memory, context.machine_state + 8)?;
     cpu.pc = ppc_read_exception_wide(memory, context.machine_state + 16)?;
@@ -76040,7 +76127,7 @@ fn ppc_restore_native_exception(
         )?;
     }
     cpu.fpscr = memory.read_u32_be(context.fpu_image + 256)?;
-    Some(())
+    frame_is_valid.then_some(())
 }
 
 fn ppc_resolve_callback_target(
@@ -84261,6 +84348,196 @@ mod tests {
             assert_eq!(loaded.memory.read_u32_be(information + 16), Some(0));
             assert_ne!(loaded.memory.read_u32_be(information + 20), Some(0));
         }
+    }
+
+    fn install_test_unmapped_store(loaded: &mut PpcLoadedApp) -> u32 {
+        let fault_pc = install_test_fault_words(
+            loaded,
+            &[
+                d_form_u(36, 5, 4, 0),
+                d_form_u(14, 7, 0, 0x1234),
+                d_form_u(14, 0, 0, 0),
+                xfx_form(31, 0, 8, 467),
+                BLR,
+            ],
+        );
+        loaded.cpu.gpr[4] = 0x1000_0000;
+        loaded.cpu.gpr[5] = 0x5566_7788;
+        fault_pc
+    }
+
+    fn install_test_unmapped_load(loaded: &mut PpcLoadedApp) -> u32 {
+        let fault_pc = install_test_fault_words(
+            loaded,
+            &[
+                d_form_u(32, 5, 4, 0),
+                d_form_u(14, 0, 0, 0),
+                xfx_form(31, 0, 8, 467),
+                BLR,
+            ],
+        );
+        loaded.cpu.gpr[4] = 0x1000_0000;
+        fault_pc
+    }
+
+    fn memory_exception_resuming_handler() -> Vec<u32> {
+        vec![
+            d_form_u(36, 3, 2, 0),
+            d_form_u(32, 4, 3, 4),
+            d_form_u(32, 5, 3, 16),
+            d_form_u(36, 5, 2, 4),
+            d_form_u(32, 6, 3, 0),
+            d_form_u(36, 6, 2, 8),
+            d_form_u(32, 6, 5, 0),
+            d_form_u(36, 6, 2, 12),
+            d_form_u(32, 6, 5, 4),
+            d_form_u(36, 6, 2, 16),
+            d_form_u(32, 6, 5, 8),
+            d_form_u(36, 6, 2, 20),
+            d_form_u(32, 6, 5, 12),
+            d_form_u(36, 6, 2, 24),
+            d_form_u(32, 6, 4, 20),
+            d_form_u(14, 6, 6, 4),
+            d_form_u(36, 6, 4, 20),
+            d_form_u(14, 3, 0, 0),
+            BLR,
+        ]
+    }
+
+    #[test]
+    fn hle_import_runner_delivers_and_resumes_unmapped_memory_exceptions() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let fault_pc = install_test_unmapped_store(&mut loaded);
+        let (_, _, handler_rtoc) = install_test_native_exception_handler(
+            &mut loaded,
+            &memory_exception_resuming_handler(),
+        );
+        let saved_sp = loaded.cpu.gpr[1];
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert!(matches!(probe.result, PpcRunResult::Halted { pc: 0, .. }));
+        assert_eq!(loaded.cpu.gpr[7], 0x1234);
+        assert_eq!(loaded.cpu.gpr[4], 0x1000_0000);
+        assert_eq!(loaded.cpu.gpr[5], 0x5566_7788);
+        assert_eq!(loaded.cpu.gpr[1], saved_sp);
+        assert!(loaded.native_exception_stack.is_empty());
+
+        let information = loaded.memory.read_u32_be(handler_rtoc).unwrap();
+        let memory_information = loaded.memory.read_u32_be(handler_rtoc + 4).unwrap();
+        assert_ne!(information, 0);
+        assert_ne!(memory_information, 0);
+        assert_eq!(loaded.memory.read_u32_be(handler_rtoc + 8), Some(4));
+        assert_eq!(
+            loaded.memory.read_u32_be(handler_rtoc + 12),
+            Some(loaded.stack_base)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(handler_rtoc + 16),
+            Some(0x1000_0000)
+        );
+        assert_eq!(loaded.memory.read_u32_be(handler_rtoc + 20), Some(5));
+        assert_eq!(loaded.memory.read_u32_be(handler_rtoc + 24), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(information),
+            Some(PPC_UNMAPPED_MEMORY_EXCEPTION)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(information + 16),
+            Some(memory_information)
+        );
+        let machine_state = loaded.memory.read_u32_be(information + 4).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(machine_state + 20),
+            Some(fault_pc + 4)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_identifies_unmapped_memory_reads() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        install_test_unmapped_load(&mut loaded);
+        let (_, _, handler_rtoc) = install_test_native_exception_handler(
+            &mut loaded,
+            &memory_exception_resuming_handler(),
+        );
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert!(matches!(probe.result, PpcRunResult::Halted { pc: 0, .. }));
+        assert_eq!(
+            loaded.memory.read_u32_be(handler_rtoc + 16),
+            Some(0x1000_0000)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(handler_rtoc + 24),
+            Some(PPC_READ_REFERENCE)
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_surfaces_unmapped_memory_after_nonzero_handler_result() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let fault_pc = install_test_unmapped_store(&mut loaded);
+        install_test_native_exception_handler(&mut loaded, &[d_form_u(14, 3, 0, u16::MAX), BLR]);
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::MemoryFault {
+                pc,
+                addr: 0x1000_0000,
+                was_write: true,
+                ..
+            } if pc == fault_pc
+        ));
+        assert_eq!(loaded.cpu.pc, fault_pc);
+        assert!(loaded.native_exception_stack.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_retains_unmapped_memory_delivery_between_slices() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        install_test_unmapped_store(&mut loaded);
+        install_test_native_exception_handler(&mut loaded, &memory_exception_resuming_handler());
+
+        let first = loaded.run_with_hle_imports(1);
+        assert_eq!(first.result, PpcRunResult::CycleLimit { cycles: 1 });
+        assert_eq!(loaded.native_exception_stack.len(), 1);
+
+        let second = loaded.run_with_hle_imports(128);
+        assert!(matches!(second.result, PpcRunResult::Halted { pc: 0, .. }));
+        assert!(loaded.native_exception_stack.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_rejects_malformed_unmapped_memory_exception_frame() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let fault_pc = install_test_unmapped_store(&mut loaded);
+        install_test_native_exception_handler(
+            &mut loaded,
+            &[
+                d_form_u(14, 4, 0, 0),
+                d_form_u(36, 4, 3, 16),
+                d_form_u(14, 3, 0, 0),
+                BLR,
+            ],
+        );
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::MemoryFault {
+                pc,
+                addr: 0x1000_0000,
+                was_write: true,
+                ..
+            } if pc == fault_pc
+        ));
+        assert_eq!(loaded.cpu.pc, fault_pc);
+        assert!(loaded.native_exception_stack.is_empty());
     }
 
     #[test]
