@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.3](https://github.com/benletchford/systemless/compare/v0.23.2...v0.23.3) (2026-08-28)
+
+
+### Bug Fixes
+
+* **event:** use SysEvtMask as the posting authority ([b9705a7](https://github.com/benletchford/systemless/commit/b9705a7bc175f8e23c9e5ee2f5d0ecdb48ef4ca1))
+
 ## [0.23.2](https://github.com/benletchford/systemless/compare/v0.23.1...v0.23.2) (2026-08-28)
 
 
