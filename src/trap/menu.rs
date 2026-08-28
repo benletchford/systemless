@@ -11,7 +11,8 @@ use crate::menu_manager::{
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
-    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuItems as SharedMenuItems,
+    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuDefinitionCall as SharedMenuDefinitionCall,
+    MenuDefinitionMessage as SharedMenuDefinitionMessage, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
@@ -20,7 +21,7 @@ use crate::menu_manager::{
     StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane,
     TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE,
     STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -145,6 +146,8 @@ const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
 const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
 const MENU_NORMAL_ICON_TEXT_LEFT_OFFSET: i16 = 51;
+
+const MDEF_TRAMPOLINE_SIZE: u32 = 60;
 
 /// Compute the size of a MENU resource in guest memory by scanning through it.
 /// MENU format: menuID(2), menuWidth(2), menuHeight(2), menuProc(4), enableFlags(4),
@@ -517,6 +520,82 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    fn menu_uses_standard_definition(&self, bus: &MacMemoryBus, menu_ptr: u32) -> bool {
+        let handle = bus.read_long(menu_ptr + 6);
+        self.loaded_handles
+            .get(&handle)
+            .is_some_and(|(_, resource_type, resource_id)| {
+                *resource_type == *b"MDEF" && *resource_id == 0
+            })
+            || bus.read_bytes(bus.read_long(handle), STANDARD_MENU_DEFINITION_SHIM.len())
+                == STANDARD_MENU_DEFINITION_SHIM
+    }
+
+    fn arm_menu_definition_size<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        menu_handle: u32,
+    ) -> bool {
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 || self.menu_uses_standard_definition(bus, menu_ptr) {
+            return false;
+        }
+        let proc_addr = bus.read_long(bus.read_long(menu_ptr + 6));
+        if proc_addr == 0 || proc_addr >= bus.ram_size() {
+            return false;
+        }
+
+        // MDEFs are Pascal procedures with five arguments. The definition
+        // procedure owns menuWidth/menuHeight for mSizeMsg, so the HLE only
+        // marshals the documented call and resumes the application afterward.
+        // Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
+        let trampoline = if self.menu_def_trampoline == 0 {
+            self.menu_def_trampoline = bus.alloc(MDEF_TRAMPOLINE_SIZE);
+            self.menu_def_trampoline
+        } else {
+            self.menu_def_trampoline
+        };
+        let call = SharedMenuDefinitionCall {
+            message: SharedMenuDefinitionMessage::Size,
+            menu_handle,
+            menu_rect: trampoline + 50,
+            hit_point: 0,
+            which_item: trampoline + 58,
+        };
+        let final_sp = cpu.read_reg(Register::A7);
+        let return_slot = final_sp.wrapping_sub(4);
+
+        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(trampoline + 2, 0xF0F0);
+        bus.write_word(trampoline + 4, 0x3F3C); // MOVE.W #message,-(SP)
+        bus.write_word(trampoline + 6, call.message as i16 as u16);
+        for (offset, value) in [
+            (8, call.menu_handle),
+            (14, call.menu_rect),
+            (20, call.hit_point),
+            (26, call.which_item),
+        ] {
+            bus.write_word(trampoline + offset, 0x2F3C); // MOVE.L #value,-(SP)
+            bus.write_long(trampoline + offset + 2, value);
+        }
+        bus.write_word(trampoline + 32, 0x4EB9); // JSR abs.L
+        bus.write_long(trampoline + 34, proc_addr);
+        bus.write_word(trampoline + 38, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_long(trampoline + 40, return_slot.wrapping_sub(32));
+        bus.write_word(trampoline + 44, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(trampoline + 46, 0x0F0F);
+        bus.write_word(trampoline + 48, 0x4E75); // RTS
+        for offset in 50..60 {
+            bus.write_byte(trampoline + offset, 0);
+        }
+
+        bus.write_long(return_slot, cpu.read_reg(Register::PC));
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampoline);
+        true
+    }
+
     /// Copy the live, inserted Menu Manager state into the shared
     /// frontend-neutral representation. Classic applications and custom menu
     /// procedures can mutate guest-owned MenuInfo records directly, so this
@@ -2748,6 +2827,11 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
+
+                let menu_ptr = bus.read_long(menu_handle);
+                if menu_ptr != 0 && self.arm_menu_definition_size(cpu, bus, menu_handle) {
+                    return Some(Ok(()));
+                }
 
                 if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
                     let (_base, _row_bytes, _screen_width, screen_height, _depth) =
@@ -6871,6 +6955,41 @@ mod tests {
             "68k CalcMenuSize should use the shared Mac OS 8.1 width policy"
         );
         assert_eq!(height, 16);
+    }
+
+    #[test]
+    fn calcmenusize_arms_custom_mdef_size_message_with_pascal_arguments() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 335, 0x306DD0, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), return_pc);
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        assert_eq!(bus.read_long(trampoline + 10), handle);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 22), 0);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
     }
 
     #[test]

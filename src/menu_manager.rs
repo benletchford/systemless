@@ -76,6 +76,44 @@ pub(crate) const STANDARD_MENU_DEFINITION_SHIM: [u8; 8] = [
     0x4e, 0xd0, // JMP (A0).
 ];
 
+/// Operation selector passed to a menu definition procedure.
+///
+/// These values and the five-parameter procedure contract are common to the
+/// 68k Pascal ABI and native PowerPC routine descriptors. Macintosh Toolbox
+/// Essentials (1992), pp. 3-148--3-151.
+#[repr(i16)]
+#[allow(dead_code)] // The retained dispatch slices migrate these messages incrementally.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuDefinitionMessage {
+    Draw = 0,
+    Choose = 1,
+    Size = 2,
+    PopUp = 3,
+}
+
+/// Architecture-neutral values supplied to one MDEF invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionCall {
+    pub(crate) message: MenuDefinitionMessage,
+    pub(crate) menu_handle: u32,
+    pub(crate) menu_rect: u32,
+    pub(crate) hit_point: u32,
+    pub(crate) which_item: u32,
+}
+
+impl MenuDefinitionCall {
+    /// Native PowerPC passes the same logical arguments in declaration order.
+    pub(crate) fn native_arguments(self) -> [u32; 5] {
+        [
+            self.message as i16 as u16 as u32,
+            self.menu_handle,
+            self.menu_rect,
+            self.hit_point,
+            self.which_item,
+        ]
+    }
+}
+
 const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.
@@ -2035,6 +2073,24 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_definition_call_preserves_the_shared_five_argument_contract() {
+        let call = MenuDefinitionCall {
+            message: MenuDefinitionMessage::Size,
+            menu_handle: 0x1111_2222,
+            menu_rect: 0x3333_4444,
+            hit_point: 0x5555_6666,
+            which_item: 0x7777_8888,
+        };
+        assert_eq!(
+            call.native_arguments(),
+            [2, 0x1111_2222, 0x3333_4444, 0x5555_6666, 0x7777_8888]
+        );
+        assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
+        assert_eq!(MenuDefinitionMessage::Choose as i16, 1);
+        assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
+    }
 
     fn menu_color_entry(menu_id: i16, item: i16, seed: u8) -> [u8; MENU_COLOR_ENTRY_SIZE] {
         let mut entry = [seed; MENU_COLOR_ENTRY_SIZE];

@@ -1329,6 +1329,9 @@ pub struct TrapDispatcher {
     /// Address of the lazily-allocated trampoline template used by the
     /// Control Manager to call a guest CDEF procedure.
     pub(crate) control_def_trampoline: u32,
+    /// Address of the lazily-allocated trampoline used by the Menu Manager to
+    /// call an application MDEF procedure.
+    pub(crate) menu_def_trampoline: u32,
     /// Reusable trampoline cells for multi-control CDEF callback chains.
     pub(crate) control_def_trampoline_chain: Vec<u32>,
     /// Address of the lazily-allocated trampoline used by DeferUserFn
@@ -3093,6 +3096,7 @@ impl TrapDispatcher {
             list_def_trampoline: 0,
             window_def_trampoline: 0,
             control_def_trampoline: 0,
+            menu_def_trampoline: 0,
             control_def_trampoline_chain: Vec::new(),
             defer_user_fn_trampoline: 0,
             qddone_seen_ports: HashSet::new(),
