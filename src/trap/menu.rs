@@ -6,8 +6,9 @@ use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::parse_menu_item_specs;
 use crate::menu_manager::{
     hierarchical_menu_id, laid_out_menu_item_count, new_standard_menu_record,
-    standard_menu_row_height, standard_menu_width as shared_standard_menu_width,
-    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    standard_menu_height as shared_standard_menu_height, standard_menu_row_height,
+    standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
+    standard_pull_down_menu_layout, standard_submenu_layout,
     MenuBarResource as SharedMenuBarResource, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
@@ -58,12 +59,23 @@ pub(crate) fn tracked_menu_state(
     rect: (i16, i16, i16, i16),
     saved_pixels: Vec<u8>,
 ) -> MenuTrackingState {
+    tracked_menu_state_with_content_top(kind, menu_handle, rect, rect.0, saved_pixels)
+}
+
+fn tracked_menu_state_with_content_top(
+    kind: MenuTrackingKind,
+    menu_handle: usize,
+    rect: (i16, i16, i16, i16),
+    content_top: i16,
+    saved_pixels: Vec<u8>,
+) -> MenuTrackingState {
     let (popup_top, popup_left, popup_bottom, popup_right) = rect;
     MenuTrackingState {
         kind,
         menu_handle,
         popup_left,
         popup_top,
+        content_top,
         popup_width: popup_right.saturating_sub(popup_left),
         popup_height: popup_bottom.saturating_sub(popup_top),
         highlighted_item: 0,
@@ -91,6 +103,7 @@ pub(crate) fn tracked_submenu_state(
         menu_handle,
         popup_left,
         popup_top,
+        content_top: popup_top,
         popup_width: popup_right.saturating_sub(popup_left),
         popup_height: popup_bottom.saturating_sub(popup_top),
         highlighted_item: 0,
@@ -2322,7 +2335,7 @@ impl super::TrapDispatcher {
                         // resolves item icon number + 256, with `cicn`
                         // taking precedence over the monochrome families.
                         self.preload_menu_item_icon_resources(bus, menu_idx);
-                        let Some((dd_rect, highlighted_item)) =
+                        let Some((dd_rect, highlighted_item, content_top)) =
                             self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item)
                         else {
                             self.finish_menu_no_hit(bus, cpu, sp, 10);
@@ -2331,12 +2344,14 @@ impl super::TrapDispatcher {
 
                         self.restore_visible_dialog_snapshots(bus);
                         let saved = self.save_dropdown_pixels(bus, dd_rect);
-                        self.menu_tracking = Some(tracked_menu_state(
+                        self.menu_tracking = Some(tracked_menu_state_with_content_top(
                             MenuTrackingKind::PopUp,
                             menu_idx,
                             dd_rect,
+                            content_top,
                             saved,
                         ));
+                        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
                         self.menu_tracking_stack_ptr = sp;
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
                         if highlighted_item > 0 {
@@ -2781,7 +2796,12 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
 
                 if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
-                    let menu_height = self.menu_items_height(bus, &menu.items);
+                    let (_base, _row_bytes, _screen_width, screen_height, _depth) =
+                        self.get_screen_params();
+                    let menu_height = shared_standard_menu_height(
+                        &self.menu_rows(bus, &menu.items),
+                        screen_height.saturating_sub(bus.read_word(addr::MBAR_HEIGHT) as i16),
+                    );
                     let menu_width = self.standard_menu_width(bus, &menu.items);
 
                     if menu_handle != 0 {
@@ -4173,7 +4193,7 @@ impl super::TrapDispatcher {
         top: i16,
         left: i16,
         popup_item: i16,
-    ) -> Option<((i16, i16, i16, i16), i16)> {
+    ) -> Option<((i16, i16, i16, i16), i16, i16)> {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
         let menu = &self.menus[menu_idx];
@@ -4187,7 +4207,7 @@ impl super::TrapDispatcher {
             (top, left),
             popup_item,
         )?;
-        Some((layout.rect(), layout.highlighted_item))
+        Some((layout.rect(), layout.highlighted_item, layout.content_top))
     }
 
     fn dropdown_width_for_menu(&self, bus: &MacMemoryBus, menu_idx: usize, min_width: i16) -> i16 {
@@ -4582,7 +4602,12 @@ impl super::TrapDispatcher {
             let menu = &self.menus[tracking.menu_handle];
             return self
                 .menu_rows(bus, &menu.items)
-                .item_at_point(tracking.dropdown_rect(), (0, 0, 0, 0), (mouse_y, mouse_x))
+                .item_at_point_with_content_top(
+                    tracking.dropdown_rect(),
+                    (0, 0, 0, 0),
+                    tracking.content_top,
+                    (mouse_y, mouse_x),
+                )
                 .unwrap_or(0);
         }
         0
@@ -4676,12 +4701,12 @@ impl super::TrapDispatcher {
         let font_id: i16 = 0;
         let font_size: i16 = 12;
         let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
-        let highlighted_item = self
+        let (highlighted_item, content_top) = self
             .menu_tracking
             .as_ref()
             .and_then(|tracking| {
                 if tracking.menu_handle == menu_idx && tracking.dropdown_rect() == rect {
-                    Some(tracking.highlighted_item)
+                    Some((tracking.highlighted_item, tracking.content_top))
                 } else {
                     tracking
                         .submenus
@@ -4689,7 +4714,7 @@ impl super::TrapDispatcher {
                         .find(|submenu| {
                             submenu.menu_handle == menu_idx && submenu.dropdown_rect() == rect
                         })
-                        .map(|submenu| submenu.highlighted_item)
+                        .map(|submenu| (submenu.highlighted_item, submenu.content_top))
                 }
             })
             .or_else(|| {
@@ -4698,22 +4723,29 @@ impl super::TrapDispatcher {
                     .filter(|tracking| {
                         tracking.active_menu == menu_idx && tracking.dropdown_rect == rect
                     })
-                    .map(|tracking| tracking.highlighted_item)
+                    .map(|tracking| (tracking.highlighted_item, top))
             })
             .or_else(|| {
                 self.dialog_tracking
                     .as_ref()
                     .and_then(|tracking| tracking.active_popup.as_ref())
                     .filter(|popup| popup.active_menu == menu_idx && popup.dropdown_rect == rect)
-                    .map(|popup| popup.highlighted_item)
+                    .map(|popup| (popup.highlighted_item, top))
             })
-            .unwrap_or(0);
+            .unwrap_or((0, top));
 
-        let mut item_top = top;
+        let mut item_top = content_top;
         for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
             let item_no = i as i16 + 1;
             let item_height = self.menu_item_height(bus, item);
-            let item_bottom = item_top + item_height;
+            let item_bottom = item_top.saturating_add(item_height);
+            if item_bottom <= top {
+                item_top = item_bottom;
+                continue;
+            }
+            if item_top >= bottom {
+                break;
+            }
             let is_separator = item.text == "-";
             let mark_pixel_index =
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 4);
@@ -6852,6 +6884,31 @@ mod tests {
             "68k CalcMenuSize should use the shared Mac OS 8.1 width policy"
         );
         assert_eq!(height, 16);
+    }
+
+    #[test]
+    fn calcmenusize_caps_oversized_menu_height_from_profile_geometry() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(0x0040_0000, 100, 800, 600, 1);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 334, 0x306DE0, "File");
+        let description = (0..40).map(|_| "A").collect::<Vec<_>>().join(";");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x306E00,
+            &description,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        disp.dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(bus.read_long(handle) + 4), 560);
     }
 
     #[test]
@@ -10865,7 +10922,7 @@ mod tests {
 
     #[test]
     fn draw_menu_dropdown_applies_setitemstyle_pixels_with_classic_style_metrics() {
-        let rect = (20, 20, 104, 180);
+        let rect = (20, 20, 160, 180);
         let menu_data = "Bold;Italic;Underline;Outline;Shadow;Condense;Extend";
         let style_cases = [
             ("bold", "Bold", 0x01u8),
@@ -14176,6 +14233,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn popupmenuselect_tracks_oversized_content_from_shared_layout() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 100;
+        let base = bus.alloc(row_bytes * 600);
+        disp.set_screen_mode_for_test(base, row_bytes, 800, 600, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 600);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+        disp.mouse_button = true;
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 734, 0x30BF00, "Long");
+        let description = (0..40).map(|_| "A").collect::<Vec<_>>().join(";");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x30BF40, &description);
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
+
+        dispatch_popupmenuselect_start(&mut disp, &mut cpu, &mut bus, menu, 100, 120, 20);
+
+        let tracking = disp.menu_tracking.as_ref().expect("popup tracking active");
+        assert_eq!(tracking.popup_top, 4);
+        assert_eq!(tracking.popup_height, 576);
+        assert_eq!(tracking.content_top, -204);
+        assert_eq!(tracking.highlighted_item, 20);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TOP_MENU_ITEM) as i16,
+            -204,
+        );
+        assert_eq!(
+            disp.dropdown_item_at_point(&bus, tracking.popup_left + 4, 100),
+            20
+        );
+    }
+
     fn finish_popupmenuselect(
         disp: &mut super::super::TrapDispatcher,
         cpu: &mut MockCpu,
@@ -14334,8 +14424,8 @@ mod tests {
         // Width comes from the widest item "Three" measured in Chicago 12.
         // Our strike reproduces the original per-glyph advances exactly
         // (T6 h8 r6 e8 e8 = 36), so the Mac OS 8.1 standard MDEF makes the
-        // box 36 + 32 = 68 pixels wide. The clamped case keeps its one-pixel
-        // shadow inside the 240-pixel screen, so its left is 240 - 68 - 1.
+        // box 36 + 32 = 68 pixels wide. The clamped case preserves the
+        // captured four-pixel standard MDEF screen margin.
         assert_eq!(classic.rect, (26, 30, 90, 98));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
@@ -14343,7 +14433,7 @@ mod tests {
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (95, 171, 159, 239));
+        assert_eq!(classic.clamped_rect, (95, 168, 159, 236));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);

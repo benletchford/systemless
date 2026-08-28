@@ -69,6 +69,11 @@ pub mod addr {
     pub const SOUND_LEVEL: u32 = 0x027F;
 
     // Menu Manager globals
+    /// TopMenuItem: global vertical coordinate of the first item in the
+    /// currently active scrollable menu (word).
+    /// Inside Macintosh Volume V (1986), pp. V-249 and V-571.
+    pub const TOP_MENU_ITEM: u32 = 0x0A0A;
+
     /// MenuList: handle to the current Menu Manager menu list.
     /// Inside Macintosh Volume III (1985), low-memory globals table;
     /// Inside Macintosh Volume V (1986), pp. V-228–V-230.

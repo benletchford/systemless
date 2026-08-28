@@ -25,6 +25,7 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) menu_handle: MenuRef,
     pub(crate) popup_left: i16,
     pub(crate) popup_top: i16,
+    pub(crate) content_top: i16,
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
@@ -46,6 +47,7 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) menu_handle: MenuRef,
     pub(crate) popup_left: i16,
     pub(crate) popup_top: i16,
+    pub(crate) content_top: i16,
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
@@ -79,6 +81,7 @@ pub(crate) trait TrackedMenuPaneView {
     fn menu_handle(&self) -> Self::MenuRef;
     fn popup_left(&self) -> i16;
     fn popup_top(&self) -> i16;
+    fn content_top(&self) -> i16;
     fn popup_width(&self) -> i16;
     fn popup_height(&self) -> i16;
     fn dropdown_rect(&self) -> (i16, i16, i16, i16) {
@@ -114,6 +117,9 @@ macro_rules! impl_tracked_menu_pane_view {
             }
             fn popup_top(&self) -> i16 {
                 self.popup_top
+            }
+            fn content_top(&self) -> i16 {
+                self.content_top
             }
             fn popup_width(&self) -> i16 {
                 self.popup_width
@@ -292,13 +298,16 @@ pub(crate) struct MenuRows {
     rows: Vec<MenuRow>,
 }
 
-/// Architecture-neutral result of positioning a standard unscrolled pop-up
-/// menu. The one-pixel shadow is presentation state and lies immediately
-/// outside this rectangle.
+/// Architecture-neutral result of positioning a standard pop-up menu.
+/// `content_top` is the screen coordinate of the uncropped first item and can
+/// lie outside the visible rectangle when the standard MDEF scrolls. The
+/// one-pixel shadow is presentation state and lies immediately outside the
+/// rectangle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PopupMenuLayout {
     pub(crate) top: i16,
     pub(crate) left: i16,
+    pub(crate) content_top: i16,
     pub(crate) width: i16,
     pub(crate) height: i16,
     pub(crate) highlighted_item: i16,
@@ -352,6 +361,23 @@ pub(crate) fn standard_menu_width(items: impl IntoIterator<Item = StandardMenuIt
                 .saturating_add(indicator),
         )
     })
+}
+
+/// Limit `MenuInfo.menuHeight` for the standard Mac OS 8.1 MDEF.
+///
+/// The definition procedure sums complete item rows, then caps the result at
+/// the captured maximum. Both supported 800-by-600 profiles
+/// report 560 pixels for a 640-pixel, 40-item menu. The general requirement
+/// that menu height not exceed the available display is documented by
+/// Macintosh Toolbox Essentials (1992), pp. 3-88--3-90; the exact limit is
+/// profile evidence rather than an inferred screen-margin formula. The caller
+/// supplies the screen height remaining below the menu bar, as required by the
+/// same reference.
+pub(crate) fn standard_menu_height(rows: &MenuRows, available_screen_height: i16) -> i16 {
+    const MACOS_81_STANDARD_MENU_MAX_HEIGHT: i16 = 560;
+    rows.total_height()
+        .max(0)
+        .min(MACOS_81_STANDARD_MENU_MAX_HEIGHT.min(available_screen_height.max(0)))
 }
 
 /// Compute the standard MDEF row height from its resolved icon geometry and
@@ -448,17 +474,27 @@ impl MenuRows {
         insets: (i16, i16, i16, i16),
         point: (i16, i16),
     ) -> Option<i16> {
+        self.item_at_point_with_content_top(rect, insets, rect.0, point)
+    }
+
+    pub(crate) fn item_at_point_with_content_top(
+        &self,
+        rect: (i16, i16, i16, i16),
+        insets: (i16, i16, i16, i16),
+        first_item_top: i16,
+        point: (i16, i16),
+    ) -> Option<i16> {
         let (top, left, bottom, right) = rect;
         let (inset_top, inset_left, inset_bottom, inset_right) = insets;
         let (vertical, horizontal) = point;
-        let content_top = top.saturating_add(inset_top);
+        let visible_content_top = top.saturating_add(inset_top);
         let content_left = left.saturating_add(inset_left);
         let content_bottom = bottom.saturating_sub(inset_bottom);
         let content_right = right.saturating_sub(inset_right);
         if vertical < top || vertical >= bottom || horizontal < left || horizontal >= right {
             return None;
         }
-        if vertical < content_top
+        if vertical < visible_content_top
             || vertical >= content_bottom
             || horizontal < content_left
             || horizontal >= content_right
@@ -466,22 +502,26 @@ impl MenuRows {
             return Some(0);
         }
         Some(
-            self.item_at_offset(vertical.saturating_sub(content_top))
+            self.item_at_offset(vertical.saturating_sub(first_item_top))
                 .unwrap_or(0),
         )
     }
 }
 
-/// Position the non-scrolling form of the standard Mac OS 8.1 pop-up menu.
+const STANDARD_POPUP_SCREEN_MARGIN: i16 = 4;
+const STANDARD_POPUP_BOTTOM_RESERVE: i16 = 20;
+const STANDARD_POPUP_SCROLL_STEP: i16 = 16;
+
+/// Position the standard Mac OS 8.1 pop-up menu and its uncropped content.
 ///
 /// The standard MDEF's `mPopUpMsg` aligns the requested item's top-left with
 /// the caller's `Top`/`Left`, uses exactly the `CalcMenuSize` dimensions, and
-/// subtracts only preceding row heights. Mac OS 8.1 returns the same geometry
-/// on the supported 68040 and 604 machines. When the full menu does not fit,
-/// this interim shared policy keeps the complete menu plus its one-pixel shadow on
-/// screen; the standard MDEF's scrolling viewport and `TopMenuItem` state are
-/// a separate operation still to be implemented. Macintosh Toolbox Essentials
-/// (1992), pp. 3-120 and 3-148--3-151.
+/// subtracts only preceding row heights. When the full content exceeds the
+/// display, the visible pane is limited to the captured scrolling viewport and
+/// aligned to the requested row while `content_top` preserves the uncropped
+/// item origin returned through `TopMenuItem`. The behavior is byte-identical
+/// on the supported 68040 and 604 Mac OS 8.1 profiles. Macintosh Toolbox
+/// Essentials (1992), pp. 3-120 and 3-148--3-151.
 pub(crate) fn standard_popup_menu_layout(
     rows: &MenuRows,
     width: i16,
@@ -490,28 +530,52 @@ pub(crate) fn standard_popup_menu_layout(
     requested_item: i16,
 ) -> Option<PopupMenuLayout> {
     let (screen_width, screen_height) = screen_size;
-    if rows.len() == 0 || screen_width <= 1 || screen_height <= 1 {
+    if rows.len() == 0
+        || screen_width <= STANDARD_POPUP_SCREEN_MARGIN.saturating_mul(2)
+        || screen_height
+            <= STANDARD_POPUP_SCREEN_MARGIN.saturating_add(STANDARD_POPUP_BOTTOM_RESERVE)
+    {
         return None;
     }
     let highlighted_item = usize::try_from(requested_item)
         .ok()
         .filter(|item| (1..=rows.len()).contains(item))
         .map_or(0, |_| requested_item);
-    let width = width.max(1).min(screen_width.saturating_sub(1));
-    let height = rows
-        .total_height()
+    let width = width
         .max(1)
-        .min(screen_height.saturating_sub(1));
+        .min(screen_width.saturating_sub(STANDARD_POPUP_SCREEN_MARGIN.saturating_mul(2)));
+    let content_height = rows.total_height().max(1);
+    let max_viewport_height = screen_height
+        .saturating_sub(STANDARD_POPUP_SCREEN_MARGIN)
+        .saturating_sub(STANDARD_POPUP_BOTTOM_RESERVE);
+    let scrolling = content_height > max_viewport_height;
+    let height = content_height.min(max_viewport_height);
     let desired_top = if highlighted_item > 0 {
         anchor.0.saturating_sub(rows.offset(highlighted_item))
     } else {
         anchor.0
     };
-    let max_left = screen_width.saturating_sub(width).saturating_sub(1);
+    let max_left = screen_width
+        .saturating_sub(STANDARD_POPUP_SCREEN_MARGIN)
+        .saturating_sub(width);
     let max_top = screen_height.saturating_sub(height).saturating_sub(1);
+    let top = if scrolling {
+        STANDARD_POPUP_SCREEN_MARGIN.saturating_add(
+            anchor
+                .0
+                .saturating_sub(STANDARD_POPUP_SCREEN_MARGIN)
+                .rem_euclid(STANDARD_POPUP_SCROLL_STEP),
+        )
+    } else {
+        desired_top.clamp(0, max_top.max(0))
+    };
     Some(PopupMenuLayout {
-        top: desired_top.clamp(0, max_top.max(0)),
-        left: anchor.1.clamp(0, max_left.max(0)),
+        top,
+        left: anchor.1.clamp(
+            STANDARD_POPUP_SCREEN_MARGIN,
+            max_left.max(STANDARD_POPUP_SCREEN_MARGIN),
+        ),
+        content_top: if scrolling { desired_top } else { top },
         width,
         height,
         highlighted_item,
@@ -554,6 +618,7 @@ pub(crate) fn standard_pull_down_menu_layout(
     Some(PopupMenuLayout {
         top: menu_bar_height,
         left: title_left.clamp(0, max_right.saturating_sub(width)),
+        content_top: menu_bar_height,
         width,
         height,
         highlighted_item: 0,
@@ -602,6 +667,9 @@ pub(crate) fn standard_submenu_layout(
             .saturating_add(parent_row_offset)
             .clamp(min_top, max_top),
         left,
+        content_top: parent_top
+            .saturating_add(parent_row_offset)
+            .clamp(min_top, max_top),
         width,
         height,
         highlighted_item: 0,
@@ -1450,6 +1518,7 @@ mod tests {
             menu_handle: root,
             popup_left: 0,
             popup_top: 20,
+            content_top: 20,
             popup_width: 100,
             popup_height: 40,
             highlighted_item: 1,
@@ -1466,6 +1535,7 @@ mod tests {
                 menu_handle: child,
                 popup_left: 99,
                 popup_top: 22,
+                content_top: 22,
                 popup_width: 100,
                 popup_height: 40,
                 highlighted_item: 2,
@@ -1866,6 +1936,7 @@ mod tests {
                 .expect("plain popup layout");
             assert_eq!(layout.rect(), (top, 120, top + 48, 195));
             assert_eq!(layout.highlighted_item, item);
+            assert_eq!(layout.content_top, top);
         }
 
         let separator = MenuRows::new([
@@ -1889,8 +1960,31 @@ mod tests {
 
         let clamped = standard_popup_menu_layout(&plain, 75, (240, 160), (150, 220), 3)
             .expect("clamped popup layout");
-        assert_eq!(clamped.rect(), (111, 164, 159, 239));
+        assert_eq!(clamped.rect(), (111, 161, 159, 236));
         assert_eq!(clamped.highlighted_item, 3);
+    }
+
+    #[test]
+    fn scrolling_popup_layout_matches_macos_81_profile_captures() {
+        let rows = MenuRows::new((0..40).map(|_| MenuRow {
+            height: 16,
+            selectable: true,
+        }));
+        assert_eq!(standard_menu_height(&rows, 580), 560);
+        for (item, anchor_top, expected_rect, content_top) in [
+            (1, 100, (4, 120, 580, 155), 100),
+            (20, 100, (4, 120, 580, 155), -204),
+            (40, 100, (4, 120, 580, 155), -524),
+            (1, 10, (10, 120, 586, 155), 10),
+            (20, 300, (12, 120, 588, 155), -4),
+            (40, 590, (14, 120, 590, 155), -34),
+        ] {
+            let layout = standard_popup_menu_layout(&rows, 35, (800, 600), (anchor_top, 120), item)
+                .expect("scrolling popup layout");
+            assert_eq!(layout.rect(), expected_rect);
+            assert_eq!(layout.content_top, content_top);
+            assert_eq!(layout.highlighted_item, item);
+        }
     }
 
     #[test]
