@@ -3990,13 +3990,22 @@ impl FixtureRunner {
         // RndSeed is the system random-number seed (Inside Macintosh Volume I,
         // I-195). The Vertical Retrace Manager updates Ticks and the one-second
         // interrupt updates Time (Inside Macintosh Volume II, II-202 and
-        // II-378). These bytes describe one running Macintosh, so native and
-        // 68k callers must observe one backing allocation rather than values
-        // copied at CPU-slice boundaries.
-        for address in [addr::RND_SEED, addr::TICKS, addr::TIME] {
+        // II-378). GetMouse, Button, and GetKeys observe the current device
+        // state, whose KeyMap is one 128-bit value (Inside Macintosh Volume I,
+        // I-259–I-260). These bytes describe one running Macintosh, so native
+        // and 68k callers must observe one backing allocation rather than
+        // values copied at CPU-slice boundaries.
+        for (address, len) in [
+            (addr::RND_SEED, 4),
+            (addr::TICKS, 4),
+            (addr::TIME, 4),
+            (addr::MB_STATE, 1),
+            (addr::KEY_MAP_LM, 16),
+            (addr::M_TEMP, 12),
+        ] {
             let region = self
                 .bus
-                .shared_ram_region(address, 4)
+                .shared_ram_region(address, len)
                 .expect("FixtureRunner owns stable guest RAM");
             // SAFETY: both adapters remain private children of this runner;
             // every execution and presentation entry point requires a mutable
@@ -11855,6 +11864,110 @@ mod tests {
             runner.bus.write_long(address, runner_value);
             assert_eq!(ppc_app.memory.read_u32_be(address), Some(runner_value));
         }
+    }
+
+    #[test]
+    fn ppc_input_globals_have_immediate_bidirectional_visibility() {
+        use crate::memory::globals::addr;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+
+        ppc_app.memory.write_u8(addr::MB_STATE, 0).unwrap();
+        assert_eq!(runner.bus.read_byte(addr::MB_STATE), 0);
+        runner.bus.write_byte(addr::MB_STATE, 0x80);
+        assert_eq!(ppc_app.memory.read_u8(addr::MB_STATE), Some(0x80));
+
+        let ppc_key_map = [
+            0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+            0x77, 0x88,
+        ];
+        ppc_app
+            .memory
+            .write_bytes(addr::KEY_MAP_LM, &ppc_key_map)
+            .unwrap();
+        assert_eq!(runner.bus.read_bytes(addr::KEY_MAP_LM, 16), ppc_key_map);
+
+        let runner_key_map = [
+            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20,
+            0x40, 0x80,
+        ];
+        runner.bus.write_bytes(addr::KEY_MAP_LM, &runner_key_map);
+        let mut observed_key_map = [0; 16];
+        ppc_app
+            .memory
+            .read_bytes_into(addr::KEY_MAP_LM, &mut observed_key_map)
+            .unwrap();
+        assert_eq!(observed_key_map, runner_key_map);
+
+        let ppc_points = [
+            0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14, 0x21, 0x22, 0x23, 0x24,
+        ];
+        ppc_app
+            .memory
+            .write_bytes(addr::M_TEMP, &ppc_points)
+            .unwrap();
+        assert_eq!(runner.bus.read_bytes(addr::M_TEMP, 12), ppc_points);
+
+        let runner_points = [
+            0x24, 0x23, 0x22, 0x21, 0x14, 0x13, 0x12, 0x11, 0x04, 0x03, 0x02, 0x01,
+        ];
+        runner.bus.write_bytes(addr::M_TEMP, &runner_points);
+        let mut observed_points = [0; 12];
+        ppc_app
+            .memory
+            .read_bytes_into(addr::M_TEMP, &mut observed_points)
+            .unwrap();
+        assert_eq!(observed_points, runner_points);
+
+        let native_key_map = [
+            0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54,
+            0x32, 0x10,
+        ];
+        ppc_app.set_input_snapshot(PpcInputSnapshot {
+            key_map: native_key_map,
+            mouse_button: true,
+            mouse_v: 123,
+            mouse_h: 456,
+        });
+        assert_eq!(runner.bus.read_byte(addr::MB_STATE), 0);
+        assert_eq!(runner.bus.read_bytes(addr::KEY_MAP_LM, 16), native_key_map);
+        for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            assert_eq!(runner.bus.read_word(point_addr), 123);
+            assert_eq!(runner.bus.read_word(point_addr + 2), 456);
+        }
+
+        runner.push_key_down(6, b'z');
+        runner.push_mouse_down(-7, 321);
+        let mut host_key_map = [0; 16];
+        ppc_app
+            .memory
+            .read_bytes_into(addr::KEY_MAP_LM, &mut host_key_map)
+            .unwrap();
+        assert_eq!(host_key_map, runner.dispatcher.key_map);
+        assert_eq!(ppc_app.memory.read_u8(addr::MB_STATE), Some(0));
+        for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
+            assert_eq!(ppc_app.memory.read_u16_be(point_addr), Some((-7i16) as u16));
+            assert_eq!(ppc_app.memory.read_u16_be(point_addr + 2), Some(321));
+        }
+
+        ppc_app
+            .memory
+            .write_u32_be(addr::THE_ZONE, 0x1122_3344)
+            .unwrap();
+        assert_ne!(runner.bus.read_long(addr::THE_ZONE), 0x1122_3344);
+        runner.bus.write_long(addr::THE_ZONE, 0x5566_7788);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::THE_ZONE),
+            Some(0x1122_3344)
+        );
     }
 
     #[test]
