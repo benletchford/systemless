@@ -7,6 +7,7 @@ use crate::menu_manager::{
     laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
     new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
     standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
@@ -217,7 +218,7 @@ fn macroman_to_string(bytes: &[u8]) -> String {
 
 /// Recover the guest Mac Roman bytes stored in the Menu Manager's internal
 /// byte-preserving string representation.
-fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
+pub(super) fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(value.len());
     for ch in value.chars() {
         if (ch as u32) <= u8::MAX as u32 {
@@ -3764,7 +3765,7 @@ impl super::TrapDispatcher {
     pub(super) fn standard_menu_width(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
         shared_standard_menu_width(Self::laid_out_items(items).iter().map(|item| {
             StandardMenuItemWidth {
-                text: Self::fb_measure_string(&item.text, 0, 12),
+                text: shared_standard_menu_text_advance(&internal_menu_string_bytes(&item.text)),
                 icon: self.menu_item_icon_width(bus, item),
                 command: item.key_equiv,
             }

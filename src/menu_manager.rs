@@ -2,6 +2,7 @@
 
 use crate::mac_roman::decode_mac_roman;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+use crate::quickdraw::text::get_glyph;
 
 /// Largest entry count representable by a menu-list partition byte length.
 pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
@@ -20,6 +21,45 @@ pub(crate) const STANDARD_MENU_BAR_TITLE_ORIGIN_INSET: i16 = 7;
 
 /// Reference glyph advance reserved for the standard system-menu mark.
 pub(crate) const STANDARD_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
+
+/// Return whether a menu title is the one-byte system-menu mark.
+///
+/// The compiled Menu Manager form is `appleMark` (`$14`). The Mac Roman
+/// Apple-logo byte (`$F0`) is accepted as the equivalent decoded spelling so
+/// host-created records retain the same layout. Macintosh Toolbox Essentials
+/// (1992), pp. 3-10 and 3-43--3-44.
+pub(crate) fn is_standard_system_menu_title(title: &[u8]) -> bool {
+    matches!(title, [0x14] | [0xF0])
+}
+
+/// Measure standard menu text in the Roman system font and size.
+///
+/// Menu titles and ordinary item text use the system font at the system size;
+/// the frozen Roman Mac OS 8.1 profiles use font 0 at 12 points. Keeping this
+/// byte-oriented also preserves the MENU record's Mac Roman identity across
+/// both CPU gateways. Macintosh Toolbox Essentials (1992), pp. 3-10--3-13.
+pub(crate) fn standard_menu_text_advance(text: &[u8]) -> i16 {
+    let advance = text.iter().fold(0i32, |advance, byte| {
+        advance.saturating_add(
+            get_glyph(0, 12, char::from(*byte))
+                .map(|(glyph, _)| i32::from(glyph.advance))
+                .unwrap_or(6),
+        )
+    });
+    i16::try_from(advance).unwrap_or(i16::MAX)
+}
+
+/// Measure one standard menu-bar title.
+///
+/// The system-menu artwork retains the captured 11-pixel logical advance;
+/// every text title uses the same system-font measurement as menu items.
+pub(crate) fn standard_menu_title_advance(title: &[u8]) -> i16 {
+    if is_standard_system_menu_title(title) {
+        STANDARD_SYSTEM_MENU_MARK_ADVANCE
+    } else {
+        standard_menu_text_advance(title)
+    }
+}
 
 const MENU_COLOR_END_ID: i16 = -99;
 
@@ -2390,6 +2430,32 @@ mod tests {
         assert_eq!(standard_menu_width([width(48, 0, 0)]), 80);
         assert_eq!(standard_menu_width([width(10, 16, 0)]), 58);
         assert_eq!(standard_menu_width([]), 32);
+    }
+
+    #[test]
+    fn standard_menu_text_measurement_is_shared_between_gateways() {
+        // The frozen 68040 and 604 profiles both measure "Three" as
+        // T6+h8+r6+e8+e8 = 36 pixels in the Roman system font. The standard
+        // MDEF then adds its 32-pixel non-indicator columns.
+        assert_eq!(standard_menu_text_advance(b"Three"), 36);
+        assert_eq!(
+            standard_menu_width([StandardMenuItemWidth {
+                text: standard_menu_text_advance(b"Three"),
+                icon: 0,
+                command: 0,
+            }]),
+            68
+        );
+
+        assert!(is_standard_system_menu_title(&[0x14]));
+        assert!(is_standard_system_menu_title(&[0xF0]));
+        assert!(!is_standard_system_menu_title(b"File"));
+        assert_eq!(standard_menu_title_advance(&[0x14]), 11);
+        assert_eq!(standard_menu_title_advance(&[0xF0]), 11);
+        assert_eq!(
+            standard_menu_title_advance(b"File"),
+            standard_menu_text_advance(b"File")
+        );
     }
 
     #[test]

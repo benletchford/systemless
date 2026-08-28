@@ -4,8 +4,8 @@ use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline, TrackedMenuPaneView,
-    STANDARD_SYSTEM_MENU_MARK_ADVANCE,
+    is_standard_system_menu_title, standard_menu_bar_system_mark_top,
+    standard_menu_bar_title_baseline, standard_menu_title_advance, TrackedMenuPaneView,
 };
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
@@ -2705,8 +2705,7 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn is_system_menu_mark_title(title: &str) -> bool {
-        let mut chars = title.chars();
-        matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
+        is_standard_system_menu_title(&super::menu::internal_menu_string_bytes(title))
     }
 
     /// Width the menu bar reserves for one menu title.
@@ -2721,11 +2720,7 @@ impl super::TrapDispatcher {
     /// font catalogue changed, and would crowd the artwork against the next
     /// title's highlight rectangle.
     pub(crate) fn menu_title_advance(title: &str) -> i16 {
-        if Self::is_system_menu_mark_title(title) {
-            STANDARD_SYSTEM_MENU_MARK_ADVANCE
-        } else {
-            Self::fb_measure_string(title, 0, 12)
-        }
+        standard_menu_title_advance(&super::menu::internal_menu_string_bytes(title))
     }
 
     fn menu_bar_title_baseline(menu_bar_height: i16) -> i16 {

@@ -21,10 +21,11 @@ use crate::managers::resource::{
 };
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    compiled_menu_color_entries, filter_menu_color_entries, laid_out_menu_item_count,
-    merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
-    standard_menu_bar_title_baseline, standard_menu_height, standard_menu_icon_kind,
-    standard_menu_icon_resource_id, standard_menu_width, standard_popup_menu_layout,
+    compiled_menu_color_entries, filter_menu_color_entries, is_standard_system_menu_title,
+    laid_out_menu_item_count, merge_menu_color_entries, new_standard_menu_record,
+    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline, standard_menu_height,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_text_advance,
+    standard_menu_title_advance, standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
     MenuBarTitleRegion, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
@@ -32,7 +33,6 @@ use crate::menu_manager::{
     StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
-    STANDARD_SYSTEM_MENU_MARK_ADVANCE,
 };
 #[cfg(test)]
 use crate::menu_manager::{
@@ -65970,11 +65970,7 @@ fn ppc_calc_menu_size_with_resources(
             .map(|appearance| appearance.icon_kind.width())
             .unwrap_or(0);
         Some(StandardMenuItemWidth {
-            text: ppc_text_bytes_advance_for_font(
-                &text,
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
-            ),
+            text: standard_menu_text_advance(&text),
             icon,
             command,
         })
@@ -68075,7 +68071,7 @@ fn ppc_relayout_menu_list(memory: &mut PpcSectionMem, menu_list: &mut PpcMenuLis
                 .read_u32_be(handle)
                 .filter(|menu| *menu != 0)
                 .and_then(|menu| ppc_read_pascal_string(memory, menu.checked_add(14)?))
-                .map(|title| ppc_menu_title_advance(&title))
+                .map(|title| standard_menu_title_advance(&title))
                 .unwrap_or(0)
         },
     );
@@ -68460,7 +68456,7 @@ fn ppc_draw_menu_bar(
             continue;
         };
         let title_h = region.title_origin();
-        let system_menu_mark = ppc_is_system_menu_mark(&title);
+        let system_menu_mark = is_standard_system_menu_title(&title);
         if system_menu_mark {
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
         } else {
@@ -68492,19 +68488,6 @@ fn ppc_draw_menu_bar(
         }
     }
     true
-}
-
-fn ppc_is_system_menu_mark(title: &[u8]) -> bool {
-    title == [0x14]
-}
-
-fn ppc_menu_title_advance(title: &[u8]) -> i16 {
-    if ppc_is_system_menu_mark(title) {
-        STANDARD_SYSTEM_MENU_MARK_ADVANCE
-    } else {
-        ppc_text_bytes_advance_for_font(title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM)
-            .max(0)
-    }
 }
 
 fn ppc_draw_system_menu_mark(
@@ -80189,7 +80172,7 @@ mod tests {
                 .read_u8(PPC_MAIN_SCREEN_BASE + 3 * ppc_main_screen_row_bytes() + 19),
             Some(mark_outline)
         );
-        assert_eq!(ppc_menu_title_advance(&[0x14]), 11);
+        assert_eq!(standard_menu_title_advance(&[0x14]), 11);
         let snapshot = loaded.guest_menu_snapshot();
         assert_eq!(snapshot.menus.len(), 2);
         assert_eq!(snapshot.menus[0].title, "Systemless");
@@ -134134,10 +134117,10 @@ mod tests {
 
         let file_left = STANDARD_MENU_BAR_FIRST_TITLE_LEFT;
         let edit_left = file_left
-            .saturating_add(ppc_menu_title_advance(b"File"))
+            .saturating_add(standard_menu_title_advance(b"File"))
             .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
         let disabled_left = edit_left
-            .saturating_add(ppc_menu_title_advance(b"Edit"))
+            .saturating_add(standard_menu_title_advance(b"Edit"))
             .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
         let point = |v: i16, h: i16| (u32::from(v as u16) << 16) | u32::from(h as u16);
         let menu_list = ppc_current_menu_list(&mut loaded.memory);
