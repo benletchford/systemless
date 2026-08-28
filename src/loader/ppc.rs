@@ -32,10 +32,12 @@ use crate::trap::extended80::Extended80;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::trap::{pict, TrapDispatcher};
 use ppc::{
-    PpcAlignmentPolicy, PpcCpu, PpcFetchHistogram, PpcFetchObserver, PpcImportAction, PpcMemory,
-    PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMem, PpcSectionMemSpan,
+    PpcAlignmentPolicy, PpcCpu, PpcException, PpcFetchHistogram, PpcFetchObserver, PpcImportAction,
+    PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMem,
+    PpcSectionMemSpan,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
 
@@ -152,6 +154,13 @@ const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
 const PPC_MIXED_MODE_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 4;
 const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
+const PPC_EXCEPTION_INFORMATION_SIZE: u32 = 24;
+const PPC_EXCEPTION_MACHINE_INFORMATION_SIZE: u32 = 64;
+const PPC_EXCEPTION_REGISTER_INFORMATION_SIZE: u32 = 256;
+const PPC_EXCEPTION_FPU_INFORMATION_SIZE: u32 = 264;
+const PPC_EXCEPTION_VECTOR_INFORMATION_SIZE: u32 = 532;
+const PPC_ILLEGAL_INSTRUCTION_EXCEPTION: u32 = 1;
+const PPC_TRAP_EXCEPTION: u32 = 2;
 const PPC_MIXED_MODE_TRAP: u16 = 0xAAFE;
 const PPC_ROUTINE_DESCRIPTOR_VERSION: u8 = 7;
 const PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE: u32 = 12;
@@ -811,6 +820,7 @@ impl Default for PpcLoadConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PpcImportDispatcherTarget {
+    InstallExceptionHandler,
     NewPtr { clear: bool },
     DisposePtr,
     GetPtrSize,
@@ -2648,6 +2658,17 @@ pub(crate) struct PpcDialogCallbackState {
     final_pc: u32,
     restore_rtoc: u32,
     completion: PpcDialogCallbackCompletion,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpcNativeExceptionContext {
+    exception: PpcException,
+    pc: u32,
+    information: u32,
+    machine_state: u32,
+    register_image: u32,
+    fpu_image: u32,
+    vector_image: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4776,6 +4797,8 @@ pub struct PpcLoadedApp {
     pub current_resource_refnum: i16,
     pub last_resource_error: i16,
     pub resource_load_enabled: bool,
+    pub native_exception_handler: u32,
+    pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
     pub(crate) dialog_callback_stack: Vec<PpcDialogCallbackState>,
     pub(crate) apple_events: PpcAppleEventState,
@@ -7912,6 +7935,8 @@ impl PpcLoadedApp {
         let mut current_resource_refnum = self.current_resource_refnum;
         let mut last_resource_error = self.last_resource_error;
         let mut resource_load_enabled = self.resource_load_enabled;
+        let native_exception_handler = Cell::new(self.native_exception_handler);
+        let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
         let mut dialog_callback_stack = std::mem::take(&mut self.dialog_callback_stack);
         let mut apple_events = std::mem::take(&mut self.apple_events);
@@ -8403,6 +8428,7 @@ impl PpcLoadedApp {
                         &mut current_resource_refnum,
                         &mut last_resource_error,
                         &mut resource_load_enabled,
+                        &native_exception_handler,
                         &mut stdc_qsort_stack,
                         &mut dialog_callback_stack,
                         &mut apple_events,
@@ -8644,38 +8670,92 @@ impl PpcLoadedApp {
                 }
             };
 
-            if let Some(range) = ppc_watch_range() {
-                let mut write_observer = PpcWatchObserver { range };
-                self.cpu.run_with_imports_and_observers_and_cycle_handler(
-                    &mut self.memory,
-                    max_cycles,
-                    self.halt_pc,
-                    self.import_trap_base,
-                    PPC_IMPORT_CAPACITY,
-                    &mut fetch_observer,
-                    &mut write_observer,
-                    &mut handle_import,
-                )
-            } else if needs_fetch_observer {
-                self.cpu
-                    .run_with_imports_and_fetch_observer_and_cycle_handler(
+            let mut total_cycles = 0u64;
+            loop {
+                let remaining_cycles = max_cycles.saturating_sub(total_cycles);
+                if remaining_cycles == 0 {
+                    break PpcRunResult::CycleLimit {
+                        cycles: total_cycles,
+                    };
+                }
+                let step_result = if let Some(range) = ppc_watch_range() {
+                    let mut write_observer = PpcWatchObserver { range };
+                    self.cpu.run_with_imports_and_observers_and_cycle_handler(
                         &mut self.memory,
-                        max_cycles,
+                        remaining_cycles,
                         self.halt_pc,
                         self.import_trap_base,
                         PPC_IMPORT_CAPACITY,
                         &mut fetch_observer,
+                        &mut write_observer,
                         &mut handle_import,
                     )
-            } else {
-                self.cpu.run_with_imports_and_cycle_handler(
-                    &mut self.memory,
-                    max_cycles,
-                    self.halt_pc,
-                    self.import_trap_base,
-                    PPC_IMPORT_CAPACITY,
-                    &mut handle_import,
-                )
+                } else if needs_fetch_observer {
+                    self.cpu
+                        .run_with_imports_and_fetch_observer_and_cycle_handler(
+                            &mut self.memory,
+                            remaining_cycles,
+                            self.halt_pc,
+                            self.import_trap_base,
+                            PPC_IMPORT_CAPACITY,
+                            &mut fetch_observer,
+                            &mut handle_import,
+                        )
+                } else {
+                    self.cpu.run_with_imports_and_cycle_handler(
+                        &mut self.memory,
+                        remaining_cycles,
+                        self.halt_pc,
+                        self.import_trap_base,
+                        PPC_IMPORT_CAPACITY,
+                        &mut handle_import,
+                    )
+                };
+                total_cycles = total_cycles.saturating_add(ppc_run_result_cycles(step_result));
+
+                match step_result {
+                    PpcRunResult::Exception { pc, exception, .. }
+                        if native_exception_handler.get() != 0
+                            && ppc_native_exception_kind(exception).is_some() =>
+                    {
+                        let Some(context) = ppc_begin_native_exception(
+                            &mut self.cpu,
+                            &mut self.memory,
+                            self.stack_base,
+                            native_exception_handler.get(),
+                            pc,
+                            exception,
+                        ) else {
+                            break ppc_run_result_with_cycles(step_result, total_cycles);
+                        };
+                        native_exception_stack.push(context);
+                    }
+                    PpcRunResult::Halted { pc, .. }
+                        if pc == self.halt_pc && !native_exception_stack.is_empty() =>
+                    {
+                        let context = native_exception_stack.pop().expect("checked nonempty");
+                        let handler_result = self.cpu.gpr[3];
+                        let restored =
+                            ppc_restore_native_exception(&mut self.cpu, &mut self.memory, context)
+                                .is_some();
+                        if handler_result == 0 && restored {
+                            continue;
+                        }
+                        native_exception_stack.clear();
+                        break PpcRunResult::Exception {
+                            pc: context.pc,
+                            exception: context.exception,
+                            cycles: total_cycles,
+                        };
+                    }
+                    PpcRunResult::CycleLimit { .. } => {
+                        break ppc_run_result_with_cycles(step_result, total_cycles);
+                    }
+                    _ => {
+                        native_exception_stack.clear();
+                        break ppc_run_result_with_cycles(step_result, total_cycles);
+                    }
+                }
             }
         };
         drop(fetch_observer);
@@ -8689,6 +8769,8 @@ impl PpcLoadedApp {
         self.current_resource_refnum = current_resource_refnum;
         self.last_resource_error = last_resource_error;
         self.resource_load_enabled = resource_load_enabled;
+        self.native_exception_handler = native_exception_handler.get();
+        self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
         self.dialog_callback_stack = dialog_callback_stack;
         self.apple_events = apple_events;
@@ -13170,6 +13252,8 @@ pub fn load_pef_application_with_config(
         current_resource_refnum: 0,
         last_resource_error: 0,
         resource_load_enabled: true,
+        native_exception_handler: 0,
+        native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
         dialog_callback_stack: Vec::new(),
         apple_events: PpcAppleEventState::default(),
@@ -13422,6 +13506,9 @@ fn dispatcher_target_for_import(
     symbol_name: &str,
 ) -> PpcImportDispatcherTarget {
     match (library_name, symbol_name) {
+        ("InterfaceLib" | "ProcessMgrSupport", "InstallExceptionHandler") => {
+            PpcImportDispatcherTarget::InstallExceptionHandler
+        }
         (library_name, "Q3Initialize") if is_quickdraw_3d_library(library_name) => {
             PpcImportDispatcherTarget::Q3Initialize
         }
@@ -15207,6 +15294,7 @@ fn dispatch_supported_import(
     current_resource_refnum: &mut i16,
     last_resource_error: &mut i16,
     resource_load_enabled: &mut bool,
+    native_exception_handler: &Cell<u32>,
     stdc_qsort_stack: &mut Vec<PpcQsortState>,
     dialog_callback_stack: &mut Vec<PpcDialogCallbackState>,
     apple_events: &mut PpcAppleEventState,
@@ -15305,6 +15393,15 @@ fn dispatch_supported_import(
     }
 
     match binding.dispatcher_target {
+        PpcImportDispatcherTarget::InstallExceptionHandler => {
+            // InstallExceptionHandler
+            // Replaces the native exception handler for the current application
+            // context and returns the previous transition-vector pointer.
+            // ExceptionHandlerTPP InstallExceptionHandler(ExceptionHandlerTPP theHandler);
+            // Inside Macintosh: PowerPC System Software (1994), pp. 4-6, 4-17
+            let previous = native_exception_handler.replace(cpu.gpr[3]);
+            Some(PpcImportAction::Return(previous))
+        }
         PpcImportDispatcherTarget::NewPtr { clear } => {
             let size = cpu.gpr[3];
             let ptr = ppc_alloc_ptr(
@@ -75751,6 +75848,185 @@ fn ppc_run_result_cycles(result: PpcRunResult) -> u64 {
     }
 }
 
+fn ppc_run_result_with_cycles(result: PpcRunResult, cycles: u64) -> PpcRunResult {
+    match result {
+        PpcRunResult::CycleLimit { .. } => PpcRunResult::CycleLimit { cycles },
+        PpcRunResult::Halted { pc, .. } => PpcRunResult::Halted { pc, cycles },
+        PpcRunResult::Unimplemented { pc, error, .. } => {
+            PpcRunResult::Unimplemented { pc, error, cycles }
+        }
+        PpcRunResult::MemoryFault {
+            pc,
+            addr,
+            was_write,
+            ..
+        } => PpcRunResult::MemoryFault {
+            pc,
+            addr,
+            was_write,
+            cycles,
+        },
+        PpcRunResult::Exception { pc, exception, .. } => PpcRunResult::Exception {
+            pc,
+            exception,
+            cycles,
+        },
+        PpcRunResult::FetchFault { pc, .. } => PpcRunResult::FetchFault { pc, cycles },
+    }
+}
+
+fn ppc_native_exception_kind(exception: PpcException) -> Option<u32> {
+    match exception {
+        PpcException::IllegalInstruction { .. } => Some(PPC_ILLEGAL_INSTRUCTION_EXCEPTION),
+        PpcException::ProgramTrap { .. } => Some(PPC_TRAP_EXCEPTION),
+        _ => None,
+    }
+}
+
+fn ppc_write_exception_wide(memory: &mut PpcSectionMem, addr: u32, value: u32) -> Option<()> {
+    memory.write_u32_be(addr, 0)?;
+    memory.write_u32_be(addr.checked_add(4)?, value)?;
+    Some(())
+}
+
+fn ppc_read_exception_wide(memory: &mut PpcSectionMem, addr: u32) -> Option<u32> {
+    memory.read_u32_be(addr.checked_add(4)?)
+}
+
+fn ppc_begin_native_exception(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    stack_base: u32,
+    handler: u32,
+    pc: u32,
+    exception: PpcException,
+) -> Option<PpcNativeExceptionContext> {
+    let kind = ppc_native_exception_kind(exception)?;
+    // InstallExceptionHandler accepts an ExceptionHandlerTPP: a native
+    // transition vector containing the entry point and TOC, not a UPP.
+    // Inside Macintosh: PowerPC System Software (1994), p. 4-17
+    let entry = memory.read_u32_be(handler)?;
+    let rtoc = memory.read_u32_be(handler.checked_add(4)?)?;
+    if entry == 0 {
+        return None;
+    }
+
+    let records_size = PPC_EXCEPTION_INFORMATION_SIZE
+        .checked_add(PPC_EXCEPTION_MACHINE_INFORMATION_SIZE)?
+        .checked_add(PPC_EXCEPTION_REGISTER_INFORMATION_SIZE)?
+        .checked_add(PPC_EXCEPTION_FPU_INFORMATION_SIZE)?
+        .checked_add(PPC_EXCEPTION_VECTOR_INFORMATION_SIZE)?;
+    let frame_and_records = PPC_INITIAL_STACK_FRAME_SIZE.checked_add(records_size)?;
+    let callback_sp = cpu.gpr[1]
+        .checked_sub(PPC_INTERRUPT_RED_ZONE_SIZE)?
+        .checked_sub(frame_and_records)?
+        & !0xFu32;
+    if callback_sp < stack_base
+        || !ppc_memory_can_write_bytes(memory, callback_sp, frame_and_records)
+    {
+        return None;
+    }
+
+    let information = callback_sp.checked_add(PPC_INITIAL_STACK_FRAME_SIZE)?;
+    let machine_state = information.checked_add(PPC_EXCEPTION_INFORMATION_SIZE)?;
+    let register_image = machine_state.checked_add(PPC_EXCEPTION_MACHINE_INFORMATION_SIZE)?;
+    let fpu_image = register_image.checked_add(PPC_EXCEPTION_REGISTER_INFORMATION_SIZE)?;
+    let vector_image = fpu_image.checked_add(PPC_EXCEPTION_FPU_INFORMATION_SIZE)?;
+    if !ppc_zero_guest_bytes(memory, callback_sp, frame_and_records) {
+        return None;
+    }
+
+    // Universal Interfaces 3.4, MachineExceptions.h defines these PowerPC
+    // records with 680x0 field alignment. The handler may edit any saved
+    // register image; a noErr return restores those edited values.
+    memory.write_u32_be(information, kind)?;
+    memory.write_u32_be(information + 4, machine_state)?;
+    memory.write_u32_be(information + 8, register_image)?;
+    memory.write_u32_be(information + 12, fpu_image)?;
+    memory.write_u32_be(information + 16, 0)?;
+    memory.write_u32_be(information + 20, vector_image)?;
+
+    ppc_write_exception_wide(memory, machine_state, cpu.ctr)?;
+    ppc_write_exception_wide(memory, machine_state + 8, cpu.lr)?;
+    ppc_write_exception_wide(memory, machine_state + 16, pc)?;
+    memory.write_u32_be(machine_state + 24, cpu.cr)?;
+    memory.write_u32_be(machine_state + 28, cpu.xer)?;
+    memory.write_u32_be(machine_state + 32, cpu.msr)?;
+    memory.write_u32_be(machine_state + 40, kind)?;
+    for (index, value) in cpu.gpr.iter().copied().enumerate() {
+        ppc_write_exception_wide(
+            memory,
+            register_image.checked_add(u32::try_from(index).ok()?.checked_mul(8)?)?,
+            value,
+        )?;
+    }
+    for (index, value) in cpu.fpr.iter().copied().enumerate() {
+        memory.write_u64_be(
+            fpu_image.checked_add(u32::try_from(index).ok()?.checked_mul(8)?)?,
+            value,
+        )?;
+    }
+    memory.write_u32_be(fpu_image + 256, cpu.fpscr)?;
+
+    memory.write_u32_be(callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET, cpu.gpr[1])?;
+    memory.write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, cpu.cr)?;
+    memory.write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, cpu.lr)?;
+    memory.write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, cpu.gpr[2])?;
+
+    cpu.pc = entry;
+    cpu.lr = PPC_HALT_PC;
+    cpu.gpr[1] = callback_sp;
+    cpu.gpr[2] = rtoc;
+    ppc_install_native_call_arguments(cpu, memory, &[information])?;
+
+    Some(PpcNativeExceptionContext {
+        exception,
+        pc,
+        information,
+        machine_state,
+        register_image,
+        fpu_image,
+        vector_image,
+    })
+}
+
+fn ppc_restore_native_exception(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    context: PpcNativeExceptionContext,
+) -> Option<()> {
+    if memory.read_u32_be(context.information + 4)? != context.machine_state
+        || memory.read_u32_be(context.information + 8)? != context.register_image
+        || memory.read_u32_be(context.information + 12)? != context.fpu_image
+        || memory.read_u32_be(context.information + 20)? != context.vector_image
+    {
+        return None;
+    }
+    cpu.ctr = ppc_read_exception_wide(memory, context.machine_state)?;
+    cpu.lr = ppc_read_exception_wide(memory, context.machine_state + 8)?;
+    cpu.pc = ppc_read_exception_wide(memory, context.machine_state + 16)?;
+    cpu.cr = memory.read_u32_be(context.machine_state + 24)?;
+    cpu.xer = memory.read_u32_be(context.machine_state + 28)?;
+    cpu.msr = memory.read_u32_be(context.machine_state + 32)?;
+    for index in 0..cpu.gpr.len() {
+        cpu.gpr[index] = ppc_read_exception_wide(
+            memory,
+            context
+                .register_image
+                .checked_add(u32::try_from(index).ok()?.checked_mul(8)?)?,
+        )?;
+    }
+    for index in 0..cpu.fpr.len() {
+        cpu.fpr[index] = memory.read_u64_be(
+            context
+                .fpu_image
+                .checked_add(u32::try_from(index).ok()?.checked_mul(8)?)?,
+        )?;
+    }
+    cpu.fpscr = memory.read_u32_be(context.fpu_image + 256)?;
+    Some(())
+}
+
 fn ppc_resolve_callback_target(
     memory: &mut PpcSectionMem,
     proc_ptr: u32,
@@ -83771,6 +84047,243 @@ mod tests {
             }
         );
         assert_eq!(loaded.heap_cursor, PPC_HEAP_BASE);
+    }
+
+    #[test]
+    fn hle_import_runner_installs_replaces_and_removes_application_exception_handler() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "InstallExceptionHandler"),
+            PpcImportDispatcherTarget::InstallExceptionHandler
+        );
+        assert_eq!(
+            dispatcher_target_for_import("ProcessMgrSupport", "InstallExceptionHandler"),
+            PpcImportDispatcherTarget::InstallExceptionHandler
+        );
+        let pef = synthetic_pef_with_import(b"InstallExceptionHandler");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handler_a = PPC_DATA_BASE + 0x1000;
+        let handler_b = PPC_DATA_BASE + 0x1100;
+
+        loaded.cpu.gpr[3] = handler_a;
+        let first = loaded.run_with_hle_imports(64);
+        assert_eq!(first.handled_import_count, 1);
+        assert_eq!(first.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.native_exception_handler, handler_a);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = handler_b;
+        let replacement = loaded.run_with_hle_imports(64);
+        assert_eq!(replacement.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], handler_a);
+        assert_eq!(loaded.native_exception_handler, handler_b);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0;
+        let removal = loaded.run_with_hle_imports(64);
+        assert_eq!(removal.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], handler_b);
+        assert_eq!(loaded.native_exception_handler, 0);
+
+        let isolated = load_pef_application(&pef).unwrap();
+        assert_eq!(isolated.native_exception_handler, 0);
+    }
+
+    fn write_test_ppc_words(loaded: &mut PpcLoadedApp, addr: u32, words: &[u32]) {
+        for (index, word) in words.iter().copied().enumerate() {
+            loaded
+                .memory
+                .write_u32_be(addr + u32::try_from(index).unwrap() * 4, word)
+                .unwrap();
+        }
+    }
+
+    fn install_test_native_exception_handler(
+        loaded: &mut PpcLoadedApp,
+        handler_words: &[u32],
+    ) -> (u32, u32, u32) {
+        let tvector = PPC_DATA_BASE + 0x1000;
+        let handler_entry = PPC_CODE_BASE + 0x1000;
+        let handler_rtoc = PPC_DATA_BASE + 0x2000;
+        loaded.memory.add_region(tvector, vec![0; 8]);
+        loaded
+            .memory
+            .add_region(handler_entry, vec![0; handler_words.len() * 4]);
+        loaded.memory.add_region(handler_rtoc, vec![0; 0x100]);
+        loaded.memory.write_u32_be(tvector, handler_entry).unwrap();
+        loaded
+            .memory
+            .write_u32_be(tvector + 4, handler_rtoc)
+            .unwrap();
+        write_test_ppc_words(loaded, handler_entry, handler_words);
+        loaded.native_exception_handler = tvector;
+        (tvector, handler_entry, handler_rtoc)
+    }
+
+    fn install_test_fault_words(loaded: &mut PpcLoadedApp, words: &[u32]) -> u32 {
+        let fault_pc = PPC_DATA_BASE + 0x3000;
+        loaded.memory.add_region(fault_pc, vec![0; words.len() * 4]);
+        write_test_ppc_words(loaded, fault_pc, words);
+        loaded.cpu.pc = fault_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        fault_pc
+    }
+
+    #[test]
+    fn hle_import_runner_delivers_and_resumes_native_powerpc_exceptions() {
+        for (fault_word, expected_kind) in [
+            (0x7c80_0008, PPC_TRAP_EXCEPTION),
+            (0x0000_0000, PPC_ILLEGAL_INSTRUCTION_EXCEPTION),
+        ] {
+            let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+            let fault_pc = install_test_fault_words(
+                &mut loaded,
+                &[
+                    fault_word,
+                    d_form_u(14, 7, 0, 0x1234),
+                    d_form_u(14, 0, 0, 0),
+                    xfx_form(31, 0, 8, 467),
+                    BLR,
+                ],
+            );
+            let (_, _, handler_rtoc) = install_test_native_exception_handler(
+                &mut loaded,
+                &[
+                    d_form_u(36, 3, 2, 0),
+                    d_form_u(32, 4, 3, 4),
+                    d_form_u(36, 4, 2, 4),
+                    d_form_u(32, 6, 3, 0),
+                    d_form_u(36, 6, 2, 8),
+                    d_form_u(32, 5, 4, 20),
+                    d_form_u(14, 5, 5, 4),
+                    d_form_u(36, 5, 4, 20),
+                    d_form_u(14, 3, 0, 0),
+                    BLR,
+                ],
+            );
+            let saved_sp = loaded.cpu.gpr[1];
+            let saved_rtoc = loaded.cpu.gpr[2];
+            loaded.cpu.gpr[6] = 0x6677_8899;
+            loaded.cpu.fpr[9] = 0x4009_21fb_5444_2d18;
+            loaded.cpu.cr = 0x1234_5678;
+            loaded.cpu.xer = 0x8000_0000;
+
+            let probe = loaded.run_with_hle_imports(128);
+
+            assert!(matches!(probe.result, PpcRunResult::Halted { pc: 0, .. }));
+            assert_eq!(loaded.cpu.gpr[7], 0x1234);
+            assert_eq!(loaded.cpu.gpr[6], 0x6677_8899);
+            assert_eq!(loaded.cpu.fpr[9], 0x4009_21fb_5444_2d18);
+            assert_eq!(loaded.cpu.cr, 0x1234_5678);
+            assert_eq!(loaded.cpu.xer, 0x8000_0000);
+            assert_eq!(loaded.cpu.gpr[1], saved_sp);
+            assert_eq!(loaded.cpu.gpr[2], saved_rtoc);
+            assert!(loaded.native_exception_stack.is_empty());
+
+            let information = loaded.memory.read_u32_be(handler_rtoc).unwrap();
+            let machine_state = loaded.memory.read_u32_be(handler_rtoc + 4).unwrap();
+            assert_ne!(information, 0);
+            assert!(information < saved_sp);
+            assert_eq!(
+                loaded.memory.read_u32_be(handler_rtoc + 8),
+                Some(expected_kind)
+            );
+            assert_eq!(loaded.memory.read_u32_be(information), Some(expected_kind));
+            assert_eq!(
+                loaded.memory.read_u32_be(information + 4),
+                Some(machine_state)
+            );
+            assert_eq!(
+                loaded.memory.read_u32_be(machine_state + 20),
+                Some(fault_pc + 4)
+            );
+            let register_image = loaded.memory.read_u32_be(information + 8).unwrap();
+            assert_eq!(
+                loaded.memory.read_u32_be(register_image + 6 * 8 + 4),
+                Some(0x6677_8899)
+            );
+            let fpu_image = loaded.memory.read_u32_be(information + 12).unwrap();
+            assert_eq!(
+                loaded.memory.read_u64_be(fpu_image + 9 * 8),
+                Some(0x4009_21fb_5444_2d18)
+            );
+            assert_eq!(loaded.memory.read_u32_be(information + 16), Some(0));
+            assert_ne!(loaded.memory.read_u32_be(information + 20), Some(0));
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_surfaces_nonzero_native_exception_handler_result() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let fault_pc = install_test_fault_words(&mut loaded, &[0, BLR]);
+        install_test_native_exception_handler(&mut loaded, &[d_form_u(14, 3, 0, u16::MAX), BLR]);
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Exception {
+                pc,
+                exception: PpcException::IllegalInstruction { word: 0, .. },
+                ..
+            } if pc == fault_pc
+        ));
+        assert_eq!(loaded.cpu.pc, fault_pc);
+        assert!(loaded.native_exception_stack.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_retains_native_exception_delivery_between_slices() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        install_test_fault_words(
+            &mut loaded,
+            &[
+                0x7c80_0008,
+                d_form_u(14, 0, 0, 0),
+                xfx_form(31, 0, 8, 467),
+                BLR,
+            ],
+        );
+        install_test_native_exception_handler(
+            &mut loaded,
+            &[
+                d_form_u(32, 4, 3, 4),
+                d_form_u(32, 5, 4, 20),
+                d_form_u(14, 5, 5, 4),
+                d_form_u(36, 5, 4, 20),
+                d_form_u(14, 3, 0, 0),
+                BLR,
+            ],
+        );
+
+        let first = loaded.run_with_hle_imports(1);
+        assert_eq!(first.result, PpcRunResult::CycleLimit { cycles: 1 });
+        assert_eq!(loaded.native_exception_stack.len(), 1);
+
+        let second = loaded.run_with_hle_imports(64);
+        assert!(matches!(second.result, PpcRunResult::Halted { pc: 0, .. }));
+        assert!(loaded.native_exception_stack.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_discards_native_exception_state_after_terminal_handler_fault() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        install_test_fault_words(&mut loaded, &[0]);
+        let tvector = PPC_DATA_BASE + 0x1000;
+        let unmapped_entry = PPC_CODE_BASE + 0x2000;
+        loaded.memory.add_region(tvector, vec![0; 8]);
+        loaded.memory.write_u32_be(tvector, unmapped_entry).unwrap();
+        loaded.native_exception_handler = tvector;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::FetchFault { pc, .. } if pc == unmapped_entry
+        ));
+        assert!(loaded.native_exception_stack.is_empty());
     }
 
     #[test]
