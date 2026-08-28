@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.7](https://github.com/benletchford/systemless/compare/v0.23.6...v0.23.7) (2026-08-28)
+
+
+### Bug Fixes
+
+* **deps:** update m68k to 0.11.5 ([#951](https://github.com/benletchford/systemless/issues/951)) ([d993950](https://github.com/benletchford/systemless/commit/d993950314b2cc34635045458a2cc79db83b6c2b))
+
 ## [0.23.6](https://github.com/benletchford/systemless/compare/v0.23.5...v0.23.6) (2026-08-28)
 
 
