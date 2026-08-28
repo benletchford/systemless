@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.6](https://github.com/benletchford/systemless/compare/v0.23.5...v0.23.6) (2026-08-28)
+
+
+### Bug Fixes
+
+* **cpu:** restore corrected m68k and ppc releases ([#945](https://github.com/benletchford/systemless/issues/945)) ([2c1dd5d](https://github.com/benletchford/systemless/commit/2c1dd5d1b053b0db2571b39be5463ab5f55a2280))
+
 ## [0.23.5](https://github.com/benletchford/systemless/compare/v0.23.4...v0.23.5) (2026-08-28)
 
 
