@@ -1038,15 +1038,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
-name = "ieee-apsqrt"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4328941c554aaeea28ca420cd1f10e932fa38874faf8c75e3ed184c64c5c6cec"
-dependencies = [
- "rustc_apfloat",
-]
-
-[[package]]
 name = "image"
 version = "0.25.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1200,9 +1191,9 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "m68k"
-version = "0.11.2"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db8c10d469f68c2b7cb110f4a73668f8f523e294be6201baf6cad5b341377da4"
+checksum = "45baba053cfe6f658103530b33f6dbf7e48389b76614b968c260cabe91873539"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1777,13 +1768,9 @@ dependencies = [
 
 [[package]]
 name = "ppc"
-version = "0.4.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e84331783697d955dabfa0f48abb9ca3c278e65dce7e16ba8000feb8a867d94"
-dependencies = [
- "ieee-apsqrt",
- "rustc_apfloat",
-]
+checksum = "71a947b9def1642a9ac9e1a0827c6574c10512165b2d7f50bf1403f933eb226d"
 
 [[package]]
 name = "prettyplease"
@@ -1962,16 +1949,6 @@ name = "rustc-hash"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
-
-[[package]]
-name = "rustc_apfloat"
-version = "0.2.3+llvm-462a31f5a5ab"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "486c2179b4796f65bfe2ee33679acf0927ac83ecf583ad6c91c3b4570911b9ad"
-dependencies = [
- "bitflags 2.11.0",
- "smallvec",
-]
 
 [[package]]
 name = "rustix"
