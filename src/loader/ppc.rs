@@ -30,7 +30,8 @@ use crate::menu_manager::{
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
     MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
-    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_SEPARATOR_HEIGHT,
+    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_DEFINITION_SHIM,
+    STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
@@ -15906,15 +15907,33 @@ fn dispatch_supported_import(
             )))
         }
         PpcImportDispatcherTarget::NewMenu => {
-            let menu = ppc_new_menu(
+            let menu_proc = ppc_menu_definition_handle(
+                0,
                 memory,
                 heap_cursor,
                 heap_limit,
+                last_mem_error,
                 handles,
                 free_handle_blocks,
-                cpu.gpr[3] as u16 as i16,
-                cpu.gpr[4],
+                handle_states,
+                vfs_resources,
+                *current_resource_refnum,
+                last_resource_error,
             );
+            let menu = if menu_proc == 0 {
+                0
+            } else {
+                ppc_alloc_new_menu(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    free_handle_blocks,
+                    menu_proc,
+                    cpu.gpr[3] as u16 as i16,
+                    cpu.gpr[4],
+                )
+            };
             *last_mem_error = if menu == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -15945,7 +15964,6 @@ fn dispatch_supported_import(
                 handle_states,
                 vfs_resources,
                 *current_resource_refnum,
-                *resource_load_enabled,
                 last_resource_error,
             )))
         }
@@ -65502,6 +65520,33 @@ fn ppc_decode_menu_items(bytes: &[u8]) -> Option<(usize, u32, Vec<PpcMenuItemDef
     Some((decoded.first_item, decoded.enable_flags, decoded.items))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_alloc_new_menu(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    menu_proc: u32,
+    menu_id: i16,
+    title_ptr: u32,
+) -> u32 {
+    let title = ppc_read_pascal_string(memory, title_ptr).unwrap_or_default();
+    // Macintosh Toolbox Essentials (1992), pp. 3-105--3-106: NewMenu
+    // creates an empty standard MenuRecord, loads the standard MDEF if
+    // necessary, and stores its Handle in MenuInfo.menuProc.
+    let bytes = new_standard_menu_record(menu_id, menu_proc, &title);
+    ppc_alloc_recyclable_handle_with_bytes(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        free_handle_blocks,
+        &bytes,
+    )
+}
+
+#[cfg(test)]
 fn ppc_new_menu(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -65511,17 +65556,15 @@ fn ppc_new_menu(
     menu_id: i16,
     title_ptr: u32,
 ) -> u32 {
-    let title = ppc_read_pascal_string(memory, title_ptr).unwrap_or_default();
-    // Macintosh Toolbox Essentials (1992), pp. 3-105--3-106: NewMenu
-    // creates an empty standard MenuRecord but does not install it.
-    let bytes = new_standard_menu_record(menu_id, 0, &title);
-    ppc_alloc_recyclable_handle_with_bytes(
+    ppc_alloc_new_menu(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         free_handle_blocks,
-        &bytes,
+        0,
+        menu_id,
+        title_ptr,
     )
 }
 
@@ -67631,7 +67674,9 @@ fn ppc_menu_select(
 }
 
 /// Materialize one resource-backed menu for both `GetMenu` and `GetNewMBar`.
-/// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107, 3-111--3-112.
+/// Unlike raw Resource Manager lookup, `GetMenu` reads both the MENU and its
+/// definition procedure into memory. Macintosh Toolbox Essentials (1992),
+/// pp. 3-106--3-107 and 3-111--3-112.
 #[allow(clippy::too_many_arguments)]
 fn ppc_load_menu_resource(
     menu_id: i16,
@@ -67642,9 +67687,8 @@ fn ppc_load_menu_resource(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
-    load_data: bool,
     last_resource_error: &mut i16,
 ) -> u32 {
     let menu_type = u32::from_be_bytes(*b"MENU");
@@ -67668,9 +67712,26 @@ fn ppc_load_menu_resource(
         handle_states,
         vfs_resources,
         index,
-        load_data,
+        true,
         last_resource_error,
     );
+    if handle != 0
+        && !ppc_resolve_menu_definition(
+            handle,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            vfs_resources,
+            current_resource_refnum,
+            last_resource_error,
+        )
+    {
+        return 0;
+    }
     if handle != 0 {
         ppc_load_menu_color_resource(
             menu_id,
@@ -67684,6 +67745,124 @@ fn ppc_load_menu_resource(
         );
     }
     handle
+}
+
+/// Load the MDEF resource whose Handle belongs in `MenuInfo.menuProc`.
+/// `NewMenu` loads the standard definition procedure, while `GetMenu` loads
+/// the definition resource named by the compiled MENU placeholder. Macintosh
+/// Toolbox Essentials (1992), pp. 3-95--3-96 and 3-105--3-107.
+#[allow(clippy::too_many_arguments)]
+fn ppc_menu_definition_handle(
+    mdef_id: i16,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    current_resource_refnum: i16,
+    last_resource_error: &mut i16,
+) -> u32 {
+    let mdef_type = u32::from_be_bytes(*b"MDEF");
+    let index = match ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        mdef_type,
+        mdef_id,
+        false,
+    ) {
+        Some(index) => index,
+        None if mdef_id == 0 => {
+            vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: 0,
+                path: "__system__/MDEF".to_string(),
+                res_type: mdef_type,
+                res_id: 0,
+                name: Vec::new(),
+                data: STANDARD_MENU_DEFINITION_SHIM.to_vec(),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+            vfs_resources.len() - 1
+        }
+        None => {
+            *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+            return 0;
+        }
+    };
+    ppc_materialize_vfs_resource_handle(
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        free_handle_blocks,
+        handle_states,
+        vfs_resources,
+        index,
+        true,
+        last_resource_error,
+    )
+}
+
+/// Replace a compiled MENU resource's MDEF-ID placeholder with the loaded
+/// definition-procedure Handle. Inside Macintosh Volume I (1985), p. I-127;
+/// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107.
+#[allow(clippy::too_many_arguments)]
+fn ppc_resolve_menu_definition(
+    menu_handle: u32,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
+    current_resource_refnum: i16,
+    last_resource_error: &mut i16,
+) -> bool {
+    let Some(menu_ptr) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        return false;
+    };
+    let Some(menu_proc) = memory.read_u32_be(menu_ptr + 6) else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        return false;
+    };
+    let mdef_type = u32::from_be_bytes(*b"MDEF");
+    if menu_proc != 0
+        && vfs_resources
+            .iter()
+            .any(|resource| resource.res_type == mdef_type && resource.handle == menu_proc)
+    {
+        return true;
+    }
+    let mdef_id = (menu_proc >> 16) as u16 as i16;
+    let mdef_handle = ppc_menu_definition_handle(
+        mdef_id,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        free_handle_blocks,
+        handle_states,
+        vfs_resources,
+        current_resource_refnum,
+        last_resource_error,
+    );
+    if mdef_handle == 0 || memory.write_u32_be(menu_ptr + 6, mdef_handle).is_none() {
+        if mdef_handle != 0 {
+            *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        }
+        return false;
+    }
+    true
 }
 
 fn ppc_menu_color_table_bytes(memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) -> Vec<u8> {
@@ -67871,7 +68050,7 @@ fn ppc_get_new_mbar(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
-    vfs_resources: &mut [PpcVfsResourceRecord],
+    vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
 ) -> u32 {
@@ -67907,7 +68086,6 @@ fn ppc_get_new_mbar(
             handle_states,
             vfs_resources,
             current_resource_refnum,
-            true,
             last_resource_error,
         );
         (handle != 0).then_some(handle)
@@ -76996,8 +77174,13 @@ mod tests {
     }
 
     fn test_menu_resource(menu_id: i16, title: &[u8]) -> Vec<u8> {
+        test_menu_resource_with_mdef(menu_id, 0, title)
+    }
+
+    fn test_menu_resource_with_mdef(menu_id: i16, mdef_id: i16, title: &[u8]) -> Vec<u8> {
         let mut data = vec![0; 14];
         data[0..2].copy_from_slice(&menu_id.to_be_bytes());
+        data[6..8].copy_from_slice(&mdef_id.to_be_bytes());
         data[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
         data.push(title.len() as u8);
         data.extend_from_slice(title);
@@ -80762,6 +80945,161 @@ mod tests {
     }
 
     #[test]
+    fn native_newmenu_installs_one_callable_standard_mdef_handle() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let title_ptr = PPC_DATA_BASE + 0x6000;
+        loaded.memory.add_region(title_ptr, vec![0; 32]);
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            title_ptr,
+            b"File"
+        ));
+
+        loaded.cpu.gpr[3] = 128;
+        loaded.cpu.gpr[4] = title_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewMenu);
+        let first_menu = loaded.cpu.gpr[3];
+        let first_menu_ptr = loaded.memory.read_u32_be(first_menu).unwrap();
+        let standard_mdef = loaded.memory.read_u32_be(first_menu_ptr + 6).unwrap();
+        assert_ne!(standard_mdef, 0);
+        assert_eq!(
+            ppc_menu_handle_bytes(&mut loaded.memory, &loaded.handles, standard_mdef),
+            Some(STANDARD_MENU_DEFINITION_SHIM.to_vec())
+        );
+
+        loaded.cpu.gpr[3] = 129;
+        loaded.cpu.gpr[4] = title_ptr;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewMenu);
+        let second_menu_ptr = loaded.memory.read_u32_be(loaded.cpu.gpr[3]).unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(second_menu_ptr + 6),
+            Some(standard_mdef),
+            "NewMenu must reuse the loaded standard MDEF resource Handle"
+        );
+        assert_eq!(
+            loaded
+                .vfs_resources
+                .iter()
+                .filter(|resource| {
+                    resource.res_type == u32::from_be_bytes(*b"MDEF") && resource.res_id == 0
+                })
+                .count(),
+            1
+        );
+        assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_getmenu_loads_and_resolves_mdefs_when_resload_is_disabled() {
+        let pef = synthetic_pef_with_import(b"GetMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.resource_load_enabled = false;
+        let ref_num = loaded.current_resource_refnum;
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 128,
+                name: Vec::new(),
+                data: test_menu_resource(128, b"File"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 129,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(129, 256, b"Custom"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MDEF"),
+                res_id: 256,
+                name: Vec::new(),
+                data: vec![0x4e, 0x75],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+
+        loaded.cpu.gpr[3] = 128;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+        let standard_menu = loaded.cpu.gpr[3];
+        let standard_menu_ptr = loaded.memory.read_u32_be(standard_menu).unwrap();
+        let standard_mdef = loaded.memory.read_u32_be(standard_menu_ptr + 6).unwrap();
+        assert_eq!(
+            ppc_menu_handle_bytes(&mut loaded.memory, &loaded.handles, standard_mdef),
+            Some(STANDARD_MENU_DEFINITION_SHIM.to_vec())
+        );
+
+        loaded.cpu.gpr[3] = 129;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+        let custom_menu = loaded.cpu.gpr[3];
+        let custom_menu_ptr = loaded.memory.read_u32_be(custom_menu).unwrap();
+        let custom_mdef = loaded.memory.read_u32_be(custom_menu_ptr + 6).unwrap();
+        let custom_resource = loaded
+            .vfs_resources
+            .iter()
+            .find(|resource| {
+                resource.res_type == u32::from_be_bytes(*b"MDEF") && resource.res_id == 256
+            })
+            .unwrap();
+        assert_eq!(custom_mdef, custom_resource.handle);
+        assert_eq!(
+            ppc_menu_handle_bytes(&mut loaded.memory, &loaded.handles, custom_mdef),
+            Some(vec![0x4e, 0x75])
+        );
+
+        loaded.cpu.gpr[3] = 129;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+        assert_eq!(loaded.cpu.gpr[3], custom_menu);
+        assert_eq!(
+            loaded.memory.read_u32_be(custom_menu_ptr + 6),
+            Some(custom_mdef),
+            "a repeated GetMenu must preserve both resource Handle identities"
+        );
+        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_getmenu_returns_nil_when_the_compiled_mdef_is_missing() {
+        let pef = synthetic_pef_with_import(b"GetMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: loaded.current_resource_refnum,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"MENU"),
+            res_id: 130,
+            name: Vec::new(),
+            data: test_menu_resource_with_mdef(130, 300, b"Missing"),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+
+        loaded.cpu.gpr[3] = 130;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
     fn native_init_getmenu_and_clear_share_live_menu_color_state() {
         let pef = synthetic_pef_with_import(b"InitMenus");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -80947,6 +81285,31 @@ mod tests {
             ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
             [file.as_slice(), edit.as_slice()].concat()
         );
+        let standard_mdef = loaded
+            .vfs_resources
+            .iter()
+            .find(|resource| {
+                resource.res_type == u32::from_be_bytes(*b"MDEF") && resource.res_id == 0
+            })
+            .map(|resource| resource.handle)
+            .unwrap();
+        assert_ne!(standard_mdef, 0);
+        for menu_id in [601, 602] {
+            let menu_handle = loaded
+                .vfs_resources
+                .iter()
+                .find(|resource| {
+                    resource.res_type == u32::from_be_bytes(*b"MENU") && resource.res_id == menu_id
+                })
+                .map(|resource| resource.handle)
+                .unwrap();
+            let menu_ptr = loaded.memory.read_u32_be(menu_handle).unwrap();
+            assert_eq!(
+                loaded.memory.read_u32_be(menu_ptr + 6),
+                Some(standard_mdef),
+                "GetNewMBar must route every MENU through GetMenu MDEF resolution"
+            );
+        }
     }
 
     #[test]

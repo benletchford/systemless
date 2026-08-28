@@ -11,6 +11,19 @@ pub(crate) const MENU_COLOR_ENTRY_SIZE: usize = 30;
 
 const MENU_COLOR_END_ID: i16 = -99;
 
+/// Callable 68k Pascal-procedure shim used for the standard system MDEF.
+///
+/// The Menu Manager implements the standard drawing semantics in Rust, but a
+/// guest can still dereference and call the resource handle installed in
+/// `MenuInfo.menuProc`. The shim recovers the JSR return address, discards the
+/// five-parameter 18-byte MDEF frame, and returns to the caller. Inside
+/// Macintosh Volume I (1985), pp. I-352 and I-365.
+pub(crate) const STANDARD_MENU_DEFINITION_SHIM: [u8; 8] = [
+    0x20, 0x5f, // MOVEA.L (SP)+,A0 -- recover JSR return PC.
+    0xde, 0xfc, 0x00, 0x12, // ADDA.W #18,SP -- discard MDEF parameters.
+    0x4e, 0xd0, // JMP (A0).
+];
+
 const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.

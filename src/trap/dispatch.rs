@@ -5996,11 +5996,8 @@ impl TrapDispatcher {
             return None;
         }
 
-        let ptr = bus.alloc(8);
-        bus.write_word(ptr, 0x205F); // MOVEA.L (SP)+,A0 — recover JSR return PC.
-        bus.write_word(ptr + 2, 0xDEFC); // ADDA.W #18,SP — discard MDEF parameters.
-        bus.write_word(ptr + 4, 18);
-        bus.write_word(ptr + 6, 0x4ED0); // JMP (A0).
+        let ptr = bus.alloc(crate::menu_manager::STANDARD_MENU_DEFINITION_SHIM.len() as u32);
+        bus.write_bytes(ptr, &crate::menu_manager::STANDARD_MENU_DEFINITION_SHIM);
         self.system_mdef_cache.insert(res_id, ptr);
         Some(ptr)
     }
