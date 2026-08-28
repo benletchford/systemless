@@ -28,11 +28,11 @@ use crate::menu_manager::{
     standard_menu_item_layout, standard_menu_text_advance, standard_menu_title_advance,
     standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
     standard_submenu_layout, ColorIconLayout, MenuBarResource, MenuBarTitleRegion,
-    MenuDefinitionCall, MenuDefinitionMessage, MenuItem as PpcMenuItemDefinition, MenuItems,
-    MenuKeyItem, MenuKeyMenu, MenuKeySelection, MenuList as PpcMenuListDefinition,
-    MenuListInstallRequest, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind, StandardMenuItemWidth,
-    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    MenuDefinitionInvocation, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem,
+    MenuKeyMenu, MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest,
+    MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState,
+    MonochromeMenuIconLayout, StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition,
+    TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
     STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
@@ -66006,9 +66006,35 @@ fn ppc_dispatch_calc_menu_size(
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     let menu_handle = cpu.gpr[3];
-    let Some(menu_ptr) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
-        return PpcImportAction::ReturnPreserve;
-    };
+    if let Some(action) = ppc_dispatch_native_menu_definition(
+        cpu,
+        memory,
+        heap_cursor,
+        heap_limit,
+        resources,
+        toolbox_startup,
+        MenuDefinitionInvocation::size(menu_handle),
+        cpu.lr,
+    ) {
+        return action;
+    }
+    ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
+    PpcImportAction::ReturnPreserve
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_native_menu_definition(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    resources: &[PpcVfsResourceRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    invocation: MenuDefinitionInvocation,
+    final_pc: u32,
+) -> Option<PpcImportAction> {
+    let menu_handle = invocation.menu_handle;
+    let menu_ptr = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
     let menu_proc = memory.read_u32_be(menu_ptr + 6).unwrap_or(0);
     let proc_ptr = memory.read_u32_be(menu_proc).unwrap_or(0);
     let resource_id = resources
@@ -66021,8 +66047,7 @@ fn ppc_dispatch_calc_menu_size(
         || ppc_memory_read_bytes(memory, proc_ptr, STANDARD_MENU_DEFINITION_SHIM.len() as u32)
             .is_some_and(|bytes| bytes == STANDARD_MENU_DEFINITION_SHIM);
     if is_standard || menu_proc == 0 || proc_ptr == 0 {
-        ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
-        return PpcImportAction::ReturnPreserve;
+        return None;
     }
 
     // Resource MDEFs without a native routine descriptor contain 68k code.
@@ -66030,14 +66055,11 @@ fn ppc_dispatch_calc_menu_size(
     // emulator gateway; never reinterpret their instruction bytes as PPC.
     // Preserve the pre-gateway standard sizing fallback in the meantime.
     if resource_id.is_some() && !ppc_is_routine_descriptor(memory, proc_ptr) {
-        ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
-        return PpcImportAction::ReturnPreserve;
+        return None;
     }
-    let Some(target) = ppc_resolve_callback_target(memory, proc_ptr, cpu.gpr[2], None) else {
-        return PpcImportAction::ReturnPreserve;
-    };
+    let target = ppc_resolve_callback_target(memory, proc_ptr, cpu.gpr[2], None)?;
     if memory.read_u32_be(target.entry).is_none() {
-        return PpcImportAction::ReturnPreserve;
+        return None;
     }
     if toolbox_startup.menu_def_scratch == 0 {
         toolbox_startup.menu_def_scratch =
@@ -66045,26 +66067,21 @@ fn ppc_dispatch_calc_menu_size(
     }
     let scratch = toolbox_startup.menu_def_scratch;
     if scratch == 0 {
-        return PpcImportAction::ReturnPreserve;
+        return None;
     }
-    let call = MenuDefinitionCall {
-        message: MenuDefinitionMessage::Size,
-        menu_handle,
-        menu_rect: scratch,
-        hit_point: 0,
-        which_item: scratch + 8,
-    };
-    if ppc_install_native_call_arguments(cpu, memory, &call.native_arguments()).is_none() {
-        return PpcImportAction::ReturnPreserve;
+    for (offset, byte) in invocation.scratch_bytes().into_iter().enumerate() {
+        memory.write_u8(scratch + offset as u32, byte)?;
     }
-    PpcImportAction::CallNative {
+    let call = invocation.call(scratch);
+    ppc_install_native_call_arguments(cpu, memory, &call.native_arguments())?;
+    Some(PpcImportAction::CallNative {
         entry: target.entry,
         rtoc: target.rtoc,
         return_pc: PPC_MIXED_MODE_RETURN_PC,
-        final_pc: cpu.lr,
+        final_pc,
         restore_rtoc: cpu.gpr[2],
         return_gpr3: PpcNativeReturnGpr3::Preserve,
-    }
+    })
 }
 
 fn ppc_menu_item_enabled(memory: &mut PpcSectionMem, menu_handle: u32, item: i16) -> bool {
@@ -78920,6 +78937,88 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(45));
         assert_ne!(loaded.toolbox_startup.menu_def_scratch, 0);
+    }
+
+    #[test]
+    fn native_custom_mdef_adapter_marshals_shared_choose_invocation() {
+        let pef = synthetic_pef_with_import(b"CalcMenuSize");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"Custom",
+            b"Ignored",
+        );
+        let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+        let mdef_handle = PPC_DATA_BASE + 0x7000;
+        let descriptor = PPC_DATA_BASE + 0x7100;
+        let tvector = PPC_DATA_BASE + 0x7180;
+        let callback_entry = PPC_CODE_BASE + 0x4000;
+        let callback_rtoc = PPC_DATA_BASE + 0x7300;
+        loaded.memory.add_region(mdef_handle, vec![0; 4]);
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            callback_entry,
+            callback_rtoc,
+            test_stack_proc_info(
+                PPC_PROCINFO_SIZE_NONE,
+                &[
+                    PPC_PROCINFO_SIZE_TWO,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                ],
+            ),
+            &[BLR],
+        );
+        loaded.memory.write_u32_be(mdef_handle, descriptor).unwrap();
+        loaded
+            .memory
+            .write_u32_be(menu_ptr + 6, mdef_handle)
+            .unwrap();
+
+        let invocation = MenuDefinitionInvocation {
+            message: crate::menu_manager::MenuDefinitionMessage::Choose,
+            menu_handle: menu,
+            menu_rect: (20, 30, 120, 180),
+            hit_point: 0x0050_0060,
+            which_item: 4,
+        };
+        let final_pc = 0x1234_5678;
+        let action = ppc_dispatch_native_menu_definition(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &loaded.vfs_resources,
+            &mut loaded.toolbox_startup,
+            invocation,
+            final_pc,
+        )
+        .expect("native custom MDEF should be callable");
+
+        assert!(matches!(
+            action,
+            PpcImportAction::CallNative {
+                entry,
+                rtoc,
+                final_pc: actual_final_pc,
+                ..
+            } if entry == callback_entry && rtoc == callback_rtoc && actual_final_pc == final_pc
+        ));
+        let scratch = loaded.toolbox_startup.menu_def_scratch;
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, scratch, 10),
+            Some(invocation.scratch_bytes().to_vec())
+        );
+        assert_eq!(
+            &loaded.cpu.gpr[3..8],
+            &[1, menu, scratch, invocation.hit_point, scratch + 8,]
+        );
     }
 
     #[test]

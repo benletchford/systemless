@@ -12,8 +12,8 @@ use crate::menu_manager::{
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
-    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuDefinitionCall as SharedMenuDefinitionCall,
-    MenuDefinitionMessage as SharedMenuDefinitionMessage, MenuItems as SharedMenuItems,
+    MenuBarTitleRegion as SharedMenuBarTitleRegion,
+    MenuDefinitionInvocation as SharedMenuDefinitionInvocation, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
@@ -531,12 +531,13 @@ impl super::TrapDispatcher {
                 == STANDARD_MENU_DEFINITION_SHIM
     }
 
-    fn arm_menu_definition_size<C: CpuOps>(
+    fn arm_menu_definition<C: CpuOps>(
         &mut self,
         cpu: &mut C,
         bus: &mut MacMemoryBus,
-        menu_handle: u32,
+        invocation: SharedMenuDefinitionInvocation,
     ) -> bool {
+        let menu_handle = invocation.menu_handle;
         let menu_ptr = bus.read_long(menu_handle);
         if menu_ptr == 0 || self.menu_uses_standard_definition(bus, menu_ptr) {
             return false;
@@ -556,13 +557,7 @@ impl super::TrapDispatcher {
         } else {
             self.menu_def_trampoline
         };
-        let call = SharedMenuDefinitionCall {
-            message: SharedMenuDefinitionMessage::Size,
-            menu_handle,
-            menu_rect: trampoline + 50,
-            hit_point: 0,
-            which_item: trampoline + 58,
-        };
+        let call = invocation.call(trampoline + 50);
         let final_sp = cpu.read_reg(Register::A7);
         let return_slot = final_sp.wrapping_sub(4);
 
@@ -586,8 +581,8 @@ impl super::TrapDispatcher {
         bus.write_word(trampoline + 44, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
         bus.write_word(trampoline + 46, 0x0F0F);
         bus.write_word(trampoline + 48, 0x4E75); // RTS
-        for offset in 50..60 {
-            bus.write_byte(trampoline + offset, 0);
+        for (offset, byte) in invocation.scratch_bytes().into_iter().enumerate() {
+            bus.write_byte(trampoline + 50 + offset as u32, byte);
         }
 
         bus.write_long(return_slot, cpu.read_reg(Register::PC));
@@ -2839,7 +2834,13 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
 
                 let menu_ptr = bus.read_long(menu_handle);
-                if menu_ptr != 0 && self.arm_menu_definition_size(cpu, bus, menu_handle) {
+                if menu_ptr != 0
+                    && self.arm_menu_definition(
+                        cpu,
+                        bus,
+                        SharedMenuDefinitionInvocation::size(menu_handle),
+                    )
+                {
                     return Some(Ok(()));
                 }
 
@@ -5564,7 +5565,7 @@ mod tests {
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::menu_manager::TrackedMenuPaneView;
+    use crate::menu_manager::{MenuDefinitionInvocation, TrackedMenuPaneView};
     use crate::ui_theme::UiThemeId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -6872,6 +6873,42 @@ mod tests {
         assert_eq!(bus.read_long(trampoline + 22), 0);
         assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
         assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
+    }
+
+    #[test]
+    fn custom_mdef_adapter_marshals_shared_choose_invocation_scratch() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 336, 0x306DF0, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        cpu.write_reg(Register::PC, 0x0012_3456);
+        cpu.write_reg(Register::A7, TEST_SP);
+        let invocation = MenuDefinitionInvocation {
+            message: crate::menu_manager::MenuDefinitionMessage::Choose,
+            menu_handle: handle,
+            menu_rect: (20, 30, 120, 180),
+            hit_point: 0x0050_0060,
+            which_item: 4,
+        };
+        assert!(disp.arm_menu_definition(&mut cpu, &mut bus, invocation));
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 10), handle);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 22), 0x0050_0060);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(
+            bus.read_bytes(trampoline + 50, 10),
+            invocation.scratch_bytes()
+        );
     }
 
     #[test]

@@ -114,6 +114,57 @@ impl MenuDefinitionCall {
     }
 }
 
+/// Typed inputs and by-reference storage for one MDEF invocation.
+///
+/// `menuRect` and `whichItem` are passed by reference by both supported guest
+/// ABIs. Keeping their initial bytes beside the logical values makes the
+/// architecture adapters responsible only for allocating guest storage and
+/// installing the resulting five arguments. Macintosh Toolbox Essentials
+/// (1992), pp. 3-148--3-151.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionInvocation {
+    pub(crate) message: MenuDefinitionMessage,
+    pub(crate) menu_handle: u32,
+    pub(crate) menu_rect: (i16, i16, i16, i16),
+    pub(crate) hit_point: u32,
+    pub(crate) which_item: i16,
+}
+
+impl MenuDefinitionInvocation {
+    pub(crate) fn size(menu_handle: u32) -> Self {
+        Self {
+            message: MenuDefinitionMessage::Size,
+            menu_handle,
+            menu_rect: (0, 0, 0, 0),
+            hit_point: 0,
+            which_item: 0,
+        }
+    }
+
+    /// Encode the shared Rect followed by the shared INTEGER scratch value.
+    pub(crate) fn scratch_bytes(self) -> [u8; 10] {
+        let (top, left, bottom, right) = self.menu_rect;
+        let mut bytes = [0; 10];
+        for (offset, value) in [top, left, bottom, right, self.which_item]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[offset * 2..offset * 2 + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        bytes
+    }
+
+    pub(crate) fn call(self, scratch: u32) -> MenuDefinitionCall {
+        MenuDefinitionCall {
+            message: self.message,
+            menu_handle: self.menu_handle,
+            menu_rect: scratch,
+            hit_point: self.hit_point,
+            which_item: scratch + 8,
+        }
+    }
+}
+
 const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.
@@ -2316,19 +2367,27 @@ mod tests {
 
     #[test]
     fn menu_definition_call_preserves_the_shared_five_argument_contract() {
-        let call = MenuDefinitionCall {
-            message: MenuDefinitionMessage::Size,
+        let invocation = MenuDefinitionInvocation {
+            message: MenuDefinitionMessage::Choose,
             menu_handle: 0x1111_2222,
-            menu_rect: 0x3333_4444,
+            menu_rect: (-1, 2, 300, 400),
             hit_point: 0x5555_6666,
-            which_item: 0x7777_8888,
+            which_item: 7,
         };
+        let call = invocation.call(0x3333_4444);
         assert_eq!(
             call.native_arguments(),
-            [2, 0x1111_2222, 0x3333_4444, 0x5555_6666, 0x7777_8888]
+            [1, 0x1111_2222, 0x3333_4444, 0x5555_6666, 0x3333_444c]
+        );
+        assert_eq!(
+            invocation.scratch_bytes(),
+            [0xff, 0xff, 0, 2, 1, 44, 1, 144, 0, 7]
+        );
+        assert_eq!(
+            MenuDefinitionInvocation::size(0x1234).message,
+            MenuDefinitionMessage::Size
         );
         assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
-        assert_eq!(MenuDefinitionMessage::Choose as i16, 1);
         assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
     }
 
