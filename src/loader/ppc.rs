@@ -66225,10 +66225,8 @@ fn ppc_dispatch_pop_up_menu_select(
     ) else {
         return PpcImportAction::Return(0);
     };
-    let _ = memory.write_u16_be(
-        crate::memory::globals::addr::TOP_MENU_ITEM,
-        content_top as u16,
-    );
+    let rows = ppc_menu_tracking_rows(memory, &state);
+    ppc_write_menu_scrolling_globals(memory, &rows, content_top);
     ppc_draw_tracked_menu(memory, gworlds, screen_clut, &state, highlighted_item);
     startup.menu_tracking = Some(state);
     startup.popup_menu_call = Some(call);
@@ -66293,26 +66291,57 @@ fn ppc_menu_tracking_hit(
     >,
     input: PpcInputSnapshot,
 ) -> Option<i16> {
-    let rows = MenuRows::new(state.item_appearances().iter().enumerate().map(
-        |(index, appearance)| {
-            let item = i16::try_from(index + 1).unwrap_or(i16::MAX);
-            MenuRow {
-                height: appearance.height,
-                selectable: ppc_menu_item_is_selectable(memory, state.menu_handle(), item),
-            }
-        },
-    ));
-    rows.item_at_point_with_content_top(
-        (
-            state.popup_top(),
-            state.popup_left(),
-            state.popup_top().saturating_add(state.popup_height()),
-            state.popup_left().saturating_add(state.popup_width()),
-        ),
-        (0, 0, 0, 0),
-        state.content_top(),
-        (input.mouse_v, input.mouse_h),
+    let rows = ppc_menu_tracking_rows(memory, state);
+    let rect = (
+        state.popup_top(),
+        state.popup_left(),
+        state.popup_top().saturating_add(state.popup_height()),
+        state.popup_left().saturating_add(state.popup_width()),
+    );
+    let inside = input.mouse_v >= rect.0
+        && input.mouse_v < rect.2
+        && input.mouse_h >= rect.1
+        && input.mouse_h < rect.3;
+    (inside
+        || rows
+            .pointer_scroll_direction(rect, state.content_top(), (input.mouse_v, input.mouse_h))
+            .is_some())
+    .then(|| rows.tracking_item_at_point(rect, state.content_top(), (input.mouse_v, input.mouse_h)))
+}
+
+fn ppc_menu_tracking_rows(
+    memory: &mut PpcSectionMem,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+) -> MenuRows {
+    MenuRows::new(
+        state
+            .item_appearances()
+            .iter()
+            .enumerate()
+            .map(|(index, appearance)| {
+                let item = i16::try_from(index + 1).unwrap_or(i16::MAX);
+                MenuRow {
+                    height: appearance.height,
+                    selectable: ppc_menu_item_is_selectable(memory, state.menu_handle(), item),
+                }
+            }),
     )
+}
+
+fn ppc_write_menu_scrolling_globals(memory: &mut PpcSectionMem, rows: &MenuRows, content_top: i16) {
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::TOP_MENU_ITEM,
+        content_top as u16,
+    );
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::AT_MENU_BOTTOM,
+        content_top.saturating_add(rows.total_height()) as u16,
+    );
 }
 
 fn ppc_menu_tracking_item(
@@ -66372,6 +66401,7 @@ fn ppc_begin_tracked_menu_with_appearances(
         popup_left,
         popup_top,
         content_top,
+        scroll_direction: None,
         popup_width,
         popup_height,
         highlighted_item,
@@ -66625,19 +66655,35 @@ fn ppc_draw_tracked_menu(
     ) else {
         return;
     };
+    let rect = state.dropdown_rect();
+    let rows = ppc_menu_tracking_rows(memory, state);
+    let (scroll_up, scroll_down) = rows.scroll_indicators(rect, state.content_top());
+    let visible_item_top = state
+        .popup_top()
+        .saturating_add(if scroll_up { 16 } else { 0 });
+    let visible_item_bottom = state
+        .popup_top()
+        .saturating_add(state.popup_height())
+        .saturating_sub(if scroll_down { 16 } else { 0 });
     for y in 0..i32::from(state.popup_height()) {
         for x in 0..i32::from(state.popup_width()) {
             let border = x == 0
                 || y == 0
                 || x == i32::from(state.popup_width()) - 1
                 || y == i32::from(state.popup_height()) - 1;
-            let item = ppc_tracked_menu_item_at_offset(
-                state,
-                state
-                    .popup_top()
-                    .saturating_add(i16::try_from(y).unwrap_or(i16::MAX))
-                    .saturating_sub(state.content_top()),
-            );
+            let absolute_y = state
+                .popup_top()
+                .saturating_add(i16::try_from(y).unwrap_or(i16::MAX));
+            let indicator = (scroll_up && absolute_y < visible_item_top)
+                || (scroll_down && absolute_y >= visible_item_bottom);
+            let item = if indicator {
+                0
+            } else {
+                ppc_tracked_menu_item_at_offset(
+                    state,
+                    absolute_y.saturating_sub(state.content_top()),
+                )
+            };
             let highlighted = !border && item == selected && selected > 0;
             let _ = ppc_quickdraw_write_raw_pixel(
                 memory,
@@ -66691,6 +66737,9 @@ fn ppc_draw_tracked_menu(
         }
         if row_top >= popup_bottom.saturating_sub(1) {
             break;
+        }
+        if row_top < visible_item_top || row_top.saturating_add(row_height) > visible_item_bottom {
+            continue;
         }
         let row_bottom = row_top.saturating_add(row_height).min(popup_bottom - 1);
         let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
@@ -66876,6 +66925,47 @@ fn ppc_draw_tracked_menu(
             }
         }
     }
+
+    // Scrolling indicators replace the first/last visible item positions.
+    // Inside Macintosh Volume V (1986), pp. V-248--V-249.
+    let center_x = state.popup_left().saturating_add(state.popup_width() / 2);
+    if scroll_up {
+        for dy in 0..6i16 {
+            for dx in -dy..=dy {
+                let _ = ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    front,
+                    (
+                        i32::from(center_x.saturating_add(dx)),
+                        i32::from(state.popup_top().saturating_add(4).saturating_add(dy)),
+                    ),
+                    black,
+                );
+            }
+        }
+    }
+    if scroll_down {
+        for dy in 0..6i16 {
+            let half_width = 5i16.saturating_sub(dy);
+            for dx in -half_width..=half_width {
+                let _ = ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    front,
+                    (
+                        i32::from(center_x.saturating_add(dx)),
+                        i32::from(
+                            state
+                                .popup_top()
+                                .saturating_add(state.popup_height())
+                                .saturating_sub(10)
+                                .saturating_add(dy),
+                        ),
+                    ),
+                    black,
+                );
+            }
+        }
+    }
 }
 
 fn ppc_redraw_tracked_menu(
@@ -67007,6 +67097,7 @@ fn ppc_begin_submenu_tracking_with_resources(
         popup_left,
         popup_top,
         content_top: layout.content_top,
+        scroll_direction: None,
         popup_width,
         popup_height,
         highlighted_item: 0,
@@ -67119,47 +67210,93 @@ fn ppc_update_menu_tracking(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
-    let hit_submenu =
-        state.deepest_submenu_hit(|_depth, submenu| ppc_menu_tracking_hit(memory, submenu, input));
-    if let Some((depth, submenu_item)) = hit_submenu {
+    let point = (input.mouse_v, input.mouse_h);
+    let submenu_target = state
+        .submenus
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(depth, submenu)| {
+            let rows = ppc_menu_tracking_rows(memory, submenu);
+            let rect = submenu.dropdown_rect();
+            let inside = input.mouse_v >= rect.0
+                && input.mouse_v < rect.2
+                && input.mouse_h >= rect.1
+                && input.mouse_h < rect.3;
+            (inside
+                || rows
+                    .pointer_scroll_direction(rect, submenu.content_top, point)
+                    .is_some())
+            .then_some((depth, rows))
+        });
+    if let Some((depth, rows)) = submenu_target {
+        let update = {
+            let submenu = &mut state.submenus[depth];
+            rows.track_pointer(
+                submenu.dropdown_rect(),
+                &mut submenu.content_top,
+                &mut submenu.scroll_direction,
+                point,
+            )
+        };
         let closed = state
-            .update_highlight(Some(depth), submenu_item)
+            .update_highlight(Some(depth), update.item)
             .unwrap_or_default();
         for submenu in closed.into_iter().rev() {
             ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
         }
-        if submenu_item > 0 {
+        if update.scrolled {
+            let submenu = &state.submenus[depth];
+            ppc_draw_tracked_menu(
+                memory,
+                gworlds,
+                screen_clut,
+                submenu,
+                submenu.highlighted_item,
+            );
+        }
+        if update.item > 0 {
             ppc_ensure_tracked_submenu(
                 memory,
                 menu_list_handle,
                 state,
                 Some(depth),
-                submenu_item,
+                update.item,
                 resources,
                 current_resource_refnum,
             );
         }
+        ppc_write_menu_scrolling_globals(memory, &rows, state.submenus[depth].content_top);
         ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
         return;
     }
 
-    let root_item = ppc_menu_tracking_hit(memory, state, input).unwrap_or(0);
-    let closed = state.update_highlight(None, root_item).unwrap_or_default();
+    let rows = ppc_menu_tracking_rows(memory, state);
+    let update = rows.track_pointer(
+        state.dropdown_rect(),
+        &mut state.content_top,
+        &mut state.scroll_direction,
+        point,
+    );
+    let closed = state
+        .update_highlight(None, update.item)
+        .unwrap_or_default();
     for submenu in closed.into_iter().rev() {
         ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
     }
-    ppc_draw_tracked_menu(memory, gworlds, screen_clut, state, root_item);
-    if root_item > 0 {
+    ppc_draw_tracked_menu(memory, gworlds, screen_clut, state, update.item);
+    if update.item > 0 {
         ppc_ensure_tracked_submenu(
             memory,
             menu_list_handle,
             state,
             None,
-            root_item,
+            update.item,
             resources,
             current_resource_refnum,
         );
     }
+    ppc_write_menu_scrolling_globals(memory, &rows, state.content_top);
     ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
 }
 
@@ -133189,6 +133326,27 @@ mod tests {
             Some(-204),
         );
         assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(crate::memory::globals::addr::AT_MENU_BOTTOM)
+                .map(|value| value as i16),
+            Some(436),
+        );
+        let indicator_point = (
+            i32::from(tracking.popup_left + tracking.popup_width / 2),
+            i32::from(tracking.popup_top + 4),
+        );
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, indicator_point),
+            Some(black),
+            "the hidden upper content must replace the first visible row with an indicator"
+        );
+        assert_eq!(
             ppc_menu_tracking_item(
                 &mut loaded.memory,
                 tracking,
@@ -133201,6 +133359,42 @@ mod tests {
             ),
             20,
         );
+
+        let popup_left = tracking.popup_left;
+        let current_menu_list = ppc_current_menu_list(&mut loaded.memory);
+        let mut tracking = loaded.toolbox_startup.menu_tracking.take().unwrap();
+        for (mouse_v, expected_item, expected_top, expected_bottom) in [
+            (28, 15, -204, 436),
+            (12, 0, -204, 436),
+            (12, 0, -188, 452),
+            (3, 0, -172, 468),
+        ] {
+            ppc_update_menu_tracking(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                &loaded.screen_clut,
+                current_menu_list,
+                &mut tracking,
+                PpcInputSnapshot {
+                    mouse_button: true,
+                    mouse_v,
+                    mouse_h: popup_left + 4,
+                    ..PpcInputSnapshot::default()
+                },
+                &loaded.vfs_resources,
+                loaded.current_resource_refnum,
+            );
+            assert_eq!(tracking.highlighted_item, expected_item);
+            assert_eq!(tracking.content_top, expected_top);
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u16_be(crate::memory::globals::addr::AT_MENU_BOTTOM)
+                    .map(|value| value as i16),
+                Some(expected_bottom),
+            );
+        }
+        loaded.toolbox_startup.menu_tracking = Some(tracking);
     }
 
     #[test]
@@ -139634,6 +139828,7 @@ mod tests {
             popup_left: 11,
             popup_top: 20,
             content_top: 20,
+            scroll_direction: None,
             popup_width: 32,
             popup_height: 20,
             highlighted_item: 0,

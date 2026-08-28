@@ -76,6 +76,7 @@ fn tracked_menu_state_with_content_top(
         popup_left,
         popup_top,
         content_top,
+        scroll_direction: None,
         popup_width: popup_right.saturating_sub(popup_left),
         popup_height: popup_bottom.saturating_sub(popup_top),
         highlighted_item: 0,
@@ -104,6 +105,7 @@ pub(crate) fn tracked_submenu_state(
         popup_left,
         popup_top,
         content_top: popup_top,
+        scroll_direction: None,
         popup_width: popup_right.saturating_sub(popup_left),
         popup_height: popup_bottom.saturating_sub(popup_top),
         highlighted_item: 0,
@@ -2351,7 +2353,8 @@ impl super::TrapDispatcher {
                             content_top,
                             saved,
                         ));
-                        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
+                        let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+                        Self::write_menu_scrolling_globals(bus, &rows, content_top);
                         self.menu_tracking_stack_ptr = sp;
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
                         if highlighted_item > 0 {
@@ -4266,6 +4269,8 @@ impl super::TrapDispatcher {
             dropdown_rect,
             saved,
         ));
+        let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+        Self::write_menu_scrolling_globals(bus, &rows, dropdown_rect.0);
         self.menu_tracking_stack_ptr = stack_ptr;
     }
 
@@ -4511,22 +4516,113 @@ impl super::TrapDispatcher {
         mouse_x: i16,
         mouse_y: i16,
     ) {
-        let hit_submenu = self.menu_tracking.as_ref().and_then(|tracking| {
-            tracking.deepest_submenu_hit(|_depth, submenu| {
-                let menu = self.menus.get(submenu.menu_handle)?;
-                self.menu_rows(bus, &menu.items).item_at_point(
-                    submenu.dropdown_rect(),
-                    (1, 0, 0, 0),
-                    (mouse_y, mouse_x),
-                )
-            })
+        let point = (mouse_y, mouse_x);
+        let submenu_target = self.menu_tracking.as_ref().and_then(|tracking| {
+            tracking
+                .submenus
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(depth, submenu)| {
+                    let menu = self.menus.get(submenu.menu_handle)?;
+                    let rows = self.menu_rows(bus, &menu.items);
+                    let (top, left, bottom, right) = submenu.dropdown_rect();
+                    let inside =
+                        mouse_y >= top && mouse_y < bottom && mouse_x >= left && mouse_x < right;
+                    (inside
+                        || rows
+                            .pointer_scroll_direction(
+                                submenu.dropdown_rect(),
+                                submenu.content_top,
+                                point,
+                            )
+                            .is_some())
+                    .then_some((depth, rows))
+                })
         });
-        if let Some((depth, submenu_item)) = hit_submenu {
-            self.update_submenu_highlight(bus, depth, submenu_item);
+        if let Some((depth, rows)) = submenu_target {
+            let update = self
+                .menu_tracking
+                .as_mut()
+                .and_then(|tracking| tracking.submenus.get_mut(depth))
+                .map(|submenu| {
+                    rows.track_pointer(
+                        submenu.dropdown_rect(),
+                        &mut submenu.content_top,
+                        &mut submenu.scroll_direction,
+                        point,
+                    )
+                });
+            let Some(update) = update else {
+                return;
+            };
+            self.update_submenu_highlight(bus, depth, update.item);
+            if update.scrolled {
+                if let Some((menu_idx, rect)) = self
+                    .menu_tracking
+                    .as_ref()
+                    .and_then(|tracking| tracking.submenus.get(depth))
+                    .map(|submenu| (submenu.menu_handle, submenu.dropdown_rect()))
+                {
+                    self.draw_menu_dropdown(bus, menu_idx, rect);
+                }
+            }
+            if let Some(content_top) = self
+                .menu_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.submenus.get(depth))
+                .map(|submenu| submenu.content_top)
+            {
+                Self::write_menu_scrolling_globals(bus, &rows, content_top);
+            }
             return;
         }
-        let new_item = self.dropdown_item_at_point(bus, mouse_x, mouse_y);
-        self.update_parent_menu_highlight(bus, new_item);
+
+        let Some((menu_idx, rect)) = self
+            .menu_tracking
+            .as_ref()
+            .map(|tracking| (tracking.menu_handle, tracking.dropdown_rect()))
+        else {
+            return;
+        };
+        let Some(menu) = self.menus.get(menu_idx) else {
+            return;
+        };
+        let rows = self.menu_rows(bus, &menu.items);
+        let update = self.menu_tracking.as_mut().map(|tracking| {
+            rows.track_pointer(
+                rect,
+                &mut tracking.content_top,
+                &mut tracking.scroll_direction,
+                point,
+            )
+        });
+        let Some(update) = update else {
+            return;
+        };
+        self.update_parent_menu_highlight(bus, update.item);
+        if update.scrolled {
+            self.draw_menu_dropdown(bus, menu_idx, rect);
+        }
+        if let Some(content_top) = self
+            .menu_tracking
+            .as_ref()
+            .map(|tracking| tracking.content_top)
+        {
+            Self::write_menu_scrolling_globals(bus, &rows, content_top);
+        }
+    }
+
+    fn write_menu_scrolling_globals(
+        bus: &mut MacMemoryBus,
+        rows: &SharedMenuRows,
+        content_top: i16,
+    ) {
+        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
+        bus.write_word(
+            addr::AT_MENU_BOTTOM,
+            content_top.saturating_add(rows.total_height()) as u16,
+        );
     }
 
     /// Read the live MenuList title geometry and map guest handles to this
@@ -4597,18 +4693,15 @@ impl super::TrapDispatcher {
     }
 
     /// Determine which item (1-based) is at the given screen point, or 0.
+    #[cfg(test)]
     fn dropdown_item_at_point(&self, bus: &MacMemoryBus, mouse_x: i16, mouse_y: i16) -> i16 {
         if let Some(ref tracking) = self.menu_tracking {
             let menu = &self.menus[tracking.menu_handle];
-            return self
-                .menu_rows(bus, &menu.items)
-                .item_at_point_with_content_top(
-                    tracking.dropdown_rect(),
-                    (0, 0, 0, 0),
-                    tracking.content_top,
-                    (mouse_y, mouse_x),
-                )
-                .unwrap_or(0);
+            return self.menu_rows(bus, &menu.items).tracking_item_at_point(
+                tracking.dropdown_rect(),
+                tracking.content_top,
+                (mouse_y, mouse_x),
+            );
         }
         0
     }
@@ -4733,6 +4826,11 @@ impl super::TrapDispatcher {
                     .map(|popup| (popup.highlighted_item, top))
             })
             .unwrap_or((0, top));
+        let rows = self.menu_rows(bus, &menu.items);
+        let (scroll_up, scroll_down) = rows.scroll_indicators(rect, content_top);
+        let visible_item_top = top.saturating_add(if scroll_up { MENU_ROW_HEIGHT } else { 0 });
+        let visible_item_bottom =
+            bottom.saturating_sub(if scroll_down { MENU_ROW_HEIGHT } else { 0 });
 
         let mut item_top = content_top;
         for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
@@ -4745,6 +4843,10 @@ impl super::TrapDispatcher {
             }
             if item_top >= bottom {
                 break;
+            }
+            if item_top < visible_item_top || item_bottom > visible_item_bottom {
+                item_top = item_bottom;
+                continue;
             }
             let is_separator = item.text == "-";
             let mark_pixel_index =
@@ -5174,6 +5276,38 @@ impl super::TrapDispatcher {
             }
 
             item_top = item_bottom;
+        }
+
+        // The standard MDEF replaces the first or last visible item position
+        // with a triangular scrolling indicator when content exists beyond
+        // that edge. Inside Macintosh Volume V (1986), pp. V-248--V-249.
+        let center_x = left.saturating_add(right.saturating_sub(left) / 2);
+        if scroll_up {
+            for dy in 0..6i16 {
+                for dx in -dy..=dy {
+                    Self::menu_set_standard_pixel(
+                        bus,
+                        screen,
+                        center_x.saturating_add(dx),
+                        top.saturating_add(4).saturating_add(dy),
+                        true,
+                    );
+                }
+            }
+        }
+        if scroll_down {
+            for dy in 0..6i16 {
+                let half_width = 5i16.saturating_sub(dy);
+                for dx in -half_width..=half_width {
+                    Self::menu_set_standard_pixel(
+                        bus,
+                        screen,
+                        center_x.saturating_add(dx),
+                        bottom.saturating_sub(10).saturating_add(dy),
+                        true,
+                    );
+                }
+            }
         }
     }
 
@@ -10606,7 +10740,7 @@ mod tests {
 
     #[test]
     fn draw_menu_dropdown_systemless_theme_routes_item_states_through_provider() {
-        let rect = (20, 20, 86, 140);
+        let rect = (20, 20, 100, 140);
 
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let classic_row_bytes = 64;
@@ -14261,8 +14395,45 @@ mod tests {
             -204,
         );
         assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            436,
+        );
+        assert_eq!(
             disp.dropdown_item_at_point(&bus, tracking.popup_left + 4, 100),
             20
+        );
+        assert!(
+            screen_pixel_is_set(
+                &bus,
+                base,
+                row_bytes,
+                tracking.popup_left + tracking.popup_width / 2,
+                tracking.popup_top + 4,
+            ),
+            "the hidden upper content must replace the first visible row with an indicator"
+        );
+
+        let popup_left = tracking.popup_left;
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 28);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().highlighted_item, 15);
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 12);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -204);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().highlighted_item, 0);
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 12);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -188);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TOP_MENU_ITEM) as i16,
+            -188,
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            452,
+        );
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 3);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -172);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            468,
         );
     }
 

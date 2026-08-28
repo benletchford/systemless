@@ -74,6 +74,11 @@ pub mod addr {
     /// Inside Macintosh Volume V (1986), pp. V-249 and V-571.
     pub const TOP_MENU_ITEM: u32 = 0x0A0A;
 
+    /// AtMenuBottom: global vertical coordinate of the bottom of the complete
+    /// currently active scrollable menu content (word).
+    /// Inside Macintosh Volume V (1986), pp. V-249, V-254, and V-571.
+    pub const AT_MENU_BOTTOM: u32 = 0x0A0C;
+
     /// MenuList: handle to the current Menu Manager menu list.
     /// Inside Macintosh Volume III (1985), low-memory globals table;
     /// Inside Macintosh Volume V (1986), pp. V-228–V-230.

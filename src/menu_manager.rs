@@ -18,6 +18,20 @@ pub(crate) enum MenuTrackingKind {
     PopUp,
 }
 
+/// Direction currently armed by a standard scrolling-menu indicator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuScrollDirection {
+    Up,
+    Down,
+}
+
+/// Result of one standard scrolling-menu pointer update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuPointerUpdate {
+    pub(crate) item: i16,
+    pub(crate) scrolled: bool,
+}
+
 /// Retained state for one visible menu pane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
@@ -26,6 +40,7 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) popup_left: i16,
     pub(crate) popup_top: i16,
     pub(crate) content_top: i16,
+    pub(crate) scroll_direction: Option<MenuScrollDirection>,
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
@@ -48,6 +63,7 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) popup_left: i16,
     pub(crate) popup_top: i16,
     pub(crate) content_top: i16,
+    pub(crate) scroll_direction: Option<MenuScrollDirection>,
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
@@ -230,6 +246,7 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
     /// Find the deepest open submenu pane hit by the adapter-supplied point
     /// test. Retained hierarchy ordering is manager state; pane geometry and
     /// coordinate conversion remain presentation concerns.
+    #[cfg(test)]
     pub(crate) fn deepest_submenu_hit(
         &self,
         mut hit: impl FnMut(usize, &TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>) -> Option<i16>,
@@ -468,6 +485,7 @@ impl MenuRows {
         None
     }
 
+    #[cfg(test)]
     pub(crate) fn item_at_point(
         &self,
         rect: (i16, i16, i16, i16),
@@ -505,6 +523,101 @@ impl MenuRows {
             self.item_at_offset(vertical.saturating_sub(first_item_top))
                 .unwrap_or(0),
         )
+    }
+
+    /// Return whether the first or last visible row position is occupied by a
+    /// standard scrolling indicator. Inside Macintosh Volume V (1986),
+    /// pp. V-248--V-249.
+    pub(crate) fn scroll_indicators(
+        &self,
+        rect: (i16, i16, i16, i16),
+        content_top: i16,
+    ) -> (bool, bool) {
+        let content_bottom = content_top.saturating_add(self.total_height());
+        (content_top < rect.0, content_bottom > rect.2)
+    }
+
+    pub(crate) fn pointer_scroll_direction(
+        &self,
+        rect: (i16, i16, i16, i16),
+        content_top: i16,
+        point: (i16, i16),
+    ) -> Option<MenuScrollDirection> {
+        const INDICATOR_HEIGHT: i16 = 16;
+
+        let (top, left, bottom, right) = rect;
+        let (vertical, horizontal) = point;
+        let (hidden_above, hidden_below) = self.scroll_indicators(rect, content_top);
+        let inside_horizontal = horizontal >= left && horizontal < right;
+        if inside_horizontal && hidden_above && vertical < top.saturating_add(INDICATOR_HEIGHT) {
+            Some(MenuScrollDirection::Up)
+        } else if inside_horizontal
+            && hidden_below
+            && vertical >= bottom.saturating_sub(INDICATOR_HEIGHT)
+        {
+            Some(MenuScrollDirection::Down)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn tracking_item_at_point(
+        &self,
+        rect: (i16, i16, i16, i16),
+        content_top: i16,
+        point: (i16, i16),
+    ) -> i16 {
+        if self
+            .pointer_scroll_direction(rect, content_top, point)
+            .is_some()
+        {
+            0
+        } else {
+            self.item_at_point_with_content_top(rect, (0, 0, 0, 0), content_top, point)
+                .unwrap_or(0)
+        }
+    }
+
+    /// Apply one standard MDEF scrolling-menu pointer update.
+    ///
+    /// A first call over an indicator arms that direction without selecting
+    /// an item. Each subsequent tracking call in the same direction moves the
+    /// complete content bounds by one 16-pixel row. Points directly above or
+    /// below the pane use the same retained direction. The behavior and
+    /// `TopMenuItem`/`AtMenuBottom` deltas are byte-identical in direct Mac OS
+    /// 8.1 68040 and 604 MDEF captures. Macintosh Toolbox Essentials (1992),
+    /// pp. 3-87--3-92 and 3-151.
+    pub(crate) fn track_pointer(
+        &self,
+        rect: (i16, i16, i16, i16),
+        content_top: &mut i16,
+        armed_direction: &mut Option<MenuScrollDirection>,
+        point: (i16, i16),
+    ) -> MenuPointerUpdate {
+        const SCROLL_STEP: i16 = 16;
+
+        let (top, _, bottom, _) = rect;
+        let direction = self.pointer_scroll_direction(rect, *content_top, point);
+
+        if let Some(direction) = direction {
+            let scrolled = *armed_direction == Some(direction);
+            if scrolled {
+                *content_top = match direction {
+                    MenuScrollDirection::Up => content_top.saturating_add(SCROLL_STEP).min(top),
+                    MenuScrollDirection::Down => content_top
+                        .saturating_sub(SCROLL_STEP)
+                        .max(bottom.saturating_sub(self.total_height())),
+                };
+            }
+            *armed_direction = Some(direction);
+            return MenuPointerUpdate { item: 0, scrolled };
+        }
+
+        *armed_direction = None;
+        MenuPointerUpdate {
+            item: self.tracking_item_at_point(rect, *content_top, point),
+            scrolled: false,
+        }
     }
 }
 
@@ -1519,6 +1632,7 @@ mod tests {
             popup_left: 0,
             popup_top: 20,
             content_top: 20,
+            scroll_direction: None,
             popup_width: 100,
             popup_height: 40,
             highlighted_item: 1,
@@ -1536,6 +1650,7 @@ mod tests {
                 popup_left: 99,
                 popup_top: 22,
                 content_top: 22,
+                scroll_direction: None,
                 popup_width: 100,
                 popup_height: 40,
                 highlighted_item: 2,
@@ -1985,6 +2100,89 @@ mod tests {
             assert_eq!(layout.content_top, content_top);
             assert_eq!(layout.highlighted_item, item);
         }
+    }
+
+    #[test]
+    fn scrolling_pointer_lifecycle_matches_both_macos_81_mdefs() {
+        let rows = MenuRows::new((0..40).map(|_| MenuRow {
+            height: 16,
+            selectable: true,
+        }));
+        let rect = (4, 120, 580, 155);
+        let mut armed = None;
+        let mut content_top = -204;
+
+        assert_eq!(rows.scroll_indicators(rect, content_top), (true, false));
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (28, 130)),
+            MenuPointerUpdate {
+                item: 15,
+                scrolled: false
+            }
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (12, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: false
+            }
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (12, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: true
+            }
+        );
+        assert_eq!(
+            (content_top, content_top + rows.total_height()),
+            (-188, 452)
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (3, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: true
+            }
+        );
+        assert_eq!(
+            (content_top, content_top + rows.total_height()),
+            (-172, 468)
+        );
+
+        armed = None;
+        content_top = 100;
+        assert_eq!(rows.scroll_indicators(rect, content_top), (false, true));
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (556, 130)),
+            MenuPointerUpdate {
+                item: 29,
+                scrolled: false
+            }
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (572, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: false
+            }
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (572, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: true
+            }
+        );
+        assert_eq!((content_top, content_top + rows.total_height()), (84, 724));
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (581, 130)),
+            MenuPointerUpdate {
+                item: 0,
+                scrolled: true
+            }
+        );
+        assert_eq!((content_top, content_top + rows.total_height()), (68, 708));
     }
 
     #[test]
