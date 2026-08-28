@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.5](https://github.com/benletchford/systemless/compare/v0.21.4...v0.21.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* **menu:** add PPC MenuChoice support ([#901](https://github.com/benletchford/systemless/issues/901)) ([a691eed](https://github.com/benletchford/systemless/commit/a691eed85bc05173ba14cb046122ef73fc5c26f9))
+
 ## [0.21.4](https://github.com/benletchford/systemless/compare/v0.21.3...v0.21.4) (2026-08-28)
 
 
