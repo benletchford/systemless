@@ -428,6 +428,39 @@ mod tests {
     }
 
     #[test]
+    fn selected_68040_preserves_address_error_frame_in_shared_memory() {
+        const SSP: u32 = 0x2000;
+        const ODD_PC: u32 = 0x1001;
+        const HANDLER: u32 = 0x1200;
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0, vec![0; 0x3000]);
+        memory.write_u32_be(0, SSP).unwrap();
+        memory.write_u32_be(4, 0x1000).unwrap();
+        memory.write_u32_be(3 * 4, HANDLER).unwrap();
+        memory.write_u16_be(HANDLER, 0x4e73).unwrap(); // RTE
+
+        let mut cpu = CpuCore::new();
+        cpu.set_cpu_type(crate::machine_profile::REFERENCE_MACHINE_PROFILE.cpu_type());
+        cpu.reset(&mut memory);
+        cpu.pc = ODD_PC;
+        cpu.set_sr(0x2700);
+
+        assert!(matches!(cpu.step(&mut memory), StepResult::Ok { .. }));
+        assert_eq!(cpu.pc, HANDLER);
+        assert_eq!(cpu.a(7), SSP - 12, "six-word format-$2 frame");
+
+        let frame = cpu.a(7);
+        assert_eq!(memory.read_u32_be(frame + 2), Some(ODD_PC));
+        assert_eq!(memory.read_u16_be(frame + 6), Some(0x200c));
+        assert_eq!(memory.read_u32_be(frame + 8), Some(ODD_PC & !1));
+
+        assert!(matches!(cpu.step(&mut memory), StepResult::Ok { .. }));
+        assert_eq!(cpu.pc, ODD_PC);
+        assert_eq!(cpu.a(7), SSP, "RTE consumes the complete frame");
+    }
+
+    #[test]
     fn both_bus_contracts_preserve_mapping_faults_and_read_only_regions() {
         let mut memory = GuestAddressSpace::new();
         memory.add_readonly_region(0x1000, vec![0x12, 0x34, 0x56, 0x78]);
