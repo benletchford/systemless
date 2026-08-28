@@ -4,6 +4,7 @@
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -493,7 +494,11 @@ pub struct MacMemoryBus {
     /// journal with final RAM proves whether a candidate execution cycle left
     /// guest memory unchanged, while still allowing temporary stack writes
     /// that are restored before the cycle closes.
-    write_probe_original: Option<HashMap<u32, u8>>,
+    write_probe_original: Option<WriteProbeJournal>,
+    /// The journal's allocation between probes. Probes start more than a
+    /// million times in a long SimCity 2000 session; reusing one map keeps
+    /// the table's capacity instead of regrowing it from empty each time.
+    write_probe_spare: WriteProbeJournal,
     /// An out-of-range write makes the probe unverifiable even though the
     /// normal bus retains its legacy warn-and-ignore behavior.
     write_probe_invalid: bool,
@@ -619,6 +624,38 @@ impl SharedRamRegion {
         }
     }
 }
+
+/// Hasher for the write-probe journal, which is keyed by RAM address.
+/// The journal takes one insert per byte written while an idle-cycle probe
+/// is armed, so the default SipHash was most of a probe's cost. A
+/// multiplicative mix of the 32-bit key, folded so the high address bits
+/// reach the low hash bits, is enough for hashbrown, which draws its tag
+/// from the top bits and its bucket from the low ones.
+#[derive(Default, Clone, Copy)]
+struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, address: u32) {
+        let mixed = (u64::from(address) ^ self.0).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = mixed ^ (mixed >> 32);
+    }
+}
+
+/// Original bytes of the addresses written during an exact-state probe.
+type WriteProbeJournal = HashMap<u32, u8, BuildHasherDefault<AddressHasher>>;
 
 /// RAM storage - either a stable owned allocation or borrowed slice.
 enum RamStorage {
@@ -1067,6 +1104,7 @@ impl MacMemoryBus {
             reserved_heap_ranges: Vec::new(),
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
+            write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
         };
@@ -1161,6 +1199,7 @@ impl MacMemoryBus {
             reserved_heap_ranges: Vec::new(),
             alloc_bucket_sizes: HashMap::new(),
             write_probe_original: None,
+            write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
         }
@@ -1169,14 +1208,16 @@ impl MacMemoryBus {
     /// Begin journaling original RAM bytes for an exact-state execution
     /// probe. Calling this again discards the previous incomplete probe.
     pub(crate) fn begin_write_probe(&mut self) {
-        self.write_probe_original = Some(HashMap::new());
+        let mut journal = std::mem::take(&mut self.write_probe_spare);
+        journal.clear();
+        self.write_probe_original = Some(journal);
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
     }
 
     /// Discard an incomplete write probe and restore normal fast-memory use.
     pub(crate) fn cancel_write_probe(&mut self) {
-        self.write_probe_original = None;
+        self.park_write_probe_journal();
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
     }
@@ -1195,11 +1236,19 @@ impl MacMemoryBus {
         };
         let unchanged = !self.write_probe_invalid
             && original
-                .into_iter()
-                .all(|(address, value)| self.ram.get_in_bounds(address as usize) == value);
+                .iter()
+                .all(|(&address, &value)| self.ram.get_in_bounds(address as usize) == value);
+        self.write_probe_spare = original;
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
         unchanged
+    }
+
+    /// Close the journal, keeping its allocation for the next probe.
+    fn park_write_probe_journal(&mut self) {
+        if let Some(journal) = self.write_probe_original.take() {
+            self.write_probe_spare = journal;
+        }
     }
 
     #[inline]
@@ -1220,7 +1269,7 @@ impl MacMemoryBus {
         if journal.len() > WRITE_PROBE_MAX_ENTRIES {
             // Too much written for a wait cycle: void the probe now so the
             // fast paths (and fastmem) come back for the work in progress.
-            self.write_probe_original = None;
+            self.park_write_probe_journal();
             self.write_probe_overflowed = true;
         }
     }
@@ -2218,6 +2267,31 @@ mod tests {
         bus.write_byte(0x102, 0xCC);
 
         assert!(!bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn write_probe_journal_is_reused_without_stale_entries() {
+        let mut bus = MacMemoryBus::new(1024);
+        bus.write_long(0x100, 0x1122_3344);
+
+        // First probe records $102 as changed; its journal is kept as the
+        // spare afterwards.
+        bus.begin_write_probe();
+        bus.write_byte(0x102, 0xCC);
+        assert!(!bus.finish_write_probe_unchanged());
+
+        // The reused journal must start empty: a probe that writes nothing
+        // is unchanged even though $102 now differs from its old original.
+        bus.begin_write_probe();
+        assert!(bus.finish_write_probe_unchanged());
+
+        // And a cancelled probe hands the journal back too.
+        bus.begin_write_probe();
+        bus.write_byte(0x103, 0xDD);
+        bus.cancel_write_probe();
+        bus.begin_write_probe();
+        bus.write_byte(0x103, 0xDD);
+        assert!(bus.finish_write_probe_unchanged());
     }
 
     #[test]
