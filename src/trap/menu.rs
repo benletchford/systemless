@@ -14,10 +14,12 @@ use crate::menu_manager::{
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState as SharedMenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth,
-    SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView,
-    MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_SEPARATOR_HEIGHT,
+    MenuTrackingState as SharedMenuTrackingState,
+    MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, StandardMenuIconKind,
+    StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane,
+    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE,
+    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -141,7 +143,6 @@ const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
 const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
-const MENU_NORMAL_ICON_SIZE: i16 = 32;
 const MENU_NORMAL_ICON_TEXT_LEFT_OFFSET: i16 = 51;
 
 /// Compute the size of a MENU resource in guest memory by scanning through it.
@@ -3845,42 +3846,43 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn draw_menu_icon_bitmap(
+    fn draw_monochrome_menu_icon(
         &self,
         bus: &mut MacMemoryBus,
         icon_ptr: u32,
         top: i16,
         left: i16,
-        dst_size: i16,
+        kind: StandardMenuIconKind,
         pixel_index_override: Option<u8>,
     ) {
+        let Some(layout) = SharedMonochromeMenuIconLayout::for_kind(
+            kind,
+            bus.get_alloc_size(icon_ptr).map(|size| size as usize),
+        ) else {
+            return;
+        };
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let dst_size = i32::from(dst_size);
 
         // IM:V 1986 p. V-233 and MTE 1992 p. 3-99: black-and-white
         // menu icons are drawn in the item name color. The caller passes
         // the resolved MenuCInfo name color when an 8bpp table entry exists.
-        // Reduced ICONs use a 16x16 slot; normal menu ICONs use 32x32.
-        // Shrinks OR-compress source pixels, matching PlotIcon and IM:V
-        // V-65 CopyBits scaling behavior. The 32x32 case is a direct copy.
-        for dy in 0..dst_size {
-            let sy_start = (dy * 32 / dst_size) as u32;
-            let sy_end = (((dy + 1) * 32 / dst_size).min(32) as u32).max(sy_start + 1);
-            for dx in 0..dst_size {
-                let sx_start = (dx * 32 / dst_size) as u32;
-                let sx_end = (((dx + 1) * 32 / dst_size).min(32) as u32).max(sx_start + 1);
-                let mut any_set = false;
-                'or_scan: for sy in sy_start..sy_end {
-                    let row_data = bus.read_long(icon_ptr + sy * 4);
-                    for sx in sx_start..sx_end {
-                        if (row_data >> (31 - sx)) & 1 != 0 {
-                            any_set = true;
-                            break 'or_scan;
-                        }
-                    }
-                }
-                if any_set {
+        // The architecture-neutral sampler owns ICON reduction and SICN
+        // first-image selection; this adapter owns only guest reads and
+        // framebuffer writes.
+        for dy in 0..layout.height {
+            for dx in 0..layout.width {
+                let set = layout
+                    .sample_with(
+                        |offset| {
+                            let offset = u32::try_from(offset).ok()?;
+                            Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                        },
+                        dx,
+                        dy,
+                    )
+                    .unwrap_or(false);
+                if set {
                     if let Some(pixel_index) = pixel_index_override {
                         Self::fb_set_pixel_index(
                             bus,
@@ -3889,8 +3891,8 @@ impl super::TrapDispatcher {
                             pixel_size,
                             screen_width,
                             screen_height,
-                            left + dx as i16,
-                            top + dy as i16,
+                            left + i16::try_from(dx).unwrap_or(i16::MAX),
+                            top + i16::try_from(dy).unwrap_or(i16::MAX),
                             pixel_index,
                         );
                     } else {
@@ -3901,62 +3903,8 @@ impl super::TrapDispatcher {
                             pixel_size,
                             screen_width,
                             screen_height,
-                            left + dx as i16,
-                            top + dy as i16,
-                            true,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn draw_sicn_menu_icon(
-        &self,
-        bus: &mut MacMemoryBus,
-        icon_ptr: u32,
-        top: i16,
-        left: i16,
-        pixel_index_override: Option<u8>,
-    ) {
-        if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 32) {
-            return;
-        }
-
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
-
-        // More Macintosh Toolbox 1993 glossary, "small icon resource":
-        // an SICN resource is a list of 16-by-16 black-and-white bitmaps;
-        // by convention the first bitmap is image data and the second is
-        // a mask. Menu Manager $1E items plot the small icon in a 16x16
-        // menu slot per MTE 1992 p. 3-46.
-        for dy in 0..MENU_ROW_HEIGHT {
-            let row_data = bus.read_word(icon_ptr + u32::from(dy as u16) * 2);
-            for dx in 0..MENU_ROW_HEIGHT {
-                if (row_data >> (15 - dx)) & 1 != 0 {
-                    if let Some(pixel_index) = pixel_index_override {
-                        Self::fb_set_pixel_index(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            left + dx,
-                            top + dy,
-                            pixel_index,
-                        );
-                    } else {
-                        Self::fb_set_pixel(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            left + dx,
-                            top + dy,
+                            left + i16::try_from(dx).unwrap_or(i16::MAX),
+                            top + i16::try_from(dy).unwrap_or(i16::MAX),
                             true,
                         );
                     }
@@ -4969,33 +4917,34 @@ impl super::TrapDispatcher {
                 text_left = icon_left + icon_width;
             } else if let Some(icon_ptr) = normal_icon_ptr {
                 let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_menu_icon_bitmap(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
                     icon_left,
-                    MENU_NORMAL_ICON_SIZE,
+                    StandardMenuIconKind::Normal,
                     content_index(name_pixel_index),
                 );
                 text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             } else if let Some(icon_ptr) = reduced_icon_ptr {
                 let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_menu_icon_bitmap(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
                     icon_left,
-                    MENU_ROW_HEIGHT,
+                    StandardMenuIconKind::Reduced,
                     content_index(name_pixel_index),
                 );
                 text_left = icon_left + MENU_ROW_HEIGHT;
             } else if let Some(icon_ptr) = small_icon_ptr {
                 let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_sicn_menu_icon(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
                     icon_left,
+                    StandardMenuIconKind::Small,
                     content_index(name_pixel_index),
                 );
                 text_left = icon_left + MENU_ROW_HEIGHT;

@@ -498,6 +498,79 @@ pub(crate) fn standard_menu_icon_resource_id(icon: u8, command: u8) -> Option<i1
     (icon != 0 && command != 0x1C).then(|| i16::from(icon).saturating_add(256))
 }
 
+/// Validated geometry and sampling policy for a standard monochrome menu icon.
+///
+/// An `ICON` is a 32-by-32 one-bit image. A reduced item OR-compresses that
+/// image into a 16-by-16 slot, while an `SICN` item uses the first 16-by-16
+/// image in its small-icon list. Macintosh Toolbox Essentials (1992),
+/// pp. 3-45--3-46 and 3-62--3-63.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MonochromeMenuIconLayout {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    source_size: usize,
+    source_row_bytes: usize,
+    source_scale: usize,
+    length: Option<usize>,
+}
+
+impl MonochromeMenuIconLayout {
+    pub(crate) fn for_kind(kind: StandardMenuIconKind, length: Option<usize>) -> Option<Self> {
+        let (width, source_size, source_row_bytes, source_scale, required_length) = match kind {
+            StandardMenuIconKind::Normal => (32, 32, 4, 1, 128),
+            StandardMenuIconKind::Reduced => (16, 32, 4, 2, 128),
+            StandardMenuIconKind::Small => (16, 16, 2, 1, 32),
+            StandardMenuIconKind::None | StandardMenuIconKind::Color { .. } => return None,
+        };
+        if length.is_some_and(|length| length < required_length) {
+            return None;
+        }
+        Some(Self {
+            width,
+            height: width,
+            source_size,
+            source_row_bytes,
+            source_scale,
+            length,
+        })
+    }
+
+    /// Sample one destination pixel through an adapter-provided byte reader.
+    /// Reduced `ICON` pixels are the OR of the corresponding 2-by-2 source
+    /// cell; normal `ICON` and `SICN` pixels map one-to-one.
+    pub(crate) fn sample_with(
+        self,
+        mut read: impl FnMut(usize) -> Option<u8>,
+        x: usize,
+        y: usize,
+    ) -> Option<bool> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let source_x = x.checked_mul(self.source_scale)?;
+        let source_y = y.checked_mul(self.source_scale)?;
+        let source_x_end = source_x
+            .checked_add(self.source_scale)?
+            .min(self.source_size);
+        let source_y_end = source_y
+            .checked_add(self.source_scale)?
+            .min(self.source_size);
+        for sy in source_y..source_y_end {
+            let row = sy.checked_mul(self.source_row_bytes)?;
+            for sx in source_x..source_x_end {
+                let offset = row.checked_add(sx / 8)?;
+                if self.length.is_some_and(|length| offset >= length) {
+                    return None;
+                }
+                if read(offset)? & (0x80 >> (sx & 7)) != 0 {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
+    }
+}
+
 /// Offsets and geometry decoded from one compiled color-icon resource.
 ///
 /// A `cicn` stores a 50-byte PixMap, two 14-byte BitMaps, a four-byte data
@@ -2377,6 +2450,60 @@ mod tests {
         );
         assert_eq!(standard_menu_icon_resource_id(7, 0), Some(263));
         assert_eq!(standard_menu_icon_resource_id(7, 0x1C), None);
+    }
+
+    #[test]
+    fn monochrome_menu_icon_sampling_is_shared_between_gateways() {
+        let mut icon = vec![0; 128];
+        icon[0] = 0x40;
+
+        let normal =
+            MonochromeMenuIconLayout::for_kind(StandardMenuIconKind::Normal, Some(icon.len()))
+                .expect("complete ICON");
+        assert_eq!((normal.width, normal.height), (32, 32));
+        assert_eq!(
+            normal.sample_with(|offset| icon.get(offset).copied(), 1, 0),
+            Some(true),
+        );
+        assert_eq!(
+            normal.sample_with(|offset| icon.get(offset).copied(), 0, 0),
+            Some(false),
+        );
+
+        let reduced =
+            MonochromeMenuIconLayout::for_kind(StandardMenuIconKind::Reduced, Some(icon.len()))
+                .expect("complete reduced ICON");
+        assert_eq!((reduced.width, reduced.height), (16, 16));
+        assert_eq!(
+            reduced.sample_with(|offset| icon.get(offset).copied(), 0, 0),
+            Some(true),
+        );
+        assert_eq!(
+            reduced.sample_with(|offset| icon.get(offset).copied(), 1, 0),
+            Some(false),
+        );
+
+        let mut small = vec![0; 32];
+        small[0] = 0x80;
+        let small_layout =
+            MonochromeMenuIconLayout::for_kind(StandardMenuIconKind::Small, Some(small.len()))
+                .expect("complete SICN image");
+        assert_eq!(
+            small_layout.sample_with(|offset| small.get(offset).copied(), 0, 0),
+            Some(true),
+        );
+        assert_eq!(
+            small_layout.sample_with(|offset| small.get(offset).copied(), 16, 0),
+            None,
+        );
+        assert_eq!(
+            MonochromeMenuIconLayout::for_kind(StandardMenuIconKind::Normal, Some(127)),
+            None,
+        );
+        assert_eq!(
+            MonochromeMenuIconLayout::for_kind(StandardMenuIconKind::Small, Some(31)),
+            None,
+        );
     }
 
     #[test]

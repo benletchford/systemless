@@ -28,9 +28,9 @@ use crate::menu_manager::{
     standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
     MenuBarTitleRegion, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
-    MenuTrackingKind, MenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth,
-    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind,
+    StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView,
+    MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
     STANDARD_SYSTEM_MENU_MARK_ADVANCE,
 };
@@ -66541,47 +66541,47 @@ fn ppc_draw_tracked_menu_icon(
     left: i16,
     content_pixel: u16,
 ) {
-    // Plot reduced ICONs by OR-compressing 32x32 source cells into a 16x16
-    // slot, use the first SICN bitmap, and map cicn ColorTable entries into
-    // the active device table. Macintosh Toolbox Essentials (1992), p. 3-46;
-    // Imaging With QuickDraw (1994), pp. 4-105--4-106.
+    // The shared standard-MDEF sampler owns monochrome resource validation,
+    // reduced-ICON scaling, and SICN first-image selection. This adapter owns
+    // retained resource bytes and framebuffer writes. Macintosh Toolbox
+    // Essentials (1992), pp. 3-45--3-46 and 3-62--3-63.
+    let monochrome = match icon {
+        PpcTrackedMenuIcon::Icon { data, reduced } => Some((
+            data,
+            if *reduced {
+                StandardMenuIconKind::Reduced
+            } else {
+                StandardMenuIconKind::Normal
+            },
+        )),
+        PpcTrackedMenuIcon::SmallIcon(data) => Some((data, StandardMenuIconKind::Small)),
+        PpcTrackedMenuIcon::CIcon(_) => None,
+    };
+    if let Some((data, kind)) = monochrome {
+        let Some(layout) = MonochromeMenuIconLayout::for_kind(kind, Some(data.len())) else {
+            return;
+        };
+        for y in 0..layout.height {
+            for x in 0..layout.width {
+                if layout
+                    .sample_with(|offset| data.get(offset).copied(), x, y)
+                    .unwrap_or(false)
+                {
+                    let _ = ppc_quickdraw_write_raw_pixel(
+                        memory,
+                        front,
+                        (i32::from(left) + x as i32, i32::from(top) + y as i32),
+                        content_pixel,
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    // Compiled color icons retain their ColorTable mapping through the active
+    // device table. Imaging With QuickDraw (1994), pp. 4-105--4-106.
     match icon {
-        PpcTrackedMenuIcon::Icon { data, reduced } => {
-            let size = if *reduced { 16usize } else { 32usize };
-            for dy in 0..size {
-                let sy_start = dy * 32 / size;
-                let sy_end = ((dy + 1) * 32 / size).max(sy_start + 1).min(32);
-                for dx in 0..size {
-                    let sx_start = dx * 32 / size;
-                    let sx_end = ((dx + 1) * 32 / size).max(sx_start + 1).min(32);
-                    let set = (sy_start..sy_end).any(|sy| {
-                        (sx_start..sx_end).any(|sx| ppc_menu_bitmap_bit(data, 0, 4, sx, sy))
-                    });
-                    if set {
-                        let _ = ppc_quickdraw_write_raw_pixel(
-                            memory,
-                            front,
-                            (i32::from(left) + dx as i32, i32::from(top) + dy as i32),
-                            content_pixel,
-                        );
-                    }
-                }
-            }
-        }
-        PpcTrackedMenuIcon::SmallIcon(data) => {
-            for y in 0..16usize {
-                for x in 0..16usize {
-                    if ppc_menu_bitmap_bit(data, 0, 2, x, y) {
-                        let _ = ppc_quickdraw_write_raw_pixel(
-                            memory,
-                            front,
-                            (i32::from(left) + x as i32, i32::from(top) + y as i32),
-                            content_pixel,
-                        );
-                    }
-                }
-            }
-        }
         PpcTrackedMenuIcon::CIcon(data) => {
             let Some(layout) = ColorIconLayout::decode(data) else {
                 return;
@@ -66635,6 +66635,7 @@ fn ppc_draw_tracked_menu_icon(
                 }
             }
         }
+        PpcTrackedMenuIcon::Icon { .. } | PpcTrackedMenuIcon::SmallIcon(_) => unreachable!(),
     }
 }
 
