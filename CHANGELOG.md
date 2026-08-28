@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.4](https://github.com/benletchford/systemless/compare/v0.21.3...v0.21.4) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ppc:** deliver native application exceptions ([#912](https://github.com/benletchford/systemless/issues/912)) ([b682e7f](https://github.com/benletchford/systemless/commit/b682e7f5f003a73c6202b4acbb8728ddfc6f3698))
+
 ## [0.21.3](https://github.com/benletchford/systemless/compare/v0.21.2...v0.21.3) (2026-08-27)
 
 
