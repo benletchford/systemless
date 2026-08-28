@@ -1788,9 +1788,6 @@ pub struct TrapDispatcher {
     /// One-shot update events recovered after FlushEvents drops queue entries
     /// while the Window Manager update region remains dirty.
     pub(crate) flushed_update_events: VecDeque<QueuedEvent>,
-    /// System event mask used by PostEvent/PPostEvent filtering.
-    /// Inside Macintosh Volume II, II-70.
-    pub(crate) system_event_mask: u16,
     /// Whether the synthetic kAEOpenApplication event has been delivered.
     /// On a real Mac, the Finder sends this Apple Event at launch.
     /// Macintosh Toolbox Essentials 1992, p. 5-90
@@ -3264,7 +3261,6 @@ impl TrapDispatcher {
             pending_modal_dialog_mouse_up: false,
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
-            system_event_mask: 0xFFEF, // everyEvent - keyUpMask
             sent_open_app_event: false,
             application_high_level_event_aware: false,
             current_trap_word: 0,
@@ -5031,6 +5027,19 @@ impl TrapDispatcher {
 
     /// Push a key-up event into the event queue.
     pub fn push_key_up(&mut self, key_code: u8, char_code: u8) {
+        self.push_key_up_with_system_event_mask(
+            crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+            key_code,
+            char_code,
+        );
+    }
+
+    pub(crate) fn push_key_up_with_system_event_mask(
+        &mut self,
+        system_event_mask: u16,
+        key_code: u8,
+        char_code: u8,
+    ) {
         if key_code == Self::CAPS_LOCK_KEY_CODE {
             self.caps_lock_physically_pressed = false;
         } else {
@@ -5060,7 +5069,7 @@ impl TrapDispatcher {
         // OS event queue only when the application explicitly enables
         // keyUpMask through SetEventMask. Inside Macintosh Volume I, I-254;
         // Macintosh Toolbox Essentials 1992, pp. 2-28..2-29 and 2-99.
-        if self.posted_event_is_enabled(4) {
+        if Self::posted_event_is_enabled(system_event_mask, 4) {
             self.event_queue.push_back(QueuedEvent {
                 what: 4, // keyUp
                 message,

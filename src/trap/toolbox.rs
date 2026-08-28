@@ -18362,7 +18362,7 @@ mod tests {
         // Simulate: runner wrote $0172=0x00 on mouse-down
         bus.write_byte(0x0172, 0x00);
         disp.push_mouse_down(50, 100);
-        let _ = disp.dequeue_event(0xFFFF);
+        let _ = disp.dequeue_event(&bus, 0xFFFF);
         disp.push_mouse_up(50, 100);
 
         // Internal state is released, but $0172 is still "pressed"

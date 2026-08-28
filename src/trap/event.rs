@@ -163,7 +163,7 @@ impl super::TrapDispatcher {
         })
     }
 
-    pub(crate) fn posted_event_is_enabled(&self, what: u16) -> bool {
+    pub(crate) fn posted_event_is_enabled(system_event_mask: u16, what: u16) -> bool {
         // The system event mask (SysEvtMask) gates OS-level events.
         // Per IM:II-67 table 2-2, bits 0..15 correspond to specific
         // event types (mDown, keyDown, activate, etc.); bit 10 is
@@ -172,10 +172,10 @@ impl super::TrapDispatcher {
         // 24/25/26 per IM:II-66) and Sound Manager / file-system
         // notification events are NOT gated by SysEvtMask — always postable.
         match what {
-            Self::K_HIGH_LEVEL_EVENT => (self.system_event_mask & Self::HIGH_LEVEL_EVENT_MASK) != 0,
+            Self::K_HIGH_LEVEL_EVENT => (system_event_mask & Self::HIGH_LEVEL_EVENT_MASK) != 0,
             0..=15 => {
                 let bit = 1u16 << what;
-                (self.system_event_mask & bit) != 0
+                (system_event_mask & bit) != 0
             }
             _ => true,
         }
@@ -213,7 +213,10 @@ impl super::TrapDispatcher {
     }
 
     fn post_os_event(&mut self, bus: &mut MacMemoryBus, what: u16, message: u32) -> (u32, u32) {
-        if !self.posted_event_is_enabled(what) {
+        if !Self::posted_event_is_enabled(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            what,
+        ) {
             return (Self::EVT_NOT_ENB, 0);
         }
 
@@ -300,12 +303,12 @@ impl super::TrapDispatcher {
         now.wrapping_sub(due) < 0x8000_0000
     }
 
-    pub(crate) fn post_auto_key_if_due(&mut self) {
+    pub(crate) fn post_auto_key_if_due(&mut self, system_event_mask: u16) {
         // Auto-key is a low-level event posted by the Operating System Event
         // Manager once the threshold/rate elapses; it is not synthesized only
         // when an application happens to poll. Macintosh Toolbox Essentials,
         // pp. 2-29 and 2-38.
-        if !self.posted_event_is_enabled(Self::AUTO_KEY_EVENT) {
+        if !Self::posted_event_is_enabled(system_event_mask, Self::AUTO_KEY_EVENT) {
             return;
         }
         let Some(repeat) = self.key_repeat else {
@@ -334,9 +337,9 @@ impl super::TrapDispatcher {
         });
     }
 
-    fn enqueue_auto_key_if_due(&mut self, event_mask: u16) {
+    fn enqueue_auto_key_if_due(&mut self, system_event_mask: u16, event_mask: u16) {
         if Self::event_matches_mask(event_mask, Self::AUTO_KEY_EVENT) {
-            self.post_auto_key_if_due();
+            self.post_auto_key_if_due(system_event_mask);
         }
     }
 
@@ -386,7 +389,10 @@ impl super::TrapDispatcher {
         event_mask: u16,
     ) -> Option<super::dispatch::QueuedEvent> {
         self.enqueue_open_application_event_if_needed(event_mask);
-        self.enqueue_auto_key_if_due(event_mask);
+        self.enqueue_auto_key_if_due(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            event_mask,
+        );
         let pending_menu = self.peek_pending_native_menu_event(event_mask);
         let queued = self
             .matching_toolbox_event_index(event_mask)
@@ -424,8 +430,15 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn peek_event(&mut self, event_mask: u16) -> Option<super::dispatch::QueuedEvent> {
-        self.enqueue_auto_key_if_due(event_mask);
+    fn peek_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> Option<super::dispatch::QueuedEvent> {
+        self.enqueue_auto_key_if_due(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            event_mask,
+        );
         let pending = self.peek_pending_native_menu_event(event_mask);
         let queued = self
             .event_queue
@@ -448,7 +461,10 @@ impl super::TrapDispatcher {
         event_mask: u16,
     ) -> (u16, u32, i16, i16, u16, bool) {
         self.enqueue_open_application_event_if_needed(event_mask);
-        self.enqueue_auto_key_if_due(event_mask);
+        self.enqueue_auto_key_if_due(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            event_mask,
+        );
         if Self::event_matches_mask(event_mask, 6) {
             self.service_window_picture_updates(cpu, bus);
         }
@@ -656,8 +672,15 @@ impl super::TrapDispatcher {
 
     /// Dequeue one event matching the event mask, or return a null event.
     /// Returns (what, message, where_v, where_h, modifiers, has_event).
-    pub(crate) fn dequeue_event(&mut self, event_mask: u16) -> (u16, u32, i16, i16, u16, bool) {
-        self.enqueue_auto_key_if_due(event_mask);
+    pub(crate) fn dequeue_event(
+        &mut self,
+        bus: &MacMemoryBus,
+        event_mask: u16,
+    ) -> (u16, u32, i16, i16, u16, bool) {
+        self.enqueue_auto_key_if_due(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            event_mask,
+        );
         let queued_idx = self.event_queue.iter().position(|event| {
             Self::is_low_level_os_event(event.what)
                 && Self::event_matches_mask(event_mask, event.what)
@@ -1165,7 +1188,7 @@ impl super::TrapDispatcher {
             (false, 0x30) => {
                 let event_mask = cpu.read_reg(Register::D0) as u16;
                 let event_ptr = cpu.read_reg(Register::A0);
-                if let Some(event) = self.peek_event(event_mask) {
+                if let Some(event) = self.peek_event(bus, event_mask) {
                     self.write_event_record(
                         bus,
                         event_ptr,
@@ -1201,7 +1224,7 @@ impl super::TrapDispatcher {
                 let event_mask = cpu.read_reg(Register::D0) as u16;
                 let event_ptr = cpu.read_reg(Register::A0);
                 let (what, message, where_v, where_h, modifiers, has_event) =
-                    self.dequeue_event(event_mask);
+                    self.dequeue_event(bus, event_mask);
                 self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
                 // D0=0 means event found (TRUE); D0=$FFFF means null (FALSE).
                 // TB Essentials 1992, p. 2-97; confirmed by MPW disassembly (ADDQ+BEQ pattern).
@@ -1225,7 +1248,7 @@ mod tests {
 
     #[test]
     fn native_menu_mouse_down_is_latched_and_rate_limited_until_menuselect() {
-        let (mut disp, _cpu, _bus) = setup();
+        let (mut disp, _cpu, bus) = setup();
         disp.tick_count = 100;
         disp.pending_native_menu_event = Some(QueuedEvent {
             what: 1,
@@ -1235,16 +1258,16 @@ mod tests {
             modifiers: 0,
         });
 
-        let first = disp.dequeue_event(1 << 1);
+        let first = disp.dequeue_event(&bus, 1 << 1);
         assert!(first.5);
         assert_eq!((first.0, first.2, first.3), (1, 10, 42));
         assert!(disp.pending_native_menu_event.is_some());
 
-        let same_tick = disp.dequeue_event(1 << 1);
+        let same_tick = disp.dequeue_event(&bus, 1 << 1);
         assert!(!same_tick.5, "latched click must not spin an event loop");
 
         disp.tick_count += 1;
-        let next_tick = disp.dequeue_event(1 << 1);
+        let next_tick = disp.dequeue_event(&bus, 1 << 1);
         assert!(next_tick.5, "ignored menu click must be presented again");
         assert!(disp.pending_native_menu_event.is_some());
     }
@@ -1268,10 +1291,10 @@ mod tests {
             modifiers: 0,
         });
 
-        assert_eq!(disp.peek_event(u16::MAX).unwrap().what, 3);
+        assert_eq!(disp.peek_event(&bus, u16::MAX).unwrap().what, 3);
         let event = disp.dequeue_toolbox_event(&mut cpu, &mut bus, u16::MAX);
         assert_eq!((event.0, event.1), (3, 0x1234));
-        let event = disp.dequeue_event(u16::MAX);
+        let event = disp.dequeue_event(&bus, u16::MAX);
         assert_eq!((event.0, event.2, event.3), (1, 10, 42));
 
         disp.tick_count += 1;
@@ -1282,8 +1305,8 @@ mod tests {
             where_h: 30,
             modifiers: 0,
         });
-        assert_eq!(disp.peek_event(u16::MAX).unwrap().what, 1);
-        assert_eq!(disp.dequeue_event(u16::MAX).0, 1);
+        assert_eq!(disp.peek_event(&bus, u16::MAX).unwrap().what, 1);
+        assert_eq!(disp.dequeue_event(&bus, u16::MAX).0, 1);
     }
 
     #[test]
@@ -1382,8 +1405,15 @@ mod tests {
         assert_eq!(what, 5);
         assert_eq!(message, 0x0000_7D1F);
 
-        disp.system_event_mask |= 1 << 4;
-        disp.push_key_up(0x7D, 31);
+        bus.write_word(
+            crate::memory::globals::addr::SYS_EVT_MASK,
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK) | (1 << 4),
+        );
+        disp.push_key_up_with_system_event_mask(
+            bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            0x7D,
+            31,
+        );
         let (what, _, _, _, _, has_event) = disp.dequeue_toolbox_event(&mut cpu, &mut bus, 0x0010);
         assert!(has_event, "keyUp should be delivered");
         assert_eq!(what, 4);
@@ -1403,7 +1433,7 @@ mod tests {
         assert!(has_event, "initial keyDown should be delivered");
 
         disp.tick_count += TrapDispatcher::AUTO_KEY_THRESHOLD_TICKS;
-        disp.post_auto_key_if_due();
+        disp.post_auto_key_if_due(bus.read_word(crate::memory::globals::addr::SYS_EVT_MASK));
 
         disp.push_key_up(0x00, b'a');
         let (what, message, _, _, _, has_event) =
@@ -2389,6 +2419,30 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    #[test]
+    fn post_event_observes_direct_sys_evt_mask_writes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A0, 4);
+        cpu.write_reg(Register::D0, 0x1234);
+
+        let result = disp.dispatch_event(false, 0x2F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), TrapDispatcher::EVT_NOT_ENB);
+        assert!(disp.event_queue.is_empty());
+
+        bus.write_word(crate::memory::globals::addr::SYS_EVT_MASK, 0xffff);
+        cpu.write_reg(Register::A0, 4);
+        cpu.write_reg(Register::D0, 0x5678);
+        let result = disp.dispatch_event(false, 0x2F, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.event_queue.front().map(|event| event.what), Some(4));
+        assert_eq!(
+            disp.event_queue.front().map(|event| event.message),
+            Some(0x5678)
+        );
+    }
+
     // ---- OSEventAvail ($A030) ----
 
     #[test]
@@ -2726,7 +2780,7 @@ mod tests {
     fn get_os_event_mouse_up_reports_button_up_modifier() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.push_mouse_down(75, 150);
-        let _ = disp.dequeue_event(0xFFFF);
+        let _ = disp.dequeue_event(&bus, 0xFFFF);
         disp.push_mouse_up(75, 150);
 
         cpu.write_reg(Register::D0, 0x0004);
