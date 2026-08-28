@@ -6,7 +6,7 @@ use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, hierarchical_menu_id,
     laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
     new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
-    standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
@@ -145,7 +145,6 @@ const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
 const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
-const MENU_NORMAL_ICON_TEXT_LEFT_OFFSET: i16 = 51;
 
 const MDEF_TRAMPOLINE_SIZE: u32 = 60;
 
@@ -4743,11 +4742,15 @@ impl super::TrapDispatcher {
                 item.mark != 0,
                 has_command_key,
             );
-            let text_baseline_adjust = if attached_pulldown { -1 } else { 0 };
-            let text_y = item_top
-                + (item_height - (metrics.ascent + metrics.descent)) / 2
-                + metrics.ascent
-                + text_baseline_adjust;
+            let layout = standard_menu_item_layout(
+                (left, right),
+                (item_top, item_height),
+                icon_kind,
+                item.mark != 0,
+                (metrics.ascent, metrics.descent),
+                attached_pulldown,
+            );
+            let text_y = layout.text_baseline;
             // IM:I I-358 / MTE 1992 p. 3-131: DisableItem dims an item and
             // takes it out of MenuSelect and MenuKey, and HIG 1992 p. 54 says
             // it stays visible while dimmed. Separator rows are dimmed the
@@ -4781,7 +4784,7 @@ impl super::TrapDispatcher {
                 // Separator: a dividing line across the item row, one pixel
                 // above the row's midpoint in the System 7.5.3 standard MDEF.
                 // Inside Macintosh Volume I, I-359
-                let sep_y = item_top + item_height / 2 - 1;
+                let sep_y = layout.separator_y;
                 for x in (left + 1)..(right - 1) {
                     match dim_index {
                         Some(pixel_index) => Self::fb_set_pixel_index(
@@ -4836,7 +4839,7 @@ impl super::TrapDispatcher {
 
             // Draw mark character if present (0x12 = checkmark, others rendered as-is).
             // Inside Macintosh Volume I, I-358
-            let mut text_left = left + 15;
+            let text_left = layout.text_left;
             if item.mark != 0 && !is_hierarchical {
                 // Map Mac Roman mark byte to a renderable string.
                 // Mac character 0x12 (18) is the standard checkmark in Chicago.
@@ -4854,7 +4857,7 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        left + 3,
+                        layout.mark_left,
                         text_y,
                         &mark_str,
                         font_id,
@@ -4870,7 +4873,7 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        left + 3,
+                        layout.mark_left,
                         text_y,
                         &mark_str,
                         font_id,
@@ -4880,52 +4883,34 @@ impl super::TrapDispatcher {
             }
 
             if let Some(icon_ptr) = cicn_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, icon_left);
-                let icon_width = self
-                    .menu_item_cicn_size(bus, item)
-                    .map(|(width, _height)| width.max(MENU_ROW_HEIGHT))
-                    .unwrap_or(MENU_ROW_HEIGHT);
-                text_left = icon_left + icon_width;
+                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, layout.icon_left);
             } else if let Some(icon_ptr) = normal_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
                 self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
+                    layout.icon_left,
                     StandardMenuIconKind::Normal,
                     content_index(name_pixel_index),
                 );
-                text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             } else if let Some(icon_ptr) = reduced_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
                 self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
+                    layout.icon_left,
                     StandardMenuIconKind::Reduced,
                     content_index(name_pixel_index),
                 );
-                text_left = icon_left + MENU_ROW_HEIGHT;
             } else if let Some(icon_ptr) = small_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
                 self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
+                    layout.icon_left,
                     StandardMenuIconKind::Small,
                     content_index(name_pixel_index),
                 );
-                text_left = icon_left + MENU_ROW_HEIGHT;
-            } else if icon_kind == StandardMenuIconKind::Normal {
-                // MTE 1992 pp. 3-137 to 3-138 says SetItemIcon stores an
-                // icon number and the Menu Manager looks up icon+256. If no
-                // resource is present, the System 7 standard MDEF still
-                // reserves the normal icon column before drawing item text.
-                text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             }
 
             // MTE 1992 pp. 3-60 and 3-133 to 3-134: `SetItemStyle`
@@ -4969,9 +4954,8 @@ impl super::TrapDispatcher {
             if is_hierarchical {
                 // IM:V V-23 / V-236: hierarchical items show a right-pointing
                 // indicator; their mark byte is the submenu ID, not a checkmark.
-                let tri_mid_y = item_top + item_height / 2;
                 for dx in 0..7 {
-                    let x = right - 12 + dx;
+                    let x = layout.indicator_left + dx;
                     let half_height = dx.min(6 - dx);
                     for dy in -half_height..=half_height {
                         match content_index(command_pixel_index) {
@@ -4983,7 +4967,7 @@ impl super::TrapDispatcher {
                                 screen_width,
                                 screen_height,
                                 x,
-                                tri_mid_y + dy,
+                                layout.indicator_mid_y + dy,
                                 pixel_index,
                             ),
                             None => Self::fb_set_pixel(
@@ -4994,7 +4978,7 @@ impl super::TrapDispatcher {
                                 screen_width,
                                 screen_height,
                                 x,
-                                tri_mid_y + dy,
+                                layout.indicator_mid_y + dy,
                                 true,
                             ),
                         }
@@ -5013,7 +4997,7 @@ impl super::TrapDispatcher {
                 // right-aligning each glyph pair by measured width. This
                 // keeps N/O/W equivalents aligned in the System 7.5.3
                 // MenuSelect reference. MTE 1992 pp. 3-115 to 3-117.
-                let command_left = right - 25;
+                let command_left = layout.command_left;
                 if let Some(pixel_index) = content_index(command_pixel_index) {
                     Self::fb_draw_string_styled_index(
                         bus,

@@ -893,6 +893,61 @@ pub(crate) struct StandardMenuItemWidth {
     pub(crate) command: u8,
 }
 
+/// Pixel anchors used to draw one standard menu item.
+///
+/// The standard definition procedure owns these columns, independent of the
+/// caller ISA: the mark starts three pixels inside the menu, plain text starts
+/// at 15, icons start at 2 (or 18 after a mark), normal icons reserve through
+/// column 51, and the command/hierarchy indicators are anchored from the
+/// right edge. Macintosh Toolbox Essentials (1992), pp. 3-12--3-13,
+/// 3-45--3-46, and 3-148--3-151; exact anchors match the Mac OS 8.1 standard
+/// MDEF captures for both supported machine profiles.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StandardMenuItemLayout {
+    pub(crate) mark_left: i16,
+    pub(crate) icon_left: i16,
+    pub(crate) text_left: i16,
+    pub(crate) text_baseline: i16,
+    pub(crate) separator_y: i16,
+    pub(crate) indicator_left: i16,
+    pub(crate) command_left: i16,
+    pub(crate) indicator_mid_y: i16,
+}
+
+pub(crate) fn standard_menu_item_layout(
+    menu_bounds: (i16, i16),
+    row_bounds: (i16, i16),
+    icon: StandardMenuIconKind,
+    has_mark: bool,
+    font_metrics: (i16, i16),
+    attached_pull_down: bool,
+) -> StandardMenuItemLayout {
+    let (menu_left, menu_right) = menu_bounds;
+    let (row_top, row_height) = row_bounds;
+    let (font_ascent, font_descent) = font_metrics;
+    let icon_left = menu_left.saturating_add(if has_mark { 18 } else { 2 });
+    let text_left = match icon {
+        StandardMenuIconKind::None => menu_left.saturating_add(15),
+        StandardMenuIconKind::Normal => menu_left.saturating_add(51),
+        StandardMenuIconKind::Color { .. }
+        | StandardMenuIconKind::Reduced
+        | StandardMenuIconKind::Small => icon_left.saturating_add(icon.width()),
+    };
+    StandardMenuItemLayout {
+        mark_left: menu_left.saturating_add(3),
+        icon_left,
+        text_left,
+        text_baseline: row_top
+            .saturating_add(row_height.saturating_sub(font_ascent.saturating_add(font_descent)) / 2)
+            .saturating_add(font_ascent)
+            .saturating_sub(i16::from(attached_pull_down)),
+        separator_y: row_top.saturating_add(row_height / 2).saturating_sub(1),
+        indicator_left: menu_right.saturating_sub(12),
+        command_left: menu_right.saturating_sub(25),
+        indicator_mid_y: row_top.saturating_add(row_height / 2),
+    }
+}
+
 /// Compute `MenuInfo.menuWidth` for the standard Mac OS 8.1 MDEF.
 ///
 /// Every item reserves 32 pixels around its text and leading icon slot.
@@ -2652,6 +2707,52 @@ mod tests {
             standard_menu_title_advance(b"File"),
             standard_menu_text_advance(b"File")
         );
+    }
+
+    #[test]
+    fn standard_menu_item_pixel_anchors_are_shared_between_gateways() {
+        let plain = standard_menu_item_layout(
+            (11, 111),
+            (20, 16),
+            StandardMenuIconKind::None,
+            false,
+            (9, 3),
+            true,
+        );
+        assert_eq!(plain.mark_left, 14);
+        assert_eq!(plain.icon_left, 13);
+        assert_eq!(plain.text_left, 26);
+        assert_eq!(plain.text_baseline, 30);
+        assert_eq!(plain.separator_y, 27);
+        assert_eq!(plain.indicator_left, 99);
+        assert_eq!(plain.command_left, 86);
+        assert_eq!(plain.indicator_mid_y, 28);
+
+        let marked_color = standard_menu_item_layout(
+            (11, 111),
+            (40, 21),
+            StandardMenuIconKind::Color {
+                width: 24,
+                height: 20,
+            },
+            true,
+            (9, 3),
+            false,
+        );
+        assert_eq!(marked_color.icon_left, 29);
+        assert_eq!(marked_color.text_left, 53);
+        assert_eq!(marked_color.text_baseline, 53);
+
+        let normal = standard_menu_item_layout(
+            (11, 111),
+            (40, 34),
+            StandardMenuIconKind::Normal,
+            true,
+            (9, 3),
+            false,
+        );
+        assert_eq!(normal.icon_left, 29);
+        assert_eq!(normal.text_left, 62);
     }
 
     #[test]

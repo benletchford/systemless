@@ -24,15 +24,15 @@ use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, is_standard_system_menu_title,
     laid_out_menu_item_count, merge_menu_color_entries, new_standard_menu_record,
     standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline, standard_menu_height,
-    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_text_advance,
-    standard_menu_title_advance, standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
-    MenuBarTitleRegion, MenuDefinitionCall, MenuDefinitionMessage,
-    MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
-    MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind, StandardMenuItemWidth,
-    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
+    standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuDefinitionCall,
+    MenuDefinitionMessage, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
+    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
+    MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind,
+    StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView,
+    MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
@@ -66764,12 +66764,26 @@ fn ppc_draw_tracked_menu(
         let explicit_index = ppc_indexed_depth_entry_count(front.depth)
             .and_then(|_| u8::try_from(content_pixel).ok());
         let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-        let text_baseline = row_top
-            .saturating_add((row_height - metrics.ascent - metrics.descent) / 2)
-            .saturating_add(metrics.ascent);
+        let appearance = usize::try_from(item.saturating_sub(1))
+            .ok()
+            .and_then(|index| state.item_appearances().get(index));
+        let layout = standard_menu_item_layout(
+            (
+                state.popup_left(),
+                state.popup_left().saturating_add(state.popup_width()),
+            ),
+            (row_top, row_height),
+            appearance
+                .map(|appearance| appearance.icon_kind)
+                .unwrap_or(StandardMenuIconKind::None),
+            mark != 0,
+            (metrics.ascent, metrics.descent),
+            false,
+        );
+        let text_baseline = layout.text_baseline;
 
         if is_separator {
-            let separator_y = row_top.saturating_add(row_height / 2).saturating_sub(1);
+            let separator_y = layout.separator_y;
             for x in 4..state.popup_width().saturating_sub(4) {
                 if front.depth == 1 && (state.popup_left().saturating_add(x) + separator_y) & 1 != 0
                 {
@@ -66802,7 +66816,7 @@ fn ppc_draw_tracked_menu(
                 memory,
                 gworlds,
                 PPC_MAIN_GWORLD,
-                (state.popup_left().saturating_add(3), text_baseline),
+                (layout.mark_left, text_baseline),
                 PPC_QD_TEXT_FONT_DEFAULT,
                 PPC_QD_TEXT_SIZE_SYSTEM,
                 PPC_QD_TEXT_MODE_SRC_OR,
@@ -66812,15 +66826,6 @@ fn ppc_draw_tracked_menu(
             );
         }
 
-        let appearance = usize::try_from(item.saturating_sub(1))
-            .ok()
-            .and_then(|index| state.item_appearances().get(index));
-        let icon_left = if mark != 0 {
-            state.popup_left().saturating_add(18)
-        } else {
-            state.popup_left().saturating_add(2)
-        };
-        let mut text_left = state.popup_left().saturating_add(18);
         if let Some(icon) = appearance.and_then(|appearance| appearance.icon.as_ref()) {
             ppc_draw_tracked_menu_icon(
                 memory,
@@ -66828,26 +66833,17 @@ fn ppc_draw_tracked_menu(
                 screen_clut,
                 icon,
                 row_top,
-                icon_left,
+                layout.icon_left,
                 content_pixel,
             );
         }
-        text_left = match appearance.map(|appearance| appearance.icon_kind) {
-            Some(StandardMenuIconKind::Normal) => state.popup_left().saturating_add(51),
-            Some(
-                kind @ (StandardMenuIconKind::Color { .. }
-                | StandardMenuIconKind::Reduced
-                | StandardMenuIconKind::Small),
-            ) => icon_left.saturating_add(kind.width()),
-            Some(StandardMenuIconKind::None) | None => text_left,
-        };
 
         let mode = PPC_QD_TEXT_MODE_SRC_OR;
         let _ = ppc_draw_text_bytes_styled(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
-            (text_left, text_baseline),
+            (layout.text_left, text_baseline),
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             mode,
@@ -66858,19 +66854,17 @@ fn ppc_draw_tracked_menu(
         );
 
         if is_hierarchical {
-            let mid_y = row_top.saturating_add(row_height / 2);
             for dx in 0..7i16 {
-                let x = state
-                    .popup_left()
-                    .saturating_add(state.popup_width())
-                    .saturating_sub(12)
-                    .saturating_add(dx);
+                let x = layout.indicator_left.saturating_add(dx);
                 let half_height = dx.min(6 - dx);
                 for dy in -half_height..=half_height {
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
-                        (i32::from(x), i32::from(mid_y.saturating_add(dy))),
+                        (
+                            i32::from(x),
+                            i32::from(layout.indicator_mid_y.saturating_add(dy)),
+                        ),
                         content_pixel,
                     );
                 }
@@ -66880,13 +66874,7 @@ fn ppc_draw_tracked_menu(
                 memory,
                 gworlds,
                 PPC_MAIN_GWORLD,
-                (
-                    state
-                        .popup_left()
-                        .saturating_add(state.popup_width())
-                        .saturating_sub(25),
-                    text_baseline,
-                ),
+                (layout.command_left, text_baseline),
                 PPC_QD_TEXT_FONT_DEFAULT,
                 PPC_QD_TEXT_SIZE_SYSTEM,
                 mode,
@@ -78514,6 +78502,29 @@ mod tests {
 
         let row_top =
             |item: i16| tracking.popup_top + ppc_tracked_menu_item_offset(&tracking, item);
+        let command_layout = standard_menu_item_layout(
+            (
+                tracking.popup_left,
+                tracking.popup_left + tracking.popup_width,
+            ),
+            (row_top(2), ppc_tracked_menu_item_height(&tracking, 2)),
+            StandardMenuIconKind::None,
+            false,
+            {
+                let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+                (metrics.ascent, metrics.descent)
+            },
+            false,
+        );
+        assert_glyph_color(
+            &mut loaded.memory,
+            (
+                i32::from(command_layout.text_left),
+                i32::from(command_layout.text_baseline),
+            ),
+            'C',
+            black,
+        );
         assert_glyph_color(
             &mut loaded.memory,
             (
@@ -78550,7 +78561,7 @@ mod tests {
         assert_glyph_color(
             &mut loaded.memory,
             (
-                i32::from(tracking.popup_left + 18),
+                i32::from(tracking.popup_left + 15),
                 i32::from(row_top(3) + 12),
             ),
             'D',
@@ -79291,7 +79302,7 @@ mod tests {
             let white =
                 ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
             let item_origin = (
-                i32::from(tracking.popup_left.saturating_add(18)),
+                i32::from(tracking.popup_left.saturating_add(15)),
                 i32::from(tracking.popup_top.saturating_add(12)),
             );
             let normal_item_ink = item_glyph_pixels
