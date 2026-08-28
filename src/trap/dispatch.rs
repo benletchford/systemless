@@ -1679,6 +1679,10 @@ pub struct TrapDispatcher {
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
+    /// Shared custom-MDEF callback and selection continuation.
+    pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
+    /// Caller QuickDraw state restored after a retained custom MDEF finishes.
+    pub(crate) menu_definition_port_state: Option<PortStateSnapshot>,
     /// 68k call frame parked while the shared Menu Manager state yields.
     pub(crate) menu_tracking_stack_ptr: u32,
     /// A host-native menu selection waiting for the guest's normal
@@ -3207,6 +3211,8 @@ impl TrapDispatcher {
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             menu_tracking: None,
+            menu_definition_tracking: None,
+            menu_definition_port_state: None,
             menu_tracking_stack_ptr: 0,
             pending_native_menu_selection: None,
             pending_native_menu_event: None,
@@ -3452,6 +3458,13 @@ impl TrapDispatcher {
         self.control_tracking
             .as_ref()
             .is_some_and(|tracking| tracking.scrollbar_callback_pending)
+    }
+
+    /// Whether retained menu tracking has entered an application MDEF and
+    /// must let that guest callback return to the original menu trap.
+    pub(crate) fn is_menu_definition_callback_pending(&self) -> bool {
+        self.menu_definition_tracking
+            .is_some_and(|tracking| tracking.pending_invocation().is_some())
     }
 
     /// Shared check used by both dispatch.rs (auto-pop push-back) and

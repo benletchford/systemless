@@ -130,6 +130,13 @@ pub(crate) struct MenuDefinitionInvocation {
     pub(crate) which_item: i16,
 }
 
+/// Result copied back from the two by-reference MDEF arguments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionResult {
+    pub(crate) menu_rect: (i16, i16, i16, i16),
+    pub(crate) which_item: i16,
+}
+
 impl MenuDefinitionInvocation {
     pub(crate) fn size(menu_handle: u32) -> Self {
         Self {
@@ -162,6 +169,154 @@ impl MenuDefinitionInvocation {
             hit_point: self.hit_point,
             which_item: scratch + 8,
         }
+    }
+
+    pub(crate) fn decode_result(bytes: [u8; 10]) -> MenuDefinitionResult {
+        let word = |offset: usize| i16::from_be_bytes([bytes[offset], bytes[offset + 1]]);
+        MenuDefinitionResult {
+            menu_rect: (word(0), word(2), word(4), word(6)),
+            which_item: word(8),
+        }
+    }
+}
+
+/// Architecture-neutral continuation for an application-defined MDEF.
+///
+/// The Menu Manager owns the current rectangle, previous item, and callback
+/// ordering. CPU adapters only execute `pending_invocation` and return its
+/// two by-reference results. Macintosh Toolbox Essentials (1992),
+/// pp. 3-87--3-91 and 3-148--3-151.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuDefinitionTracking {
+    menu_handle: u32,
+    menu_rect: (i16, i16, i16, i16),
+    which_item: i16,
+    last_hit_point: Option<u32>,
+    pending_invocation: Option<MenuDefinitionInvocation>,
+}
+
+impl MenuDefinitionTracking {
+    pub(crate) fn begin_draw(menu_handle: u32, menu_rect: (i16, i16, i16, i16)) -> Self {
+        Self {
+            menu_handle,
+            menu_rect,
+            which_item: 0,
+            last_hit_point: None,
+            pending_invocation: Some(MenuDefinitionInvocation {
+                message: MenuDefinitionMessage::Draw,
+                menu_handle,
+                menu_rect,
+                hit_point: 0,
+                which_item: 0,
+            }),
+        }
+    }
+
+    pub(crate) fn begin_popup(menu_handle: u32, hit_point: u32, which_item: i16) -> Self {
+        Self {
+            menu_handle,
+            menu_rect: (0, 0, 0, 0),
+            which_item,
+            last_hit_point: None,
+            pending_invocation: Some(MenuDefinitionInvocation {
+                message: MenuDefinitionMessage::PopUp,
+                menu_handle,
+                menu_rect: (0, 0, 0, 0),
+                hit_point,
+                which_item,
+            }),
+        }
+    }
+
+    pub(crate) fn pending_invocation(self) -> Option<MenuDefinitionInvocation> {
+        self.pending_invocation
+    }
+
+    pub(crate) fn complete_pending(
+        &mut self,
+        result: MenuDefinitionResult,
+    ) -> Option<MenuDefinitionMessage> {
+        let completed = self.pending_invocation.take()?;
+        self.menu_rect = result.menu_rect;
+        self.which_item = result.which_item;
+        Some(completed.message)
+    }
+
+    pub(crate) fn draw(&mut self) -> Option<MenuDefinitionInvocation> {
+        if self.pending_invocation.is_some() {
+            return None;
+        }
+        let invocation = MenuDefinitionInvocation {
+            message: MenuDefinitionMessage::Draw,
+            menu_handle: self.menu_handle,
+            menu_rect: self.menu_rect,
+            hit_point: 0,
+            which_item: self.which_item,
+        };
+        self.pending_invocation = Some(invocation);
+        Some(invocation)
+    }
+
+    /// Request the MDEF to reconcile its highlight with a new global point.
+    /// Repeated host frames at the same point do not create duplicate guest
+    /// calls; the source contract requires calls when the cursor moves into
+    /// or out of an item.
+    pub(crate) fn choose(&mut self, hit_point: u32) -> Option<MenuDefinitionInvocation> {
+        if self.pending_invocation.is_some() || self.last_hit_point == Some(hit_point) {
+            return None;
+        }
+        self.last_hit_point = Some(hit_point);
+        self.queue_choose(hit_point)
+    }
+
+    /// Queue one Menu Manager-controlled blink phase. The documented MDEF
+    /// contract unhighlights on an outside point and highlights on the saved
+    /// selection point; repeated `mChooseMsg` calls produce the blink.
+    /// Inside Macintosh Volume I (1985), p. I-366.
+    pub(crate) fn flash(&mut self, visible: bool) -> Option<MenuDefinitionInvocation> {
+        if self.pending_invocation.is_some() {
+            return None;
+        }
+        let hit_point = if visible {
+            self.last_hit_point?
+        } else {
+            let (top, left, bottom, right) = self.menu_rect;
+            let (vertical, horizontal) = if top > i16::MIN {
+                (top - 1, left)
+            } else if left > i16::MIN {
+                (top, left - 1)
+            } else if bottom < i16::MAX {
+                (bottom, left)
+            } else {
+                (top, right)
+            };
+            (u32::from(vertical as u16) << 16) | u32::from(horizontal as u16)
+        };
+        self.queue_choose(hit_point)
+    }
+
+    fn queue_choose(&mut self, hit_point: u32) -> Option<MenuDefinitionInvocation> {
+        let invocation = MenuDefinitionInvocation {
+            message: MenuDefinitionMessage::Choose,
+            menu_handle: self.menu_handle,
+            menu_rect: self.menu_rect,
+            hit_point,
+            which_item: self.which_item,
+        };
+        self.pending_invocation = Some(invocation);
+        Some(invocation)
+    }
+
+    pub(crate) fn which_item(self) -> i16 {
+        self.which_item
+    }
+
+    pub(crate) fn menu_handle(self) -> u32 {
+        self.menu_handle
+    }
+
+    pub(crate) fn menu_rect(self) -> (i16, i16, i16, i16) {
+        self.menu_rect
     }
 }
 
@@ -2389,6 +2544,81 @@ mod tests {
         );
         assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
         assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
+    }
+
+    #[test]
+    fn custom_menu_definition_tracking_owns_draw_and_choose_order() {
+        let rect = (20, 11, 84, 171);
+        let mut tracking = MenuDefinitionTracking::begin_draw(0x1111_2222, rect);
+        assert_eq!(
+            tracking.pending_invocation(),
+            Some(MenuDefinitionInvocation {
+                message: MenuDefinitionMessage::Draw,
+                menu_handle: 0x1111_2222,
+                menu_rect: rect,
+                hit_point: 0,
+                which_item: 0,
+            })
+        );
+        assert_eq!(tracking.choose(0x0030_0040), None);
+
+        let draw_result =
+            MenuDefinitionInvocation::decode_result([0, 20, 0, 11, 0, 84, 0, 171, 0, 0]);
+        assert_eq!(
+            tracking.complete_pending(draw_result),
+            Some(MenuDefinitionMessage::Draw)
+        );
+
+        let choose = tracking.choose(0x0030_0040).unwrap();
+        assert_eq!(choose.message, MenuDefinitionMessage::Choose);
+        assert_eq!(choose.menu_rect, rect);
+        assert_eq!(choose.which_item, 0);
+        assert_eq!(tracking.choose(0x0030_0040), None);
+
+        let choose_result =
+            MenuDefinitionInvocation::decode_result([0, 20, 0, 11, 0, 84, 0, 171, 0, 3]);
+        assert_eq!(
+            tracking.complete_pending(choose_result),
+            Some(MenuDefinitionMessage::Choose)
+        );
+        assert_eq!(tracking.which_item(), 3);
+        assert_eq!(tracking.menu_handle(), 0x1111_2222);
+        assert_eq!(tracking.choose(0x0030_0040), None);
+        let hidden = tracking.flash(false).unwrap();
+        assert_eq!(hidden.which_item, 3);
+        assert_eq!(hidden.hit_point, 0x0013_000B);
+        tracking.complete_pending(MenuDefinitionResult {
+            menu_rect: rect,
+            which_item: 0,
+        });
+        let visible = tracking.flash(true).unwrap();
+        assert_eq!(visible.which_item, 0);
+        assert_eq!(visible.hit_point, 0x0030_0040);
+    }
+
+    #[test]
+    fn custom_popup_definition_returns_geometry_before_draw() {
+        let mut tracking = MenuDefinitionTracking::begin_popup(0x1234, 0x0064_0050, 4);
+        assert_eq!(
+            tracking.pending_invocation().unwrap().message,
+            MenuDefinitionMessage::PopUp
+        );
+        assert_eq!(
+            tracking.pending_invocation().unwrap().hit_point,
+            0x0064_0050
+        );
+        assert_eq!(tracking.pending_invocation().unwrap().which_item, 4);
+        let result = MenuDefinitionInvocation::decode_result([0, 40, 0, 30, 0, 120, 0, 150, 0, 2]);
+        assert_eq!(
+            tracking.complete_pending(result),
+            Some(MenuDefinitionMessage::PopUp)
+        );
+        assert_eq!(tracking.menu_rect(), (40, 30, 120, 150));
+        assert_eq!(tracking.which_item(), 2);
+        let draw = tracking.draw().unwrap();
+        assert_eq!(draw.message, MenuDefinitionMessage::Draw);
+        assert_eq!(draw.menu_rect, (40, 30, 120, 150));
+        assert_eq!(draw.which_item, 2);
     }
 
     fn menu_color_entry(menu_id: i16, item: i16, seed: u8) -> [u8; MENU_COLOR_ENTRY_SIZE] {

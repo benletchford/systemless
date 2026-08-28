@@ -5947,6 +5947,9 @@ impl FixtureRunner {
                                 if self.dispatcher.is_control_action_callback_pending() {
                                     continue;
                                 }
+                                if self.dispatcher.is_menu_definition_callback_pending() {
+                                    continue;
+                                }
                                 // In GUI mode, freeze ticks so the game clock doesn't
                                 // advance while the host renders intermediate frames.
                                 // In headless mode (scripted harnesses), let the budget
