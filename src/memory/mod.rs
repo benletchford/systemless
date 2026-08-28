@@ -2,9 +2,11 @@
 //!
 //! Provides Big-Endian memory access and Mac low-memory globals.
 
+mod address_space;
 pub mod bus;
 pub mod globals;
 
+pub use address_space::GuestAddressSpace;
 pub use bus::{
     arm_watchpoint, disarm_watchpoint, get_step, increment_step, set_current_pc,
     set_watch_registers, watchpoint_armed, STEP_COUNTER,
