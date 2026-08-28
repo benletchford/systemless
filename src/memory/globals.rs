@@ -9,6 +9,10 @@
 
 use std::collections::HashMap;
 
+/// Initial per-process SysEvtMask: every low-level event except keyUp.
+/// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99.
+pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
+
 /// Low-memory global variable addresses
 pub mod addr {
     // System globals
@@ -19,6 +23,10 @@ pub mod addr {
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
     pub const THE_ZONE: u32 = 0x0118; // Current heap zone (ptr)
+    /// SysEvtMask: current process's low-level event posting mask (word).
+    /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99--2-100;
+    /// Inside Macintosh Volume III (1985), low-memory globals table.
+    pub const SYS_EVT_MASK: u32 = 0x0144;
     pub const RND_SEED: u32 = 0x0156; // Random number seed (long) - Inside Macintosh Volume II, II-387
     pub const TICKS: u32 = 0x016A; // Tick count (long) - system timer
     pub const MB_STATE: u32 = 0x0172; // Mouse button state (byte) - 0=down, $80=up

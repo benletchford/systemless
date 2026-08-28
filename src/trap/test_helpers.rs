@@ -97,6 +97,10 @@ pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
 
     // Set up TickCount low-memory global
     bus.write_long(0x016A, 100);
+    bus.write_word(
+        crate::memory::globals::addr::SYS_EVT_MASK,
+        crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+    );
     // MBState ($0172) is 0 when the mouse button is down and $80 when it is
     // up. Real startup code initializes it to up; zero-filled test RAM would
     // otherwise look like a held mouse. Inside Macintosh Volume II, II-371.

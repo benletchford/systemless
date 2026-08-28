@@ -411,14 +411,6 @@ fn format_input_key_map(key_map: &[u8; 16]) -> String {
     out
 }
 
-fn sync_ppc_system_event_mask(dispatcher: &mut TrapDispatcher, system_event_mask: u16) {
-    // Macintosh Toolbox Essentials (1992), pp. 2-99--2-100: SetEventMask
-    // changes the current process's OS Event Manager posting mask. Input is
-    // injected through the shared dispatcher, so it must observe the PPC
-    // process's mask before deciding whether to post keyUp events.
-    dispatcher.system_event_mask = system_event_mask;
-}
-
 fn sync_ppc_cursor_state(
     dispatcher: &mut TrapDispatcher,
     cursor_level: i16,
@@ -1961,6 +1953,10 @@ impl FixtureRunner {
         let mut bus = MacMemoryBus::new(ram_size);
         bus.set_addressing_32_bit(config.addressing_32_bit);
         bus.configure_screen_depth(config.screen_depth);
+        bus.write_word(
+            crate::memory::globals::addr::SYS_EVT_MASK,
+            crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+        );
         let profile = crate::machine_profile::reference_machine_profile();
         let visible_row_bytes =
             (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
@@ -2853,7 +2849,12 @@ impl FixtureRunner {
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
     pub fn push_key_up(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
-        self.dispatcher.push_key_up(key, char_code);
+        self.dispatcher.push_key_up_with_system_event_mask(
+            self.bus
+                .read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            key,
+            char_code,
+        );
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -4004,6 +4005,9 @@ impl FixtureRunner {
     fn share_ppc_runtime_globals(&mut self, ppc_app: &mut PpcLoadedApp) {
         use crate::memory::globals::addr;
 
+        // SysEvtMask is the current process's low-level event posting mask
+        // (Macintosh Toolbox Essentials 1992, pp. 2-28--2-29 and 2-99--2-100;
+        // Inside Macintosh Volume III 1985, low-memory globals table).
         // RndSeed is the system random-number seed (Inside Macintosh Volume I,
         // I-195). The Vertical Retrace Manager updates Ticks and the one-second
         // interrupt updates Time (Inside Macintosh Volume II, II-202 and
@@ -4013,6 +4017,7 @@ impl FixtureRunner {
         // and 68k callers must observe one backing allocation rather than
         // values copied at CPU-slice boundaries.
         for (address, len) in [
+            (addr::SYS_EVT_MASK, 2),
             (addr::RND_SEED, 4),
             (addr::TICKS, 4),
             (addr::TIME, 4),
@@ -6109,7 +6114,6 @@ impl FixtureRunner {
 
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
         ppc_app.set_input_snapshot(input);
-        self.sync_ppc_event_state_before_execution(&mut ppc_app);
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
         let remaining_cycles =
@@ -6152,12 +6156,10 @@ impl FixtureRunner {
 
         self.total_instructions = self.total_instructions.saturating_add(cycles);
         self.dispatcher.instruction_count = self.total_instructions;
-        self.sync_ppc_event_state_after_execution(&ppc_app);
         let (vbl_probes, timer_probes) = if exited_via_ppc_exit_to_shell {
             (Vec::new(), Vec::new())
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
-            self.sync_ppc_event_state_before_execution(&mut ppc_app);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
             self.fire_ppc_tick_callbacks(
                 &mut ppc_app,
@@ -6259,7 +6261,6 @@ impl FixtureRunner {
             self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         }
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
-        self.sync_ppc_event_state_after_execution(&ppc_app);
         sync_ppc_cursor_state(
             &mut self.dispatcher,
             ppc_app.quickdraw_cursor_level,
@@ -6433,17 +6434,6 @@ impl FixtureRunner {
             ));
         }
         (vbl_probes, timer_probes)
-    }
-
-    fn sync_ppc_event_state_after_execution(&mut self, ppc_app: &PpcLoadedApp) {
-        sync_ppc_system_event_mask(
-            &mut self.dispatcher,
-            ppc_app.toolbox_startup.system_event_mask,
-        );
-    }
-
-    fn sync_ppc_event_state_before_execution(&self, ppc_app: &mut PpcLoadedApp) {
-        ppc_app.toolbox_startup.system_event_mask = self.dispatcher.system_event_mask;
     }
 
     fn render_ppc_completed_frames(
@@ -7485,7 +7475,6 @@ impl FixtureRunner {
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return;
         };
-        self.sync_ppc_event_state_before_execution(&mut ppc_app);
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
@@ -7529,9 +7518,7 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
-            self.sync_ppc_event_state_after_execution(&ppc_app);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
-            self.sync_ppc_event_state_before_execution(&mut ppc_app);
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let buffer_bit = 1u8 << (doubleback.exhausted_buffer_index.min(1) as u8);
@@ -7573,7 +7560,6 @@ impl FixtureRunner {
                 break;
             }
         }
-        self.sync_ppc_event_state_after_execution(&ppc_app);
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
@@ -7594,7 +7580,6 @@ impl FixtureRunner {
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return;
         };
-        self.sync_ppc_event_state_before_execution(&mut ppc_app);
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
@@ -7624,9 +7609,7 @@ impl FixtureRunner {
             }
             self.total_instructions = self.total_instructions.saturating_add(invocation.cycles);
             self.dispatcher.instruction_count = self.total_instructions;
-            self.sync_ppc_event_state_after_execution(&ppc_app);
             self.advance_ticks_for_ppc_cycles(invocation.cycles, None);
-            self.sync_ppc_event_state_before_execution(&mut ppc_app);
             self.prepare_ppc_execution_clock(&mut ppc_app);
 
             let callback_failed = invocation.unsupported_import_index.is_some()
@@ -7653,7 +7636,6 @@ impl FixtureRunner {
                 break;
             }
         }
-        self.sync_ppc_event_state_after_execution(&ppc_app);
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
@@ -8441,7 +8423,10 @@ impl FixtureRunner {
         let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
         self.bus.write_long(0x016A, new_tick);
         self.dispatcher.tick_count = new_tick;
-        self.dispatcher.post_auto_key_if_due();
+        self.dispatcher.post_auto_key_if_due(
+            self.bus
+                .read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+        );
 
         // Sync MBState ($0172) from the internal button state.
         // On real hardware the VBL interrupt handler reads the ADB mouse
@@ -11852,6 +11837,27 @@ mod tests {
         runner.init_app(&app);
         let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
 
+        assert_eq!(
+            runner.bus.read_word(addr::SYS_EVT_MASK),
+            crate::memory::globals::DEFAULT_SYS_EVT_MASK
+        );
+        assert_eq!(
+            ppc_app.memory.read_u16_be(addr::SYS_EVT_MASK),
+            Some(crate::memory::globals::DEFAULT_SYS_EVT_MASK)
+        );
+        ppc_app
+            .memory
+            .write_u16_be(addr::SYS_EVT_MASK, 0xffdf)
+            .unwrap();
+        assert_eq!(runner.bus.read_word(addr::SYS_EVT_MASK), 0xffdf);
+        runner.bus.write_word(addr::SYS_EVT_MASK, 0x1234);
+        assert_eq!(ppc_app.memory.read_u16_be(addr::SYS_EVT_MASK), Some(0x1234));
+
+        let mut detached = ppc_app.memory.clone();
+        detached.write_u16_be(addr::SYS_EVT_MASK, 0xabcd).unwrap();
+        assert_eq!(runner.bus.read_word(addr::SYS_EVT_MASK), 0x1234);
+        assert_eq!(ppc_app.memory.read_u16_be(addr::SYS_EVT_MASK), Some(0x1234));
+
         ppc_app.memory.write_u8(addr::MB_STATE, 0).unwrap();
         assert_eq!(runner.bus.read_byte(addr::MB_STATE), 0);
         runner.bus.write_byte(addr::MB_STATE, 0x80);
@@ -11994,10 +12000,6 @@ mod tests {
         assert_eq!(reposted.message, 0x1111);
         assert_eq!((reposted.where_v, reposted.where_h), (10, 20));
         assert_eq!(reposted.modifiers, 0x0200);
-
-        ppc_app.toolbox_startup.system_event_mask = 0x1234;
-        runner.sync_ppc_event_state_after_execution(&ppc_app);
-        assert_eq!(runner.dispatcher.system_event_mask, 0x1234);
     }
 
     #[test]
@@ -13339,7 +13341,18 @@ mod tests {
         let posted = &runner.dispatcher.event_queue[0];
         assert_eq!((posted.what, posted.message), (5, 0x5566_7788));
         assert_eq!((posted.where_v, posted.where_h), (17, 19));
-        assert_eq!(runner.dispatcher.system_event_mask, 0x1234);
+        assert_eq!(
+            runner
+                .bus
+                .read_word(crate::memory::globals::addr::SYS_EVT_MASK),
+            0x1234
+        );
+        assert_eq!(
+            ppc_app
+                .memory
+                .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK),
+            Some(0x1234)
+        );
     }
 
     #[test]
@@ -14470,10 +14483,23 @@ mod tests {
     }
 
     #[test]
-    fn ppc_system_event_mask_enables_injected_key_up_events() {
+    fn ppc_system_event_mask_write_enables_injected_key_up_events() {
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
 
-        sync_ppc_system_event_mask(&mut runner.dispatcher, 0xffdf);
+        runner
+            .ppc_app
+            .as_mut()
+            .expect("PPC app installed")
+            .memory
+            .write_u16_be(crate::memory::globals::addr::SYS_EVT_MASK, 0xffdf)
+            .unwrap();
         runner.push_key_down(0x7c, 29);
         runner.push_key_up(0x7c, 29);
 

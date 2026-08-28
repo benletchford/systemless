@@ -79,6 +79,7 @@ pub const PPC_MEM_FULL_ERR: i16 = -108;
 const PPC_NIL_HANDLE_ERR: i16 = -109;
 const PPC_C_DEPTH_ERR: i16 = -157;
 pub const PPC_NO_ERR: i16 = 0;
+const PPC_EVT_NOT_ENB: i16 = 1;
 pub const PPC_EOF_ERR: i16 = -39;
 pub const PPC_FN_OPN_ERR: i16 = -38;
 pub const PPC_POS_ERR: i16 = -40;
@@ -2979,7 +2980,6 @@ pub struct PpcToolboxStartupState {
     pub flush_events_count: u32,
     pub last_flush_event_mask: u16,
     pub last_flush_stop_mask: u16,
-    pub system_event_mask: u16,
     pub dispose_dialog_count: u32,
     pub last_disposed_dialog: u32,
     pub delay_deadline: Option<u32>,
@@ -3035,9 +3035,6 @@ impl Default for PpcToolboxStartupState {
             flush_events_count: 0,
             last_flush_event_mask: 0,
             last_flush_stop_mask: 0,
-            // Macintosh Toolbox Essentials (1992), p. 2-99: the Process
-            // Manager initializes SysEvtMask to everyEvent-keyUpMask.
-            system_event_mask: 0xffef,
             dispose_dialog_count: 0,
             last_disposed_dialog: 0,
             delay_deadline: None,
@@ -13066,6 +13063,10 @@ pub fn load_pef_application_with_config(
 
     let mut memory = PpcSectionMem::new();
     memory.add_region(PPC_HALT_PC, vec![0u8; PPC_LOW_MEMORY_SIZE]);
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::SYS_EVT_MASK,
+        crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+    );
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
@@ -20893,9 +20894,13 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::SetEventMask => {
             // Macintosh Toolbox Essentials (1992), pp. 2-99--2-100: this is
-            // per-process OS Event Manager posting state. Host events remain
-            // queued; GetNextEvent still applies the caller's retrieval mask.
-            toolbox_startup.system_event_mask = cpu.gpr[3] as u16;
+            // the current process's OS Event Manager posting state. Universal
+            // Interfaces 3.4 LowMem.h exposes the same word directly at
+            // SysEvtMask ($0144), so the guest-visible bytes are authoritative.
+            let _ = memory.write_u16_be(
+                crate::memory::globals::addr::SYS_EVT_MASK,
+                cpu.gpr[3] as u16,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisposeDialog => {
@@ -20978,14 +20983,24 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(u32::from(has_event)))
         }
         PpcImportDispatcherTarget::PostEvent => {
-            event_queue.push_back(PpcQueuedEvent {
-                what: cpu.gpr[3] as u16,
-                message: cpu.gpr[4],
-                where_v: input.mouse_v,
-                where_h: input.mouse_h,
-                modifiers: 0,
-            });
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
+            let what = cpu.gpr[3] as u16;
+            let system_event_mask = memory
+                .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK)
+                .unwrap_or(crate::memory::globals::DEFAULT_SYS_EVT_MASK);
+            let result =
+                if crate::trap::TrapDispatcher::posted_event_is_enabled(system_event_mask, what) {
+                    event_queue.push_back(PpcQueuedEvent {
+                        what,
+                        message: cpu.gpr[4],
+                        where_v: input.mouse_v,
+                        where_h: input.mouse_h,
+                        modifiers: 0,
+                    });
+                    PPC_NO_ERR
+                } else {
+                    PPC_EVT_NOT_ENB
+                };
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::Button => {
             Some(PpcImportAction::Return(u32::from(input.mouse_button)))
@@ -86771,7 +86786,12 @@ mod tests {
             0x0000_ffdf,
             0,
         );
-        assert_eq!(loaded.toolbox_startup.system_event_mask, 0xffdf);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(crate::memory::globals::addr::SYS_EVT_MASK),
+            Some(0xffdf)
+        );
 
         run_toolbox_import(
             &mut loaded,
@@ -136016,6 +136036,41 @@ mod tests {
                 where_h: 456,
                 modifiers: 0,
             }])
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_posts_events_through_sys_evt_mask_low_memory() {
+        let pef = synthetic_pef_with_import(b"PostEvent");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mask_addr = crate::memory::globals::addr::SYS_EVT_MASK;
+        assert_eq!(
+            loaded.memory.read_u16_be(mask_addr),
+            Some(crate::memory::globals::DEFAULT_SYS_EVT_MASK)
+        );
+
+        loaded.cpu.gpr[3] = 4;
+        loaded.cpu.gpr[4] = 0x1234;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_EVT_NOT_ENB));
+        assert!(loaded.event_queue().is_empty());
+
+        loaded.memory.write_u16_be(mask_addr, 0xffff).unwrap();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 4;
+        loaded.cpu.gpr[4] = 0x5678;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.event_queue().front().map(|event| event.what),
+            Some(4)
+        );
+        assert_eq!(
+            loaded.event_queue().front().map(|event| event.message),
+            Some(0x5678)
         );
     }
 
