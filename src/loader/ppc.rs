@@ -14,6 +14,7 @@ use super::pef::{
     SECTION_KIND_PATTERN_DATA, SECTION_KIND_UNPACKED_DATA,
 };
 use super::ApplicationSizeResource;
+use crate::event_queue::{QueuedEvent, SharedEventQueue};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
@@ -1741,14 +1742,8 @@ pub struct PpcHleImportTraceEntry {
     pub repeat_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcQueuedEvent {
-    pub what: u16,
-    pub message: u32,
-    pub where_v: i16,
-    pub where_h: i16,
-    pub modifiers: u16,
-}
+/// Backward-compatible native-loader name for the shared event record.
+pub type PpcQueuedEvent = QueuedEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcInputSprocketSimpleStateTraceEntry {
@@ -4909,7 +4904,7 @@ pub struct PpcLoadedApp {
     pub imports: Vec<PpcImportBinding>,
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
-    pub event_queue: VecDeque<PpcQueuedEvent>,
+    pub(crate) event_queue: SharedEventQueue,
     pub draw_sprocket: PpcDrawSprocketState,
 }
 
@@ -5014,11 +5009,20 @@ impl PpcLoadedApp {
     where
         I: IntoIterator<Item = PpcQueuedEvent>,
     {
-        self.event_queue = events.into_iter().collect();
+        self.event_queue.clear();
+        self.event_queue.extend(events);
     }
 
     pub fn event_queue(&self) -> &VecDeque<PpcQueuedEvent> {
         &self.event_queue
+    }
+
+    pub(crate) fn share_event_queue(&mut self, event_queue: &SharedEventQueue) {
+        let pending = std::mem::take(&mut *self.event_queue);
+        // SAFETY: the runner owns both adapters and serializes all queue access
+        // through its mutable borrow, including native callback execution.
+        self.event_queue = unsafe { event_queue.shared_handle() };
+        self.event_queue.extend(pending);
     }
 
     /// Copy the live PowerPC Menu Manager list into the same frontend-neutral
@@ -13381,7 +13385,7 @@ pub fn load_pef_application_with_config(
         imports,
         section_bases,
         input: PpcInputSnapshot::default(),
-        event_queue: VecDeque::new(),
+        event_queue: SharedEventQueue::default(),
         draw_sprocket: PpcDrawSprocketState::default(),
     })
 }

@@ -250,7 +250,7 @@ impl super::TrapDispatcher {
             remaining.push_back(event);
         }
 
-        self.event_queue = remaining;
+        *self.event_queue = remaining;
         result
     }
 
@@ -324,12 +324,13 @@ impl super::TrapDispatcher {
         }
 
         let message = ((repeat.key_code as u32) << 8) | (repeat.char_code as u32);
+        let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(super::dispatch::QueuedEvent {
             what: Self::AUTO_KEY_EVENT,
             message,
             where_v: self.mouse_pos.0,
             where_h: self.mouse_pos.1,
-            modifiers: self.current_event_modifiers(),
+            modifiers,
         });
     }
 

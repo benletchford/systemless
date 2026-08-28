@@ -55,6 +55,7 @@ pub mod debug_overlay;
 pub mod disk_image;
 pub mod display;
 mod error;
+mod event_queue;
 pub mod game;
 pub mod loader;
 mod mac_roman;

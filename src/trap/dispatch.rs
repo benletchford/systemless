@@ -7,6 +7,7 @@
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
+use crate::event_queue::SharedEventQueue;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -19,6 +20,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
+
+pub use crate::event_queue::QueuedEvent;
 
 pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
@@ -945,20 +948,6 @@ pub(crate) struct AeCoercionHandler {
     pub from_type_is_desc: bool,
 }
 
-/// A queued Mac event (mouseDown, mouseUp, keyDown, etc.)
-#[derive(Clone, Debug)]
-pub struct QueuedEvent {
-    /// Event type (1=mouseDown, 2=mouseUp, 3=keyDown, etc.)
-    pub what: u16,
-    /// Event message (key code for key events, window ptr for activate, etc.)
-    pub message: u32,
-    /// Mouse location at time of event (v, h)
-    pub where_v: i16,
-    pub where_h: i16,
-    /// Modifier flags
-    pub modifiers: u16,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct KeyRepeatState {
     pub key_code: u8,
@@ -1786,7 +1775,7 @@ pub struct TrapDispatcher {
     pub(crate) input_trace_enabled: bool,
     pub(crate) input_trace_log: Vec<String>,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
-    pub(crate) event_queue: VecDeque<QueuedEvent>,
+    pub(crate) event_queue: SharedEventQueue,
     /// A mouseDown consumed by ModalDialog can return to the application
     /// before the physical release arrives. Keep ownership of that release
     /// even if the application disposes the dialog in the meantime.
@@ -3271,7 +3260,7 @@ impl TrapDispatcher {
             debug_scroll_rect_last_is_color: false,
             input_trace_enabled: false,
             input_trace_log: Vec::new(),
-            event_queue: VecDeque::new(),
+            event_queue: SharedEventQueue::default(),
             pending_modal_dialog_mouse_up: false,
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
