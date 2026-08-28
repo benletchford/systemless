@@ -741,6 +741,146 @@ impl ColorIconLayout {
             pixel_data_offset,
         })
     }
+
+    /// Test one pixel in the icon's transparency mask.
+    pub(crate) fn mask_bit_with(
+        self,
+        mut read: impl FnMut(usize) -> Option<u8>,
+        x: usize,
+        y: usize,
+    ) -> Option<bool> {
+        self.bitmap_bit_with(&mut read, self.mask_offset, self.mask_row_bytes, x, y)
+    }
+
+    /// Resolve one source pixel to its 48-bit QuickDraw color.
+    ///
+    /// Indexed PixMaps use their embedded `ColorTable`; direct 16- and
+    /// 32-bit PixMaps expand their packed components. A device color table
+    /// uses each entry's ordinal as its pixel value, while a PixMap table uses
+    /// `ColorSpec.value`. Inside Macintosh: Imaging With QuickDraw (1994),
+    /// pp. 4-14--4-17, 4-47--4-48, 4-105--4-106.
+    pub(crate) fn rgb_with(
+        self,
+        mut read: impl FnMut(usize) -> Option<u8>,
+        x: usize,
+        y: usize,
+    ) -> Option<[u16; 3]> {
+        let value = self.packed_pixel_with(&mut read, x, y)?;
+        match self.pixel_size {
+            16 => Some([
+                (((value >> 10) & 0x1f) as u16) * 0x842,
+                (((value >> 5) & 0x1f) as u16) * 0x842,
+                ((value & 0x1f) as u16) * 0x842,
+            ]),
+            32 => Some([
+                (((value >> 16) & 0xff) as u16) * 0x101,
+                (((value >> 8) & 0xff) as u16) * 0x101,
+                ((value & 0xff) as u16) * 0x101,
+            ]),
+            1 | 2 | 4 | 8 => {
+                let flags = self.read_u16_with(&mut read, self.color_table_offset + 4)?;
+                let device_table = flags & 0x8000 != 0;
+                for ordinal in 0..self.color_table_entries {
+                    let offset = self
+                        .color_table_offset
+                        .checked_add(8 + ordinal.checked_mul(8)?)?;
+                    let entry_value = if device_table {
+                        u32::try_from(ordinal).ok()?
+                    } else {
+                        u32::from(self.read_u16_with(&mut read, offset)?)
+                    };
+                    if entry_value == value {
+                        return Some([
+                            self.read_u16_with(&mut read, offset + 2)?,
+                            self.read_u16_with(&mut read, offset + 4)?,
+                            self.read_u16_with(&mut read, offset + 6)?,
+                        ]);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Sample the 1-bit fallback image used on a monochrome destination.
+    pub(crate) fn monochrome_bit_with(
+        self,
+        mut read: impl FnMut(usize) -> Option<u8>,
+        x: usize,
+        y: usize,
+    ) -> Option<bool> {
+        if self.bitmap_row_bytes != 0 {
+            self.bitmap_bit_with(&mut read, self.bitmap_offset, self.bitmap_row_bytes, x, y)
+        } else {
+            Some(self.packed_pixel_with(&mut read, x, y)? != 0)
+        }
+    }
+
+    fn bitmap_bit_with(
+        self,
+        read: &mut impl FnMut(usize) -> Option<u8>,
+        offset: usize,
+        row_bytes: usize,
+        x: usize,
+        y: usize,
+    ) -> Option<bool> {
+        if x >= usize::try_from(self.width).ok()? || y >= usize::try_from(self.height).ok()? {
+            return None;
+        }
+        let byte = offset
+            .checked_add(y.checked_mul(row_bytes)?)?
+            .checked_add(x / 8)?;
+        Some(read(byte)? & (0x80 >> (x & 7)) != 0)
+    }
+
+    fn packed_pixel_with(
+        self,
+        read: &mut impl FnMut(usize) -> Option<u8>,
+        x: usize,
+        y: usize,
+    ) -> Option<u32> {
+        if x >= usize::try_from(self.width).ok()? || y >= usize::try_from(self.height).ok()? {
+            return None;
+        }
+        let row = self
+            .pixel_data_offset
+            .checked_add(y.checked_mul(self.pixel_row_bytes)?)?;
+        match self.pixel_size {
+            1 | 2 | 4 | 8 => {
+                let bit = x.checked_mul(usize::from(self.pixel_size))?;
+                let byte = read(row.checked_add(bit / 8)?)?;
+                let shift = 8usize
+                    .checked_sub(usize::from(self.pixel_size))?
+                    .checked_sub(bit & 7)?;
+                Some(u32::from(byte >> shift) & ((1u32 << self.pixel_size) - 1))
+            }
+            16 => Some(u32::from(
+                self.read_u16_with(read, row.checked_add(x.checked_mul(2)?)?)?,
+            )),
+            32 => {
+                let offset = row.checked_add(x.checked_mul(4)?)?;
+                Some(u32::from_be_bytes([
+                    read(offset)?,
+                    read(offset.checked_add(1)?)?,
+                    read(offset.checked_add(2)?)?,
+                    read(offset.checked_add(3)?)?,
+                ]))
+            }
+            _ => None,
+        }
+    }
+
+    fn read_u16_with(
+        self,
+        read: &mut impl FnMut(usize) -> Option<u8>,
+        offset: usize,
+    ) -> Option<u16> {
+        Some(u16::from_be_bytes([
+            read(offset)?,
+            read(offset.checked_add(1)?)?,
+        ]))
+    }
 }
 
 /// Horizontal inputs resolved by an architecture adapter for one standard
@@ -2677,6 +2817,71 @@ mod tests {
                 .expect("the maximum compiled ColorTable remains representable")
                 .color_table_entries,
             65_536,
+        );
+    }
+
+    #[test]
+    fn compiled_color_icon_sampling_is_shared_between_gateways() {
+        let layout = ColorIconLayout {
+            width: 2,
+            height: 1,
+            pixel_row_bytes: 1,
+            mask_row_bytes: 1,
+            bitmap_row_bytes: 1,
+            pixel_size: 4,
+            mask_offset: 0,
+            bitmap_offset: 1,
+            color_table_offset: 2,
+            color_table_entries: 4,
+            pixel_data_offset: 42,
+        };
+        let mut bytes = vec![0; 43];
+        bytes[0] = 0x80;
+        bytes[1] = 0x80;
+        bytes[6..8].copy_from_slice(&0x8000u16.to_be_bytes());
+        let entry = 10 + 3 * 8;
+        bytes[entry..entry + 2].copy_from_slice(&99u16.to_be_bytes());
+        bytes[entry + 2..entry + 4].copy_from_slice(&0x1234u16.to_be_bytes());
+        bytes[entry + 4..entry + 6].copy_from_slice(&0x5678u16.to_be_bytes());
+        bytes[entry + 6..entry + 8].copy_from_slice(&0x9abcu16.to_be_bytes());
+        bytes[42] = 0x30;
+
+        assert_eq!(
+            layout.mask_bit_with(|offset| bytes.get(offset).copied(), 0, 0),
+            Some(true)
+        );
+        assert_eq!(
+            layout.mask_bit_with(|offset| bytes.get(offset).copied(), 1, 0),
+            Some(false)
+        );
+        assert_eq!(
+            layout.rgb_with(|offset| bytes.get(offset).copied(), 0, 0),
+            Some([0x1234, 0x5678, 0x9abc]),
+            "device tables use the ColorSpec ordinal instead of its value field"
+        );
+        assert_eq!(
+            layout.monochrome_bit_with(|offset| bytes.get(offset).copied(), 0, 0),
+            Some(true)
+        );
+
+        let direct = ColorIconLayout {
+            width: 1,
+            height: 1,
+            pixel_row_bytes: 2,
+            mask_row_bytes: 1,
+            bitmap_row_bytes: 0,
+            pixel_size: 16,
+            mask_offset: 0,
+            bitmap_offset: 1,
+            color_table_offset: 1,
+            color_table_entries: 0,
+            pixel_data_offset: 1,
+        };
+        let direct_bytes = [0x80, 0x03, 0xe0];
+        assert_eq!(
+            direct.rgb_with(|offset| direct_bytes.get(offset).copied(), 0, 0),
+            Some([0, 0xfffe, 0]),
+            "direct RGB555 pixels expand to QuickDraw's 16-bit components"
         );
     }
 

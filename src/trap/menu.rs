@@ -3722,69 +3722,6 @@ impl super::TrapDispatcher {
         )
     }
 
-    fn menu_cicn_rgb_for_index(
-        bus: &MacMemoryBus,
-        icon_ptr: u32,
-        layout: SharedColorIconLayout,
-        pixel_index: u8,
-    ) -> Option<[u16; 3]> {
-        let color_table_ptr =
-            icon_ptr.checked_add(u32::try_from(layout.color_table_offset).ok()?)?;
-        let device_table = (bus.read_word(color_table_ptr.checked_add(4)?) & 0x8000) != 0;
-        for ordinal in 0..layout.color_table_entries {
-            let entry_offset = 8usize.checked_add(ordinal.checked_mul(8)?)?;
-            let entry = color_table_ptr.checked_add(u32::try_from(entry_offset).ok()?)?;
-            let value = if device_table {
-                u16::try_from(ordinal).ok()?
-            } else {
-                bus.read_word(entry)
-            };
-            if value == u16::from(pixel_index) {
-                return Some([
-                    bus.read_word(entry + 2),
-                    bus.read_word(entry + 4),
-                    bus.read_word(entry + 6),
-                ]);
-            }
-        }
-        None
-    }
-
-    fn menu_cicn_pixel_index(
-        bus: &MacMemoryBus,
-        data_ptr: u32,
-        row_bytes: u32,
-        pixel_size: u16,
-        x: u32,
-        y: u32,
-    ) -> Option<u8> {
-        let row_ptr = data_ptr.checked_add(y.checked_mul(row_bytes)?)?;
-        match pixel_size {
-            1 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 8)?);
-                Some(((byte >> (7 - (x % 8))) & 1) as u8)
-            }
-            2 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 4)?);
-                Some((byte >> (6 - 2 * (x % 4))) & 0x03)
-            }
-            4 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 2)?);
-                Some(if x % 2 == 0 {
-                    (byte >> 4) & 0x0F
-                } else {
-                    byte & 0x0F
-                })
-            }
-            8 => Some(bus.read_byte(row_ptr.checked_add(x)?)),
-            size if size > 8 && size % 8 == 0 => {
-                let bytes_per_pixel = u32::from(size / 8);
-                Some(bus.read_byte(row_ptr.checked_add(x.checked_mul(bytes_per_pixel)?)?))
-            }
-            _ => None,
-        }
-    }
-
     fn menu_item_cicn_size(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<(i16, i16)> {
         let icon_ptr = self.cicn_menu_icon_resource_ptr(item)?;
         let layout = Self::menu_cicn_layout(bus, icon_ptr)?;
@@ -4002,31 +3939,6 @@ impl super::TrapDispatcher {
         let Some(layout) = Self::menu_cicn_layout(bus, icon_ptr) else {
             return;
         };
-        let Some(mask_data_ptr) = u32::try_from(layout.mask_offset)
-            .ok()
-            .and_then(|offset| icon_ptr.checked_add(offset))
-        else {
-            return;
-        };
-        let Some(bitmap_data_ptr) = u32::try_from(layout.bitmap_offset)
-            .ok()
-            .and_then(|offset| icon_ptr.checked_add(offset))
-        else {
-            return;
-        };
-        let Some(pixel_data_ptr) = u32::try_from(layout.pixel_data_offset)
-            .ok()
-            .and_then(|offset| icon_ptr.checked_add(offset))
-        else {
-            return;
-        };
-        let (Ok(pixel_row_bytes), Ok(mask_row_bytes), Ok(bitmap_row_bytes)) = (
-            u32::try_from(layout.pixel_row_bytes),
-            u32::try_from(layout.mask_row_bytes),
-            u32::try_from(layout.bitmap_row_bytes),
-        ) else {
-            return;
-        };
         let (screen_base, row_bytes, screen_width, screen_height, screen_pixel_size) =
             self.get_screen_params();
         let screen = (
@@ -4039,44 +3951,37 @@ impl super::TrapDispatcher {
 
         for dy in 0..layout.height {
             for dx in 0..layout.width {
-                let sx = dx as u32;
-                let sy = dy as u32;
-                let mask_byte = bus.read_byte(mask_data_ptr + sy * mask_row_bytes + sx / 8);
-                if (mask_byte & (0x80 >> (sx % 8))) == 0 {
+                let (Ok(sx), Ok(sy)) = (usize::try_from(dx), usize::try_from(dy)) else {
+                    continue;
+                };
+                let read = |offset: usize| {
+                    let offset = u32::try_from(offset).ok()?;
+                    Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                };
+                if !layout.mask_bit_with(read, sx, sy).unwrap_or(false) {
                     continue;
                 }
 
-                if matches!(screen_pixel_size, 2 | 4 | 8) && layout.pixel_size >= 2 {
-                    let Some(pixel_index) = Self::menu_cicn_pixel_index(
-                        bus,
-                        pixel_data_ptr,
-                        pixel_row_bytes,
-                        layout.pixel_size,
-                        sx,
-                        sy,
-                    ) else {
+                if matches!(screen_pixel_size, 2 | 4 | 8) {
+                    let read = |offset: usize| {
+                        let offset = u32::try_from(offset).ok()?;
+                        Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                    };
+                    let Some(rgb) = layout.rgb_with(read, sx, sy) else {
                         continue;
                     };
-                    // A `cicn` pixel is an index into the icon's own
-                    // ColorTable, not a destination-device pixel value.
-                    // PlotCIcon remaps those colors to the current depth and
-                    // color table. More Macintosh Toolbox (1993), pp. 5-25
+                    // PlotCIcon remaps the source RGB color to the active
+                    // screen device. More Macintosh Toolbox (1993), pp. 5-25
                     // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
-                    let destination_index =
-                        Self::menu_cicn_rgb_for_index(bus, icon_ptr, layout, pixel_index)
-                            .map(|rgb| {
-                                Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(
-                                    || {
-                                        super::pict::closest_clut_index(
-                                            rgb[0],
-                                            rgb[1],
-                                            rgb[2],
-                                            &self.device_clut,
-                                        )
-                                    },
-                                )
-                            })
-                            .unwrap_or(pixel_index);
+                    let destination_index = Self::fb_main_screen_pixel_index_for_rgb(bus, rgb)
+                        .unwrap_or_else(|| {
+                            super::pict::closest_clut_index(
+                                rgb[0],
+                                rgb[1],
+                                rgb[2],
+                                &self.device_clut,
+                            )
+                        });
                     let dst_x = left + dx;
                     let dst_y = top + dy;
                     Self::fb_set_pixel_index(
@@ -4093,32 +3998,14 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
-                let source_data_ptr = if bitmap_row_bytes != 0 {
-                    bitmap_data_ptr
-                } else {
-                    pixel_data_ptr
+                let read = |offset: usize| {
+                    let offset = u32::try_from(offset).ok()?;
+                    Some(bus.read_byte(icon_ptr.checked_add(offset)?))
                 };
-                let source_row_bytes = if bitmap_row_bytes != 0 {
-                    bitmap_row_bytes
-                } else {
-                    pixel_row_bytes
-                };
-                let source_pixel_size = if bitmap_row_bytes != 0 {
-                    1
-                } else {
-                    layout.pixel_size
-                };
-                let Some(pixel_index) = Self::menu_cicn_pixel_index(
-                    bus,
-                    source_data_ptr,
-                    source_row_bytes,
-                    source_pixel_size,
-                    sx,
-                    sy,
-                ) else {
+                let Some(set) = layout.monochrome_bit_with(read, sx, sy) else {
                     continue;
                 };
-                Self::menu_set_standard_pixel(bus, screen, left + dx, top + dy, pixel_index != 0);
+                Self::menu_set_standard_pixel(bus, screen, left + dx, top + dy, set);
             }
         }
     }

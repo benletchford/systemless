@@ -65772,12 +65772,6 @@ fn ppc_check_menu_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcH
     });
 }
 
-fn ppc_slice_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_be_bytes(
-        bytes.get(offset..offset.checked_add(2)?)?.try_into().ok()?,
-    ))
-}
-
 fn ppc_menu_resource_data<'a>(
     resources: &'a [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -66551,57 +66545,6 @@ fn ppc_physical_screen_color_pixel(
     }
 }
 
-fn ppc_menu_bitmap_bit(data: &[u8], offset: usize, row_bytes: usize, x: usize, y: usize) -> bool {
-    offset
-        .checked_add(y.saturating_mul(row_bytes))
-        .and_then(|row| row.checked_add(x / 8))
-        .and_then(|address| data.get(address))
-        .is_some_and(|byte| byte & (0x80 >> (x & 7)) != 0)
-}
-
-fn ppc_menu_packed_pixel(
-    data: &[u8],
-    offset: usize,
-    row_bytes: usize,
-    pixel_size: u16,
-    x: usize,
-    y: usize,
-) -> Option<u16> {
-    let row = offset.checked_add(y.checked_mul(row_bytes)?)?;
-    match pixel_size {
-        1 | 2 | 4 | 8 => {
-            let bit = x.checked_mul(usize::from(pixel_size))?;
-            let byte = *data.get(row.checked_add(bit / 8)?)?;
-            let shift = 8usize
-                .checked_sub(usize::from(pixel_size))?
-                .checked_sub(bit & 7)?;
-            Some(u16::from(byte >> shift) & ((1u16 << pixel_size) - 1))
-        }
-        16 => ppc_slice_u16(data, row.checked_add(x.checked_mul(2)?)?),
-        _ => None,
-    }
-}
-
-fn ppc_menu_cicon_rgb(data: &[u8], layout: ColorIconLayout, value: u16) -> Option<PpcRgbColor> {
-    if layout.pixel_size == 16 {
-        return Some(PpcRgbColor {
-            red: ((value >> 10) & 0x1f) * 0x842,
-            green: ((value >> 5) & 0x1f) * 0x842,
-            blue: (value & 0x1f) * 0x842,
-        });
-    }
-    (0..layout.color_table_entries).find_map(|entry| {
-        let offset = layout
-            .color_table_offset
-            .checked_add(8 + entry.checked_mul(8)?)?;
-        (ppc_slice_u16(data, offset)? == value).then(|| PpcRgbColor {
-            red: ppc_slice_u16(data, offset + 2).unwrap_or(0),
-            green: ppc_slice_u16(data, offset + 4).unwrap_or(0),
-            blue: ppc_slice_u16(data, offset + 6).unwrap_or(0),
-        })
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 fn ppc_draw_tracked_menu_icon(
     memory: &mut PpcSectionMem,
@@ -66659,41 +66602,24 @@ fn ppc_draw_tracked_menu_icon(
             };
             for y in 0..usize::try_from(layout.height).unwrap_or_default() {
                 for x in 0..usize::try_from(layout.width).unwrap_or_default() {
-                    if !ppc_menu_bitmap_bit(data, layout.mask_offset, layout.mask_row_bytes, x, y) {
+                    if !layout
+                        .mask_bit_with(|offset| data.get(offset).copied(), x, y)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                     let pixel = if front.depth == 1 {
-                        let set = if layout.bitmap_row_bytes != 0 {
-                            ppc_menu_bitmap_bit(
-                                data,
-                                layout.bitmap_offset,
-                                layout.bitmap_row_bytes,
-                                x,
-                                y,
-                            )
-                        } else {
-                            ppc_menu_packed_pixel(
-                                data,
-                                layout.pixel_data_offset,
-                                layout.pixel_row_bytes,
-                                layout.pixel_size,
-                                x,
-                                y,
-                            )
-                            .is_some_and(|pixel| pixel != 0)
-                        };
-                        set.then_some(content_pixel)
+                        layout
+                            .monochrome_bit_with(|offset| data.get(offset).copied(), x, y)
+                            .filter(|set| *set)
+                            .map(|_| content_pixel)
                     } else {
-                        ppc_menu_packed_pixel(
-                            data,
-                            layout.pixel_data_offset,
-                            layout.pixel_row_bytes,
-                            layout.pixel_size,
-                            x,
-                            y,
-                        )
-                        .and_then(|value| ppc_menu_cicon_rgb(data, layout, value))
-                        .and_then(|rgb| ppc_physical_screen_color_pixel(front, rgb, screen_clut))
+                        layout
+                            .rgb_with(|offset| data.get(offset).copied(), x, y)
+                            .map(|[red, green, blue]| PpcRgbColor { red, green, blue })
+                            .and_then(|rgb| {
+                                ppc_physical_screen_color_pixel(front, rgb, screen_clut)
+                            })
                     };
                     if let Some(pixel) = pixel {
                         let _ = ppc_quickdraw_write_raw_pixel(
@@ -79101,6 +79027,28 @@ mod tests {
                         },
                     ),
                     item,
+                );
+            }
+            if depth > 1 {
+                let red = ppc_physical_screen_color_pixel(
+                    front,
+                    PpcRgbColor {
+                        red: 0xffff,
+                        green: 0,
+                        blue: 0,
+                    },
+                    &loaded.screen_clut,
+                )
+                .unwrap();
+                let top = tracking.popup_top + ppc_tracked_menu_item_offset(&tracking, 4);
+                assert_eq!(
+                    ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        front,
+                        (i32::from(tracking.popup_left + 2), i32::from(top)),
+                    ),
+                    Some(red),
+                    "{depth}bpp cicn pixel did not map through its embedded ColorTable",
                 );
             }
             assert_eq!(
