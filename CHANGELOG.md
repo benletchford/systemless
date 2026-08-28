@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/benletchford/systemless/compare/v0.23.1...v0.23.2) (2026-08-28)
+
+
+### Bug Fixes
+
+* **event:** share the event queue across CPU backends ([#928](https://github.com/benletchford/systemless/issues/928)) ([7ffc1fd](https://github.com/benletchford/systemless/commit/7ffc1fdd441c8593fc5af6b21be7741c62b4a297))
+
 ## [0.23.1](https://github.com/benletchford/systemless/compare/v0.23.0...v0.23.1) (2026-08-28)
 
 
