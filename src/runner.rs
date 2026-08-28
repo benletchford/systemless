@@ -16,13 +16,14 @@ use crate::loader::{
     JumpTableEntry, LoadedApp, MpwFarSegmentHeader, Retro68RelocationError,
 };
 use crate::managers::resource::ResourceFork;
+use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
 use m68k::BatchExit;
-use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult, PpcSectionMem};
+use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 

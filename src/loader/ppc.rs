@@ -1,7 +1,7 @@
 //! HLE-side PowerPC loader handoff.
 //!
 //! The PEF parser lives in [`super::pef`]. This module turns parsed and
-//! instantiated PEF data into a deterministic `ppc-rs` CPU + memory state:
+//! instantiated PEF data into deterministic CPU + guest-address-space state:
 //! section bases, relocations, synthetic import TVectors, and an initial
 //! stack frame. It deliberately does not implement Toolbox imports yet.
 
@@ -18,7 +18,7 @@ use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
-use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -33,8 +33,7 @@ use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::trap::{pict, TrapDispatcher};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcFetchHistogram, PpcFetchObserver, PpcImportAction,
-    PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMem,
-    PpcSectionMemSpan,
+    PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMemSpan,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -4800,7 +4799,8 @@ pub struct PpcListManagerState {
 #[derive(Debug, Clone)]
 pub struct PpcLoadedApp {
     pub cpu: PpcCpu,
-    pub memory: PpcSectionMem,
+    /// Mapped guest bytes shared by native and emulated 68k execution.
+    pub memory: crate::memory::GuestAddressSpace,
     pub entry_pc: u32,
     pub rtoc: u32,
     pub stack_base: u32,
