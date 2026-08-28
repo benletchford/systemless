@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.5](https://github.com/benletchford/systemless/compare/v0.23.4...v0.23.5) (2026-08-28)
+
+
+### Bug Fixes
+
+* **cpu:** roll back dependency regressions ([#938](https://github.com/benletchford/systemless/issues/938)) ([53858dc](https://github.com/benletchford/systemless/commit/53858dcbd7ef63818e7297a1906bc8707c8c3631)), closes [#937](https://github.com/benletchford/systemless/issues/937)
+
 ## [0.23.4](https://github.com/benletchford/systemless/compare/v0.23.3...v0.23.4) (2026-08-28)
 
 
