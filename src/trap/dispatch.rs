@@ -1681,6 +1681,8 @@ pub struct TrapDispatcher {
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
     /// Shared custom-MDEF callback and selection continuation.
     pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
+    /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
+    pub(crate) pending_menu_bar_build: Option<super::menu::PendingMenuBarBuild>,
     /// Caller QuickDraw state restored after a retained custom MDEF finishes.
     pub(crate) menu_definition_port_state: Option<PortStateSnapshot>,
     /// 68k call frame parked while the shared Menu Manager state yields.
@@ -3212,6 +3214,7 @@ impl TrapDispatcher {
             menus: Vec::new(),
             menu_tracking: None,
             menu_definition_tracking: None,
+            pending_menu_bar_build: None,
             menu_definition_port_state: None,
             menu_tracking_stack_ptr: 0,
             pending_native_menu_selection: None,
@@ -3463,8 +3466,10 @@ impl TrapDispatcher {
     /// Whether retained menu tracking has entered an application MDEF and
     /// must let that guest callback return to the original menu trap.
     pub(crate) fn is_menu_definition_callback_pending(&self) -> bool {
-        self.menu_definition_tracking
-            .is_some_and(|tracking| tracking.pending_invocation().is_some())
+        self.pending_menu_bar_build.is_some()
+            || self
+                .menu_definition_tracking
+                .is_some_and(|tracking| tracking.pending_invocation().is_some())
     }
 
     /// Shared check used by both dispatch.rs (auto-pop push-back) and
@@ -3475,6 +3480,7 @@ impl TrapDispatcher {
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
+        let is_menu_bar_build_refire = trap_no_autopop == 0xA9C0;
         let is_dialog_refire =
             matches!(trap_no_autopop, 0xA991 | 0xA985 | 0xA986 | 0xA987 | 0xA988);
         let is_standard_file_refire = trap_no_autopop == 0xA9EA;
@@ -3484,6 +3490,7 @@ impl TrapDispatcher {
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
         (is_menu_refire && self.is_menu_tracking())
+            || (is_menu_bar_build_refire && self.pending_menu_bar_build.is_some())
             || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
                 && (self.is_standard_file_put_tracking() || self.is_standard_file_get_tracking()))

@@ -63,6 +63,14 @@ pub struct Menu {
 pub(crate) type MenuTrackingState = SharedMenuTrackingState<usize, (), u8, ()>;
 pub(crate) type SubmenuTrackingState = SharedTrackedMenuPane<usize, (), u8, ()>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingMenuBarBuild {
+    pub(crate) stack_ptr: u32,
+    pub(crate) result_handle: u32,
+    pub(crate) menu_handles: Vec<u32>,
+    pub(crate) next_menu: usize,
+}
+
 pub(crate) fn tracked_menu_state(
     kind: MenuTrackingKind,
     menu_handle: usize,
@@ -910,6 +918,51 @@ impl super::TrapDispatcher {
         self.load_menu_color_resource(bus, menu_id);
         bus.write_word(0x0A60, 0);
         handle
+    }
+
+    fn calculate_standard_menu_size(&self, bus: &mut MacMemoryBus, menu_handle: u32) {
+        let Some(menu) = self.menus.iter().find(|menu| menu.handle == menu_handle) else {
+            return;
+        };
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 {
+            return;
+        }
+        let (_base, _row_bytes, _screen_width, screen_height, _depth) = self.get_screen_params();
+        let menu_height = shared_standard_menu_height(
+            &self.menu_rows(bus, &menu.items),
+            screen_height.saturating_sub(bus.read_word(addr::MBAR_HEIGHT) as i16),
+        );
+        let menu_width = self.standard_menu_width(bus, &menu.items);
+        bus.write_word(menu_ptr + 2, menu_width as u16);
+        bus.write_word(menu_ptr + 4, menu_height as u16);
+    }
+
+    fn continue_menu_bar_build<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        loop {
+            let next = self.pending_menu_bar_build.as_mut().and_then(|build| {
+                let handle = build.menu_handles.get(build.next_menu).copied()?;
+                build.next_menu += 1;
+                Some(handle)
+            });
+            let Some(menu_handle) = next else {
+                let Some(build) = self.pending_menu_bar_build.take() else {
+                    return;
+                };
+                bus.write_long(build.stack_ptr + 2, build.result_handle);
+                cpu.write_reg(Register::A7, build.stack_ptr + 2);
+                return;
+            };
+            if self.arm_menu_definition_to(
+                cpu,
+                bus,
+                SharedMenuDefinitionInvocation::size(menu_handle),
+                cpu.read_reg(Register::PC).wrapping_sub(2),
+            ) {
+                return;
+            }
+            self.calculate_standard_menu_size(bus, menu_handle);
+        }
     }
 
     pub(crate) fn popup_menu_item_title(
@@ -1787,6 +1840,19 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::D0, bus.read_word(0x0A60) as i16 as i32 as u32);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
+                if handle != 0 {
+                    // A custom definition owns the initial dimensions of a
+                    // newly created MenuRecord. Macintosh Toolbox Essentials
+                    // (1992), pp. 3-148--3-151.
+                    if self.arm_menu_definition(
+                        cpu,
+                        bus,
+                        SharedMenuDefinitionInvocation::size(handle),
+                    ) {
+                        return Some(Ok(()));
+                    }
+                    self.calculate_standard_menu_size(bus, handle);
+                }
                 Ok(())
             }
 
@@ -1978,6 +2044,10 @@ impl super::TrapDispatcher {
             // FUNCTION GetNewMBar(menuBarID: INTEGER): Handle;
             // Inside Macintosh Volume I, I-354
             (true, 0x1C0) => {
+                if self.pending_menu_bar_build.is_some() {
+                    self.continue_menu_bar_build(cpu, bus);
+                    return Some(Ok(()));
+                }
                 let sp = cpu.read_reg(Register::A7);
                 let mbar_id = bus.read_word(sp) as i16;
                 let handle = if let Some((_, mbar_ptr)) =
@@ -1996,20 +2066,31 @@ impl super::TrapDispatcher {
                         let handle = self.load_menu_resource(bus, menu_id);
                         (handle != 0).then_some(handle)
                     });
-                    let mut menu_list = SharedMenuList::from_regular_handles(mbar_id, menu_handles);
+                    let mut menu_list =
+                        SharedMenuList::from_regular_handles(mbar_id, menu_handles.iter().copied());
                     self.relayout_menu_list(bus, &mut menu_list);
                     let list_bytes = menu_list.encode();
                     let list_block = bus.alloc(list_bytes.len() as u32);
                     bus.write_bytes(list_block, &list_bytes);
                     let list_handle = bus.alloc(4);
                     bus.write_long(list_handle, list_block);
+                    self.pending_menu_bar_build = Some(PendingMenuBarBuild {
+                        stack_ptr: sp,
+                        result_handle: list_handle,
+                        menu_handles,
+                        next_menu: 0,
+                    });
                     list_handle
                 } else {
                     0
                 };
 
-                bus.write_long(sp + 2, handle);
-                cpu.write_reg(Register::A7, sp + 2);
+                if handle != 0 && self.pending_menu_bar_build.is_some() {
+                    self.continue_menu_bar_build(cpu, bus);
+                } else {
+                    bus.write_long(sp + 2, handle);
+                    cpu.write_reg(Register::A7, sp + 2);
+                }
                 Ok(())
             }
 
@@ -3184,23 +3265,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
-                if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
-                    let (_base, _row_bytes, _screen_width, screen_height, _depth) =
-                        self.get_screen_params();
-                    let menu_height = shared_standard_menu_height(
-                        &self.menu_rows(bus, &menu.items),
-                        screen_height.saturating_sub(bus.read_word(addr::MBAR_HEIGHT) as i16),
-                    );
-                    let menu_width = self.standard_menu_width(bus, &menu.items);
-
-                    if menu_handle != 0 {
-                        let menu_ptr = bus.read_long(menu_handle);
-                        if menu_ptr != 0 {
-                            bus.write_word(menu_ptr + 2, menu_width as u16);
-                            bus.write_word(menu_ptr + 4, menu_height as u16);
-                        }
-                    }
-                }
+                self.calculate_standard_menu_size(bus, menu_handle);
                 Ok(())
             }
 
@@ -8319,7 +8384,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let menu_handle = bus.read_long(TEST_SP + 2);
         let live_menu_ptr = bus.read_long(menu_handle);
         let mdef_handle = bus.read_long(live_menu_ptr + 6);
         assert_ne!(
@@ -8367,7 +8432,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        // While the MDEF callback is active A7 points at its synthetic return
+        // slot; the GetMenu result already occupies the caller's result slot.
+        let menu_handle = bus.read_long(TEST_SP + 2);
         let live_menu_ptr = bus.read_long(menu_handle);
         let mdef_handle = bus.read_long(live_menu_ptr + 6);
         assert_ne!(
@@ -8380,6 +8447,14 @@ mod tests {
             mdef_ptr,
             "custom MDEF handle should dereference to the loaded resource"
         );
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(
+            bus.read_word(trampoline + 6),
+            2,
+            "GetMenu must size a newly created custom menu through mSizeMsg"
+        );
+        assert_eq!(bus.read_long(trampoline + 10), menu_handle);
     }
 
     #[test]
@@ -8683,6 +8758,86 @@ mod tests {
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 129),
             0,
             "SetMenuBar should install Edit menu from MBAR"
+        );
+    }
+
+    #[test]
+    fn getnewmbar_sizes_each_custom_menu_before_returning_the_list() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first_menu = seed_menu_resource(&mut bus, 601, "First");
+        let second_menu = seed_menu_resource(&mut bus, 602, "Second");
+        for menu in [first_menu, second_menu] {
+            bus.write_word(menu + 6, 256);
+            bus.write_word(menu + 8, 0);
+        }
+        let mdef = bus.alloc(2);
+        bus.write_word(mdef, 0x4E75);
+        let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MBAR", 900), mbar),
+                        ((*b"MENU", 601), first_menu),
+                        ((*b"MENU", 602), second_menu),
+                        ((*b"MDEF", 256), mdef),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let trap_pc = 0x0012_3600;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 900);
+
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        let first_handle = bus.read_long(trampoline + 10);
+        assert_eq!(bus.read_word(bus.read_long(first_handle)), 601);
+        assert!(disp.is_tracking_refire(0xA9C0));
+        bus.write_word(bus.read_long(first_handle) + 2, 101);
+        bus.write_word(bus.read_long(first_handle) + 4, 41);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        let second_handle = bus.read_long(trampoline + 10);
+        assert_eq!(bus.read_word(bus.read_long(second_handle)), 602);
+        bus.write_word(bus.read_long(second_handle) + 2, 102);
+        bus.write_word(bus.read_long(second_handle) + 4, 42);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let list_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(list_handle, 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(disp.pending_menu_bar_build, None);
+        assert_eq!(bus.read_word(bus.read_long(first_handle) + 2), 101);
+        assert_eq!(bus.read_word(bus.read_long(second_handle) + 4), 42);
+        assert_eq!(
+            super::menu_list_from_memory(&bus, list_handle)
+                .unwrap()
+                .regular_handles()
+                .collect::<Vec<_>>(),
+            vec![first_handle, second_handle]
         );
     }
 

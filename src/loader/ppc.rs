@@ -2774,6 +2774,14 @@ struct PpcMenuSelectCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcPendingMenuBarBuild {
+    result_handle: u32,
+    menu_handles: Vec<u32>,
+    next_menu: usize,
+    return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PpcTrackedMenuItemAppearance {
     height: i16,
     icon_kind: StandardMenuIconKind,
@@ -2907,6 +2915,8 @@ pub struct PpcToolboxStartupState {
     pub(crate) menu_tracking: Option<PpcMenuTracking>,
     /// Shared custom-MDEF callback and selection continuation.
     menu_definition_tracking: Option<MenuDefinitionTracking>,
+    /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
+    pending_menu_bar_build: Option<PpcPendingMenuBarBuild>,
     /// Native call frame parked while a custom MDEF owns MenuSelect.
     menu_select_call: Option<PpcMenuSelectCall>,
     /// Caller QuickDraw port/device restored after a retained custom MDEF.
@@ -2971,6 +2981,7 @@ impl Default for PpcToolboxStartupState {
             pending_native_menu_selection: None,
             menu_tracking: None,
             menu_definition_tracking: None,
+            pending_menu_bar_build: None,
             menu_select_call: None,
             menu_definition_saved_gworld: None,
             popup_menu_call: None,
@@ -15998,7 +16009,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenu => {
-            Some(PpcImportAction::Return(ppc_load_menu_resource(
+            let menu_handle = ppc_load_menu_resource(
                 cpu.gpr[3] as u16 as i16,
                 memory,
                 heap_cursor,
@@ -16010,7 +16021,32 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
-            )))
+            );
+            if menu_handle != 0 {
+                // A custom definition owns the initial dimensions of a newly
+                // created MenuRecord. Macintosh Toolbox Essentials (1992),
+                // pp. 3-148--3-151.
+                if let Some(action) = ppc_dispatch_native_menu_definition_with_return(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    vfs_resources,
+                    toolbox_startup,
+                    MenuDefinitionInvocation::size(menu_handle),
+                    cpu.lr,
+                    PpcNativeReturnGpr3::Set(menu_handle),
+                ) {
+                    return Some(action);
+                }
+                ppc_calc_menu_size_with_resources(
+                    memory,
+                    menu_handle,
+                    vfs_resources,
+                    *current_resource_refnum,
+                );
+            }
+            Some(PpcImportAction::Return(menu_handle))
         }
         PpcImportDispatcherTarget::GetItemCmd => {
             ppc_get_item_cmd(cpu, memory);
@@ -16190,19 +16226,53 @@ fn dispatch_supported_import(
             handles,
             free_handle_blocks,
         ))),
-        PpcImportDispatcherTarget::GetNewMBar => Some(PpcImportAction::Return(ppc_get_new_mbar(
-            cpu.gpr[3] as u16 as i16,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            handles,
-            free_handle_blocks,
-            handle_states,
-            vfs_resources,
-            *current_resource_refnum,
-            last_resource_error,
-        ))),
+        PpcImportDispatcherTarget::GetNewMBar => {
+            if toolbox_startup.pending_menu_bar_build.is_some() {
+                return Some(ppc_continue_menu_bar_build(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    toolbox_startup,
+                    vfs_resources,
+                    *current_resource_refnum,
+                ));
+            }
+            let result_handle = ppc_get_new_mbar(
+                cpu.gpr[3] as u16 as i16,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                vfs_resources,
+                *current_resource_refnum,
+                last_resource_error,
+            );
+            if result_handle == 0 {
+                return Some(PpcImportAction::Return(0));
+            }
+            let menu_handles = ppc_menu_list_definition(memory, result_handle)
+                .map(|menu_list| menu_list.handles().collect())
+                .unwrap_or_default();
+            toolbox_startup.pending_menu_bar_build = Some(PpcPendingMenuBarBuild {
+                result_handle,
+                menu_handles,
+                next_menu: 0,
+                return_address: cpu.lr,
+            });
+            Some(ppc_continue_menu_bar_build(
+                cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                vfs_resources,
+                *current_resource_refnum,
+            ))
+        }
         PpcImportDispatcherTarget::LMGetMenuList => {
             Some(PpcImportAction::Return(current_menu_list))
         }
@@ -66149,6 +66219,31 @@ fn ppc_dispatch_native_menu_definition(
     invocation: MenuDefinitionInvocation,
     final_pc: u32,
 ) -> Option<PpcImportAction> {
+    ppc_dispatch_native_menu_definition_with_return(
+        cpu,
+        memory,
+        heap_cursor,
+        heap_limit,
+        resources,
+        toolbox_startup,
+        invocation,
+        final_pc,
+        PpcNativeReturnGpr3::Preserve,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_native_menu_definition_with_return(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    resources: &[PpcVfsResourceRecord],
+    toolbox_startup: &mut PpcToolboxStartupState,
+    invocation: MenuDefinitionInvocation,
+    final_pc: u32,
+    return_gpr3: PpcNativeReturnGpr3,
+) -> Option<PpcImportAction> {
     let menu_handle = invocation.menu_handle;
     let target = ppc_native_menu_definition_target(cpu, memory, resources, menu_handle)?;
     if toolbox_startup.menu_def_scratch == 0 {
@@ -66170,7 +66265,7 @@ fn ppc_dispatch_native_menu_definition(
         return_pc: PPC_MIXED_MODE_RETURN_PC,
         final_pc,
         restore_rtoc: cpu.gpr[2],
-        return_gpr3: PpcNativeReturnGpr3::Preserve,
+        return_gpr3,
     })
 }
 
@@ -68735,6 +68830,44 @@ fn ppc_get_new_mbar(
     *last_mem_error = PPC_NO_ERR;
     *last_resource_error = PPC_NO_ERR;
     handle
+}
+
+fn ppc_continue_menu_bar_build(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    startup: &mut PpcToolboxStartupState,
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+) -> PpcImportAction {
+    loop {
+        let next = startup.pending_menu_bar_build.as_mut().and_then(|build| {
+            let handle = build.menu_handles.get(build.next_menu).copied()?;
+            build.next_menu += 1;
+            Some(handle)
+        });
+        let Some(menu_handle) = next else {
+            let Some(build) = startup.pending_menu_bar_build.take() else {
+                return PpcImportAction::Return(0);
+            };
+            cpu.lr = build.return_address;
+            return PpcImportAction::Return(build.result_handle);
+        };
+        if let Some(action) = ppc_dispatch_native_menu_definition(
+            cpu,
+            memory,
+            heap_cursor,
+            heap_limit,
+            resources,
+            startup,
+            MenuDefinitionInvocation::size(menu_handle),
+            cpu.pc,
+        ) {
+            return action;
+        }
+        ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
+    }
 }
 
 #[cfg(test)]
@@ -82161,6 +82294,77 @@ mod tests {
     }
 
     #[test]
+    fn native_getmenu_sizes_a_new_custom_menu_through_its_mdef() {
+        let pef = synthetic_pef_with_import(b"GetMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_DATA_BASE + 0x7100;
+        let tvector = PPC_DATA_BASE + 0x7180;
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            PPC_CODE_BASE + 0x4000,
+            PPC_DATA_BASE + 0x7300,
+            test_stack_proc_info(
+                PPC_PROCINFO_SIZE_NONE,
+                &[
+                    PPC_PROCINFO_SIZE_TWO,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                ],
+            ),
+            &[
+                d_form_u(32, 6, 4, 0),
+                d_form_u(14, 7, 0, 123),
+                d_form_u(44, 7, 6, 2),
+                d_form_u(14, 7, 0, 45),
+                d_form_u(44, 7, 6, 4),
+                BLR,
+            ],
+        );
+        let descriptor_bytes =
+            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let ref_num = loaded.current_resource_refnum;
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 129,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(129, 256, b"Custom"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MDEF"),
+                res_id: 256,
+                name: Vec::new(),
+                data: descriptor_bytes,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+
+        loaded.cpu.gpr[3] = 129;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+
+        let menu_handle = loaded.cpu.gpr[3];
+        let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
+        assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
+        assert_ne!(loaded.toolbox_startup.menu_def_scratch, 0);
+    }
+
+    #[test]
     fn native_getmenu_returns_nil_when_the_compiled_mdef_is_missing() {
         let pef = synthetic_pef_with_import(b"GetMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -82395,6 +82599,113 @@ mod tests {
                 "GetNewMBar must route every MENU through GetMenu MDEF resolution"
             );
         }
+    }
+
+    #[test]
+    fn native_getnewmbar_sizes_each_custom_menu_before_returning_the_list() {
+        let pef = synthetic_pef_with_import(b"GetNewMBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_DATA_BASE + 0x7100;
+        let tvector = PPC_DATA_BASE + 0x7180;
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            PPC_CODE_BASE + 0x4000,
+            PPC_DATA_BASE + 0x7300,
+            test_stack_proc_info(
+                PPC_PROCINFO_SIZE_NONE,
+                &[
+                    PPC_PROCINFO_SIZE_TWO,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                    PPC_PROCINFO_SIZE_FOUR,
+                ],
+            ),
+            &[
+                d_form_u(32, 6, 4, 0),
+                d_form_u(14, 7, 0, 123),
+                d_form_u(44, 7, 6, 2),
+                d_form_u(14, 7, 0, 45),
+                d_form_u(44, 7, 6, 4),
+                BLR,
+            ],
+        );
+        let descriptor_bytes =
+            ppc_memory_read_bytes(&mut loaded.memory, descriptor, 0x100).unwrap();
+        let ref_num = loaded.current_resource_refnum;
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MBAR"),
+                res_id: 900,
+                name: Vec::new(),
+                data: vec![0, 2, 2, 89, 2, 90],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 601,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(601, 256, b"First"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 602,
+                name: Vec::new(),
+                data: test_menu_resource_with_mdef(602, 256, b"Second"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MDEF"),
+                res_id: 256,
+                name: Vec::new(),
+                data: descriptor_bytes,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+        loaded.cpu.gpr[3] = 900;
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetNewMBar;
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 3);
+        assert_eq!(probe.unsupported_import_index, None);
+
+        let list_handle = loaded.cpu.gpr[3];
+        let menu_handles = ppc_menu_list_definition(&mut loaded.memory, list_handle)
+            .unwrap()
+            .handles()
+            .collect::<Vec<_>>();
+        assert_eq!(menu_handles.len(), 2);
+        for menu_handle in menu_handles {
+            let menu = loaded.memory.read_u32_be(menu_handle).unwrap();
+            assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
+            assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
+        }
+        assert_eq!(loaded.toolbox_startup.pending_menu_bar_build, None);
     }
 
     #[test]
