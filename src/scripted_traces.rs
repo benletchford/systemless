@@ -1390,7 +1390,11 @@ fn scripted_menu_title_regions(
     dispatcher: &TrapDispatcher,
     bus: &MacMemoryBus,
 ) -> Vec<(usize, i16, i16)> {
-    dispatcher.current_menu_title_regions_with_indices(bus)
+    dispatcher
+        .current_menu_title_regions_with_indices(bus)
+        .into_iter()
+        .map(|(index, region)| (index, region.left, region.right))
+        .collect()
 }
 
 #[cfg(test)]

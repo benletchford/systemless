@@ -3,7 +3,10 @@
 use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::menu_manager::TrackedMenuPaneView;
+use crate::menu_manager::{
+    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline, TrackedMenuPaneView,
+    STANDARD_SYSTEM_MENU_MARK_ADVANCE,
+};
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
@@ -35,11 +38,6 @@ const TEXT_STYLE_SHADOW: u8 = 0x10;
 const TEXT_STYLE_CONDENSE: u8 = 0x20;
 const TEXT_STYLE_EXTEND: u8 = 0x40;
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-/// Menu bar cell width for the system menu's mark title, matching the
-/// Chicago 12 mark advance System 7.5.3 lays the bar out with. See
-/// `TrapDispatcher::menu_title_advance`.
-const SYSTEM_MENU_MARK_TITLE_ADVANCE: i16 = 11;
-
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -2568,19 +2566,21 @@ impl super::TrapDispatcher {
         // Draw visible menu titles from the current menu list. InsertMenu
         // with beforeID=-1 installs a submenu/popup in the current menu
         // list without adding a menu-bar title. MTE 1992, p. 3-121.
-        for (menu_idx, left, right) in self.current_menu_title_regions_with_indices(bus) {
+        for (menu_idx, region) in self.current_menu_title_regions_with_indices(bus) {
             let Some(menu) = self.menus.get(menu_idx) else {
                 continue;
             };
             let title = &menu.title;
             let title_width = Self::menu_title_advance(title);
-            let x = left.saturating_add(7);
+            let x = region.title_origin();
             let title_bg_index = self.menu_title_background_pixel_index(bus, menu.id, pixel_size);
             if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                 // StandardMBDF establishes each title's RGB1/RGB2 pair and
                 // erases the complete title cell to RGB2 before drawing its
                 // text. This cell is also the rectangle later reversed by
                 // HiliteMenu. IM:V 1986 pp. V-232 and V-252 to V-253.
+                let (cell_top, cell_left, cell_bottom, cell_right) =
+                    region.highlighted_rect(menu_bar_height);
                 if let Some(bg_index) = title_bg_index {
                     Self::fb_fill_rect_index(
                         bus,
@@ -2589,10 +2589,10 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        1,
-                        left - 2,
-                        menu_bar_height - 1,
-                        right + 3,
+                        cell_top,
+                        cell_left,
+                        cell_bottom,
+                        cell_right,
                         bg_index,
                     );
                 } else {
@@ -2603,10 +2603,10 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        1,
-                        left - 2,
-                        menu_bar_height - 1,
-                        right + 3,
+                        cell_top,
+                        cell_left,
+                        cell_bottom,
+                        cell_right,
                         false,
                     );
                 }
@@ -2618,9 +2618,9 @@ impl super::TrapDispatcher {
             self.draw_theme_menu_title_chrome(
                 bus,
                 1,
-                left,
+                region.left,
                 menu_bar_height - 1,
-                right,
+                region.right,
                 menu.enabled,
                 false,
             );
@@ -2722,7 +2722,7 @@ impl super::TrapDispatcher {
     /// title's highlight rectangle.
     pub(crate) fn menu_title_advance(title: &str) -> i16 {
         if Self::is_system_menu_mark_title(title) {
-            SYSTEM_MENU_MARK_TITLE_ADVANCE
+            STANDARD_SYSTEM_MENU_MARK_ADVANCE
         } else {
             Self::fb_measure_string(title, 0, 12)
         }
@@ -2730,9 +2730,7 @@ impl super::TrapDispatcher {
 
     fn menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
         let metrics = get_font_metrics(0, 12);
-        // Vertically center text: baseline = top margin + ascent.
-        let text_height = metrics.ascent + metrics.descent;
-        (menu_bar_height - text_height) / 2 + metrics.ascent
+        standard_menu_bar_title_baseline(menu_bar_height, metrics.ascent, metrics.descent)
     }
 
     pub(super) fn fb_draw_retro_computer_menu_mark(
@@ -2761,9 +2759,8 @@ impl super::TrapDispatcher {
         // 20-pixel bar while following a live MBarHeight. Clip to the menu
         // bar interior so a short bar cannot paint the window/desktop below.
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let top = Self::menu_bar_title_baseline(menu_bar_height)
-            .saturating_sub(metrics.ascent)
-            .saturating_add(1);
+        let top =
+            standard_menu_bar_system_mark_top(menu_bar_height, metrics.ascent, metrics.descent);
         let menu_bar_bottom = menu_bar_height.saturating_sub(1).max(0);
         for (dy, row) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
             .into_iter()

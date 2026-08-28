@@ -10,13 +10,14 @@ use crate::menu_manager::{
     new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
     standard_menu_row_height, standard_menu_width as shared_standard_menu_width,
     standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    MenuBarResource as SharedMenuBarResource, MenuItems as SharedMenuItems,
-    MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
-    MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
-    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
+    MenuBarResource as SharedMenuBarResource, MenuBarTitleRegion as SharedMenuBarTitleRegion,
+    MenuItems as SharedMenuItems, MenuKeyItem as SharedMenuKeyItem,
+    MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList, MenuRow as SharedMenuRow,
+    MenuRows as SharedMenuRows, MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState as SharedMenuTrackingState, StandardMenuItemWidth, SubmenuTransition,
     TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_SEPARATOR_HEIGHT,
+    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::trap::types::encode_mac_roman_lossy;
@@ -557,7 +558,7 @@ impl super::TrapDispatcher {
     ) -> Option<(i16, i16)> {
         self.guest_menu_snapshot(bus)
             .selectable_result(menu_id, item_number)?;
-        let (_, left, right) = self
+        let region = self
             .current_menu_list(bus)?
             .regular_title_regions()
             .into_iter()
@@ -569,12 +570,12 @@ impl super::TrapDispatcher {
                 what: 1,
                 message: 0,
                 where_v: 10,
-                where_h: left + (right - left) / 2,
+                where_h: region.left + (region.right - region.left) / 2,
                 modifiers: self.current_event_modifiers(),
             });
             self.pending_native_menu_event_tick = None;
         }
-        Some((10, left + (right - left) / 2))
+        Some((10, region.left + (region.right - region.left) / 2))
     }
 
     /// Consume a staged selection only if it is still valid in the current
@@ -1375,16 +1376,20 @@ impl super::TrapDispatcher {
     }
 
     fn relayout_menu_list(&self, bus: &MacMemoryBus, menu_list: &mut SharedMenuList) {
-        menu_list.relayout_regular_titles(11, 13, |handle| {
-            let menu_ptr = bus.read_long(handle);
-            (menu_ptr != 0)
-                .then(|| {
-                    let title_len = bus.read_byte(menu_ptr + 14) as usize;
-                    macroman_to_string(&bus.read_bytes(menu_ptr + 15, title_len))
-                })
-                .map(|title| Self::menu_title_advance(&title))
-                .unwrap_or(0)
-        });
+        menu_list.relayout_regular_titles(
+            STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+            STANDARD_MENU_BAR_TITLE_SPACING,
+            |handle| {
+                let menu_ptr = bus.read_long(handle);
+                (menu_ptr != 0)
+                    .then(|| {
+                        let title_len = bus.read_byte(menu_ptr + 14) as usize;
+                        macroman_to_string(&bus.read_bytes(menu_ptr + 15, title_len))
+                    })
+                    .map(|title| Self::menu_title_advance(&title))
+                    .unwrap_or(0)
+            },
+        );
     }
 
     fn ensure_menu_record_capacity(
@@ -4187,22 +4192,26 @@ impl super::TrapDispatcher {
         let region = self
             .current_menu_title_regions_with_indices(bus)
             .into_iter()
-            .find(|(idx, _, _)| *idx == menu_idx);
+            .find(|(idx, _region)| *idx == menu_idx);
         if menu_idx >= self.menus.len() {
             return;
         }
-        let Some((_idx, title_left, title_right)) = region else {
+        let Some((_idx, title_region)) = region else {
             return;
         };
         let menu = &self.menus[menu_idx];
 
-        let max_width = self.dropdown_width_for_menu(bus, menu_idx, title_right - title_left + 20);
+        let max_width = self.dropdown_width_for_menu(
+            bus,
+            menu_idx,
+            title_region.right - title_region.left + 20,
+        );
         let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
         let Some(layout) = standard_pull_down_menu_layout(
             max_width,
             self.menu_items_height(bus, &menu.items),
             (screen_width, screen_height),
-            title_left,
+            title_region.left,
             menu_bar_height,
         ) else {
             return;
@@ -4585,15 +4594,15 @@ impl super::TrapDispatcher {
     pub(crate) fn current_menu_title_regions_with_indices(
         &self,
         bus: &MacMemoryBus,
-    ) -> Vec<(usize, i16, i16)> {
+    ) -> Vec<(usize, SharedMenuBarTitleRegion)> {
         self.current_menu_list(bus)
             .into_iter()
             .flat_map(|menu_list| menu_list.regular_title_regions())
-            .filter_map(|(handle, left, right)| {
+            .filter_map(|region| {
                 self.menus
                     .iter()
-                    .position(|menu| menu.handle == handle)
-                    .map(|index| (index, left, right))
+                    .position(|menu| menu.handle == region.handle)
+                    .map(|index| (index, region))
             })
             .collect()
     }
@@ -4601,8 +4610,8 @@ impl super::TrapDispatcher {
     fn current_menu_title_hit_test(&self, bus: &MacMemoryBus, mouse_x: i16) -> Option<usize> {
         self.current_menu_title_regions_with_indices(bus)
             .into_iter()
-            .find(|(_menu_idx, left, right)| mouse_x >= *left && mouse_x < *right)
-            .map(|(menu_idx, _left, _right)| menu_idx)
+            .find(|(_menu_idx, region)| region.contains_horizontal(mouse_x))
+            .map(|(menu_idx, _region)| menu_idx)
     }
 
     /// Determine which menu title the x coordinate falls on.
@@ -4633,16 +4642,17 @@ impl super::TrapDispatcher {
     #[cfg(test)]
     fn menu_title_regions_with_indices(&self) -> Vec<(usize, i16, i16)> {
         let mut regions = Vec::new();
-        let mut x: i16 = 18;
+        let mut left = STANDARD_MENU_BAR_FIRST_TITLE_LEFT;
         for (menu_idx, menu) in self.menus.iter().enumerate() {
             if !menu.visible_in_menu_bar {
                 continue;
             }
             let width = Self::menu_title_advance(&menu.title);
-            let left = x - 7; // padding before title
-            let right = x + width + 6; // padding after title
+            let right = left
+                .saturating_add(width)
+                .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
             regions.push((menu_idx, left, right));
-            x += width + 13;
+            left = right;
         }
         regions
     }
@@ -5421,10 +5431,10 @@ impl super::TrapDispatcher {
         }
 
         if menu_id != 0 {
-            if let Some((idx, left, right)) = self
+            if let Some((idx, region)) = self
                 .current_menu_title_regions_with_indices(bus)
                 .into_iter()
-                .find(|(idx, _, _)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
+                .find(|(idx, _region)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
             {
                 let menu = &self.menus[idx];
                 let hilite_indexes = Self::menu_hilite_pixel_indexes(
@@ -5433,15 +5443,9 @@ impl super::TrapDispatcher {
                     Self::menu_title_pixel_index(bus, menu.id, pixel_size),
                     pixel_size,
                 );
-                self.invert_menu_bar_rect(
-                    bus,
-                    1,
-                    left - 2,
-                    menu_bar_height - 1,
-                    right + 3,
-                    hilite_indexes,
-                );
-                self.redraw_color_system_menu_mark_title(bus, idx, left + 7);
+                let (top, left, bottom, right) = region.highlighted_rect(menu_bar_height);
+                self.invert_menu_bar_rect(bus, top, left, bottom, right, hilite_indexes);
+                self.redraw_color_system_menu_mark_title(bus, idx, region.title_origin());
                 return;
             }
         }
@@ -5499,14 +5503,14 @@ impl super::TrapDispatcher {
         }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let mut target_region: Option<(i16, i16)> = None;
-        for (idx, left, right) in self.current_menu_title_regions_with_indices(bus) {
+        let mut target_region = None;
+        for (idx, region) in self.current_menu_title_regions_with_indices(bus) {
             if idx == menu_idx {
-                target_region = Some((left, right));
+                target_region = Some(region);
                 break;
             }
         }
-        let Some((left, right)) = target_region else {
+        let Some(region) = target_region else {
             return;
         };
         let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
@@ -5527,9 +5531,9 @@ impl super::TrapDispatcher {
             if self.draw_theme_menu_title_chrome(
                 bus,
                 1,
-                left,
+                region.left,
                 menu_bar_height - 1,
-                right,
+                region.right,
                 menu.enabled,
                 true,
             ) {
@@ -5545,7 +5549,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 7,
+                    region.title_origin(),
                     text_y,
                     &menu.title,
                     font_id,
@@ -5569,13 +5573,13 @@ impl super::TrapDispatcher {
             Self::menu_title_pixel_index(bus, menu.id, pixel_size),
             pixel_size,
         );
-        // Invert the title area in the menu bar. The standard MDEF's
+        // Invert the title area in the menu bar. The standard MBDF's
         // highlighted title rectangle begins two pixels before the logical
         // hit region, matching the pull-down rectangle captured by the
         // System 7.5.3 MenuSelect reference. Inside Macintosh Volume I, I-356.
-        let classic_left = left - 2;
-        let classic_right = right + 3;
-        for y in 1i16..(menu_bar_height - 1) {
+        let (classic_top, classic_left, classic_bottom, classic_right) =
+            region.highlighted_rect(menu_bar_height);
+        for y in classic_top..classic_bottom {
             for x in classic_left..classic_right {
                 if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
                     if pixel_size == 1 {
@@ -5613,7 +5617,7 @@ impl super::TrapDispatcher {
         // itself: only its transparent cell background participates in the
         // reversal. Replotting is intentionally limited to indexed color;
         // the monochrome mark remains ordinary reversed one-bit title ink.
-        self.redraw_color_system_menu_mark_title(bus, menu_idx, left + 7);
+        self.redraw_color_system_menu_mark_title(bus, menu_idx, region.title_origin());
     }
 
     fn redraw_color_system_menu_mark_title(
@@ -7679,7 +7683,7 @@ mod tests {
         assert_eq!(
             disp.current_menu_title_regions_with_indices(&bus)
                 .into_iter()
-                .map(|(index, left, right)| (disp.menus[index].handle, left, right))
+                .map(|(index, region)| (disp.menus[index].handle, region.left, region.right))
                 .collect::<Vec<_>>(),
             vec![(second, 40, 80), (first, 80, 120)],
             "68k title geometry must come from the live guest MenuList"

@@ -9,6 +9,18 @@ pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 /// Size of one guest `MCEntry` in a live menu color information table.
 pub(crate) const MENU_COLOR_ENTRY_SIZE: usize = 30;
 
+/// Horizontal origin of the first standard menu title's logical hit cell.
+pub(crate) const STANDARD_MENU_BAR_FIRST_TITLE_LEFT: i16 = 11;
+
+/// Horizontal distance added after each standard menu title's glyph advance.
+pub(crate) const STANDARD_MENU_BAR_TITLE_SPACING: i16 = 13;
+
+/// Horizontal inset from a standard title's logical hit cell to its ink.
+pub(crate) const STANDARD_MENU_BAR_TITLE_ORIGIN_INSET: i16 = 7;
+
+/// Reference glyph advance reserved for the standard system-menu mark.
+pub(crate) const STANDARD_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
+
 const MENU_COLOR_END_ID: i16 = -99;
 
 /// Callable 68k Pascal-procedure shim used for the standard system MDEF.
@@ -41,6 +53,64 @@ pub(crate) enum MenuTrackingKind {
 pub(crate) enum MenuScrollDirection {
     Up,
     Down,
+}
+
+/// One regular menu title's live MenuList geometry.
+///
+/// `left..right` is the half-open logical hit cell stored by the Menu
+/// Manager. The standard MBDF draws title ink seven pixels inside that cell
+/// and reverses a rectangle extending two pixels left and three pixels right
+/// of it. Inside Macintosh Volume I (1985), pp. I-352--I-356; Inside
+/// Macintosh Volume V (1986), pp. V-228--V-230 and V-252--V-253.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuBarTitleRegion {
+    pub(crate) handle: u32,
+    pub(crate) left: i16,
+    pub(crate) right: i16,
+}
+
+impl MenuBarTitleRegion {
+    pub(crate) fn contains_horizontal(self, horizontal: i16) -> bool {
+        horizontal >= self.left && horizontal < self.right
+    }
+
+    pub(crate) fn title_origin(self) -> i16 {
+        self.left
+            .saturating_add(STANDARD_MENU_BAR_TITLE_ORIGIN_INSET)
+    }
+
+    pub(crate) fn highlighted_rect(self, menu_bar_height: i16) -> (i16, i16, i16, i16) {
+        (
+            1,
+            self.left.saturating_sub(2),
+            menu_bar_height.saturating_sub(1),
+            self.right.saturating_add(3),
+        )
+    }
+}
+
+/// Center the standard system-font metrics vertically in the live menu bar.
+pub(crate) fn standard_menu_bar_title_baseline(
+    menu_bar_height: i16,
+    ascent: i16,
+    descent: i16,
+) -> i16 {
+    menu_bar_height
+        .saturating_sub(ascent)
+        .saturating_sub(descent)
+        / 2
+        + ascent
+}
+
+/// Align the replacement system-menu artwork to the standard title baseline.
+pub(crate) fn standard_menu_bar_system_mark_top(
+    menu_bar_height: i16,
+    ascent: i16,
+    descent: i16,
+) -> i16 {
+    standard_menu_bar_title_baseline(menu_bar_height, ascent, descent)
+        .saturating_sub(ascent)
+        .saturating_add(1)
 }
 
 /// Result of one standard scrolling-menu pointer update.
@@ -1520,7 +1590,7 @@ impl MenuList {
     /// Derive each regular menu title's half-open horizontal hit region from
     /// its stored `menuLeft` and the following `menuLeft` or `lastRight`.
     /// Macintosh Toolbox Essentials (1992), pp. 3-96--3-97.
-    pub(crate) fn regular_title_regions(&self) -> Vec<(u32, i16, i16)> {
+    pub(crate) fn regular_title_regions(&self) -> Vec<MenuBarTitleRegion> {
         self.regular
             .iter()
             .enumerate()
@@ -1530,7 +1600,11 @@ impl MenuList {
                     .get(index + 1)
                     .map(|next| next.value)
                     .unwrap_or(self.last_right);
-                (entry.handle, entry.value, right)
+                MenuBarTitleRegion {
+                    handle: entry.handle,
+                    left: entry.value,
+                    right,
+                }
             })
             .collect()
     }
@@ -1538,8 +1612,8 @@ impl MenuList {
     pub(crate) fn regular_title_at_horizontal(&self, horizontal: i16) -> Option<(u32, i16)> {
         self.regular_title_regions()
             .into_iter()
-            .find(|(_handle, left, right)| horizontal >= *left && horizontal < *right)
-            .map(|(handle, left, _right)| (handle, left))
+            .find(|region| region.contains_horizontal(horizontal))
+            .map(|region| (region.handle, region.left))
     }
 
     /// Resolve a Command-key equivalent using the Menu Manager's partition
@@ -2404,7 +2478,23 @@ mod tests {
         assert_eq!(list.last_right, 140);
         assert_eq!(
             list.regular_title_regions(),
-            vec![(10, 11, 44), (20, 44, 87), (30, 87, 140)]
+            vec![
+                MenuBarTitleRegion {
+                    handle: 10,
+                    left: 11,
+                    right: 44,
+                },
+                MenuBarTitleRegion {
+                    handle: 20,
+                    left: 44,
+                    right: 87,
+                },
+                MenuBarTitleRegion {
+                    handle: 30,
+                    left: 87,
+                    right: 140,
+                },
+            ]
         );
         assert_eq!(list.regular_title_at_horizontal(10), None);
         assert_eq!(list.regular_title_at_horizontal(11), Some((10, 11)));
@@ -2427,6 +2517,24 @@ mod tests {
                 ..MenuList::default()
             }
         );
+    }
+
+    #[test]
+    fn standard_menu_bar_geometry_is_shared_between_gateways() {
+        let region = MenuBarTitleRegion {
+            handle: 0x1234,
+            left: STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+            right: 45,
+        };
+
+        assert!(!region.contains_horizontal(10));
+        assert!(region.contains_horizontal(11));
+        assert!(region.contains_horizontal(44));
+        assert!(!region.contains_horizontal(45));
+        assert_eq!(region.title_origin(), 18);
+        assert_eq!(region.highlighted_rect(20), (1, 9, 19, 48));
+        assert_eq!(standard_menu_bar_title_baseline(20, 11, 2), 14);
+        assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 4);
     }
 
     #[test]

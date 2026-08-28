@@ -20,18 +20,22 @@ use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
-#[cfg(test)]
-use crate::menu_manager::MenuListEntry as PpcMenuListEntry;
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, laid_out_menu_item_count,
-    merge_menu_color_entries, new_standard_menu_record, standard_menu_height,
-    standard_menu_row_height, standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout, MenuBarResource,
+    merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
+    standard_menu_bar_title_baseline, standard_menu_height, standard_menu_row_height,
+    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
+    standard_submenu_layout, MenuBarResource, MenuBarTitleRegion,
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
     MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
-    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_DEFINITION_SHIM,
-    STANDARD_MENU_SEPARATOR_HEIGHT,
+    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_SYSTEM_MENU_MARK_ADVANCE,
+};
+#[cfg(test)]
+use crate::menu_manager::{
+    MenuListEntry as PpcMenuListEntry, STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
@@ -363,10 +367,6 @@ const PPC_DSP_SCREEN_HEIGHT: u32 = 480;
 pub const PPC_QD_TEXT_FONT_DEFAULT: i16 = 0;
 pub const PPC_QD_TEXT_MODE_SRC_OR: i16 = 1;
 pub const PPC_QD_TEXT_SIZE_SYSTEM: i16 = 0;
-const PPC_MENU_TITLE_ORIGIN_H: i16 = 18;
-const PPC_MENU_TITLE_HIT_LEFT: i16 = 11;
-const PPC_MENU_TITLE_SPACING: i16 = 13;
-const PPC_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
 const PPC_QD_PEN_MODE_PAT_COPY: i16 = 8;
 const PPC_CGRAF_PORT_PN_LOC_OFFSET: u32 = 48;
 const PPC_CGRAF_PORT_PN_SIZE_OFFSET: u32 = 52;
@@ -68151,14 +68151,18 @@ fn ppc_menu_list_bytes(menu_list: &PpcMenuListDefinition) -> Vec<u8> {
 }
 
 fn ppc_relayout_menu_list(memory: &mut PpcSectionMem, menu_list: &mut PpcMenuListDefinition) {
-    menu_list.relayout_regular_titles(PPC_MENU_TITLE_HIT_LEFT, PPC_MENU_TITLE_SPACING, |handle| {
-        memory
-            .read_u32_be(handle)
-            .filter(|menu| *menu != 0)
-            .and_then(|menu| ppc_read_pascal_string(memory, menu.checked_add(14)?))
-            .map(|title| ppc_menu_title_advance(&title))
-            .unwrap_or(0)
-    });
+    menu_list.relayout_regular_titles(
+        STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+        STANDARD_MENU_BAR_TITLE_SPACING,
+        |handle| {
+            memory
+                .read_u32_be(handle)
+                .filter(|menu| *menu != 0)
+                .and_then(|menu| ppc_read_pascal_string(memory, menu.checked_add(14)?))
+                .map(|title| ppc_menu_title_advance(&title))
+                .unwrap_or(0)
+        },
+    );
 }
 
 fn ppc_replace_menu_list_definition(
@@ -68410,8 +68414,7 @@ fn ppc_reverse_menu_title_cell(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
     screen_clut: &[[u16; 3]; 256],
-    left: i16,
-    right: i16,
+    region: MenuBarTitleRegion,
     menu_bar_height: i16,
 ) {
     if menu_bar_height <= 1 {
@@ -68428,10 +68431,11 @@ fn ppc_reverse_menu_title_cell(
     // The standard MBDF's highlighted title rectangle extends beyond the
     // logical hit cell and excludes the menu bar's outer border. Inside
     // Macintosh Volume I (1985), p. I-356.
-    let left = left.saturating_sub(2).max(0).min(screen_width);
-    let right = right.saturating_add(3).max(0).min(screen_width);
-    let bottom = menu_bar_height.min(screen_height).saturating_sub(1);
-    for y in 1..bottom {
+    let (top, left, bottom, right) = region.highlighted_rect(menu_bar_height);
+    let left = left.max(0).min(screen_width);
+    let right = right.max(0).min(screen_width);
+    let bottom = bottom.min(screen_height);
+    for y in top..bottom {
         for x in left..right {
             let Some(pixel) =
                 ppc_quickdraw_read_pixel(memory, front_buffer, (i32::from(x), i32::from(y)))
@@ -68465,11 +68469,7 @@ fn ppc_menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
     // Keep the PowerPC menu title baseline identical to the 68k Menu
     // Manager when an application changes MBarHeight: center the live system
     // font metrics inside the bar instead of assuming the default 20 pixels.
-    menu_bar_height
-        .saturating_sub(menu_ascent)
-        .saturating_sub(menu_descent)
-        / 2
-        + menu_ascent
+    standard_menu_bar_title_baseline(menu_bar_height, menu_ascent, menu_descent)
 }
 
 fn ppc_menu_bar_system_mark_top(menu_bar_height: i16) -> i16 {
@@ -68477,9 +68477,9 @@ fn ppc_menu_bar_system_mark_top(menu_bar_height: i16) -> i16 {
         get_font_face_scale_ratio(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
     let menu_ascent =
         ppc_scale_font_value(i32::from(menu_font.metrics.ascent), numerator, denominator);
-    ppc_menu_bar_title_baseline(menu_bar_height)
-        .saturating_sub(menu_ascent)
-        .saturating_add(1)
+    let menu_descent =
+        ppc_scale_font_value(i32::from(menu_font.metrics.descent), numerator, denominator);
+    standard_menu_bar_system_mark_top(menu_bar_height, menu_ascent, menu_descent)
 }
 
 fn ppc_draw_menu_bar(
@@ -68532,19 +68532,18 @@ fn ppc_draw_menu_bar(
     // title cell. The shared MenuList operation is therefore authoritative
     // for drawing as well as hit testing; do not reconstruct a second layout
     // from title widths in this PowerPC adapter.
-    for (menu_handle, title_left, title_right) in menu_list.regular_title_regions() {
-        if menu_handle == 0 {
+    for region in menu_list.regular_title_regions() {
+        if region.handle == 0 {
             continue;
         }
-        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+        let Some(menu) = memory.read_u32_be(region.handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
         let title_ptr = menu.wrapping_add(14);
         let Some(title) = ppc_read_pascal_string(memory, title_ptr) else {
             continue;
         };
-        let title_h = title_left
-            .saturating_add(PPC_MENU_TITLE_ORIGIN_H.saturating_sub(PPC_MENU_TITLE_HIT_LEFT));
+        let title_h = region.title_origin();
         let system_menu_mark = ppc_is_system_menu_mark(&title);
         if system_menu_mark {
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
@@ -68566,14 +68565,7 @@ fn ppc_draw_menu_bar(
         }
         let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
         if !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id {
-            ppc_reverse_menu_title_cell(
-                memory,
-                front_buffer,
-                screen_clut,
-                title_left,
-                title_right,
-                menu_bar_height,
-            );
+            ppc_reverse_menu_title_cell(memory, front_buffer, screen_clut, region, menu_bar_height);
             // Color title artwork is replotted after reversing its cell so
             // only the transparent background participates in highlighting.
             // Inside Macintosh Volume V (1986), pp. V-235 and V-244.
@@ -68592,7 +68584,7 @@ fn ppc_is_system_menu_mark(title: &[u8]) -> bool {
 
 fn ppc_menu_title_advance(title: &[u8]) -> i16 {
     if ppc_is_system_menu_mark(title) {
-        PPC_SYSTEM_MENU_MARK_ADVANCE
+        STANDARD_SYSTEM_MENU_MARK_ADVANCE
     } else {
         ppc_text_bytes_advance_for_font(title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM)
             .max(0)
@@ -77782,7 +77774,7 @@ mod tests {
         assert_eq!(loaded.memory.read_u32_be(menu_list + 6), Some(regular));
         assert_eq!(
             loaded.memory.read_u16_be(menu_list + 10),
-            Some(PPC_MENU_TITLE_HIT_LEFT as u16)
+            Some(STANDARD_MENU_BAR_FIRST_TITLE_LEFT as u16)
         );
         assert_eq!(loaded.memory.read_u16_be(menu_list + 12), Some(6));
         assert_eq!(loaded.memory.read_u32_be(menu_list + 14), Some(0));
@@ -77805,7 +77797,7 @@ mod tests {
             definition.regular,
             vec![PpcMenuListEntry {
                 handle: regular,
-                value: PPC_MENU_TITLE_HIT_LEFT,
+                value: STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
             }]
         );
         assert_eq!(
@@ -77886,10 +77878,10 @@ mod tests {
             ppc_menu_select(
                 &mut loaded.memory,
                 menu_list_handle,
-                PPC_MENU_TITLE_HIT_LEFT as u16 as u32,
+                STANDARD_MENU_BAR_FIRST_TITLE_LEFT as u16 as u32,
                 PpcInputSnapshot {
                     mouse_v: 21,
-                    mouse_h: PPC_MENU_TITLE_HIT_LEFT,
+                    mouse_h: STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
                     ..PpcInputSnapshot::default()
                 },
             ),
@@ -78025,7 +78017,10 @@ mod tests {
         };
 
         assert!(
-            !contains_black(PPC_MENU_TITLE_ORIGIN_H, 40),
+            !contains_black(
+                STANDARD_MENU_BAR_FIRST_TITLE_LEFT + STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
+                40,
+            ),
             "drawing must not retain the independently reconstructed title origin"
         );
         assert!(
@@ -78481,7 +78476,9 @@ mod tests {
             let white =
                 ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
             let title_origin = (
-                i32::from(PPC_MENU_TITLE_ORIGIN_H),
+                i32::from(
+                    STANDARD_MENU_BAR_FIRST_TITLE_LEFT + STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
+                ),
                 i32::from(ppc_menu_bar_title_baseline(20)),
             );
             let normal_title_ink = title_glyph_pixels
@@ -79280,7 +79277,7 @@ mod tests {
             );
             let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
             assert_eq!(tracking.front_buffer, front);
-            assert_eq!(tracking.popup_left, PPC_MENU_TITLE_HIT_LEFT);
+            assert_eq!(tracking.popup_left, STANDARD_MENU_BAR_FIRST_TITLE_LEFT);
             assert_eq!(tracking.saved_width, tracking.popup_width + 1);
             assert_eq!(tracking.saved_height, tracking.popup_height + 1);
             assert_eq!(
@@ -79968,7 +79965,14 @@ mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    (i32::from(PPC_MENU_TITLE_ORIGIN_H + 1), 0),
+                    (
+                        i32::from(
+                            STANDARD_MENU_BAR_FIRST_TITLE_LEFT
+                                + STANDARD_MENU_BAR_TITLE_ORIGIN_INSET
+                                + 1,
+                        ),
+                        0,
+                    ),
                 ),
                 Some(outline),
                 "{depth}bpp system mark did not draw at its clipped top",
@@ -134205,13 +134209,13 @@ mod tests {
             install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1800, 130, b"View", b"Zoom");
         ppc_set_menu_item_enabled(&mut loaded.memory, &loaded.handles, disabled_menu, 0, false);
 
-        let file_left = PPC_MENU_TITLE_HIT_LEFT;
+        let file_left = STANDARD_MENU_BAR_FIRST_TITLE_LEFT;
         let edit_left = file_left
             .saturating_add(ppc_menu_title_advance(b"File"))
-            .saturating_add(PPC_MENU_TITLE_SPACING);
+            .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
         let disabled_left = edit_left
             .saturating_add(ppc_menu_title_advance(b"Edit"))
-            .saturating_add(PPC_MENU_TITLE_SPACING);
+            .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
         let point = |v: i16, h: i16| (u32::from(v as u16) << 16) | u32::from(h as u16);
         let menu_list = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
