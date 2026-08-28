@@ -2,8 +2,9 @@
 //!
 //! Provides Big-Endian memory access compatible with 68k Mac architecture.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
@@ -512,9 +513,117 @@ pub struct MacMemoryBus {
 /// of the tick.
 pub(crate) const WRITE_PROBE_MAX_ENTRIES: usize = 4096;
 
-/// RAM storage - either owned vector or borrowed slice
+/// Stable shared ownership of the runner's flat RAM allocation.
+///
+/// `FixtureRunner` serializes access to its 68k bus and native application
+/// behind `&mut self`. A mapped [`SharedRamRegion`] can therefore expose the
+/// same allocation to the PowerPC address-space adapter without concurrent
+/// access or a dangling pointer when the runner is moved.
+#[derive(Clone)]
+struct SharedRam(Rc<UnsafeCell<Box<[u8]>>>);
+
+impl SharedRam {
+    #[inline]
+    fn len(&self) -> usize {
+        // SAFETY: the boxed allocation is fixed for every shared handle.
+        unsafe { (&*self.0.get()).len() }
+    }
+
+    #[inline]
+    fn as_ptr(&self) -> *const u8 {
+        // SAFETY: the boxed allocation is fixed for every shared handle.
+        unsafe { (&*self.0.get()).as_ptr() }
+    }
+
+    #[inline]
+    fn as_mut_ptr(&self) -> *mut u8 {
+        // SAFETY: dereferencing this pointer remains subject to the serialized
+        // access contract on `SharedRamRegion`.
+        unsafe { (&mut *self.0.get()).as_mut_ptr() }
+    }
+}
+
+/// A stable subrange of runner RAM mapped into another CPU bus.
+#[derive(Clone)]
+pub(crate) struct SharedRamRegion {
+    ram: SharedRam,
+    offset: usize,
+    len: usize,
+}
+
+impl std::fmt::Debug for SharedRamRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedRamRegion")
+            .field("offset", &self.offset)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SharedRamRegion {
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Read a byte from the shared subrange.
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize access with the source [`MacMemoryBus`] and
+    /// must not retain a source RAM slice or fast-memory window.
+    #[inline]
+    pub(crate) unsafe fn read(&self, offset: usize) -> Option<u8> {
+        (offset < self.len).then(|| {
+            // SAFETY: the caller upholds serialization and the offset was
+            // checked against the shared subrange.
+            unsafe { *self.ram.as_ptr().add(self.offset + offset) }
+        })
+    }
+
+    /// Write a byte into the shared subrange.
+    ///
+    /// # Safety
+    ///
+    /// The caller must serialize access with the source [`MacMemoryBus`] and
+    /// must not retain a source RAM slice or fast-memory window.
+    #[inline]
+    pub(crate) unsafe fn write(&self, offset: usize, value: u8) -> Option<()> {
+        if offset >= self.len {
+            return None;
+        }
+        // SAFETY: the caller upholds serialization and the offset was checked
+        // against the shared subrange.
+        unsafe {
+            *self.ram.as_mut_ptr().add(self.offset + offset) = value;
+        }
+        Some(())
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<u8> {
+        (0..self.len)
+            .map(|offset| {
+                // SAFETY: snapshotting occurs while the address-space clone
+                // has exclusive access to its runtime-owned mapping.
+                unsafe { self.read(offset).expect("bounded shared RAM read") }
+            })
+            .collect()
+    }
+
+    pub(crate) fn detached_clone(&self) -> Self {
+        let bytes = self.snapshot();
+        let ram = SharedRam(Rc::new(UnsafeCell::new(bytes.into_boxed_slice())));
+        Self {
+            len: ram.len(),
+            ram,
+            offset: 0,
+        }
+    }
+}
+
+/// RAM storage - either a stable owned allocation or borrowed slice.
 enum RamStorage {
     Owned(Vec<u8>),
+    Shared(SharedRam),
     /// Borrowed raw pointer + length (used for wrapping r68k memory)
     /// Safety: The lifetime is managed externally
     External(*mut u8, usize),
@@ -525,6 +634,13 @@ impl RamStorage {
     fn get(&self, index: usize) -> u8 {
         match self {
             RamStorage::Owned(v) => v.get(index).copied().unwrap_or(0),
+            RamStorage::Shared(v) => {
+                if index < v.len() {
+                    unsafe { *v.as_ptr().add(index) }
+                } else {
+                    0
+                }
+            }
             RamStorage::External(ptr, len) => {
                 if index < *len {
                     unsafe { *ptr.add(index) }
@@ -541,6 +657,7 @@ impl RamStorage {
         // avoid repeating slice bounds checks on the instruction hot path.
         match self {
             RamStorage::Owned(v) => unsafe { *v.as_ptr().add(index) },
+            RamStorage::Shared(v) => unsafe { *v.as_ptr().add(index) },
             RamStorage::External(ptr, _) => unsafe { *ptr.add(index) },
         }
     }
@@ -549,6 +666,10 @@ impl RamStorage {
     fn read_word_in_bounds(&self, index: usize) -> u16 {
         match self {
             RamStorage::Owned(v) => unsafe {
+                let ptr = v.as_ptr().add(index);
+                u16::from_be_bytes([*ptr, *ptr.add(1)])
+            },
+            RamStorage::Shared(v) => unsafe {
                 let ptr = v.as_ptr().add(index);
                 u16::from_be_bytes([*ptr, *ptr.add(1)])
             },
@@ -566,6 +687,10 @@ impl RamStorage {
                 let ptr = v.as_ptr().add(index);
                 u32::from_be_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)])
             },
+            RamStorage::Shared(v) => unsafe {
+                let ptr = v.as_ptr().add(index);
+                u32::from_be_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)])
+            },
             RamStorage::External(ptr, _) => unsafe {
                 let ptr = ptr.add(index);
                 u32::from_be_bytes([*ptr, *ptr.add(1), *ptr.add(2), *ptr.add(3)])
@@ -579,6 +704,7 @@ impl RamStorage {
             RamStorage::Owned(v) => unsafe {
                 *v.as_mut_ptr().add(index) = value;
             },
+            RamStorage::Shared(v) => unsafe { *v.as_mut_ptr().add(index) = value },
             RamStorage::External(ptr, _) => unsafe {
                 *ptr.add(index) = value;
             },
@@ -593,6 +719,9 @@ impl RamStorage {
                 let ptr = v.as_mut_ptr().add(index);
                 *ptr = bytes[0];
                 *ptr.add(1) = bytes[1];
+            },
+            RamStorage::Shared(v) => unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.as_mut_ptr().add(index), 2);
             },
             RamStorage::External(ptr, _) => unsafe {
                 let ptr = ptr.add(index);
@@ -613,6 +742,9 @@ impl RamStorage {
                 *ptr.add(2) = bytes[2];
                 *ptr.add(3) = bytes[3];
             },
+            RamStorage::Shared(v) => unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), v.as_mut_ptr().add(index), 4);
+            },
             RamStorage::External(ptr, _) => unsafe {
                 let ptr = ptr.add(index);
                 *ptr = bytes[0];
@@ -629,6 +761,9 @@ impl RamStorage {
             RamStorage::Owned(v) => unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), v.as_mut_ptr().add(index), data.len());
             },
+            RamStorage::Shared(v) => unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), v.as_mut_ptr().add(index), data.len());
+            },
             RamStorage::External(ptr, _) => unsafe {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(index), data.len());
             },
@@ -639,6 +774,13 @@ impl RamStorage {
     fn copy_bytes_in_bounds(&mut self, src_index: usize, dst_index: usize, len: usize) {
         match self {
             RamStorage::Owned(v) => unsafe {
+                std::ptr::copy(
+                    v.as_ptr().add(src_index),
+                    v.as_mut_ptr().add(dst_index),
+                    len,
+                );
+            },
+            RamStorage::Shared(v) => unsafe {
                 std::ptr::copy(
                     v.as_ptr().add(src_index),
                     v.as_mut_ptr().add(dst_index),
@@ -667,6 +809,13 @@ impl RamStorage {
                     *dst.add(offset) = map[*src.add(offset) as usize];
                 }
             },
+            RamStorage::Shared(v) => unsafe {
+                let src = v.as_ptr().add(src_index);
+                let dst = v.as_mut_ptr().add(dst_index);
+                for offset in 0..len {
+                    *dst.add(offset) = map[*src.add(offset) as usize];
+                }
+            },
             RamStorage::External(ptr, _) => unsafe {
                 let src = ptr.add(src_index);
                 let dst = ptr.add(dst_index);
@@ -683,6 +832,9 @@ impl RamStorage {
             RamStorage::Owned(v) => unsafe {
                 std::ptr::write_bytes(v.as_mut_ptr().add(index), 0, len);
             },
+            RamStorage::Shared(v) => unsafe {
+                std::ptr::write_bytes(v.as_mut_ptr().add(index), 0, len);
+            },
             RamStorage::External(ptr, _) => unsafe {
                 std::ptr::write_bytes(ptr.add(index), 0, len);
             },
@@ -693,6 +845,9 @@ impl RamStorage {
     fn fill_bytes_in_bounds(&mut self, index: usize, len: usize, value: u8) {
         match self {
             RamStorage::Owned(v) => unsafe {
+                std::ptr::write_bytes(v.as_mut_ptr().add(index), value, len);
+            },
+            RamStorage::Shared(v) => unsafe {
                 std::ptr::write_bytes(v.as_mut_ptr().add(index), value, len);
             },
             RamStorage::External(ptr, _) => unsafe {
@@ -710,6 +865,11 @@ impl RamStorage {
     fn slice_at(&self, index: usize, len: usize) -> Option<&[u8]> {
         match self {
             RamStorage::Owned(v) => v.get(index..index + len),
+            RamStorage::Shared(v) => {
+                let end = index.checked_add(len)?;
+                (end <= v.len())
+                    .then(|| unsafe { std::slice::from_raw_parts(v.as_ptr().add(index), len) })
+            }
             RamStorage::External(ptr, total_len) => {
                 if index
                     .checked_add(len)
@@ -733,6 +893,12 @@ impl RamStorage {
     fn slice_at_mut(&mut self, index: usize, len: usize) -> Option<&mut [u8]> {
         match self {
             RamStorage::Owned(v) => v.get_mut(index..index + len),
+            RamStorage::Shared(v) => {
+                let end = index.checked_add(len)?;
+                (end <= v.len()).then(|| unsafe {
+                    std::slice::from_raw_parts_mut(v.as_mut_ptr().add(index), len)
+                })
+            }
             RamStorage::External(ptr, total_len) => {
                 if index
                     .checked_add(len)
@@ -752,6 +918,13 @@ impl RamStorage {
             RamStorage::Owned(v) => {
                 if index < v.len() {
                     v[index] = value;
+                }
+            }
+            RamStorage::Shared(v) => {
+                if index < v.len() {
+                    unsafe {
+                        *v.as_mut_ptr().add(index) = value;
+                    }
                 }
             }
             RamStorage::External(ptr, len) => {
@@ -1334,7 +1507,14 @@ impl MacMemoryBus {
         let s = start as usize;
         let e = s + len as usize;
         match &self.ram {
-            RamStorage::Owned(v) => &v[s..e],
+            RamStorage::Owned(v) => {
+                assert!(e <= v.len());
+                &v[s..e]
+            }
+            RamStorage::Shared(v) => {
+                assert!(e <= v.len());
+                unsafe { std::slice::from_raw_parts(v.as_ptr().add(s), len as usize) }
+            }
             RamStorage::External(ptr, max_len) => {
                 assert!(e <= *max_len);
                 unsafe { std::slice::from_raw_parts(ptr.add(s), len as usize) }
@@ -1439,6 +1619,34 @@ impl MacMemoryBus {
         self.ram_size
     }
 
+    /// Return a stable shared view over an owned RAM subrange.
+    ///
+    /// The runner uses this to map selected system-scoped bytes into another
+    /// CPU adapter without copying them. Externally wrapped RAM cannot safely
+    /// extend its caller-provided lifetime and therefore returns `None`.
+    pub(crate) fn shared_ram_region(&mut self, address: u32, len: u32) -> Option<SharedRamRegion> {
+        let end = address.checked_add(len)?;
+        if end > self.ram_size {
+            return None;
+        }
+        let ram = match &mut self.ram {
+            RamStorage::Owned(bytes) => {
+                let shared = SharedRam(Rc::new(UnsafeCell::new(
+                    std::mem::take(bytes).into_boxed_slice(),
+                )));
+                self.ram = RamStorage::Shared(shared.clone());
+                shared
+            }
+            RamStorage::Shared(ram) => ram.clone(),
+            RamStorage::External(_, _) => return None,
+        };
+        Some(SharedRamRegion {
+            ram,
+            offset: address as usize,
+            len: len as usize,
+        })
+    }
+
     /// Select the guest MMU address width. The default is 32-bit addressing.
     pub fn set_addressing_32_bit(&mut self, enabled: bool) {
         self.addressing_32_bit = enabled;
@@ -1485,6 +1693,7 @@ impl MacMemoryBus {
         }
         let ptr = match &mut self.ram {
             RamStorage::Owned(v) => v.as_mut_ptr(),
+            RamStorage::Shared(_) => return None,
             RamStorage::External(ptr, _) => *ptr,
         };
         Some((ptr, self.ram_size))
