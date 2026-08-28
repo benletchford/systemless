@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.8](https://github.com/benletchford/systemless/compare/v0.23.7...v0.23.8) (2026-08-28)
+
+
+### Bug Fixes
+
+* **cpu:** preserve 68040 address error frames ([#956](https://github.com/benletchford/systemless/issues/956)) ([f92aee5](https://github.com/benletchford/systemless/commit/f92aee572e88d7d0176ee02fce05769dcde105e7))
+
 ## [0.23.7](https://github.com/benletchford/systemless/compare/v0.23.6...v0.23.7) (2026-08-28)
 
 
