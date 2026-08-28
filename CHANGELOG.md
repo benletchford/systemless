@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/benletchford/systemless/compare/v0.21.6...v0.22.0) (2026-08-28)
+
+
+### Features
+
+* **memory:** add shared cross-architecture guest address space ([#919](https://github.com/benletchford/systemless/issues/919)) ([89442a5](https://github.com/benletchford/systemless/commit/89442a5b0e9f31b05b37ff15e389110f062fb8e2))
+
 ## [0.21.6](https://github.com/benletchford/systemless/compare/v0.21.5...v0.21.6) (2026-08-28)
 
 
