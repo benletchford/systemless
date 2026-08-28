@@ -1573,9 +1573,7 @@ impl super::TrapDispatcher {
                 Self::logical_white_pixel_index(bus)
             };
             let row_addr = screen_base + (y as u32) * row_bytes;
-            for x in left..right {
-                bus.write_byte(row_addr + x, fill);
-            }
+            bus.fill_bytes(row_addr + left, right - left, fill);
             return;
         }
         for x in x1..x2 {
@@ -2949,13 +2947,18 @@ impl super::TrapDispatcher {
                     8,
                     8,
                 );
+                // Row-buffered: one bulk read, a host-side table pass and
+                // one bulk write per row instead of two bus calls per pixel.
+                let mut src_row = vec![0u8; bounded_col_count as usize];
+                let mut dst_row = vec![0u8; bounded_col_count as usize];
                 for row in 0..bounded_row_count {
                     let src_addr = port_base + (src_y_offset + row) * port_rb + src_x_offset;
                     let dst_addr = screen_base + (dst_y + row) * screen_rb + dst_x;
-                    for col in 0..bounded_col_count {
-                        let src_idx = bus.read_byte(src_addr + col);
-                        bus.write_byte(dst_addr + col, translation[src_idx as usize]);
+                    bus.read_bytes_into(src_addr, &mut src_row);
+                    for (dst, src) in dst_row.iter_mut().zip(src_row.iter()) {
+                        *dst = translation[*src as usize];
                     }
+                    bus.write_bytes(dst_addr, &dst_row);
                 }
                 return;
             }
@@ -3026,15 +3029,32 @@ impl super::TrapDispatcher {
             let dst_pixel_size = u32::from(pixel_size);
             let dst_pixels_per_byte = 8 / dst_pixel_size;
             let dst_field_mask = ((1u16 << dst_pixel_size) - 1) as u8;
+            if row_count == 0 || col_count == 0 {
+                return;
+            }
+            // Row-buffered: bulk-read the source span (and, for a packed
+            // destination, the destination span the pixels merge into),
+            // repack against host buffers, one bulk write per row — instead
+            // of one or two bus calls per pixel.
+            let src_first = (src_x_offset / src_pixels_per_byte) as usize;
+            let src_last = ((src_x_offset + col_count - 1) / src_pixels_per_byte) as usize;
+            let dst_first = (dst_x / dst_pixels_per_byte) as usize;
+            let dst_last = ((dst_x + col_count - 1) / dst_pixels_per_byte) as usize;
+            let mut src_buf = vec![0u8; src_last - src_first + 1];
+            let mut dst_buf = vec![0u8; dst_last - dst_first + 1];
             for row in 0..row_count {
                 let src_row = port_base + (src_y_offset + row) * port_rb;
                 let dst_row = screen_base + (dst_y + row) * screen_rb;
+                bus.read_bytes_into(src_row + src_first as u32, &mut src_buf);
+                if dst_pixel_size != 8 {
+                    bus.read_bytes_into(dst_row + dst_first as u32, &mut dst_buf);
+                }
                 for col in 0..col_count {
                     let src_x = src_x_offset + col;
                     let src_index = if port_pixel_size == 8 {
-                        bus.read_byte(src_row + src_x)
+                        src_buf[src_x as usize - src_first]
                     } else {
-                        let src_byte = bus.read_byte(src_row + src_x / src_pixels_per_byte);
+                        let src_byte = src_buf[(src_x / src_pixels_per_byte) as usize - src_first];
                         let src_shift =
                             8 - port_pixel_size - (src_x % src_pixels_per_byte) * port_pixel_size;
                         (src_byte >> src_shift) & src_field_mask
@@ -3050,17 +3070,17 @@ impl super::TrapDispatcher {
                         .map_or(src_index, |translation| translation[src_index as usize]);
                     let dst_x = dst_x + col;
                     if dst_pixel_size == 8 {
-                        bus.write_byte(dst_row + dst_x, dst_index);
+                        dst_buf[dst_x as usize - dst_first] = dst_index;
                     } else {
                         debug_assert!(dst_index <= dst_field_mask);
-                        let dst_addr = dst_row + dst_x / dst_pixels_per_byte;
+                        let index = (dst_x / dst_pixels_per_byte) as usize - dst_first;
                         let dst_shift =
                             8 - dst_pixel_size - (dst_x % dst_pixels_per_byte) * dst_pixel_size;
                         let dst_mask = dst_field_mask << dst_shift;
-                        let dst_byte = bus.read_byte(dst_addr);
-                        bus.write_byte(dst_addr, (dst_byte & !dst_mask) | (dst_index << dst_shift));
+                        dst_buf[index] = (dst_buf[index] & !dst_mask) | (dst_index << dst_shift);
                     }
                 }
+                bus.write_bytes(dst_row + dst_first as u32, &dst_buf);
             }
             return;
         }

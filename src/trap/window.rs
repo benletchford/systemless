@@ -1431,27 +1431,39 @@ impl super::TrapDispatcher {
 
         let width = right - left;
         let height = bottom - top;
-        let mut pixels = Vec::with_capacity(width as usize * height as usize);
-        for y in top..bottom {
-            for x in left..right {
-                match pixel_size {
-                    8 => {
-                        pixels.push(bus.read_byte(screen_base + y as u32 * row_bytes + x as u32));
-                    }
-                    bits @ (2 | 4) => {
-                        let pixels_per_byte = 8 / u32::from(bits);
+        let width_u = width as usize;
+        let mut pixels = vec![0u8; width_u * height as usize];
+        match pixel_size {
+            8 => {
+                // One bulk read per row instead of one bus call per
+                // pixel; `pixels` is already row-major over the rect.
+                for (row, y) in (top..bottom).enumerate() {
+                    let start = screen_base + y as u32 * row_bytes + left as u32;
+                    bus.read_bytes_into(start, &mut pixels[row * width_u..(row + 1) * width_u]);
+                }
+            }
+            bits @ (2 | 4) => {
+                let pixels_per_byte = 8 / u32::from(bits);
+                let mut idx = 0usize;
+                for y in top..bottom {
+                    for x in left..right {
                         let byte_offset = y as u32 * row_bytes + x as u32 / pixels_per_byte;
                         let shift =
                             8 - u32::from(bits) - (x as u32 % pixels_per_byte) * u32::from(bits);
-                        pixels.push(
-                            (bus.read_byte(screen_base + byte_offset) >> shift)
-                                & ((1u8 << bits) - 1),
-                        );
+                        pixels[idx] = (bus.read_byte(screen_base + byte_offset) >> shift)
+                            & ((1u8 << bits) - 1);
+                        idx += 1;
                     }
-                    _ => {
+                }
+            }
+            _ => {
+                let mut idx = 0usize;
+                for y in top..bottom {
+                    for x in left..right {
                         let byte_offset = y as u32 * row_bytes + x as u32 / 8;
                         let bit = 7 - (x as u32 % 8);
-                        pixels.push((bus.read_byte(screen_base + byte_offset) >> bit) & 1);
+                        pixels[idx] = (bus.read_byte(screen_base + byte_offset) >> bit) & 1;
+                        idx += 1;
                     }
                 }
             }
@@ -1471,6 +1483,36 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
+        if pixel_size == 8 && width > 0 && height > 0 {
+            // One bulk write per on-screen row instead of one bus call
+            // per pixel. `pixels` is row-major over the rect; off-screen
+            // columns are clipped while the index still advances, and a
+            // truncated buffer stops the writes exactly where the
+            // per-pixel loop below would.
+            let x0 = dst_left.max(0).min(screen_width);
+            let x1 = dst_left.saturating_add(width).min(screen_width);
+            if x1 <= x0 {
+                return;
+            }
+            let width_u = width as usize;
+            for dy in 0..height {
+                let y = dst_top + dy;
+                if y < 0 || y >= screen_height {
+                    continue;
+                }
+                let row_base = dy as usize * width_u;
+                if row_base >= pixels.len() {
+                    return;
+                }
+                let s = row_base + (x0 - dst_left) as usize;
+                let e = (row_base + (x1 - dst_left) as usize).min(pixels.len());
+                if s < e {
+                    let addr = screen_base + y as u32 * row_bytes + x0 as u32;
+                    bus.write_bytes(addr, &pixels[s..e]);
+                }
+            }
+            return;
+        }
         let mut idx = 0usize;
         for dy in 0..height {
             let y = dst_top + dy;
