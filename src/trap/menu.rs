@@ -679,6 +679,60 @@ impl super::TrapDispatcher {
             .unwrap_or(0)
     }
 
+    /// Materialize one resource-backed menu exactly as `GetMenu` does.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107, 3-111--3-112.
+    fn load_menu_resource(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
+        let Some((refnum, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) else {
+            bus.write_word(0x0A60, (-192i16) as u16);
+            return 0;
+        };
+
+        let handle =
+            self.get_or_create_resource_handle_in_file(bus, *b"MENU", menu_id, res_ptr, refnum);
+        if handle == 0 {
+            bus.write_word(0x0A60, (-192i16) as u16);
+            return 0;
+        }
+
+        let mut menu_ptr = bus.read_long(handle);
+        if menu_ptr == 0 {
+            menu_ptr = res_ptr;
+            bus.write_long(handle, menu_ptr);
+            self.ptr_to_handle.insert(menu_ptr, handle);
+        }
+        if menu_ptr != 0 {
+            if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
+                let resized = self.resize_resource_allocation(bus, handle, menu_ptr, 256);
+                if resized != 0 {
+                    menu_ptr = resized;
+                }
+            }
+            let menu_proc_placeholder = bus.read_long(menu_ptr + 6);
+            if !self.loaded_handles.contains_key(&menu_proc_placeholder) {
+                let mdef_id = (menu_proc_placeholder >> 16) as u16 as i16;
+                let menu_proc = self.menu_def_proc_handle(bus, mdef_id);
+                if menu_proc == 0 {
+                    bus.write_word(0x0A60, (-192i16) as u16);
+                    return 0;
+                }
+                bus.write_long(menu_ptr + 6, menu_proc);
+            }
+            let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
+            if let Some(existing) = self.menus.iter_mut().find(|menu| menu.handle == handle) {
+                parsed.in_menu_bar = existing.in_menu_bar;
+                parsed.hierarchical = existing.hierarchical;
+                parsed.visible_in_menu_bar = existing.visible_in_menu_bar;
+                *existing = parsed;
+            } else {
+                self.menus.push(parsed);
+            }
+        }
+
+        self.load_menu_color_resource(bus, menu_id);
+        bus.write_word(0x0A60, 0);
+        handle
+    }
+
     pub(crate) fn popup_menu_item_title(
         &self,
         bus: &MacMemoryBus,
@@ -1581,63 +1635,8 @@ impl super::TrapDispatcher {
             (true, 0x1BF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
-                let handle = match self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
-                    Some((refnum, res_ptr)) => {
-                        let handle = self.get_or_create_resource_handle_in_file(
-                            bus, *b"MENU", menu_id, res_ptr, refnum,
-                        );
-                        if handle != 0 {
-                            let mut menu_ptr = bus.read_long(handle);
-                            if menu_ptr == 0 {
-                                menu_ptr = res_ptr;
-                                bus.write_long(handle, menu_ptr);
-                                self.ptr_to_handle.insert(menu_ptr, handle);
-                            }
-                            if menu_ptr != 0 {
-                                if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
-                                    let resized =
-                                        self.resize_resource_allocation(bus, handle, menu_ptr, 256);
-                                    if resized != 0 {
-                                        menu_ptr = resized;
-                                    }
-                                }
-                                let menu_proc_placeholder = bus.read_long(menu_ptr + 6);
-                                if !self.loaded_handles.contains_key(&menu_proc_placeholder) {
-                                    let mdef_id = (menu_proc_placeholder >> 16) as u16 as i16;
-                                    let menu_proc = self.menu_def_proc_handle(bus, mdef_id);
-                                    if menu_proc == 0 {
-                                        bus.write_word(0x0A60, (-192i16) as u16);
-                                        cpu.write_reg(Register::D0, -192i32 as u32);
-                                        bus.write_long(sp + 2, 0);
-                                        cpu.write_reg(Register::A7, sp + 2);
-                                        return Some(Ok(()));
-                                    }
-                                    bus.write_long(menu_ptr + 6, menu_proc);
-                                }
-                                let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
-                                if let Some(existing) =
-                                    self.menus.iter_mut().find(|m| m.handle == handle)
-                                {
-                                    parsed.in_menu_bar = existing.in_menu_bar;
-                                    parsed.hierarchical = existing.hierarchical;
-                                    parsed.visible_in_menu_bar = existing.visible_in_menu_bar;
-                                    *existing = parsed;
-                                } else {
-                                    self.menus.push(parsed);
-                                }
-                            }
-                        }
-                        self.load_menu_color_resource(bus, menu_id);
-                        bus.write_word(0x0A60, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        handle
-                    }
-                    None => {
-                        bus.write_word(0x0A60, (-192i16) as u16);
-                        cpu.write_reg(Register::D0, -192i32 as u32);
-                        0
-                    }
-                };
+                let handle = self.load_menu_resource(bus, menu_id);
+                cpu.write_reg(Register::D0, bus.read_word(0x0A60) as i16 as i32 as u32);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
@@ -1844,41 +1843,12 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::A7, sp + 2);
                         return Some(Ok(()));
                     };
-                    let mut snapshot = Vec::new();
                     self.clear_menu_color_table_entries(bus);
-
-                    for menu_id in mbar.menu_ids {
-                        let Some((_, menu_res_ptr)) =
-                            self.find_or_load_resource_any(bus, *b"MENU", menu_id)
-                        else {
-                            continue;
-                        };
-
-                        let menu_ptr = bus.alloc(256);
-                        let menu_handle = bus.alloc(4);
-                        bus.write_long(menu_handle, menu_ptr);
-                        let res_size = menu_resource_size(bus, menu_res_ptr);
-                        for j in 0..res_size.min(256) {
-                            bus.write_byte(
-                                menu_ptr + j as u32,
-                                bus.read_byte(menu_res_ptr + j as u32),
-                            );
-                        }
-
-                        let mut parsed = parse_menu_resource(bus, menu_ptr, menu_handle);
-                        // This list is not installed until SetMenuBar is called,
-                        // but once installed it represents the current menu list.
-                        parsed.in_menu_bar = true;
-                        parsed.hierarchical = false;
-                        parsed.visible_in_menu_bar = true;
-                        snapshot.push(parsed);
-                        self.load_menu_color_resource(bus, menu_id);
-                    }
-
-                    let mut menu_list = SharedMenuList::from_regular_handles(
-                        mbar_id,
-                        snapshot.iter().map(|menu| menu.handle),
-                    );
+                    let menu_handles = mbar.load_regular_handles(|menu_id| {
+                        let handle = self.load_menu_resource(bus, menu_id);
+                        (handle != 0).then_some(handle)
+                    });
+                    let mut menu_list = SharedMenuList::from_regular_handles(mbar_id, menu_handles);
                     self.relayout_menu_list(bus, &mut menu_list);
                     let list_bytes = menu_list.encode();
                     let list_block = bus.alloc(list_bytes.len() as u32);
@@ -7997,6 +7967,33 @@ mod tests {
         assert_eq!(menu_list.mb_res_id, 900);
         assert_eq!(menu_list.regular.len(), 2);
         assert!(menu_list.regular.iter().all(|entry| entry.handle != 0));
+        let file_handle = menu_list.regular[0].handle;
+        assert_eq!(
+            disp.loaded_handles.get(&file_handle).copied(),
+            Some((bus.read_long(file_handle), *b"MENU", 128)),
+            "GetNewMBar must obtain each menu through the Resource Manager",
+        );
+        assert_eq!(
+            disp.resource_handle_files.get(&file_handle).copied(),
+            Some(0),
+            "GetNewMBar menu handles should retain their resource-file owner",
+        );
+        assert_ne!(
+            bus.read_long(bus.read_long(file_handle) + 6),
+            0,
+            "GetNewMBar should resolve the standard MDEF through GetMenu",
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 128);
+        disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(cpu.read_reg(Register::A7)),
+            file_handle,
+            "GetMenu should reuse the MENU resource loaded by GetNewMBar",
+        );
 
         // IM:I I-354: GetNewMBar only creates the list; SetMenuBar installs it.
         assert_ne!(
@@ -8032,6 +8029,48 @@ mod tests {
             0,
             "SetMenuBar should install Edit menu from MBAR"
         );
+    }
+
+    #[test]
+    fn getnewmbar_preserves_complete_resource_backed_menu_records() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let seed_ptr = seed_menu_resource(&mut bus, 640, "Long");
+        let menu_ptr = bus.alloc(320);
+        let seed_bytes = bus.read_bytes(seed_ptr, 256);
+        bus.write_bytes(menu_ptr, &seed_bytes);
+        bus.write_byte(menu_ptr + 300, 0xA5);
+        let mbar_ptr = seed_mbar_resource(&mut bus, &[640]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MBAR", 940), mbar_ptr),
+                        ((*b"MENU", 640), menu_ptr),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 940);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let list_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let list = menu_list_from_memory(&bus, list_handle).expect("GetNewMBar menu list");
+        let menu_handle = list.regular[0].handle;
+        assert_eq!(bus.read_long(menu_handle), menu_ptr);
+        assert_eq!(bus.get_alloc_size(menu_ptr), Some(320));
+        assert_eq!(bus.read_byte(menu_ptr + 300), 0xA5);
     }
 
     // IM:V 1986 p. V-244: GetNewMBar clears the current menu color

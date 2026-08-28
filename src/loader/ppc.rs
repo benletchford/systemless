@@ -15933,11 +15933,8 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenu => {
-            let menu_id = cpu.gpr[3];
-            cpu.gpr[3] = u32::from_be_bytes(*b"MENU");
-            cpu.gpr[4] = menu_id;
-            Some(PpcImportAction::Return(ppc_get_resource(
-                cpu,
+            Some(PpcImportAction::Return(ppc_load_menu_resource(
+                cpu.gpr[3] as u16 as i16,
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -15947,7 +15944,6 @@ fn dispatch_supported_import(
                 handle_states,
                 vfs_resources,
                 *current_resource_refnum,
-                false,
                 *resource_load_enabled,
                 last_resource_error,
             )))
@@ -67436,6 +67432,8 @@ fn ppc_menu_select(
     0
 }
 
+/// Materialize one resource-backed menu for both `GetMenu` and `GetNewMBar`.
+/// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107, 3-111--3-112.
 #[allow(clippy::too_many_arguments)]
 fn ppc_load_menu_resource(
     menu_id: i16,
@@ -67448,6 +67446,8 @@ fn ppc_load_menu_resource(
     handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
+    load_data: bool,
+    last_resource_error: &mut i16,
 ) -> u32 {
     let menu_type = u32::from_be_bytes(*b"MENU");
     let Some(index) = ppc_vfs_resource_index(
@@ -67457,27 +67457,22 @@ fn ppc_load_menu_resource(
         menu_id,
         false,
     ) else {
+        *last_resource_error = PPC_NO_ERR;
         return 0;
     };
-    if vfs_resources[index].handle == 0 {
-        let data = vfs_resources[index].data.clone();
-        let handle = ppc_alloc_recyclable_handle_with_bytes(
-            memory,
-            heap_cursor,
-            heap_limit,
-            handles,
-            free_handle_blocks,
-            &data,
-        );
-        if handle == 0 {
-            *last_mem_error = PPC_MEM_FULL_ERR;
-            return 0;
-        }
-        vfs_resources[index].handle = handle;
-    }
-    let handle = vfs_resources[index].handle;
-    let _ = ppc_mark_handle_resource(memory, handles, handle_states, handle);
-    handle
+    ppc_materialize_vfs_resource_handle(
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        free_handle_blocks,
+        handle_states,
+        vfs_resources,
+        index,
+        load_data,
+        last_resource_error,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67584,8 +67579,7 @@ fn ppc_get_new_mbar(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
-    let mut menu_handles = Vec::with_capacity(mbar.menu_ids.len());
-    for menu_id in mbar.menu_ids {
+    let menu_handles = mbar.load_regular_handles(|menu_id| {
         let handle = ppc_load_menu_resource(
             menu_id,
             memory,
@@ -67597,11 +67591,11 @@ fn ppc_get_new_mbar(
             handle_states,
             vfs_resources,
             current_resource_refnum,
+            true,
+            last_resource_error,
         );
-        if handle != 0 {
-            menu_handles.push(handle);
-        }
-    }
+        (handle != 0).then_some(handle)
+    });
 
     // Macintosh Toolbox Essentials (1992), pp. 3-110--3-112 and 3-155:
     // GetNewMBar expands the MBAR's ordered MENU resource IDs into a new,
@@ -79682,14 +79676,21 @@ mod tests {
         let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
         assert_eq!(loaded.memory.read_u16_be(menu_list), Some(12));
         assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(1000));
-        assert_ne!(
-            ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128),
-            0
-        );
+        let file_menu = ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128);
+        assert_ne!(file_menu, 0);
         assert_ne!(
             ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 129),
             0
         );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetMenu;
+        loaded.cpu.gpr[3] = 128;
+        let get_menu_probe = loaded.run_with_hle_imports(64);
+        assert_eq!(get_menu_probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], file_menu);
+
         assert!(ppc_draw_menu_bar(
             &mut loaded.memory,
             &loaded.gworlds,

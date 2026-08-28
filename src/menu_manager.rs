@@ -967,6 +967,23 @@ impl MenuBarResource {
         }
         Some(Self { menu_ids })
     }
+
+    /// Load the ordered menu records named by this menu-bar resource.
+    ///
+    /// `GetNewMBar` uses `GetMenu` for each ID in the compiled `'MBAR'`
+    /// sequence. Resource lookup, failure reporting, and guest handle
+    /// allocation remain adapter operations; MBAR traversal and relative
+    /// ordering are common Menu Manager behavior. Macintosh Toolbox
+    /// Essentials (1992), pp. 3-111--3-112.
+    pub(crate) fn load_regular_handles(
+        &self,
+        mut load_menu: impl FnMut(i16) -> Option<u32>,
+    ) -> Vec<u32> {
+        self.menu_ids
+            .iter()
+            .filter_map(|menu_id| load_menu(*menu_id))
+            .collect()
+    }
 }
 
 impl MenuList {
@@ -1486,11 +1503,17 @@ mod tests {
         assert_eq!(resource.menu_ids, vec![128, -1, 300]);
         assert_eq!(MenuBarResource::decode(&[0, 2, 0, 128]), None);
 
-        let list = MenuList::from_regular_handles(900, [0x1000, 0x2000, 0x3000]);
+        let handles = resource.load_regular_handles(|menu_id| match menu_id {
+            128 => Some(0x1000),
+            -1 => None,
+            300 => Some(0x3000),
+            _ => unreachable!(),
+        });
+        let list = MenuList::from_regular_handles(900, handles);
         assert_eq!(list.mb_res_id, 900);
         assert_eq!(
             list.regular_handles().collect::<Vec<_>>(),
-            vec![0x1000, 0x2000, 0x3000]
+            vec![0x1000, 0x3000]
         );
         assert!(list.hierarchical.is_empty());
     }
