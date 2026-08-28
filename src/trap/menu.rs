@@ -5,17 +5,18 @@ use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 #[cfg(test)]
 use crate::menu_manager::parse_menu_item_specs;
 use crate::menu_manager::{
-    hierarchical_menu_id, laid_out_menu_item_count, new_standard_menu_record,
-    standard_menu_height as shared_standard_menu_height, standard_menu_row_height,
-    standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout,
+    compiled_menu_color_entries, filter_menu_color_entries, hierarchical_menu_id,
+    laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
+    new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
+    standard_menu_row_height, standard_menu_width as shared_standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
     MenuBarResource as SharedMenuBarResource, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState as SharedMenuTrackingState, StandardMenuItemWidth, SubmenuTransition,
     TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    STANDARD_MENU_SEPARATOR_HEIGHT,
+    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::trap::types::encode_mac_roman_lossy;
@@ -506,9 +507,8 @@ fn menu_list_from_memory(bus: &MacMemoryBus, menu_list_handle: u32) -> Option<Sh
 ///
 /// Apple's `MenuCRsrc` stores an array of complete `MCEntry` records, including
 /// the trailing reserved word.
-const MC_ENTRY_SIZE: usize = 30;
+const MC_ENTRY_SIZE: usize = MENU_COLOR_ENTRY_SIZE;
 const MC_ALL_ITEMS: i16 = -98;
-const MC_LAST_ID_INDIC: i16 = -99;
 
 fn mc_entry_key(bytes: &[u8]) -> Option<(i16, i16)> {
     if bytes.len() < 4 {
@@ -1285,24 +1285,7 @@ impl super::TrapDispatcher {
         }
 
         let current_bytes = Self::menu_color_table_bytes(bus, current_handle);
-        let mut new_bytes = current_bytes.clone();
-        for entry in entries.chunks_exact(MC_ENTRY_SIZE) {
-            let Some((menu_id, menu_item)) = mc_entry_key(entry) else {
-                continue;
-            };
-            let mut found_offset = None;
-            for (entry_index, existing) in new_bytes.chunks_exact(MC_ENTRY_SIZE).enumerate() {
-                if mc_entry_matches(existing, menu_id, menu_item) {
-                    found_offset = Some(entry_index * MC_ENTRY_SIZE);
-                    break;
-                }
-            }
-            if let Some(offset) = found_offset {
-                new_bytes[offset..offset + MC_ENTRY_SIZE].copy_from_slice(entry);
-            } else {
-                new_bytes.extend_from_slice(entry);
-            }
-        }
+        let new_bytes = shared_merge_menu_color_entries(&current_bytes, entries);
         let _ = self.replace_handle_bytes(bus, current_handle, &new_bytes);
     }
 
@@ -1312,30 +1295,7 @@ impl super::TrapDispatcher {
             return;
         };
         let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0) as usize;
-        if resource_size < 2 {
-            return;
-        }
-
-        let declared_count = bus.read_word(resource_ptr) as i16;
-        if declared_count <= 0 {
-            return;
-        }
-
-        let available_entries = (resource_size - 2) / MC_ENTRY_SIZE;
-        let entry_count = (declared_count as usize).min(available_entries);
-        let mut entries = Vec::with_capacity(entry_count * MC_ENTRY_SIZE);
-        for index in 0..entry_count {
-            let entry_ptr = resource_ptr + 2 + (index * MC_ENTRY_SIZE) as u32;
-            let menu_id = bus.read_word(entry_ptr) as i16;
-            if menu_id == MC_LAST_ID_INDIC {
-                continue;
-            }
-            entries.extend_from_slice(&bus.read_bytes(entry_ptr, MC_ENTRY_SIZE));
-        }
-
-        // IM:V 1986 p. V-234 and MTE 1992 p. 3-156 define compiled
-        // 'mctb' resources as a count-prefixed array of complete MCEntry
-        // records, including mctReserved.
+        let entries = compiled_menu_color_entries(&bus.read_bytes(resource_ptr, resource_size));
         self.merge_menu_color_entries(bus, &entries);
     }
 
@@ -1353,14 +1313,9 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let mut filtered = Vec::with_capacity(current_bytes.len());
-        for entry in current_bytes.chunks_exact(MC_ENTRY_SIZE) {
-            if let Some((menu_id, menu_item)) = mc_entry_key(entry) {
-                if keep(menu_id, menu_item) {
-                    filtered.extend_from_slice(entry);
-                }
-            }
-        }
+        let filtered = filter_menu_color_entries(&current_bytes, |menu_id, menu_item| {
+            keep(menu_id, menu_item)
+        });
         let _ = self.replace_handle_bytes(bus, current_handle, &filtered);
     }
 

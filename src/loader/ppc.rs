@@ -23,7 +23,8 @@ use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus}
 #[cfg(test)]
 use crate::menu_manager::MenuListEntry as PpcMenuListEntry;
 use crate::menu_manager::{
-    laid_out_menu_item_count, new_standard_menu_record, standard_menu_height,
+    compiled_menu_color_entries, filter_menu_color_entries, laid_out_menu_item_count,
+    merge_menu_color_entries, new_standard_menu_record, standard_menu_height,
     standard_menu_row_height, standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout, MenuBarResource,
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
@@ -16146,6 +16147,10 @@ fn dispatch_supported_import(
                     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
                 }
             }
+            // ClearMenuBar also deletes every entry from the application
+            // MenuCInfo table without disposing its stable handle. Macintosh
+            // Toolbox Essentials (1992), p. 3-110.
+            ppc_clear_menu_color_table(memory, heap_cursor, heap_limit, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetMenuBar => {
@@ -20059,6 +20064,27 @@ fn dispatch_supported_import(
                     &PpcMenuListDefinition::default(),
                 );
             }
+            // InitMenus creates the process MenuCInfo table and automatically
+            // adds entries from the current resource chain's `'mctb'` 0.
+            // Inside Macintosh Volume V (1986), pp. V-242--V-244; Macintosh
+            // Toolbox Essentials (1992), pp. 3-154--3-156.
+            let _ = ppc_ensure_menu_color_table_handle(
+                memory,
+                heap_cursor,
+                heap_limit,
+                handles,
+                free_handle_blocks,
+            );
+            ppc_load_menu_color_resource(
+                0,
+                memory,
+                heap_cursor,
+                heap_limit,
+                handles,
+                free_handle_blocks,
+                vfs_resources,
+                *current_resource_refnum,
+            );
             if current_menu_list != 0 {
                 if !toolbox_startup.host_menu_bar_hidden {
                     let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
@@ -65602,6 +65628,12 @@ fn ppc_delete_menu_item(
     let Some(original) = ppc_menu_handle_bytes(memory, handles, menu_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
+    let Some(menu_id) = original
+        .get(..2)
+        .map(|bytes| i16::from_be_bytes([bytes[0], bytes[1]]))
+    else {
+        return PPC_PARAM_ERR;
+    };
     let Some(mut items) = MenuItems::decode(&original) else {
         return PPC_PARAM_ERR;
     };
@@ -65611,14 +65643,20 @@ fn ppc_delete_menu_item(
     let Some(bytes) = items.rebuild(&original) else {
         return PPC_PARAM_ERR;
     };
-    ppc_replace_menu_bytes(
+    let result = ppc_replace_menu_bytes(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         menu_handle,
         &bytes,
-    )
+    );
+    if result == PPC_NO_ERR {
+        ppc_filter_menu_color_table(memory, heap_cursor, heap_limit, handles, |id, item| {
+            id != menu_id || item != item_number
+        });
+    }
+    result
 }
 
 fn ppc_insert_menu_items(
@@ -67620,7 +67658,7 @@ fn ppc_load_menu_resource(
         *last_resource_error = PPC_NO_ERR;
         return 0;
     };
-    ppc_materialize_vfs_resource_handle(
+    let handle = ppc_materialize_vfs_resource_handle(
         memory,
         heap_cursor,
         heap_limit,
@@ -67632,7 +67670,120 @@ fn ppc_load_menu_resource(
         index,
         load_data,
         last_resource_error,
-    )
+    );
+    if handle != 0 {
+        ppc_load_menu_color_resource(
+            menu_id,
+            memory,
+            heap_cursor,
+            heap_limit,
+            handles,
+            free_handle_blocks,
+            vfs_resources,
+            current_resource_refnum,
+        );
+    }
+    handle
+}
+
+fn ppc_menu_color_table_bytes(memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) -> Vec<u8> {
+    let handle = memory
+        .read_u32_be(crate::memory::globals::addr::MENU_C_INFO)
+        .unwrap_or(0);
+    ppc_menu_handle_bytes(memory, handles, handle).unwrap_or_default()
+}
+
+fn ppc_ensure_menu_color_table_handle(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+) -> u32 {
+    let current = memory
+        .read_u32_be(crate::memory::globals::addr::MENU_C_INFO)
+        .unwrap_or(0);
+    if current != 0 {
+        return current;
+    }
+    let handle = ppc_alloc_recyclable_handle_with_bytes(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        free_handle_blocks,
+        &[],
+    );
+    if handle != 0 {
+        let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_C_INFO, handle);
+    }
+    handle
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_load_menu_color_resource(
+    resource_id: i16,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+) {
+    let Some(index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"mctb"),
+        resource_id,
+        false,
+    ) else {
+        return;
+    };
+    let incoming = compiled_menu_color_entries(&vfs_resources[index].data);
+    if incoming.is_empty() {
+        return;
+    }
+    let handle = ppc_ensure_menu_color_table_handle(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        free_handle_blocks,
+    );
+    if handle == 0 {
+        return;
+    }
+    let current = ppc_menu_color_table_bytes(memory, handles);
+    let merged = merge_menu_color_entries(&current, &incoming);
+    let _ = ppc_replace_menu_bytes(memory, heap_cursor, heap_limit, handles, handle, &merged);
+}
+
+fn ppc_clear_menu_color_table(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut [PpcHandleRecord],
+) {
+    ppc_filter_menu_color_table(memory, heap_cursor, heap_limit, handles, |_id, _item| false);
+}
+
+fn ppc_filter_menu_color_table(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut [PpcHandleRecord],
+    keep: impl FnMut(i16, i16) -> bool,
+) {
+    let handle = memory
+        .read_u32_be(crate::memory::globals::addr::MENU_C_INFO)
+        .unwrap_or(0);
+    if handle == 0 {
+        return;
+    }
+    let current = ppc_menu_color_table_bytes(memory, handles);
+    let filtered = filter_menu_color_entries(&current, keep);
+    let _ = ppc_replace_menu_bytes(memory, heap_cursor, heap_limit, handles, handle, &filtered);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67739,6 +67890,11 @@ fn ppc_get_new_mbar(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
+    // GetNewMBar saves the current menu list but clears MenuCInfo before it
+    // calls GetMenu for each compiled menu ID. The rebuilt color table remains
+    // current after the old menu list is restored. Macintosh Toolbox
+    // Essentials (1992), pp. 3-111--3-112.
+    ppc_clear_menu_color_table(memory, heap_cursor, heap_limit, handles);
     let menu_handles = mbar.load_regular_handles(|menu_id| {
         let handle = ppc_load_menu_resource(
             menu_id,
@@ -67926,14 +68082,20 @@ fn ppc_delete_menu(
         return PPC_NO_ERR;
     }
     ppc_relayout_menu_list(memory, &mut menu_list);
-    ppc_replace_menu_list_definition(
+    let result = ppc_replace_menu_list_definition(
         memory,
         heap_cursor,
         heap_limit,
         handles,
         menu_list_handle,
         &menu_list,
-    )
+    );
+    if result == PPC_NO_ERR {
+        ppc_filter_menu_color_table(memory, heap_cursor, heap_limit, handles, |id, _item| {
+            id != menu_id
+        });
+    }
+    result
 }
 
 fn ppc_get_menu_handle(memory: &mut PpcSectionMem, menu_list_handle: u32, menu_id: i16) -> u32 {
@@ -76833,6 +76995,31 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
     }
 
+    fn test_menu_resource(menu_id: i16, title: &[u8]) -> Vec<u8> {
+        let mut data = vec![0; 14];
+        data[0..2].copy_from_slice(&menu_id.to_be_bytes());
+        data[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        data.push(title.len() as u8);
+        data.extend_from_slice(title);
+        data.push(0);
+        data
+    }
+
+    fn test_menu_color_entry(menu_id: i16, item: i16, seed: u8) -> [u8; 30] {
+        let mut entry = [seed; 30];
+        entry[0..2].copy_from_slice(&menu_id.to_be_bytes());
+        entry[2..4].copy_from_slice(&item.to_be_bytes());
+        entry
+    }
+
+    fn test_menu_color_resource(entries: &[[u8; 30]]) -> Vec<u8> {
+        let mut data = i16::try_from(entries.len()).unwrap().to_be_bytes().to_vec();
+        for entry in entries {
+            data.extend_from_slice(entry);
+        }
+        data
+    }
+
     fn install_test_menu(
         loaded: &mut PpcLoadedApp,
         scratch: u32,
@@ -80572,6 +80759,252 @@ mod tests {
             Some(PpcMenuListDefinition::default())
         );
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_init_getmenu_and_clear_share_live_menu_color_state() {
+        let pef = synthetic_pef_with_import(b"InitMenus");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.toolbox_startup.host_menu_bar_hidden = true;
+        let ref_num = loaded.current_resource_refnum;
+        let menu_bar = test_menu_color_entry(0, 0, 0x11);
+        let old_title = test_menu_color_entry(128, 0, 0x22);
+        let new_title = test_menu_color_entry(128, 0, 0x33);
+        let item = test_menu_color_entry(128, 2, 0x44);
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"mctb"),
+                res_id: 0,
+                name: Vec::new(),
+                data: test_menu_color_resource(&[menu_bar, old_title]),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 128,
+                name: Vec::new(),
+                data: test_menu_resource(128, b"File"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"mctb"),
+                res_id: 128,
+                name: Vec::new(),
+                data: test_menu_color_resource(&[new_title, item]),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InitMenus);
+
+        let color_handle = loaded
+            .memory
+            .read_u32_be(crate::memory::globals::addr::MENU_C_INFO)
+            .unwrap();
+        assert_ne!(color_handle, 0);
+        assert_eq!(
+            ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
+            [menu_bar.as_slice(), old_title.as_slice()].concat()
+        );
+
+        loaded.cpu.gpr[3] = 128;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
+
+        assert_ne!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
+            [menu_bar.as_slice(), new_title.as_slice(), item.as_slice()].concat()
+        );
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::ClearMenuBar);
+
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_C_INFO),
+            Some(color_handle),
+            "ClearMenuBar must preserve the manager-owned MenuCInfo handle"
+        );
+        assert!(ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles).is_empty());
+    }
+
+    #[test]
+    fn native_getnewmbar_rebuilds_menu_color_state_from_loaded_menus() {
+        let pef = synthetic_pef_with_import(b"GetNewMBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let ref_num = loaded.current_resource_refnum;
+        let stale = test_menu_color_entry(999, 1, 0x11);
+        let file = test_menu_color_entry(601, 0, 0x22);
+        let edit = test_menu_color_entry(602, 2, 0x33);
+        let color_handle = ppc_ensure_menu_color_table_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_ne!(color_handle, 0);
+        assert_eq!(
+            ppc_replace_menu_bytes(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                color_handle,
+                &stale,
+            ),
+            PPC_NO_ERR
+        );
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MBAR"),
+                res_id: 900,
+                name: Vec::new(),
+                data: vec![0, 2, 2, 89, 2, 90],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 601,
+                name: Vec::new(),
+                data: test_menu_resource(601, b"File"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"mctb"),
+                res_id: 601,
+                name: Vec::new(),
+                data: test_menu_color_resource(&[file]),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"MENU"),
+                res_id: 602,
+                name: Vec::new(),
+                data: test_menu_resource(602, b"Edit"),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"mctb"),
+                res_id: 602,
+                name: Vec::new(),
+                data: test_menu_color_resource(&[edit]),
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+        loaded.cpu.gpr[3] = 900;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNewMBar);
+
+        assert_ne!(loaded.cpu.gpr[3], 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_C_INFO),
+            Some(color_handle)
+        );
+        assert_eq!(
+            ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
+            [file.as_slice(), edit.as_slice()].concat()
+        );
+    }
+
+    #[test]
+    fn native_menu_deletion_filters_the_shared_menu_color_table() {
+        let pef = synthetic_pef_with_import(b"DeleteMenuItem");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu_handle = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x6000,
+            128,
+            b"File",
+            b"One;Two",
+        );
+        let title = test_menu_color_entry(128, 0, 0x11);
+        let item_one = test_menu_color_entry(128, 1, 0x22);
+        let item_two = test_menu_color_entry(128, 2, 0x33);
+        let unrelated = test_menu_color_entry(129, 0, 0x44);
+        let color_handle = ppc_ensure_menu_color_table_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_eq!(
+            ppc_replace_menu_bytes(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                color_handle,
+                &[
+                    title.as_slice(),
+                    item_one.as_slice(),
+                    item_two.as_slice(),
+                    unrelated.as_slice(),
+                ]
+                .concat(),
+            ),
+            PPC_NO_ERR
+        );
+
+        loaded.cpu.gpr[3] = menu_handle;
+        loaded.cpu.gpr[4] = 2;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenuItem);
+
+        assert_eq!(
+            ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
+            [title.as_slice(), item_one.as_slice(), unrelated.as_slice()].concat()
+        );
+
+        loaded.cpu.gpr[3] = 128;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DeleteMenu);
+
+        assert_eq!(
+            ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles),
+            unrelated
+        );
     }
 
     #[test]

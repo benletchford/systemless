@@ -6,6 +6,11 @@ use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 /// Largest entry count representable by a menu-list partition byte length.
 pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 
+/// Size of one guest `MCEntry` in a live menu color information table.
+pub(crate) const MENU_COLOR_ENTRY_SIZE: usize = 30;
+
+const MENU_COLOR_END_ID: i16 = -99;
+
 const MAX_MENU_ITEMS: usize = 1024;
 
 /// The public Menu Manager operation that owns an active tracking session.
@@ -1123,6 +1128,79 @@ pub(crate) struct MenuSnapshotRecord {
     pub(crate) items: MenuItems,
 }
 
+/// Decode the entries in a compiled `'mctb'` resource.
+///
+/// The resource starts with a signed entry count followed by complete
+/// 30-byte `MCEntry` records. `GetMenu` and `InitMenus` transfer those records
+/// into the process's live menu color information table. Inside Macintosh
+/// Volume V (1986), pp. V-242--V-244; Macintosh Toolbox Essentials (1992),
+/// pp. 3-154--3-156.
+pub(crate) fn compiled_menu_color_entries(bytes: &[u8]) -> Vec<u8> {
+    let Some(declared_count) = read_u16(bytes, 0).map(|value| value as i16) else {
+        return Vec::new();
+    };
+    if declared_count <= 0 {
+        return Vec::new();
+    }
+    let available_count = bytes.len().saturating_sub(2) / MENU_COLOR_ENTRY_SIZE;
+    let entry_count = usize::from(declared_count as u16).min(available_count);
+    let mut entries = Vec::with_capacity(entry_count * MENU_COLOR_ENTRY_SIZE);
+    for index in 0..entry_count {
+        let offset = 2 + index * MENU_COLOR_ENTRY_SIZE;
+        let entry = &bytes[offset..offset + MENU_COLOR_ENTRY_SIZE];
+        if read_u16(entry, 0).map(|value| value as i16) == Some(MENU_COLOR_END_ID) {
+            continue;
+        }
+        entries.extend_from_slice(entry);
+    }
+    entries
+}
+
+/// Merge complete `MCEntry` records into a live menu color information table.
+/// Existing `(menu ID, item)` entries are replaced in place and new identities
+/// retain source order at the end of the table. Inside Macintosh Volume V
+/// (1986), pp. V-242--V-244.
+pub(crate) fn merge_menu_color_entries(current: &[u8], incoming: &[u8]) -> Vec<u8> {
+    let mut merged = current.to_vec();
+    for entry in incoming.chunks_exact(MENU_COLOR_ENTRY_SIZE) {
+        let Some(key) = menu_color_entry_key(entry) else {
+            continue;
+        };
+        let existing = merged
+            .chunks_exact(MENU_COLOR_ENTRY_SIZE)
+            .position(|candidate| menu_color_entry_key(candidate) == Some(key));
+        if let Some(index) = existing {
+            let offset = index * MENU_COLOR_ENTRY_SIZE;
+            merged[offset..offset + MENU_COLOR_ENTRY_SIZE].copy_from_slice(entry);
+        } else {
+            merged.extend_from_slice(entry);
+        }
+    }
+    merged
+}
+
+/// Keep only live `MCEntry` records accepted by the supplied identity filter.
+/// Macintosh Toolbox Essentials (1992), pp. 3-109--3-110 documents the table
+/// effects of deleting one menu or clearing the complete menu bar.
+pub(crate) fn filter_menu_color_entries(
+    current: &[u8],
+    mut keep: impl FnMut(i16, i16) -> bool,
+) -> Vec<u8> {
+    let mut filtered = Vec::with_capacity(current.len());
+    for entry in current.chunks_exact(MENU_COLOR_ENTRY_SIZE) {
+        if let Some((menu_id, menu_item)) = menu_color_entry_key(entry) {
+            if keep(menu_id, menu_item) {
+                filtered.extend_from_slice(entry);
+            }
+        }
+    }
+    filtered
+}
+
+fn menu_color_entry_key(entry: &[u8]) -> Option<(i16, i16)> {
+    Some((read_u16(entry, 0)? as i16, read_u16(entry, 2)? as i16))
+}
+
 /// The ordered menu resource IDs stored in a compiled `'MBAR'` resource.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MenuBarResource {
@@ -1599,6 +1677,39 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn menu_color_entry(menu_id: i16, item: i16, seed: u8) -> [u8; MENU_COLOR_ENTRY_SIZE] {
+        let mut entry = [seed; MENU_COLOR_ENTRY_SIZE];
+        entry[0..2].copy_from_slice(&menu_id.to_be_bytes());
+        entry[2..4].copy_from_slice(&item.to_be_bytes());
+        entry
+    }
+
+    #[test]
+    fn compiled_menu_colors_share_decode_merge_and_filter_semantics() {
+        let first = menu_color_entry(128, 0, 0x11);
+        let replacement = menu_color_entry(128, 0, 0x22);
+        let second = menu_color_entry(128, 2, 0x33);
+        let terminator = menu_color_entry(MENU_COLOR_END_ID, 0, 0x44);
+        let mut resource = 4i16.to_be_bytes().to_vec();
+        resource.extend_from_slice(&replacement);
+        resource.extend_from_slice(&terminator);
+        resource.extend_from_slice(&second);
+        resource.extend_from_slice(&[0; 8]);
+
+        let decoded = compiled_menu_color_entries(&resource);
+        assert_eq!(
+            decoded,
+            [replacement.as_slice(), second.as_slice()].concat()
+        );
+
+        let merged = merge_menu_color_entries(&first, &decoded);
+        assert_eq!(merged, [replacement.as_slice(), second.as_slice()].concat());
+        assert_eq!(
+            filter_menu_color_entries(&merged, |menu_id, item| menu_id == 128 && item == 2),
+            second
+        );
+    }
 
     #[test]
     fn new_menu_record_uses_the_shared_menu_info_layout() {

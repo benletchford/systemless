@@ -111,8 +111,8 @@ pub mod addr {
     /// table, DispMCInfo ($AA63) disposes a caller-supplied table,
     /// GetMCEntry ($AA64) returns a pointer into the live table, and
     /// SetMCEntries / DelMCEntries ($AA65 / $AA60) update or remove
-    /// entries. Systemless HLE still does not auto-load 'mctb' resources,
-    /// but it now stores a real live table here for API compatibility.
+    /// entries. InitMenus and GetMenu also add matching compiled 'mctb'
+    /// resources to this live table.
     /// Per IM:V V-247 + V-571 line 8688: `MenuCInfo EQU $0D50`. The
     /// Menu Color Manager was deprecated in System 7.5 by the Theme
     /// Manager (Macintosh Toolbox Essentials 1992 treats the routines
