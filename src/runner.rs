@@ -1315,7 +1315,16 @@ impl CpuArchitecturalSnapshot {
             pmmu_enabled: cpu.pmmu_enabled,
             int_level: cpu.int_level,
             stopped: cpu.stopped,
-            change_of_flow: cpu.change_of_flow,
+            // Deliberately normalized: `change_of_flow` is the m68k core's
+            // internal did-the-last-instruction-branch bookkeeping (a trace
+            // and loop-mode heuristic input), not architectural state. Its
+            // value at a trap site depends on whether execution arrived via
+            // the interpreter or a compiled trace, so comparing it makes
+            // wait-identity proofs fail whenever the JIT compiles part of a
+            // wait loop: measured on the SC2K boot census, the flag was the
+            // sole differing field in every sampled proof failure, and each
+            // lost proof is a lost tick fast-forward.
+            change_of_flow: false,
             loop_mode: cpu.loop_mode,
             loop_body_word: cpu.loop_body_word,
             loop_dbcc_word: cpu.loop_dbcc_word,
@@ -4621,18 +4630,52 @@ impl FixtureRunner {
                     WS_FAIL_TICK.fetch_add(1, AtomicOrdering::Relaxed);
                 } else if same_site_tick {
                     let n = WS_FAIL_CPU.fetch_add(1, AtomicOrdering::Relaxed);
-                    if n < 8 {
+                    if n < 40 {
+                        let a = &probe.cpu;
+                        let b = &cpu;
+                        let mut diffs: Vec<String> = Vec::new();
                         for i in 0..16 {
-                            if probe.cpu.dar[i] != cpu.dar[i] {
-                                eprintln!(
-                                    "[WAIT-STATS] cpu-diff sample {n} pc={trap_pc:08X}: {}{} {:08X} -> {:08X}",
+                            if a.dar[i] != b.dar[i] {
+                                diffs.push(format!(
+                                    "{}{}:{:08X}->{:08X}",
                                     if i < 8 { "D" } else { "A" },
                                     i & 7,
-                                    probe.cpu.dar[i],
-                                    cpu.dar[i]
-                                );
+                                    a.dar[i],
+                                    b.dar[i]
+                                ));
                             }
                         }
+                        if a.ppc != b.ppc {
+                            diffs.push(format!("ppc:{:08X}->{:08X}", a.ppc, b.ppc));
+                        }
+                        if a.pc != b.pc {
+                            diffs.push(format!("pc:{:08X}->{:08X}", a.pc, b.pc));
+                        }
+                        if a.ir != b.ir {
+                            diffs.push(format!("ir:{:04X}->{:04X}", a.ir, b.ir));
+                        }
+                        if a.sr != b.sr {
+                            diffs.push(format!("sr:{:04X}->{:04X}", a.sr, b.sr));
+                        }
+                        if a.prefetch_count != b.prefetch_count {
+                            diffs.push(format!("pfn:{}->{}", a.prefetch_count, b.prefetch_count));
+                        }
+                        if a.prefetch != b.prefetch {
+                            diffs.push(format!("pf:{:04X?}->{:04X?}", a.prefetch, b.prefetch));
+                        }
+                        if a.change_of_flow != b.change_of_flow {
+                            diffs.push(format!("cof:{}->{}", a.change_of_flow, b.change_of_flow));
+                        }
+                        if a.stack_pointers != b.stack_pointers {
+                            diffs.push("sp".to_owned());
+                        }
+                        if diffs.is_empty() {
+                            diffs.push("other-field".to_owned());
+                        }
+                        eprintln!(
+                            "[WAIT-STATS] cpu-diff sample {n} pc={trap_pc:08X}: {}",
+                            diffs.join(" ")
+                        );
                     }
                 }
             }
@@ -18486,6 +18529,13 @@ mod tests {
         let mut cpu = m68k::CpuCore::new();
         cpu.fpr[0] = m68k::fpu::FloatX80::from_extended(0x3FFF, 0x8000_0000_0000_0000);
         let baseline = CpuArchitecturalSnapshot::capture(&cpu);
+
+        cpu.change_of_flow = !cpu.change_of_flow;
+        assert_eq!(
+            baseline,
+            CpuArchitecturalSnapshot::capture(&cpu),
+            "internal flow bookkeeping must not participate in an idle-cycle proof"
+        );
 
         cpu.fpr[0].mantissa ^= 1;
         assert_ne!(
