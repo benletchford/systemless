@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/benletchford/systemless/compare/v0.22.0...v0.23.0) (2026-08-28)
+
+
+### Features
+
+* **memory:** share runtime globals across CPU backends ([#922](https://github.com/benletchford/systemless/issues/922)) ([1c7735f](https://github.com/benletchford/systemless/commit/1c7735fb81897fa5fa3d0cd892838147a2bf7d42))
+
 ## [0.22.0](https://github.com/benletchford/systemless/compare/v0.21.6...v0.22.0) (2026-08-28)
 
 
