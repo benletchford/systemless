@@ -62,6 +62,7 @@ mod mac_roman;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
+mod menu_manager;
 pub mod menu_model;
 pub mod quickdraw;
 pub mod runner;

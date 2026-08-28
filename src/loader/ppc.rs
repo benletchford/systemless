@@ -20,7 +20,17 @@ use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
 };
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
-use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
+#[cfg(test)]
+use crate::menu_manager::MenuListEntry as PpcMenuListEntry;
+use crate::menu_manager::{
+    laid_out_menu_item_count, standard_menu_row_height, standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    MenuBarResource, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
+    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
+    MenuTrackingKind, MenuTrackingState, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
+    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_SEPARATOR_HEIGHT,
+};
+use crate::menu_model::GuestMenuSnapshot;
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
@@ -246,6 +256,17 @@ const PPC_THE_MENU_ADDR: u32 = 0x0000_0a26;
 // tracked by the menu definition procedure. Inside Macintosh Volume V
 // (1986), p. V-571; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
 const PPC_MENU_DISABLE_ADDR: u32 = 0x0000_0b54;
+
+fn ppc_current_menu_list(memory: &mut PpcSectionMem) -> u32 {
+    memory
+        .read_u32_be(crate::memory::globals::addr::MENU_LIST)
+        .unwrap_or(0)
+}
+
+fn ppc_set_current_menu_list(memory: &mut PpcSectionMem, menu_list: u32) {
+    let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, menu_list);
+}
+
 const PPC_MBAR_HEIGHT_ADDR: u32 = 0x0000_0baa;
 const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
@@ -342,7 +363,6 @@ pub const PPC_QD_TEXT_SIZE_SYSTEM: i16 = 0;
 const PPC_MENU_TITLE_ORIGIN_H: i16 = 18;
 const PPC_MENU_TITLE_HIT_LEFT: i16 = 11;
 const PPC_MENU_TITLE_SPACING: i16 = 13;
-const PPC_MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 const PPC_SYSTEM_MENU_MARK_ADVANCE: i16 = 11;
 const PPC_QD_PEN_MODE_PAT_COPY: i16 = 8;
 const PPC_CGRAF_PORT_PN_LOC_OFFSET: u32 = 48;
@@ -2733,12 +2753,6 @@ impl PpcInputSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PpcMenuTrackingKind {
-    MenuBar,
-    PopUp(PpcPopUpMenuCall),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PpcPopUpMenuCall {
     top: i16,
     left: i16,
@@ -2748,47 +2762,7 @@ struct PpcPopUpMenuCall {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcMenuTrackingState {
-    kind: PpcMenuTrackingKind,
-    menu_handle: u32,
-    popup_left: i16,
-    popup_top: i16,
-    popup_width: i16,
-    popup_height: i16,
-    highlighted_item: i16,
-    flash_remaining: u8,
-    flash_delay: u8,
-    flash_result: u32,
-    saved_width: i16,
-    saved_height: i16,
-    front_buffer: PpcFrontBuffer,
-    saved_pixels: Vec<u16>,
-    item_appearances: Vec<PpcTrackedMenuItemAppearance>,
-    // Open hierarchical panes ordered from the root menu's child to the
-    // deepest descendant. MenuSelect searches installed submenu records by
-    // ID while traversing the hierarchy. Macintosh Toolbox Essentials
-    // (1992), pp. 3-53--3-55 and 3-115--3-116.
-    submenus: Vec<PpcSubmenuTrackingState>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcSubmenuTrackingState {
-    parent_item: i16,
-    menu_handle: u32,
-    popup_left: i16,
-    popup_top: i16,
-    popup_width: i16,
-    popup_height: i16,
-    highlighted_item: i16,
-    saved_width: i16,
-    saved_height: i16,
-    front_buffer: PpcFrontBuffer,
-    saved_pixels: Vec<u16>,
-    item_appearances: Vec<PpcTrackedMenuItemAppearance>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcTrackedMenuItemAppearance {
+pub(crate) struct PpcTrackedMenuItemAppearance {
     height: i16,
     icon: Option<PpcTrackedMenuIcon>,
 }
@@ -2800,67 +2774,8 @@ enum PpcTrackedMenuIcon {
     SmallIcon(Vec<u8>),
 }
 
-trait PpcTrackedMenuPane {
-    fn menu_handle(&self) -> u32;
-    fn popup_left(&self) -> i16;
-    fn popup_top(&self) -> i16;
-    fn popup_width(&self) -> i16;
-    fn popup_height(&self) -> i16;
-    fn saved_width(&self) -> i16;
-    fn saved_height(&self) -> i16;
-    fn front_buffer(&self) -> PpcFrontBuffer;
-    fn saved_pixels(&self) -> &[u16];
-    fn item_appearances(&self) -> &[PpcTrackedMenuItemAppearance];
-}
-
-macro_rules! impl_ppc_tracked_menu_pane {
-    ($type:ty) => {
-        impl PpcTrackedMenuPane for $type {
-            fn menu_handle(&self) -> u32 {
-                self.menu_handle
-            }
-
-            fn popup_left(&self) -> i16 {
-                self.popup_left
-            }
-
-            fn popup_top(&self) -> i16 {
-                self.popup_top
-            }
-
-            fn popup_width(&self) -> i16 {
-                self.popup_width
-            }
-
-            fn popup_height(&self) -> i16 {
-                self.popup_height
-            }
-
-            fn saved_width(&self) -> i16 {
-                self.saved_width
-            }
-
-            fn saved_height(&self) -> i16 {
-                self.saved_height
-            }
-
-            fn front_buffer(&self) -> PpcFrontBuffer {
-                self.front_buffer
-            }
-
-            fn saved_pixels(&self) -> &[u16] {
-                &self.saved_pixels
-            }
-
-            fn item_appearances(&self) -> &[PpcTrackedMenuItemAppearance] {
-                &self.item_appearances
-            }
-        }
-    };
-}
-
-impl_ppc_tracked_menu_pane!(PpcMenuTrackingState);
-impl_ppc_tracked_menu_pane!(PpcSubmenuTrackingState);
+type PpcMenuTracking = MenuTrackingState<u32, PpcFrontBuffer, u16, PpcTrackedMenuItemAppearance>;
+type PpcSubmenuTracking = TrackedMenuPane<u32, PpcFrontBuffer, u16, PpcTrackedMenuItemAppearance>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PpcGoAwayCall {
@@ -2968,7 +2883,6 @@ pub struct PpcToolboxStartupState {
     pub fonts_initialized: bool,
     pub windows_initialized: bool,
     pub menus_initialized: bool,
-    pub current_menu_bar: u32,
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
     pub cursor_installed: bool,
@@ -2977,7 +2891,10 @@ pub struct PpcToolboxStartupState {
     pub cursor_hot_v: i16,
     pub cursor_hot_h: i16,
     pub pending_native_menu_selection: Option<(i16, i16)>,
-    pub menu_tracking: Option<PpcMenuTrackingState>,
+    pub(crate) menu_tracking: Option<PpcMenuTracking>,
+    /// PowerPC call frame parked while `PopUpMenuSelect` yields.
+    /// This is adapter state, not part of the shared Menu Manager session.
+    popup_menu_call: Option<PpcPopUpMenuCall>,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
@@ -3023,7 +2940,6 @@ impl Default for PpcToolboxStartupState {
             fonts_initialized: false,
             windows_initialized: false,
             menus_initialized: false,
-            current_menu_bar: 0,
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
             cursor_installed: false,
@@ -3033,6 +2949,7 @@ impl Default for PpcToolboxStartupState {
             cursor_hot_h: 0,
             pending_native_menu_selection: None,
             menu_tracking: None,
+            popup_menu_call: None,
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
@@ -5052,17 +4969,14 @@ impl PpcLoadedApp {
     /// Copy the live PowerPC Menu Manager list into the same frontend-neutral
     /// model used by the 68k Toolbox implementation.
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
-        ppc_guest_menu_snapshot(&mut self.memory, self.toolbox_startup.current_menu_bar)
+        let menu_list = ppc_current_menu_list(&mut self.memory);
+        ppc_guest_menu_snapshot(&mut self.memory, menu_list)
     }
 
     /// Validate and stage a command selected through a host-native menu.
     pub fn queue_native_menu_selection(&mut self, menu_id: i16, item_number: i16) -> bool {
-        if !ppc_menu_selection_is_selectable(
-            &mut self.memory,
-            self.toolbox_startup.current_menu_bar,
-            menu_id,
-            item_number,
-        ) {
+        let menu_list = ppc_current_menu_list(&mut self.memory);
+        if ppc_menu_selection_result(&mut self.memory, menu_list, menu_id, item_number).is_none() {
             return false;
         }
         self.toolbox_startup.pending_native_menu_selection = Some((menu_id, item_number));
@@ -15484,6 +15398,8 @@ fn dispatch_supported_import(
         q3_error_state.clear();
     }
 
+    let mut current_menu_list = ppc_current_menu_list(memory);
+
     match binding.dispatcher_target {
         PpcImportDispatcherTarget::InstallExceptionHandler => {
             // InstallExceptionHandler
@@ -16046,7 +15962,7 @@ fn dispatch_supported_import(
                     cpu.gpr[3], cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8
                 );
             }
-            ppc_set_item_cmd(cpu, memory);
+            ppc_set_item_cmd(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetItemMark => {
@@ -16101,7 +16017,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 handles,
                 free_handle_blocks,
-                &mut toolbox_startup.current_menu_bar,
                 cpu.gpr[3],
                 cpu.gpr[4] as u16 as i16,
             );
@@ -16113,7 +16028,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 handles,
-                toolbox_startup.current_menu_bar,
+                current_menu_list,
                 cpu.gpr[3] as u16 as i16,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -16143,23 +16058,23 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EnableMenuItem => {
-            ppc_set_menu_item_enabled(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, true);
+            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, true);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisableMenuItem => {
-            ppc_set_menu_item_enabled(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, false);
+            ppc_set_menu_item_enabled(memory, handles, cpu.gpr[3], cpu.gpr[4] as u16 as i16, false);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetItemMark => {
-            ppc_set_item_mark(cpu, memory);
+            ppc_set_item_mark(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CheckItem => {
-            ppc_check_menu_item(cpu, memory);
+            ppc_check_menu_item(cpu, memory, handles);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenuBar => Some(PpcImportAction::Return(ppc_get_menu_bar(
-            toolbox_startup.current_menu_bar,
+            current_menu_list,
             memory,
             heap_cursor,
             heap_limit,
@@ -16181,7 +16096,7 @@ fn dispatch_supported_import(
             last_resource_error,
         ))),
         PpcImportDispatcherTarget::LMGetMenuList => {
-            Some(PpcImportAction::Return(toolbox_startup.current_menu_bar))
+            Some(PpcImportAction::Return(current_menu_list))
         }
         PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
             memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
@@ -16218,20 +16133,17 @@ fn dispatch_supported_import(
             // removes every menu from the current list without disposing the
             // menu records themselves. Preserve the current list Handle when
             // one exists, matching the manager-owned MenuList identity.
-            if toolbox_startup.current_menu_bar != 0 {
-                let mb_res_id = ppc_menu_list_definition(memory, toolbox_startup.current_menu_bar)
-                    .map(|menu_list| menu_list.mb_res_id)
-                    .unwrap_or_default();
+            if current_menu_list != 0 {
+                let mut menu_list =
+                    ppc_menu_list_definition(memory, current_menu_list).unwrap_or_default();
+                menu_list.clear_entries();
                 *last_mem_error = ppc_replace_menu_list_definition(
                     memory,
                     heap_cursor,
                     heap_limit,
                     handles,
-                    toolbox_startup.current_menu_bar,
-                    &PpcMenuListDefinition {
-                        mb_res_id,
-                        ..PpcMenuListDefinition::default()
-                    },
+                    current_menu_list,
+                    &menu_list,
                 );
                 if *last_mem_error == PPC_NO_ERR {
                     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
@@ -16245,8 +16157,8 @@ fn dispatch_supported_import(
                 *last_mem_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::ReturnPreserve);
             };
-            if toolbox_startup.current_menu_bar == 0 {
-                toolbox_startup.current_menu_bar = ppc_alloc_menu_list_handle(
+            if current_menu_list == 0 {
+                current_menu_list = ppc_alloc_menu_list_handle(
                     &[],
                     memory,
                     heap_cursor,
@@ -16254,44 +16166,30 @@ fn dispatch_supported_import(
                     handles,
                     free_handle_blocks,
                 );
-                if toolbox_startup.current_menu_bar == 0 {
+                if current_menu_list == 0 {
                     *last_mem_error = PPC_MEM_FULL_ERR;
                     return Some(PpcImportAction::ReturnPreserve);
                 }
+                ppc_set_current_menu_list(memory, current_menu_list);
             }
             *last_mem_error = ppc_replace_menu_list_definition(
                 memory,
                 heap_cursor,
                 heap_limit,
                 handles,
-                toolbox_startup.current_menu_bar,
+                current_menu_list,
                 &menu_list,
             );
-            if *last_mem_error == PPC_NO_ERR {
-                let _ = memory.write_u32_be(
-                    crate::memory::globals::addr::MENU_LIST,
-                    toolbox_startup.current_menu_bar,
-                );
-            }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::GetMenuHandle => {
-            Some(PpcImportAction::Return(ppc_get_menu_handle(
-                memory,
-                toolbox_startup.current_menu_bar,
-                cpu.gpr[3] as u16 as i16,
-            )))
-        }
+        PpcImportDispatcherTarget::GetMenuHandle => Some(PpcImportAction::Return(
+            ppc_get_menu_handle(memory, current_menu_list, cpu.gpr[3] as u16 as i16),
+        )),
         PpcImportDispatcherTarget::DrawMenuBar => {
             toolbox_startup.menu_bar_draw_count =
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
             if !toolbox_startup.host_menu_bar_hidden {
-                let _ = ppc_draw_menu_bar(
-                    memory,
-                    gworlds,
-                    toolbox_startup.current_menu_bar,
-                    screen_clut,
-                );
+                let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -16314,7 +16212,7 @@ fn dispatch_supported_import(
             ppc_set_menu_title_highlight(
                 memory,
                 gworlds,
-                toolbox_startup.current_menu_bar,
+                current_menu_list,
                 cpu.gpr[3] as u16 as i16,
                 screen_clut,
                 toolbox_startup.host_menu_bar_hidden,
@@ -16323,19 +16221,27 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::MenuKey => {
-            let result = ppc_menu_key(memory, toolbox_startup.current_menu_bar, cpu.gpr[3] as u8);
+            let selection = ppc_menu_key(memory, current_menu_list, cpu.gpr[3] as u8);
+            let result = selection.map_or(0, MenuKeySelection::packed_result);
+            let root_menu_id = selection
+                .and_then(|selection| selection.owner_handle)
+                .and_then(|owner_handle| memory.read_u32_be(owner_handle))
+                .filter(|menu| *menu != 0)
+                .and_then(|menu| memory.read_u16_be(menu))
+                .map_or(0, |menu_id| menu_id as i16);
             ppc_set_menu_command_highlight(
                 memory,
                 gworlds,
-                toolbox_startup.current_menu_bar,
+                current_menu_list,
                 result,
+                Some(root_menu_id),
                 screen_clut,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if crate::trap::dispatch::trace_input_enabled() {
                 eprintln!(
                     "[INPUT] PPC MenuKey menu_list=${:08X} key=${:02X} -> ${result:08X}",
-                    toolbox_startup.current_menu_bar, cpu.gpr[3] as u8
+                    current_menu_list, cpu.gpr[3] as u8
                 );
             }
             Some(PpcImportAction::Return(result))
@@ -16352,27 +16258,21 @@ fn dispatch_supported_import(
             if toolbox_startup
                 .menu_tracking
                 .as_ref()
-                .is_some_and(|state| state.kind != PpcMenuTrackingKind::MenuBar)
+                .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
             {
                 Some(PpcImportAction::Return(0))
             } else if let Some((menu_id, item_number)) =
                 toolbox_startup.pending_native_menu_selection.take()
             {
-                let result = if ppc_menu_selection_is_selectable(
-                    memory,
-                    toolbox_startup.current_menu_bar,
-                    menu_id,
-                    item_number,
-                ) {
-                    (u32::from(menu_id as u16) << 16) | u32::from(item_number as u16)
-                } else {
-                    0
-                };
+                let result =
+                    ppc_menu_selection_result(memory, current_menu_list, menu_id, item_number)
+                        .unwrap_or(0);
                 ppc_set_menu_command_highlight(
                     memory,
                     gworlds,
-                    toolbox_startup.current_menu_bar,
+                    current_menu_list,
                     result,
+                    None,
                     screen_clut,
                     toolbox_startup.host_menu_bar_hidden,
                 );
@@ -16391,7 +16291,7 @@ fn dispatch_supported_import(
                 if toolbox_startup
                     .menu_tracking
                     .as_ref()
-                    .is_some_and(|state| state.kind == PpcMenuTrackingKind::MenuBar)
+                    .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar)
                 {
                     Some(PpcImportAction::Yield(u64::MAX))
                 } else {
@@ -16407,17 +16307,13 @@ fn dispatch_supported_import(
                 ) {
                     result
                 } else {
-                    let result = ppc_menu_select(
-                        memory,
-                        toolbox_startup.current_menu_bar,
-                        cpu.gpr[3],
-                        input,
-                    );
+                    let result = ppc_menu_select(memory, current_menu_list, cpu.gpr[3], input);
                     ppc_set_menu_command_highlight(
                         memory,
                         gworlds,
-                        toolbox_startup.current_menu_bar,
+                        current_menu_list,
                         result,
+                        None,
                         screen_clut,
                         toolbox_startup.host_menu_bar_hidden,
                     );
@@ -20138,8 +20034,8 @@ fn dispatch_supported_import(
             // InitMenus call allocates the stable DynamicMenuList whose handle
             // is published in the MenuList low-memory global. Later calls do
             // not replace that manager-owned handle.
-            if toolbox_startup.current_menu_bar == 0 {
-                toolbox_startup.current_menu_bar = ppc_alloc_menu_list_handle(
+            if current_menu_list == 0 {
+                current_menu_list = ppc_alloc_menu_list_handle(
                     &[],
                     memory,
                     heap_cursor,
@@ -20147,9 +20043,10 @@ fn dispatch_supported_import(
                     handles,
                     free_handle_blocks,
                 );
-                *last_mem_error = if toolbox_startup.current_menu_bar == 0 {
+                *last_mem_error = if current_menu_list == 0 {
                     PPC_MEM_FULL_ERR
                 } else {
+                    ppc_set_current_menu_list(memory, current_menu_list);
                     PPC_NO_ERR
                 };
             } else {
@@ -20161,22 +20058,13 @@ fn dispatch_supported_import(
                     heap_cursor,
                     heap_limit,
                     handles,
-                    toolbox_startup.current_menu_bar,
+                    current_menu_list,
                     &PpcMenuListDefinition::default(),
                 );
             }
-            if toolbox_startup.current_menu_bar != 0 {
-                let _ = memory.write_u32_be(
-                    crate::memory::globals::addr::MENU_LIST,
-                    toolbox_startup.current_menu_bar,
-                );
+            if current_menu_list != 0 {
                 if !toolbox_startup.host_menu_bar_hidden {
-                    let _ = ppc_draw_menu_bar(
-                        memory,
-                        gworlds,
-                        toolbox_startup.current_menu_bar,
-                        screen_clut,
-                    );
+                    let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -25128,11 +25016,9 @@ fn ppc_dispatch_quickdraw_compatibility(
             // SetItemIcon stores only the icon-number byte; the standard
             // MDEF resolves resource ID icon+256 when it draws the item.
             // Macintosh Toolbox Essentials (1992), pp. 3-137--3-138.
-            if let Some(address) =
-                ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 0)
-            {
-                let _ = memory.write_u8(address, cpu.gpr[5] as u8);
-            }
+            ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+                items.set_icon(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+            });
             PpcImportAction::ReturnPreserve
         }
         "GetItemStyle" => {
@@ -25149,11 +25035,9 @@ fn ppc_dispatch_quickdraw_compatibility(
             // SetItemStyle replaces the one-byte QuickDraw face bitset used
             // by the standard MDEF. Macintosh Toolbox Essentials (1992),
             // pp. 3-133--3-134.
-            if let Some(address) =
-                ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 3)
-            {
-                let _ = memory.write_u8(address, cpu.gpr[5] as u8);
-            }
+            ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+                items.set_style(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+            });
             PpcImportAction::ReturnPreserve
         }
         "OpenPicture" => {
@@ -52902,8 +52786,9 @@ fn ppc_set_depth(
     let tracking_owned_menu_bar = toolbox_startup
         .menu_tracking
         .as_ref()
-        .is_some_and(|state| state.kind == PpcMenuTrackingKind::MenuBar);
+        .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
     toolbox_startup.menu_tracking = None;
+    toolbox_startup.popup_menu_call = None;
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
     toolbox_startup.grow_window_tracking = None;
@@ -65531,49 +65416,6 @@ fn ppc_te_dispose(
     ppc_te_forget_handle(memory, handles, handle_states, te_handle);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcMenuItemDefinition {
-    text: Vec<u8>,
-    icon: u8,
-    command: u8,
-    mark: u8,
-    style: u8,
-    enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PpcMenuListEntry {
-    handle: u32,
-    value: i16,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct PpcMenuListDefinition {
-    last_right: i16,
-    mb_res_id: i16,
-    regular: Vec<PpcMenuListEntry>,
-    menu_title_save: u32,
-    hierarchical: Vec<PpcMenuListEntry>,
-}
-
-impl PpcMenuListDefinition {
-    fn regular_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
-        self.regular.iter().map(|entry| entry.handle)
-    }
-
-    fn hierarchical_handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
-        self.hierarchical.iter().map(|entry| entry.handle)
-    }
-
-    fn handles(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
-        self.regular_handles().chain(self.hierarchical_handles())
-    }
-
-    fn contains_handle(&self, handle: u32) -> bool {
-        self.handles().any(|candidate| candidate == handle)
-    }
-}
-
 fn ppc_menu_handle_bytes(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -65608,65 +65450,33 @@ fn ppc_replace_menu_bytes(
     PPC_NO_ERR
 }
 
-fn ppc_decode_menu_items(bytes: &[u8]) -> Option<(usize, u32, Vec<PpcMenuItemDefinition>)> {
-    if bytes.len() < 16 {
-        return None;
+fn ppc_mutate_menu_items_in_place(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    menu_handle: u32,
+    mutation: impl FnOnce(&mut MenuItems) -> bool,
+) -> bool {
+    let Some(original) = ppc_menu_handle_bytes(memory, handles, menu_handle) else {
+        return false;
+    };
+    let Some(mut items) = MenuItems::decode(&original) else {
+        return false;
+    };
+    if !mutation(&mut items) {
+        return false;
     }
-    let title_len = usize::from(*bytes.get(14)?);
-    let first_item = 15usize.checked_add(title_len)?;
-    if first_item >= bytes.len() {
-        return None;
-    }
-    let enable_flags = u32::from_be_bytes(bytes.get(10..14)?.try_into().ok()?);
-    let mut cursor = first_item;
-    let mut items = Vec::new();
-    while items.len() < 1024 {
-        let len = usize::from(*bytes.get(cursor)?);
-        if len == 0 {
-            return Some((first_item, enable_flags, items));
-        }
-        let attributes = cursor.checked_add(1 + len)?;
-        let end = attributes.checked_add(4)?;
-        if end > bytes.len() {
-            return None;
-        }
-        let item_number = items.len() + 1;
-        items.push(PpcMenuItemDefinition {
-            text: bytes[cursor + 1..attributes].to_vec(),
-            icon: bytes[attributes],
-            command: bytes[attributes + 1],
-            mark: bytes[attributes + 2],
-            style: bytes[attributes + 3],
-            enabled: item_number > 31 || enable_flags & (1u32 << item_number) != 0,
-        });
-        cursor = end;
-    }
-    None
+    let Some(bytes) = items.rebuild(&original) else {
+        return false;
+    };
+    let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    bytes.len() <= original.len() && memory.write_bytes(menu, &bytes).is_some()
 }
 
-fn ppc_rebuild_menu_items(
-    original: &[u8],
-    first_item: usize,
-    old_enable_flags: u32,
-    items: &[PpcMenuItemDefinition],
-) -> Option<Vec<u8>> {
-    let mut bytes = original.get(..first_item)?.to_vec();
-    let mut enable_flags = old_enable_flags & 1;
-    for (index, item) in items.iter().enumerate() {
-        let text_len = item.text.len().min(255);
-        bytes.push(text_len as u8);
-        bytes.extend_from_slice(&item.text[..text_len]);
-        bytes.extend_from_slice(&[item.icon, item.command, item.mark, item.style]);
-        let item_number = index + 1;
-        if item.enabled && item_number <= 31 {
-            enable_flags |= 1u32 << item_number;
-        }
-    }
-    bytes.push(0);
-    bytes
-        .get_mut(10..14)?
-        .copy_from_slice(&enable_flags.to_be_bytes());
-    Some(bytes)
+fn ppc_decode_menu_items(bytes: &[u8]) -> Option<(usize, u32, Vec<PpcMenuItemDefinition>)> {
+    let decoded = MenuItems::decode(bytes)?;
+    Some((decoded.first_item, decoded.enable_flags, decoded.items))
 }
 
 fn ppc_new_menu(
@@ -65729,15 +65539,12 @@ fn ppc_get_item_cmd(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
     let _ = memory.write_u16_be(cmd_char_ptr, u16::from(command));
 }
 
-fn ppc_set_item_cmd(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
-    let Some(address) =
-        ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 1)
-    else {
-        return;
-    };
+fn ppc_set_item_cmd(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
     // Inside Macintosh Volume V (1986), p. V-244: SetItemCmd installs the
     // command-key byte, including $1B for a hierarchical submenu.
-    let _ = memory.write_u8(address, cpu.gpr[5] as u8);
+    ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+        items.set_command(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+    });
 }
 
 fn ppc_get_item_mark(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
@@ -65752,24 +65559,9 @@ fn ppc_get_item_mark(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
 }
 
 fn ppc_count_menu_items(memory: &mut PpcSectionMem, menu_handle: u32) -> u16 {
-    let Some(mut item_addr) = ppc_menu_first_item(memory, menu_handle) else {
-        return 0;
-    };
-    let mut count = 0u16;
-    while count < 1024 {
-        let Some(item_len) = memory.read_u8(item_addr) else {
-            break;
-        };
-        if item_len == 0 {
-            break;
-        }
-        count += 1;
-        let Some(next) = item_addr.checked_add(5 + u32::from(item_len)) else {
-            break;
-        };
-        item_addr = next;
-    }
-    count
+    ppc_menu_items_from_memory(memory, menu_handle)
+        .map(|items| items.item_count())
+        .unwrap_or(0)
 }
 
 fn ppc_get_menu_item_text(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
@@ -65797,25 +65589,15 @@ fn ppc_set_menu_item_text(
     let Some(original) = ppc_menu_handle_bytes(memory, handles, cpu.gpr[3]) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    let Some((first_item, enable_flags, mut items)) = ppc_decode_menu_items(&original) else {
+    let Some(mut items) = MenuItems::decode(&original) else {
         return PPC_PARAM_ERR;
     };
     let item_number = cpu.gpr[4] as u16 as i16;
-    let Some(index) = item_number
-        .checked_sub(1)
-        .and_then(|index| usize::try_from(index).ok())
-    else {
+    let text = ppc_read_pascal_string(memory, cpu.gpr[5]).unwrap_or_default();
+    if !items.set_text(item_number, &text) {
         return PPC_NO_ERR;
-    };
-    let Some(item) = items.get_mut(index) else {
-        return PPC_NO_ERR;
-    };
-    item.text = ppc_read_pascal_string(memory, cpu.gpr[5])
-        .unwrap_or_default()
-        .into_iter()
-        .take(255)
-        .collect();
-    let Some(bytes) = ppc_rebuild_menu_items(&original, first_item, enable_flags, &items) else {
+    }
+    let Some(bytes) = items.rebuild(&original) else {
         return PPC_PARAM_ERR;
     };
     ppc_replace_menu_bytes(memory, heap_cursor, heap_limit, handles, cpu.gpr[3], &bytes)
@@ -65832,20 +65614,13 @@ fn ppc_delete_menu_item(
     let Some(original) = ppc_menu_handle_bytes(memory, handles, menu_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    let Some((first_item, enable_flags, mut items)) = ppc_decode_menu_items(&original) else {
+    let Some(mut items) = MenuItems::decode(&original) else {
         return PPC_PARAM_ERR;
     };
-    let Some(index) = item_number
-        .checked_sub(1)
-        .and_then(|index| usize::try_from(index).ok())
-    else {
-        return PPC_NO_ERR;
-    };
-    if index >= items.len() {
+    if !items.delete(item_number) {
         return PPC_NO_ERR;
     }
-    items.remove(index);
-    let Some(bytes) = ppc_rebuild_menu_items(&original, first_item, enable_flags, &items) else {
+    let Some(bytes) = items.rebuild(&original) else {
         return PPC_PARAM_ERR;
     };
     ppc_replace_menu_bytes(
@@ -65856,67 +65631,6 @@ fn ppc_delete_menu_item(
         menu_handle,
         &bytes,
     )
-}
-
-fn ppc_parse_menu_item_specs(data: &[u8]) -> Vec<PpcMenuItemDefinition> {
-    let mut result = Vec::new();
-    for raw_item in data.split(|byte| matches!(*byte, b';' | b'\r')) {
-        if raw_item.is_empty() {
-            continue;
-        }
-        let mut item = PpcMenuItemDefinition {
-            text: Vec::new(),
-            icon: 0,
-            command: 0,
-            mark: 0,
-            style: 0,
-            enabled: true,
-        };
-        let mut cursor = 0usize;
-        while cursor < raw_item.len() {
-            match raw_item[cursor] {
-                b'^' if cursor + 1 < raw_item.len() => {
-                    item.icon = raw_item[cursor + 1];
-                    cursor += 2;
-                }
-                b'/' if cursor + 1 < raw_item.len() => {
-                    item.command = raw_item[cursor + 1];
-                    cursor += 2;
-                }
-                b'!' if cursor + 1 < raw_item.len() => {
-                    item.mark = raw_item[cursor + 1];
-                    cursor += 2;
-                }
-                b'<' => {
-                    cursor += 1;
-                    while cursor < raw_item.len() {
-                        let style = match raw_item[cursor].to_ascii_uppercase() {
-                            b'B' => 1,
-                            b'I' => 2,
-                            b'U' => 4,
-                            b'O' => 8,
-                            b'S' => 16,
-                            _ => break,
-                        };
-                        item.style |= style;
-                        cursor += 1;
-                    }
-                }
-                b'(' => {
-                    item.enabled = false;
-                    cursor += 1;
-                }
-                byte => {
-                    if item.text.len() < 255 {
-                        item.text.push(byte);
-                    }
-                    cursor += 1;
-                }
-            }
-        }
-        result.push(item);
-    }
-    result
 }
 
 fn ppc_insert_menu_items(
@@ -65931,24 +65645,16 @@ fn ppc_insert_menu_items(
     let Some(original) = ppc_menu_handle_bytes(memory, handles, menu_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    let Some((first_item, enable_flags, mut items)) = ppc_decode_menu_items(&original) else {
+    let Some(mut items) = MenuItems::decode(&original) else {
         return PPC_PARAM_ERR;
     };
     let data = ppc_read_pascal_string(memory, data_ptr).unwrap_or_default();
-    let definitions = ppc_parse_menu_item_specs(&data);
     if after_item == i16::MAX {
-        items.extend(definitions);
+        items.append_specs(&data);
     } else {
-        let insertion = usize::try_from(after_item.max(0))
-            .unwrap_or(0)
-            .min(items.len());
-        // InsertMenuItem inserts multiple definitions at the same location,
-        // which gives the documented reverse order.
-        for definition in definitions {
-            items.insert(insertion, definition);
-        }
+        items.insert_specs(&data, after_item);
     }
-    let Some(bytes) = ppc_rebuild_menu_items(&original, first_item, enable_flags, &items) else {
+    let Some(bytes) = items.rebuild(&original) else {
         return PPC_PARAM_ERR;
     };
     ppc_replace_menu_bytes(
@@ -65963,49 +65669,32 @@ fn ppc_insert_menu_items(
 
 fn ppc_set_menu_item_enabled(
     memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
     menu_handle: u32,
     item: i16,
     enabled: bool,
 ) {
-    let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
-        return;
-    };
-    if !(0..=31).contains(&item) {
-        return;
-    }
-    let mut flags = memory.read_u32_be(menu + 10).unwrap_or(0);
-    let bit = 1u32 << item;
-    if enabled {
-        flags |= bit;
-    } else {
-        flags &= !bit;
-    }
-    let _ = memory.write_u32_be(menu + 10, flags);
+    ppc_mutate_menu_items_in_place(memory, handles, menu_handle, |items| {
+        items.set_enabled(item, enabled)
+    });
 }
 
-fn ppc_set_item_mark(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
-    let Some(address) =
-        ppc_menu_item_attribute_address(memory, cpu.gpr[3], cpu.gpr[4] as u16 as i16, 2)
-    else {
-        return;
-    };
-    let _ = memory.write_u8(address, cpu.gpr[5] as u8);
+fn ppc_set_item_mark(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
+    ppc_mutate_menu_items_in_place(memory, handles, cpu.gpr[3], |items| {
+        items.set_mark(cpu.gpr[4] as u16 as i16, cpu.gpr[5] as u8)
+    });
 }
 
-fn ppc_check_menu_item(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
+fn ppc_check_menu_item(cpu: &PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
     let menu_handle = cpu.gpr[3];
     let item = cpu.gpr[4] as u16 as i16;
     let checked = cpu.gpr[5] & 0xff != 0;
-    let Some((item_addr, item_len)) = ppc_menu_item(memory, menu_handle, item) else {
-        return;
-    };
-    let Some(mark_addr) = item_addr.checked_add(3 + u32::from(item_len)) else {
-        return;
-    };
     // Inside Macintosh Volume I (1985), pp. I-345 and I-358: a compiled
     // MENU item stores icon, command-key, mark, and style bytes after its
     // Pascal text. CheckItem uses the standard checkmark glyph ($12).
-    let _ = memory.write_u8(mark_addr, if checked { 0x12 } else { 0 });
+    ppc_mutate_menu_items_in_place(memory, handles, menu_handle, |items| {
+        items.set_mark(item, if checked { 0x12 } else { 0 })
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66098,6 +65787,7 @@ fn ppc_menu_item_appearance(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> PpcTrackedMenuItemAppearance {
+    let is_separator = ppc_menu_item_is_separator(memory, menu_handle, item);
     let icon = ppc_menu_item_attribute_address(memory, menu_handle, item, 0)
         .and_then(|address| memory.read_u8(address))
         .unwrap_or(0);
@@ -66133,19 +65823,21 @@ fn ppc_menu_item_appearance(
         None
     };
     let normal_icon = icon != 0 && (command == 0 || command > 0x20);
-    let icon_height = match tracked_icon.as_ref() {
-        Some(PpcTrackedMenuIcon::CIcon(data)) => ppc_menu_cicon_layout(data)
-            .map(|layout| layout.height.max(16))
-            .unwrap_or(16),
-        Some(PpcTrackedMenuIcon::Icon { reduced: false, .. }) => 34,
-        _ if normal_icon => 34,
-        _ => 16,
+    let color_icon_height = match tracked_icon.as_ref() {
+        Some(PpcTrackedMenuIcon::CIcon(data)) => {
+            ppc_menu_cicon_layout(data).map(|layout| layout.height)
+        }
+        _ => None,
     };
     PpcTrackedMenuItemAppearance {
-        height: if style & PPC_MENU_STYLE_SHADOW != 0 {
-            icon_height.max(21)
+        height: if is_separator {
+            STANDARD_MENU_SEPARATOR_HEIGHT
         } else {
-            icon_height
+            standard_menu_row_height(
+                color_icon_height,
+                normal_icon,
+                style & PPC_MENU_STYLE_SHADOW != 0,
+            )
         },
         icon: tracked_icon,
     }
@@ -66157,57 +65849,86 @@ fn ppc_menu_item_appearances(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Vec<PpcTrackedMenuItemAppearance> {
-    (1..=ppc_count_menu_items(memory, menu_handle) as i16)
+    let mut items = (1..=ppc_count_menu_items(memory, menu_handle) as i16)
         .map(|item| {
-            ppc_menu_item_appearance(
-                memory,
-                menu_handle,
-                item,
-                resources,
-                current_resource_refnum,
+            (
+                ppc_menu_item_appearance(
+                    memory,
+                    menu_handle,
+                    item,
+                    resources,
+                    current_resource_refnum,
+                ),
+                ppc_menu_item_is_separator(memory, menu_handle, item),
             )
         })
+        .collect::<Vec<_>>();
+    let laid_out = laid_out_menu_item_count(&items, |(_appearance, separator)| *separator);
+    items.truncate(laid_out);
+    items
+        .into_iter()
+        .map(|(appearance, _separator)| appearance)
         .collect()
 }
 
-fn ppc_tracked_menu_item_height(state: &impl PpcTrackedMenuPane, item: i16) -> i16 {
-    usize::try_from(item.saturating_sub(1))
-        .ok()
-        .and_then(|index| state.item_appearances().get(index))
-        .map(|appearance| appearance.height)
-        .unwrap_or(16)
+fn ppc_tracked_menu_item_height(
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+    item: i16,
+) -> i16 {
+    ppc_tracked_menu_rows(state).height(item, 16)
 }
 
-fn ppc_tracked_menu_item_offset(state: &impl PpcTrackedMenuPane, item: i16) -> i16 {
-    (1..item).fold(0i16, |offset, previous| {
-        offset.saturating_add(ppc_tracked_menu_item_height(state, previous))
-    })
+fn ppc_tracked_menu_item_offset(
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+    item: i16,
+) -> i16 {
+    ppc_tracked_menu_rows(state).offset(item)
 }
 
 fn ppc_menu_appearance_height(appearances: &[PpcTrackedMenuItemAppearance]) -> i16 {
-    appearances.iter().fold(4i16, |height, appearance| {
-        height.saturating_add(appearance.height)
-    })
+    ppc_menu_rows_for_appearances(appearances).total_height()
 }
 
-fn ppc_tracked_menu_item_at_offset(state: &impl PpcTrackedMenuPane, offset: i16) -> i16 {
-    if offset < 0 {
-        return 0;
-    }
-    let count = state
-        .item_appearances()
-        .len()
-        .max(usize::try_from(state.popup_height().saturating_sub(4) / 16).unwrap_or_default());
-    let mut remaining = offset;
-    for item in 1..=count {
-        let item = i16::try_from(item).unwrap_or(i16::MAX);
-        let height = ppc_tracked_menu_item_height(state, item);
-        if remaining < height {
-            return item;
-        }
-        remaining = remaining.saturating_sub(height);
-    }
-    0
+fn ppc_tracked_menu_item_at_offset(
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+    offset: i16,
+) -> i16 {
+    ppc_tracked_menu_rows(state)
+        .item_at_offset(offset)
+        .unwrap_or(0)
+}
+
+fn ppc_tracked_menu_rows(
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
+) -> MenuRows {
+    ppc_menu_rows_for_appearances(state.item_appearances())
+}
+
+fn ppc_menu_rows_for_appearances(appearances: &[PpcTrackedMenuItemAppearance]) -> MenuRows {
+    MenuRows::new(appearances.iter().map(|appearance| MenuRow {
+        height: appearance.height,
+        selectable: true,
+    }))
 }
 
 #[cfg(test)]
@@ -66224,29 +65945,17 @@ fn ppc_calc_menu_size_with_resources(
     let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
         return;
     };
-    let mut width = 32u16;
-    let count = ppc_count_menu_items(memory, menu_handle);
     let appearances =
         ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
-    for item in 1..=count {
-        let Some((address, len)) = ppc_menu_item(memory, menu_handle, item as i16) else {
-            continue;
-        };
+    let width = standard_menu_width((1..=appearances.len()).filter_map(|item| {
+        let item = i16::try_from(item).ok()?;
+        let (address, len) = ppc_menu_item(memory, menu_handle, item)?;
         let text = ppc_memory_read_bytes(memory, address + 1, u32::from(len)).unwrap_or_default();
-        let advance = ppc_text_bytes_advance_for_font(
-            &text,
-            PPC_QD_TEXT_FONT_DEFAULT,
-            PPC_QD_TEXT_SIZE_SYSTEM,
-        );
-        let command = ppc_menu_item_attribute_address(memory, menu_handle, item as i16, 1)
+        let command = ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
             .and_then(|address| memory.read_u8(address))
             .unwrap_or(0);
-        // The standard MDEF reserves the right-side indicator column in
-        // addition to the text margins. Command-key glyph pairs need the
-        // widest column; hierarchical items reserve the triangle column.
-        // Macintosh Toolbox Essentials (1992), pp. 3-12--3-13.
-        let icon_width = appearances
-            .get(usize::from(item.saturating_sub(1)))
+        let icon = appearances
+            .get(usize::try_from(item - 1).ok()?)
             .and_then(|appearance| appearance.icon.as_ref())
             .map(|icon| match icon {
                 PpcTrackedMenuIcon::CIcon(data) => ppc_menu_cicon_layout(data)
@@ -66257,7 +65966,7 @@ fn ppc_calc_menu_size_with_resources(
                 | PpcTrackedMenuIcon::SmallIcon(_) => 16,
             })
             .unwrap_or_else(|| {
-                let icon = ppc_menu_item_attribute_address(memory, menu_handle, item as i16, 0)
+                let icon = ppc_menu_item_attribute_address(memory, menu_handle, item, 0)
                     .and_then(|address| memory.read_u8(address))
                     .unwrap_or(0);
                 if icon != 0 && (command == 0 || command > 0x20) {
@@ -66268,23 +65977,20 @@ fn ppc_calc_menu_size_with_resources(
                     0
                 }
             });
-        let chrome_width: u16 = if command > 0x20 {
-            53
-        } else if command == 0x1b {
-            42
-        } else {
-            30
-        } + u16::try_from(icon_width).unwrap_or(0);
-        width = width.max(
-            u16::try_from(advance.max(0))
-                .unwrap_or(u16::MAX)
-                .saturating_add(chrome_width),
-        );
-    }
-    let height = appearances.iter().fold(4u16, |height, appearance| {
+        Some(StandardMenuItemWidth {
+            text: ppc_text_bytes_advance_for_font(
+                &text,
+                PPC_QD_TEXT_FONT_DEFAULT,
+                PPC_QD_TEXT_SIZE_SYSTEM,
+            ),
+            icon,
+            command,
+        })
+    }));
+    let height = appearances.iter().fold(0u16, |height, appearance| {
         height.saturating_add(u16::try_from(appearance.height).unwrap_or(16))
     });
-    let _ = memory.write_u16_be(menu + 2, width);
+    let _ = memory.write_u16_be(menu + 2, width as u16);
     let _ = memory.write_u16_be(menu + 4, height);
 }
 
@@ -66308,72 +66014,23 @@ fn ppc_menu_item_is_selectable(memory: &mut PpcSectionMem, menu_handle: u32, ite
 
 fn ppc_guest_menu_snapshot(memory: &mut PpcSectionMem, menu_list_handle: u32) -> GuestMenuSnapshot {
     let menu_list = ppc_menu_list_definition(memory, menu_list_handle).unwrap_or_default();
-    let entries = menu_list
-        .regular_handles()
-        .map(|handle| (handle, false))
-        .chain(
-            menu_list
-                .hierarchical_handles()
-                .map(|handle| (handle, true)),
-        );
-
-    let menus = entries
-        .filter_map(|(menu_handle, hierarchical)| {
-            let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
-            let id = memory.read_u16_be(menu)? as i16;
-            let title_bytes = ppc_read_pascal_string(memory, menu + 14)?;
-            let title = if ppc_is_system_menu_mark(&title_bytes) {
-                "Systemless".to_owned()
-            } else {
-                decode_mac_roman(&title_bytes)
-            };
-            let enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
-            let items = (1..=ppc_count_menu_items(memory, menu_handle) as i16)
-                .filter_map(|number| {
-                    let (address, len) = ppc_menu_item(memory, menu_handle, number)?;
-                    let text_bytes = ppc_memory_read_bytes(memory, address + 1, u32::from(len))?;
-                    let command = memory.read_u8(address + 2 + u32::from(len)).unwrap_or(0);
-                    let mark = memory.read_u8(address + 3 + u32::from(len)).unwrap_or(0);
-                    let submenu_id = (command == 0x1b).then_some(i16::from(mark));
-                    Some(GuestMenuItem {
-                        number,
-                        text: decode_mac_roman(&text_bytes),
-                        enabled: ppc_menu_item_enabled(memory, menu_handle, number),
-                        checked: mark != 0 && submenu_id.is_none(),
-                        key_equivalent: (command != 0 && command != 0x1b)
-                            .then(|| char::from(command).to_ascii_lowercase()),
-                        submenu_id,
-                        separator: text_bytes == b"-",
-                    })
-                })
-                .collect();
-            Some(GuestMenu {
-                id,
-                title,
-                enabled,
-                hierarchical,
-                visible_in_menu_bar: !hierarchical,
-                items,
-            })
+    menu_list.guest_snapshot(|menu_handle| {
+        let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+        Some(MenuSnapshotRecord {
+            id: memory.read_u16_be(menu)? as i16,
+            title: ppc_read_pascal_string(memory, menu + 14)?,
+            items: ppc_menu_items_from_memory(memory, menu_handle)?,
         })
-        .collect();
-    GuestMenuSnapshot { menus }
+    })
 }
 
-fn ppc_menu_selection_is_selectable(
+fn ppc_menu_selection_result(
     memory: &mut PpcSectionMem,
     menu_list_handle: u32,
     menu_id: i16,
     item_number: i16,
-) -> bool {
-    let snapshot = ppc_guest_menu_snapshot(memory, menu_list_handle);
-    let Some(menu) = snapshot.menus.iter().find(|menu| menu.id == menu_id) else {
-        return false;
-    };
-    let Some(item) = menu.items.iter().find(|item| item.number == item_number) else {
-        return false;
-    };
-    menu.enabled && item.enabled && !item.separator && item.submenu_id.is_none()
+) -> Option<u32> {
+    ppc_guest_menu_snapshot(memory, menu_list_handle).selectable_result(menu_id, item_number)
 }
 
 fn ppc_popup_menu_call(cpu: &PpcCpu) -> PpcPopUpMenuCall {
@@ -66415,43 +66072,24 @@ fn ppc_popup_menu_layout_with_resources(
     ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
     let appearances =
         ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
-    let desired_width = i32::from(memory.read_u16_be(menu + 2)?.max(32));
-    let desired_height = i32::from(ppc_menu_appearance_height(&appearances));
-    let screen_width = i32::try_from(front.width).ok()?;
-    let screen_height = i32::try_from(front.height).ok()?;
-    let popup_width = desired_width.min(screen_width - 1).max(1);
-    let popup_height = desired_height.min(screen_height - 1).max(1);
-    let saved_width = popup_width.checked_add(1)?;
-    let saved_height = popup_height.checked_add(1)?;
-
-    let highlighted_item = if call.pop_up_item >= 1 && call.pop_up_item <= count {
-        call.pop_up_item
-    } else {
-        0
-    };
-    let preceding_height = appearances
-        .iter()
-        .take(usize::try_from(highlighted_item.saturating_sub(1)).ok()?)
-        .fold(0i32, |height, appearance| {
-            height.saturating_add(i32::from(appearance.height))
-        });
-    let desired_top = if highlighted_item > 0 {
-        i32::from(call.top)
-            .checked_sub(2)?
-            .checked_sub(preceding_height)?
-    } else {
-        i32::from(call.top)
-    };
-    let desired_left = i32::from(call.left).checked_sub(1)?;
-    let popup_left = desired_left.clamp(0, screen_width.checked_sub(saved_width)?);
-    let popup_top = desired_top.clamp(0, screen_height.checked_sub(saved_height)?);
+    let rows = ppc_menu_rows_for_appearances(&appearances);
+    let layout = standard_popup_menu_layout(
+        &rows,
+        i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?,
+        (
+            ppc_u32_to_i16_saturating(front.width),
+            ppc_u32_to_i16_saturating(front.height),
+        ),
+        (call.top, call.left),
+        call.pop_up_item,
+    )?;
 
     Some((
-        i16::try_from(popup_left).ok()?,
-        i16::try_from(popup_top).ok()?,
-        i16::try_from(popup_width).ok()?,
-        i16::try_from(popup_height).ok()?,
-        highlighted_item,
+        layout.left,
+        layout.top,
+        layout.width,
+        layout.height,
+        layout.highlighted_item,
     ))
 }
 
@@ -66468,9 +66106,13 @@ fn ppc_dispatch_pop_up_menu_select(
 ) -> PpcImportAction {
     let menu_handle = cpu.gpr[3];
     let call = ppc_popup_menu_call(cpu);
+    let current_menu_list = ppc_current_menu_list(memory);
 
     if let Some(state) = startup.menu_tracking.as_ref() {
-        if state.kind != PpcMenuTrackingKind::PopUp(call) || state.menu_handle != menu_handle {
+        if state.kind != MenuTrackingKind::PopUp
+            || startup.popup_menu_call != Some(call)
+            || state.menu_handle != menu_handle
+        {
             // A callback may enter a different modal menu routine while an
             // outer import is parked. Never let that nested call consume the
             // outer routine's save-under or eventual result.
@@ -66482,12 +66124,14 @@ fn ppc_dispatch_pop_up_menu_select(
             // A changed PixMap/depth makes the saved coordinates unsafe to
             // write. Abandon the overlay without touching either buffer.
             startup.menu_tracking = None;
+            startup.popup_menu_call = None;
             return PpcImportAction::Return(0);
         }
-        if !ppc_popup_menu_is_inserted(memory, startup.current_menu_bar, menu_handle) {
+        if !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
             let Some(state) = startup.menu_tracking.take() else {
                 return PpcImportAction::Return(0);
             };
+            startup.popup_menu_call = None;
             ppc_restore_menu_tracking(memory, state.front_buffer, &state);
             return PpcImportAction::Return(0);
         }
@@ -66504,6 +66148,7 @@ fn ppc_dispatch_pop_up_menu_select(
             state.flash_remaining -= 1;
             if state.flash_remaining == 0 {
                 let result = state.flash_result;
+                startup.popup_menu_call = None;
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
@@ -66525,6 +66170,7 @@ fn ppc_dispatch_pop_up_menu_select(
         state.highlighted_item = highlighted_item;
         if !input.mouse_button {
             if highlighted_item == 0 {
+                startup.popup_menu_call = None;
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(0);
             }
@@ -66547,9 +66193,7 @@ fn ppc_dispatch_pop_up_menu_select(
         return PpcImportAction::Yield(u64::MAX);
     }
 
-    if !input.mouse_button
-        || !ppc_popup_menu_is_inserted(memory, startup.current_menu_bar, menu_handle)
-    {
+    if !input.mouse_button || !ppc_popup_menu_is_inserted(memory, current_menu_list, menu_handle) {
         return PpcImportAction::Return(0);
     }
     let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
@@ -66577,7 +66221,7 @@ fn ppc_dispatch_pop_up_menu_select(
     let Some(state) = ppc_begin_tracked_menu_with_appearances(
         memory,
         front,
-        PpcMenuTrackingKind::PopUp(call),
+        MenuTrackingKind::PopUp,
         menu_handle,
         popup_left,
         popup_top,
@@ -66590,32 +66234,38 @@ fn ppc_dispatch_pop_up_menu_select(
     };
     ppc_draw_tracked_menu(memory, gworlds, screen_clut, &state, highlighted_item);
     startup.menu_tracking = Some(state);
+    startup.popup_menu_call = Some(call);
     PpcImportAction::Yield(u64::MAX)
 }
 
-fn ppc_menu_key(memory: &mut PpcSectionMem, menu_list_handle: u32, key: u8) -> u32 {
-    let Some(menus) = ppc_menu_list_handles(memory, menu_list_handle) else {
-        return 0;
-    };
-    for menu_handle in menus {
-        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
-            continue;
-        };
-        let menu_id = memory.read_u16_be(menu).unwrap_or(0);
-        let count = ppc_count_menu_items(memory, menu_handle);
-        for item in 1..=count {
-            if !ppc_menu_item_enabled(memory, menu_handle, item as i16) {
-                continue;
-            }
-            let command = ppc_menu_item_attribute_address(memory, menu_handle, item as i16, 1)
-                .and_then(|address| memory.read_u8(address))
-                .unwrap_or(0);
-            if command != 0 && command != 0x1b && command.eq_ignore_ascii_case(&key) {
-                return (u32::from(menu_id) << 16) | u32::from(item);
-            }
-        }
-    }
-    0
+fn ppc_menu_key(
+    memory: &mut PpcSectionMem,
+    menu_list_handle: u32,
+    key: u8,
+) -> Option<MenuKeySelection> {
+    ppc_menu_list_definition(memory, menu_list_handle)?.menu_key_selection(key, |menu_handle| {
+        let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+        let flags = memory.read_u32_be(menu + 10)?;
+        let items = (1..=ppc_count_menu_items(memory, menu_handle))
+            .map(|item| {
+                let item = item as i16;
+                MenuKeyItem {
+                    command: ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
+                        .and_then(|address| memory.read_u8(address))
+                        .unwrap_or(0),
+                    mark: ppc_menu_item_attribute_address(memory, menu_handle, item, 2)
+                        .and_then(|address| memory.read_u8(address))
+                        .unwrap_or(0),
+                    enabled: item > 31 || flags & (1u32 << item) != 0,
+                }
+            })
+            .collect();
+        Some(MenuKeyMenu {
+            id: memory.read_u16_be(menu)? as i16,
+            enabled: flags & 1 != 0,
+            items,
+        })
+    })
 }
 
 fn ppc_menu_handle_at_title_point(
@@ -66629,69 +66279,62 @@ fn ppc_menu_handle_at_title_point(
     if initial_v < 0 || initial_v >= menu_bar_height {
         return None;
     }
-    let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
-    for menu_handle in ppc_menu_list_definition(memory, menu_list_handle)?.regular_handles() {
-        let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
-        let title = ppc_read_pascal_string(memory, menu + 14)?;
-        let title_right = title_left
-            .saturating_add(ppc_menu_title_advance(&title))
-            .saturating_add(PPC_MENU_TITLE_SPACING);
-        if initial_h >= title_left && initial_h < title_right {
-            let menu_enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
-            return menu_enabled.then_some((menu_handle, title_left));
-        }
-        title_left = title_right;
-    }
-    None
+    let (menu_handle, title_left) = ppc_menu_list_definition(memory, menu_list_handle)?
+        .regular_title_at_horizontal(initial_h)?;
+    let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+    let menu_enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
+    menu_enabled.then_some((menu_handle, title_left))
 }
 
 fn ppc_menu_tracking_hit(
     memory: &mut PpcSectionMem,
-    state: &impl PpcTrackedMenuPane,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     input: PpcInputSnapshot,
 ) -> Option<i16> {
-    let relative_v = i32::from(input.mouse_v) - i32::from(state.popup_top());
-    let relative_h = i32::from(input.mouse_h) - i32::from(state.popup_left());
-    if relative_v < 2
-        || relative_v >= i32::from(state.popup_height()).saturating_sub(1)
-        || relative_h <= 0
-        || relative_h >= i32::from(state.popup_width()).saturating_sub(1)
-    {
-        return None;
-    }
-    let mut remaining = i16::try_from(relative_v - 2).unwrap_or(i16::MAX);
-    let mut item = 1i16;
-    while item <= ppc_count_menu_items(memory, state.menu_handle()) as i16 {
-        let height = ppc_tracked_menu_item_height(state, item);
-        if remaining < height {
-            break;
-        }
-        remaining = remaining.saturating_sub(height);
-        item = item.saturating_add(1);
-    }
-    let enabled_item = item <= ppc_count_menu_items(memory, state.menu_handle()) as i16
-        && ppc_menu_item_enabled(memory, state.menu_handle(), item)
-        && ppc_menu_item(memory, state.menu_handle(), item)
-            .and_then(|(address, len)| ppc_memory_read_bytes(memory, address + 1, u32::from(len)))
-            .is_some_and(|text| text != b"-");
-    Some(if enabled_item { item } else { 0 })
+    let rows = MenuRows::new(state.item_appearances().iter().enumerate().map(
+        |(index, appearance)| {
+            let item = i16::try_from(index + 1).unwrap_or(i16::MAX);
+            MenuRow {
+                height: appearance.height,
+                selectable: ppc_menu_item_is_selectable(memory, state.menu_handle(), item),
+            }
+        },
+    ));
+    rows.item_at_point(
+        (
+            state.popup_top(),
+            state.popup_left(),
+            state.popup_top().saturating_add(state.popup_height()),
+            state.popup_left().saturating_add(state.popup_width()),
+        ),
+        (0, 0, 0, 0),
+        (input.mouse_v, input.mouse_h),
+    )
 }
 
 fn ppc_menu_tracking_item(
     memory: &mut PpcSectionMem,
-    state: &impl PpcTrackedMenuPane,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     input: PpcInputSnapshot,
 ) -> i16 {
-    ppc_menu_tracking_hit(memory, state, input)
-        .filter(|item| ppc_menu_item_is_selectable(memory, state.menu_handle(), *item))
-        .unwrap_or(0)
+    ppc_menu_tracking_hit(memory, state, input).unwrap_or(0)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_begin_tracked_menu_with_appearances(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
-    kind: PpcMenuTrackingKind,
+    kind: MenuTrackingKind,
     menu_handle: u32,
     popup_left: i16,
     popup_top: i16,
@@ -66699,7 +66342,7 @@ fn ppc_begin_tracked_menu_with_appearances(
     popup_height: i16,
     highlighted_item: i16,
     item_appearances: Vec<PpcTrackedMenuItemAppearance>,
-) -> Option<PpcMenuTrackingState> {
+) -> Option<PpcMenuTracking> {
     if popup_left < 0 || popup_top < 0 || popup_width <= 0 || popup_height <= 0 {
         return None;
     }
@@ -66724,7 +66367,7 @@ fn ppc_begin_tracked_menu_with_appearances(
             )?);
         }
     }
-    Some(PpcMenuTrackingState {
+    Some(PpcMenuTracking {
         kind,
         menu_handle,
         popup_left,
@@ -66747,7 +66390,12 @@ fn ppc_begin_tracked_menu_with_appearances(
 fn ppc_restore_tracked_menu(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
-    state: &impl PpcTrackedMenuPane,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
 ) {
     if front != state.front_buffer() {
         return;
@@ -66774,7 +66422,7 @@ fn ppc_restore_tracked_menu(
 fn ppc_restore_menu_tracking(
     memory: &mut PpcSectionMem,
     front: PpcFrontBuffer,
-    state: &PpcMenuTrackingState,
+    state: &PpcMenuTracking,
 ) {
     for submenu in state.submenus.iter().rev() {
         ppc_restore_tracked_menu(memory, front, submenu);
@@ -66960,7 +66608,12 @@ fn ppc_draw_tracked_menu(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
-    state: &impl PpcTrackedMenuPane,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     selected: i16,
 ) {
     let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
@@ -66978,11 +66631,7 @@ fn ppc_draw_tracked_menu(
                 || y == 0
                 || x == i32::from(state.popup_width()) - 1
                 || y == i32::from(state.popup_height()) - 1;
-            let item = if y >= 2 {
-                ppc_tracked_menu_item_at_offset(state, i16::try_from(y - 2).unwrap_or(i16::MAX))
-            } else {
-                0
-            };
+            let item = ppc_tracked_menu_item_at_offset(state, i16::try_from(y).unwrap_or(i16::MAX));
             let highlighted = !border && item == selected && selected > 0;
             let _ = ppc_quickdraw_write_raw_pixel(
                 memory,
@@ -67022,14 +66671,13 @@ fn ppc_draw_tracked_menu(
         );
     }
     let popup_bottom = state.popup_top().saturating_add(state.popup_height());
-    for item in 1..=ppc_count_menu_items(memory, state.menu_handle()) as i16 {
+    for item in 1..=i16::try_from(state.item_appearances().len()).unwrap_or(i16::MAX) {
         let Some((address, len)) = ppc_menu_item(memory, state.menu_handle(), item) else {
             continue;
         };
         let text = ppc_memory_read_bytes(memory, address + 1, u32::from(len)).unwrap_or_default();
         let row_top = state
             .popup_top()
-            .saturating_add(2)
             .saturating_add(ppc_tracked_menu_item_offset(state, item));
         if row_top >= popup_bottom.saturating_sub(1) {
             break;
@@ -67225,7 +66873,12 @@ fn ppc_redraw_tracked_menu(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
-    state: &impl PpcTrackedMenuPane,
+    state: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     visible_item: i16,
 ) -> bool {
     let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
@@ -67245,30 +66898,23 @@ fn ppc_submenu_handle_for_item(
     parent_menu_handle: u32,
     parent_item: i16,
 ) -> Option<u32> {
-    let command = ppc_menu_item_attribute_address(memory, parent_menu_handle, parent_item, 1)
-        .and_then(|address| memory.read_u8(address))?;
-    let submenu_id = ppc_menu_item_attribute_address(memory, parent_menu_handle, parent_item, 2)
-        .and_then(|address| memory.read_u8(address))?;
-    if command != 0x1b || submenu_id == 0 {
-        return None;
-    }
-    ppc_menu_list_definition(memory, menu_list_handle)?
-        .hierarchical_handles()
-        .find(|handle| {
+    let parent_items = ppc_menu_items_from_memory(memory, parent_menu_handle)?;
+    ppc_menu_list_definition(memory, menu_list_handle)?.submenu_handle_for_item(
+        &parent_items,
+        parent_item,
+        |handle| {
             memory
-                .read_u32_be(*handle)
+                .read_u32_be(handle)
                 .filter(|menu| *menu != 0)
                 .and_then(|menu| memory.read_u16_be(menu))
-                == Some(u16::from(submenu_id))
-        })
+                .map(|menu_id| menu_id as i16)
+        },
+    )
 }
 
 fn ppc_menu_item_is_hierarchical(memory: &mut PpcSectionMem, menu_handle: u32, item: i16) -> bool {
-    let command = ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
-        .and_then(|address| memory.read_u8(address));
-    let submenu_id = ppc_menu_item_attribute_address(memory, menu_handle, item, 2)
-        .and_then(|address| memory.read_u8(address));
-    command == Some(0x1b) && submenu_id.is_some_and(|submenu_id| submenu_id != 0)
+    ppc_menu_items_from_memory(memory, menu_handle)
+        .is_some_and(|items| items.item_is_hierarchical(item))
 }
 
 #[cfg(test)]
@@ -67276,9 +66922,14 @@ fn ppc_begin_submenu_tracking(
     memory: &mut PpcSectionMem,
     menu_list_handle: u32,
     front: PpcFrontBuffer,
-    parent: &impl PpcTrackedMenuPane,
+    parent: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     parent_item: i16,
-) -> Option<PpcSubmenuTrackingState> {
+) -> Option<PpcSubmenuTracking> {
     ppc_begin_submenu_tracking_with_resources(
         memory,
         menu_list_handle,
@@ -67294,11 +66945,16 @@ fn ppc_begin_submenu_tracking_with_resources(
     memory: &mut PpcSectionMem,
     menu_list_handle: u32,
     front: PpcFrontBuffer,
-    parent: &impl PpcTrackedMenuPane,
+    parent: &impl TrackedMenuPaneView<
+        MenuRef = u32,
+        Surface = PpcFrontBuffer,
+        Pixel = u16,
+        Appearance = PpcTrackedMenuItemAppearance,
+    >,
     parent_item: i16,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
-) -> Option<PpcSubmenuTrackingState> {
+) -> Option<PpcSubmenuTracking> {
     let menu_handle =
         ppc_submenu_handle_for_item(memory, menu_list_handle, parent.menu_handle(), parent_item)?;
     ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
@@ -67308,31 +66964,20 @@ fn ppc_begin_submenu_tracking_with_resources(
     let front_width = ppc_u32_to_i16_saturating(front.width);
     let front_height = ppc_u32_to_i16_saturating(front.height);
     let desired_width = i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).ok()?;
-    let popup_width = desired_width.min(front_width.saturating_sub(1)).max(1);
-    let popup_top = parent
-        .popup_top()
-        .saturating_add(2)
-        .saturating_add(ppc_tracked_menu_item_offset(parent, parent_item));
-    if popup_top < 0 || popup_top >= front_height.saturating_sub(1) {
-        return None;
-    }
     let desired_height = ppc_menu_appearance_height(&item_appearances);
-    let popup_height = desired_height
-        .min(front_height.saturating_sub(popup_top).saturating_sub(1))
-        .max(1);
-    let right_side = parent
-        .popup_left()
-        .saturating_add(parent.popup_width())
-        .saturating_sub(1);
-    let popup_left = if right_side.saturating_add(popup_width).saturating_add(1) <= front_width {
-        right_side
-    } else {
-        parent
-            .popup_left()
-            .saturating_sub(popup_width)
-            .saturating_add(1)
-            .max(0)
-    };
+    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
+    let layout = standard_submenu_layout(
+        parent.dropdown_rect(),
+        ppc_tracked_menu_item_offset(parent, parent_item),
+        desired_width,
+        desired_height,
+        (front_width, front_height),
+        menu_bar_height,
+    )?;
+    let popup_left = layout.left;
+    let popup_top = layout.top;
+    let popup_width = layout.width;
+    let popup_height = layout.height;
     let saved_width = popup_width.checked_add(1)?;
     let saved_height = popup_height.checked_add(1)?;
     let saved_len =
@@ -67347,7 +66992,7 @@ fn ppc_begin_submenu_tracking_with_resources(
             )?);
         }
     }
-    Some(PpcSubmenuTrackingState {
+    Some(PpcSubmenuTracking {
         parent_item,
         menu_handle,
         popup_left,
@@ -67365,10 +67010,10 @@ fn ppc_begin_submenu_tracking_with_resources(
 
 fn ppc_close_tracked_submenus_from(
     memory: &mut PpcSectionMem,
-    state: &mut PpcMenuTrackingState,
+    state: &mut PpcMenuTracking,
     depth: usize,
 ) {
-    for submenu in state.submenus.split_off(depth).into_iter().rev() {
+    for submenu in state.close_submenus_from(depth).into_iter().rev() {
         ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
     }
 }
@@ -67376,7 +67021,7 @@ fn ppc_close_tracked_submenus_from(
 fn ppc_ensure_tracked_submenu(
     memory: &mut PpcSectionMem,
     menu_list_handle: u32,
-    state: &mut PpcMenuTrackingState,
+    state: &mut PpcMenuTracking,
     parent_depth: Option<usize>,
     parent_item: i16,
     resources: &[PpcVfsResourceRecord],
@@ -67394,27 +67039,19 @@ fn ppc_ensure_tracked_submenu(
         return;
     };
 
-    // A malformed circular hierarchy must not grow the visible chain on
-    // every tracking refire. Macintosh Toolbox Essentials (1992), p. 3-138,
-    // explicitly rejects circular hierarchical menu definitions.
-    let repeats_ancestor = submenu_handle == state.menu_handle
-        || state
-            .submenus
-            .iter()
-            .take(child_depth)
-            .any(|submenu| submenu.menu_handle == submenu_handle);
-    if repeats_ancestor {
-        ppc_close_tracked_submenus_from(memory, state, child_depth);
-        return;
+    let closed = match state.prepare_submenu(child_depth, parent_item, submenu_handle) {
+        SubmenuTransition::Keep => return,
+        SubmenuTransition::Reject(closed) => {
+            for submenu in closed.into_iter().rev() {
+                ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
+            }
+            return;
+        }
+        SubmenuTransition::Open(closed) => closed,
+    };
+    for submenu in closed.into_iter().rev() {
+        ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
     }
-    let already_open = state.submenus.get(child_depth).is_some_and(|submenu| {
-        submenu.menu_handle == submenu_handle && submenu.parent_item == parent_item
-    });
-    if already_open {
-        return;
-    }
-
-    ppc_close_tracked_submenus_from(memory, state, child_depth);
     let submenu = if let Some(depth) = parent_depth {
         let Some(parent) = state.submenus.get(depth).cloned() else {
             return;
@@ -67448,7 +67085,7 @@ fn ppc_draw_open_tracked_submenus(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
-    state: &PpcMenuTrackingState,
+    state: &PpcMenuTracking,
 ) {
     for submenu in &state.submenus {
         ppc_draw_tracked_menu(
@@ -67467,19 +67104,19 @@ fn ppc_update_menu_tracking(
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
     menu_list_handle: u32,
-    state: &mut PpcMenuTrackingState,
+    state: &mut PpcMenuTracking,
     input: PpcInputSnapshot,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
-    let hit_submenu = (0..state.submenus.len()).rev().find_map(|depth| {
-        ppc_menu_tracking_hit(memory, &state.submenus[depth], input).map(|item| (depth, item))
-    });
+    let hit_submenu =
+        state.deepest_submenu_hit(|_depth, submenu| ppc_menu_tracking_hit(memory, submenu, input));
     if let Some((depth, submenu_item)) = hit_submenu {
-        let changed = state.submenus[depth].highlighted_item != submenu_item;
-        if changed {
-            ppc_close_tracked_submenus_from(memory, state, depth + 1);
-            state.submenus[depth].highlighted_item = submenu_item;
+        let closed = state
+            .update_highlight(Some(depth), submenu_item)
+            .unwrap_or_default();
+        for submenu in closed.into_iter().rev() {
+            ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
         }
         if submenu_item > 0 {
             ppc_ensure_tracked_submenu(
@@ -67491,17 +67128,15 @@ fn ppc_update_menu_tracking(
                 resources,
                 current_resource_refnum,
             );
-        } else {
-            ppc_close_tracked_submenus_from(memory, state, depth + 1);
         }
         ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
         return;
     }
 
     let root_item = ppc_menu_tracking_hit(memory, state, input).unwrap_or(0);
-    if state.highlighted_item != root_item {
-        ppc_close_tracked_submenus_from(memory, state, 0);
-        state.highlighted_item = root_item;
+    let closed = state.update_highlight(None, root_item).unwrap_or_default();
+    for submenu in closed.into_iter().rev() {
+        ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
     }
     ppc_draw_tracked_menu(memory, gworlds, screen_clut, state, root_item);
     if root_item > 0 {
@@ -67514,15 +67149,13 @@ fn ppc_update_menu_tracking(
             resources,
             current_resource_refnum,
         );
-    } else {
-        ppc_close_tracked_submenus_from(memory, state, 0);
     }
     ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, state);
 }
 
 fn ppc_tracked_menu_selection(
     memory: &mut PpcSectionMem,
-    state: &PpcMenuTrackingState,
+    state: &PpcMenuTracking,
     input: PpcInputSnapshot,
 ) -> Option<(u32, i16)> {
     if let Some((submenu, item)) = state.submenus.iter().rev().find_map(|submenu| {
@@ -67547,7 +67180,7 @@ fn ppc_begin_menu_bar_tracking(
     front: PpcFrontBuffer,
     menu_handle: u32,
     title_left: i16,
-) -> Option<PpcMenuTrackingState> {
+) -> Option<PpcMenuTracking> {
     ppc_begin_menu_bar_tracking_with_resources(memory, front, menu_handle, title_left, &[], 0)
 }
 
@@ -67558,7 +67191,7 @@ fn ppc_begin_menu_bar_tracking_with_resources(
     title_left: i16,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
-) -> Option<PpcMenuTrackingState> {
+) -> Option<PpcMenuTracking> {
     ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
     let item_appearances =
         ppc_menu_item_appearances(memory, menu_handle, resources, current_resource_refnum);
@@ -67566,28 +67199,24 @@ fn ppc_begin_menu_bar_tracking_with_resources(
     let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
     let front_width = ppc_u32_to_i16_saturating(front.width);
     let front_height = ppc_u32_to_i16_saturating(front.height);
-    if menu_bar_height <= 0 || menu_bar_height >= front_height || front_width <= 1 {
-        return None;
-    }
     let desired_width = i16::try_from(memory.read_u16_be(menu + 2)?.max(32)).unwrap_or(i16::MAX);
-    let popup_width = desired_width.min(front_width.saturating_sub(1)).max(1);
-    let popup_left = title_left
-        .max(0)
-        .min(front_width.saturating_sub(popup_width.saturating_add(1)));
-    let popup_top = menu_bar_height;
     let desired_height = ppc_menu_appearance_height(&item_appearances);
-    let popup_height = desired_height
-        .min(front_height.saturating_sub(popup_top).saturating_sub(1))
-        .max(1);
+    let layout = standard_pull_down_menu_layout(
+        desired_width,
+        desired_height,
+        (front_width, front_height),
+        title_left,
+        menu_bar_height,
+    )?;
     ppc_begin_tracked_menu_with_appearances(
         memory,
         front,
-        PpcMenuTrackingKind::MenuBar,
+        MenuTrackingKind::MenuBar,
         menu_handle,
-        popup_left,
-        popup_top,
-        popup_width,
-        popup_height,
+        layout.left,
+        layout.top,
+        layout.width,
+        layout.height,
         0,
         item_appearances,
     )
@@ -67625,13 +67254,14 @@ fn ppc_track_menu_while_held_with_resources(
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
+    let current_menu_list = ppc_current_menu_list(memory);
     let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) else {
         return;
     };
     if startup
         .menu_tracking
         .as_ref()
-        .is_some_and(|state| state.kind != PpcMenuTrackingKind::MenuBar)
+        .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
     {
         return;
     }
@@ -67648,14 +67278,14 @@ fn ppc_track_menu_while_held_with_resources(
         if previous.front_buffer != front {
             ppc_restore_menu_tracking(memory, previous.front_buffer, &previous);
             let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
-            let _ = ppc_draw_menu_bar(memory, gworlds, startup.current_menu_bar, screen_clut);
+            let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
             return;
         }
         // MenuSelect keeps tracking while the button is held. Crossing an
         // enabled regular title closes the old dropdown and opens the new
         // title's menu. Macintosh Toolbox Essentials (1992), p. 3-115.
         let live_point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
-        let switched = ppc_menu_handle_at_title_point(memory, startup.current_menu_bar, live_point)
+        let switched = ppc_menu_handle_at_title_point(memory, current_menu_list, live_point)
             .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle);
         if let Some((menu_handle, title_left)) = switched {
             ppc_restore_menu_tracking(memory, front, &previous);
@@ -67667,12 +67297,13 @@ fn ppc_track_menu_while_held_with_resources(
                 resources,
                 current_resource_refnum,
             );
+            startup.popup_menu_call = None;
         } else {
             startup.menu_tracking = Some(previous);
         }
     } else {
         let Some((menu_handle, title_left)) =
-            ppc_menu_handle_at_title_point(memory, startup.current_menu_bar, initial_point)
+            ppc_menu_handle_at_title_point(memory, current_menu_list, initial_point)
         else {
             return;
         };
@@ -67687,6 +67318,7 @@ fn ppc_track_menu_while_held_with_resources(
             return;
         };
         startup.menu_tracking = Some(state);
+        startup.popup_menu_call = None;
     }
     let active_menu_id = startup.menu_tracking.as_ref().and_then(|state| {
         memory
@@ -67699,7 +67331,7 @@ fn ppc_track_menu_while_held_with_resources(
         ppc_set_menu_title_highlight(
             memory,
             gworlds,
-            startup.current_menu_bar,
+            current_menu_list,
             active_menu_id,
             screen_clut,
             startup.host_menu_bar_hidden,
@@ -67715,7 +67347,7 @@ fn ppc_track_menu_while_held_with_resources(
             memory,
             gworlds,
             screen_clut,
-            startup.current_menu_bar,
+            current_menu_list,
             &mut state,
             input,
             resources,
@@ -67732,10 +67364,11 @@ fn ppc_finish_menu_bar_tracking(
     startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
 ) -> Option<u32> {
+    let current_menu_list = ppc_current_menu_list(memory);
     if startup
         .menu_tracking
         .as_ref()
-        .is_some_and(|state| state.kind != PpcMenuTrackingKind::MenuBar)
+        .is_some_and(|state| state.kind != MenuTrackingKind::MenuBar)
     {
         return None;
     }
@@ -67765,13 +67398,14 @@ fn ppc_finish_menu_bar_tracking(
     ppc_set_menu_command_highlight(
         memory,
         gworlds,
-        startup.current_menu_bar,
+        current_menu_list,
         result,
+        None,
         screen_clut,
         startup.host_menu_bar_hidden,
     );
     if result == 0 && !startup.host_menu_bar_hidden {
-        let _ = ppc_draw_menu_bar(memory, gworlds, startup.current_menu_bar, screen_clut);
+        let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
     }
     Some(result)
 }
@@ -67782,38 +67416,30 @@ fn ppc_menu_select(
     initial_point: u32,
     input: PpcInputSnapshot,
 ) -> u32 {
-    let initial_v = (initial_point >> 16) as u16 as i16;
-    let initial_h = initial_point as u16 as i16;
-    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-    if initial_v < 0 || initial_v >= menu_bar_height {
-        return 0;
-    }
-    let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
+    // Inside Macintosh Volume V (1986), pp. V-228--V-230: the live
+    // DynamicMenuList owns each regular title's menuLeft and the rightmost
+    // lastRight boundary. Use the same shared title lookup as retained PPC
+    // tracking and the 68k gateway instead of reconstructing those cells
+    // from independently measured title text.
+    let Some((menu_handle, _title_left)) =
+        ppc_menu_handle_at_title_point(memory, menu_list_handle, initial_point)
+    else {
         return 0;
     };
-    let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
-    for menu_handle in menu_list.regular_handles() {
-        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
-            continue;
-        };
-        let title = ppc_read_pascal_string(memory, menu + 14).unwrap_or_default();
-        let title_width = ppc_menu_title_advance(&title).saturating_add(PPC_MENU_TITLE_SPACING);
-        let title_right = title_left.saturating_add(title_width);
-        if initial_h >= title_left && initial_h < title_right {
-            let count = ppc_count_menu_items(memory, menu_handle) as i16;
-            let relative_v = i32::from(input.mouse_v) - i32::from(menu_bar_height);
-            let item = if relative_v >= 0 {
-                i16::try_from(relative_v / 16 + 1).unwrap_or(i16::MAX)
-            } else {
-                0
-            };
-            if item > 0 && item <= count && ppc_menu_item_is_selectable(memory, menu_handle, item) {
-                let menu_id = memory.read_u16_be(menu).unwrap_or(0);
-                return (u32::from(menu_id) << 16) | u32::from(item as u16);
-            }
-            return 0;
-        }
-        title_left = title_right;
+    let Some(menu) = memory.read_u32_be(menu_handle).filter(|menu| *menu != 0) else {
+        return 0;
+    };
+    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
+    let count = ppc_count_menu_items(memory, menu_handle) as i16;
+    let relative_v = i32::from(input.mouse_v) - i32::from(menu_bar_height);
+    let item = if relative_v >= 0 {
+        i16::try_from(relative_v / 16 + 1).unwrap_or(i16::MAX)
+    } else {
+        0
+    };
+    if item > 0 && item <= count && ppc_menu_item_is_selectable(memory, menu_handle, item) {
+        let menu_id = memory.read_u16_be(menu).unwrap_or(0);
+        return (u32::from(menu_id) << 16) | u32::from(item as u16);
     }
     0
 }
@@ -67864,7 +67490,7 @@ fn ppc_load_menu_resource(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_get_menu_bar(
-    current_menu_bar: u32,
+    current_menu_list: u32,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -67872,10 +67498,10 @@ fn ppc_get_menu_bar(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
-    let menu_list = if current_menu_bar == 0 {
+    let menu_list = if current_menu_list == 0 {
         PpcMenuListDefinition::default()
     } else {
-        let Some(menu_list) = ppc_menu_list_definition(memory, current_menu_bar) else {
+        let Some(menu_list) = ppc_menu_list_definition(memory, current_menu_list) else {
             *last_mem_error = PPC_PARAM_ERR;
             return 0;
         };
@@ -67905,17 +67531,8 @@ fn ppc_alloc_menu_list_handle(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
-    let mut menu_list = PpcMenuListDefinition {
-        regular: menu_handles
-            .iter()
-            .take(PPC_MAX_MENU_LIST_ENTRIES)
-            .map(|handle| PpcMenuListEntry {
-                handle: *handle,
-                value: 0,
-            })
-            .collect(),
-        ..PpcMenuListDefinition::default()
-    };
+    let mut menu_list =
+        PpcMenuListDefinition::from_regular_handles(0, menu_handles.iter().copied());
     ppc_relayout_menu_list(memory, &mut menu_list);
     ppc_alloc_menu_list_definition_handle(
         &menu_list,
@@ -67971,17 +67588,12 @@ fn ppc_get_new_mbar(
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
     };
-    let mbar = vfs_resources[mbar_index].data.clone();
-    if mbar.len() < 2 {
+    let Some(mbar) = MenuBarResource::decode(&vfs_resources[mbar_index].data) else {
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
         return 0;
-    }
-    let declared_count = usize::from(u16::from_be_bytes([mbar[0], mbar[1]]));
-    let count = declared_count.min(mbar.len().saturating_sub(2) / 2);
-    let mut menu_handles = Vec::with_capacity(count);
-    for index in 0..count {
-        let offset = 2 + index * 2;
-        let menu_id = i16::from_be_bytes([mbar[offset], mbar[offset + 1]]);
+    };
+    let mut menu_handles = Vec::with_capacity(mbar.menu_ids.len());
+    for menu_id in mbar.menu_ids {
         let handle = ppc_load_menu_resource(
             menu_id,
             memory,
@@ -68002,8 +67614,10 @@ fn ppc_get_new_mbar(
     // Macintosh Toolbox Essentials (1992), pp. 3-110--3-112 and 3-155:
     // GetNewMBar expands the MBAR's ordered MENU resource IDs into a new,
     // caller-owned menu-list handle; it does not install or draw that list.
-    let handle = ppc_alloc_menu_list_handle(
-        &menu_handles,
+    let mut menu_list = PpcMenuListDefinition::from_regular_handles(mbar_id, menu_handles);
+    ppc_relayout_menu_list(memory, &mut menu_list);
+    let handle = ppc_alloc_menu_list_definition_handle(
+        &menu_list,
         memory,
         heap_cursor,
         heap_limit,
@@ -68019,6 +67633,7 @@ fn ppc_get_new_mbar(
     handle
 }
 
+#[cfg(test)]
 fn ppc_menu_list_handles(memory: &mut PpcSectionMem, menu_list_handle: u32) -> Option<Vec<u32>> {
     Some(
         ppc_menu_list_definition(memory, menu_list_handle)?
@@ -68035,89 +67650,35 @@ fn ppc_menu_list_definition(
         .read_u32_be(menu_list_handle)
         .filter(|ptr| *ptr != 0)?;
 
-    // Inside Macintosh Volume V (1986), pp. V-228--V-230: DynamicMenuList
-    // has a six-byte header, six bytes per regular MenuRec, a six-byte
-    // hierarchical header, then six bytes per HMenuRec. `lastMenu` and
-    // `lastHMenu` are zero for an empty partition and advance by six for
-    // each entry, locating the last record in their respective arrays.
     let regular_bytes = usize::from(memory.read_u16_be(list)?);
-    if regular_bytes % 6 != 0 || regular_bytes / 6 > PPC_MAX_MENU_LIST_ENTRIES {
+    if regular_bytes % 6 != 0 || regular_bytes / 6 > MAX_MENU_LIST_ENTRIES {
         return None;
     }
-    let regular_count = regular_bytes / 6;
-    let mut regular = Vec::with_capacity(regular_count);
-    for index in 0..regular_count {
-        let address = list.checked_add(6 + u32::try_from(index.checked_mul(6)?).ok()?)?;
-        regular.push(PpcMenuListEntry {
-            handle: memory.read_u32_be(address)?,
-            value: memory.read_u16_be(address.checked_add(4)?)? as i16,
-        });
-    }
-
     let hierarchical_header = list.checked_add(6 + u32::try_from(regular_bytes).ok()?)?;
     let hierarchical_bytes = usize::from(memory.read_u16_be(hierarchical_header)?);
-    if hierarchical_bytes % 6 != 0 || hierarchical_bytes / 6 > PPC_MAX_MENU_LIST_ENTRIES {
+    if hierarchical_bytes % 6 != 0 || hierarchical_bytes / 6 > MAX_MENU_LIST_ENTRIES {
         return None;
     }
-    let hierarchical_count = hierarchical_bytes / 6;
-    let mut hierarchical = Vec::with_capacity(hierarchical_count);
-    let hierarchical_start = hierarchical_header.checked_add(6)?;
-    for index in 0..hierarchical_count {
-        let address = hierarchical_start.checked_add(u32::try_from(index.checked_mul(6)?).ok()?)?;
-        hierarchical.push(PpcMenuListEntry {
-            handle: memory.read_u32_be(address)?,
-            value: memory.read_u16_be(address.checked_add(4)?)? as i16,
-        });
-    }
-
-    Some(PpcMenuListDefinition {
-        last_right: memory.read_u16_be(list.checked_add(2)?)? as i16,
-        mb_res_id: memory.read_u16_be(list.checked_add(4)?)? as i16,
-        regular,
-        menu_title_save: memory.read_u32_be(hierarchical_header.checked_add(2)?)?,
-        hierarchical,
-    })
+    let byte_count = 12usize
+        .checked_add(regular_bytes)?
+        .checked_add(hierarchical_bytes)?;
+    let bytes = ppc_memory_read_bytes(memory, list, u32::try_from(byte_count).ok()?)?;
+    PpcMenuListDefinition::decode(&bytes)
 }
 
 fn ppc_menu_list_bytes(menu_list: &PpcMenuListDefinition) -> Vec<u8> {
-    let regular_count = menu_list.regular.len().min(PPC_MAX_MENU_LIST_ENTRIES);
-    let hierarchical_count = menu_list.hierarchical.len().min(PPC_MAX_MENU_LIST_ENTRIES);
-    let mut bytes = Vec::with_capacity(12 + 6 * (regular_count + hierarchical_count));
-    bytes.extend_from_slice(&((regular_count * 6) as u16).to_be_bytes());
-    bytes.extend_from_slice(&menu_list.last_right.to_be_bytes());
-    bytes.extend_from_slice(&menu_list.mb_res_id.to_be_bytes());
-    for entry in menu_list.regular.iter().take(regular_count) {
-        bytes.extend_from_slice(&entry.handle.to_be_bytes());
-        bytes.extend_from_slice(&entry.value.to_be_bytes());
-    }
-    bytes.extend_from_slice(&((hierarchical_count * 6) as u16).to_be_bytes());
-    bytes.extend_from_slice(&menu_list.menu_title_save.to_be_bytes());
-    for entry in menu_list.hierarchical.iter().take(hierarchical_count) {
-        bytes.extend_from_slice(&entry.handle.to_be_bytes());
-        bytes.extend_from_slice(&entry.value.to_be_bytes());
-    }
-    bytes
+    menu_list.encode()
 }
 
 fn ppc_relayout_menu_list(memory: &mut PpcSectionMem, menu_list: &mut PpcMenuListDefinition) {
-    let mut title_left = PPC_MENU_TITLE_HIT_LEFT;
-    for entry in &mut menu_list.regular {
-        entry.value = title_left;
-        let advance = memory
-            .read_u32_be(entry.handle)
+    menu_list.relayout_regular_titles(PPC_MENU_TITLE_HIT_LEFT, PPC_MENU_TITLE_SPACING, |handle| {
+        memory
+            .read_u32_be(handle)
             .filter(|menu| *menu != 0)
             .and_then(|menu| ppc_read_pascal_string(memory, menu.checked_add(14)?))
             .map(|title| ppc_menu_title_advance(&title))
-            .unwrap_or(0);
-        title_left = title_left
-            .saturating_add(advance)
-            .saturating_add(PPC_MENU_TITLE_SPACING);
-    }
-    menu_list.last_right = if menu_list.regular.is_empty() {
-        0
-    } else {
-        title_left
-    };
+            .unwrap_or(0)
+    });
 }
 
 fn ppc_replace_menu_list_definition(
@@ -68146,7 +67707,6 @@ fn ppc_insert_menu(
     heap_limit: u32,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    current_menu_bar: &mut u32,
     menu_handle: u32,
     before_id: i16,
 ) -> i16 {
@@ -68157,8 +67717,9 @@ fn ppc_insert_menu(
     {
         return PPC_PARAM_ERR;
     }
-    if *current_menu_bar == 0 {
-        *current_menu_bar = ppc_alloc_menu_list_handle(
+    let mut current_menu_list = ppc_current_menu_list(memory);
+    if current_menu_list == 0 {
+        current_menu_list = ppc_alloc_menu_list_handle(
             &[],
             memory,
             heap_cursor,
@@ -68166,69 +67727,31 @@ fn ppc_insert_menu(
             handles,
             free_handle_blocks,
         );
-        if *current_menu_bar == 0 {
+        if current_menu_list == 0 {
             return PPC_MEM_FULL_ERR;
         }
+        ppc_set_current_menu_list(memory, current_menu_list);
     }
-    let Some(mut menu_list) = ppc_menu_list_definition(memory, *current_menu_bar) else {
+    let Some(mut menu_list) = ppc_menu_list_definition(memory, current_menu_list) else {
         return PPC_PARAM_ERR;
     };
-    if menu_list.contains_handle(menu_handle) {
-        let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, *current_menu_bar);
+    if !menu_list.insert(menu_handle, before_id, |candidate| {
+        memory
+            .read_u32_be(candidate)
+            .and_then(|menu| memory.read_u16_be(menu))
+            .map(|id| id as i16)
+    }) {
         return PPC_NO_ERR;
-    }
-    let partition_full = if before_id == -1 {
-        menu_list.hierarchical.len() >= PPC_MAX_MENU_LIST_ENTRIES
-    } else {
-        menu_list.regular.len() >= PPC_MAX_MENU_LIST_ENTRIES
-    };
-    if partition_full {
-        // MTE 1992 p. 3-108: InsertMenu is a no-op when the list is full.
-        return PPC_NO_ERR;
-    }
-
-    if before_id == -1 {
-        menu_list.hierarchical.push(PpcMenuListEntry {
-            handle: menu_handle,
-            value: 0,
-        });
-    } else {
-        let insertion = if before_id == 0 {
-            menu_list.regular.len()
-        } else {
-            menu_list
-                .regular
-                .iter()
-                .position(|candidate| {
-                    memory
-                        .read_u32_be(candidate.handle)
-                        .and_then(|menu| memory.read_u16_be(menu))
-                        .map(|id| id as i16)
-                        == Some(before_id)
-                })
-                .unwrap_or(menu_list.regular.len())
-        };
-        menu_list.regular.insert(
-            insertion,
-            PpcMenuListEntry {
-                handle: menu_handle,
-                value: 0,
-            },
-        );
     }
     ppc_relayout_menu_list(memory, &mut menu_list);
-    let result = ppc_replace_menu_list_definition(
+    ppc_replace_menu_list_definition(
         memory,
         heap_cursor,
         heap_limit,
         handles,
-        *current_menu_bar,
+        current_menu_list,
         &menu_list,
-    );
-    if result == PPC_NO_ERR {
-        let _ = memory.write_u32_be(crate::memory::globals::addr::MENU_LIST, *current_menu_bar);
-    }
-    result
+    )
 }
 
 fn ppc_delete_menu(
@@ -68245,25 +67768,15 @@ fn ppc_delete_menu(
     let Some(mut menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return PPC_PARAM_ERR;
     };
-    let matching_index = |entries: &[PpcMenuListEntry], memory: &mut PpcSectionMem| {
-        entries.iter().position(|candidate| {
+    if menu_list
+        .remove_by_id(menu_id, |candidate| {
             memory
-                .read_u32_be(candidate.handle)
+                .read_u32_be(candidate)
                 .and_then(|menu| memory.read_u16_be(menu))
                 .map(|id| id as i16)
-                == Some(menu_id)
         })
-    };
-    let removed = if let Some(index) = matching_index(&menu_list.hierarchical, memory) {
-        menu_list.hierarchical.remove(index);
-        true
-    } else if let Some(index) = matching_index(&menu_list.regular, memory) {
-        menu_list.regular.remove(index);
-        true
-    } else {
-        false
-    };
-    if !removed {
+        .is_none()
+    {
         return PPC_NO_ERR;
     }
     ppc_relayout_menu_list(memory, &mut menu_list);
@@ -68281,23 +67794,15 @@ fn ppc_get_menu_handle(memory: &mut PpcSectionMem, menu_list_handle: u32, menu_i
     let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return 0;
     };
-    // Inside Macintosh Volume V (1986), p. V-245: resolve the hierarchical
-    // portion first so a submenu can safely share an ID with a regular menu.
-    for menu_handle in menu_list
-        .hierarchical_handles()
-        .chain(menu_list.regular_handles())
-    {
-        if menu_handle == 0 {
-            continue;
-        }
-        let Some(menu) = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0) else {
-            continue;
-        };
-        if memory.read_u16_be(menu).map(|id| id as i16) == Some(menu_id) {
-            return menu_handle;
-        }
-    }
-    0
+    menu_list
+        .find_handle_by_id(menu_id, |handle| {
+            memory
+                .read_u32_be(handle)
+                .filter(|menu| *menu != 0)
+                .and_then(|menu| memory.read_u16_be(menu))
+                .map(|id| id as i16)
+        })
+        .unwrap_or(0)
 }
 
 fn ppc_regular_menu_contains_id(
@@ -68392,11 +67897,14 @@ fn ppc_set_menu_command_highlight(
     gworlds: &[PpcGWorldRecord],
     menu_list_handle: u32,
     result: u32,
+    known_root_menu_id: Option<i16>,
     screen_clut: &[[u16; 3]; 256],
     menu_bar_hidden: bool,
 ) {
     let selected_menu_id = (result >> 16) as u16 as i16;
-    let root_menu_id = ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
+    let root_menu_id = known_root_menu_id.unwrap_or_else(|| {
+        ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id)
+    });
     ppc_set_menu_title_highlight(
         memory,
         gworlds,
@@ -68531,10 +68039,14 @@ fn ppc_draw_menu_bar(
     let highlighted_menu_id =
         ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
     let mut highlighted_title_drawn = false;
-    let mut title_h = PPC_MENU_TITLE_ORIGIN_H;
     let menu_bar_height = i16::try_from(height).unwrap_or(i16::MAX);
     let title_v = ppc_menu_bar_title_baseline(menu_bar_height);
-    for menu_handle in menu_list.regular_handles().take(64) {
+    // Inside Macintosh Volume V (1986), pp. V-228--V-230: regular MenuList
+    // entries carry their live menuLeft values and lastRight closes the final
+    // title cell. The shared MenuList operation is therefore authoritative
+    // for drawing as well as hit testing; do not reconstruct a second layout
+    // from title widths in this PowerPC adapter.
+    for (menu_handle, title_left, title_right) in menu_list.regular_title_regions() {
         if menu_handle == 0 {
             continue;
         }
@@ -68545,10 +68057,11 @@ fn ppc_draw_menu_bar(
         let Some(title) = ppc_read_pascal_string(memory, title_ptr) else {
             continue;
         };
+        let title_h = title_left
+            .saturating_add(PPC_MENU_TITLE_ORIGIN_H.saturating_sub(PPC_MENU_TITLE_HIT_LEFT));
         let system_menu_mark = ppc_is_system_menu_mark(&title);
-        let advance = if system_menu_mark {
+        if system_menu_mark {
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
-            PPC_SYSTEM_MENU_MARK_ADVANCE
         } else {
             let explicit_index = ppc_indexed_depth_entry_count(front_buffer.depth)
                 .and_then(|_| u8::try_from(black).ok());
@@ -68563,15 +68076,10 @@ fn ppc_draw_menu_bar(
                 PPC_RGB_BLACK,
                 explicit_index,
                 &title,
-            )
-        };
+            );
+        }
         let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
         if !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id {
-            let title_left = title_h
-                .saturating_sub(PPC_MENU_TITLE_ORIGIN_H.saturating_sub(PPC_MENU_TITLE_HIT_LEFT));
-            let title_right = title_left
-                .saturating_add(advance)
-                .saturating_add(PPC_MENU_TITLE_SPACING);
             ppc_reverse_menu_title_cell(
                 memory,
                 front_buffer,
@@ -68588,9 +68096,6 @@ fn ppc_draw_menu_bar(
             }
             highlighted_title_drawn = true;
         }
-        title_h = title_h
-            .saturating_add(advance)
-            .saturating_add(PPC_MENU_TITLE_SPACING);
     }
     true
 }
@@ -68649,6 +68154,14 @@ fn ppc_draw_system_menu_mark(
             );
         }
     }
+}
+
+fn ppc_menu_items_from_memory(memory: &mut PpcSectionMem, menu_handle: u32) -> Option<MenuItems> {
+    let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+    MenuItems::decode_with(|offset| {
+        let offset = u32::try_from(offset).ok()?;
+        memory.read_u8(menu.checked_add(offset)?)
+    })
 }
 
 fn ppc_menu_first_item(memory: &mut PpcSectionMem, menu_handle: u32) -> Option<u32> {
@@ -77219,7 +76732,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 menu,
                 0,
             ),
@@ -77236,13 +76748,14 @@ mod tests {
         item_specs: &[u8],
     ) -> u32 {
         let menu = install_test_menu(loaded, scratch, menu_id, title, item_specs);
+        let current_menu_list = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
             ppc_delete_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                loaded.toolbox_startup.current_menu_bar,
+                current_menu_list,
                 menu_id,
             ),
             PPC_NO_ERR,
@@ -77254,13 +76767,22 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 menu,
                 -1,
             ),
             PPC_NO_ERR,
         );
         menu
+    }
+
+    fn draw_current_test_menu_bar(loaded: &mut PpcLoadedApp) -> bool {
+        let menu_list = ppc_current_menu_list(&mut loaded.memory);
+        ppc_draw_menu_bar(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            menu_list,
+            &loaded.screen_clut,
+        )
     }
 
     fn test_wind_resource(
@@ -77574,6 +77096,28 @@ mod tests {
 
         assert_eq!(ppc_count_menu_items(&mut memory, menu_handle), 2);
 
+        let unterminated_handle = 0x1500;
+        let unterminated_menu = 0x1600;
+        memory.add_region(unterminated_handle, vec![0; 4]);
+        memory.add_region(unterminated_menu, vec![0; 24]);
+        memory
+            .write_u32_be(unterminated_handle, unterminated_menu)
+            .unwrap();
+        memory
+            .write_u32_be(unterminated_menu + 10, u32::MAX)
+            .unwrap();
+        memory.write_u8(unterminated_menu + 14, 0).unwrap();
+        memory.write_u8(unterminated_menu + 15, 4).unwrap();
+        memory.write_bytes(unterminated_menu + 16, b"Open").unwrap();
+        memory
+            .write_bytes(unterminated_menu + 20, &[0, b'O', 0, 0])
+            .unwrap();
+        assert_eq!(
+            ppc_count_menu_items(&mut memory, unterminated_handle),
+            0,
+            "both adapters must reject the same unterminated MenuInfo sequence"
+        );
+
         let mut cpu = PpcCpu::new();
         cpu.gpr[3] = menu_handle;
         cpu.gpr[4] = 2;
@@ -77588,12 +77132,19 @@ mod tests {
         ppc_get_item_cmd(&cpu, &mut memory);
         assert_eq!(memory.read_u16_be(output), Some(u16::from(b'Q')));
         assert_eq!(
-            ppc_menu_key(&mut memory, menu_list_handle, b'r'),
+            ppc_menu_key(&mut memory, menu_list_handle, b'r')
+                .map_or(0, MenuKeySelection::packed_result),
             (128 << 16) | 1
         );
 
         cpu.gpr[5] = 0x1b;
-        ppc_set_item_cmd(&cpu, &mut memory);
+        let handles = [PpcHandleRecord {
+            handle: menu_handle,
+            ptr: menu,
+            size: 64,
+            capacity: 64,
+        }];
+        ppc_set_item_cmd(&cpu, &mut memory, &handles);
         cpu.gpr[5] = output;
         ppc_get_item_cmd(&cpu, &mut memory);
         assert_eq!(memory.read_u16_be(output), Some(0x1b));
@@ -77684,7 +77235,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 regular,
                 0,
             ),
@@ -77697,14 +77247,13 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 hierarchical,
                 -1,
             ),
             PPC_NO_ERR
         );
 
-        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
         assert_ne!(menu_list_handle, 0);
         assert_eq!(
             loaded
@@ -77761,9 +77310,84 @@ mod tests {
             hierarchical
         );
         assert_eq!(
-            ppc_menu_key(&mut loaded.memory, menu_list_handle, b'd'),
+            ppc_menu_key(&mut loaded.memory, menu_list_handle, b'd')
+                .map_or(0, MenuKeySelection::packed_result),
             (200 << 16) | 1
         );
+        let regular_command =
+            ppc_menu_item_attribute_address(&mut loaded.memory, regular, 1, 1).unwrap();
+        loaded.memory.write_u8(regular_command, b'D').unwrap();
+        assert_eq!(
+            ppc_menu_key(&mut loaded.memory, menu_list_handle, b'd')
+                .map_or(0, MenuKeySelection::packed_result),
+            (128 << 16) | 1,
+            "regular menus must be searched before the hierarchical partition"
+        );
+        loaded.memory.write_u8(regular_command, b'O').unwrap();
+        let command = ppc_menu_item_attribute_address(&mut loaded.memory, regular, 1, 1).unwrap();
+        let mark = ppc_menu_item_attribute_address(&mut loaded.memory, regular, 1, 2).unwrap();
+        loaded.memory.write_u8(command, 0x1B).unwrap();
+        loaded.memory.write_u8(mark, 200).unwrap();
+        assert_eq!(
+            ppc_submenu_handle_for_item(&mut loaded.memory, menu_list_handle, regular, 1),
+            Some(hierarchical),
+            "submenu resolution must find the matching hierarchical entry"
+        );
+        loaded.memory.write_u16_be(menu_list + 2, 80).unwrap();
+        loaded.memory.write_u16_be(menu_list + 10, 40).unwrap();
+        assert_eq!(
+            ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list_handle, 39),
+            None
+        );
+        assert_eq!(
+            ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list_handle, 40),
+            Some((regular, 40)),
+            "PPC title hits must use the live guest menuLeft"
+        );
+        assert_eq!(
+            ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list_handle, 79),
+            Some((regular, 40))
+        );
+        assert_eq!(
+            ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list_handle, 80),
+            None
+        );
+        assert_eq!(
+            ppc_menu_select(
+                &mut loaded.memory,
+                menu_list_handle,
+                40,
+                PpcInputSnapshot {
+                    mouse_v: 21,
+                    mouse_h: 40,
+                    ..PpcInputSnapshot::default()
+                },
+            ),
+            (128 << 16) | 1,
+            "the fallback MenuSelect path must use the live guest menuLeft"
+        );
+        assert_eq!(
+            ppc_menu_select(
+                &mut loaded.memory,
+                menu_list_handle,
+                PPC_MENU_TITLE_HIT_LEFT as u16 as u32,
+                PpcInputSnapshot {
+                    mouse_v: 21,
+                    mouse_h: PPC_MENU_TITLE_HIT_LEFT,
+                    ..PpcInputSnapshot::default()
+                },
+            ),
+            0,
+            "the stale pre-mutation title cell must not remain selectable"
+        );
+        loaded
+            .memory
+            .write_u16_be(menu_list + 2, definition.last_right as u16)
+            .unwrap();
+        loaded
+            .memory
+            .write_u16_be(menu_list + 10, definition.regular[0].value as u16)
+            .unwrap();
 
         let first_non_title_h = definition.last_right.saturating_add(1);
         assert_eq!(
@@ -77815,6 +77439,11 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(regular_only, 0);
+        assert_eq!(
+            ppc_submenu_handle_for_item(&mut loaded.memory, regular_only, regular, 1),
+            None,
+            "a detached or regular-only ID match must not resolve as a submenu"
+        );
         assert!(loaded
             .memory
             .write_bytes(PPC_MAIN_SCREEN_BASE, &vec![0x55; menu_bar_bytes as usize])
@@ -77839,7 +77468,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 hierarchical,
                 0,
             ),
@@ -77849,6 +77477,44 @@ mod tests {
             ppc_menu_list_definition(&mut loaded.memory, menu_list_handle),
             Some(before_duplicate),
             "reinserting a current menu must be a no-op"
+        );
+    }
+
+    #[test]
+    fn native_draw_menu_bar_uses_live_shared_title_geometry() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
+        let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
+        loaded.memory.write_u16_be(menu_list + 2, 90).unwrap();
+        loaded.memory.write_u16_be(menu_list + 6 + 4, 50).unwrap();
+
+        assert!(draw_current_test_menu_bar(&mut loaded));
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black = ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut)
+            .expect("black screen pixel");
+        let mut contains_black = |left: i16, right: i16| {
+            (2..18).any(|y| {
+                (left..right).any(|x| {
+                    ppc_quickdraw_read_pixel(
+                        &mut loaded.memory,
+                        front,
+                        (i32::from(x), i32::from(y)),
+                    ) == Some(black)
+                })
+            })
+        };
+
+        assert!(
+            !contains_black(PPC_MENU_TITLE_ORIGIN_H, 40),
+            "drawing must not retain the independently reconstructed title origin"
+        );
+        assert!(
+            contains_black(57, 80),
+            "drawing must place title artwork from the live menuLeft"
         );
     }
 
@@ -77896,14 +77562,13 @@ mod tests {
                     loaded.heap_limit,
                     &mut loaded.handles,
                     &mut loaded.free_handle_blocks,
-                    &mut loaded.toolbox_startup.current_menu_bar,
                     handle,
                     before_id,
                 ),
                 PPC_NO_ERR
             );
         }
-        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
             ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 200),
             hierarchical,
@@ -77991,7 +77656,7 @@ mod tests {
                 handle: 0xdead_0000,
                 value: 0,
             };
-            PPC_MAX_MENU_LIST_ENTRIES - 1
+            MAX_MENU_LIST_ENTRIES - 1
         ];
         regular.push(PpcMenuListEntry {
             handle: existing,
@@ -78010,7 +77675,7 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(current, 0);
-        loaded.toolbox_startup.current_menu_bar = current;
+        ppc_set_current_menu_list(&mut loaded.memory, current);
 
         assert_eq!(
             ppc_insert_menu(
@@ -78019,7 +77684,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 insertion,
                 200,
             ),
@@ -78047,9 +77711,9 @@ mod tests {
                 PpcImportDispatcherTarget::QuickDrawCompatibility,
             );
             let item = if attribute_offset == 0 {
-                b"Item^\x07".as_slice()
+                b"Item^7".as_slice()
             } else {
-                b"Item<BI".as_slice()
+                b"Item<B<I".as_slice()
             };
             let menu = install_test_menu(&mut loaded, scratch, 128, b"File", item);
             let output = scratch + 0x300;
@@ -78255,7 +77919,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 menu,
                 0,
             ),
@@ -78286,12 +77949,7 @@ mod tests {
             run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
             loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 0).unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let front = ppc_live_front_buffer_for_gworld(
                 &mut loaded.memory,
                 &loaded.gworlds,
@@ -78382,12 +78040,7 @@ mod tests {
         ppc_calc_menu_size(&mut loaded.memory, menu);
 
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
-        assert!(ppc_draw_menu_bar(
-            &mut loaded.memory,
-            &loaded.gworlds,
-            loaded.toolbox_startup.current_menu_bar,
-            &loaded.screen_clut,
-        ));
+        assert!(draw_current_test_menu_bar(&mut loaded));
         let framebuffer_len = front.row_bytes * front.height;
         let before =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
@@ -78446,7 +78099,8 @@ mod tests {
                 }));
             };
 
-        let row_top = |item: i16| tracking.popup_top + 2 + (item - 1) * 16;
+        let row_top =
+            |item: i16| tracking.popup_top + ppc_tracked_menu_item_offset(&tracking, item);
         assert_glyph_color(
             &mut loaded.memory,
             (
@@ -78522,7 +78176,7 @@ mod tests {
                 front,
                 (
                     i32::from(tracking.popup_left + 10),
-                    i32::from(row_top(4) + 7),
+                    i32::from(row_top(4) + 2),
                 ),
             ),
             Some(gray)
@@ -78636,7 +78290,7 @@ mod tests {
         let state = ppc_begin_tracked_menu_with_appearances(
             &mut loaded.memory,
             front,
-            PpcMenuTrackingKind::MenuBar,
+            MenuTrackingKind::MenuBar,
             menu,
             11,
             20,
@@ -78654,7 +78308,7 @@ mod tests {
             0,
         );
         let pixels_for_item = |memory: &mut PpcSectionMem, item: i16| {
-            let top = state.popup_top + 2 + ppc_tracked_menu_item_offset(&state, item);
+            let top = state.popup_top + ppc_tracked_menu_item_offset(&state, item);
             let mut pixels = Vec::with_capacity(16 * 48);
             for y in 0..16i32 {
                 for x in 0..48i32 {
@@ -78679,7 +78333,7 @@ mod tests {
             );
         }
         for item in 1..=8 {
-            let top = state.popup_top + 2 + ppc_tracked_menu_item_offset(&state, item);
+            let top = state.popup_top + ppc_tracked_menu_item_offset(&state, item);
             assert_eq!(
                 ppc_menu_tracking_item(
                     &mut loaded.memory,
@@ -78697,6 +78351,64 @@ mod tests {
     }
 
     #[test]
+    fn tracked_menu_omits_trailing_separator_rows() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"Apple",
+            b"About;-",
+        );
+
+        let appearances = ppc_menu_item_appearances(&mut loaded.memory, menu, &[], 0);
+        assert_eq!(appearances.len(), 1);
+        assert_eq!(ppc_menu_appearance_height(&appearances), 16);
+        ppc_calc_menu_size(&mut loaded.memory, menu);
+        let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+        assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(16));
+    }
+
+    #[test]
+    fn native_calc_menu_size_uses_shared_macos_8_1_width_policy() {
+        let pef = synthetic_pef_with_import(b"NewMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"File",
+            b"Alpha;Parent/\x1b",
+        );
+        let parent_width = ppc_text_bytes_advance_for_font(
+            b"Parent",
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        );
+        assert_eq!(
+            parent_width,
+            TrapDispatcher::fb_measure_string("Parent", 0, 12),
+            "PPC and 68k adapters should resolve the same bundled font metric",
+        );
+        assert_eq!(
+            ppc_menu_item(&mut loaded.memory, menu, 2).and_then(|(address, length)| {
+                ppc_memory_read_bytes(&mut loaded.memory, address + 1, u32::from(length))
+            }),
+            Some(b"Parent".to_vec()),
+        );
+
+        ppc_calc_menu_size(&mut loaded.memory, menu);
+
+        let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
+        assert_eq!(
+            loaded.memory.read_u16_be(menu_ptr + 2),
+            Some((parent_width + 64) as u16),
+        );
+        assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(32));
+    }
+
+    #[test]
     fn tracked_menu_resolves_icon_precedence_and_variable_rows_at_supported_depths() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -78705,7 +78417,7 @@ mod tests {
             PPC_DATA_BASE + 0x1000,
             128,
             b"File",
-            b"Normal^\x01;Reduced^\x02/\x1d;Small^\x03/\x1e;Color^\x04",
+            b"Normal^1;Reduced^2/\x1d;Small^3/\x1e;Color^4",
         );
         loaded.current_resource_refnum = 5;
         let record = |res_type: [u8; 4], res_id: i16, data: Vec<u8>| PpcVfsResourceRecord {
@@ -78747,12 +78459,7 @@ mod tests {
                 PPC_MAIN_GWORLD,
             )
             .unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let framebuffer_len = front.row_bytes * front.height;
             let before =
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
@@ -78797,11 +78504,11 @@ mod tests {
                 tracking.item_appearances[3].icon,
                 Some(PpcTrackedMenuIcon::CIcon(_))
             ));
-            assert_eq!(tracking.popup_height, 86);
+            assert_eq!(tracking.popup_height, 82);
             let black =
                 ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
             for item in 1..=3 {
-                let top = tracking.popup_top + 2 + ppc_tracked_menu_item_offset(&tracking, item);
+                let top = tracking.popup_top + ppc_tracked_menu_item_offset(&tracking, item);
                 assert_eq!(
                     ppc_quickdraw_read_pixel(
                         &mut loaded.memory,
@@ -78857,7 +78564,7 @@ mod tests {
             scratch,
             128,
             b"File",
-            b"Icon^\x01;Parent/\x1b!\xc9",
+            b"Icon^1;Parent/\x1b!\xc9",
         );
         loaded.memory.add_region(scratch + 0x200, vec![0; 0x200]);
         assert!(ppc_write_pstring_bytes(
@@ -78898,7 +78605,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 submenu,
                 -1,
             ),
@@ -78936,7 +78642,7 @@ mod tests {
         );
         let root = loaded.toolbox_startup.menu_tracking.clone().unwrap();
         assert_eq!(root.item_appearances[0].height, 34);
-        let parent_top = root.popup_top + 2 + root.item_appearances[0].height;
+        let parent_top = root.popup_top + root.item_appearances[0].height;
         ppc_track_menu_while_held_with_resources(
             &mut loaded.memory,
             &loaded.gworlds,
@@ -79015,12 +78721,7 @@ mod tests {
                 .memory
                 .write_bytes(front.base_addr, &pattern)
                 .unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let before = ppc_memory_read_bytes(
                 &mut loaded.memory,
                 front.base_addr,
@@ -79072,7 +78773,7 @@ mod tests {
                 ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
             let item_origin = (
                 i32::from(tracking.popup_left.saturating_add(18)),
-                i32::from(tracking.popup_top.saturating_add(2 + 12)),
+                i32::from(tracking.popup_top.saturating_add(12)),
             );
             let normal_item_ink = item_glyph_pixels
                 .iter()
@@ -79214,7 +78915,6 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 submenu,
                 -1,
             ),
@@ -79243,12 +78943,7 @@ mod tests {
                 .memory
                 .write_bytes(front.base_addr, &pattern)
                 .unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let before = ppc_memory_read_bytes(
                 &mut loaded.memory,
                 front.base_addr,
@@ -79291,13 +78986,13 @@ mod tests {
             assert_eq!(child.parent_item, 1);
             assert_eq!(
                 child.popup_left,
-                tracking.popup_left + tracking.popup_width - 1
+                tracking.popup_left + tracking.popup_width - 4
             );
-            assert_eq!(child.popup_top, tracking.popup_top + 2);
+            assert_eq!(child.popup_top, tracking.popup_top + 7);
 
             let disabled_hover = PpcInputSnapshot {
                 mouse_button: true,
-                mouse_v: child.popup_top + 2 + 16 + 8,
+                mouse_v: child.popup_top + 16 + 8,
                 mouse_h: child.popup_left + 20,
                 ..PpcInputSnapshot::default()
             };
@@ -79356,12 +79051,7 @@ mod tests {
                 highlighted, before,
                 "{depth}bpp root title was not highlighted"
             );
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             assert_eq!(
                 ppc_memory_read_bytes(
                     &mut loaded.memory,
@@ -79371,10 +79061,11 @@ mod tests {
                 Some(highlighted),
                 "{depth}bpp DrawMenuBar lost the root title for submenu TheMenu",
             );
+            let menu_list = ppc_current_menu_list(&mut loaded.memory);
             ppc_set_menu_title_highlight(
                 &mut loaded.memory,
                 &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
+                menu_list,
                 0,
                 &loaded.screen_clut,
                 false,
@@ -79443,26 +79134,20 @@ mod tests {
         let front =
             ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
                 .unwrap();
-        let parent_menu =
-            ppc_menu_list_definition(&mut loaded.memory, loaded.toolbox_startup.current_menu_bar)
-                .unwrap()
-                .regular_handles()
-                .next()
-                .unwrap();
+        let menu_list = ppc_current_menu_list(&mut loaded.memory);
+        let parent_menu = ppc_menu_list_definition(&mut loaded.memory, menu_list)
+            .unwrap()
+            .regular_handles()
+            .next()
+            .unwrap();
         let mut parent =
             ppc_begin_menu_bar_tracking(&mut loaded.memory, front, parent_menu, 400).unwrap();
         parent.popup_left = ppc_u32_to_i16_saturating(front.width).saturating_sub(10);
-        let flipped = ppc_begin_submenu_tracking(
-            &mut loaded.memory,
-            loaded.toolbox_startup.current_menu_bar,
-            front,
-            &parent,
-            1,
-        )
-        .unwrap();
+        let flipped =
+            ppc_begin_submenu_tracking(&mut loaded.memory, menu_list, front, &parent, 1).unwrap();
         assert_eq!(
             flipped.popup_left,
-            parent.popup_left - flipped.popup_width + 1,
+            ppc_u32_to_i16_saturating(front.width) - flipped.popup_width - 8,
         );
         ppc_restore_tracked_menu(&mut loaded.memory, front, &flipped);
     }
@@ -79539,14 +79224,13 @@ mod tests {
                     loaded.heap_limit,
                     &mut loaded.handles,
                     &mut loaded.free_handle_blocks,
-                    &mut loaded.toolbox_startup.current_menu_bar,
                     menu,
                     -1,
                 ),
                 PPC_NO_ERR,
             );
         }
-        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
         for (selected, expected_root) in [(128, 128), (201, 128), (202, 128), (999, 0)] {
             assert_eq!(
                 ppc_root_menu_id_for_selection(&mut loaded.memory, menu_list_handle, selected,),
@@ -79575,12 +79259,7 @@ mod tests {
                 .memory
                 .write_bytes(front.base_addr, &pattern)
                 .unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let before =
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, active_len).unwrap();
 
@@ -79618,7 +79297,7 @@ mod tests {
             track(
                 &mut loaded,
                 (
-                    options_pane.popup_top + 2 + 16 + 8,
+                    options_pane.popup_top + 16 + 8,
                     options_pane.popup_left + 20,
                 ),
             );
@@ -79655,7 +79334,7 @@ mod tests {
             );
 
             let leaf = PpcInputSnapshot {
-                mouse_v: speed_pane.popup_top + 2 + 16 + 8,
+                mouse_v: speed_pane.popup_top + 16 + 8,
                 mouse_h: speed_pane.popup_left + 20,
                 ..PpcInputSnapshot::default()
             };
@@ -79671,10 +79350,11 @@ mod tests {
                 Some((202 << 16) | 2),
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));
+            let menu_list = ppc_current_menu_list(&mut loaded.memory);
             ppc_set_menu_title_highlight(
                 &mut loaded.memory,
                 &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
+                menu_list,
                 0,
                 &loaded.screen_clut,
                 false,
@@ -79734,12 +79414,7 @@ mod tests {
             let below_bar_before =
                 ppc_memory_read_bytes(&mut loaded.memory, below_bar, below_bar_len).unwrap();
 
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
 
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, below_bar, below_bar_len),
@@ -79844,12 +79519,7 @@ mod tests {
                 depth: 8,
             },
         );
-        assert!(ppc_draw_menu_bar(
-            &mut loaded.memory,
-            &loaded.gworlds,
-            loaded.toolbox_startup.current_menu_bar,
-            &loaded.screen_clut,
-        ));
+        assert!(draw_current_test_menu_bar(&mut loaded));
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, cached.base_addr, cached_len),
             Some(cached_before.clone()),
@@ -79926,6 +79596,32 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_get_new_mbar_rejects_a_truncated_declared_menu_sequence() {
+        let pef = synthetic_pef_with_import(b"GetNewMBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: loaded.current_resource_refnum,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"MBAR"),
+            res_id: 1001,
+            name: Vec::new(),
+            data: vec![0, 2, 0, 128],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        loaded.cpu.gpr[3] = 1001;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
     fn hle_import_runner_builds_and_draws_mbar_resources() {
         fn menu_resource(menu_id: i16, title: &[u8]) -> Vec<u8> {
             let mut data = vec![0; 14];
@@ -79990,9 +79686,10 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         let menu_list_handle = loaded.cpu.gpr[3];
-        loaded.toolbox_startup.current_menu_bar = menu_list_handle;
+        ppc_set_current_menu_list(&mut loaded.memory, menu_list_handle);
         let menu_list = loaded.memory.read_u32_be(menu_list_handle).unwrap();
         assert_eq!(loaded.memory.read_u16_be(menu_list), Some(12));
+        assert_eq!(loaded.memory.read_u16_be(menu_list + 4), Some(1000));
         assert_ne!(
             ppc_get_menu_handle(&mut loaded.memory, menu_list_handle, 128),
             0
@@ -80140,13 +79837,12 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 menu_handle,
                 0,
             ),
             PPC_NO_ERR
         );
-        let menu_list_handle = loaded.toolbox_startup.current_menu_bar;
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
         assert!(ppc_draw_menu_bar(
             &mut loaded.memory,
             &loaded.gworlds,
@@ -80181,7 +79877,7 @@ mod tests {
             let tracking = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
             let input = PpcInputSnapshot {
                 mouse_button: true,
-                mouse_v: tracking.popup_top + 2 + (item - 1) * 16 + 4,
+                mouse_v: tracking.popup_top + (item - 1) * 16 + 4,
                 mouse_h: tracking.popup_left + 4,
                 ..PpcInputSnapshot::default()
             };
@@ -80427,7 +80123,7 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(current, 0);
-        loaded.toolbox_startup.current_menu_bar = current;
+        ppc_set_current_menu_list(&mut loaded.memory, current);
         let stack_pointer = loaded.cpu.gpr[1];
 
         let probe = loaded.run_with_hle_imports(64);
@@ -80487,7 +80183,7 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        let installed = loaded.toolbox_startup.current_menu_bar;
+        let installed = ppc_current_menu_list(&mut loaded.memory);
         assert_ne!(installed, 0);
         assert_ne!(installed, source);
         assert_eq!(
@@ -80515,13 +80211,13 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(current, 0);
-        loaded.toolbox_startup.current_menu_bar = current;
+        ppc_set_current_menu_list(&mut loaded.memory, current);
 
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(ppc_current_menu_list(&mut loaded.memory), current);
         assert_eq!(
             ppc_menu_list_handles(&mut loaded.memory, current),
             Some(Vec::new())
@@ -80561,7 +80257,7 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(current, 0);
-        loaded.toolbox_startup.current_menu_bar = current;
+        ppc_set_current_menu_list(&mut loaded.memory, current);
         loaded
             .memory
             .write_u32_be(crate::memory::globals::addr::MENU_LIST, current)
@@ -80586,7 +80282,7 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(ppc_current_menu_list(&mut loaded.memory), current);
         assert_eq!(
             loaded
                 .memory
@@ -80614,7 +80310,7 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(ppc_current_menu_list(&mut loaded.memory), current);
         assert_eq!(
             ppc_menu_list_definition(&mut loaded.memory, current),
             Some(original.clone())
@@ -80639,7 +80335,7 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert!(loaded.toolbox_startup.menus_initialized);
-        let current = loaded.toolbox_startup.current_menu_bar;
+        let current = ppc_current_menu_list(&mut loaded.memory);
         assert_ne!(current, 0);
         assert_eq!(
             loaded
@@ -80691,7 +80387,7 @@ mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.toolbox_startup.current_menu_bar, current);
+        assert_eq!(ppc_current_menu_list(&mut loaded.memory), current);
         assert_eq!(
             loaded
                 .memory
@@ -133065,9 +132761,10 @@ mod tests {
         );
         let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
         let parked_lr = loaded.cpu.lr;
+        assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
         assert_eq!(
-            tracking.kind,
-            PpcMenuTrackingKind::PopUp(PpcPopUpMenuCall {
+            loaded.toolbox_startup.popup_menu_call,
+            Some(PpcPopUpMenuCall {
                 top: 100,
                 left: 50,
                 pop_up_item: 2,
@@ -133075,8 +132772,8 @@ mod tests {
                 return_address: parked_lr,
             })
         );
-        assert_eq!(tracking.popup_left + 1, 50);
-        assert_eq!(tracking.popup_top + 2 + 16, 100);
+        assert_eq!(tracking.popup_left, 50);
+        assert_eq!(tracking.popup_top + 16, 100);
         assert_eq!(tracking.highlighted_item, 2);
         let black =
             ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
@@ -133129,7 +132826,7 @@ mod tests {
 
         let item_two_release = PpcInputSnapshot {
             mouse_button: false,
-            mouse_v: tracking.popup_top + 2 + 16 + 4,
+            mouse_v: tracking.popup_top + 16 + 4,
             mouse_h: tracking.popup_left + 4,
             ..PpcInputSnapshot::default()
         };
@@ -133143,7 +132840,7 @@ mod tests {
 
         let flash_probe = (
             i32::from(tracking.popup_left + 4),
-            i32::from(tracking.popup_top + 2 + 16 + 4),
+            i32::from(tracking.popup_top + 16 + 4),
         );
         let mut flash_pixels =
             vec![ppc_quickdraw_read_pixel(&mut loaded.memory, front, flash_probe).unwrap()];
@@ -133296,7 +132993,7 @@ mod tests {
             let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: false,
-                mouse_v: tracking.popup_top + 2 + 16 + 4,
+                mouse_v: tracking.popup_top + 16 + 4,
                 mouse_h: tracking.popup_left + 4,
                 ..PpcInputSnapshot::default()
             });
@@ -133375,9 +133072,10 @@ mod tests {
 
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
             let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
             assert_eq!(
-                tracking.kind,
-                PpcMenuTrackingKind::PopUp(ppc_popup_menu_call(&loaded.cpu))
+                loaded.toolbox_startup.popup_menu_call,
+                Some(ppc_popup_menu_call(&loaded.cpu))
             );
             assert_eq!(
                 i32::from(tracking.popup_left) + i32::from(tracking.saved_width),
@@ -133432,7 +133130,7 @@ mod tests {
             install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1400, 129, b"Edit", b"Cut");
         let disabled_menu =
             install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1800, 130, b"View", b"Zoom");
-        ppc_set_menu_item_enabled(&mut loaded.memory, disabled_menu, 0, false);
+        ppc_set_menu_item_enabled(&mut loaded.memory, &loaded.handles, disabled_menu, 0, false);
 
         let file_left = PPC_MENU_TITLE_HIT_LEFT;
         let edit_left = file_left
@@ -133442,18 +133140,15 @@ mod tests {
             .saturating_add(ppc_menu_title_advance(b"Edit"))
             .saturating_add(PPC_MENU_TITLE_SPACING);
         let point = |v: i16, h: i16| (u32::from(v as u16) << 16) | u32::from(h as u16);
+        let menu_list = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
-            ppc_menu_handle_at_title_point(
-                &mut loaded.memory,
-                loaded.toolbox_startup.current_menu_bar,
-                point(10, edit_left + 2),
-            ),
+            ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list, point(10, edit_left + 2),),
             Some((edit_menu, edit_left)),
         );
         assert_eq!(
             ppc_menu_handle_at_title_point(
                 &mut loaded.memory,
-                loaded.toolbox_startup.current_menu_bar,
+                menu_list,
                 point(10, disabled_left + 2),
             ),
             None,
@@ -133481,12 +133176,7 @@ mod tests {
                 .memory
                 .write_bytes(front.base_addr, &pattern)
                 .unwrap();
-            assert!(ppc_draw_menu_bar(
-                &mut loaded.memory,
-                &loaded.gworlds,
-                loaded.toolbox_startup.current_menu_bar,
-                &loaded.screen_clut,
-            ));
+            assert!(draw_current_test_menu_bar(&mut loaded));
             let before =
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len)
                     .unwrap();
@@ -134310,7 +134000,7 @@ mod tests {
         let menu_ptr = loaded.memory.read_u32_be(menu).unwrap();
         assert_eq!(ppc_count_menu_items(&mut loaded.memory, menu), 2);
         assert!(loaded.memory.read_u16_be(menu_ptr + 2).unwrap() >= 32);
-        assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(36));
+        assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(32));
 
         assert_eq!(
             ppc_insert_menu(
@@ -134319,18 +134009,14 @@ mod tests {
                 loaded.heap_limit,
                 &mut loaded.handles,
                 &mut loaded.free_handle_blocks,
-                &mut loaded.toolbox_startup.current_menu_bar,
                 menu,
                 0,
             ),
             PPC_NO_ERR
         );
+        let menu_list = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
-            ppc_get_menu_handle(
-                &mut loaded.memory,
-                loaded.toolbox_startup.current_menu_bar,
-                128,
-            ),
+            ppc_get_menu_handle(&mut loaded.memory, menu_list, 128,),
             menu
         );
         assert_eq!(
@@ -134339,19 +134025,12 @@ mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                loaded.toolbox_startup.current_menu_bar,
+                menu_list,
                 128,
             ),
             PPC_NO_ERR
         );
-        assert_eq!(
-            ppc_get_menu_handle(
-                &mut loaded.memory,
-                loaded.toolbox_startup.current_menu_bar,
-                128,
-            ),
-            0
-        );
+        assert_eq!(ppc_get_menu_handle(&mut loaded.memory, menu_list, 128,), 0);
     }
 
     #[test]
@@ -139866,8 +139545,8 @@ mod tests {
     fn hle_import_runner_set_depth_cancels_tracking_only_after_success() {
         let pef = synthetic_pef_with_import(b"SetDepth");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let tracking = PpcMenuTrackingState {
-            kind: PpcMenuTrackingKind::MenuBar,
+        let tracking = PpcMenuTracking {
+            kind: MenuTrackingKind::MenuBar,
             menu_handle: 0x1234,
             popup_left: 11,
             popup_top: 20,
@@ -139908,7 +139587,8 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
 
         let mut popup_tracking = tracking;
-        popup_tracking.kind = PpcMenuTrackingKind::PopUp(PpcPopUpMenuCall {
+        popup_tracking.kind = MenuTrackingKind::PopUp;
+        loaded.toolbox_startup.popup_menu_call = Some(PpcPopUpMenuCall {
             top: 100,
             left: 50,
             pop_up_item: 1,
@@ -140832,7 +140512,7 @@ mod tests {
             &mut loaded.free_handle_blocks,
         );
         assert_ne!(menu_list, 0);
-        loaded.toolbox_startup.current_menu_bar = menu_list;
+        ppc_set_current_menu_list(&mut loaded.memory, menu_list);
 
         let logical_black = 37usize;
         let logical_white = 73usize;
@@ -141023,7 +140703,7 @@ mod tests {
                 let popup_left = tracking.popup_left;
                 let popup_top = tracking.popup_top;
                 let popup_width = tracking.popup_width;
-                let row_top = popup_top + 2;
+                let row_top = popup_top;
                 let unhighlighted_black_glyphs = (row_top..row_top + 16)
                     .flat_map(|y| {
                         (popup_left + 18..popup_left + popup_width - 1).map(move |x| (x, y))

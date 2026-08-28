@@ -1674,15 +1674,10 @@ pub struct TrapDispatcher {
     pub sound_manager: crate::sound::SoundManager,
     /// Menus loaded from MENU resources, in order of insertion
     pub(crate) menus: Vec<super::menu::Menu>,
-    /// Snapshots of `menus` taken by GetMenuBar ($A93B), keyed by the
-    /// guest-side master pointer the trap returned. SetMenuBar ($A93C)
-    /// restores from this map when the caller passes a handle that was
-    /// previously vended by GetMenuBar — the typical save/restore pattern
-    /// real Mac apps use around modal dialogs that disable command keys.
-    /// Inside Macintosh Volume I, I-354
-    pub(crate) saved_menu_bars: HashMap<u32, Vec<super::menu::Menu>>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
+    /// 68k call frame parked while the shared Menu Manager state yields.
+    pub(crate) menu_tracking_stack_ptr: u32,
     /// A host-native menu selection waiting for the guest's normal
     /// FindWindow -> MenuSelect event path.  It is consumed only by
     /// MenuSelect and revalidated against the live menu list there.
@@ -3207,8 +3202,8 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
-            saved_menu_bars: HashMap::new(),
             menu_tracking: None,
+            menu_tracking_stack_ptr: 0,
             pending_native_menu_selection: None,
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
@@ -7101,7 +7096,7 @@ mod tests {
 
     use super::*;
     use crate::cpu::{CpuOps, Register};
-    use crate::trap::menu::MenuTrackingState;
+    use crate::trap::menu::test_tracked_menu_state;
     use crate::trap::test_helpers::setup;
     use std::collections::VecDeque;
 
@@ -7246,17 +7241,7 @@ mod tests {
     }
 
     fn install_menu_tracking(disp: &mut TrapDispatcher) {
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 0,
-            saved_pixels: Vec::new(),
-            dropdown_rect: (0, 0, 0, 0),
-            submenus: Vec::new(),
-            stack_ptr: 0,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
     }
 
     fn install_dialog_tracking(disp: &mut TrapDispatcher) {

@@ -3,6 +3,7 @@
 use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::menu_manager::TrackedMenuPaneView;
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
@@ -2567,13 +2568,13 @@ impl super::TrapDispatcher {
         // Draw visible menu titles from the current menu list. InsertMenu
         // with beforeID=-1 installs a submenu/popup in the current menu
         // list without adding a menu-bar title. MTE 1992, p. 3-121.
-        let mut x: i16 = 18;
-        for menu in &self.menus {
-            if !menu.visible_in_menu_bar {
+        for (menu_idx, left, right) in self.current_menu_title_regions_with_indices(bus) {
+            let Some(menu) = self.menus.get(menu_idx) else {
                 continue;
-            }
+            };
             let title = &menu.title;
             let title_width = Self::menu_title_advance(title);
+            let x = left.saturating_add(7);
             let title_bg_index = self.menu_title_background_pixel_index(bus, menu.id, pixel_size);
             if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                 // StandardMBDF establishes each title's RGB1/RGB2 pair and
@@ -2589,9 +2590,9 @@ impl super::TrapDispatcher {
                         screen_width,
                         screen_height,
                         1,
-                        x - 9,
+                        left - 2,
                         menu_bar_height - 1,
-                        x + title_width + 9,
+                        right + 3,
                         bg_index,
                     );
                 } else {
@@ -2603,9 +2604,9 @@ impl super::TrapDispatcher {
                         screen_width,
                         screen_height,
                         1,
-                        x - 9,
+                        left - 2,
                         menu_bar_height - 1,
-                        x + title_width + 9,
+                        right + 3,
                         false,
                     );
                 }
@@ -2617,9 +2618,9 @@ impl super::TrapDispatcher {
             self.draw_theme_menu_title_chrome(
                 bus,
                 1,
-                x - 7,
+                left,
                 menu_bar_height - 1,
-                x + title_width + 6,
+                right,
                 menu.enabled,
                 false,
             );
@@ -2700,7 +2701,6 @@ impl super::TrapDispatcher {
                     false,
                 );
             }
-            x += width + 13;
         }
     }
 
@@ -5027,12 +5027,12 @@ impl super::TrapDispatcher {
         // pixels are drawn; the logical tracking state must remain intact.
         if let Some((active_menu, dropdowns, hidden_depth)) =
             self.menu_tracking.as_ref().map(|tracking| {
-                let dropdowns = std::iter::once((tracking.active_menu, tracking.dropdown_rect))
+                let dropdowns = std::iter::once((tracking.menu_handle, tracking.dropdown_rect()))
                     .chain(
                         tracking
                             .submenus
                             .iter()
-                            .map(|submenu| (submenu.menu, submenu.dropdown_rect)),
+                            .map(|submenu| (submenu.menu_handle, submenu.dropdown_rect())),
                     )
                     .collect::<Vec<_>>();
                 let hide_classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7
@@ -5048,7 +5048,7 @@ impl super::TrapDispatcher {
                         .map(|(depth, _)| depth + 1)
                         .unwrap_or(0)
                 });
-                (tracking.active_menu, dropdowns, hidden_depth)
+                (tracking.menu_handle, dropdowns, hidden_depth)
             })
         {
             self.highlight_menu_title(bus, active_menu);
@@ -5104,7 +5104,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod redraw_chrome_tests {
     use super::super::dispatch::{ControlTrackingState, DialogItem, ScreenCopyBitsRect};
-    use super::super::menu::{Menu, MenuItem, MenuTrackingState, SubmenuTrackingState};
+    use super::super::menu::{test_tracked_menu_state, tracked_submenu_state, Menu, MenuItem};
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
@@ -5202,23 +5202,13 @@ mod redraw_chrome_tests {
         ];
         let root_rect = (20, 10, 38, 100);
         let child_rect = (24, 140, 42, 230);
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: root_rect,
-            submenus: vec![SubmenuTrackingState {
-                menu: 1,
-                parent_item: 1,
-                highlighted_item: 1,
-                saved_pixels: Vec::new(),
-                dropdown_rect: child_rect,
-            }],
-            stack_ptr: 0,
-            flash_remaining: 5,
-            flash_delay: 0,
-            flash_result: (701u32 << 16) | 1,
-        });
+        let mut child = tracked_submenu_state(1, 1, child_rect, Vec::new());
+        child.highlighted_item = 1;
+        let mut tracking = test_tracked_menu_state(0, root_rect, 1);
+        tracking.submenus.push(child);
+        tracking.flash_remaining = 5;
+        tracking.flash_result = (701u32 << 16) | 1;
+        disp.menu_tracking = Some(tracking);
 
         disp.redraw_chrome(&mut bus);
 
