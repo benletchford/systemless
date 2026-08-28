@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.23.4](https://github.com/benletchford/systemless/compare/v0.23.3...v0.23.4) (2026-08-28)
+
+
+### Bug Fixes
+
+* **runner:** wait-identity proofs compare architectural state only ([#859](https://github.com/benletchford/systemless/issues/859)) ([c55797b](https://github.com/benletchford/systemless/commit/c55797b43173fc48b6e42d3a0ef672e26ebb4769))
+
+
+### Performance Improvements
+
+* **memory:** journal write probes by 32-bit unit and keep bulk stores on their fast paths ([#861](https://github.com/benletchford/systemless/issues/861)) ([2dc4151](https://github.com/benletchford/systemless/commit/2dc4151e67aa48fa71bdd61137e92d37524057b0))
+* **memory:** reuse the write-probe journal and hash it by address ([#857](https://github.com/benletchford/systemless/issues/857)) ([a6228a5](https://github.com/benletchford/systemless/commit/a6228a52e5c14068d823fb9cbf9c0906d0387f0f))
+* **quickdraw:** no per-pixel region test for rectangular regions in CopyBits ([#858](https://github.com/benletchford/systemless/issues/858)) ([28556d4](https://github.com/benletchford/systemless/commit/28556d45f6751f404d8805cc252e7b42c47f6d78))
+* **render:** row-blit 8bpp text and column-fill vertical borders ([#860](https://github.com/benletchford/systemless/issues/860)) ([bfea9cd](https://github.com/benletchford/systemless/commit/bfea9cd16a2dc815a5cbf4c685ebcaf923268666))
+* **render:** row-bulk the 8bpp draw primitives ([#853](https://github.com/benletchford/systemless/issues/853)) ([308c221](https://github.com/benletchford/systemless/commit/308c221065ad974bf6c602756fe4494c2575a85b))
+
 ## [0.23.3](https://github.com/benletchford/systemless/compare/v0.23.2...v0.23.3) (2026-08-28)
 
 
