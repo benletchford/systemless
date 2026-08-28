@@ -229,9 +229,15 @@ const PPC_NATIVE_PARAMETER_GPR_COUNT: usize = 8;
 const PPC_MAX_STACK_SIZE: u32 = PPC_STACK_TOP - PPC_HEAP_BASE;
 const PPC_RAND_SEED_ADDR: u32 = 0x0000_0156;
 const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
-// TheMenu contains the menu ID whose title is currently highlighted.
+// TheMenu identifies the menu owning the selected item. For a hierarchical
+// choice this is the submenu ID even though its originating regular title is
+// visibly highlighted. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119;
 // Inside Macintosh Volume V (1986), pp. V-244 and V-571.
 const PPC_THE_MENU_ADDR: u32 = 0x0000_0a26;
+// MenuDisable contains the packed menu ID and item number most recently
+// tracked by the menu definition procedure. Inside Macintosh Volume V
+// (1986), p. V-571; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
+const PPC_MENU_DISABLE_ADDR: u32 = 0x0000_0b54;
 const PPC_MBAR_HEIGHT_ADDR: u32 = 0x0000_0baa;
 const PPC_DEFAULT_DOUBLE_TIME_TICKS: u32 = 20;
 const PPC_RES_CHANGED_ATTR: u16 = 0x0002;
@@ -1071,6 +1077,7 @@ pub enum PpcImportDispatcherTarget {
     HiliteMenu,
     MenuNoop,
     MenuKey,
+    MenuChoice,
     MenuSelect,
     TestDeviceAttribute,
     SetDeviceAttribute,
@@ -14508,6 +14515,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "AddPt") => PpcImportDispatcherTarget::AddPt,
         ("InterfaceLib", "SubPt") => PpcImportDispatcherTarget::SubPt,
         ("InterfaceLib", "MenuKey") => PpcImportDispatcherTarget::MenuKey,
+        ("InterfaceLib", "MenuChoice") => PpcImportDispatcherTarget::MenuChoice,
         ("InterfaceLib", "MenuSelect") => PpcImportDispatcherTarget::MenuSelect,
         ("InterfaceLib", "MoveTo") => PpcImportDispatcherTarget::MoveTo,
         ("InterfaceLib", "Move") => PpcImportDispatcherTarget::Move,
@@ -16242,6 +16250,14 @@ fn dispatch_supported_import(
                 );
             }
             Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::MenuChoice => {
+            // MenuChoice is a parameterless C function that returns the
+            // standard MDEF's packed MenuDisable low-memory value unchanged.
+            // Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
+            Some(PpcImportAction::Return(
+                memory.read_u32_be(PPC_MENU_DISABLE_ADDR).unwrap_or(0),
+            ))
         }
         PpcImportDispatcherTarget::MenuSelect => {
             if toolbox_startup
@@ -79507,6 +79523,39 @@ mod tests {
             dispatcher_target_for_import("InterfaceLib", "HMGetHelpMenuHandle"),
             PpcImportDispatcherTarget::HMGetHelpMenuHandle
         );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "MenuChoice"),
+            PpcImportDispatcherTarget::MenuChoice
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_menu_choice_returns_menu_disable_without_side_effects() {
+        let pef = synthetic_pef_with_import(b"MenuChoice");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let original_sp = loaded.cpu.gpr[1];
+
+        for expected in [0, (128u32 << 16) | 3, (201u32 << 16) | 0xffff] {
+            loaded
+                .memory
+                .write_u32_be(PPC_MENU_DISABLE_ADDR, expected)
+                .unwrap();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+            loaded.cpu.gpr[3] = 0xdead_beef;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(probe.unsupported_import_index, None);
+            assert_eq!(loaded.cpu.gpr[3], expected);
+            assert_eq!(loaded.cpu.gpr[1], original_sp);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_MENU_DISABLE_ADDR),
+                Some(expected),
+            );
+        }
     }
 
     #[test]
