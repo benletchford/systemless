@@ -23,14 +23,15 @@ use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus}
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, laid_out_menu_item_count,
     merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
-    standard_menu_bar_title_baseline, standard_menu_height, standard_menu_row_height,
-    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
-    standard_submenu_layout, MenuBarResource, MenuBarTitleRegion,
+    standard_menu_bar_title_baseline, standard_menu_height, standard_menu_icon_kind,
+    standard_menu_icon_resource_id, standard_menu_width, standard_popup_menu_layout,
+    standard_pull_down_menu_layout, standard_submenu_layout, MenuBarResource, MenuBarTitleRegion,
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
     MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
-    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
+    MenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition,
+    TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
     STANDARD_SYSTEM_MENU_MARK_ADVANCE,
 };
 #[cfg(test)]
@@ -2767,6 +2768,7 @@ struct PpcPopUpMenuCall {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PpcTrackedMenuItemAppearance {
     height: i16,
+    icon_kind: StandardMenuIconKind,
     icon: Option<PpcTrackedMenuIcon>,
 }
 
@@ -65866,48 +65868,49 @@ fn ppc_menu_item_appearance(
     let style = ppc_menu_item_attribute_address(memory, menu_handle, item, 3)
         .and_then(|address| memory.read_u8(address))
         .unwrap_or(0);
-    // The standard MDEF looks up icon-number+256, prefers 'cicn', treats
-    // command bytes $1D/$1E as reduced ICON/SICN selectors, and otherwise
-    // uses a normal ICON. Normal icons and tall color icons enlarge their
-    // item rows. Macintosh Toolbox Essentials (1992), pp. 3-45--3-46.
-    let resource_id = i16::from(icon).saturating_add(256);
-    let cicon = (icon != 0)
-        .then(|| ppc_menu_resource_data(resources, current_resource_refnum, b"cicn", resource_id))
-        .flatten()
-        .filter(|data| ppc_menu_cicon_layout(data).is_some());
-    let tracked_icon = if let Some(data) = cicon {
-        Some(PpcTrackedMenuIcon::CIcon(data.to_vec()))
-    } else if icon != 0 && command == 0x1e {
-        ppc_menu_resource_data(resources, current_resource_refnum, b"SICN", resource_id)
+    // Resource access and bitmap ownership remain PowerPC adapter work; the
+    // standard MDEF's resource priority, selector interpretation, and
+    // geometry are shared with the 68k gateway. Macintosh Toolbox Essentials
+    // (1992), pp. 3-45--3-46 and 3-62--3-63.
+    let resource_id = standard_menu_icon_resource_id(icon, command);
+    let color_icon = resource_id
+        .and_then(|resource_id| {
+            ppc_menu_resource_data(resources, current_resource_refnum, b"cicn", resource_id)
+        })
+        .and_then(|data| ppc_menu_cicon_layout(data).map(|layout| (data, layout)));
+    let icon_kind = standard_menu_icon_kind(
+        icon,
+        command,
+        color_icon.map(|(_data, layout)| (layout.width, layout.height)),
+    );
+    let tracked_icon = match icon_kind {
+        StandardMenuIconKind::None => None,
+        StandardMenuIconKind::Color { .. } => {
+            color_icon.map(|(data, _layout)| PpcTrackedMenuIcon::CIcon(data.to_vec()))
+        }
+        StandardMenuIconKind::Small => resource_id
+            .and_then(|resource_id| {
+                ppc_menu_resource_data(resources, current_resource_refnum, b"SICN", resource_id)
+            })
             .filter(|data| data.len() >= 32)
-            .map(|data| PpcTrackedMenuIcon::SmallIcon(data.to_vec()))
-    } else if icon != 0 {
-        ppc_menu_resource_data(resources, current_resource_refnum, b"ICON", resource_id)
+            .map(|data| PpcTrackedMenuIcon::SmallIcon(data.to_vec())),
+        StandardMenuIconKind::Normal | StandardMenuIconKind::Reduced => resource_id
+            .and_then(|resource_id| {
+                ppc_menu_resource_data(resources, current_resource_refnum, b"ICON", resource_id)
+            })
             .filter(|data| data.len() >= 128)
             .map(|data| PpcTrackedMenuIcon::Icon {
                 data: data.to_vec(),
-                reduced: command == 0x1d,
-            })
-    } else {
-        None
-    };
-    let normal_icon = icon != 0 && (command == 0 || command > 0x20);
-    let color_icon_height = match tracked_icon.as_ref() {
-        Some(PpcTrackedMenuIcon::CIcon(data)) => {
-            ppc_menu_cicon_layout(data).map(|layout| layout.height)
-        }
-        _ => None,
+                reduced: icon_kind == StandardMenuIconKind::Reduced,
+            }),
     };
     PpcTrackedMenuItemAppearance {
         height: if is_separator {
             STANDARD_MENU_SEPARATOR_HEIGHT
         } else {
-            standard_menu_row_height(
-                color_icon_height,
-                normal_icon,
-                style & PPC_MENU_STYLE_SHADOW != 0,
-            )
+            icon_kind.row_height(style & PPC_MENU_STYLE_SHADOW != 0)
         },
+        icon_kind,
         icon: tracked_icon,
     }
 }
@@ -66025,27 +66028,8 @@ fn ppc_calc_menu_size_with_resources(
             .unwrap_or(0);
         let icon = appearances
             .get(usize::try_from(item - 1).ok()?)
-            .and_then(|appearance| appearance.icon.as_ref())
-            .map(|icon| match icon {
-                PpcTrackedMenuIcon::CIcon(data) => ppc_menu_cicon_layout(data)
-                    .map(|layout| layout.width.max(16))
-                    .unwrap_or(16),
-                PpcTrackedMenuIcon::Icon { reduced: false, .. } => 32,
-                PpcTrackedMenuIcon::Icon { reduced: true, .. }
-                | PpcTrackedMenuIcon::SmallIcon(_) => 16,
-            })
-            .unwrap_or_else(|| {
-                let icon = ppc_menu_item_attribute_address(memory, menu_handle, item, 0)
-                    .and_then(|address| memory.read_u8(address))
-                    .unwrap_or(0);
-                if icon != 0 && (command == 0 || command > 0x20) {
-                    32
-                } else if icon != 0 {
-                    16
-                } else {
-                    0
-                }
-            });
+            .map(|appearance| appearance.icon_kind.width())
+            .unwrap_or(0);
         Some(StandardMenuItemWidth {
             text: ppc_text_bytes_advance_for_font(
                 &text,
@@ -78950,7 +78934,7 @@ mod tests {
             PPC_DATA_BASE + 0x1000,
             128,
             b"File",
-            b"Normal^1;Reduced^2/\x1d;Small^3/\x1e;Color^4",
+            b"Normal^1;Reduced^2/\x1d;Small^3/\x1e;Color^4;Script^5/\x1c",
         );
         loaded.current_resource_refnum = 5;
         let record = |res_type: [u8; 4], res_id: i16, data: Vec<u8>| PpcVfsResourceRecord {
@@ -78977,6 +78961,7 @@ mod tests {
             record(*b"SICN", 259, small_icon),
             record(*b"ICON", 260, vec![0xff; 128]),
             record(*b"cicn", 260, test_one_bit_cicon()),
+            record(*b"cicn", 261, test_one_bit_cicon()),
         ]);
 
         for depth in [1, 2, 4, 8, 16] {
@@ -79019,7 +79004,7 @@ mod tests {
                     .iter()
                     .map(|item| item.height)
                     .collect::<Vec<_>>(),
-                vec![34, 16, 16, 16],
+                vec![34, 16, 16, 16, 16],
             );
             assert!(matches!(
                 tracking.item_appearances[0].icon,
@@ -79037,7 +79022,13 @@ mod tests {
                 tracking.item_appearances[3].icon,
                 Some(PpcTrackedMenuIcon::CIcon(_))
             ));
-            assert_eq!(tracking.popup_height, 82);
+            assert_eq!(
+                tracking.item_appearances[4].icon_kind,
+                StandardMenuIconKind::None,
+                "$1C makes the icon byte a script code even when a matching cicn exists",
+            );
+            assert_eq!(tracking.item_appearances[4].icon, None);
+            assert_eq!(tracking.popup_height, 98);
             let black =
                 ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
             for item in 1..=3 {

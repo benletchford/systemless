@@ -434,6 +434,70 @@ impl PopupMenuLayout {
 /// `CalcMenuSize` observations report 38 pixels for 16 + separator + 16.
 pub(crate) const STANDARD_MENU_SEPARATOR_HEIGHT: i16 = 6;
 
+/// The icon presentation selected by the standard menu definition procedure.
+///
+/// The item icon byte is a script code, not an icon number, when the command
+/// byte is `$1C`. Otherwise a valid color icon takes priority; `$1D` selects a
+/// reduced `ICON`, `$1E` selects an `SICN`, and every other command-byte form
+/// uses a normal `ICON`. Macintosh Toolbox Essentials (1992), pp. 3-45--3-46
+/// and 3-62--3-63.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StandardMenuIconKind {
+    None,
+    Color { width: i16, height: i16 },
+    Normal,
+    Reduced,
+    Small,
+}
+
+impl StandardMenuIconKind {
+    pub(crate) fn width(self) -> i16 {
+        match self {
+            Self::None => 0,
+            Self::Color { width, .. } => width.max(16),
+            Self::Normal => 32,
+            Self::Reduced | Self::Small => 16,
+        }
+    }
+
+    pub(crate) fn row_height(self, uses_shadow_style: bool) -> i16 {
+        let (color_icon_height, uses_normal_icon) = match self {
+            Self::Color { height, .. } => (Some(height), false),
+            Self::Normal => (None, true),
+            Self::None | Self::Reduced | Self::Small => (None, false),
+        };
+        standard_menu_row_height(color_icon_height, uses_normal_icon, uses_shadow_style)
+    }
+}
+
+/// Resolve the standard MDEF icon form after an adapter has decoded an
+/// optional valid `cicn` rectangle from its Resource Manager representation.
+pub(crate) fn standard_menu_icon_kind(
+    icon: u8,
+    command: u8,
+    color_icon_size: Option<(i16, i16)>,
+) -> StandardMenuIconKind {
+    if icon == 0 || command == 0x1C {
+        return StandardMenuIconKind::None;
+    }
+    if let Some((width, height)) =
+        color_icon_size.filter(|(width, height)| *width > 0 && *height > 0)
+    {
+        return StandardMenuIconKind::Color { width, height };
+    }
+    match command {
+        0x1D => StandardMenuIconKind::Reduced,
+        0x1E => StandardMenuIconKind::Small,
+        _ => StandardMenuIconKind::Normal,
+    }
+}
+
+/// Convert a standard menu icon number into its Resource Manager ID.
+/// Script-code items deliberately have no icon resource identity.
+pub(crate) fn standard_menu_icon_resource_id(icon: u8, command: u8) -> Option<i16> {
+    (icon != 0 && command != 0x1C).then(|| i16::from(icon).saturating_add(256))
+}
+
 /// Horizontal inputs resolved by an architecture adapter for one standard
 /// menu item. Text and icon resource measurement remain presentation work;
 /// the standard MDEF's column policy belongs to the Menu Manager.
@@ -2159,6 +2223,66 @@ mod tests {
         assert_eq!(standard_menu_width([width(48, 0, 0)]), 80);
         assert_eq!(standard_menu_width([width(10, 16, 0)]), 58);
         assert_eq!(standard_menu_width([]), 32);
+    }
+
+    #[test]
+    fn standard_menu_icon_policy_is_shared_between_gateways() {
+        assert_eq!(
+            standard_menu_icon_kind(0, 0, Some((24, 20))),
+            StandardMenuIconKind::None
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0x1C, Some((24, 20))),
+            StandardMenuIconKind::None,
+            "the icon byte carries a script code for the $1C form"
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0x1D, Some((24, 20))),
+            StandardMenuIconKind::Color {
+                width: 24,
+                height: 20,
+            },
+            "a valid cicn takes priority over monochrome selectors"
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0x1D, None),
+            StandardMenuIconKind::Reduced
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0x1E, None),
+            StandardMenuIconKind::Small
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0, None),
+            StandardMenuIconKind::Normal
+        );
+        assert_eq!(
+            standard_menu_icon_kind(7, 0x1B, None),
+            StandardMenuIconKind::Normal,
+            "the documented otherwise case uses a normal ICON"
+        );
+        assert_eq!(StandardMenuIconKind::Normal.width(), 32);
+        assert_eq!(StandardMenuIconKind::Reduced.width(), 16);
+        assert_eq!(
+            StandardMenuIconKind::Color {
+                width: 12,
+                height: 24,
+            }
+            .width(),
+            16
+        );
+        assert_eq!(StandardMenuIconKind::Normal.row_height(false), 34);
+        assert_eq!(StandardMenuIconKind::Reduced.row_height(false), 16);
+        assert_eq!(
+            StandardMenuIconKind::Color {
+                width: 16,
+                height: 24,
+            }
+            .row_height(false),
+            24
+        );
+        assert_eq!(standard_menu_icon_resource_id(7, 0), Some(263));
+        assert_eq!(standard_menu_icon_resource_id(7, 0x1C), None);
     }
 
     #[test]

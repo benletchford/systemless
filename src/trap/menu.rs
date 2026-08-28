@@ -2,23 +2,24 @@
 
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
-#[cfg(test)]
-use crate::menu_manager::parse_menu_item_specs;
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, hierarchical_menu_id,
     laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
     new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
-    standard_menu_row_height, standard_menu_width as shared_standard_menu_width,
-    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
+    standard_pull_down_menu_layout, standard_submenu_layout,
     MenuBarResource as SharedMenuBarResource, MenuBarTitleRegion as SharedMenuBarTitleRegion,
     MenuItems as SharedMenuItems, MenuKeyItem as SharedMenuKeyItem,
     MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList, MenuRow as SharedMenuRow,
     MenuRows as SharedMenuRows, MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState as SharedMenuTrackingState, StandardMenuItemWidth, SubmenuTransition,
-    TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_SEPARATOR_HEIGHT,
+    MenuTrackingState as SharedMenuTrackingState, StandardMenuIconKind, StandardMenuItemWidth,
+    SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView,
+    MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
+#[cfg(test)]
+use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
 use crate::menu_model::GuestMenuSnapshot;
 use crate::trap::types::encode_mac_roman_lossy;
 use crate::ui_theme::UiThemeId;
@@ -133,7 +134,9 @@ pub(crate) fn test_tracked_menu_state(
 // Macintosh Toolbox Essentials 1992, pp. 3-137 to 3-138: an icon number
 // maps to resource ID icon+256; key-equivalent bytes $1D and $1E select
 // reduced ICON and SICN menu icons instead of command-key shortcuts.
+#[cfg(test)]
 const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
+#[cfg(test)]
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
 const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
@@ -3637,18 +3640,6 @@ impl super::TrapDispatcher {
         item.key_equiv > 0x20
     }
 
-    fn menu_item_uses_reduced_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && item.key_equiv == MENU_KEY_REDUCED_ICON
-    }
-
-    fn menu_item_uses_small_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && item.key_equiv == MENU_KEY_SMALL_ICON
-    }
-
-    fn menu_item_uses_normal_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && (item.key_equiv == 0 || item.key_equiv > 0x20)
-    }
-
     fn menu_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<MenuCIconLayout> {
         if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 82) {
             return None;
@@ -3779,6 +3770,14 @@ impl super::TrapDispatcher {
         Some((layout.width, layout.height))
     }
 
+    fn menu_item_icon_kind(&self, bus: &MacMemoryBus, item: &MenuItem) -> StandardMenuIconKind {
+        standard_menu_icon_kind(
+            item.icon,
+            item.key_equiv,
+            self.menu_item_cicn_size(bus, item),
+        )
+    }
+
     pub(super) fn menu_item_height(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
         if item.text == "-" {
             return STANDARD_MENU_SEPARATOR_HEIGHT;
@@ -3788,12 +3787,8 @@ impl super::TrapDispatcher {
         // Normal ICON items reserve a 32-by-32 slot; System 7.5.3's
         // standard MDEF uses a 34-pixel row around that slot. Reduced ICON
         // and SICN slots fit the standard 16-by-16 item height.
-        standard_menu_row_height(
-            self.menu_item_cicn_size(bus, item)
-                .map(|(_width, height)| height),
-            Self::menu_item_uses_normal_icon(item),
-            item.style & MENU_TEXT_STYLE_SHADOW != 0,
-        )
+        self.menu_item_icon_kind(bus, item)
+            .row_height(item.style & MENU_TEXT_STYLE_SHADOW != 0)
     }
 
     pub(super) fn menu_items_height(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
@@ -3827,15 +3822,7 @@ impl super::TrapDispatcher {
     }
 
     fn menu_item_icon_width(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
-        if let Some((width, _height)) = self.menu_item_cicn_size(bus, item) {
-            width.max(MENU_ROW_HEIGHT)
-        } else if Self::menu_item_uses_reduced_icon(item) || Self::menu_item_uses_small_icon(item) {
-            MENU_ROW_HEIGHT
-        } else if Self::menu_item_uses_normal_icon(item) {
-            MENU_NORMAL_ICON_SIZE
-        } else {
-            0
-        }
+        self.menu_item_icon_kind(bus, item).width()
     }
 
     pub(super) fn standard_menu_width(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
@@ -3849,11 +3836,7 @@ impl super::TrapDispatcher {
     }
 
     fn menu_item_icon_resource_id(item: &MenuItem) -> Option<i16> {
-        (item.icon != 0).then_some(i16::from(item.icon) + 256)
-    }
-
-    fn menu_item_has_cicn_resource(&self, item: &MenuItem) -> bool {
-        self.cicn_menu_icon_resource_ptr(item).is_some()
+        standard_menu_icon_resource_id(item.icon, item.key_equiv)
     }
 
     /// Materialize a menu's item-icon resources (cicn/ICON/SICN at
@@ -3883,15 +3866,13 @@ impl super::TrapDispatcher {
     }
 
     fn cicn_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        let Some(icon_resource_id) = Self::menu_item_icon_resource_id(item) else {
-            return None;
-        };
+        let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
         self.find_loaded_resource_any(*b"cicn", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
-    fn reduced_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_reduced_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn reduced_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Reduced {
             return None;
         }
 
@@ -3903,8 +3884,8 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn small_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_small_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn small_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Small {
             return None;
         }
 
@@ -3916,8 +3897,8 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn normal_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_normal_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn normal_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Normal {
             return None;
         }
 
@@ -4855,10 +4836,13 @@ impl super::TrapDispatcher {
                     selected_background,
                 );
             }
-            let cicn_icon_ptr = self.cicn_menu_icon_resource_ptr(item);
-            let reduced_icon_ptr = self.reduced_menu_icon_resource_ptr(item);
-            let small_icon_ptr = self.small_menu_icon_resource_ptr(item);
-            let normal_icon_ptr = self.normal_menu_icon_resource_ptr(item);
+            let icon_kind = self.menu_item_icon_kind(bus, item);
+            let cicn_icon_ptr = matches!(icon_kind, StandardMenuIconKind::Color { .. })
+                .then(|| self.cicn_menu_icon_resource_ptr(item))
+                .flatten();
+            let reduced_icon_ptr = self.reduced_menu_icon_resource_ptr(bus, item);
+            let small_icon_ptr = self.small_menu_icon_resource_ptr(bus, item);
+            let normal_icon_ptr = self.normal_menu_icon_resource_ptr(bus, item);
             let has_app_icon_resource = cicn_icon_ptr.is_some()
                 || reduced_icon_ptr.is_some()
                 || small_icon_ptr.is_some()
@@ -5055,7 +5039,7 @@ impl super::TrapDispatcher {
                     content_index(name_pixel_index),
                 );
                 text_left = icon_left + MENU_ROW_HEIGHT;
-            } else if Self::menu_item_uses_normal_icon(item) {
+            } else if icon_kind == StandardMenuIconKind::Normal {
                 // MTE 1992 pp. 3-137 to 3-138 says SetItemIcon stores an
                 // icon number and the Menu Manager looks up icon+256. If no
                 // resource is present, the System 7 standard MDEF still
@@ -12300,6 +12284,28 @@ mod tests {
                 expected_left + expected_width,
             ),
             "live pull-down geometry should match the System 7 plain-row width reference"
+        );
+    }
+
+    #[test]
+    fn script_code_item_does_not_reserve_icon_geometry() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 629, 0x303700, "Script");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303740, "Localized");
+        disp.menus[0].items[0].icon = 7;
+        disp.menus[0].items[0].key_equiv = 0x1C;
+        let cicn = cicn_source_with_left_stripe(24, 20);
+        disp.install_test_resource(&mut bus, *b"cicn", 263, &cicn);
+
+        assert_eq!(
+            disp.menu_item_icon_width(&bus, &disp.menus[0].items[0]),
+            0,
+            "$1C makes the icon byte a script code even when a matching cicn exists",
+        );
+        assert_eq!(disp.menu_item_height(&bus, &disp.menus[0].items[0]), 16);
+        assert_eq!(
+            disp.cicn_menu_icon_resource_ptr(&disp.menus[0].items[0]),
+            None,
         );
     }
 
