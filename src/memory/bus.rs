@@ -449,6 +449,16 @@ pub trait MemoryBus {
             self.write_byte(address.wrapping_add(i), value);
         }
     }
+
+    /// Write `value` to `count` bytes spaced `stride` apart starting at
+    /// `address` — one column of an 8-bit framebuffer. Default impl is a
+    /// byte-by-byte loop; the [`MacMemoryBus`] override takes one bounds
+    /// check for the whole span.
+    fn fill_bytes_strided(&mut self, address: u32, stride: u32, count: u32, value: u8) {
+        for i in 0..count {
+            self.write_byte(address.wrapping_add(i.wrapping_mul(stride)), value);
+        }
+    }
 }
 
 /// Flat guest RAM with low-memory globals, allocation state, and diagnostics.
@@ -2214,6 +2224,44 @@ impl MemoryBus for MacMemoryBus {
         }
     }
 
+    /// Strided fill fast path: one translation and bounds check for the
+    /// span from the first to the last byte written, then a stride loop
+    /// over the RAM slice. Falls back to byte writes — which skip exactly
+    /// the protected bytes and journal each write — when the span touches
+    /// read-only code, a write probe is armed, or a tracer is active.
+    #[inline]
+    fn fill_bytes_strided(&mut self, address: u32, stride: u32, count: u32, value: u8) {
+        if count == 0 {
+            return;
+        }
+        let span = u64::from(stride) * u64::from(count - 1) + 1;
+        #[cfg(debug_assertions)]
+        let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
+        #[cfg(not(debug_assertions))]
+        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        if fast && span <= u64::from(u32::MAX) {
+            if let Some(start) = self.range_translates_contiguously(address, span as usize) {
+                let end = u64::from(start) + span;
+                if end <= u64::from(self.ram_size)
+                    && !self.readonly_code_overlaps(start, span as u32)
+                {
+                    if let Some(slice) = self.ram.slice_at_mut(start as usize, span as usize) {
+                        let stride = stride as usize;
+                        for i in 0..count as usize {
+                            slice[i * stride] = value;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+        for i in 0..count {
+            self.write_byte(address.wrapping_add(i.wrapping_mul(stride)), value);
+        }
+    }
+
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
         let translated = self.range_translates_contiguously(address, len as usize);
@@ -2498,6 +2546,48 @@ mod tests {
         bus.begin_write_probe();
         bus.write_byte(0x103, 0xDD);
         assert!(bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn fill_bytes_strided_writes_only_the_column() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.fill_bytes(0x100, 0x100, 0x11);
+        bus.fill_bytes_strided(0x105, 16, 8, 0xEE);
+        for i in 0..0x100u32 {
+            let expected = if (5..5 + 8 * 16).contains(&i) && (i - 5) % 16 == 0 {
+                0xEE
+            } else {
+                0x11
+            };
+            assert_eq!(bus.read_byte(0x100 + i), expected, "byte {i:#x}");
+        }
+        bus.fill_bytes_strided(0x1F0, 16, 0, 0xAA);
+        assert_eq!(bus.read_byte(0x1F0), 0x11, "count 0 writes nothing");
+    }
+
+    #[test]
+    fn fill_bytes_strided_skips_read_only_code_like_byte_writes() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.fill_bytes(0x100, 0x100, 0x11);
+        bus.protect_readonly_code(0x125, 1); // inside the span, on the column
+        bus.protect_readonly_code(0x131, 1); // inside the span, off the column
+        bus.fill_bytes_strided(0x105, 16, 8, 0xEE);
+        assert_eq!(bus.read_byte(0x125), 0x11, "protected column byte kept");
+        assert_eq!(bus.read_byte(0x115), 0xEE);
+        assert_eq!(bus.read_byte(0x135), 0xEE, "bytes past it still written");
+        assert_eq!(bus.read_byte(0x131), 0x11);
+    }
+
+    #[test]
+    fn fill_bytes_strided_is_journaled_by_a_write_probe() {
+        let mut bus = MacMemoryBus::new(4096);
+        bus.fill_bytes(0x100, 0x100, 0x11);
+        bus.begin_write_probe();
+        bus.fill_bytes_strided(0x105, 16, 4, 0xEE);
+        assert!(!bus.finish_write_probe_unchanged(), "changed bytes seen");
+        bus.begin_write_probe();
+        bus.fill_bytes_strided(0x105, 16, 4, 0xEE);
+        assert!(bus.finish_write_probe_unchanged(), "same bytes: unchanged");
     }
 
     #[test]
