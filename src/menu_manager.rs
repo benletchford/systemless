@@ -683,6 +683,26 @@ pub(crate) struct MenuItems {
     pub(crate) items: Vec<MenuItem>,
 }
 
+/// Build the empty standard `MenuInfo` record created by `NewMenu`.
+///
+/// The architecture gateway supplies the standard MDEF handle because that
+/// handle belongs to its guest memory adapter. The record layout and initial
+/// enabled state are common Menu Manager semantics. Macintosh Toolbox
+/// Essentials (1992), pp. 3-95--3-97, 3-105--3-106.
+pub(crate) fn new_standard_menu_record(menu_id: i16, menu_proc: u32, title: &[u8]) -> Vec<u8> {
+    let title = &title[..title.len().min(255)];
+    let mut bytes = Vec::with_capacity(16 + title.len());
+    bytes.extend_from_slice(&menu_id.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&0u16.to_be_bytes());
+    bytes.extend_from_slice(&menu_proc.to_be_bytes());
+    bytes.extend_from_slice(&u32::MAX.to_be_bytes());
+    bytes.push(title.len() as u8);
+    bytes.extend_from_slice(title);
+    bytes.push(0);
+    bytes
+}
+
 /// The MenuInfo fields that participate in `MenuKey` resolution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MenuKeyMenu {
@@ -1381,6 +1401,28 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_menu_record_uses_the_shared_menu_info_layout() {
+        let record = new_standard_menu_record(-128, 0x1234_5678, b"File");
+
+        assert_eq!(&record[0..2], &(-128i16).to_be_bytes());
+        assert_eq!(&record[2..6], &[0, 0, 0, 0]);
+        assert_eq!(&record[6..10], &0x1234_5678u32.to_be_bytes());
+        assert_eq!(&record[10..14], &u32::MAX.to_be_bytes());
+        assert_eq!(&record[14..], b"\x04File\0");
+        assert_eq!(MenuItems::decode(&record).unwrap().item_count(), 0);
+    }
+
+    #[test]
+    fn new_menu_record_limits_titles_to_pascal_string_capacity() {
+        let record = new_standard_menu_record(128, 0, &[b'A'; 300]);
+
+        assert_eq!(record.len(), 271);
+        assert_eq!(record[14], 255);
+        assert_eq!(record.last(), Some(&0));
+        assert_eq!(MenuItems::decode(&record).unwrap().item_count(), 0);
+    }
 
     fn tracking_with_child<MenuRef: Copy>(
         root: MenuRef,

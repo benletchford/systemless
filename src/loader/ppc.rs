@@ -23,12 +23,13 @@ use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus}
 #[cfg(test)]
 use crate::menu_manager::MenuListEntry as PpcMenuListEntry;
 use crate::menu_manager::{
-    laid_out_menu_item_count, standard_menu_row_height, standard_menu_width,
-    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    MenuBarResource, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
-    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
-    MenuTrackingKind, MenuTrackingState, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
-    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_SEPARATOR_HEIGHT,
+    laid_out_menu_item_count, new_standard_menu_record, standard_menu_row_height,
+    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
+    standard_submenu_layout, MenuBarResource, MenuItem as PpcMenuItemDefinition, MenuItems,
+    MenuKeyItem, MenuKeyMenu, MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow,
+    MenuRows, MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, StandardMenuItemWidth,
+    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
@@ -65489,18 +65490,9 @@ fn ppc_new_menu(
     title_ptr: u32,
 ) -> u32 {
     let title = ppc_read_pascal_string(memory, title_ptr).unwrap_or_default();
-    let title_len = title.len().min(255);
     // Macintosh Toolbox Essentials (1992), pp. 3-105--3-106: NewMenu
     // creates an empty standard MenuRecord but does not install it.
-    let mut bytes = Vec::with_capacity(16 + title_len);
-    bytes.extend_from_slice(&menu_id.to_be_bytes());
-    bytes.extend_from_slice(&0u16.to_be_bytes());
-    bytes.extend_from_slice(&0u16.to_be_bytes());
-    bytes.extend_from_slice(&0u32.to_be_bytes());
-    bytes.extend_from_slice(&u32::MAX.to_be_bytes());
-    bytes.push(title_len as u8);
-    bytes.extend_from_slice(&title[..title_len]);
-    bytes.push(0);
+    let bytes = new_standard_menu_record(menu_id, 0, &title);
     ppc_alloc_recyclable_handle_with_bytes(
         memory,
         heap_cursor,

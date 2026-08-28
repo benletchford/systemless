@@ -5,9 +5,9 @@ use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 #[cfg(test)]
 use crate::menu_manager::parse_menu_item_specs;
 use crate::menu_manager::{
-    hierarchical_menu_id, laid_out_menu_item_count, standard_menu_row_height,
-    standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout,
+    hierarchical_menu_id, laid_out_menu_item_count, new_standard_menu_record,
+    standard_menu_row_height, standard_menu_width as shared_standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
     MenuBarResource as SharedMenuBarResource, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
@@ -1536,38 +1536,20 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let title_ptr = bus.read_long(sp);
                 let menu_id = bus.read_word(sp + 4) as i16;
-                let menu_ptr = bus.alloc(256);
+                let menu_proc = self.menu_def_proc_handle(bus, 0);
+                let title_bytes = if title_ptr == 0 {
+                    Vec::new()
+                } else {
+                    let title_len = usize::from(bus.read_byte(title_ptr));
+                    bus.read_bytes(title_ptr + 1, title_len)
+                };
+                let menu_record = new_standard_menu_record(menu_id, menu_proc, &title_bytes);
+                let menu_ptr = bus.alloc(menu_record.len().max(256) as u32);
                 let handle = bus.alloc(4);
                 bus.write_long(handle, menu_ptr);
                 self.ptr_to_handle.insert(menu_ptr, handle);
-                // MenuInfo layout per IM:I I-355:
-                //   +0  menuID
-                //   +2  menuWidth
-                //   +4  menuHeight
-                //   +6  menuProc (handle)
-                //   +10 enableFlags
-                //   +14 menuData (pstring title followed by items)
-                bus.write_word(menu_ptr, menu_id as u16);
-                bus.write_word(menu_ptr + 2, 0);
-                bus.write_word(menu_ptr + 4, 0);
-                let menu_proc = self.menu_def_proc_handle(bus, 0);
-                bus.write_long(menu_ptr + 6, menu_proc);
-                bus.write_long(menu_ptr + 10, 0xFFFFFFFF); // enable all items
-                let mut title = String::new();
-                if title_ptr != 0 {
-                    let title_len = bus.read_byte(title_ptr) as u32;
-                    bus.write_byte(menu_ptr + 14, title_len as u8);
-                    let mut title_bytes = Vec::with_capacity(title_len as usize);
-                    for i in 0..title_len {
-                        let b = bus.read_byte(title_ptr + 1 + i);
-                        bus.write_byte(menu_ptr + 15 + i, b);
-                        title_bytes.push(b);
-                    }
-                    // Terminate the menuData area with an empty item string
-                    // so AppendMenu's scan knows where to append.
-                    bus.write_byte(menu_ptr + 15 + title_len, 0);
-                    title = macroman_to_string(&title_bytes);
-                }
+                bus.write_bytes(menu_ptr, &menu_record);
+                let title = macroman_to_string(&title_bytes);
                 // Track the menu in self.menus immediately so AppendMenu
                 // (which often runs BEFORE InsertMenu in typical Mac app
                 // boot code) can find the menu by handle.
@@ -7321,6 +7303,18 @@ mod tests {
             0,
             "menuData should terminate items with an empty item string"
         );
+    }
+
+    #[test]
+    fn newmenu_allocates_the_complete_maximum_length_title_record() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let title = "A".repeat(255);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 231, 0x30B200, &title);
+        let menu_ptr = bus.read_long(handle);
+
+        assert_eq!(bus.get_alloc_size(menu_ptr), Some(271));
+        assert_eq!(bus.read_byte(menu_ptr + 14), 255);
+        assert_eq!(bus.read_byte(menu_ptr + 270), 0);
     }
 
     #[test]
