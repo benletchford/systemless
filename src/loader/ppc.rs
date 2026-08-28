@@ -21,18 +21,19 @@ use crate::managers::resource::{
 };
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    compiled_menu_color_entries, filter_menu_color_entries, is_standard_system_menu_title,
-    laid_out_menu_item_count, merge_menu_color_entries, new_standard_menu_record,
-    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline, standard_menu_height,
-    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
-    standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
-    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuDefinitionCall,
-    MenuDefinitionMessage, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
-    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuRow, MenuRows, MenuSnapshotRecord,
-    MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind,
-    StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView,
-    MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    compiled_menu_color_entries, filter_menu_color_entries, install_menu_list_copy,
+    is_standard_system_menu_title, laid_out_menu_item_count, merge_menu_color_entries,
+    new_standard_menu_record, standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
+    standard_menu_height, standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_item_layout, standard_menu_text_advance, standard_menu_title_advance,
+    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
+    standard_submenu_layout, ColorIconLayout, MenuBarResource, MenuBarTitleRegion,
+    MenuDefinitionCall, MenuDefinitionMessage, MenuItem as PpcMenuItemDefinition, MenuItems,
+    MenuKeyItem, MenuKeyMenu, MenuKeySelection, MenuList as PpcMenuListDefinition,
+    MenuListInstallRequest, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
+    MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind, StandardMenuItemWidth,
+    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
@@ -16183,29 +16184,41 @@ fn dispatch_supported_import(
                 *last_mem_error = PPC_PARAM_ERR;
                 return Some(PpcImportAction::ReturnPreserve);
             };
-            if current_menu_list == 0 {
-                current_menu_list = ppc_alloc_menu_list_handle(
-                    &[],
-                    memory,
-                    heap_cursor,
-                    heap_limit,
-                    handles,
-                    free_handle_blocks,
-                );
-                if current_menu_list == 0 {
-                    *last_mem_error = PPC_MEM_FULL_ERR;
-                    return Some(PpcImportAction::ReturnPreserve);
+            let installation =
+                install_menu_list_copy(current_menu_list, &menu_list, |request| match request {
+                    MenuListInstallRequest::Allocate { bytes } => {
+                        let handle = ppc_alloc_recyclable_handle_with_bytes(
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            handles,
+                            free_handle_blocks,
+                            bytes,
+                        );
+                        (handle != 0).then_some(handle).ok_or(PPC_MEM_FULL_ERR)
+                    }
+                    MenuListInstallRequest::Replace { handle, bytes } => {
+                        let result = ppc_replace_menu_bytes(
+                            memory,
+                            heap_cursor,
+                            heap_limit,
+                            handles,
+                            handle,
+                            bytes,
+                        );
+                        (result == PPC_NO_ERR).then_some(handle).ok_or(result)
+                    }
+                });
+            match installation {
+                Ok(installation) => {
+                    current_menu_list = installation.handle;
+                    if installation.allocated {
+                        ppc_set_current_menu_list(memory, current_menu_list);
+                    }
+                    *last_mem_error = PPC_NO_ERR;
                 }
-                ppc_set_current_menu_list(memory, current_menu_list);
+                Err(error) => *last_mem_error = error,
             }
-            *last_mem_error = ppc_replace_menu_list_definition(
-                memory,
-                heap_cursor,
-                heap_limit,
-                handles,
-                current_menu_list,
-                &menu_list,
-            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetMenuHandle => Some(PpcImportAction::Return(

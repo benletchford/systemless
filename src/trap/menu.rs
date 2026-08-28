@@ -4,9 +4,10 @@ use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries, hierarchical_menu_id,
-    laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
-    new_standard_menu_record, standard_menu_height as shared_standard_menu_height,
-    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
+    install_menu_list_copy, laid_out_menu_item_count,
+    merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
+    standard_menu_height as shared_standard_menu_height, standard_menu_icon_kind,
+    standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
@@ -14,7 +15,7 @@ use crate::menu_manager::{
     MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuDefinitionCall as SharedMenuDefinitionCall,
     MenuDefinitionMessage as SharedMenuDefinitionMessage, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
-    MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
+    MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState as SharedMenuTrackingState,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, StandardMenuIconKind,
@@ -1433,15 +1434,25 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         menu_list: &SharedMenuList,
     ) -> bool {
-        let mut handle = bus.read_long(addr::MENU_LIST);
-        if handle == 0 {
-            handle = bus.alloc(4);
-            if handle == 0 {
-                return false;
-            }
-            bus.write_long(addr::MENU_LIST, handle);
+        let current_handle = bus.read_long(addr::MENU_LIST);
+        let installation =
+            install_menu_list_copy(current_handle, menu_list, |request| match request {
+                MenuListInstallRequest::Allocate { bytes } => {
+                    let handle = self.alloc_handle_with_bytes(bus, bytes);
+                    (handle != 0).then_some(handle).ok_or(())
+                }
+                MenuListInstallRequest::Replace { handle, bytes } => self
+                    .replace_handle_bytes(bus, handle, bytes)
+                    .then_some(handle)
+                    .ok_or(()),
+            });
+        let Ok(installation) = installation else {
+            return false;
+        };
+        if installation.allocated {
+            bus.write_long(addr::MENU_LIST, installation.handle);
         }
-        self.replace_handle_bytes(bus, handle, &menu_list.encode())
+        true
     }
 
     fn relayout_menu_list(&self, bus: &MacMemoryBus, menu_list: &mut SharedMenuList) {
@@ -13628,6 +13639,8 @@ mod tests {
         let edit = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x30B710, "Edit");
         insert_menu(&mut disp, &mut cpu, &mut bus, file);
         insert_menu(&mut disp, &mut cpu, &mut bus, edit);
+        let current_menu_list = bus.read_long(crate::memory::globals::addr::MENU_LIST);
+        assert_ne!(current_menu_list, 0);
 
         // Snapshot the current menu list with GetMenuBar.
         cpu.write_reg(Register::A7, TEST_SP);
@@ -13665,6 +13678,11 @@ mod tests {
                 .is_ok(),
             "SetMenuBar should succeed"
         );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_LIST),
+            current_menu_list,
+            "SetMenuBar should preserve the manager-owned current-list Handle"
+        );
 
         assert_ne!(
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 128),
@@ -13680,6 +13698,16 @@ mod tests {
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 130),
             0,
             "SetMenuBar should replace current list with the saved snapshot"
+        );
+
+        bus.write_long(saved_menu_list, 0);
+        assert_eq!(
+            menu_list_from_memory(&bus, current_menu_list)
+                .expect("current list must outlive the caller-owned source")
+                .regular_handles()
+                .collect::<Vec<_>>(),
+            vec![file, edit],
+            "SetMenuBar must copy the list before the caller disposes its Handle"
         );
     }
 

@@ -1707,6 +1707,51 @@ pub(crate) struct MenuList {
     pub(crate) hierarchical: Vec<MenuListEntry>,
 }
 
+/// Guest-memory write requested while installing a copied menu list.
+///
+/// The adapter owns allocation mechanics, while the Menu Manager owns whether
+/// a missing current list is allocated or an existing current-list Handle is
+/// preserved. Macintosh Toolbox Essentials (1992), pp. 3-112--3-113.
+pub(crate) enum MenuListInstallRequest<'a> {
+    Allocate { bytes: &'a [u8] },
+    Replace { handle: u32, bytes: &'a [u8] },
+}
+
+/// Successful installation of a copied menu list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuListInstallation {
+    pub(crate) handle: u32,
+    pub(crate) allocated: bool,
+}
+
+/// Copy `source` into the current menu-list allocation.
+///
+/// `SetMenuBar` copies only the `DynamicMenuList`, not the referenced menu
+/// records. Existing current-list Handle identity is preserved; when no
+/// current list exists, the adapter must allocate the complete copy before
+/// publishing the returned Handle. Macintosh Toolbox Essentials (1992),
+/// pp. 3-112--3-113.
+pub(crate) fn install_menu_list_copy<E>(
+    current_handle: u32,
+    source: &MenuList,
+    apply: impl FnOnce(MenuListInstallRequest<'_>) -> Result<u32, E>,
+) -> Result<MenuListInstallation, E> {
+    let bytes = source.encode();
+    let allocated = current_handle == 0;
+    let request = if allocated {
+        MenuListInstallRequest::Allocate { bytes: &bytes }
+    } else {
+        MenuListInstallRequest::Replace {
+            handle: current_handle,
+            bytes: &bytes,
+        }
+    };
+    let handle = apply(request)?;
+    debug_assert_ne!(handle, 0);
+    debug_assert!(allocated || handle == current_handle);
+    Ok(MenuListInstallation { handle, allocated })
+}
+
 /// Live guest MenuInfo data supplied by a CPU memory adapter when projecting
 /// the current menu list for a frontend.
 pub(crate) struct MenuSnapshotRecord {
@@ -2399,6 +2444,58 @@ mod tests {
             }],
         };
         assert_eq!(MenuList::decode(&expected.encode()), Some(expected));
+    }
+
+    #[test]
+    fn menu_list_installation_allocates_or_preserves_current_handle_atomically() {
+        let source = MenuList {
+            last_right: 91,
+            mb_res_id: 128,
+            regular: vec![MenuListEntry {
+                handle: 0x1234_5678,
+                value: 17,
+            }],
+            ..MenuList::default()
+        };
+        let expected = source.encode();
+
+        let allocated = install_menu_list_copy(0, &source, |request| match request {
+            MenuListInstallRequest::Allocate { bytes } => {
+                assert_eq!(bytes, expected);
+                Ok::<u32, ()>(0x1000)
+            }
+            MenuListInstallRequest::Replace { .. } => panic!("missing list must allocate"),
+        })
+        .expect("allocate current list");
+        assert_eq!(
+            allocated,
+            MenuListInstallation {
+                handle: 0x1000,
+                allocated: true,
+            }
+        );
+
+        let replaced = install_menu_list_copy(0x2000, &source, |request| match request {
+            MenuListInstallRequest::Replace { handle, bytes } => {
+                assert_eq!(handle, 0x2000);
+                assert_eq!(bytes, expected);
+                Ok::<u32, ()>(handle)
+            }
+            MenuListInstallRequest::Allocate { .. } => {
+                panic!("existing current-list Handle must be preserved")
+            }
+        })
+        .expect("replace current list");
+        assert_eq!(
+            replaced,
+            MenuListInstallation {
+                handle: 0x2000,
+                allocated: false,
+            }
+        );
+
+        let failed = install_menu_list_copy(0, &source, |_request| Err::<u32, _>(-108));
+        assert_eq!(failed, Err(-108));
     }
 
     #[test]
