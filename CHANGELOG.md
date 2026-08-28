@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.6](https://github.com/benletchford/systemless/compare/v0.21.5...v0.21.6) (2026-08-28)
+
+
+### Bug Fixes
+
+* **ppc:** deliver unmapped memory exceptions ([#916](https://github.com/benletchford/systemless/issues/916)) ([bee520e](https://github.com/benletchford/systemless/commit/bee520e2156b7edbf1c24c9ac859822ea5118d8d))
+
 ## [0.21.5](https://github.com/benletchford/systemless/compare/v0.21.4...v0.21.5) (2026-08-28)
 
 
