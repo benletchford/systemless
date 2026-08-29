@@ -11,7 +11,7 @@ use crate::loader::cfrg::{
 use crate::loader::pef::{parse_pef_header, parse_pef_loader_header, resolve_pef_main_entry};
 use crate::loader::ppc::{
     PpcCfmLibraryFragment, PpcVfsDirectory, PpcVfsFileRecord, PpcVfsResourceFileRecord,
-    PpcVfsResourceRecord,
+    PpcVfsResourceRecord, PpcVfsVolumeRecord,
 };
 use crate::loader::LoadedApp;
 use crate::managers::resource::ResourceFork;
@@ -2289,6 +2289,7 @@ fn load_selected_executable(
                 })?;
             let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
             loaded.seed_cfm_library_fragments(library_fragments);
+            loaded.seed_vfs_volumes(ppc_vfs.volumes);
             loaded.seed_vfs_directories(
                 ppc_vfs.directories,
                 ppc_vfs.default_dir_id,
@@ -2710,6 +2711,7 @@ enum ExecutableKind {
 
 #[derive(Clone, Debug)]
 struct PpcDiagnosticVfs {
+    volumes: Vec<PpcVfsVolumeRecord>,
     directories: Vec<PpcVfsDirectory>,
     files: Vec<PpcVfsFileRecord>,
     resource_files: Vec<PpcVfsResourceFileRecord>,
@@ -2907,6 +2909,29 @@ fn ppc_diagnostic_vfs(
         })
         .collect();
 
+    let mut volumes = dispatcher
+        .vfs_volumes
+        .values()
+        .map(|volume| PpcVfsVolumeRecord {
+            ref_num: volume.ref_num,
+            name: volume.name.clone(),
+            root_dir_id: volume.root_dir_id,
+            attributes: volume.attributes,
+            file_count: volume.file_count,
+            allocation_block_count: volume.allocation_block_count,
+            allocation_block_size: volume.allocation_block_size,
+            clump_size: volume.clump_size,
+            free_blocks: volume.free_blocks,
+            bitmap_start: volume.bitmap_start,
+            allocation_pointer: volume.allocation_pointer,
+            allocation_start: volume.allocation_start,
+            next_catalog_id: volume.next_catalog_id,
+            created_date: volume.created_date,
+            modified_date: volume.modified_date,
+        })
+        .collect::<Vec<_>>();
+    volumes.sort_by_key(|volume| std::cmp::Reverse(volume.ref_num));
+
     let mut file_entries: Vec<_> = dispatcher.vfs.iter().collect();
     file_entries.sort_by_key(|(path, _)| *path);
     let mut files = file_entries
@@ -2984,6 +3009,7 @@ fn ppc_diagnostic_vfs(
     }
 
     PpcDiagnosticVfs {
+        volumes,
         directories,
         files,
         resource_files,
@@ -4258,6 +4284,7 @@ mod tests {
             }
         }
         PpcDiagnosticVfs {
+            volumes: Vec::new(),
             directories: Vec::new(),
             files,
             resource_files,
@@ -4307,6 +4334,7 @@ mod tests {
             b"SDL",
         );
         let vfs = PpcDiagnosticVfs {
+            volumes: Vec::new(),
             directories: Vec::new(),
             files: vec![PpcVfsFileRecord {
                 path: "Volume/SDL".to_string(),
