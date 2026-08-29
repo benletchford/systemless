@@ -6083,10 +6083,11 @@ impl super::TrapDispatcher {
             // SpBlock.spResult is the first longword at offset 0.
             // Devices 1994, pp. 2-23 to 2-24 and 2-61 to 2-62.
             //
-            // Systemless models no NuBus cards, so every selector returns
-            // smEmptySlot. For the documented SReadInfo selector, we
-            // also mirror that result into SpBlock.spResult when
-            // SpBlockPtr is non-NIL.
+            // Systemless models the ROM-based Slot Manager but no NuBus cards.
+            // SVersion therefore returns version 2 and clears its reserved
+            // additional-information pointer. Card-dependent selectors retain
+            // the empty-slot behavior below; SReadInfo also mirrors that result
+            // into SpBlock.spResult.
             //
             // Regression coverage:
             //   src/trap/toolbox.rs::slotmanager_sreadinfo_selector_uses_a0_spblock_d0_selector_and_returns_oserr_in_d0
@@ -6096,13 +6097,23 @@ impl super::TrapDispatcher {
                 let sp_block_ptr = cpu.read_reg(Register::A0);
                 let selector = cpu.read_reg(Register::D0) as i32;
                 let sm_empty_slot: i32 = -300;
-                if selector == 0x0010 && sp_block_ptr != 0 {
-                    bus.write_long(sp_block_ptr, sm_empty_slot as u32);
+                if selector == 0x0008 && sp_block_ptr != 0 {
+                    // SVersion ($0008): Devices 1994, pp. 2-30 to 2-31.
+                    // Version 2 is the ROM-based Slot Manager; spsPointer is
+                    // reserved for future use.
+                    bus.write_long(sp_block_ptr, 2);
+                    bus.write_long(sp_block_ptr + 4, 0);
+                    cpu.write_reg(Register::D0, 0);
+                } else {
+                    if selector == 0x0010 && sp_block_ptr != 0 {
+                        bus.write_long(sp_block_ptr, sm_empty_slot as u32);
+                    }
+                    cpu.write_reg(Register::D0, sm_empty_slot as u32);
                 }
-                cpu.write_reg(Register::D0, sm_empty_slot as u32);
                 eprintln!(
-                    "[TRAP] SlotManager selector={} -> smEmptySlot (no NuBus cards modeled)",
-                    selector
+                    "[TRAP] SlotManager selector={} -> {}",
+                    selector,
+                    cpu.read_reg(Register::D0) as i32
                 );
                 Ok(())
             }
@@ -17445,6 +17456,49 @@ mod tests {
             stack_ptr,
             "SlotManager register calling convention should preserve A7"
         );
+    }
+
+    #[test]
+    fn slotmanager_sversion_returns_rom_manager_version_and_reserved_pointer() {
+        // Inside Macintosh: Devices (1994), pp. 2-30 to 2-31:
+        // SVersion selector $0008 returns version 2 for the ROM-based Slot
+        // Manager in spResult and reserves spsPointer for future information.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_block_ptr = 0x0031_0080u32;
+        let stack_ptr = 0x00F0_6080u32;
+
+        bus.write_long(sp_block_ptr, 0xDEAD_BEEF);
+        bus.write_long(sp_block_ptr + 4, 0xCAFE_BABE);
+        bus.write_long(sp_block_ptr + 8, 0x1122_3344);
+        cpu.write_reg(Register::A0, sp_block_ptr);
+        cpu.write_reg(Register::D0, 0x0008);
+        cpu.write_reg(Register::A7, stack_ptr);
+
+        let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SlotManager should be handled");
+        assert!(result.unwrap().is_ok(), "SVersion should return normally");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "SVersion should return noErr"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr),
+            2,
+            "spResult should be version 2"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr + 4),
+            0,
+            "reserved spsPointer should be NIL"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr + 8),
+            0x1122_3344,
+            "SVersion should not overwrite the rest of SpBlock"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), sp_block_ptr);
+        assert_eq!(cpu.read_reg(Register::A7), stack_ptr);
     }
 
     #[test]
