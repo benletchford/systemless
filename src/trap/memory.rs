@@ -2516,21 +2516,18 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // UprString ($A054)
-            // Converts lowercase letters in a string to uppercase.
-            // PROCEDURE UprString(VAR theString: Str255; diacSens: BOOLEAN);
-            // Inside Macintosh Volume II, II-377
-            //
-            // Assembly calling convention:
-            //   On entry: A0 = pointer to first character, D0.W = length
-            //   On exit:  A0 = pointer to first character (unchanged)
-            //   Bit 9 of trap word: if set, diacSens=FALSE (strip diacriticals)
-            //
-            // UprString ($A054): Converts lowercase→uppercase in place; bit 9=strip diacriticals; per IM:II II-377
+            // UpperString / UprString ($A054/$A254)
+            // Converts lowercase Roman characters to uppercase in place.
+            // PROCEDURE UpperString(VAR theString: Str255; diacSens: Boolean);
+            // Inside Macintosh: Text (1993), pp. 5-64--5-65.
             (false, 0x54) => {
                 let ptr = cpu.read_reg(Register::A0);
                 let len = cpu.read_reg(Register::D0) & 0xFFFF;
-                let strip_marks = (self.current_trap_word & 0x0200) != 0;
+                let strip_marks = match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::UpperStringPreserveMarks => false,
+                    OsRoutineVariant::UpperStringStripMarks => true,
+                    _ => unreachable!("UprString trap word must have a classified variant"),
+                };
                 for i in 0..len {
                     let ch = bus.read_byte(ptr + i);
                     let upper = mac_roman_to_upper(ch, strip_marks);
@@ -8336,6 +8333,29 @@ mod tests {
             0,
             "LowerText should return noErr in D0"
         );
+    }
+
+    #[test]
+    fn uprstring_variants_preserve_or_strip_mac_roman_marks() {
+        // Inside Macintosh: Text (1993), pp. 5-64--5-65: the bare form has
+        // diacSens=TRUE, while MARKS has diacSens=FALSE and strips marks.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for (trap_word, expected) in [
+            (0xA054u16, [0x83, 0x80, b'Q']),
+            (0xA254u16, [b'E', b'A', b'Q']),
+        ] {
+            let ptr = bus.alloc(3);
+            bus.write_bytes(ptr, &[0x8E, 0x8A, b'q']);
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, ptr);
+            cpu.write_reg(Register::D0, 3);
+
+            let result = dispatcher.dispatch_memory(false, 0x54, &mut cpu, &mut bus);
+
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(bus.read_bytes(ptr, 3), expected, "trap ${trap_word:04X}");
+            assert_eq!(cpu.read_reg(Register::A0), ptr);
+        }
     }
 
     #[test]

@@ -3974,7 +3974,10 @@ impl super::TrapDispatcher {
             // Files 1992, 2-84, 2-121 to 2-122, 2-238
             (false, 0x02) => {
                 let pb = cpu.read_reg(Register::A0);
-                let async_call = (self.current_trap_word & 0x0400) != 0;
+                let async_call = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::ParameterBlockAsynchronous
+                );
                 let completion_addr = bus.read_long(pb + 12);
                 let ref_num = bus.read_word(pb + 24);
                 let buffer = bus.read_long(pb + 32);
@@ -14770,6 +14773,34 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
         assert_eq!(bus.read_word(pb + 16) as i16, -39);
         assert_eq!(bus.read_long(pb + 12), 0);
+        assert!(disp.pending_file_completions.is_empty());
+    }
+
+    #[test]
+    fn pb_read_immediate_completes_without_queueing() {
+        // Inside Macintosh: Devices (1994), p. 1-16 and UI 3.4 Devices.h
+        // lines 985--996: $A202 is PBReadImmed, not the async $A402 form.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+
+        disp.vfs.insert("Immediate".to_string(), vec![1, 2, 3]);
+        disp.open_files.insert(100, "Immediate".to_string());
+        disp.file_positions.insert(100, 0);
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 12, 0x320000);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 3);
+        bus.write_word(pb + 44, 0);
+        bus.write_long(pb + 46, 0);
+
+        call_trap_word(&mut disp, 0xA202, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 12), 0);
+        assert_eq!(bus.read_bytes(read_buf, 3), vec![1, 2, 3]);
         assert!(disp.pending_file_completions.is_empty());
     }
 

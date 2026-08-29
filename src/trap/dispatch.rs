@@ -1234,11 +1234,15 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// The string-comparison permutations come from *Inside Macintosh: Text*
 /// (1993), pp. 5-51--5-52 and 5-60--5-61. The later table is authoritative
 /// over the contradictory MARKS annotation in Volume II (1985), p. II-377.
+/// UpperString's MARKS form comes from the same book, pp. 5-64--5-65.
+/// Parameter-block synchronous, immediate, and asynchronous forms come from
+/// *Inside Macintosh: Devices* (1994), p. 1-16.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
-/// summary. Universal Interfaces 3.4 independently declares the corresponding
-/// exact A-line words in `MacMemory.h` (lines 436--1010, 1331--1362),
-/// `TextUtils.h` (lines 404--455), and `Files.h` (lines 1315--3343).
+/// summary. Universal Interfaces 3.4 independently declares reviewed exact
+/// words in `MacMemory.h` (lines 436--1010, 1331--1362), `TextUtils.h` (lines
+/// 404--455), `Devices.h` (lines 905--1044, 1282--1415), and `Files.h` (lines
+/// 1315--3343); `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
     Unclassified,
@@ -1254,6 +1258,11 @@ pub(crate) enum OsRoutineVariant {
     TextCompareFoldCase,
     TextCompareStripMarks,
     TextCompareExact,
+    UpperStringPreserveMarks,
+    UpperStringStripMarks,
+    ParameterBlockSynchronous,
+    ParameterBlockImmediate,
+    ParameterBlockAsynchronous,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1309,6 +1318,18 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x3C | 0x50, 0x0200) => OsRoutineVariant::TextCompareFoldCase,
         (0x3C | 0x50, 0x0400) => OsRoutineVariant::TextCompareStripMarks,
         (0x3C | 0x50, 0x0600) => OsRoutineVariant::TextCompareExact,
+
+        // Text 1993, pp. 5-64--5-65: bare UprString preserves marks while
+        // MARKS (bit 9) strips them. Bit 10 has no documented meaning here.
+        (0x54, 0x0000) => OsRoutineVariant::UpperStringPreserveMarks,
+        (0x54, 0x0200) => OsRoutineVariant::UpperStringStripMarks,
+
+        // Devices 1994, p. 1-16 and UI 3.4 Devices.h lines 905--1044 and
+        // 1282--1415: these PB slots have exact Sync/Immed/Async declarations.
+        // Slot $00 is excluded because $A200 also means PBHOpenSync/OpenSlotSync.
+        (0x01..=0x06, 0x0000) => OsRoutineVariant::ParameterBlockSynchronous,
+        (0x01..=0x06, 0x0200) => OsRoutineVariant::ParameterBlockImmediate,
+        (0x01..=0x06, 0x0400) => OsRoutineVariant::ParameterBlockAsynchronous,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -8100,9 +8121,11 @@ mod tests {
     fn raw_routes_classify_only_source_backed_os_routine_variants() {
         use OsRoutineVariant::{
             CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
-            FileHfsSynchronous, FileSynchronous, LowerText, StripText, StripUpperText, SystemHeap,
-            SystemHeapClear, TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
-            TextCompareStripMarks, Unclassified, UpperText,
+            FileHfsSynchronous, FileSynchronous, LowerText, ParameterBlockAsynchronous,
+            ParameterBlockImmediate, ParameterBlockSynchronous, StripText, StripUpperText,
+            SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
+            TextCompareFoldCaseAndMarks, TextCompareStripMarks, Unclassified,
+            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8120,6 +8143,48 @@ mod tests {
                         expected
                     );
                 }
+            }
+        }
+
+        // Inside Macintosh: Text (1993), pp. 5-64--5-65.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA054 | return_a0).os_routine_variant,
+                UpperStringPreserveMarks
+            );
+            assert_eq!(
+                raw_trap_route(0xA254 | return_a0).os_routine_variant,
+                UpperStringStripMarks
+            );
+            assert_eq!(
+                raw_trap_route(0xA454 | return_a0).os_routine_variant,
+                Unclassified
+            );
+            assert_eq!(
+                raw_trap_route(0xA654 | return_a0).os_routine_variant,
+                Unclassified
+            );
+        }
+
+        // Devices 1994, p. 1-16; UI 3.4 Devices.h lines 905--1044 and
+        // 1282--1415 declare exact Sync, Immed, and Async words for $01--$06.
+        for slot in 0x01u16..=0x06 {
+            for return_a0 in [0x0000u16, 0x0100] {
+                for (routine_bits, expected) in [
+                    (0x0000, ParameterBlockSynchronous),
+                    (0x0200, ParameterBlockImmediate),
+                    (0x0400, ParameterBlockAsynchronous),
+                ] {
+                    assert_eq!(
+                        raw_trap_route(0xA000 | slot | return_a0 | routine_bits).os_routine_variant,
+                        expected
+                    );
+                }
+                assert_eq!(
+                    raw_trap_route(0xA600 | slot | return_a0).os_routine_variant,
+                    Unclassified,
+                    "combined ASYNC+IMMED slot ${slot:02X} is undeclared"
+                );
             }
         }
 
@@ -8215,9 +8280,9 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 200);
+        assert_eq!(classified, 240);
         assert_eq!(
-            raw_trap_route(0xA201).os_routine_variant,
+            raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
             "an unrelated OS bit-9 form must not acquire invented semantics"
         );
