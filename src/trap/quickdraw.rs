@@ -381,6 +381,31 @@ fn encode_text_face_style(face: i16) -> u16 {
 }
 
 impl super::TrapDispatcher {
+    fn dispose_color_compound_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) {
+        if bus.get_alloc_size(handle) != Some(4) {
+            return;
+        }
+        let record = bus.read_long(handle);
+        if bus.get_alloc_size(record).is_none() {
+            return;
+        }
+
+        // PixPat and CCrsr deliberately share their leading compound-object
+        // layout: map handle at +2, data at +6, expanded data at +10, and an
+        // expansion handle at +16. Inside Macintosh Volume V,
+        // V-55--V-56 and V-63; Imaging With QuickDraw (1994), pp. 4-58 and
+        // 8-4--8-5. Their disposal routines therefore release the same owned
+        // handle graph before releasing the record and master pointer.
+        for offset in [6u32, 10, 16] {
+            Self::free_memory_handle(bus, bus.read_long(record + offset));
+        }
+        Self::free_pixmap_handle(bus, bus.read_long(record + 2));
+        bus.free(record);
+        bus.write_long(handle, 0);
+        bus.free(handle);
+        self.makergbpat_colors.remove(&handle);
+    }
+
     fn get_or_create_std_pix_gateway(&mut self, bus: &mut MacMemoryBus) -> u32 {
         let unimplemented = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
         if self.std_pix_gateway == 0 {
@@ -1211,7 +1236,7 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ClosePort / CloseCPort ($A87D)
+            // ClosePort / CloseCPort ($A87D); CloseCPort ($AA02)
             //
             // Per IM:I I-163: "ClosePort releases the memory occupied
             // by the given grafPort's visRgn and clipRgn. When you're
@@ -1238,9 +1263,12 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-72 (CloseCPort)
             // Inside Macintosh Volume III line 9399: "ClosePort | A87D"
             // Inside Macintosh Volume V V-291 line 20688: "CloseCPort | A87D"
-            // (same trap word, polymorphic dispatch — Apple reused $A87D
-            // when Color QuickDraw was added; the dispatcher inspects
-            // the port's portRect rowBytes high bit to detect CGrafPort)
+            // Universal Interfaces 3.4 Quickdraw.h assigns CloseCPort to
+            // $AA02. Both forms use this polymorphic implementation; the
+            // dispatcher inspects the portVersion high bits to distinguish a
+            // CGrafPort from a GrafPort. The selected 68040 profile gives the
+            // two slots one default address, while the 604 profile retains
+            // distinct callable entries.
             // Imaging With QuickDraw 1994, 4-66
             //
             // Stack: SP+0 port GrafPtr/CGrafPtr (4 bytes). Pop 4.
@@ -1256,7 +1284,7 @@ impl super::TrapDispatcher {
             //   quickdraw::tests::closeport_releases_visrgn_and_cliprgn_and_nils_port_slots
             //   quickdraw::tests::closeport_consumes_port_argument_and_pops_four_bytes
             //   quickdraw::tests::closecport_releases_documented_cgrafport_subhandles_and_preserves_portpixmap_colortable
-            (true, 0x07D) => {
+            (true, 0x07D) | (true, 0x202) => {
                 let sp = cpu.read_reg(Register::A7);
                 let port_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -11704,56 +11732,22 @@ impl super::TrapDispatcher {
             // The arm was SWAPPED with CopyPixPat ($AA09); fixed by
             // swapping the trap-word matches. Real-Mac apps emitting
             // _DisposPixPat now correctly land here.
-            (true, 0x208) => {
+            // DisposeCCursor ($AA26)
+            // Releases all records allocated by GetCCursor.
+            // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
+            // Inside Macintosh Volume V, V-75; Imaging With QuickDraw
+            // (1994), pp. 8-26--8-27
+            //
+            // Both procedures consume one four-byte compound-object handle.
+            // Their common record prefix is released by one implementation;
+            // the selected 68040 profile also exposes one default procedure
+            // address for the two slots, while the 604 profile keeps distinct
+            // gateway identities.
+            (true, 0x208) | (true, 0x226) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ppat_handle = bus.read_long(sp);
+                let handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                self.makergbpat_colors.remove(&ppat_handle);
-                if ppat_handle != 0 {
-                    let ppat_ptr = bus.read_long(ppat_handle);
-                    if ppat_ptr != 0 {
-                        // Free patData handle (+6)
-                        let pat_data_handle = bus.read_long(ppat_ptr + 6);
-                        if pat_data_handle != 0 {
-                            let pat_data_ptr = bus.read_long(pat_data_handle);
-                            if pat_data_ptr != 0 {
-                                bus.free(pat_data_ptr);
-                            }
-                            bus.free(pat_data_handle);
-                        }
-                        // Free patXData handle (+10)
-                        let pat_xdata_handle = bus.read_long(ppat_ptr + 10);
-                        if pat_xdata_handle != 0 {
-                            let pat_xdata_ptr = bus.read_long(pat_xdata_handle);
-                            if pat_xdata_ptr != 0 {
-                                bus.free(pat_xdata_ptr);
-                            }
-                            bus.free(pat_xdata_handle);
-                        }
-                        // Free patXMap handle (+16)
-                        Self::free_memory_handle(bus, bus.read_long(ppat_ptr + 16));
-                        // Free patMap (PixMapHandle at +2) — also frees its ctab
-                        let pat_map_handle = bus.read_long(ppat_ptr + 2);
-                        if pat_map_handle != 0 {
-                            let pat_map_ptr = bus.read_long(pat_map_handle);
-                            if pat_map_ptr != 0 {
-                                let ctab_handle = bus.read_long(pat_map_ptr + 42);
-                                if ctab_handle != 0 {
-                                    let ctab_ptr = bus.read_long(ctab_handle);
-                                    if ctab_ptr != 0 {
-                                        bus.free(ctab_ptr);
-                                    }
-                                    bus.free(ctab_handle);
-                                }
-                                bus.free(pat_map_ptr);
-                            }
-                            bus.free(pat_map_handle);
-                        }
-                        // Free the PixPat record
-                        bus.free(ppat_ptr);
-                    }
-                    bus.free(ppat_handle);
-                }
+                self.dispose_color_compound_handle(bus, handle);
                 Ok(())
             }
 
@@ -13942,23 +13936,6 @@ impl super::TrapDispatcher {
                         self.cursor_visible = self.cursor_level == 0;
                     }
                 }
-                Ok(())
-            }
-
-            // DisposeCCursor ($AA26)
-            // Releases a color cursor allocated by GetCCursor. No-op stub.
-            // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
-            // Inside Macintosh Volume V, V-80
-            // Stack: SP+0: cCrsr(4). Pop 4.
-            // DisposeCCursor ($AA26): Pops 4 bytes (cCrsr); Systemless keeps
-            // guest cursor allocations alive for the process lifetime, so
-            // disposal is a no-op per the current HLE memory model. Return
-            // noErr in D0 so callers can treat the procedure as a clean
-            // do-nothing path.
-            (true, 0x226) => {
-                let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 4);
-                cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
 
@@ -25703,13 +25680,36 @@ mod tests {
     }
 
     #[test]
-    fn disposeccursor_returns_noerr_and_consumes_ccrsrhandle_pointer_argument() {
-        // IM:V 1986 p. V-80: DisposCCursor is a procedure with one
-        // CCrsrHandle argument and no function result; Systemless pins
-        // the no-op path by clearing D0 to noErr.
+    fn disposeccursor_releases_promoted_ccrsr_object_graph() {
+        // Imaging With QuickDraw (1994), pp. 8-4–8-5 and 8-26–8-27:
+        // GetCCursor promotes a compiled resource into a relocatable CCrsr
+        // graph and DisposeCCursor releases that graph. The CCrsr's common
+        // color-compound prefix owns crsrMap, crsrData, crsrXData, and
+        // crsrXHandle; the PixMap in turn owns its color table.
         let (mut d, mut cpu, mut bus) = setup();
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        bus.write_long(TEST_SP, 0);
+        let crsr_data = compiled_crsr_resource_2bpp();
+        d.install_test_resource(&mut bus, *b"crsr", 1026, &crsr_data);
+        bus.write_word(TEST_SP, 1026);
+        assert!(d
+            .dispatch_quickdraw(true, 0x21B, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let crsr_handle = bus.read_long(TEST_SP + 2);
+        let crsr_ptr = bus.read_long(crsr_handle);
+        let crsr_map_handle = bus.read_long(crsr_ptr + 2);
+        let crsr_map_ptr = bus.read_long(crsr_map_handle);
+        let crsr_data_handle = bus.read_long(crsr_ptr + 6);
+        let crsr_data_ptr = bus.read_long(crsr_data_handle);
+        let crsr_xdata_handle = bus.read_long(crsr_ptr + 10);
+        let crsr_xdata_ptr = bus.read_long(crsr_xdata_handle);
+        let crsr_xhandle = bus.read_long(crsr_ptr + 16);
+        let crsr_xhandle_ptr = bus.read_long(crsr_xhandle);
+        let color_table_handle = bus.read_long(crsr_map_ptr + 42);
+        let color_table_ptr = bus.read_long(color_table_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, crsr_handle);
 
         let result = d.dispatch_quickdraw(true, 0x226, &mut cpu, &mut bus);
         assert!(result.is_some(), "DisposeCCursor should be handled");
@@ -25719,11 +25719,25 @@ mod tests {
             TEST_SP + 4,
             "DisposeCCursor should pop one CCrsrHandle argument"
         );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "DisposeCCursor should return noErr in D0"
-        );
+        for addr in [
+            crsr_handle,
+            crsr_ptr,
+            crsr_map_handle,
+            crsr_map_ptr,
+            crsr_data_handle,
+            crsr_data_ptr,
+            crsr_xdata_handle,
+            crsr_xdata_ptr,
+            crsr_xhandle,
+            crsr_xhandle_ptr,
+            color_table_handle,
+            color_table_ptr,
+        ] {
+            assert!(
+                bus.get_alloc_size(addr).is_none(),
+                "DisposeCCursor leaked allocation at ${addr:08X}"
+            );
+        }
     }
 
     // ==================== QuickDraw Initialization ====================
@@ -27605,6 +27619,9 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-72: CloseCPort disposes
         // visRgn/clipRgn, bkPixPat/pnPixPat/fillPixPat, grafVars, and
         // portPixMap, but does NOT dispose the portPixMap color table.
+        // Universal Interfaces 3.4 assigns the named CloseCPort entry to
+        // $AA02, so this exercises that later entry rather than the earlier
+        // polymorphic $A87D ClosePort/CloseCPort entry recorded in IM:V.
         let (mut d, mut cpu, mut bus) = setup();
         let port_ptr = 0x300000u32;
         bus.write_word(port_ptr + 6, 0xC000); // CGrafPort signature
@@ -27708,7 +27725,7 @@ mod tests {
         }
 
         bus.write_long(TEST_SP, port_ptr);
-        let result = d.dispatch_quickdraw(true, 0x07D, &mut cpu, &mut bus);
+        let result = d.dispatch_quickdraw(true, 0x202, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
 

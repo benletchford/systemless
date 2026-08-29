@@ -1407,6 +1407,7 @@ pub(crate) struct ProfileTrapRoute {
     pub(crate) raw: RawTrapRoute,
     pub(crate) default_is_unimplemented: bool,
     pub(crate) has_permanent_come_from: bool,
+    pub(crate) default_gateway_word: u16,
 }
 
 /// Application-context portion of the writable Trap Manager topology.
@@ -1440,6 +1441,15 @@ const M68K_68040_COME_FROM_TRAPS: &[u16] = &[
 
 const POWERPC_604_COME_FROM_TRAPS: &[u16] = &[0xA823, 0xA851, 0xA996, 0xA999, 0xAAFB];
 
+// Reviewed default-address aliases observed repeatedly in the selected 68040
+// profile. Universal Interfaces 3.4 assigns CloseCPort to $AA02 while Inside
+// Macintosh Volume V, V-72/V-291 records its earlier $A87D entry. The same
+// profile also shares the compound-handle disposal routine used by
+// DisposePixPat and DisposeCCursor; IM:V V-55/V-63 shows their common leading
+// map/data/expanded-data/expanded-map layout. The selected 604 profile exposes
+// distinct addresses for all four slots, so these aliases are profile-local.
+const M68K_68040_DEFAULT_GATEWAY_ALIASES: &[(u16, u16)] = &[(0xAA02, 0xA87D), (0xAA26, 0xAA08)];
+
 // Both selected Mac OS 8.1 profiles identify the modern 1,024-entry Toolbox
 // table's `$AA6E` slot as the `Unimplemented` logical identity. All other
 // captured slots have callable defaults. IM:OSUtils (1994), pp. 8-22 and
@@ -1460,12 +1470,23 @@ impl TrapTableProfile {
         }
     }
 
+    fn default_gateway_word(self, canonical_word: u16) -> u16 {
+        match self {
+            Self::M68k68040 => M68K_68040_DEFAULT_GATEWAY_ALIASES
+                .iter()
+                .find_map(|&(alias, target)| (alias == canonical_word).then_some(target))
+                .unwrap_or(canonical_word),
+            Self::PowerPc604 => canonical_word,
+        }
+    }
+
     pub(crate) fn route(self, trap_word: u16) -> ProfileTrapRoute {
         let raw = *raw_trap_route(trap_word);
         ProfileTrapRoute {
             raw,
             default_is_unimplemented: self.unimplemented_traps().contains(&raw.canonical_word),
             has_permanent_come_from: self.come_from_traps().contains(&raw.canonical_word),
+            default_gateway_word: self.default_gateway_word(raw.canonical_word),
         }
     }
 }
@@ -6612,10 +6633,13 @@ impl TrapDispatcher {
 
     fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
+        let gateway_word = self.trap_table_profile.map_or(canonical, |profile| {
+            profile.route(canonical).default_gateway_word
+        });
         if (canonical & 0x0800) != 0 {
-            self.tool_trap_trampolines.get(&canonical).copied()
+            self.tool_trap_trampolines.get(&gateway_word).copied()
         } else {
-            self.os_trap_trampolines.get(&canonical).copied()
+            self.os_trap_trampolines.get(&gateway_word).copied()
         }
     }
 
@@ -6669,7 +6693,7 @@ impl TrapDispatcher {
                     .insert(trap_word, unimplemented_gateway);
                 unimplemented_gateway
             } else {
-                self.get_or_create_os_trap_trampoline(bus, trap_word)
+                self.get_or_create_os_trap_trampoline(bus, route.default_gateway_word)
             };
             let default = self
                 .native_trap_table
@@ -6690,7 +6714,7 @@ impl TrapDispatcher {
                     .insert(trap_word, unimplemented_gateway);
                 unimplemented_gateway
             } else {
-                self.get_or_create_tool_trap_trampoline(bus, trap_word)
+                self.get_or_create_tool_trap_trampoline(bus, route.default_gateway_word)
             };
             let default = self
                 .native_trap_table
@@ -8008,11 +8032,13 @@ mod tests {
                 } else {
                     0xA000 | slot
                 };
-                let invoked_word = canonical_word | if is_toolbox { 0x0400 } else { 0 };
-                let declared = *default_trap_route(canonical_word);
                 let (mut dispatcher, mut cpu, mut bus) = setup();
                 dispatcher.materialize_trap_tables(&mut bus, profile);
                 let saved_default = dispatcher.trap_table_address(&bus, canonical_word).unwrap();
+                let profile_route = profile.route(canonical_word);
+                let invoked_word = bus.read_word(saved_default);
+                let invoked_operation = profile_route.default_gateway_word;
+                let declared = *default_trap_route(invoked_operation);
                 dispatcher.install_trap_address(&mut bus, canonical_word, PATCH);
                 assert_eq!(
                     dispatcher.native_trap_handler(&bus, canonical_word),
@@ -8033,7 +8059,7 @@ mod tests {
                 let result = dispatcher.dispatch(invoked_word, &mut cpu, &mut bus);
 
                 assert_eq!(
-                    dispatcher.current_trap_operation, canonical_word,
+                    dispatcher.current_trap_operation, invoked_operation,
                     "{profile:?} operation ${canonical_word:04X}"
                 );
                 assert!(
@@ -8283,10 +8309,13 @@ mod tests {
 
                 // The saved default remains an executable OS trap-plus-RTS or
                 // Toolbox auto-pop A-line while its table slot is patched.
+                // A profile may intentionally give multiple cells the same
+                // procedure address, so inspect its declared gateway identity
+                // rather than assuming every cell embeds its own slot word.
                 if is_toolbox {
-                    assert_eq!(bus.read_word(default), trap_word | 0x0400);
+                    assert_eq!(bus.read_word(default), route.default_gateway_word | 0x0400);
                 } else {
-                    assert_eq!(bus.read_word(default), trap_word);
+                    assert_eq!(bus.read_word(default), route.default_gateway_word);
                     assert_eq!(bus.read_word(default + 2), 0x4E75);
                 }
 
@@ -8488,27 +8517,36 @@ mod tests {
 
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
+            let gateway_word = TrapTableProfile::M68k68040
+                .route(trap_word)
+                .default_gateway_word;
             let entry = bus.read_long(OS_TRAP_TABLE_BASE + u32::from(slot) * 4);
             assert_ne!(entry, 0, "OS trap slot ${slot:02X}");
             if M68K_68040_COME_FROM_TRAPS.contains(&trap_word) {
                 assert_eq!(bus.read_long(entry), 0x6006_4EF9);
                 assert_eq!(bus.read_word(entry + 8), 0x60F8);
-                assert_eq!(bus.read_word(bus.read_long(entry + 4)), trap_word);
+                assert_eq!(bus.read_word(bus.read_long(entry + 4)), gateway_word);
             } else {
-                assert_eq!(bus.read_word(entry), trap_word);
+                assert_eq!(bus.read_word(entry), gateway_word);
                 assert_eq!(bus.read_word(entry + 2), 0x4E75);
             }
         }
         for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
             let trap_word = 0xA800 | slot;
+            let gateway_word = TrapTableProfile::M68k68040
+                .route(trap_word)
+                .default_gateway_word;
             let entry = bus.read_long(TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4);
             assert_ne!(entry, 0, "Toolbox trap slot ${slot:03X}");
             if M68K_68040_COME_FROM_TRAPS.contains(&trap_word) {
                 assert_eq!(bus.read_long(entry), 0x6006_4EF9);
                 assert_eq!(bus.read_word(entry + 8), 0x60F8);
-                assert_eq!(bus.read_word(bus.read_long(entry + 4)), trap_word | 0x0400);
+                assert_eq!(
+                    bus.read_word(bus.read_long(entry + 4)),
+                    gateway_word | 0x0400
+                );
             } else {
-                assert_eq!(bus.read_word(entry), trap_word | 0x0400);
+                assert_eq!(bus.read_word(entry), gateway_word | 0x0400);
             }
         }
     }
@@ -8713,6 +8751,105 @@ mod tests {
                 Some(unimplemented)
             );
         }
+    }
+
+    #[test]
+    fn machine_profiles_materialize_only_their_reviewed_default_pointer_aliases() {
+        let aliases = [(0xA87D, 0xAA02), (0xAA08, 0xAA26)];
+
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        for (target, alias) in aliases {
+            assert_eq!(
+                dispatcher.trap_table_address(&bus, target),
+                dispatcher.trap_table_address(&bus, alias),
+                "68040 defaults ${target:04X}/${alias:04X}"
+            );
+            assert_eq!(
+                TrapTableProfile::M68k68040
+                    .route(alias)
+                    .default_gateway_word,
+                target
+            );
+        }
+
+        let second =
+            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let _first = dispatcher
+            .switch_trap_table_process_context(&mut bus, second)
+            .expect("68040 context must be saved");
+        for (target, alias) in aliases {
+            assert_ne!(
+                dispatcher.trap_table_address(&bus, target),
+                dispatcher.trap_table_address(&bus, alias),
+                "604 defaults ${target:04X}/${alias:04X}"
+            );
+            assert_eq!(
+                TrapTableProfile::PowerPc604
+                    .route(alias)
+                    .default_gateway_word,
+                alias
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_default_alias_keeps_independent_patch_and_restore_state() {
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+
+        for (target, alias, patch) in [(0xA87D, 0xAA02, 0x0021_0000), (0xAA08, 0xAA26, 0x0021_1000)]
+        {
+            let shared_default = dispatcher.trap_table_address(&bus, alias).unwrap();
+            assert_eq!(
+                dispatcher.trap_table_address(&bus, target),
+                Some(shared_default)
+            );
+
+            dispatcher.install_trap_address(&mut bus, alias, patch);
+            assert_eq!(dispatcher.native_trap_handler(&bus, alias), Some(patch));
+            assert_eq!(
+                dispatcher.trap_table_address(&bus, target),
+                Some(shared_default),
+                "patching alias ${alias:04X} must not patch ${target:04X}"
+            );
+
+            dispatcher.install_trap_address(&mut bus, alias, shared_default);
+            assert_eq!(dispatcher.native_trap_handler(&bus, alias), None);
+            assert_eq!(
+                dispatcher.trap_table_address(&bus, alias),
+                Some(shared_default)
+            );
+        }
+    }
+
+    #[test]
+    fn saved_closecport_alias_gateway_executes_the_shared_default_procedure() {
+        // Universal Interfaces 3.4 names $AA02 as CloseCPort, while Inside
+        // Macintosh Volume V, V-72/V-291 records $A87D. The selected 68040
+        // profile exposes one default address for those slots. Calling the
+        // address saved from $AA02 must therefore execute the shared $A87D
+        // procedure and retain its one-CGrafPtr Pascal stack contract.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        let gateway = dispatcher.trap_table_address(&bus, 0xAA02).unwrap();
+        let return_pc = 0x0020_0000;
+        let sp = 0x003F_FF00;
+
+        assert_eq!(dispatcher.trap_table_address(&bus, 0xA87D), Some(gateway));
+        assert_eq!(bus.read_word(gateway), 0xAC7D);
+        bus.write_long(sp, return_pc);
+        bus.write_long(sp + 4, 0); // NIL CGrafPtr
+        cpu.write_reg(Register::PC, gateway + 2);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher
+            .dispatch(bus.read_word(gateway), &mut cpu, &mut bus)
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
     }
 
     #[test]
