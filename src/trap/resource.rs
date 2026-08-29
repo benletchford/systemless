@@ -12,13 +12,28 @@ use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use super::dispatch::{raw_trap_route, OsRoutineVariant};
+use super::dispatch::{
+    raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
+};
 use super::memory::{mac_roman_strip_diacriticals, mac_roman_to_upper};
 static TRACE_MENU_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FSSPEC: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RESOURCE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETRESOURCE: OnceLock<bool> = OnceLock::new();
 static TRACE_LOADSEG: OnceLock<bool> = OnceLock::new();
+
+const RESOURCE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_resource_dispatch_operations.rs");
+
+fn resource_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA822 {
+        return None;
+    }
+    selector_operation_route(RESOURCE_DISPATCH_OPERATION_ROUTES, selector)
+}
 
 const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
 const CURRENT_PROCESS_PSN_LOW: u32 = 2;
@@ -2319,14 +2334,13 @@ impl super::TrapDispatcher {
             // Inside Macintosh: More Macintosh Toolbox 1993, 1-69 .. 1-71
             // Inside Macintosh Volume VI 1991, p. C-27 (selector table)
             //
-            // Selector lives in D0; the dispatcher matches the low
-            // byte. IM:VI lists the selectors as $0001/$0002/$0003;
-            // MMTB 1993 lists them as $7001/$7002/$7003. Both forms
-            // route to the same routine because Apple's dispatcher
-            // consults only the low byte. The high byte is an MPW
-            // glue marker, not a parameter-bytes hint (param sizes
-            // here are 16/16/8 bytes — none of which equals
-            // 2 × 0x70 = 224).
+            // IM:VI lists the D0 values as $0001/$0002/$0003. MMTB
+            // prints $7001/$7002/$7003, which Universal Interfaces 3.4
+            // confirms are complete MOVEQ opcodes preceding $A822, not
+            // alternate D0 values. Runtime identity therefore uses 1--3.
+            // The semantic handler retains its existing low-byte behavior
+            // for compatibility, without attributing noncanonical values to
+            // a generated operation.
             //
             // The Mac maintains a disk/memory dichotomy that makes
             // the partial-resource workflow non-trivial there: a
@@ -2349,10 +2363,16 @@ impl super::TrapDispatcher {
             // break callers that treat any non-zero ResErr as a
             // failure when the operation actually succeeded.
             //
-            // ResourceDispatch ($A822): D0-low-byte selectors: 1=ReadPartialResource, 2=WritePartialResource, 3=SetResourceSize per MMTB 1-69..1-71. HLE is memory-resident so all three operate on the in-memory allocation directly; reports inputOutOfBounds/writingPastEnd/resNotFound per IM.
+            // ResourceDispatch ($A822)
+            // Reads, writes, or resizes part of a memory-resident resource.
+            // D0: selector; stack: routine parameters; ResErr: result code.
+            // More Macintosh Toolbox (1993), pp. 1-111 to 1-115.
             (true, 0x022) => {
                 let sp = cpu.read_reg(Register::A7);
-                let routine = (cpu.read_reg(Register::D0) & 0xFF) as u8;
+                let selector = cpu.read_reg(Register::D0);
+                let operation = resource_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let routine = (selector & 0xFF) as u8;
                 match routine {
                     // ReadPartialResource (selector 1) — 16 bytes args
                     // SP+12 theResource | SP+8 offset | SP+4 buffer | SP+0 count
@@ -10555,9 +10575,54 @@ mod tests {
     // 5d. ResourceDispatch (0x022) — selectors 1/2/3
     // ================================================================
     #[test]
+    fn resourcedispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::RESOURCE_DISPATCH_OPERATION_ROUTES.len(), 3);
+        assert!(super::RESOURCE_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let read = super::resource_dispatch_operation_route(0xA822, 0x0001)
+            .expect("ReadPartialResource route");
+        assert_eq!(read.routine_name, "ReadPartialResource");
+        assert_eq!(
+            read.operation_id,
+            "selector-operation:_ResourceDispatch:0x0001:d0-moveq-immediate:8"
+        );
+
+        assert!(super::resource_dispatch_operation_route(0xA822, 0x7001).is_none());
+        assert!(super::resource_dispatch_operation_route(0xA822, 0x0001_0001).is_none());
+        assert!(super::resource_dispatch_operation_route(0xAA22, 0x0001).is_none());
+    }
+
+    #[test]
+    fn resourcedispatch_records_every_generated_operation_and_rejects_opcode_spelling() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in super::RESOURCE_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            bus.write_bytes(TEST_SP, &[0; 16]);
+            call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x7001);
+        bus.write_bytes(TEST_SP, &[0; 16]);
+        call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.current_selector_operation, None);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001_0001);
+        bus.write_bytes(TEST_SP, &[0; 16]);
+        call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
+    #[test]
     fn readpartialresource_selector_1_copies_requested_bytes_and_pops_16_bytes() {
-        // MMTB 1993 1-69 + IM:VI C-27: selector 1 (or $7001 glue form)
-        // performs ReadPartialResource and consumes 16 bytes of args.
+        // MMTB 1993 pp. 1-111 to 1-113 prints the MOVEQ opcode $7001;
+        // this compatibility probe preserves the handler's historical
+        // low-byte dispatch while generated runtime identity uses D0 = 1.
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(
             &mut disp,
