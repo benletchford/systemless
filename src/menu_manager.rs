@@ -147,6 +147,46 @@ pub(crate) struct MenuDefinitionResult {
     pub(crate) which_item: i16,
 }
 
+/// One architecture-neutral step while `GetNewMBar` sizes its menus.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuBarBuildStep<Handle> {
+    Size(Handle),
+    Complete(Handle),
+}
+
+/// Retained `GetNewMBar` progress while custom MDEFs receive `mSizeMsg`.
+///
+/// The Menu Manager creates each menu in MBAR order and returns the completed
+/// menu-list Handle only after those records have been sized. The CPU adapters
+/// retain only their parked ABI frames. Inside Macintosh Volume I (1985),
+/// pp. I-354 and I-365--I-366; Macintosh Toolbox Essentials (1992),
+/// pp. 3-43 and 3-148--3-151.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MenuBarBuild<Handle> {
+    result_handle: Option<Handle>,
+    menu_handles: Vec<Handle>,
+    next_menu: usize,
+}
+
+impl<Handle: Copy> MenuBarBuild<Handle> {
+    pub(crate) fn new(result_handle: Handle, menu_handles: Vec<Handle>) -> Self {
+        Self {
+            result_handle: Some(result_handle),
+            menu_handles,
+            next_menu: 0,
+        }
+    }
+
+    pub(crate) fn next_step(&mut self) -> Option<MenuBarBuildStep<Handle>> {
+        if let Some(handle) = self.menu_handles.get(self.next_menu).copied() {
+            self.next_menu += 1;
+            Some(MenuBarBuildStep::Size(handle))
+        } else {
+            self.result_handle.take().map(MenuBarBuildStep::Complete)
+        }
+    }
+}
+
 impl MenuDefinitionInvocation {
     pub(crate) fn size(menu_handle: u32) -> Self {
         Self {
@@ -2982,6 +3022,15 @@ mod tests {
         );
         assert_eq!(MenuDefinitionMessage::Draw as i16, 0);
         assert_eq!(MenuDefinitionMessage::PopUp as i16, 3);
+    }
+
+    #[test]
+    fn menu_bar_build_owns_ordered_sizing_and_completion() {
+        let mut build = MenuBarBuild::new(0x1111u32, vec![0x2222, 0x3333]);
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(0x2222)));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Size(0x3333)));
+        assert_eq!(build.next_step(), Some(MenuBarBuildStep::Complete(0x1111)));
+        assert_eq!(build.next_step(), None);
     }
 
     #[test]

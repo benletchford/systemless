@@ -13,7 +13,8 @@ use crate::menu_manager::{
     standard_menu_item_layout, standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
-    ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
+    ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
+    MenuBarBuildStep as SharedMenuBarBuildStep, MenuBarResource as SharedMenuBarResource,
     MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuColorTable,
     MenuDefinitionInvocation as SharedMenuDefinitionInvocation,
     MenuDefinitionPane as SharedMenuDefinitionPane,
@@ -70,9 +71,7 @@ pub(crate) type SubmenuTrackingState = SharedTrackedMenuPane<usize, (), u8, ()>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PendingMenuBarBuild {
     pub(crate) stack_ptr: u32,
-    pub(crate) result_handle: u32,
-    pub(crate) menu_handles: Vec<u32>,
-    pub(crate) next_menu: usize,
+    pub(crate) build: SharedMenuBarBuild<u32>,
 }
 
 pub(crate) fn tracked_menu_state(
@@ -895,18 +894,24 @@ impl super::TrapDispatcher {
 
     fn continue_menu_bar_build<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
         loop {
-            let next = self.pending_menu_bar_build.as_mut().and_then(|build| {
-                let handle = build.menu_handles.get(build.next_menu).copied()?;
-                build.next_menu += 1;
-                Some(handle)
-            });
-            let Some(menu_handle) = next else {
-                let Some(build) = self.pending_menu_bar_build.take() else {
-                    return;
-                };
-                bus.write_long(build.stack_ptr + 2, build.result_handle);
-                cpu.write_reg(Register::A7, build.stack_ptr + 2);
+            let Some(step) = self
+                .pending_menu_bar_build
+                .as_mut()
+                .and_then(|pending| pending.build.next_step())
+            else {
                 return;
+            };
+            let menu_handle = match step {
+                SharedMenuBarBuildStep::Size(menu_handle) => menu_handle,
+                SharedMenuBarBuildStep::Complete(result_handle) => {
+                    let Some(pending) = self.pending_menu_bar_build.take() else {
+                        return;
+                    };
+                    let stack_ptr = pending.stack_ptr;
+                    bus.write_long(stack_ptr + 2, result_handle);
+                    cpu.write_reg(Register::A7, stack_ptr + 2);
+                    return;
+                }
             };
             if self.arm_menu_definition_to(
                 cpu,
@@ -1971,9 +1976,7 @@ impl super::TrapDispatcher {
                     bus.write_long(list_handle, list_block);
                     self.pending_menu_bar_build = Some(PendingMenuBarBuild {
                         stack_ptr: sp,
-                        result_handle: list_handle,
-                        menu_handles,
-                        next_menu: 0,
+                        build: SharedMenuBarBuild::new(list_handle, menu_handles),
                     });
                     list_handle
                 } else {

@@ -31,10 +31,10 @@ use crate::menu_manager::{
     standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
     standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable, MenuDefinitionInvocation,
-    MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
-    MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
-    MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
+    ColorIconLayout, MenuBarBuild, MenuBarBuildStep, MenuBarResource, MenuBarTitleRegion,
+    MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
+    MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
+    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
     StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
     TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
@@ -2781,9 +2781,7 @@ struct PpcMenuSelectCall {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPendingMenuBarBuild {
-    result_handle: u32,
-    menu_handles: Vec<u32>,
-    next_menu: usize,
+    build: MenuBarBuild<u32>,
     return_address: u32,
 }
 
@@ -16345,9 +16343,7 @@ fn dispatch_supported_import(
                 .map(|menu_list| menu_list.handles().collect())
                 .unwrap_or_default();
             toolbox_startup.pending_menu_bar_build = Some(PpcPendingMenuBarBuild {
-                result_handle,
-                menu_handles,
-                next_menu: 0,
+                build: MenuBarBuild::new(result_handle, menu_handles),
                 return_address: cpu.lr,
             });
             Some(ppc_continue_menu_bar_build(
@@ -69608,17 +69604,23 @@ fn ppc_continue_menu_bar_build(
     current_resource_refnum: i16,
 ) -> PpcImportAction {
     loop {
-        let next = startup.pending_menu_bar_build.as_mut().and_then(|build| {
-            let handle = build.menu_handles.get(build.next_menu).copied()?;
-            build.next_menu += 1;
-            Some(handle)
-        });
-        let Some(menu_handle) = next else {
-            let Some(build) = startup.pending_menu_bar_build.take() else {
-                return PpcImportAction::Return(0);
-            };
-            cpu.lr = build.return_address;
-            return PpcImportAction::Return(build.result_handle);
+        let Some(step) = startup
+            .pending_menu_bar_build
+            .as_mut()
+            .and_then(|pending| pending.build.next_step())
+        else {
+            return PpcImportAction::Return(0);
+        };
+        let menu_handle = match step {
+            MenuBarBuildStep::Size(menu_handle) => menu_handle,
+            MenuBarBuildStep::Complete(result_handle) => {
+                let Some(pending) = startup.pending_menu_bar_build.take() else {
+                    return PpcImportAction::Return(0);
+                };
+                let return_address = pending.return_address;
+                cpu.lr = return_address;
+                return PpcImportAction::Return(result_handle);
+            }
         };
         if let Some(action) = ppc_dispatch_native_menu_definition(
             cpu,
