@@ -1128,6 +1128,7 @@ pub enum PpcImportDispatcherTarget {
     EqualRect,
     EmptyRect,
     SetPt,
+    EqualPt,
     AddPt,
     SubPt,
     LocalToGlobal,
@@ -14755,6 +14756,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "EqualRect") => PpcImportDispatcherTarget::EqualRect,
         ("InterfaceLib", "EmptyRect") => PpcImportDispatcherTarget::EmptyRect,
         ("InterfaceLib", "SetPt") => PpcImportDispatcherTarget::SetPt,
+        ("InterfaceLib", "EqualPt") => PpcImportDispatcherTarget::EqualPt,
         ("InterfaceLib", "PtInRect") => PpcImportDispatcherTarget::PtInRect,
         ("InterfaceLib", "SetOrigin") => PpcImportDispatcherTarget::SetOrigin,
         ("InterfaceLib", "OffsetRect") => PpcImportDispatcherTarget::OffsetRect,
@@ -18909,6 +18911,12 @@ fn dispatch_supported_import(
                 let _ = memory.write_u16_be(point_ptr + 2, h);
             }
             Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EqualPt => {
+            // Imaging With QuickDraw (1994), p. 2-53: EqualPt returns true
+            // only when both the vertical and horizontal coordinates match.
+            // A Point occupies one PowerPC parameter word.
+            Some(PpcImportAction::Return(u32::from(cpu.gpr[3] == cpu.gpr[4])))
         }
         PpcImportDispatcherTarget::AddPt | PpcImportDispatcherTarget::SubPt => {
             let src_v = (cpu.gpr[3] >> 16) as u16 as i16;
@@ -125082,6 +125090,29 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u16_be(point_ptr), Some(45));
         assert_eq!(loaded.memory.read_u16_be(point_ptr + 2), Some(123));
+    }
+
+    #[test]
+    fn hle_import_runner_handles_equal_pt() {
+        let pef = synthetic_pef_with_import(b"EqualPt");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = (45u32 << 16) | 123;
+        loaded.cpu.gpr[4] = (45u32 << 16) | 123;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (45u32 << 16) | 123;
+        loaded.cpu.gpr[4] = (46u32 << 16) | 123;
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], 0);
     }
 
     #[test]
