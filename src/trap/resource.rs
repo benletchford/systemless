@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use super::dispatch::{raw_trap_route, OsRoutineVariant};
+use super::memory::{mac_roman_strip_diacriticals, mac_roman_to_upper};
 static TRACE_MENU_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FSSPEC: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RESOURCE: OnceLock<bool> = OnceLock::new();
@@ -5872,54 +5873,46 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // _CmpString ($A03C) — underlying trap for EqualString
-            // FUNCTION EqualString (aStr, bStr: Str255; caseSens, diacSens: BOOLEAN): BOOLEAN;
-            // Inside Macintosh Volume II, II-377
-            //
+            // _CmpString ($A03C), the register-level EqualString operation.
             // On entry: A0 = ptr to first string's first character
             //           A1 = ptr to second string's first character
             //           D0 high word = length of first string
             //           D0 low word  = length of second string
             // On exit:  D0 = 0 if equal, 1 if not equal (long word).
             //
-            // The default trap word $A03C is case-INSENSITIVE for ASCII
-            // (per IM:II II-377 the bare _CmpString has caseSens=FALSE).
-            // The MARKS / CASE trap-word bits 9 and 10 select different
-            // sensitivities; Systemless currently handles only the default.
-            //
-            // EqualString / CmpString ($A03C): String comparison per IM:II II-377
-            // Trap word bit 10 (0x0400): caseSens=TRUE → case-sensitive comparison.
-            // Default $A03C (bit 10 clear): caseSens=FALSE → case-insensitive.
-            // Trap word bit 9 (0x0200): diacSens flag (strip diacriticals when set).
-            // D0=0 means equal; D0=1 means not equal (EqualString Pascal glue inverts).
+            // MARKS (bit 9) makes comparison diacritic-sensitive; CASE (bit
+            // 10) makes it case-sensitive. The bare form ignores both. Inside
+            // Macintosh: Text (1993), pp. 5-51--5-52. This later four-row table
+            // supersedes the opposite MARKS annotation in Volume II (1985),
+            // p. II-377. D0 is 0 for equal and 1 for unequal.
             (false, 0x3C) => {
                 let a_ptr = cpu.read_reg(Register::A0);
                 let b_ptr = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
                 let a_len = (d0 >> 16) & 0xFFFF;
                 let b_len = d0 & 0xFFFF;
-                let case_sens = (self.current_trap_word & 0x0400) != 0;
+                let (case_sensitive, diacritic_sensitive) = raw_trap_route(self.current_trap_word)
+                    .os_routine_variant
+                    .text_comparison_sensitivity()
+                    .expect("CmpString trap word must have a classified comparison variant");
 
                 let result: u32 = if a_len != b_len {
                     1
                 } else {
-                    let a_bytes = bus.read_bytes(a_ptr, a_len as usize);
-                    let b_bytes = bus.read_bytes(b_ptr, b_len as usize);
-                    if case_sens {
-                        // Case-sensitive: exact byte comparison.
-                        if a_bytes == b_bytes {
-                            0
-                        } else {
-                            1
+                    let equal = (0..a_len).all(|offset| {
+                        let mut a = bus.read_byte(a_ptr + offset);
+                        let mut b = bus.read_byte(b_ptr + offset);
+                        if !diacritic_sensitive {
+                            a = mac_roman_strip_diacriticals(a);
+                            b = mac_roman_strip_diacriticals(b);
                         }
-                    } else {
-                        // Case-insensitive: fold ASCII letters before comparing.
-                        if a_bytes.eq_ignore_ascii_case(&b_bytes) {
-                            0
-                        } else {
-                            1
+                        if !case_sensitive {
+                            a = mac_roman_to_upper(a, false);
+                            b = mac_roman_to_upper(b, false);
                         }
-                    }
+                        a == b
+                    });
+                    u32::from(!equal)
                 };
                 cpu.write_reg(Register::D0, result);
                 Ok(())
@@ -8767,6 +8760,41 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0, "AA89 clears D0");
         assert_eq!(bus.read_word(sp + 2), 0, "AA89 writes zero result");
         assert_eq!(cpu.read_reg(Register::A7), sp + 2, "AA89 pops 2 bytes");
+    }
+
+    #[test]
+    fn cmpstring_variants_apply_documented_case_and_marks_sensitivity() {
+        // Inside Macintosh: Text (1993), pp. 5-51--5-52: MARKS and CASE
+        // independently enable diacritic-sensitive and case-sensitive matching.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let accented_lower = bus.alloc(1);
+        let plain_lower = bus.alloc(1);
+        let plain_upper = bus.alloc(1);
+        bus.write_byte(accented_lower, 0x8E); // Mac Roman e acute
+        bus.write_byte(plain_lower, b'e');
+        bus.write_byte(plain_upper, b'E');
+
+        for (trap_word, left, right, expected) in [
+            (0xA03C, accented_lower, plain_upper, 0),
+            (0xA23C, accented_lower, plain_upper, 1),
+            (0xA43C, accented_lower, plain_upper, 1),
+            (0xA63C, accented_lower, plain_upper, 1),
+            (0xA03C, plain_lower, plain_upper, 0),
+            (0xA23C, plain_lower, plain_upper, 0),
+            (0xA43C, plain_lower, plain_upper, 1),
+            (0xA63C, plain_lower, plain_upper, 1),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, left);
+            cpu.write_reg(Register::A1, right);
+            cpu.write_reg(Register::D0, 0x0001_0001);
+            call(&mut dispatcher, false, 0x3C, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected,
+                "trap ${trap_word:04X}"
+            );
+        }
     }
 
     /// Write a Pascal string (length-prefixed) into memory at `addr`.

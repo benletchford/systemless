@@ -1231,6 +1231,9 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// *Inside Macintosh: Memory* (1992), pp. 2-31, 2-33, 2-35, 2-53--2-55,
 /// 2-65--2-68, and 2-71--2-74. The text transformations come from *Inside
 /// Macintosh*, Volume VI (1991), pp. 14-62--14-63 and Appendix C, table C-2.
+/// The string-comparison permutations come from *Inside Macintosh: Text*
+/// (1993), pp. 5-51--5-52 and 5-60--5-61. The later table is authoritative
+/// over the contradictory MARKS annotation in Volume II (1985), p. II-377.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares the corresponding
@@ -1247,10 +1250,27 @@ pub(crate) enum OsRoutineVariant {
     StripText,
     UpperText,
     StripUpperText,
+    TextCompareFoldCaseAndMarks,
+    TextCompareFoldCase,
+    TextCompareStripMarks,
+    TextCompareExact,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
     FileHfsAsynchronous,
+}
+
+impl OsRoutineVariant {
+    /// Returns `(case_sensitive, diacritic_sensitive)` for CmpString/RelString.
+    pub(crate) const fn text_comparison_sensitivity(self) -> Option<(bool, bool)> {
+        match self {
+            Self::TextCompareFoldCaseAndMarks => Some((false, false)),
+            Self::TextCompareFoldCase => Some((false, true)),
+            Self::TextCompareStripMarks => Some((true, false)),
+            Self::TextCompareExact => Some((true, true)),
+            _ => None,
+        }
+    }
 }
 
 const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
@@ -1281,6 +1301,14 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x56, 0x0200) => OsRoutineVariant::StripText,
         (0x56, 0x0400) => OsRoutineVariant::UpperText,
         (0x56, 0x0600) => OsRoutineVariant::StripUpperText,
+
+        // Text 1993, pp. 5-51--5-52 and 5-60--5-61: MARKS (bit 9)
+        // makes comparison diacritic-sensitive and CASE (bit 10) makes it
+        // case-sensitive. Both CmpString and RelString use this table.
+        (0x3C | 0x50, 0x0000) => OsRoutineVariant::TextCompareFoldCaseAndMarks,
+        (0x3C | 0x50, 0x0200) => OsRoutineVariant::TextCompareFoldCase,
+        (0x3C | 0x50, 0x0400) => OsRoutineVariant::TextCompareStripMarks,
+        (0x3C | 0x50, 0x0600) => OsRoutineVariant::TextCompareExact,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -8073,7 +8101,8 @@ mod tests {
         use OsRoutineVariant::{
             CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
             FileHfsSynchronous, FileSynchronous, LowerText, StripText, StripUpperText, SystemHeap,
-            SystemHeapClear, Unclassified, UpperText,
+            SystemHeapClear, TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
+            TextCompareStripMarks, Unclassified, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8090,6 +8119,23 @@ mod tests {
                         raw_trap_route(0xA000 | slot | return_a0 | routine_bits).os_routine_variant,
                         expected
                     );
+                }
+            }
+        }
+
+        // Inside Macintosh: Text (1993), pp. 5-51--5-52 and 5-60--5-61.
+        for slot in [0x3Cu16, 0x50] {
+            for return_a0 in [0x0000u16, 0x0100] {
+                for (routine_bits, expected, sensitivity) in [
+                    (0x0000, TextCompareFoldCaseAndMarks, (false, false)),
+                    (0x0200, TextCompareFoldCase, (false, true)),
+                    (0x0400, TextCompareStripMarks, (true, false)),
+                    (0x0600, TextCompareExact, (true, true)),
+                ] {
+                    let variant =
+                        raw_trap_route(0xA000 | slot | return_a0 | routine_bits).os_routine_variant;
+                    assert_eq!(variant, expected);
+                    assert_eq!(variant.text_comparison_sensitivity(), Some(sensitivity));
                 }
             }
         }
@@ -8169,7 +8215,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 184);
+        assert_eq!(classified, 200);
         assert_eq!(
             raw_trap_route(0xA201).os_routine_variant,
             Unclassified,

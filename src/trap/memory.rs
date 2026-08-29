@@ -2595,38 +2595,35 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // RelString ($A050)
-            // Compares two strings relationally, returning -1, 0, or 1.
-            // FUNCTION RelString(aStr, bStr: Str255; caseSens, diacSens: BOOLEAN): INTEGER;
-            // Inside Macintosh Volume IV, IV-234
+            // RelString compares two Roman strings relationally. MARKS (bit 9)
+            // makes comparison diacritic-sensitive; CASE (bit 10) makes it
+            // case-sensitive. Inside Macintosh: Text (1993), pp. 5-60--5-61.
             //
             // Assembly calling convention:
             //   On entry: A0 = ptr to first string, A1 = ptr to second string
             //             D0 high word = length of first, D0 low word = length of second
             //   On exit:  D0 = -1 (less), 0 (equal), or 1 (greater) as long word
-            //   Bit 9: if set, diacSens=FALSE (strip diacriticals)
-            //   Bit 10: if set, caseSens=TRUE
-            //
-            // RelString ($A050): Compares strings relationally: A0/A1=ptrs, D0=lengths; bit 9=strip marks, bit 10=case-sensitive; per IM:IV IV-234
             (false, 0x50) => {
                 let ptr_a = cpu.read_reg(Register::A0);
                 let ptr_b = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
                 let len_a = (d0 >> 16) & 0xFFFF;
                 let len_b = d0 & 0xFFFF;
-                let strip_marks = (self.current_trap_word & 0x0200) != 0;
-                let case_sens = (self.current_trap_word & 0x0400) != 0;
+                let (case_sensitive, diacritic_sensitive) = raw_trap_route(self.current_trap_word)
+                    .os_routine_variant
+                    .text_comparison_sensitivity()
+                    .expect("RelString trap word must have a classified comparison variant");
 
                 let min_len = std::cmp::min(len_a, len_b);
                 let mut result: i32 = 0;
                 for i in 0..min_len {
                     let mut a = bus.read_byte(ptr_a + i);
                     let mut b = bus.read_byte(ptr_b + i);
-                    if strip_marks {
+                    if !diacritic_sensitive {
                         a = mac_roman_strip_diacriticals(a);
                         b = mac_roman_strip_diacriticals(b);
                     }
-                    if !case_sens {
+                    if !case_sensitive {
                         a = mac_roman_to_upper(a, false);
                         b = mac_roman_to_upper(b, false);
                     }
@@ -4362,7 +4359,7 @@ fn mac_roman_to_lower(ch: u8) -> u8 {
 
 /// Strip diacritical marks from a Mac Roman character without case conversion.
 /// Per IM:IV IV-235 stripping table.
-fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
+pub(crate) fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
     match ch {
         // Uppercase accented → uppercase base
         0x80 => b'A', // Ä → A
@@ -8519,6 +8516,42 @@ mod tests {
                 bus.read_bytes(ptr, 4),
                 expected.to_vec(),
                 "Variant ${trap_word:04X} must produce documented byte sequence"
+            );
+        }
+    }
+
+    #[test]
+    fn relstring_variants_apply_documented_case_and_marks_sensitivity() {
+        // Inside Macintosh: Text (1993), pp. 5-60--5-61: the bare form
+        // ignores case and marks; MARKS and CASE independently enable them.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let accented_lower = bus.alloc(1);
+        let plain_lower = bus.alloc(1);
+        let plain_upper = bus.alloc(1);
+        bus.write_byte(accented_lower, 0x8E); // Mac Roman e acute
+        bus.write_byte(plain_lower, b'e');
+        bus.write_byte(plain_upper, b'E');
+
+        for (trap_word, left, right, expected) in [
+            (0xA050, accented_lower, plain_upper, 0),
+            (0xA250, accented_lower, plain_upper, 1),
+            (0xA450, accented_lower, plain_upper, 1),
+            (0xA650, accented_lower, plain_upper, 1),
+            (0xA050, plain_lower, plain_upper, 0),
+            (0xA250, plain_lower, plain_upper, 0),
+            (0xA450, plain_lower, plain_upper, 1),
+            (0xA650, plain_lower, plain_upper, 1),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, left);
+            cpu.write_reg(Register::A1, right);
+            cpu.write_reg(Register::D0, 0x0001_0001);
+            let result = dispatcher.dispatch_memory(false, 0x50, &mut cpu, &mut bus);
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected,
+                "trap ${trap_word:04X}"
             );
         }
     }
