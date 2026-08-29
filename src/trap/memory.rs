@@ -3133,20 +3133,37 @@ impl super::TrapDispatcher {
             (false, 0x92) => return_noerr(cpu),
 
             // SleepQInstall ($A28A) / SleepQRemove ($A48A)
-            // Sleep queue management.
-            // Inside Macintosh: Devices (1994), p. 6-33.
-            // No-op behavior in HLE — we don't have sleep/wake hardware.
-            // Both variants take one SleepQRecPtr Pascal argument on stack.
-            //
-            // SleepQInstall/SleepQRemove ($A08A): Returns noErr; no sleep/wake hardware; per IM:VI
+            // Adds or removes an A0-supplied SleepQRec from the ordered sleep
+            // queue; the manager maintains its first-longword link.
+            // PROCEDURE SleepQInstall(qRecPtr: SleepQRecPtr);
+            // PROCEDURE SleepQRemove(qRecPtr: SleepQRecPtr);
+            // Inside Macintosh: Devices (1994), pp. 6-18, 6-26, and 6-33.
+            // Universal Interfaces 3.4 Power.h lines 447--461 and 705--731.
             (false, 0x8A) => {
-                // Variant trap words: $A28A (install), $A48A (remove).
-                // Appendix C table C-2 (IM:VI 1991, p. C-3).
-                match self.current_trap_word {
-                    0xA28A | 0xA48A => {
-                        let sp = cpu.read_reg(Register::A7);
-                        let _q_rec_ptr = bus.read_long(sp);
-                        cpu.write_reg(Register::A7, sp.wrapping_add(4));
+                let q_rec_ptr = cpu.read_reg(Register::A0);
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::SleepQueueInstall
+                        if q_rec_ptr != 0 && !self.sleep_queue.contains(&q_rec_ptr) =>
+                    {
+                        if let Some(&tail) = self.sleep_queue.last() {
+                            bus.write_long(tail, q_rec_ptr);
+                        }
+                        bus.write_long(q_rec_ptr, 0);
+                        self.sleep_queue.push(q_rec_ptr);
+                    }
+                    OsRoutineVariant::SleepQueueRemove => {
+                        if let Some(index) = self
+                            .sleep_queue
+                            .iter()
+                            .position(|&entry| entry == q_rec_ptr)
+                        {
+                            let next = self.sleep_queue.get(index + 1).copied().unwrap_or(0);
+                            if index != 0 {
+                                let previous = self.sleep_queue[index - 1];
+                                bus.write_long(previous, next);
+                            }
+                            self.sleep_queue.remove(index);
+                        }
                     }
                     _ => {}
                 }
@@ -7430,95 +7447,75 @@ mod tests {
     }
 
     #[test]
-    fn sleepqinstall_variant_consumes_sleepqrecptr_argument() {
-        // SleepQInstall is PROCEDURE SleepQInstall(qRecPtr: SleepQRecPtr),
-        // so it consumes one 4-byte pointer argument from stack.
-        // Inside Macintosh: Devices (1994), p. 6-33.
-        // Trap word mapping: SleepQInstall = $A28A (IM:VI 1991 Appendix C, p. C-3).
+    fn sleep_queue_variants_use_a0_and_keep_links_ordered_when_bit_8_changes() {
+        // Inside Macintosh: Devices (1994), pp. 6-18, 6-26, and 6-33 makes
+        // the SleepQRec link manager-owned and defines ordered install/remove.
+        // UI 3.4 Power.h lines 447--461 and 705--731 puts qRecPtr in A0.
+        // OS Utilities 1994, pp. 8-10--8-14 makes bit 8 independently control
+        // A0 restoration, so $A38A/$A58A retain their operation.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let q_rec_ptr = bus.alloc(12);
+        let first = bus.alloc(12);
+        let second = bus.alloc(12);
+        let third = bus.alloc(12);
         let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, q_rec_ptr);
-        dispatcher.current_trap_word = 0xA28A;
+        bus.write_long(sp_before, 0x1357_9BDF);
 
-        let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQInstall should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQInstall should return cleanly"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before.wrapping_add(4),
-            "SleepQInstall should pop one SleepQRecPtr argument (4 bytes)"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "SleepQInstall no-op path should report noErr in D0"
-        );
+        for (trap_word, q_rec_ptr) in [(0xA28A, first), (0xA38A, second), (0xA28A, third)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, q_rec_ptr);
+            dispatcher
+                .dispatch_memory(false, 0x8A, &mut cpu, &mut bus)
+                .expect("SleepQInstall should be handled")
+                .expect("SleepQInstall should return cleanly");
+        }
+        assert_eq!(dispatcher.sleep_queue, [first, second, third]);
+        assert_eq!(bus.read_long(first), second);
+        assert_eq!(bus.read_long(second), third);
+        assert_eq!(bus.read_long(third), 0);
+
+        for (trap_word, q_rec_ptr) in [(0xA58A, second), (0xA48A, first), (0xA48A, third)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, q_rec_ptr);
+            dispatcher
+                .dispatch_memory(false, 0x8A, &mut cpu, &mut bus)
+                .expect("SleepQRemove should be handled")
+                .expect("SleepQRemove should return cleanly");
+            if q_rec_ptr == second {
+                assert_eq!(dispatcher.sleep_queue, [first, third]);
+                assert_eq!(bus.read_long(first), third);
+            }
+        }
+        assert!(dispatcher.sleep_queue.is_empty());
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(bus.read_long(sp_before), 0x1357_9BDF);
     }
 
     #[test]
-    fn sleepqremove_variant_consumes_sleepqrecptr_argument() {
-        // SleepQRemove is PROCEDURE SleepQRemove(qRecPtr: SleepQRecPtr),
-        // so it consumes one 4-byte pointer argument from stack.
-        // Inside Macintosh: Devices (1994), p. 6-33.
-        // Trap word mapping: SleepQRemove = $A48A (IM:VI 1991 Appendix C, p. C-3).
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let q_rec_ptr = bus.alloc(12);
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, q_rec_ptr);
-        dispatcher.current_trap_word = 0xA48A;
-
-        let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQRemove should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQRemove should return cleanly"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before.wrapping_add(4),
-            "SleepQRemove should pop one SleepQRecPtr argument (4 bytes)"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "SleepQRemove no-op path should report noErr in D0"
-        );
-    }
-
-    #[test]
-    fn sleepq_family_trap_leaves_stack_untouched() {
-        // The family trap word ($A08A) is the shell that dispatches to the
-        // SleepQInstall/$A28A and SleepQRemove/$A48A variants.
-        // The shell itself should not consume a Pascal argument frame.
+    fn sleep_trap_leaves_stack_untouched() {
+        // Universal Interfaces 3.4 Traps.h line 794 identifies $A08A as the
+        // distinct _Sleep operation. It has no SleepQRec argument frame.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0x1357_9BDF);
         dispatcher.current_trap_word = 0xA08A;
 
         let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQ family trap should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQ family trap should return cleanly"
-        );
+        assert!(result.is_some(), "Sleep should be handled");
+        assert!(result.unwrap().is_ok(), "Sleep should return cleanly");
         assert_eq!(
             cpu.read_reg(Register::A7),
             sp_before,
-            "SleepQ family shell should not pop a Pascal frame"
+            "Sleep should not pop a Pascal frame"
         );
         assert_eq!(
             bus.read_long(sp_before),
             0x1357_9BDF,
-            "SleepQ family shell should leave the stack top untouched"
+            "Sleep should leave the stack top untouched"
         );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
-            "SleepQ family shell should report noErr in D0"
+            "Sleep should report noErr in D0"
         );
     }
 

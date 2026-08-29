@@ -1245,6 +1245,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// Operating System Utilities* (1994), pp. 8-27--8-31 and 8-32--8-33.
 /// Gestalt, NewGestalt, and ReplaceGestalt come from the same book,
 /// pp. 1-31--1-36.
+/// SleepQInstall and SleepQRemove come from *Inside Macintosh: Devices*
+/// (1994), pp. 6-18, 6-26, and 6-33.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares reviewed exact
@@ -1253,6 +1255,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// 1315--3343); `Timer.h` lines 74--100 declares InsTime and InsXTime;
 /// `Patches.h` lines 80--231 declares the Trap Manager forms;
 /// `Gestalt.h` lines 55--105 declares the three Gestalt Manager forms;
+/// `Power.h` lines 447--461 and 705--731 declares the sleep-queue record and
+/// register entry points;
 /// `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
@@ -1282,6 +1286,8 @@ pub(crate) enum OsRoutineVariant {
     GestaltQuery,
     GestaltRegister,
     GestaltReplace,
+    SleepQueueInstall,
+    SleepQueueRemove,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1367,10 +1373,18 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         // Operating System Utilities 1994, pp. 1-31--1-36 and UI 3.4
         // Gestalt.h lines 55--105: the three operations share slot $AD.
         // Bit 9 selects NewGestalt and bit 10 selects ReplaceGestalt; the
-        // combined form has no declaration and remains unclassified.
+        // combined form remains unclassified. UI 3.4 Traps.h line 804 names
+        // $A7AD as _GetGestaltProcPtr, but the reviewed sources do not define
+        // its ABI or semantics.
         (0xAD, 0x0000) => OsRoutineVariant::GestaltQuery,
         (0xAD, 0x0200) => OsRoutineVariant::GestaltRegister,
         (0xAD, 0x0400) => OsRoutineVariant::GestaltReplace,
+
+        // Devices 1994, pp. 6-18, 6-26, and 6-33; UI 3.4 Power.h lines
+        // 447--461 and 705--731: bit 9 installs an A0-supplied SleepQRec and
+        // bit 10 removes it. The combined form has no reviewed semantics.
+        (0x8A, 0x0200) => OsRoutineVariant::SleepQueueInstall,
+        (0x8A, 0x0400) => OsRoutineVariant::SleepQueueRemove,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -2565,6 +2579,9 @@ pub struct TrapDispatcher {
     pub(crate) timer_extended_wakeups: HashMap<u32, u64>,
     /// Exact Time Manager time while a callback is being delivered.
     pub(crate) timer_current_subtick: u64,
+    /// Ordered Power Manager sleep queue. Each entry is a guest SleepQRec;
+    /// its first longword remains the guest-visible next link.
+    pub(crate) sleep_queue: Vec<u32>,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: Vec<VblTask>,
@@ -3880,6 +3897,7 @@ impl TrapDispatcher {
             timer_tasks: Vec::new(),
             timer_extended_wakeups: HashMap::new(),
             timer_current_subtick: 0,
+            sleep_queue: Vec::new(),
             vbl_tasks: Vec::new(),
             system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,
@@ -8170,11 +8188,11 @@ mod tests {
             CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
             FileHfsSynchronous, FileSynchronous, GestaltQuery, GestaltRegister, GestaltReplace,
             LowerText, ParameterBlockAsynchronous, ParameterBlockImmediate,
-            ParameterBlockSynchronous, StripText, StripUpperText, SystemHeap, SystemHeapClear,
-            TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
-            TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal, TrapAddressLegacy,
-            TrapAddressNewOs, TrapAddressNewTool, Unclassified, UpperStringPreserveMarks,
-            UpperStringStripMarks, UpperText,
+            ParameterBlockSynchronous, SleepQueueInstall, SleepQueueRemove, StripText,
+            StripUpperText, SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
+            TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
+            TrapAddressLegacy, TrapAddressNewOs, TrapAddressNewTool, Unclassified,
+            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8238,6 +8256,24 @@ mod tests {
                 raw_trap_route(0xA6AD | return_a0).os_routine_variant,
                 Unclassified,
                 "combined Gestalt Manager modifier bits are undeclared"
+            );
+        }
+
+        // Inside Macintosh: Devices (1994), pp. 6-18, 6-26, and 6-33;
+        // UI 3.4 Power.h lines 447--461 and 705--731.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA28A | return_a0).os_routine_variant,
+                SleepQueueInstall
+            );
+            assert_eq!(
+                raw_trap_route(0xA48A | return_a0).os_routine_variant,
+                SleepQueueRemove
+            );
+            assert_eq!(
+                raw_trap_route(0xA68A | return_a0).os_routine_variant,
+                Unclassified,
+                "combined sleep-queue modifier bits have no reviewed semantics"
             );
         }
 
@@ -8396,7 +8432,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 262);
+        assert_eq!(classified, 266);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
