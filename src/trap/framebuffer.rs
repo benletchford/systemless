@@ -9,7 +9,7 @@ use crate::menu_manager::{
 };
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
-    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
+    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
 use crate::ui_theme::{
     CaretState, ControlKind, ControlState, DialogFrameKind, DialogFrameState, MenuBarState,
@@ -28,15 +28,6 @@ fn no_visrgn_auto_expand_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_NO_VISRGN_AUTO_EXPAND").is_some())
 }
 
-// MTE 1992 p. 3-60 defines the low-order `Style` byte bit assignments:
-// bold, italic, underline, outline, shadow, condensed, and extended.
-const TEXT_STYLE_BOLD: u8 = 0x01;
-const TEXT_STYLE_ITALIC: u8 = 0x02;
-const TEXT_STYLE_UNDERLINE: u8 = 0x04;
-const TEXT_STYLE_OUTLINE: u8 = 0x08;
-const TEXT_STYLE_SHADOW: u8 = 0x10;
-const TEXT_STYLE_CONDENSE: u8 = 0x20;
-const TEXT_STYLE_EXTEND: u8 = 0x40;
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
@@ -1721,7 +1712,7 @@ impl super::TrapDispatcher {
             glyph,
             data,
             None,
-            0,
+            QuickDrawTextStyle::plain(),
             None,
             true,
         );
@@ -1795,7 +1786,7 @@ impl super::TrapDispatcher {
         glyph: &Glyph,
         data: &[u8],
         synthetic_italic: Option<(i16, i16)>,
-        style: u8,
+        style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
     ) {
@@ -1804,9 +1795,7 @@ impl super::TrapDispatcher {
         let gw = glyph.width as usize;
         let gh = glyph.height as usize;
         // Unslanted, unstretched glyphs on an 8-bit screen go row by row.
-        if pixel_size == 8
-            && synthetic_italic.is_none()
-            && (style & (TEXT_STYLE_EXTEND | TEXT_STYLE_CONDENSE)) == 0
+        if pixel_size == 8 && synthetic_italic.is_none() && !style.extended() && !style.condensed()
         {
             let index = pixel_index_override.unwrap_or_else(|| {
                 if black {
@@ -1854,11 +1843,11 @@ impl super::TrapDispatcher {
                             get_italic_slant(*font_id, *font_size, metrics, y, py)
                         })
                         .unwrap_or(0);
-                    let (dst_start, dst_end) = if (style & TEXT_STYLE_EXTEND) != 0 {
+                    let (dst_start, dst_end) = if style.extended() {
                         let start = (col as i16 * 4) / 3;
                         let end = (((col as i16 + 1) * 4) / 3).max(start + 1);
                         (start, end)
-                    } else if (style & TEXT_STYLE_CONDENSE) != 0 {
+                    } else if style.condensed() {
                         let start = (col as i16 * 3) / 4;
                         (start, start + 1)
                     } else {
@@ -1943,7 +1932,7 @@ impl super::TrapDispatcher {
         glyph: &Glyph,
         data: &[u8],
         synthetic_italic: Option<(i16, i16)>,
-        style: u8,
+        style: QuickDrawTextStyle,
     ) -> HashSet<(i16, i16)> {
         let gx = x + glyph.origin_x as i16;
         let gy = y + glyph.origin_y as i16;
@@ -1973,7 +1962,7 @@ impl super::TrapDispatcher {
                 for dst_col in dst_start..dst_end {
                     let px = gx + dst_col + slant;
                     pixels.insert((px, py));
-                    if (style & TEXT_STYLE_BOLD) != 0 {
+                    if style.bold() {
                         pixels.insert((px + 1, py));
                     }
                 }
@@ -1981,31 +1970,6 @@ impl super::TrapDispatcher {
         }
 
         pixels
-    }
-
-    fn fb_styled_glyph_advance(glyph: &Glyph, style: u8) -> i16 {
-        let mut advance = glyph.advance as i16;
-        if (style & TEXT_STYLE_BOLD) != 0 {
-            // Menu item styles follow the classic Style bitset; the
-            // System 7 MDEF renders bold item names with the synthetic
-            // one-pixel strike and matching one-pixel pen advance while
-            // CalcMenuSize keeps plain guest metrics. MTE 1992 pp. 3-133
-            // to 3-134.
-            advance += 1;
-        }
-        if (style & TEXT_STYLE_OUTLINE) != 0 {
-            advance += 1;
-        }
-        if (style & TEXT_STYLE_SHADOW) != 0 {
-            advance += 2;
-        }
-        if (style & TEXT_STYLE_CONDENSE) != 0 && advance >= 6 {
-            advance -= 1;
-        }
-        if (style & TEXT_STYLE_EXTEND) != 0 {
-            advance += 1;
-        }
-        advance.max(1)
     }
 
     fn fb_draw_char_styled(
@@ -2020,12 +1984,11 @@ impl super::TrapDispatcher {
         ch: char,
         font_id: i16,
         font_size: i16,
-        style: u8,
+        style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
     ) -> i16 {
-        let italic = (style & TEXT_STYLE_ITALIC) != 0;
-        let (glyph_hit, synthetic_italic) = if italic {
+        let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
                 (Some(hit), None)
             } else {
@@ -2045,13 +2008,7 @@ impl super::TrapDispatcher {
         // Without a per-glyph style bit the styled painter's pixel set is
         // exactly the glyph bitmap; on an 8-bit screen let the row painter
         // write it instead of building the set.
-        const PER_GLYPH_STYLE: u8 = TEXT_STYLE_BOLD
-            | TEXT_STYLE_ITALIC
-            | TEXT_STYLE_OUTLINE
-            | TEXT_STYLE_SHADOW
-            | TEXT_STYLE_CONDENSE
-            | TEXT_STYLE_EXTEND;
-        if pixel_size == 8 && (style & PER_GLYPH_STYLE) == 0 {
+        if pixel_size == 8 && !style.has_per_glyph_effect() {
             Self::fb_draw_glyph_bitmap_with_slant(
                 bus,
                 screen_base,
@@ -2064,22 +2021,19 @@ impl super::TrapDispatcher {
                 glyph,
                 data,
                 None,
-                0,
+                QuickDrawTextStyle::plain(),
                 pixel_index_override,
                 black,
             );
-            return Self::fb_styled_glyph_advance(glyph, style);
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or(i16::MAX);
         }
 
-        let glyph_y = if (style & TEXT_STYLE_SHADOW) != 0 {
-            y - 1
-        } else {
-            y
-        };
+        let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
         let base_pixels =
             Self::fb_styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
 
-        if (style & (TEXT_STYLE_OUTLINE | TEXT_STYLE_SHADOW)) == 0 {
+        let Some(smear_max) = style.smear_max() else {
             for (px, py) in base_pixels.iter().copied() {
                 Self::fb_set_styled_text_pixel(
                     bus,
@@ -2094,20 +2048,15 @@ impl super::TrapDispatcher {
                     black,
                 );
             }
-            return Self::fb_styled_glyph_advance(glyph, style);
-        }
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or(i16::MAX);
+        };
 
         // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
         // then XORing the original glyph out of the result. That produces
         // hollow outline and shadow faces instead of drawing offset filled
         // glyph copies.
-        let smear_max = if (style & TEXT_STYLE_SHADOW) != 0 && (style & TEXT_STYLE_OUTLINE) != 0 {
-            3
-        } else if (style & TEXT_STYLE_SHADOW) != 0 {
-            2
-        } else {
-            1
-        };
+        let smear_max = i16::try_from(smear_max).unwrap_or(1);
         let min_x = base_pixels.iter().map(|(px, _)| *px).min().unwrap_or(x) - 1;
         let max_x = base_pixels.iter().map(|(px, _)| *px).max().unwrap_or(x) + smear_max;
         let min_y = base_pixels.iter().map(|(_, py)| *py).min().unwrap_or(y) - 1;
@@ -2144,7 +2093,7 @@ impl super::TrapDispatcher {
             }
         }
 
-        Self::fb_styled_glyph_advance(glyph, style)
+        i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX)
     }
 
     /// Draw a string to the framebuffer, return total width
@@ -2403,6 +2352,7 @@ impl super::TrapDispatcher {
         pixel_index_override: Option<u8>,
         black: bool,
     ) -> i16 {
+        let style = QuickDrawTextStyle::from_bits(style);
         let mut cx = x;
         for ch in s.chars() {
             cx += Self::fb_draw_char_styled(
@@ -2423,7 +2373,7 @@ impl super::TrapDispatcher {
             );
         }
 
-        if (style & TEXT_STYLE_UNDERLINE) != 0 && cx > x {
+        if style.underline() && cx > x {
             let thickness = get_underline_thickness(font_id, font_size).max(1);
             for dy in 1..=thickness {
                 if let Some(pixel_index) = pixel_index_override {
@@ -5463,7 +5413,7 @@ mod redraw_chrome_tests {
             &glyph,
             &[0xff, 0xff],
             None,
-            0,
+            super::QuickDrawTextStyle::plain(),
             Some(3),
             true,
         );

@@ -29,6 +29,7 @@ use crate::menu_manager::{
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
 use crate::menu_model::GuestMenuSnapshot;
+use crate::quickdraw::text::QuickDrawTextStyle;
 use crate::trap::types::encode_mac_roman_lossy;
 use crate::ui_theme::UiThemeId;
 use crate::Result;
@@ -157,7 +158,6 @@ const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
 #[cfg(test)]
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
-const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
 
 const MDEF_TRAMPOLINE_SIZE: u32 = 60;
 
@@ -4253,7 +4253,7 @@ impl super::TrapDispatcher {
         // standard MDEF uses a 34-pixel row around that slot. Reduced ICON
         // and SICN slots fit the standard 16-by-16 item height.
         self.menu_item_icon_kind(bus, item)
-            .row_height(item.style & MENU_TEXT_STYLE_SHADOW != 0)
+            .row_height(QuickDrawTextStyle::from_bits(item.style))
     }
 
     pub(super) fn menu_items_height(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
@@ -11865,7 +11865,11 @@ mod tests {
         assert_eq!(
             styled_size.1,
             plain_size.1
-                + (super::standard_menu_row_height(None, false, true) - super::MENU_ROW_HEIGHT),
+                + (super::standard_menu_row_height(
+                    None,
+                    false,
+                    super::QuickDrawTextStyle::from_bits(super::QuickDrawTextStyle::SHADOW_BIT),
+                ) - super::MENU_ROW_HEIGHT),
             "System 7.5.3's standard MDEF grows the shadow-styled item row"
         );
 
@@ -11873,8 +11877,12 @@ mod tests {
         for (idx, (label, text, style)) in style_cases.iter().enumerate() {
             let styled_height = styled.menu_item_height(&styled_bus, &styled.menus[0].items[idx]);
             let plain_height = plain.menu_item_height(&plain_bus, &plain.menus[0].items[idx]);
-            let expected_height = if (*style & super::MENU_TEXT_STYLE_SHADOW) != 0 {
-                plain_height.max(super::standard_menu_row_height(None, false, true))
+            let expected_height = if super::QuickDrawTextStyle::from_bits(*style).shadow() {
+                plain_height.max(super::standard_menu_row_height(
+                    None,
+                    false,
+                    super::QuickDrawTextStyle::from_bits(super::QuickDrawTextStyle::SHADOW_BIT),
+                ))
             } else {
                 plain_height
             };

@@ -46,7 +46,7 @@ use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
 };
 use crate::quickdraw::text::{
-    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
+    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
 use crate::trap::dispatch::key_map_key_is_down;
 use crate::trap::extended80::Extended80;
@@ -3449,16 +3449,6 @@ const PPC_RGB_MENU_GRAY: PpcRgbColor = PpcRgbColor {
     green: 0x7fff,
     blue: 0x7fff,
 };
-// The low-order Style byte uses QuickDraw's standard face bits. Macintosh
-// Toolbox Essentials (1992), pp. 3-60 and 3-133--3-134.
-const PPC_MENU_STYLE_BOLD: u8 = 0x01;
-const PPC_MENU_STYLE_ITALIC: u8 = 0x02;
-const PPC_MENU_STYLE_UNDERLINE: u8 = 0x04;
-const PPC_MENU_STYLE_OUTLINE: u8 = 0x08;
-const PPC_MENU_STYLE_SHADOW: u8 = 0x10;
-const PPC_MENU_STYLE_CONDENSED: u8 = 0x20;
-const PPC_MENU_STYLE_EXTENDED: u8 = 0x40;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PpcDspGammaFadeKind {
     Manual,
@@ -50451,7 +50441,8 @@ fn ppc_draw_text_bytes_styled(
     bytes: &[u8],
 ) -> i16 {
     let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
-    if style == 0 {
+    let style = QuickDrawTextStyle::from_bits(style);
+    if style.is_plain() {
         ppc_draw_text_chars(
             memory,
             gworlds,
@@ -50550,26 +50541,6 @@ fn ppc_draw_text_chars(
     }
 }
 
-fn ppc_styled_glyph_advance(glyph_advance: i32, style: u8) -> i32 {
-    let mut advance = glyph_advance;
-    if style & PPC_MENU_STYLE_BOLD != 0 {
-        advance += 1;
-    }
-    if style & PPC_MENU_STYLE_OUTLINE != 0 {
-        advance += 1;
-    }
-    if style & PPC_MENU_STYLE_SHADOW != 0 {
-        advance += 2;
-    }
-    if style & PPC_MENU_STYLE_CONDENSED != 0 && advance >= 6 {
-        advance -= 1;
-    }
-    if style & PPC_MENU_STYLE_EXTENDED != 0 {
-        advance += 1;
-    }
-    advance.max(1)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn ppc_apply_scaled_text_source_pixel(
     memory: &mut PpcSectionMem,
@@ -50609,7 +50580,7 @@ fn ppc_draw_text_chars_styled(
     text_mode: i16,
     color: PpcRgbColor,
     explicit_index: Option<u8>,
-    style: u8,
+    style: QuickDrawTextStyle,
     chars: impl IntoIterator<Item = char>,
 ) {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
@@ -50630,8 +50601,7 @@ fn ppc_draw_text_chars_styled(
     let mut source_advance = 0i32;
 
     for ch in chars {
-        let italic = style & PPC_MENU_STYLE_ITALIC != 0;
-        let (glyph_hit, synthetic_italic) = if italic {
+        let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(text_font, face.size, ch) {
                 (Some(hit), false)
             } else {
@@ -50644,11 +50614,7 @@ fn ppc_draw_text_chars_styled(
             source_advance = source_advance.saturating_add(6);
             continue;
         };
-        let glyph_y_offset = if style & PPC_MENU_STYLE_SHADOW != 0 {
-            -1
-        } else {
-            0
-        };
+        let glyph_y_offset = style.glyph_y_offset();
         let mut base_pixels = HashSet::new();
         for row in 0..glyph.height as usize {
             for col in 0..glyph.width as usize {
@@ -50671,36 +50637,13 @@ fn ppc_draw_text_chars_styled(
                     + col as i32
                     + i32::from(slant.unwrap_or(0));
                 base_pixels.insert((source_x, source_y));
-                if style & PPC_MENU_STYLE_BOLD != 0 {
+                if style.bold() {
                     base_pixels.insert((source_x + 1, source_y));
                 }
             }
         }
 
-        if style & (PPC_MENU_STYLE_OUTLINE | PPC_MENU_STYLE_SHADOW) == 0 {
-            for (source_x, source_y) in base_pixels.iter().copied() {
-                ppc_apply_scaled_text_source_pixel(
-                    memory,
-                    front_buffer,
-                    local_h,
-                    local_v,
-                    source_x,
-                    source_y,
-                    numerator,
-                    denominator,
-                    color_pixel,
-                    text_mode,
-                );
-            }
-        } else {
-            let smear_max =
-                if style & PPC_MENU_STYLE_SHADOW != 0 && style & PPC_MENU_STYLE_OUTLINE != 0 {
-                    3
-                } else if style & PPC_MENU_STYLE_SHADOW != 0 {
-                    2
-                } else {
-                    1
-                };
+        if let Some(smear_max) = style.smear_max() {
             let min_x = base_pixels
                 .iter()
                 .map(|(x, _)| *x)
@@ -50740,12 +50683,27 @@ fn ppc_draw_text_chars_styled(
                     }
                 }
             }
+        } else {
+            for (source_x, source_y) in base_pixels.iter().copied() {
+                ppc_apply_scaled_text_source_pixel(
+                    memory,
+                    front_buffer,
+                    local_h,
+                    local_v,
+                    source_x,
+                    source_y,
+                    numerator,
+                    denominator,
+                    color_pixel,
+                    text_mode,
+                );
+            }
         }
-        source_advance = source_advance
-            .saturating_add(ppc_styled_glyph_advance(i32::from(glyph.advance), style));
+        source_advance =
+            source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
     }
 
-    if style & PPC_MENU_STYLE_UNDERLINE != 0 && source_advance > 0 {
+    if style.underline() && source_advance > 0 {
         let thickness = get_underline_thickness(text_font, face.size).max(1);
         for dy in 1..=i32::from(thickness) {
             for source_x in 0..source_advance {
@@ -66116,7 +66074,7 @@ fn ppc_menu_item_appearance(
         height: if is_separator {
             STANDARD_MENU_SEPARATOR_HEIGHT
         } else {
-            icon_kind.row_height(style & PPC_MENU_STYLE_SHADOW != 0)
+            icon_kind.row_height(QuickDrawTextStyle::from_bits(style))
         },
         icon_kind,
         icon: tracked_icon,
@@ -79723,13 +79681,13 @@ mod tests {
         );
         let styles = [
             0,
-            PPC_MENU_STYLE_BOLD,
-            PPC_MENU_STYLE_ITALIC,
-            PPC_MENU_STYLE_UNDERLINE,
-            PPC_MENU_STYLE_OUTLINE,
-            PPC_MENU_STYLE_SHADOW,
-            PPC_MENU_STYLE_CONDENSED,
-            PPC_MENU_STYLE_EXTENDED,
+            QuickDrawTextStyle::BOLD_BIT,
+            QuickDrawTextStyle::ITALIC_BIT,
+            QuickDrawTextStyle::UNDERLINE_BIT,
+            QuickDrawTextStyle::OUTLINE_BIT,
+            QuickDrawTextStyle::SHADOW_BIT,
+            QuickDrawTextStyle::CONDENSE_BIT,
+            QuickDrawTextStyle::EXTEND_BIT,
         ];
         for (item, style) in (1i16..).zip(styles) {
             let address =

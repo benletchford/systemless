@@ -2,7 +2,7 @@
 
 use crate::mac_roman::decode_mac_roman;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-use crate::quickdraw::text::get_glyph;
+use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
 
 /// Largest entry count representable by a menu-list partition byte length.
 pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
@@ -809,13 +809,13 @@ impl StandardMenuIconKind {
         }
     }
 
-    pub(crate) fn row_height(self, uses_shadow_style: bool) -> i16 {
+    pub(crate) fn row_height(self, style: QuickDrawTextStyle) -> i16 {
         let (color_icon_height, uses_normal_icon) = match self {
             Self::Color { height, .. } => (Some(height), false),
             Self::Normal => (None, true),
             Self::None | Self::Reduced | Self::Small => (None, false),
         };
-        standard_menu_row_height(color_icon_height, uses_normal_icon, uses_shadow_style)
+        standard_menu_row_height(color_icon_height, uses_normal_icon, style)
     }
 }
 
@@ -1267,7 +1267,7 @@ pub(crate) fn standard_menu_height(rows: &MenuRows, available_screen_height: i16
 pub(crate) fn standard_menu_row_height(
     color_icon_height: Option<i16>,
     uses_normal_icon: bool,
-    uses_shadow_style: bool,
+    style: QuickDrawTextStyle,
 ) -> i16 {
     let base_height = if let Some(height) = color_icon_height {
         height.max(16)
@@ -1276,7 +1276,7 @@ pub(crate) fn standard_menu_row_height(
     } else {
         16
     };
-    if uses_shadow_style {
+    if style.shadow() {
         base_height.max(21)
     } else {
         base_height
@@ -3254,14 +3254,20 @@ mod tests {
             .width(),
             16
         );
-        assert_eq!(StandardMenuIconKind::Normal.row_height(false), 34);
-        assert_eq!(StandardMenuIconKind::Reduced.row_height(false), 16);
+        assert_eq!(
+            StandardMenuIconKind::Normal.row_height(QuickDrawTextStyle::plain()),
+            34
+        );
+        assert_eq!(
+            StandardMenuIconKind::Reduced.row_height(QuickDrawTextStyle::plain()),
+            16
+        );
         assert_eq!(
             StandardMenuIconKind::Color {
                 width: 16,
                 height: 24,
             }
-            .row_height(false),
+            .row_height(QuickDrawTextStyle::plain()),
             24
         );
         assert_eq!(standard_menu_icon_resource_id(7, 0), Some(263));
@@ -3473,10 +3479,12 @@ mod tests {
 
     #[test]
     fn menu_rows_share_offsets_boundaries_and_selectability_across_chrome_insets() {
-        assert_eq!(standard_menu_row_height(None, false, false), 16);
-        assert_eq!(standard_menu_row_height(None, true, false), 34);
-        assert_eq!(standard_menu_row_height(Some(25), true, false), 25);
-        assert_eq!(standard_menu_row_height(None, false, true), 21);
+        let plain = QuickDrawTextStyle::plain();
+        let shadow = QuickDrawTextStyle::from_bits(QuickDrawTextStyle::SHADOW_BIT);
+        assert_eq!(standard_menu_row_height(None, false, plain), 16);
+        assert_eq!(standard_menu_row_height(None, true, plain), 34);
+        assert_eq!(standard_menu_row_height(Some(25), true, plain), 25);
+        assert_eq!(standard_menu_row_height(None, false, shadow), 21);
         assert_eq!(
             laid_out_menu_item_count(&[false, true, true], |separator| *separator),
             1

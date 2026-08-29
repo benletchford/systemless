@@ -15,6 +15,121 @@ use crate::quickdraw::fonts::{
     override_format, FontMetrics, Glyph,
 };
 
+/// Architecture-neutral interpretation of QuickDraw's low-order `Style` byte.
+///
+/// QuickDraw and the Font Manager accept any combination of bold, italic,
+/// underline, outline, shadow, condense, and extend. Intrinsic font faces take
+/// priority; the remaining styles are synthesized while drawing. Inside
+/// Macintosh: Text (1993), pp. 3-5--3-7 and 3-69--3-70.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct QuickDrawTextStyle(u8);
+
+impl QuickDrawTextStyle {
+    pub(crate) const BOLD_BIT: u8 = 0x01;
+    pub(crate) const ITALIC_BIT: u8 = 0x02;
+    pub(crate) const UNDERLINE_BIT: u8 = 0x04;
+    pub(crate) const OUTLINE_BIT: u8 = 0x08;
+    pub(crate) const SHADOW_BIT: u8 = 0x10;
+    pub(crate) const CONDENSE_BIT: u8 = 0x20;
+    pub(crate) const EXTEND_BIT: u8 = 0x40;
+    const EFFECT_BITS: u8 = Self::BOLD_BIT
+        | Self::ITALIC_BIT
+        | Self::UNDERLINE_BIT
+        | Self::OUTLINE_BIT
+        | Self::SHADOW_BIT
+        | Self::CONDENSE_BIT
+        | Self::EXTEND_BIT;
+    const PER_GLYPH_EFFECT_BITS: u8 = Self::EFFECT_BITS & !Self::UNDERLINE_BIT;
+
+    pub(crate) const fn from_bits(bits: u8) -> Self {
+        Self(bits & Self::EFFECT_BITS)
+    }
+
+    pub(crate) const fn plain() -> Self {
+        Self(0)
+    }
+
+    pub(crate) const fn is_plain(self) -> bool {
+        self.0 == 0
+    }
+
+    pub(crate) const fn has_per_glyph_effect(self) -> bool {
+        self.0 & Self::PER_GLYPH_EFFECT_BITS != 0
+    }
+
+    pub(crate) const fn bold(self) -> bool {
+        self.0 & Self::BOLD_BIT != 0
+    }
+
+    pub(crate) const fn italic(self) -> bool {
+        self.0 & Self::ITALIC_BIT != 0
+    }
+
+    pub(crate) const fn underline(self) -> bool {
+        self.0 & Self::UNDERLINE_BIT != 0
+    }
+
+    pub(crate) const fn outline(self) -> bool {
+        self.0 & Self::OUTLINE_BIT != 0
+    }
+
+    pub(crate) const fn shadow(self) -> bool {
+        self.0 & Self::SHADOW_BIT != 0
+    }
+
+    pub(crate) const fn condensed(self) -> bool {
+        self.0 & Self::CONDENSE_BIT != 0
+    }
+
+    pub(crate) const fn extended(self) -> bool {
+        self.0 & Self::EXTEND_BIT != 0
+    }
+
+    /// Advance one synthesized glyph using the frozen Roman system-font
+    /// metrics shared by both guest adapters.
+    pub(crate) fn glyph_advance(self, glyph_advance: i32) -> i32 {
+        let mut advance = glyph_advance;
+        if self.bold() {
+            advance += 1;
+        }
+        if self.outline() {
+            advance += 1;
+        }
+        if self.shadow() {
+            advance += 2;
+        }
+        if self.condensed() && advance >= 6 {
+            advance -= 1;
+        }
+        if self.extended() {
+            advance += 1;
+        }
+        advance.max(1)
+    }
+
+    /// Vertical source-bitmap offset used before synthesizing a shadow.
+    pub(crate) const fn glyph_y_offset(self) -> i32 {
+        if self.shadow() {
+            -1
+        } else {
+            0
+        }
+    }
+
+    /// Radius of the mask smear used to synthesize hollow outline/shadow ink.
+    pub(crate) const fn smear_max(self) -> Option<i32> {
+        if self.shadow() && self.outline() {
+            Some(3)
+        } else if self.shadow() {
+            Some(2)
+        } else if self.outline() {
+            Some(1)
+        } else {
+            None
+        }
+    }
+}
+
 pub fn get_font_metrics(font_id: i16, size: i16) -> FontMetrics {
     get_font_face_or_default(font_id, size).metrics
 }
@@ -143,7 +258,24 @@ pub fn get_underline_thickness(_font_id: i16, _size: i16) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::get_glyph;
+    use super::{get_glyph, QuickDrawTextStyle};
+
+    #[test]
+    fn quickdraw_style_plan_combines_all_low_order_face_bits() {
+        let style = QuickDrawTextStyle::from_bits(0xff);
+
+        assert!(style.bold());
+        assert!(style.italic());
+        assert!(style.underline());
+        assert!(style.outline());
+        assert!(style.shadow());
+        assert!(style.condensed());
+        assert!(style.extended());
+        assert_eq!(style.glyph_y_offset(), -1);
+        assert_eq!(style.smear_max(), Some(3));
+        assert_eq!(style.glyph_advance(6), 10);
+        assert!(QuickDrawTextStyle::from_bits(0x80).is_plain());
+    }
 
     #[test]
     fn built_in_system_font_renders_menu_symbols() {
