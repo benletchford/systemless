@@ -88,7 +88,15 @@ pub(crate) struct M68kRegisterState {
 pub(crate) enum M68kResultSource {
     Data(u8),
     Address(u8),
-    Memory { address: u32, size: u8 },
+    Memory {
+        address: u32,
+        size: u8,
+    },
+    SpecialCase {
+        selector: u8,
+        arguments: PowerPcArguments,
+        stack_result: Option<u32>,
+    },
 }
 
 pub(crate) const MAX_POWERPC_GUEST_ARGUMENTS: usize = 13;
@@ -123,6 +131,7 @@ pub(crate) enum M68kResultTarget {
     Address { index: u8, size: u8 },
     Ccr { mask: u8 },
     Memory { address: u32, size: u8 },
+    SpecialCase { selector: u8, scratch: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

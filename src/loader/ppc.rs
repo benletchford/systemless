@@ -41250,19 +41250,119 @@ fn ppc_begin_m68k_universal_proc(
     // PowerPC System Software (1994), pp. 1-42--1-43 and 2-12--2-20. In
     // particular, Pascal results precede left-to-right parameters, MPW C and
     // THINK C parameters are pushed right-to-left, and THINK C alone places a
-    // one-byte argument in the high byte of its aligned stack word.
+    // one-byte argument in the high byte of its aligned stack word. Special
+    // cases use the bespoke layouts on pp. 2-30--2-32 and the native
+    // prototypes in Universal Interfaces 3.4 TextEdit.h, AppleTalk.h,
+    // Events.h, and Menus.h; Apple Technical Note 85 defines the GetNextEvent
+    // filter's duplicated Boolean result.
     let convention = proc_info & PPC_PROCINFO_CALLING_CONVENTION_MASK;
-    let result_size = (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x03;
-    if convention == PPC_PROCINFO_SPECIAL_CASE {
-        return None;
-    }
+    let result_size = if convention == PPC_PROCINFO_SPECIAL_CASE {
+        PPC_PROCINFO_SIZE_NONE
+    } else {
+        (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x03
+    };
     let mut registers = M68kRegisterState::default();
     // Native processes expose their compatibility globals through the
     // synthetic mini-A5 world returned by SetCurrentA5/LMGetCurrentA5.
     registers.address[5] = PPC_DATA_BASE;
     let mut stack_arguments = Vec::<(u32, u32)>::new();
+    let mut special_stack = Vec::new();
+    let mut special_result = None;
+    let mut special_stack_result = false;
 
     match convention {
+        PPC_PROCINFO_SPECIAL_CASE => {
+            let signature = crate::mixed_mode::native_special_case_signature(proc_info)?;
+            if arguments.len() != signature.argument_count {
+                return None;
+            }
+            let selector = (proc_info >> crate::mixed_mode::special_case::SELECTOR_PHASE)
+                & crate::mixed_mode::special_case::SELECTOR_MASK;
+            let argument_record = crate::guest_call::PowerPcArguments::from_slice(&arguments)?;
+            special_result = Some((u8::try_from(selector).ok()?, argument_record));
+            use crate::mixed_mode::special_case;
+            match selector {
+                special_case::HIGH_HOOK => {
+                    let rect = arguments[0];
+                    for offset in 0..8 {
+                        special_stack.push(memory.read_u8(rect.checked_add(offset)?)?);
+                    }
+                    registers.address[3] = arguments[1];
+                }
+                special_case::EOL_HOOK => {
+                    registers.data[0] = arguments[0] & 0xff;
+                    registers.address[3] = arguments[1];
+                    registers.address[4] = arguments[2];
+                }
+                special_case::WIDTH_HOOK => {
+                    registers.data[0] = arguments[0] & 0xffff;
+                    registers.data[1] = arguments[1] & 0xffff;
+                    registers.address[0] = arguments[2];
+                    registers.address[3] = arguments[3];
+                    registers.address[4] = arguments[4];
+                }
+                special_case::NWIDTH_HOOK => {
+                    registers.data[0] = arguments[0] & 0xffff;
+                    registers.data[1] = arguments[1] & 0xffff;
+                    registers.data[2] = ((arguments[3] & 0xffff) << 16) | (arguments[2] & 0xffff);
+                    registers.address[0] = arguments[4];
+                    registers.address[2] = arguments[5];
+                    registers.address[3] = arguments[6];
+                    registers.address[4] = arguments[7];
+                }
+                special_case::DRAW_HOOK => {
+                    registers.data[0] = arguments[0] & 0xffff;
+                    registers.data[1] = arguments[1] & 0xffff;
+                    registers.address[0] = arguments[2];
+                    registers.address[3] = arguments[3];
+                    registers.address[4] = arguments[4];
+                }
+                special_case::HIT_TEST_HOOK => {
+                    registers.data[0] = arguments[0] & 0xffff;
+                    registers.data[1] = arguments[1] & 0xffff;
+                    registers.data[2] = arguments[2] & 0xffff;
+                    registers.address[0] = arguments[3];
+                    registers.address[3] = arguments[4];
+                    registers.address[4] = arguments[5];
+                }
+                special_case::TE_FIND_WORD => {
+                    registers.data[0] = arguments[0] & 0xffff;
+                    registers.data[2] = arguments[1] & 0xffff;
+                    registers.address[3] = arguments[2];
+                    registers.address[4] = arguments[3];
+                }
+                special_case::PROTOCOL_HANDLER => {
+                    registers.address[0..5].copy_from_slice(&arguments[0..5]);
+                    registers.data[1] = arguments[5] & 0xffff;
+                }
+                special_case::SOCKET_LISTENER => {
+                    registers.address[0..5].copy_from_slice(&arguments[0..5]);
+                    registers.data[0] = arguments[5] & 0xff;
+                    registers.data[1] = arguments[6] & 0xffff;
+                }
+                special_case::TE_RECALC => {
+                    registers.address[3] = arguments[0];
+                    registers.data[7] = arguments[1] & 0xffff;
+                }
+                special_case::TE_DO_TEXT => {
+                    registers.address[3] = arguments[0];
+                    registers.data[3] = arguments[1] & 0xffff;
+                    registers.data[4] = arguments[2] & 0xffff;
+                    registers.data[7] = arguments[3] & 0xffff;
+                }
+                special_case::GNE_FILTER_PROC => {
+                    let initial_result = memory.read_u8(arguments[1])?;
+                    registers.address[1] = arguments[0];
+                    registers.data[0] = u32::from(initial_result);
+                    special_stack.extend_from_slice(&u16::from(initial_result).to_be_bytes());
+                    special_stack_result = true;
+                }
+                special_case::MBAR_HOOK => {
+                    special_stack.extend_from_slice(&arguments[0].to_be_bytes());
+                }
+                _ => return None,
+            }
+        }
         PPC_PROCINFO_REGISTER_BASED => {
             let result_register = (proc_info >> PPC_PROCINFO_REGISTER_RESULT_LOCATION_PHASE) & 0x1f;
             if result_size == PPC_PROCINFO_SIZE_NONE
@@ -41356,7 +41456,11 @@ fn ppc_begin_m68k_universal_proc(
     );
     let think_c = convention == PPC_PROCINFO_THINK_C_STACK_BASED;
     let mut sp = stack_top;
-    let mut result = None;
+    let mut result = special_result.map(|(selector, arguments)| M68kResultSource::SpecialCase {
+        selector,
+        arguments,
+        stack_result: None,
+    });
     let pascal_result_sp = if pascal && result_size != PPC_PROCINFO_SIZE_NONE {
         let value_address = ppc_reserve_m68k_stack_value(memory, &mut sp, result_size, false)?;
         result = Some(M68kResultSource::Memory {
@@ -41385,7 +41489,19 @@ fn ppc_begin_m68k_universal_proc(
             ppc_push_m68k_stack_value(memory, &mut sp, value, size, think_c)?;
         }
     }
+    if !special_stack.is_empty() {
+        sp = sp.checked_sub(u32::try_from(special_stack.len()).ok()?)?;
+        for (offset, byte) in special_stack.into_iter().enumerate() {
+            memory.write_u8(sp.checked_add(u32::try_from(offset).ok()?)?, byte)?;
+        }
+    }
     let parameter_sp = sp;
+    if special_stack_result {
+        let Some(M68kResultSource::SpecialCase { stack_result, .. }) = result.as_mut() else {
+            return None;
+        };
+        *stack_result = Some(parameter_sp);
+    }
     sp = sp.checked_sub(4)?;
     memory.write_u32_be(sp, return_pc)?;
     let initial_sp = sp;
@@ -79515,6 +79631,9 @@ mod tests {
                         _ => panic!("unsupported 68k result size {size}"),
                     })
                 }
+                Some(crate::guest_call::M68kResultSource::SpecialCase { selector, .. }) => {
+                    panic!("special-case result selector {selector} requires the shared runner")
+                }
             };
             assert!(loaded.guest_calls.complete_m68k_for_powerpc(
                 cpu.pc,
@@ -91107,6 +91226,222 @@ mod tests {
         );
         assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
         assert_eq!(loaded.cpu.gpr[3], descriptor);
+    }
+
+    #[test]
+    fn ppc_to_m68k_special_cases_build_every_classic_input_layout() {
+        use crate::guest_call::M68kResultSource;
+        use crate::guest_procedure::GuestProcedureRepresentation;
+        use crate::mixed_mode::special_case;
+
+        const RECT: u32 = PPC_DATA_BASE + 0x4000;
+        const RESULT: u32 = PPC_DATA_BASE + 0x4010;
+        const ENTRY: u32 = 0x00c0_ffee;
+
+        let a5 = PPC_DATA_BASE;
+        let cases = vec![
+            (
+                special_case::HIGH_HOOK,
+                vec![RECT, 0x1300],
+                [0; 8],
+                [0, 0, 0, 0x1300, 0, a5, 0],
+                (1u8..=8).collect::<Vec<_>>(),
+                false,
+            ),
+            (
+                special_case::EOL_HOOK,
+                vec![0xffff_fff2, 0x1300, 0x1400],
+                [0xf2, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::WIDTH_HOOK,
+                vec![0x80f2, 0xff01, 0x1000, 0x1300, 0x1400],
+                [0x80f2, 0xff01, 0, 0, 0, 0, 0, 0],
+                [0x1000, 0, 0, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::NWIDTH_HOOK,
+                vec![
+                    0x80f2,
+                    0xff01,
+                    0xffff_8002,
+                    0xffff_8001,
+                    0x1000,
+                    0x1200,
+                    0x1300,
+                    0x1400,
+                ],
+                [0x80f2, 0xff01, 0x8001_8002, 0, 0, 0, 0, 0],
+                [0x1000, 0, 0x1200, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::DRAW_HOOK,
+                vec![0x80f2, 0xff01, 0x1000, 0x1300, 0x1400],
+                [0x80f2, 0xff01, 0, 0, 0, 0, 0, 0],
+                [0x1000, 0, 0, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::HIT_TEST_HOOK,
+                vec![
+                    0x80f2, 0xff01, 0x8002, 0x1000, 0x1300, 0x1400, 0x1500, 0x1600, 0x1700,
+                ],
+                [0x80f2, 0xff01, 0x8002, 0, 0, 0, 0, 0],
+                [0x1000, 0, 0, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::TE_FIND_WORD,
+                vec![0x80f2, 0xffff_8002, 0x1300, 0x1400, 0x1500, 0x1600],
+                [0x80f2, 0, 0x8002, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::PROTOCOL_HANDLER,
+                vec![0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0xffff_ff01],
+                [0, 0xff01, 0, 0, 0, 0, 0, 0],
+                [0x1000, 0x1100, 0x1200, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::SOCKET_LISTENER,
+                vec![
+                    0x1000,
+                    0x1100,
+                    0x1200,
+                    0x1300,
+                    0x1400,
+                    0xffff_fff2,
+                    0xffff_ff01,
+                ],
+                [0xf2, 0xff01, 0, 0, 0, 0, 0, 0],
+                [0x1000, 0x1100, 0x1200, 0x1300, 0x1400, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::TE_RECALC,
+                vec![0x1300, 0xffff_fffe, 0x1500, 0x1600, 0x1700],
+                [0, 0, 0, 0, 0, 0, 0, 0xfffe],
+                [0, 0, 0, 0x1300, 0, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::TE_DO_TEXT,
+                vec![0x1300, 0x1234, 0x5678, 0xffff_fffe, 0x1500, 0x1600],
+                [0, 0, 0, 0x1234, 0x5678, 0, 0, 0xfffe],
+                [0, 0, 0, 0x1300, 0, a5, 0],
+                vec![],
+                false,
+            ),
+            (
+                special_case::GNE_FILTER_PROC,
+                vec![0x1100, RESULT],
+                [1, 0, 0, 0, 0, 0, 0, 0],
+                [0, 0x1100, 0, 0, 0, a5, 0],
+                vec![0, 1],
+                true,
+            ),
+            (
+                special_case::MBAR_HOOK,
+                vec![0xcafe_babe],
+                [0; 8],
+                [0, 0, 0, 0, 0, a5, 0],
+                0xcafe_babeu32.to_be_bytes().to_vec(),
+                false,
+            ),
+        ];
+
+        for (selector, arguments, data, address, stack, has_stack_result) in cases {
+            let pef = synthetic_pef();
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded
+                .toolbox_startup
+                .guest_calls
+                .attach_to(&loaded.guest_calls);
+            loaded.memory.add_region(RECT, vec![0; 0x20]);
+            for (offset, byte) in (1u8..=8).enumerate() {
+                loaded
+                    .memory
+                    .write_u8(RECT + u32::try_from(offset).unwrap(), byte)
+                    .unwrap();
+            }
+            loaded.memory.write_u8(RESULT, 1).unwrap();
+            let proc_info = PPC_PROCINFO_SPECIAL_CASE
+                | (selector << crate::mixed_mode::special_case::SELECTOR_PHASE);
+            let expected_arguments =
+                crate::guest_call::PowerPcArguments::from_slice(&arguments).unwrap();
+            let target = GuestProcedure {
+                original_pointer: ENTRY,
+                representation: GuestProcedureRepresentation::RawCode,
+                isa: GuestIsa::M68k,
+                entry: ENTRY,
+                rtoc: 0,
+                proc_info,
+                routine_flags: 0,
+            };
+            let action = ppc_begin_m68k_universal_proc(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.toolbox_startup,
+                target,
+                proc_info,
+                None,
+                arguments,
+                PPC_HALT_PC,
+                ppc_call_universal_proc_return_gpr3(proc_info),
+            );
+            assert!(
+                matches!(action, Some(PpcImportAction::Halt)),
+                "selector {selector}"
+            );
+            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            assert_eq!(pending.registers.data, data, "selector {selector}");
+            assert_eq!(pending.registers.address, address, "selector {selector}");
+            assert_eq!(
+                pending.final_sp,
+                pending.initial_sp + 4,
+                "selector {selector}",
+            );
+            for (offset, expected) in stack.into_iter().enumerate() {
+                assert_eq!(
+                    loaded
+                        .memory
+                        .read_u8(pending.initial_sp + 4 + u32::try_from(offset).unwrap()),
+                    Some(expected),
+                    "selector {selector} stack byte {offset}",
+                );
+            }
+            let Some(M68kResultSource::SpecialCase {
+                selector: result_selector,
+                arguments: result_arguments,
+                stack_result,
+            }) = pending.result
+            else {
+                panic!("selector {selector} did not retain a special-case result")
+            };
+            assert_eq!(u32::from(result_selector), selector);
+            assert_eq!(result_arguments, expected_arguments);
+            assert_eq!(
+                stack_result,
+                has_stack_result.then_some(pending.initial_sp + 4)
+            );
+        }
     }
 
     #[test]

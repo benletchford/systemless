@@ -6620,6 +6620,9 @@ impl FixtureRunner {
                     _ => false,
                 })
             }
+            Some(M68kResultTarget::SpecialCase { selector, scratch }) => {
+                self.apply_m68k_special_case_result(ppc_app, selector, scratch, resume.powerpc.gpr3)
+            }
         };
         if !result_applied {
             return false;
@@ -6627,6 +6630,97 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::PC, resume.return_pc);
         self.cpu.write_reg(Register::A7, resume.final_sp);
         true
+    }
+
+    fn apply_m68k_special_case_result(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        selector: u8,
+        scratch: u32,
+        native_result: u32,
+    ) -> bool {
+        use crate::mixed_mode::special_case;
+
+        let set_data_word = |cpu: &mut crate::cpu::M68kCpu, index: usize, value: u32| {
+            let preserved = cpu.core.d(index) & 0xffff_0000;
+            cpu.core.set_d(index, preserved | (value & 0xffff));
+        };
+        let set_z = |cpu: &mut crate::cpu::M68kCpu, value: bool| {
+            let ccr = (cpu.core.get_ccr() & !0x04) | if value { 0x04 } else { 0 };
+            cpu.core.set_ccr(ccr);
+        };
+
+        match u32::from(selector) {
+            special_case::EOL_HOOK
+            | special_case::PROTOCOL_HANDLER
+            | special_case::SOCKET_LISTENER => {
+                set_z(&mut self.cpu, native_result & 0xff != 0);
+                true
+            }
+            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => {
+                set_data_word(&mut self.cpu, 1, native_result);
+                true
+            }
+            special_case::HIT_TEST_HOOK => {
+                let Some(pixel_width) = ppc_app.memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(char_offset) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                    return false;
+                };
+                let Some(pixel_in_char) = ppc_app.memory.read_u8(scratch + 4) else {
+                    return false;
+                };
+                self.cpu
+                    .core
+                    .set_d(0, ((native_result & 0xff) << 16) | u32::from(pixel_width));
+                set_data_word(&mut self.cpu, 1, u32::from(char_offset));
+                set_data_word(&mut self.cpu, 2, u32::from(pixel_in_char));
+                true
+            }
+            special_case::TE_FIND_WORD => {
+                let Some(word_start) = ppc_app.memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(word_end) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                    return false;
+                };
+                set_data_word(&mut self.cpu, 0, u32::from(word_start));
+                set_data_word(&mut self.cpu, 1, u32::from(word_end));
+                true
+            }
+            special_case::TE_RECALC => {
+                let Some(line_start) = ppc_app.memory.read_u16_be(scratch) else {
+                    return false;
+                };
+                let Some(first_char) = ppc_app.memory.read_u16_be(scratch + 2) else {
+                    return false;
+                };
+                let Some(last_char) = ppc_app.memory.read_u16_be(scratch + 4) else {
+                    return false;
+                };
+                set_data_word(&mut self.cpu, 2, u32::from(line_start));
+                set_data_word(&mut self.cpu, 3, u32::from(first_char));
+                set_data_word(&mut self.cpu, 4, u32::from(last_char));
+                true
+            }
+            special_case::TE_DO_TEXT => {
+                let Some(current_graf_port) = ppc_app.memory.read_u32_be(scratch) else {
+                    return false;
+                };
+                let Some(char_position) = ppc_app.memory.read_u16_be(scratch + 4) else {
+                    return false;
+                };
+                self.cpu.core.set_a(0, current_graf_port);
+                set_data_word(&mut self.cpu, 0, u32::from(char_position));
+                true
+            }
+            special_case::MBAR_HOOK => {
+                set_data_word(&mut self.cpu, 0, native_result);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn complete_pending_m68k_guest_call(
@@ -6652,6 +6746,21 @@ impl FixtureRunner {
                 };
                 Some(value)
             }
+            Some(M68kResultSource::SpecialCase {
+                selector,
+                arguments,
+                stack_result,
+            }) => {
+                let Ok(value) = self.complete_m68k_special_case_result(
+                    ppc_app,
+                    selector,
+                    arguments,
+                    stack_result,
+                ) else {
+                    return false;
+                };
+                Some(value)
+            }
         };
         ppc_app.guest_calls.complete_m68k_for_powerpc(
             pending.return_pc,
@@ -6659,6 +6768,91 @@ impl FixtureRunner {
             result,
             &mut ppc_app.cpu,
         )
+    }
+
+    fn complete_m68k_special_case_result(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        selector: u8,
+        arguments: crate::guest_call::PowerPcArguments,
+        stack_result: Option<u32>,
+    ) -> std::result::Result<u32, ()> {
+        use crate::mixed_mode::special_case;
+
+        let arguments = arguments.as_slice();
+        let proc_info = crate::mixed_mode::proc_info::SPECIAL_CASE
+            | (u32::from(selector) << special_case::SELECTOR_PHASE);
+        let signature = crate::mixed_mode::native_special_case_signature(proc_info).ok_or(())?;
+        if arguments.len() != signature.argument_count {
+            return Err(());
+        }
+        let z = u32::from(self.cpu.core.get_ccr() & 0x04 != 0);
+        match u32::from(selector) {
+            special_case::HIGH_HOOK | special_case::DRAW_HOOK => Ok(0),
+            special_case::EOL_HOOK
+            | special_case::PROTOCOL_HANDLER
+            | special_case::SOCKET_LISTENER => Ok(z),
+            special_case::WIDTH_HOOK | special_case::NWIDTH_HOOK => Ok(self.cpu.core.d(1) & 0xffff),
+            special_case::HIT_TEST_HOOK => {
+                ppc_app
+                    .memory
+                    .write_u16_be(arguments[6], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                ppc_app
+                    .memory
+                    .write_u16_be(arguments[7], self.cpu.core.d(1) as u16)
+                    .ok_or(())?;
+                ppc_app
+                    .memory
+                    .write_u8(arguments[8], self.cpu.core.d(2) as u8)
+                    .ok_or(())?;
+                Ok((self.cpu.core.d(0) >> 16) & 0xff)
+            }
+            special_case::TE_FIND_WORD => {
+                ppc_app
+                    .memory
+                    .write_u16_be(arguments[4], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                ppc_app
+                    .memory
+                    .write_u16_be(arguments[5], self.cpu.core.d(1) as u16)
+                    .ok_or(())?;
+                Ok(0)
+            }
+            special_case::TE_RECALC => {
+                for (argument, register) in arguments[2..5].iter().copied().zip(2..=4) {
+                    ppc_app
+                        .memory
+                        .write_u16_be(argument, self.cpu.core.d(register) as u16)
+                        .ok_or(())?;
+                }
+                Ok(0)
+            }
+            special_case::TE_DO_TEXT => {
+                ppc_app
+                    .memory
+                    .write_u32_be(arguments[4], self.cpu.core.a(0))
+                    .ok_or(())?;
+                ppc_app
+                    .memory
+                    .write_u16_be(arguments[5], self.cpu.core.d(0) as u16)
+                    .ok_or(())?;
+                Ok(0)
+            }
+            special_case::GNE_FILTER_PROC => {
+                let result = ppc_app
+                    .memory
+                    .read_u16_be(stack_result.ok_or(())?)
+                    .ok_or(())?;
+                ppc_app
+                    .memory
+                    .write_u8(arguments[1], result as u8)
+                    .ok_or(())?;
+                Ok(0)
+            }
+            special_case::MBAR_HOOK => Ok(self.cpu.core.d(0) & 0xffff),
+            _ => Err(()),
+        }
     }
 
     fn prepare_ppc_execution_clock(&self, ppc_app: &mut PpcLoadedApp) {
@@ -13536,6 +13730,74 @@ mod tests {
     }
 
     #[test]
+    fn parked_native_special_case_executes_68k_and_writes_native_outputs() {
+        use crate::guest_call::{M68kResultSource, PowerPcArguments};
+        use crate::mixed_mode::special_case;
+
+        const M68K_ENTRY: u32 = 0x0305_0000;
+        const OUTPUTS: u32 = 0x0305_1000;
+        const STACK_BASE: u32 = 0x0305_2000;
+        const INITIAL_SP: u32 = STACK_BASE + 0x80;
+        const RETURN_PC: u32 = 0x0305_3000;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(
+            M68K_ENTRY,
+            [
+                0x203c, 0x0001, 0x1111, // MOVE.L #$00011111,D0
+                0x323c, 0x2222, // MOVE.W #$2222,D1
+                0x343c, 0x0033, // MOVE.W #$0033,D2
+                0x4e75, // RTS
+            ]
+            .into_iter()
+            .flat_map(u16::to_be_bytes)
+            .collect(),
+        );
+        ppc_app.memory.add_region(OUTPUTS, vec![0; 8]);
+        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        let arguments =
+            PowerPcArguments::from_slice(&[0, 0, 0, 0, 0, 0, OUTPUTS, OUTPUTS + 2, OUTPUTS + 4])
+                .unwrap();
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: M68K_ENTRY,
+                rtoc: 0,
+            },
+            M68K_ENTRY,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 4,
+            crate::guest_call::M68kRegisterState::default(),
+            Some(M68kResultSource::SpecialCase {
+                selector: u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
+                arguments,
+                stack_result: None,
+            }),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Mask(0xff),
+        ));
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let (steps, running) = runner.run_steps(64, None);
+
+        assert!(steps > 0);
+        assert!(running);
+        assert!(!runner.is_halted());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(ppc_app.cpu.gpr[3], 1);
+        assert_eq!(ppc_app.memory.read_u16_be(OUTPUTS), Some(0x1111));
+        assert_eq!(ppc_app.memory.read_u16_be(OUTPUTS + 2), Some(0x2222));
+        assert_eq!(ppc_app.memory.read_u8(OUTPUTS + 4), Some(0x33));
+    }
+
+    #[test]
     fn parked_native_call_can_enter_powerpc_through_a_68k_routine_descriptor() {
         use crate::guest_procedure::{
             ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
@@ -13703,6 +13965,309 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), 0x0010_0000);
         assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_1000);
         assert!(ppc_app.guest_calls.is_empty());
+        runner.ppc_app = Some(ppc_app);
+    }
+
+    #[test]
+    fn reverse_special_case_results_restore_every_classic_output_layout() {
+        use crate::mixed_mode::special_case;
+
+        const SCRATCH: u32 = 0x0305_0000;
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        ppc_app.memory.add_region(SCRATCH, vec![0; 8]);
+
+        runner.cpu.core.set_ccr(0x13);
+        for selector in [
+            special_case::EOL_HOOK,
+            special_case::PROTOCOL_HANDLER,
+            special_case::SOCKET_LISTENER,
+        ] {
+            assert!(runner.apply_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(selector).unwrap(),
+                SCRATCH,
+                1,
+            ));
+            assert_eq!(runner.cpu.core.get_ccr(), 0x17);
+            assert!(runner.apply_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(selector).unwrap(),
+                SCRATCH,
+                0,
+            ));
+            assert_eq!(runner.cpu.core.get_ccr(), 0x13);
+        }
+
+        runner.cpu.core.set_d(1, 0xaaaa_0000);
+        for selector in [special_case::WIDTH_HOOK, special_case::NWIDTH_HOOK] {
+            assert!(runner.apply_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(selector).unwrap(),
+                SCRATCH,
+                0x1234_5678,
+            ));
+            assert_eq!(runner.cpu.core.d(1), 0xaaaa_5678);
+        }
+
+        runner.cpu.core.set_d(1, 0xbbbb_0000);
+        runner.cpu.core.set_d(2, 0xcccc_0000);
+        ppc_app.memory.write_u16_be(SCRATCH, 0x1111).unwrap();
+        ppc_app.memory.write_u16_be(SCRATCH + 2, 0x2222).unwrap();
+        ppc_app.memory.write_u8(SCRATCH + 4, 1).unwrap();
+        assert!(runner.apply_m68k_special_case_result(
+            &mut ppc_app,
+            u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
+            SCRATCH,
+            1,
+        ));
+        assert_eq!(runner.cpu.core.d(0), 0x0001_1111);
+        assert_eq!(runner.cpu.core.d(1), 0xbbbb_2222);
+        assert_eq!(runner.cpu.core.d(2), 0xcccc_0001);
+
+        runner.cpu.core.set_d(0, 0xaaaa_0000);
+        runner.cpu.core.set_d(1, 0xbbbb_0000);
+        ppc_app.memory.write_u16_be(SCRATCH, 0x3333).unwrap();
+        ppc_app.memory.write_u16_be(SCRATCH + 2, 0x4444).unwrap();
+        assert!(runner.apply_m68k_special_case_result(
+            &mut ppc_app,
+            u8::try_from(special_case::TE_FIND_WORD).unwrap(),
+            SCRATCH,
+            0,
+        ));
+        assert_eq!(runner.cpu.core.d(0), 0xaaaa_3333);
+        assert_eq!(runner.cpu.core.d(1), 0xbbbb_4444);
+
+        for (offset, value) in [(0, 0x5555), (2, 0x6666), (4, 0x7777)] {
+            ppc_app
+                .memory
+                .write_u16_be(SCRATCH + offset, value)
+                .unwrap();
+        }
+        runner.cpu.core.set_d(2, 0xaaaa_0000);
+        runner.cpu.core.set_d(3, 0xbbbb_0000);
+        runner.cpu.core.set_d(4, 0xcccc_0000);
+        assert!(runner.apply_m68k_special_case_result(
+            &mut ppc_app,
+            u8::try_from(special_case::TE_RECALC).unwrap(),
+            SCRATCH,
+            0,
+        ));
+        assert_eq!(runner.cpu.core.d(2), 0xaaaa_5555);
+        assert_eq!(runner.cpu.core.d(3), 0xbbbb_6666);
+        assert_eq!(runner.cpu.core.d(4), 0xcccc_7777);
+
+        ppc_app.memory.write_u32_be(SCRATCH, 0xcafe_babe).unwrap();
+        ppc_app.memory.write_u16_be(SCRATCH + 4, 0x8888).unwrap();
+        runner.cpu.core.set_d(0, 0xdddd_0000);
+        assert!(runner.apply_m68k_special_case_result(
+            &mut ppc_app,
+            u8::try_from(special_case::TE_DO_TEXT).unwrap(),
+            SCRATCH,
+            0,
+        ));
+        assert_eq!(runner.cpu.core.a(0), 0xcafe_babe);
+        assert_eq!(runner.cpu.core.d(0), 0xdddd_8888);
+
+        runner.cpu.core.set_d(0, 0xeeee_0000);
+        assert!(runner.apply_m68k_special_case_result(
+            &mut ppc_app,
+            u8::try_from(special_case::MBAR_HOOK).unwrap(),
+            SCRATCH,
+            0x1234_9999,
+        ));
+        assert_eq!(runner.cpu.core.d(0), 0xeeee_9999);
+        assert!(!runner.apply_m68k_special_case_result(&mut ppc_app, 13, SCRATCH, 0));
+        runner.ppc_app = Some(ppc_app);
+    }
+
+    #[test]
+    fn forward_special_case_results_restore_every_native_output_layout() {
+        use crate::guest_call::PowerPcArguments;
+        use crate::mixed_mode::special_case;
+
+        const SCRATCH: u32 = 0x0306_0000;
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        ppc_app.memory.add_region(SCRATCH, vec![0; 0x100]);
+        let arguments = |values: &[u32]| PowerPcArguments::from_slice(values).unwrap();
+
+        for selector in [special_case::HIGH_HOOK, special_case::DRAW_HOOK] {
+            let values = vec![
+                0;
+                if selector == special_case::HIGH_HOOK {
+                    2
+                } else {
+                    5
+                }
+            ];
+            assert_eq!(
+                runner.complete_m68k_special_case_result(
+                    &mut ppc_app,
+                    u8::try_from(selector).unwrap(),
+                    arguments(&values),
+                    None,
+                ),
+                Ok(0),
+            );
+        }
+
+        for selector in [
+            special_case::EOL_HOOK,
+            special_case::PROTOCOL_HANDLER,
+            special_case::SOCKET_LISTENER,
+        ] {
+            let values = vec![
+                0;
+                match selector {
+                    special_case::EOL_HOOK => 3,
+                    special_case::PROTOCOL_HANDLER => 6,
+                    special_case::SOCKET_LISTENER => 7,
+                    _ => unreachable!(),
+                }
+            ];
+            runner.cpu.core.set_ccr(0x04);
+            assert_eq!(
+                runner.complete_m68k_special_case_result(
+                    &mut ppc_app,
+                    u8::try_from(selector).unwrap(),
+                    arguments(&values),
+                    None,
+                ),
+                Ok(1),
+            );
+            runner.cpu.core.set_ccr(0);
+            assert_eq!(
+                runner.complete_m68k_special_case_result(
+                    &mut ppc_app,
+                    u8::try_from(selector).unwrap(),
+                    arguments(&values),
+                    None,
+                ),
+                Ok(0),
+            );
+        }
+
+        runner.cpu.core.set_d(1, 0xaaaa_5678);
+        for selector in [special_case::WIDTH_HOOK, special_case::NWIDTH_HOOK] {
+            let values = vec![
+                0;
+                if selector == special_case::WIDTH_HOOK {
+                    5
+                } else {
+                    8
+                }
+            ];
+            assert_eq!(
+                runner.complete_m68k_special_case_result(
+                    &mut ppc_app,
+                    u8::try_from(selector).unwrap(),
+                    arguments(&values),
+                    None,
+                ),
+                Ok(0x5678),
+            );
+        }
+
+        runner.cpu.core.set_d(0, 0x0001_1111);
+        runner.cpu.core.set_d(1, 0xaaaa_2222);
+        runner.cpu.core.set_d(2, 0xbbbb_0033);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
+                arguments(&[0, 0, 0, 0, 0, 0, SCRATCH, SCRATCH + 2, SCRATCH + 4]),
+                None,
+            ),
+            Ok(1),
+        );
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH), Some(0x1111));
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 2), Some(0x2222));
+        assert_eq!(ppc_app.memory.read_u8(SCRATCH + 4), Some(0x33));
+
+        runner.cpu.core.set_d(0, 0xaaaa_4444);
+        runner.cpu.core.set_d(1, 0xbbbb_5555);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::TE_FIND_WORD).unwrap(),
+                arguments(&[0, 0, 0, 0, SCRATCH + 8, SCRATCH + 10]),
+                None,
+            ),
+            Ok(0),
+        );
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 8), Some(0x4444));
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 10), Some(0x5555));
+
+        runner.cpu.core.set_d(2, 0xaaaa_6666);
+        runner.cpu.core.set_d(3, 0xbbbb_7777);
+        runner.cpu.core.set_d(4, 0xcccc_8888);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::TE_RECALC).unwrap(),
+                arguments(&[0, 0, SCRATCH + 12, SCRATCH + 14, SCRATCH + 16]),
+                None,
+            ),
+            Ok(0),
+        );
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 12), Some(0x6666));
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 14), Some(0x7777));
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 16), Some(0x8888));
+
+        runner.cpu.core.set_a(0, 0xcafe_babe);
+        runner.cpu.core.set_d(0, 0xaaaa_9999);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::TE_DO_TEXT).unwrap(),
+                arguments(&[0, 0, 0, 0, SCRATCH + 20, SCRATCH + 24]),
+                None,
+            ),
+            Ok(0),
+        );
+        assert_eq!(ppc_app.memory.read_u32_be(SCRATCH + 20), Some(0xcafe_babe));
+        assert_eq!(ppc_app.memory.read_u16_be(SCRATCH + 24), Some(0x9999));
+
+        ppc_app.memory.write_u16_be(SCRATCH + 28, 1).unwrap();
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::GNE_FILTER_PROC).unwrap(),
+                arguments(&[0, SCRATCH + 26]),
+                Some(SCRATCH + 28),
+            ),
+            Ok(0),
+        );
+        assert_eq!(ppc_app.memory.read_u8(SCRATCH + 26), Some(1));
+
+        runner.cpu.core.set_d(0, 0xaaaa_abcd);
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::MBAR_HOOK).unwrap(),
+                arguments(&[0]),
+                None,
+            ),
+            Ok(0xabcd),
+        );
+        assert_eq!(
+            runner.complete_m68k_special_case_result(
+                &mut ppc_app,
+                u8::try_from(special_case::HIGH_HOOK).unwrap(),
+                arguments(&[]),
+                None,
+            ),
+            Err(()),
+        );
+        assert_eq!(
+            runner.complete_m68k_special_case_result(&mut ppc_app, 13, arguments(&[]), None,),
+            Err(()),
+        );
         runner.ppc_app = Some(ppc_app);
     }
 

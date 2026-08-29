@@ -340,6 +340,158 @@ fn register_result_target(proc_info: u32, size: Option<ValueSize>) -> Option<M68
     Some(M68kResultTarget::Ccr { mask })
 }
 
+fn sign_extend_byte(value: u32) -> u32 {
+    i32::from(value as i8) as u32
+}
+
+fn sign_extend_word(value: u32) -> u32 {
+    i32::from(value as i16) as u32
+}
+
+fn special_case_transition(
+    cpu: &impl CpuOps,
+    bus: &mut MacMemoryBus,
+    sp: u32,
+    proc_info: u32,
+) -> Option<(Vec<u32>, Option<M68kResultTarget>)> {
+    native_special_case_signature(proc_info)?;
+    let selector = (proc_info >> special_case::SELECTOR_PHASE) & special_case::SELECTOR_MASK;
+    let data_registers = [
+        Register::D0,
+        Register::D1,
+        Register::D2,
+        Register::D3,
+        Register::D4,
+        Register::D5,
+        Register::D6,
+        Register::D7,
+    ];
+    let address_registers = [
+        Register::A0,
+        Register::A1,
+        Register::A2,
+        Register::A3,
+        Register::A4,
+        Register::A5,
+        Register::A6,
+    ];
+    let d = |index| cpu.read_reg(data_registers[index]);
+    let a = |index| cpu.read_reg(address_registers[index]);
+    let scratch = sp.checked_sub(8)?;
+    let result = M68kResultTarget::SpecialCase {
+        selector: u8::try_from(selector).ok()?,
+        scratch,
+    };
+
+    // Special cases translate the historical register/stack frames into the
+    // ordinary native prototypes declared by Universal Interfaces 3.4. The
+    // classic layouts are documented in Inside Macintosh: PowerPC System
+    // Software (1994), pp. 2-30--2-32, and TextEdit.h, AppleTalk.h, Events.h,
+    // and Menus.h. The GetNextEvent filter's duplicated Boolean result is
+    // documented by Apple Technical Note 85. Scratch output values live below
+    // the parked 68k stack.
+    let (arguments, result) = match selector {
+        special_case::HIGH_HOOK => (vec![sp.checked_add(4)?, a(3)], None),
+        special_case::EOL_HOOK => (vec![sign_extend_byte(d(0)), a(3), a(4)], Some(result)),
+        special_case::WIDTH_HOOK => (
+            vec![d(0) & 0xffff, d(1) & 0xffff, a(0), a(3), a(4)],
+            Some(result),
+        ),
+        special_case::NWIDTH_HOOK => (
+            vec![
+                d(0) & 0xffff,
+                d(1) & 0xffff,
+                sign_extend_word(d(2)),
+                sign_extend_word(d(2) >> 16),
+                a(0),
+                a(2),
+                a(3),
+                a(4),
+            ],
+            Some(result),
+        ),
+        special_case::DRAW_HOOK => (vec![d(0) & 0xffff, d(1) & 0xffff, a(0), a(3), a(4)], None),
+        special_case::HIT_TEST_HOOK => {
+            bus.write_long(scratch, 0);
+            bus.write_word(scratch + 4, 0);
+            (
+                vec![
+                    d(0) & 0xffff,
+                    d(1) & 0xffff,
+                    d(2) & 0xffff,
+                    a(0),
+                    a(3),
+                    a(4),
+                    scratch,
+                    scratch + 2,
+                    scratch + 4,
+                ],
+                Some(result),
+            )
+        }
+        special_case::TE_FIND_WORD => {
+            bus.write_long(scratch, 0);
+            (
+                vec![
+                    d(0) & 0xffff,
+                    sign_extend_word(d(2)),
+                    a(3),
+                    a(4),
+                    scratch,
+                    scratch + 2,
+                ],
+                Some(result),
+            )
+        }
+        special_case::PROTOCOL_HANDLER => (
+            vec![a(0), a(1), a(2), a(3), a(4), sign_extend_word(d(1))],
+            Some(result),
+        ),
+        special_case::SOCKET_LISTENER => (
+            vec![
+                a(0),
+                a(1),
+                a(2),
+                a(3),
+                a(4),
+                d(0) & 0xff,
+                sign_extend_word(d(1)),
+            ],
+            Some(result),
+        ),
+        special_case::TE_RECALC => {
+            bus.write_long(scratch, 0);
+            bus.write_word(scratch + 4, 0);
+            (
+                vec![a(3), d(7) & 0xffff, scratch, scratch + 2, scratch + 4],
+                Some(result),
+            )
+        }
+        special_case::TE_DO_TEXT => {
+            bus.write_long(scratch, 0);
+            bus.write_word(scratch + 4, 0);
+            (
+                vec![
+                    a(3),
+                    d(3) & 0xffff,
+                    d(4) & 0xffff,
+                    sign_extend_word(d(7)),
+                    scratch,
+                    scratch + 4,
+                ],
+                Some(result),
+            )
+        }
+        special_case::GNE_FILTER_PROC => {
+            let result_address = sp.checked_add(4)?;
+            (vec![a(1), result_address], None)
+        }
+        special_case::MBAR_HOOK => (vec![bus.read_long(sp.checked_add(4)?)], Some(result)),
+        _ => return None,
+    };
+    Some((arguments, result))
+}
+
 /// Handle the private `$AAFE` instruction at the start of a routine
 /// descriptor. Returns only after either redirecting directly to a selected
 /// 68k record or parking the classic caller for native execution.
@@ -361,15 +513,17 @@ pub(crate) fn enter_m68k_routine_descriptor(
     }
 
     let convention = convention(target.proc_info);
-    if convention == proc_info::SPECIAL_CASE {
-        return Err(Error::Halted);
-    }
     let result_size = result_size(target.proc_info);
     let mut arguments = Vec::new();
     let mut result = None;
     let final_sp;
 
     match convention {
+        proc_info::SPECIAL_CASE => {
+            (arguments, result) =
+                special_case_transition(cpu, bus, sp, target.proc_info).ok_or(Error::Halted)?;
+            final_sp = sp.checked_add(4).ok_or(Error::Halted)?;
+        }
         proc_info::REGISTER_BASED => {
             for index in 0..proc_info::MAX_REGISTER_PARAMETERS {
                 let shift = proc_info::REGISTER_PARAMETER_PHASE
@@ -576,6 +730,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn special_cases_translate_every_classic_input_layout_to_native_arguments() {
+        let (_, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0x1234_80f2);
+        cpu.write_reg(Register::D1, 0x5678_ff01);
+        cpu.write_reg(Register::D2, 0x8001_8002);
+        cpu.write_reg(Register::D3, 0x1111_1234);
+        cpu.write_reg(Register::D4, 0x2222_5678);
+        cpu.write_reg(Register::D7, 0x3333_fffe);
+        cpu.write_reg(Register::A0, 0x1000);
+        cpu.write_reg(Register::A1, 0x1100);
+        cpu.write_reg(Register::A2, 0x1200);
+        cpu.write_reg(Register::A3, 0x1300);
+        cpu.write_reg(Register::A4, 0x1400);
+        bus.write_long(TEST_SP + 4, 0xcafe_babe);
+        let scratch = TEST_SP - 8;
+        let special_result = |selector| {
+            Some(M68kResultTarget::SpecialCase {
+                selector: u8::try_from(selector).unwrap(),
+                scratch,
+            })
+        };
+        let cases = [
+            (special_case::HIGH_HOOK, vec![TEST_SP + 4, 0x1300], None),
+            (
+                special_case::EOL_HOOK,
+                vec![0xffff_fff2, 0x1300, 0x1400],
+                special_result(special_case::EOL_HOOK),
+            ),
+            (
+                special_case::WIDTH_HOOK,
+                vec![0x80f2, 0xff01, 0x1000, 0x1300, 0x1400],
+                special_result(special_case::WIDTH_HOOK),
+            ),
+            (
+                special_case::NWIDTH_HOOK,
+                vec![
+                    0x80f2,
+                    0xff01,
+                    0xffff_8002,
+                    0xffff_8001,
+                    0x1000,
+                    0x1200,
+                    0x1300,
+                    0x1400,
+                ],
+                special_result(special_case::NWIDTH_HOOK),
+            ),
+            (
+                special_case::DRAW_HOOK,
+                vec![0x80f2, 0xff01, 0x1000, 0x1300, 0x1400],
+                None,
+            ),
+            (
+                special_case::HIT_TEST_HOOK,
+                vec![
+                    0x80f2,
+                    0xff01,
+                    0x8002,
+                    0x1000,
+                    0x1300,
+                    0x1400,
+                    scratch,
+                    scratch + 2,
+                    scratch + 4,
+                ],
+                special_result(special_case::HIT_TEST_HOOK),
+            ),
+            (
+                special_case::TE_FIND_WORD,
+                vec![0x80f2, 0xffff_8002, 0x1300, 0x1400, scratch, scratch + 2],
+                special_result(special_case::TE_FIND_WORD),
+            ),
+            (
+                special_case::PROTOCOL_HANDLER,
+                vec![0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0xffff_ff01],
+                special_result(special_case::PROTOCOL_HANDLER),
+            ),
+            (
+                special_case::SOCKET_LISTENER,
+                vec![0x1000, 0x1100, 0x1200, 0x1300, 0x1400, 0xf2, 0xffff_ff01],
+                special_result(special_case::SOCKET_LISTENER),
+            ),
+            (
+                special_case::TE_RECALC,
+                vec![0x1300, 0xfffe, scratch, scratch + 2, scratch + 4],
+                special_result(special_case::TE_RECALC),
+            ),
+            (
+                special_case::TE_DO_TEXT,
+                vec![0x1300, 0x1234, 0x5678, 0xffff_fffe, scratch, scratch + 4],
+                special_result(special_case::TE_DO_TEXT),
+            ),
+            (
+                special_case::GNE_FILTER_PROC,
+                vec![0x1100, TEST_SP + 4],
+                None,
+            ),
+            (
+                special_case::MBAR_HOOK,
+                vec![0xcafe_babe],
+                special_result(special_case::MBAR_HOOK),
+            ),
+        ];
+
+        for (selector, expected_arguments, expected_result) in cases {
+            let proc_info = proc_info::SPECIAL_CASE | (selector << special_case::SELECTOR_PHASE);
+            let (arguments, result) =
+                special_case_transition(&cpu, &mut bus, TEST_SP, proc_info).unwrap();
+            assert_eq!(arguments, expected_arguments, "selector {selector}");
+            assert_eq!(result, expected_result, "selector {selector}");
+            assert_eq!(
+                arguments.len(),
+                native_special_case_signature(proc_info)
+                    .unwrap()
+                    .argument_count,
+                "selector {selector}"
+            );
+        }
+    }
+
     fn install_powerpc_target(bus: &mut MacMemoryBus) {
         bus.write_long(TVECTOR, POWERPC_ENTRY);
         bus.write_long(TVECTOR + 4, POWERPC_RTOC);
@@ -682,6 +957,67 @@ mod tests {
                 size: 4,
             })
         );
+    }
+
+    #[test]
+    fn native_special_case_descriptor_uses_the_cross_isa_transition() {
+        let (_, mut cpu, mut bus) = setup();
+        let calls = SharedGuestCallStack::default();
+        let proc_info =
+            proc_info::SPECIAL_CASE | (special_case::HIT_TEST_HOOK << special_case::SELECTOR_PHASE);
+        write_header(&mut bus, 0);
+        write_record(
+            &mut bus,
+            0,
+            ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_FLAG_USE_NATIVE_ISA,
+            proc_info,
+            TVECTOR,
+            0,
+        );
+        install_powerpc_target(&mut bus);
+        cpu.write_reg(Register::D0, 0x1111);
+        cpu.write_reg(Register::D1, 0x2222);
+        cpu.write_reg(Register::D2, 0x3333);
+        cpu.write_reg(Register::A0, 0x4444);
+        cpu.write_reg(Register::A3, 0x5555);
+        cpu.write_reg(Register::A4, 0x6666);
+
+        enter(&mut cpu, &mut bus, &calls);
+
+        let scratch = TEST_SP - 8;
+        let pending = calls.pending_powerpc_from_m68k().unwrap();
+        assert_eq!(
+            pending.arguments.as_slice(),
+            &[
+                0x1111,
+                0x2222,
+                0x3333,
+                0x4444,
+                0x5555,
+                0x6666,
+                scratch,
+                scratch + 2,
+                scratch + 4,
+            ]
+        );
+        let mut ppc = PpcCpu::new();
+        calls
+            .activate_powerpc_from_m68k(&mut ppc, PPC_RETURN_PC)
+            .unwrap();
+        ppc.pc = PPC_RETURN_PC;
+        ppc.gpr[3] = 1;
+        assert!(calls.complete_powerpc_for_m68k(&mut ppc));
+        let resume = calls.take_m68k_resume().unwrap();
+        assert_eq!(resume.final_sp, TEST_SP + 4);
+        assert_eq!(
+            resume.result,
+            Some(M68kResultTarget::SpecialCase {
+                selector: u8::try_from(special_case::HIT_TEST_HOOK).unwrap(),
+                scratch,
+            })
+        );
+        assert_eq!(resume.powerpc.gpr3, 1);
     }
 
     #[test]
