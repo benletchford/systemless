@@ -1404,6 +1404,7 @@ pub enum PpcImportDispatcherTarget {
     StdRand,
     P2CStr,
     C2PStr,
+    UpperText,
     GetCurrentProcess,
     WakeUpProcess,
     SameProcess,
@@ -15081,6 +15082,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "c2pstr") | ("InterfaceLib", "C2PStr") => {
             PpcImportDispatcherTarget::C2PStr
         }
+        ("InterfaceLib", "UpperText") => PpcImportDispatcherTarget::UpperText,
         ("InterfaceLib", "GetCurrentProcess" | "GetFrontProcess") => {
             PpcImportDispatcherTarget::GetCurrentProcess
         }
@@ -21551,6 +21553,25 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::C2PStr => {
             ppc_c2pstr(cpu, memory);
             Some(PpcImportAction::Return(cpu.gpr[3]))
+        }
+        PpcImportDispatcherTarget::UpperText => {
+            // UpperText
+            // Converts a byte range to localized uppercase in place.
+            // PROCEDURE UpperText (textPtr: Ptr; len: Integer);
+            // Inside Macintosh Volume VI (1991), 14-63
+            let text_ptr = cpu.gpr[3];
+            let length = u32::from(cpu.gpr[4] as u16);
+            if ppc_memory_can_write_bytes(memory, text_ptr, length) {
+                for offset in 0..length {
+                    if let Some(byte) = memory.read_u8(text_ptr + offset) {
+                        let _ = memory.write_u8(
+                            text_ptr + offset,
+                            crate::trap::mac_roman_to_upper(byte, false),
+                        );
+                    }
+                }
+            }
+            Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetCurrentProcess => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_get_current_process(cpu, memory)),
@@ -138253,6 +138274,28 @@ mod tests {
         assert_eq!(
             ppc_read_pstring_bytes(&mut loaded.memory, string_ptr).as_deref(),
             Some(b"Gridz".as_slice())
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_upper_text_converts_only_the_requested_bytes() {
+        let pef = synthetic_pef_with_import(b"UpperText");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let text_ptr = PPC_DATA_BASE + 0x1000;
+        loaded
+            .memory
+            .add_region(text_ptr, vec![b'a', b'z', 0x8e, b'!', b'q']);
+        loaded.cpu.gpr[3] = text_ptr;
+        loaded.cpu.gpr[4] = 3;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], text_ptr);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, text_ptr, 5),
+            Some(vec![b'A', b'Z', 0x83, b'!', b'q'])
         );
     }
 

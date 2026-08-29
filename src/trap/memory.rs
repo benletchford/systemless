@@ -4380,7 +4380,7 @@ impl super::TrapDispatcher {
 ///   æ(0xBE)→Æ(0xAE), ç(0x8D)→Ç(0x82), é(0x8E)→É(0x83), ñ(0x96)→Ñ(0x84),
 ///   ö(0x9A)→Ö(0x85), õ(0x9B)→Õ(0xCD), ø(0xBF)→Ø(0xAF), œ(0xCF)→Œ(0xCE),
 ///   ü(0x9F)→Ü(0x86)
-fn mac_roman_to_upper(ch: u8, strip_marks: bool) -> u8 {
+pub(crate) fn mac_roman_to_upper(ch: u8, strip_marks: bool) -> u8 {
     if strip_marks {
         // Strip diacriticals first, then uppercase the base letter
         let stripped = mac_roman_strip_diacriticals(ch);
