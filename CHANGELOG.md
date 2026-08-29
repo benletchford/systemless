@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.10](https://github.com/benletchford/systemless/compare/v0.23.9...v0.23.10) (2026-08-29)
+
+
+### Bug Fixes
+
+* preserve classic HFS media metadata ([9c717a8](https://github.com/benletchford/systemless/commit/9c717a81470dce178d54396c56ed6e51ca7746ba))
+
 ## [0.23.9](https://github.com/benletchford/systemless/compare/v0.23.8...v0.23.9) (2026-08-29)
 
 
