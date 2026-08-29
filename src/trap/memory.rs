@@ -19,6 +19,8 @@ const MEMORY_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_memory_dispatch_operations.rs");
 const MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_memory_dispatch_a0_result_operations.rs");
+const HWPRIV_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_hwpriv_operations.rs");
 
 fn memory_dispatch_operation_route(
     trap_word: u16,
@@ -30,6 +32,16 @@ fn memory_dispatch_operation_route(
         _ => return None,
     };
     selector_operation_route(routes, selector)
+}
+
+fn hwpriv_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if !matches!(trap_word, 0xA098 | 0xA198) {
+        return None;
+    }
+    selector_operation_route(HWPRIV_OPERATION_ROUTES, selector)
 }
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
@@ -2112,17 +2124,14 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // HWPriv ($A198)
-            // Hardware privilege trap for processor cache control.
-            // Selector in D0: 0=SwapInstructionCache, 1=FlushInstructionCache,
-            // 2=SwapDataCache, 3=FlushDataCache, 4-6=ExtCache, 9=FlushCodeCacheRange
-            // Memory 1992, 4-29
-            // HWPriv ($A198): Cache-control selectors (0/2 swap return previous
-            // state and update the simulated enable bit; 1/3/4/5/6 flush no-op;
-            // 9 range flush no-op) — Systemless has no physical caches but preserves
-            // the documented stateful Boolean surface per Memory 1992, 4-29..4-33
+            // HWPriv ($A198; cache-flush glue also uses $A098)
+            // Controls processor caches through a selector in D0.
+            // Register ABI: D0 = selector; FlushCodeCacheRange uses A0/A1 and returns OSErr in D0.
+            // Inside Macintosh: Memory (1992), pp. 4-29 to 4-33.
             (false, 0x98) => {
                 let selector = cpu.read_reg(Register::D0);
+                let operation = hwpriv_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 match selector {
                     0 => {
                         // SwapInstructionCache:
@@ -4587,7 +4596,7 @@ pub(crate) fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_helpers::{setup, TEST_SP};
+    use super::super::test_helpers::{setup, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
@@ -4595,6 +4604,15 @@ mod tests {
     use std::collections::HashMap;
 
     // ==================== OS Traps (is_tool=false) ====================
+
+    fn call_trap_word(
+        dispatcher: &mut super::super::TrapDispatcher,
+        trap_word: u16,
+        cpu: &mut MockCpu,
+        bus: &mut crate::memory::MacMemoryBus,
+    ) -> crate::Result<()> {
+        dispatcher.dispatch(trap_word, cpu, bus)
+    }
 
     #[test]
     fn memorydispatch_generated_selector_routes_are_sorted_unique_and_complete() {
@@ -4623,6 +4641,48 @@ mod tests {
         assert!(super::memory_dispatch_operation_route(0xA05C, 0x0005).is_none());
         assert!(super::memory_dispatch_operation_route(0xA15C, 0x0000).is_none());
         assert!(super::memory_dispatch_operation_route(0xA05C, 0x0001_0000).is_none());
+    }
+
+    #[test]
+    fn hwpriv_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::HWPRIV_OPERATION_ROUTES.len(), 3);
+        assert!(super::HWPRIV_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for trap_word in [0xA098, 0xA198] {
+            let flush = super::hwpriv_operation_route(trap_word, 0x0001).expect("flush route");
+            assert_eq!(flush.routine_name, "FlushInstructionCache");
+            assert_eq!(
+                flush.operation_id,
+                "selector-operation:_HWPriv:0x0001:d0-moveq-immediate:8"
+            );
+        }
+
+        assert!(super::hwpriv_operation_route(0xA298, 0x0001).is_none());
+        assert!(super::hwpriv_operation_route(0xA098, 0x7001).is_none());
+        assert!(super::hwpriv_operation_route(0xA098, 0x0001_0001).is_none());
+    }
+
+    #[test]
+    fn hwpriv_records_every_generated_operation_for_both_source_backed_trap_forms() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for trap_word in [0xA098, 0xA198] {
+            for route in super::HWPRIV_OPERATION_ROUTES {
+                cpu.write_reg(Register::D0, u32::from(route.selector));
+                call_trap_word(&mut dispatcher, trap_word, &mut cpu, &mut bus).unwrap();
+                assert_eq!(
+                    dispatcher.current_selector_operation,
+                    Some(route.operation_id)
+                );
+            }
+        }
+
+        for (trap_word, selector) in [(0xA298, 0x0001), (0xA098, 0x7001), (0xA098, 0x0001_0001)] {
+            cpu.write_reg(Register::D0, selector);
+            call_trap_word(&mut dispatcher, trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     #[test]
