@@ -31,6 +31,8 @@ const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
 const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_alias_dispatch_operations.rs");
 const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
+const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack8_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -51,6 +53,13 @@ fn ppc_operation_route(trap_word: u16, selector: u32) -> Option<&'static Selecto
         return None;
     }
     selector_operation_route(PPC_OPERATION_ROUTES, selector)
+}
+
+fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA816 {
+        return None;
+    }
+    selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -6511,35 +6520,16 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== Pack8 / Apple Events Manager ($A816) ==========
-            //
-            // Selector-based dispatch. Per Apple's SuperMario ROM source
-            // (Toolbox/AppleEventMgr/AEDFGlue.a), the AE Manager package
-            // expects:
-            //   D0.W high byte = number of WORDS of parameters
-            //   D0.W low byte  = routine number (index into dispatch table)
-            //
-            // Stack layout on entry:
-            //   SP+0 .. SP+(params*2-1) = parameters (last pushed first)
-            //   SP+(params*2)           = result OSErr (2 bytes, pre-pushed by caller)
-            //
-            // After dispatch the convention from AEDFGlue's ExtensionProc
-            // fallback is: pop the parameters, leave a 2-byte result at the
-            // new SP. We mirror that here as a no-op stub, returning noErr.
-            //
-            // The dispatch table (AEDFGlue.a) starts:
-            //   0: AE_InstallSpecialHandler   1: AE_RemoveSpecialHandler
-            //   2: AE_CoercePtr               3: AE_CoerceDesc
-            //   4: AE_DisposeDesc             5: AE_DuplicateDesc
-            //   6: AE_CreateList              7: AE_CountItems
-            //   ...
-            //  25: AE_ResetTimer             27: AE_ProcessAppleEvent
-            //   ... (52 routines total + 10 extension slots)
-            // Pack8 / Apple Events ($A816): Selector-based; routine 31 (AEInstallEventHandler) records handlers and routine 27 (AEProcessAppleEvent) dispatches into them via a trampoline; other selectors are stubbed to pop their encoded args and return noErr in D0
+            // Pack8 ($A816)
+            // Dispatches Apple Event Manager routines selected by D0.W.
+            // FUNCTION AEManagerInfo (keyword: AEKeyword; VAR result: LongInt): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), p. 4-104.
             (true, 0x016) => {
                 let sp = cpu.read_reg(Register::A7);
                 let d0 = cpu.read_reg(Register::D0);
                 let selector = (d0 & 0xFFFF) as u16;
+                let operation = pack8_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
 
                 if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
                     return Some(self.resume_loadseg_after_getresource(bus, cpu));
@@ -27983,6 +27973,111 @@ mod tests {
     // Pack8 / Apple Events ($A816)
     // Inside Macintosh: Interapplication Communication 1993:
     // AEInstallEventHandler pp.4-62..4-64, AEProcessAppleEvent pp.4-66..4-67.
+
+    #[test]
+    fn pack8_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK8_OPERATION_ROUTES.len(), 54);
+        assert!(super::PACK8_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x011E, "AESetInteractionAllowed"),
+            (0x0204, "AEDisposeDesc"),
+            (0x0219, "AEResetTimer"),
+            (0x021A, "AEGetTheCurrentEvent"),
+            (0x021B, "AEProcessAppleEvent"),
+            (0x021D, "AEGetInteractionAllowed"),
+            (0x022B, "AESuspendTheCurrentEvent"),
+            (0x022C, "AESetTheCurrentEvent"),
+            (0x023A, "AEDisposeToken"),
+            (0x0405, "AEDuplicateDesc"),
+            (0x0407, "AECountItems"),
+            (0x040E, "AEDeleteItem"),
+            (0x0413, "AEDeleteParam"),
+            (0x0441, "AEManagerInfo"),
+            (0x0500, "AEInstallSpecialHandler"),
+            (0x0501, "AERemoveSpecialHandler"),
+            (0x052D, "AEGetSpecialHandler"),
+            (0x0536, "AEResolve"),
+            (0x0603, "AECoerceDesc"),
+            (0x0609, "AEPutDesc"),
+            (0x0610, "AEPutParamDesc"),
+            (0x061C, "AEInteractWithUser"),
+            (0x0627, "AEPutAttributeDesc"),
+            (0x0706, "AECreateList"),
+            (0x0720, "AERemoveEventHandler"),
+            (0x0723, "AERemoveCoercionHandler"),
+            (0x0738, "AERemoveObjectAccessor"),
+            (0x0812, "AEGetParamDesc"),
+            (0x0818, "AEResumeTheCurrentEvent"),
+            (0x0825, "AECreateDesc"),
+            (0x0826, "AEGetAttributeDesc"),
+            (0x0828, "AESizeOfAttribute"),
+            (0x0829, "AESizeOfParam"),
+            (0x082A, "AESizeOfNthItem"),
+            (0x091F, "AEInstallEventHandler"),
+            (0x0921, "AEGetEventHandler"),
+            (0x0937, "AEInstallObjectAccessor"),
+            (0x0939, "AEGetObjectAccessor"),
+            (0x0A02, "AECoercePtr"),
+            (0x0A08, "AEPutPtr"),
+            (0x0A0B, "AEGetNthDesc"),
+            (0x0A0F, "AEPutParamPtr"),
+            (0x0A16, "AEPutAttributePtr"),
+            (0x0A22, "AEInstallCoercionHandler"),
+            (0x0B0D, "AEPutArray"),
+            (0x0B14, "AECreateAppleEvent"),
+            (0x0B24, "AEGetCoercionHandler"),
+            (0x0C3B, "AECallObjectAccessor"),
+            (0x0D0C, "AEGetArray"),
+            (0x0D17, "AESend"),
+            (0x0E11, "AEGetParamPtr"),
+            (0x0E15, "AEGetAttributePtr"),
+            (0x0E35, "AESetObjectCallbacks"),
+            (0x100A, "AEGetNthPtr"),
+        ] {
+            let route = super::pack8_operation_route(0xA816, selector).expect("Pack8 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA916, 0x091F),
+            (0xA816, 0x081F),
+            (0xA816, 0x0920),
+            (0xA816, 0x303C),
+            (0xA816, crate::trap::dispatch::LOADSEG_GETRESOURCE_SENTINEL),
+            (0xA816, 0xFEFE),
+        ] {
+            assert!(super::pack8_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack8_records_low_word_identity_and_rejects_wrong_trap() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA816;
+        cpu.write_reg(Register::D0, 0xABCD_0720);
+        for offset in 0..14 {
+            bus.write_byte(sp + offset, 0);
+        }
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.expect("Pack8 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack8:0x0720:d0-low-word-immediate:16")
+        );
+
+        disp.current_trap_word = 0xA916;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0720);
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.expect("Pack8 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
 
     #[test]
     fn pack8_unhandled_selector_pops_param_words_and_returns_noerr() {
