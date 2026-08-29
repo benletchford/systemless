@@ -17890,8 +17890,16 @@ fn dispatch_supported_import(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CloseWindow => {
+        PpcImportDispatcherTarget::CloseWindow | PpcImportDispatcherTarget::DisposeDialog => {
             let window = cpu.gpr[3];
+            if matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::DisposeDialog
+            ) {
+                toolbox_startup.dispose_dialog_count =
+                    toolbox_startup.dispose_dialog_count.saturating_add(1);
+                toolbox_startup.last_disposed_dialog = window;
+            }
             let previous_front = ppc_front_visible_window(memory, gworlds);
             if window != 0 {
                 let closed_palette = memory
@@ -20998,12 +21006,6 @@ fn dispatch_supported_import(
                 crate::memory::globals::addr::SYS_EVT_MASK,
                 cpu.gpr[3] as u16,
             );
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        PpcImportDispatcherTarget::DisposeDialog => {
-            toolbox_startup.dispose_dialog_count =
-                toolbox_startup.dispose_dialog_count.saturating_add(1);
-            toolbox_startup.last_disposed_dialog = cpu.gpr[3];
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetNextEvent | PpcImportDispatcherTarget::GetOSEvent => {
@@ -78041,6 +78043,50 @@ mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
         assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.memory.read_u32_be(window_out), Some(0));
+    }
+
+    #[test]
+    fn dispose_dialog_removes_it_from_the_window_list_and_restores_the_previous_window() {
+        let pef = synthetic_pef_with_import(b"DisposeDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let application_window = PPC_DATA_BASE + 0x1000;
+        let dialog = PPC_DATA_BASE + 0x2000;
+
+        for window in [application_window, dialog] {
+            loaded
+                .memory
+                .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
+            loaded
+                .memory
+                .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+                .unwrap();
+            loaded.gworlds.push(PpcGWorldRecord {
+                port: window,
+                pixmap_handle: 0,
+                pixmap: 0,
+                base_addr: 0,
+                gdevice: PPC_MAIN_GDEVICE,
+                width: 100,
+                height: 100,
+                depth: 8,
+                row_bytes: 100,
+                pixels_locked: false,
+                pixels_no_purge: false,
+            });
+        }
+        loaded.current_gworld = dialog;
+        loaded.cpu.gpr[3] = dialog;
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
+
+        assert_eq!(loaded.toolbox_startup.dispose_dialog_count, 1);
+        assert_eq!(loaded.toolbox_startup.last_disposed_dialog, dialog);
+        assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
+        assert_eq!(loaded.current_gworld, application_window);
+        assert_eq!(
+            ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
+            Some(application_window)
+        );
     }
 
     #[test]
