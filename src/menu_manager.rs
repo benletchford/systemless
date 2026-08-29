@@ -416,6 +416,8 @@ pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
+    /// Application-defined item drawing and hit-testing for this pane.
+    pub(crate) definition: Option<MenuDefinitionTracking>,
     pub(crate) saved_width: i16,
     pub(crate) saved_height: i16,
     pub(crate) front_buffer: Surface,
@@ -439,6 +441,8 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) popup_width: i16,
     pub(crate) popup_height: i16,
     pub(crate) highlighted_item: i16,
+    /// Application-defined item drawing and hit-testing for the root pane.
+    pub(crate) definition: Option<MenuDefinitionTracking>,
     pub(crate) flash_remaining: u8,
     pub(crate) flash_delay: u8,
     pub(crate) flash_result: u32,
@@ -457,6 +461,12 @@ pub(crate) enum SubmenuTransition<Pane> {
     Keep,
     Reject(Vec<Pane>),
     Open(Vec<Pane>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuDefinitionPane {
+    Root,
+    Submenu(usize),
 }
 
 /// Common read-only view used by tracking geometry and presentation code.
@@ -540,6 +550,45 @@ impl_tracked_menu_pane_view!(TrackedMenuPane);
 impl<MenuRef: Copy, Surface, Pixel, Appearance>
     MenuTrackingState<MenuRef, Surface, Pixel, Appearance>
 {
+    pub(crate) fn active_definition_pane(&self) -> Option<MenuDefinitionPane> {
+        self.submenus
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(depth, submenu)| {
+                submenu
+                    .definition
+                    .is_some()
+                    .then_some(MenuDefinitionPane::Submenu(depth))
+            })
+            .or_else(|| {
+                self.definition
+                    .is_some()
+                    .then_some(MenuDefinitionPane::Root)
+            })
+    }
+
+    pub(crate) fn active_definition(&self) -> Option<&MenuDefinitionTracking> {
+        match self.active_definition_pane()? {
+            MenuDefinitionPane::Root => self.definition.as_ref(),
+            MenuDefinitionPane::Submenu(depth) => self.submenus.get(depth)?.definition.as_ref(),
+        }
+    }
+
+    pub(crate) fn active_definition_mut(&mut self) -> Option<&mut MenuDefinitionTracking> {
+        match self.active_definition_pane()? {
+            MenuDefinitionPane::Root => self.definition.as_mut(),
+            MenuDefinitionPane::Submenu(depth) => self.submenus.get_mut(depth)?.definition.as_mut(),
+        }
+    }
+
+    pub(crate) fn take_active_definition(&mut self) -> Option<MenuDefinitionTracking> {
+        match self.active_definition_pane()? {
+            MenuDefinitionPane::Root => self.definition.take(),
+            MenuDefinitionPane::Submenu(depth) => self.submenus.get_mut(depth)?.definition.take(),
+        }
+    }
+
     /// Remove every open submenu from `depth` onward and return the panes so
     /// the presentation adapter can restore their saved pixels deepest-first.
     pub(crate) fn close_submenus_from(
@@ -640,11 +689,27 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         mut is_terminal_item: impl FnMut(MenuRef, i16) -> bool,
     ) -> Option<(MenuRef, i16)> {
         for submenu in self.submenus.iter().rev() {
+            if let Some(item) = submenu
+                .definition
+                .as_ref()
+                .map(|definition| definition.which_item())
+                .filter(|item| *item > 0)
+            {
+                return Some((submenu.menu_handle, item));
+            }
             if submenu.highlighted_item > 0
                 && is_terminal_item(submenu.menu_handle, submenu.highlighted_item)
             {
                 return Some((submenu.menu_handle, submenu.highlighted_item));
             }
+        }
+        if let Some(item) = self
+            .definition
+            .as_ref()
+            .map(|definition| definition.which_item())
+            .filter(|item| *item > 0)
+        {
+            return Some((self.menu_handle, item));
         }
         (self.highlighted_item > 0 && is_terminal_item(self.menu_handle, self.highlighted_item))
             .then_some((self.menu_handle, self.highlighted_item))
@@ -2690,6 +2755,7 @@ mod tests {
             popup_width: 100,
             popup_height: 40,
             highlighted_item: 1,
+            definition: None,
             flash_remaining: 0,
             flash_delay: 0,
             flash_result: 0,
@@ -2708,6 +2774,7 @@ mod tests {
                 popup_width: 100,
                 popup_height: 40,
                 highlighted_item: 2,
+                definition: None,
                 saved_width: 100,
                 saved_height: 40,
                 front_buffer: (),
@@ -3764,6 +3831,33 @@ mod tests {
         assert_eq!(powerpc.selection(|_, _| true), Some((0x2000, 2)));
         assert_eq!(classic.selection(|_, item| item != 2), Some((0, 1)));
         assert_eq!(powerpc.selection(|_, item| item != 2), Some((0x1000, 1)));
+    }
+
+    #[test]
+    fn both_architecture_reference_types_drop_custom_child_ownership_on_close() {
+        let mut classic = tracking_with_child(0usize, 1usize);
+        let mut classic_definition = MenuDefinitionTracking::begin_draw(0x1111, (20, 80, 52, 152));
+        classic_definition.complete_pending(MenuDefinitionResult {
+            menu_rect: (20, 80, 52, 152),
+            which_item: 3,
+        });
+        classic.submenus[0].definition = Some(classic_definition);
+        assert_eq!(classic.selection(|_, _| false), Some((1, 3)));
+        let closed = classic.close_submenus_from(0);
+        assert!(classic.active_definition().is_none());
+        assert_eq!(closed[0].definition, Some(classic_definition));
+
+        let mut powerpc = tracking_with_child(0x1000u32, 0x2000u32);
+        let mut powerpc_definition = MenuDefinitionTracking::begin_draw(0x2000, (20, 80, 52, 152));
+        powerpc_definition.complete_pending(MenuDefinitionResult {
+            menu_rect: (20, 80, 52, 152),
+            which_item: 3,
+        });
+        powerpc.submenus[0].definition = Some(powerpc_definition);
+        assert_eq!(powerpc.selection(|_, _| false), Some((0x2000, 3)));
+        let closed = powerpc.close_submenus_from(0);
+        assert!(powerpc.active_definition().is_none());
+        assert_eq!(closed[0].definition, Some(powerpc_definition));
     }
 
     #[test]

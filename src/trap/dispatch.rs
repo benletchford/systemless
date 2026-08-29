@@ -1679,7 +1679,7 @@ pub struct TrapDispatcher {
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
-    /// Shared custom-MDEF callback and selection continuation.
+    /// Custom popup MDEF state before its returned rectangle creates a pane.
     pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
     pub(crate) pending_menu_bar_build: Option<super::menu::PendingMenuBarBuild>,
@@ -3468,7 +3468,10 @@ impl TrapDispatcher {
     pub(crate) fn is_menu_definition_callback_pending(&self) -> bool {
         self.pending_menu_bar_build.is_some()
             || self
-                .menu_definition_tracking
+                .menu_tracking
+                .as_ref()
+                .and_then(crate::menu_manager::MenuTrackingState::active_definition)
+                .or(self.menu_definition_tracking.as_ref())
                 .is_some_and(|tracking| tracking.pending_invocation().is_some())
     }
 
