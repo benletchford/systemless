@@ -283,12 +283,6 @@ impl SharedGuestCallStack {
         restore_rtoc: u32,
         return_gpr3: PpcNativeReturnGpr3,
     ) -> bool {
-        // A reverse native call leaves its 68k caller live in the sole 68k
-        // core. A further native-to-68k call needs another parked 68k context;
-        // reject it until the process stack owns that context explicitly.
-        if self.has_powerpc_from_m68k() {
-            return false;
-        }
         debug_assert_eq!(target.isa, GuestIsa::M68k);
         self.0.borrow_mut().push(GuestCallFrame {
             target,
@@ -353,6 +347,27 @@ impl SharedGuestCallStack {
         self.0.borrow().last().is_some_and(|frame| {
             matches!(frame.origin, GuestCallOrigin::M68k(_)) && frame.powerpc_execution.is_some()
         })
+    }
+
+    /// Return the number of live 68k callers suspended in native PowerPC.
+    ///
+    /// The scheduler uses this depth to pair each nested PowerPC-to-68k call
+    /// with the 68k CPU context parked by its enclosing switch frame. Mixed
+    /// Mode links switch frames in LIFO order and preserves the emulated 68k
+    /// context across every mode switch. Inside Macintosh: PowerPC System
+    /// Software (1994), pp. 2-9--2-13.
+    pub(crate) fn suspended_m68k_context_depth(&self) -> usize {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|frame| {
+                matches!(frame.origin, GuestCallOrigin::M68k(_))
+                    && frame
+                        .powerpc_execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.return_pc.is_some())
+            })
+            .count()
     }
 
     pub(crate) fn complete_powerpc_for_m68k(&self, cpu: &mut PpcCpu) -> bool {
@@ -777,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn reverse_transition_rejects_a_deeper_native_to_68k_call_without_losing_its_frame() {
+    fn deeper_cross_isa_transition_completes_in_lifo_order() {
         let calls = SharedGuestCallStack::default();
         assert!(calls.begin_m68k_to_powerpc(
             GuestCallTarget {
@@ -790,8 +805,14 @@ mod tests {
             0x4000,
             None,
         ));
+        assert_eq!(calls.suspended_m68k_context_depth(), 0);
+        let mut cpu = PpcCpu::new();
+        assert!(calls
+            .activate_powerpc_from_m68k(&mut cpu, RETURN_PC)
+            .is_some());
+        assert_eq!(calls.suspended_m68k_context_depth(), 1);
 
-        assert!(!calls.begin_powerpc_to_m68k(
+        assert!(calls.begin_powerpc_to_m68k(
             GuestCallTarget {
                 isa: GuestIsa::M68k,
                 entry: 0x5000,
@@ -807,8 +828,70 @@ mod tests {
             0x9000,
             PpcNativeReturnGpr3::Preserve,
         ));
+        assert_eq!(calls.len(), 2);
+        assert!(!calls.has_powerpc_from_m68k());
+        assert!(calls.has_m68k_execution());
+        assert!(calls.activate_m68k().is_some());
+
+        assert!(calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0xa000,
+                rtoc: 0xb000,
+            },
+            PowerPcArguments::from_slice(&[0xc000]).unwrap(),
+            0xd000,
+            0xe000,
+            None,
+        ));
+        assert!(calls
+            .activate_powerpc_from_m68k(&mut cpu, RETURN_PC + 4)
+            .is_some());
+        assert_eq!(calls.suspended_m68k_context_depth(), 2);
+        assert!(calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0xf000,
+                rtoc: 0,
+            },
+            0xf000,
+            0x1_0000,
+            0x1_1000,
+            0x1_0004,
+            M68kRegisterState::default(),
+            None,
+            0x1_2000,
+            0x1_3000,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+        assert!(calls.activate_m68k().is_some());
+        assert!(!calls.complete_m68k_for_powerpc(0x7000, 0x6004, None, &mut cpu));
+        assert!(calls.complete_m68k_for_powerpc(0x1_1000, 0x1_0004, None, &mut cpu));
+        assert_eq!(calls.suspended_m68k_context_depth(), 2);
+
+        cpu.pc = RETURN_PC + 4;
+        assert!(calls.complete_powerpc_for_m68k(&mut cpu));
+        let nested_resume = calls.take_m68k_resume().unwrap();
+        assert_eq!(
+            (nested_resume.return_pc, nested_resume.final_sp),
+            (0xd000, 0xe000)
+        );
+        assert_eq!(calls.suspended_m68k_context_depth(), 1);
+
+        assert!(!calls.complete_m68k_for_powerpc(0x7004, 0x6004, None, &mut cpu));
+        assert!(calls.complete_m68k_for_powerpc(0x7000, 0x6004, None, &mut cpu));
         assert_eq!(calls.len(), 1);
         assert!(calls.has_powerpc_from_m68k());
+        assert_eq!(calls.suspended_m68k_context_depth(), 1);
+
+        cpu.pc = RETURN_PC;
+        cpu.gpr[3] = 0x1234_5678;
+        assert!(calls.complete_powerpc_for_m68k(&mut cpu));
+        let resume = calls.take_m68k_resume().unwrap();
+        assert_eq!((resume.return_pc, resume.final_sp), (0x3000, 0x4000));
+        assert_eq!(resume.powerpc.gpr3, 0x1234_5678);
+        assert_eq!(calls.suspended_m68k_context_depth(), 0);
+        assert!(calls.is_empty());
     }
 
     #[test]

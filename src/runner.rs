@@ -1746,6 +1746,10 @@ impl FixtureRunnerConfig {
 /// See `examples/run_headless.rs` for a runnable end-to-end example.
 pub struct FixtureRunner {
     cpu: M68kCpu,
+    /// Complete 68k CPU contexts parked by nested Mixed Mode switch frames.
+    /// The active context remains in `cpu`; suspended contexts are ordered by
+    /// the process guest-call stack's 68k-to-PowerPC nesting depth.
+    parked_m68k_cpus: Vec<M68kCpu>,
     ppc_app: Option<PpcLoadedApp>,
     ppc_sound_synced_file_playback_count: usize,
     ppc_sound_host_playbacks: Vec<PpcHostSoundPlayback>,
@@ -1993,6 +1997,7 @@ impl FixtureRunner {
             .install_standard_service_routine(standard_adb_service);
         Self {
             cpu: M68kCpu::new(),
+            parked_m68k_cpus: Vec::new(),
             ppc_app: None,
             ppc_sound_synced_file_playback_count: 0,
             ppc_sound_host_playbacks: Vec::new(),
@@ -3567,6 +3572,7 @@ impl FixtureRunner {
     /// Think C runtimes, e.g. Koji / Munchies) sees `CurStackBase` =
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
+        self.parked_m68k_cpus.clear();
         if let Some(ppc_app) = app.ppc.clone() {
             self.init_ppc_app(ppc_app);
             return;
@@ -6497,6 +6503,24 @@ impl FixtureRunner {
         let active = ppc_app.guest_calls.active_m68k();
         let pending = active.or_else(|| ppc_app.guest_calls.activate_m68k())?;
         if active.is_none() {
+            let suspended_depth = ppc_app.guest_calls.suspended_m68k_context_depth();
+            if suspended_depth > 0 {
+                match self.parked_m68k_cpus.len() {
+                    parked if parked == suspended_depth => {
+                        // A sibling PowerPC-to-68k call at this depth replaces
+                        // the completed nested context, while its caller stays
+                        // parked in the existing stack entry.
+                        self.cpu = M68kCpu::new();
+                    }
+                    parked if parked.checked_add(1) == Some(suspended_depth) => {
+                        // The first PowerPC-to-68k call at this depth parks the
+                        // live classic caller before installing a fresh context.
+                        let parked = std::mem::take(&mut self.cpu);
+                        self.parked_m68k_cpus.push(parked);
+                    }
+                    _ => return Some((0, false)),
+                }
+            }
             for (index, value) in pending.registers.data.into_iter().enumerate() {
                 self.cpu.core.set_d(index, value);
             }
@@ -6580,9 +6604,25 @@ impl FixtureRunner {
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
         use crate::guest_call::M68kResultTarget;
 
+        let suspended_depth = ppc_app.guest_calls.suspended_m68k_context_depth();
+        let restore_parked = if suspended_depth == 0 {
+            false
+        } else {
+            match self.parked_m68k_cpus.len() {
+                parked if parked == suspended_depth => true,
+                parked if parked.checked_add(1) == Some(suspended_depth) => false,
+                _ => return false,
+            }
+        };
         let Some(resume) = ppc_app.guest_calls.take_m68k_resume() else {
             return false;
         };
+        if restore_parked {
+            self.cpu = self
+                .parked_m68k_cpus
+                .pop()
+                .expect("depth proves a parked 68k CPU context");
+        }
         let mask_value = |value: u32, size: u8| match size {
             1 => Some(value & 0xff),
             2 => Some(value & 0xffff),
@@ -13928,6 +13968,238 @@ mod tests {
             Some(ARGUMENT + 7)
         );
         assert_eq!(ppc_app.memory.read_u32_be(ppc_app.cpu.gpr[1]), Some(0));
+    }
+
+    #[test]
+    fn nested_cross_isa_calls_restore_each_68k_cpu_context() {
+        use crate::guest_procedure::{
+            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA, ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+        };
+        use crate::mixed_mode::proc_info;
+
+        const DESCRIPTOR: u32 = 0x0301_0100;
+        const TVECTOR: u32 = 0x0301_0200;
+        const PPC_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const CALLBACK_RTOC: u32 = 0x0301_0300;
+        const M68K_INNER: u32 = 0x0301_0400;
+        const INNER_DESCRIPTOR: u32 = 0x0301_0600;
+        const M68K_STACK: u32 = 0x0302_0000;
+        const INITIAL_SP: u32 = M68K_STACK + 0x80;
+        const RETURN_PC: u32 = 0x0302_0100;
+        const ARGUMENT: u32 = 0x10;
+        const OUTER_D6: u32 = 0x1357_2468;
+        const INNER_D6: u32 = 0xdead_beef;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+
+        let inner_words = [
+            0x2c3c,
+            (INNER_D6 >> 16) as u16,
+            INNER_D6 as u16, // MOVE.L #INNER_D6,D6
+            0x202f,
+            0x0004, // MOVE.L 4(SP),D0
+            0x5e80, // ADDQ.L #7,D0
+            0x2f40,
+            0x0008, // MOVE.L D0,8(SP)
+            0x4e74,
+            0x0004, // RTD #4
+        ];
+        ppc_app.memory.add_region(
+            M68K_INNER,
+            inner_words.into_iter().flat_map(u16::to_be_bytes).collect(),
+        );
+
+        let proc_info = proc_info::PASCAL_STACK_BASED
+            | (proc_info::SIZE_FOUR << proc_info::RESULT_SIZE_PHASE)
+            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE);
+        let first_branch_pc = PPC_CALLBACK + 6 * 4;
+        let second_branch_pc = PPC_CALLBACK + 12 * 4;
+        let callback_words = [
+            0x7fe8_02a6, // MFLR R31
+            0x3c60_0000 | (INNER_DESCRIPTOR >> 16),
+            0x6063_0000 | (INNER_DESCRIPTOR & 0xffff),
+            0x3c80_0000 | (proc_info >> 16),
+            0x6084_0000 | (proc_info & 0xffff),
+            0x38a0_0000 | ARGUMENT, // LI R5,ARGUMENT
+            ppc_test_relative_branch(first_branch_pc, PPC_IMPORT_TRAP_BASE) | 1, // BL CallUniversalProc
+            0x3c60_0000 | (INNER_DESCRIPTOR >> 16),
+            0x6063_0000 | (INNER_DESCRIPTOR & 0xffff),
+            0x3c80_0000 | (proc_info >> 16),
+            0x6084_0000 | (proc_info & 0xffff),
+            0x38a0_0000 | ARGUMENT, // LI R5,ARGUMENT
+            ppc_test_relative_branch(second_branch_pc, PPC_IMPORT_TRAP_BASE) | 1, // BL CallUniversalProc
+            0x7fe8_03a6,                                                          // MTLR R31
+            0x3863_0007,                                                          // ADDI R3,R3,7
+            0x4e80_0020,                                                          // BLR
+        ];
+        ppc_app.memory.add_region(
+            PPC_CALLBACK,
+            callback_words
+                .into_iter()
+                .flat_map(u32::to_be_bytes)
+                .collect(),
+        );
+        ppc_app.memory.add_region(DESCRIPTOR, vec![0; 0x200]);
+        ppc_app
+            .memory
+            .write_u16_be(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        ppc_app.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+        let record = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        ppc_app.memory.write_u32_be(record, proc_info).unwrap();
+        ppc_app
+            .memory
+            .write_u8(
+                record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_POWERPC_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(
+                record + ROUTINE_RECORD_FLAGS_OFFSET,
+                ROUTINE_FLAG_USE_NATIVE_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, TVECTOR)
+            .unwrap();
+        ppc_app.memory.write_u32_be(TVECTOR, PPC_CALLBACK).unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(TVECTOR + 4, CALLBACK_RTOC)
+            .unwrap();
+        ppc_app.memory.add_region(INNER_DESCRIPTOR, vec![0; 0x100]);
+        ppc_app
+            .memory
+            .write_u16_be(INNER_DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(INNER_DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(INNER_DESCRIPTOR + 10, 0)
+            .unwrap();
+        let inner_record = INNER_DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        ppc_app
+            .memory
+            .write_u32_be(inner_record, proc_info)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(
+                inner_record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_M68K_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(
+                inner_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                M68K_INNER,
+            )
+            .unwrap();
+        ppc_app.memory.add_region(M68K_STACK, vec![0; 0x200]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(INITIAL_SP + 4, ARGUMENT)
+            .unwrap();
+
+        let mut call_universal_proc =
+            test_ppc_import_binding(0, "InterfaceLib", "CallUniversalProc");
+        call_universal_proc.trap_pc = PPC_IMPORT_TRAP_BASE;
+        call_universal_proc.dispatcher_target = PpcImportDispatcherTarget::CallUniversalProc;
+        ppc_app.import_count = 1;
+        ppc_app.imports = vec![call_universal_proc];
+        let mut outer_registers = crate::guest_call::M68kRegisterState::default();
+        outer_registers.data[6] = OUTER_D6;
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: DESCRIPTOR,
+                rtoc: 0,
+            },
+            DESCRIPTOR,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 8,
+            outer_registers,
+            Some(crate::guest_call::M68kResultSource::Memory {
+                address: INITIAL_SP + 8,
+                size: 4,
+            }),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        let mut maximum_parked = 0;
+        let mut inner_entries = 0;
+        let mut checked_wrong_boundary = false;
+        for iteration in 0..128 {
+            let (steps, running) = runner.run_steps(1, None);
+            assert!(
+                running,
+                "cross-ISA execution stopped at iteration {iteration} after {steps} steps: pc=${:08x} sp=${:08x} frames={} parked={} ppc_pc=${:08x}",
+                runner.cpu.read_reg(Register::PC),
+                runner.cpu.read_reg(Register::A7),
+                runner.dispatcher.guest_calls.len(),
+                runner.parked_m68k_cpus.len(),
+                runner
+                    .ppc_app
+                    .as_ref()
+                    .map_or(0, |ppc_app| ppc_app.cpu.pc),
+            );
+            maximum_parked = maximum_parked.max(runner.parked_m68k_cpus.len());
+            if !runner.parked_m68k_cpus.is_empty()
+                && runner.cpu.read_reg(Register::PC) == M68K_INNER + 6
+            {
+                inner_entries += 1;
+            }
+            if !checked_wrong_boundary && !runner.parked_m68k_cpus.is_empty() {
+                let frame_count = runner.dispatcher.guest_calls.len();
+                let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+                assert!(!runner.resume_m68k_after_powerpc(&mut ppc_app));
+                assert_eq!(runner.parked_m68k_cpus.len(), 1);
+                assert_eq!(ppc_app.guest_calls.len(), frame_count);
+                runner.ppc_app = Some(ppc_app);
+                checked_wrong_boundary = true;
+            }
+            if runner.dispatcher.guest_calls.is_empty() {
+                break;
+            }
+        }
+
+        assert!(checked_wrong_boundary);
+        assert_eq!(inner_entries, 2);
+        assert_eq!(maximum_parked, 1);
+        assert!(runner.parked_m68k_cpus.is_empty());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert_eq!(runner.cpu.core.d(6), OUTER_D6);
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(ppc_app.cpu.gpr[3], ARGUMENT + 14);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(INITIAL_SP + 8),
+            Some(ARGUMENT + 14)
+        );
     }
 
     #[test]
