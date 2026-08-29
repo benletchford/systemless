@@ -4971,7 +4971,9 @@ impl super::TrapDispatcher {
                 (tracking.menu_handle, dropdowns, hidden_depth)
             })
         {
-            self.highlight_menu_title(bus, active_menu);
+            if let Some(active_menu) = self.menu_index_for_handle(active_menu) {
+                self.highlight_menu_title(bus, active_menu);
+            }
             let hidden_item = hidden_depth.and_then(|depth| {
                 self.menu_tracking.as_mut().and_then(|tracking| {
                     if depth == 0 {
@@ -4987,8 +4989,10 @@ impl super::TrapDispatcher {
                     }
                 })
             });
-            for (menu, rect) in dropdowns {
-                self.draw_menu_dropdown(bus, menu, rect);
+            for (menu_handle, rect) in dropdowns {
+                if let Some(menu) = self.menu_index_for_handle(menu_handle) {
+                    self.draw_menu_dropdown(bus, menu, rect);
+                }
             }
             if let Some((depth, item)) = hidden_item {
                 if let Some(tracking) = self.menu_tracking.as_mut() {
@@ -5102,7 +5106,7 @@ mod redraw_chrome_tests {
                 enabled: true,
             }],
             enabled: true,
-            handle: 0,
+            handle: id as u32,
             in_menu_bar: true,
             hierarchical: !visible_in_menu_bar,
             visible_in_menu_bar,
@@ -5122,9 +5126,9 @@ mod redraw_chrome_tests {
         ];
         let root_rect = (20, 10, 38, 100);
         let child_rect = (24, 140, 42, 230);
-        let mut child = tracked_submenu_state(1, 1, child_rect, Vec::new());
+        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new());
         child.highlighted_item = 1;
-        let mut tracking = test_tracked_menu_state(0, root_rect, 1);
+        let mut tracking = test_tracked_menu_state(700, root_rect, 1);
         tracking.submenus.push(child);
         tracking.flash_remaining = 5;
         tracking.flash_result = (701u32 << 16) | 1;
