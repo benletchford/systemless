@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.11](https://github.com/benletchford/systemless/compare/v0.23.10...v0.23.11) (2026-08-29)
+
+
+### Bug Fixes
+
+* **ppc:** support InputSprocket element lists ([#969](https://github.com/benletchford/systemless/issues/969)) ([64dae33](https://github.com/benletchford/systemless/commit/64dae33aaa8e1595dd679339de4e76e7310fa4fe))
+
 ## [0.23.10](https://github.com/benletchford/systemless/compare/v0.23.9...v0.23.10) (2026-08-29)
 
 
