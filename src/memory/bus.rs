@@ -676,6 +676,11 @@ impl Hasher for AddressHasher {
 /// withdrawn), so comparing them at the end is harmless.
 type WriteProbeJournal = HashMap<u32, u32, BuildHasherDefault<AddressHasher>>;
 
+/// An armed write journal temporarily detached from the bus by
+/// [`MacMemoryBus::suspend_write_probe`]; hand it back with
+/// [`MacMemoryBus::resume_write_probe`].
+pub(crate) struct SuspendedWriteProbe(WriteProbeJournal);
+
 /// RAM storage - either a stable owned allocation or borrowed slice.
 enum RamStorage {
     Owned(Vec<u8>),
@@ -1343,6 +1348,19 @@ impl MacMemoryBus {
         self.park_write_probe_journal();
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
+    }
+
+    /// Detach the armed journal so writes made meanwhile -- host-owned
+    /// drawing the guest never performed -- are neither recorded nor able
+    /// to overflow it. The bus's fast paths come back while it is detached;
+    /// `resume_write_probe` re-arms the very same journal. `None` when no
+    /// journal is armed.
+    pub(crate) fn suspend_write_probe(&mut self) -> Option<SuspendedWriteProbe> {
+        self.write_probe_original.take().map(SuspendedWriteProbe)
+    }
+
+    pub(crate) fn resume_write_probe(&mut self, suspended: SuspendedWriteProbe) {
+        self.write_probe_original = Some(suspended.0);
     }
 
     /// Report -- and clear -- whether the most recent probe's journal
@@ -2811,6 +2829,39 @@ mod tests {
         bus.begin_write_probe();
         bus.fill_bytes_strided(0x105, 16, 4, 0xEE);
         assert!(bus.finish_write_probe_unchanged(), "same bytes: unchanged");
+    }
+
+    #[test]
+    fn suspended_write_probe_ignores_writes_and_rearms_intact() {
+        // A host-sized burst (more units than WRITE_PROBE_MAX_ENTRIES)
+        // overflows an armed journal; made while the journal is suspended it
+        // is neither recorded nor able to overflow, and the re-armed journal
+        // still catches the next write.
+        let mut bus = MacMemoryBus::new(1024 * 1024);
+        let base = 0x0008_0000u32;
+        let burst = (WRITE_PROBE_MAX_ENTRIES as u32 + 64) * 4;
+
+        bus.begin_write_probe();
+        bus.fill_bytes(base, burst, 0xAA);
+        assert!(bus.take_write_probe_overflow());
+        bus.cancel_write_probe();
+        bus.fill_bytes(base, burst, 0x00);
+
+        bus.begin_write_probe();
+        let suspended = bus.suspend_write_probe().expect("journal armed");
+        assert!(bus.suspend_write_probe().is_none());
+        bus.fill_bytes(base, burst, 0xAA);
+        bus.resume_write_probe(suspended);
+        assert!(!bus.take_write_probe_overflow());
+        bus.write_byte(base + 8, 0x01);
+        assert!(!bus.finish_write_probe_unchanged());
+
+        bus.begin_write_probe();
+        let suspended = bus.suspend_write_probe().expect("journal armed");
+        bus.fill_bytes(base, burst, 0x55);
+        bus.resume_write_probe(suspended);
+        assert!(bus.finish_write_probe_unchanged());
+        assert!(bus.suspend_write_probe().is_none());
     }
 
     #[test]

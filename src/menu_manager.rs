@@ -817,7 +817,7 @@ impl SharedNativeMenuSelection {
         self.0.borrow_mut().take()
     }
 
-    #[cfg(test)]
+    /// Current value without consuming it (idle-park host snapshot).
     pub(crate) fn snapshot(&self) -> Option<(i16, i16)> {
         *self.0.borrow()
     }

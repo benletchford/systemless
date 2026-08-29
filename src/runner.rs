@@ -935,6 +935,10 @@ static WS_CANCEL_TRAP: AtomicU64 = AtomicU64::new(0);
 static WS_PARKED: AtomicU64 = AtomicU64::new(0);
 static WS_PERIOD_STEPS: AtomicU64 = AtomicU64::new(0);
 static WS_PROBE_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+static WS_RESUMED: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_HOST: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_OTHER: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
     std::sync::Mutex::new(None);
 
@@ -968,6 +972,13 @@ pub fn dump_wait_stats() {
         WS_FAIL_CPU.load(AtomicOrdering::Relaxed),
         WS_FAIL_MEM.load(AtomicOrdering::Relaxed),
         WS_CANCEL_TRAP.load(AtomicOrdering::Relaxed),
+    );
+    eprintln!(
+        "[WAIT-STATS] resumed={} resume_fail_mem={} resume_fail_host={} resume_fail_other={}",
+        WS_RESUMED.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_MEM.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_HOST.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_OTHER.load(AtomicOrdering::Relaxed),
     );
     if let Ok(guard) = WS_CANCEL_TRAP_WORDS.lock() {
         if let Some(map) = guard.as_ref() {
@@ -1314,6 +1325,15 @@ struct IdleCycleHostSnapshot {
     mouse_button: bool,
     key_map: [u8; 16],
     caps_lock_physically_pressed: bool,
+    /// Host mirror of the guest window chain, read by the admitted Window
+    /// Manager queries. Every mutation of it is also written into the guest
+    /// chain (journaled), so this is belt-and-braces: a parked cycle must
+    /// not resume across a reordering the journal somehow missed.
+    window_list: Vec<u32>,
+    /// A native menu selection staged for MenuSelect. It is always paired
+    /// with a pending event the resume gate sees; recorded here so the
+    /// pairing is not the only thing standing between it and a proof.
+    pending_native_menu_selection: Option<(i16, i16)>,
 }
 
 impl IdleCycleHostSnapshot {
@@ -1323,6 +1343,8 @@ impl IdleCycleHostSnapshot {
             mouse_button: dispatcher.mouse_button,
             key_map: *dispatcher.key_map_bytes(),
             caps_lock_physically_pressed: dispatcher.caps_lock_physically_pressed,
+            window_list: dispatcher.window_list.clone(),
+            pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
         }
     }
 }
@@ -2601,7 +2623,7 @@ impl FixtureRunner {
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
         self.sync_ppc_deferred_host_state();
-        self.redraw_chrome();
+        self.redraw_chrome_outside_idle_journal();
     }
 
     fn redraw_chrome(&mut self) {
@@ -4156,12 +4178,30 @@ impl FixtureRunner {
         self.sync_ppc_sound_completions_from_dispatcher();
     }
 
+    /// Repaint the host-owned chrome (menu bar, window frames, cursor)
+    /// without it counting against an armed idle-proof journal. The runner
+    /// paints it every frame on the guest's behalf, so it is not a guest
+    /// memory effect, and at 8 bpp the menu bar alone is more journal words
+    /// than `WRITE_PROBE_MAX_ENTRIES`: recorded, it would overflow the
+    /// journal and void a parked cycle on every frame. Its pixels change
+    /// only when dispatcher state does, which happens through guest traps
+    /// (never admitted into a proof) or host input (gated by
+    /// `IdleCycleHostSnapshot` before a park resumes), so leaving them out
+    /// of the journal takes nothing away from the proof.
+    fn redraw_chrome_outside_idle_journal(&mut self) {
+        let suspended = self.bus.suspend_write_probe();
+        self.redraw_chrome();
+        if let Some(journal) = suspended {
+            self.bus.resume_write_probe(journal);
+        }
+    }
+
     fn finish_host_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
         // Redraw menu bar and window chrome after each frame.
         // On a real Mac the Window Manager maintains these as
         // separate layers; here they are raw framebuffer pixels
         // that game drawing (explosions, etc.) can overwrite.
-        self.redraw_chrome();
+        self.redraw_chrome_outside_idle_journal();
         self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
     }
 
@@ -4517,6 +4557,16 @@ impl FixtureRunner {
             || !host_unchanged
             || !event_stream_empty
         {
+            if wait_stats_enabled() {
+                let counter = if !memory_unchanged {
+                    &WS_RESUME_FAIL_MEM
+                } else if !host_unchanged {
+                    &WS_RESUME_FAIL_HOST
+                } else {
+                    &WS_RESUME_FAIL_OTHER
+                };
+                counter.fetch_add(1, AtomicOrdering::Relaxed);
+            }
             self.cancel_idle_cycle_detector();
             return false;
         }
@@ -4527,6 +4577,9 @@ impl FixtureRunner {
         };
         match self.advance_until_tick(sleep.wake_tick, Some(cap)) {
             AdvanceResult::CapHit => {
+                if wait_stats_enabled() {
+                    WS_RESUMED.fetch_add(1, AtomicOrdering::Relaxed);
+                }
                 self.park_proven_idle_cycle(sleep.trap_pc, sleep.wake_tick);
                 true
             }
@@ -5161,7 +5214,7 @@ impl FixtureRunner {
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
                 if self.halted_by_exit_to_shell() {
-                    self.redraw_chrome();
+                    self.redraw_chrome_outside_idle_journal();
                 } else {
                     self.finish_host_frame(audio_samples, false);
                 }
@@ -6298,7 +6351,7 @@ impl FixtureRunner {
         self.ppc_app = Some(ppc_app);
         if exited_via_ppc_exit_to_shell {
             if finish_frame {
-                self.redraw_chrome();
+                self.redraw_chrome_outside_idle_journal();
             }
         } else {
             self.queue_due_ppc_sound_completions();
@@ -21011,6 +21064,45 @@ mod tests {
         // observe; it must cancel.
         runner.note_idle_cycle_trap_result(0xA893);
         assert!(runner.idle_cycle_probe.is_none());
+    }
+
+    #[test]
+    fn chrome_repaint_stays_out_of_an_armed_idle_journal() {
+        // The runner repaints host-owned chrome every frame. Painted under an
+        // armed idle-proof journal it would be recorded against the proof
+        // (and at 8 bpp overflow it -- see
+        // memory::bus::tests::suspended_write_probe_ignores_writes_and_rearms_intact);
+        // the runner's wrapper must leave the journal armed and untouched.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.bus.begin_write_probe();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(!runner.bus.take_write_probe_overflow());
+        assert!(
+            runner.bus.suspend_write_probe().is_some(),
+            "the journal must still be armed after the repaint"
+        );
+        runner.bus.cancel_write_probe();
+
+        runner.bus.begin_write_probe();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(runner.bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn host_snapshot_tracks_window_list_and_pending_native_menu_selection() {
+        let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+        let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+        runner.dispatcher.window_list.push(0x0012_3456);
+        assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+        runner.dispatcher.window_list.pop();
+        assert_eq!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+        runner.dispatcher.pending_native_menu_selection = Some((3, 1));
+        assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
     }
 
     #[test]
