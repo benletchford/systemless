@@ -6179,6 +6179,27 @@ impl FixtureRunner {
             cycles_per_tick,
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
+        if ppc_app.guest_calls.has_m68k_execution() {
+            let (mixed_steps, running) = self
+                .run_pending_m68k_guest_call(&mut ppc_app, ppc_max_steps)
+                .unwrap_or((0, false));
+            let mixed_cycles = mixed_steps as u64;
+            self.total_instructions = self.total_instructions.saturating_add(mixed_cycles);
+            self.dispatcher.instruction_count = self.total_instructions;
+            self.advance_ticks_for_ppc_cycles(mixed_cycles, tick_cap);
+            if !running {
+                self.halted = true;
+                self.halted_pc = Some(self.cpu.read_reg(Register::PC));
+                self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+                self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+            }
+            self.ppc_app = Some(ppc_app);
+            if finish_frame {
+                self.sync_ppc_deferred_host_state();
+                self.finish_host_frame(audio_samples, false);
+            }
+            return (mixed_steps, running);
+        }
         let ppc_start_tick = self.dispatcher.tick_count;
         let ppc_start_time = self.bus.read_long(crate::memory::globals::addr::TIME);
         let profile_ppc = ppc_profile_enabled();
@@ -6197,7 +6218,12 @@ impl FixtureRunner {
             (false, false) => ppc_app.run_with_hle_imports(ppc_max_steps as u64),
         };
         let profile_run_us = elapsed_profile_micros(profile_run_start);
-        let cycles = ppc_run_result_cycles(probe.result);
+        let ppc_cycles = ppc_run_result_cycles(probe.result);
+        let mixed_mode_budget =
+            ppc_max_steps.saturating_sub(usize::try_from(ppc_cycles).unwrap_or(usize::MAX));
+        let mixed_mode = self.run_pending_m68k_guest_call(&mut ppc_app, mixed_mode_budget);
+        let mixed_mode_cycles = mixed_mode.map_or(0, |(cycles, _)| cycles as u64);
+        let cycles = ppc_cycles.saturating_add(mixed_mode_cycles);
         let pc = ppc_app.cpu.pc;
         let sp = ppc_app.cpu.gpr[1];
         let gpr3 = ppc_app.cpu.gpr[3];
@@ -6208,8 +6234,13 @@ impl FixtureRunner {
             probe.last_import_index,
             unsupported_import_index,
         );
-        let still_running = matches!(probe.result, PpcRunResult::CycleLimit { .. })
-            && unsupported_import_index.is_none();
+        let still_running = mixed_mode.map_or_else(
+            || {
+                matches!(probe.result, PpcRunResult::CycleLimit { .. })
+                    && unsupported_import_index.is_none()
+            },
+            |(_, running)| running,
+        );
 
         self.total_instructions = self.total_instructions.saturating_add(cycles);
         self.dispatcher.instruction_count = self.total_instructions;
@@ -6436,6 +6467,120 @@ impl FixtureRunner {
             .unwrap_or(usize::MAX),
             still_running,
         )
+    }
+
+    /// Run the top parked native-to-68k call without recursively borrowing
+    /// either CPU adapter. A-lines return to the same process dispatcher; the
+    /// exact gateway PC and restored 68k stack close the switch frame and
+    /// resume the PowerPC continuation.
+    fn run_pending_m68k_guest_call(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        max_steps: usize,
+    ) -> Option<(usize, bool)> {
+        let active = ppc_app.guest_calls.active_m68k();
+        let pending = active.or_else(|| ppc_app.guest_calls.activate_m68k())?;
+        if active.is_none() {
+            for register in [
+                Register::D0,
+                Register::D1,
+                Register::D2,
+                Register::D3,
+                Register::D4,
+                Register::D5,
+                Register::D6,
+                Register::D7,
+                Register::A0,
+                Register::A1,
+                Register::A2,
+                Register::A3,
+                Register::A4,
+                Register::A5,
+                Register::A6,
+            ] {
+                self.cpu.write_reg(register, 0);
+            }
+            self.cpu.write_reg(Register::A7, pending.initial_sp);
+            self.cpu.write_reg(Register::PC, pending.entry);
+        }
+
+        if self.cpu.read_reg(Register::PC) == pending.return_pc
+            && self.cpu.read_reg(Register::A7) == pending.final_sp
+        {
+            let completed = ppc_app.guest_calls.complete_m68k_for_powerpc(
+                pending.return_pc,
+                pending.final_sp,
+                &mut ppc_app.cpu,
+            );
+            return Some((0, completed));
+        }
+        if max_steps == 0 {
+            return Some((0, true));
+        }
+
+        // SAFETY: `ppc_app` is parked for this whole interval. The address
+        // space remains in place, and all reads and writes are serialized
+        // through this runner until the bus is detached below.
+        let shared_memory = unsafe { ppc_app.memory.shared_view() };
+        unsafe {
+            self.bus.attach_guest_address_space(shared_memory);
+        }
+
+        let mut executed = 0usize;
+        let mut running = true;
+        while executed < max_steps {
+            if self.cpu.read_reg(Register::PC) == pending.return_pc {
+                running = ppc_app.guest_calls.complete_m68k_for_powerpc(
+                    pending.return_pc,
+                    self.cpu.read_reg(Register::A7),
+                    &mut ppc_app.cpu,
+                );
+                break;
+            }
+            let batch = self.cpu.run_batch(
+                &mut self.bus,
+                u32::try_from(max_steps - executed).unwrap_or(u32::MAX),
+                &[pending.return_pc],
+            );
+            let retired = batch.instructions as usize
+                + usize::from(matches!(
+                    batch.exit,
+                    BatchExit::AlineTrap { .. } | BatchExit::FlineTrap { .. }
+                ));
+            executed = executed.saturating_add(retired);
+            match batch.exit {
+                BatchExit::BudgetExhausted => break,
+                BatchExit::WatchedPc { pc } if pc == pending.return_pc => {
+                    running = ppc_app.guest_calls.complete_m68k_for_powerpc(
+                        pc,
+                        self.cpu.read_reg(Register::A7),
+                        &mut ppc_app.cpu,
+                    );
+                    break;
+                }
+                BatchExit::AlineTrap { opcode } => {
+                    if self
+                        .dispatcher
+                        .dispatch(opcode, &mut self.cpu, &mut self.bus)
+                        .is_err()
+                    {
+                        running = false;
+                        break;
+                    }
+                }
+                BatchExit::WatchedPc { .. } => continue,
+                BatchExit::Stopped
+                | BatchExit::FlineTrap { .. }
+                | BatchExit::TrapInstruction { .. }
+                | BatchExit::Breakpoint { .. }
+                | BatchExit::IllegalInstruction { .. } => {
+                    running = false;
+                    break;
+                }
+            }
+        }
+        self.bus.detach_guest_address_space();
+        Some((executed, running))
     }
 
     fn prepare_ppc_execution_clock(&self, ppc_app: &mut PpcLoadedApp) {
@@ -11060,7 +11205,7 @@ mod tests {
         DialogItem, DialogTrackingState, PendingFileCompletion, PendingWaitNextEventReturn,
         QueuedEvent, TimerTask, VblTask,
     };
-    use ppc::PpcCpu;
+    use ppc::{PpcCpu, PpcNativeReturnGpr3};
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
@@ -11835,7 +11980,7 @@ mod tests {
         runner.init_app(&app);
         runner.set_instructions_per_tick(100);
 
-        let (steps, running) = runner.run_steps(5, None);
+        let (steps, running) = runner.run_steps(64, None);
         assert!(steps > 0);
         assert!(running);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x1234_5678);
@@ -13247,6 +13392,66 @@ mod tests {
         assert_eq!(ppc_app.guest_calls.len(), 1);
         assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
         assert!(runner.dispatcher.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn parked_native_call_executes_68k_code_and_nested_traps_in_shared_memory() {
+        const M68K_ENTRY: u32 = 0x0301_0000;
+        const RESULT: u32 = 0x0302_0000;
+        const STACK_BASE: u32 = 0x0303_0000;
+        const INITIAL_SP: u32 = STACK_BASE + 0x80;
+        const RETURN_PC: u32 = 0x0304_0000;
+
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.set_launch_state(41, 1, 0);
+        runner.init_app(&app);
+
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(
+            M68K_ENTRY,
+            vec![
+                0x59, 0x8f, // SUBQ.L #4,SP: TickCount result slot
+                0xa9, 0x75, // TickCount
+                0x20, 0x1f, // MOVE.L (SP)+,D0
+                0x23, 0xc0, 0x03, 0x02, 0x00, 0x00, // MOVE.L D0,RESULT
+                0x4e, 0x75, // RTS
+            ],
+        );
+        ppc_app.memory.add_region(RESULT, vec![0; 4]);
+        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        ppc_app.guest_calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: M68K_ENTRY,
+                rtoc: 0,
+            },
+            M68K_ENTRY,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 4,
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        );
+        let (first_steps, first_running) = runner.run_steps(2, None);
+        assert_eq!(first_steps, 2);
+        assert!(first_running);
+        assert_eq!(runner.bus.read_long(RESULT), 0);
+        assert!(!runner.dispatcher.guest_calls.is_empty());
+
+        let (steps, running) = runner.run_steps(64, None);
+
+        assert_eq!(steps, 64);
+        assert!(running);
+        assert!(!runner.is_halted());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(41));
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(ppc_app.cpu.lr, PPC_CODE_BASE);
+        assert_eq!(runner.bus.read_long(RESULT), 0);
     }
 
     #[test]

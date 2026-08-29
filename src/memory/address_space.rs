@@ -8,6 +8,7 @@
 use m68k::core::memory::{BusFault, BusFaultKind};
 use m68k::AddressBus;
 use ppc::{PpcMemory, PpcSectionMem, PpcSectionMemSpan};
+use std::ptr::NonNull;
 
 use super::bus::SharedRamRegion;
 
@@ -26,6 +27,64 @@ struct SharedRegionMapping {
 pub struct GuestAddressSpace {
     regions: PpcSectionMem,
     shared_regions: Vec<SharedRegionMapping>,
+}
+
+/// A temporary, non-owning view of one process address space.
+///
+/// The runner uses this only while the PowerPC application is parked and its
+/// emulated 68k context is executing. This keeps both CPU adapters on the same
+/// mapped bytes without changing the detached-snapshot semantics of
+/// [`GuestAddressSpace::clone`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SharedGuestAddressSpace(NonNull<GuestAddressSpace>);
+
+impl SharedGuestAddressSpace {
+    /// Borrow an address space through a stable raw pointer for a serialized
+    /// cross-ISA execution interval.
+    ///
+    /// # Safety
+    ///
+    /// The source address space must remain alive and unmoved, and no other
+    /// access may overlap any call through this view.
+    pub(crate) unsafe fn new(memory: &mut GuestAddressSpace) -> Self {
+        Self(NonNull::from(memory))
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u8(self, address: u32) -> Option<u8> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u8(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u16_be(self, address: u32) -> Option<u16> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u16_be(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u32_be(self, address: u32) -> Option<u32> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u32_be(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u8(self, address: u32, value: u8) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u8(self.0.as_ptr().as_mut()?, address, value) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u16_be(self, address: u32, value: u16) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u16_be(self.0.as_ptr().as_mut()?, address, value) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u32_be(self, address: u32, value: u32) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u32_be(self.0.as_ptr().as_mut()?, address, value) }
+    }
 }
 
 impl Clone for GuestAddressSpace {
@@ -48,6 +107,17 @@ impl GuestAddressSpace {
     /// Construct an empty address space.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a temporary view for another serialized CPU adapter.
+    ///
+    /// # Safety
+    ///
+    /// The returned view must not outlive or move this address space, and all
+    /// accesses through it must be exclusive of ordinary address-space use.
+    pub(crate) unsafe fn shared_view(&mut self) -> SharedGuestAddressSpace {
+        // SAFETY: the caller inherits the contract above.
+        unsafe { SharedGuestAddressSpace::new(self) }
     }
 
     /// Map a writable region. Newer mappings take precedence over overlaps.
@@ -536,5 +606,53 @@ mod tests {
             PpcMemory::read_u32_be(&mut snapshot, SHARED),
             Some(0xddee_ff00)
         );
+    }
+
+    #[test]
+    fn parked_process_mappings_temporarily_extend_the_68k_bus() {
+        const FLAT: u32 = 0x2000;
+        const SPARSE: u32 = 0x0100_0000;
+        const READ_ONLY: u32 = SPARSE + 0x100;
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        MemoryBus::write_long(&mut bus, FLAT, 0x1122_3344);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(SPARSE, vec![0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0]);
+        memory.add_readonly_region(READ_ONLY, 0x99aa_bbccu32.to_be_bytes().to_vec());
+
+        // SAFETY: the test keeps `memory` in place, performs no direct access
+        // while attached, and detaches before using it again.
+        let shared = unsafe { memory.shared_view() };
+        unsafe {
+            bus.attach_guest_address_space(shared);
+        }
+        assert_eq!(MemoryBus::read_long(&bus, FLAT), 0x1122_3344);
+        assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0x5566_7788);
+        MemoryBus::write_long(&mut bus, SPARSE, 0xdead_beef);
+        MemoryBus::write_bytes(&mut bus, SPARSE + 4, &[1, 2, 3, 4]);
+        bus.block_move(FLAT, SPARSE + 8, 4);
+        bus.block_move(SPARSE + 4, FLAT + 4, 4);
+        assert_eq!(
+            MemoryBus::read_bytes(&bus, SPARSE + 4, 8),
+            [1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44]
+        );
+        assert_eq!(MemoryBus::read_long(&bus, FLAT + 4), 0x0102_0304);
+        MemoryBus::write_long(&mut bus, READ_ONLY, 0);
+        bus.detach_guest_address_space();
+
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, SPARSE),
+            Some(0xdead_beef)
+        );
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, READ_ONLY),
+            Some(0x99aa_bbcc)
+        );
+        let mut sparse_tail = [0; 8];
+        memory
+            .read_bytes_into(SPARSE + 4, &mut sparse_tail)
+            .unwrap();
+        assert_eq!(sparse_tail, [1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0);
     }
 }

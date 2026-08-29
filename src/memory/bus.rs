@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
+use super::SharedGuestAddressSpace;
 
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
@@ -516,6 +517,10 @@ pub struct MacMemoryBus {
     /// probed cycle was doing work, not waiting. Sticky until the runner
     /// takes it, so the verdict survives the journal's disappearance.
     write_probe_overflowed: bool,
+    /// Temporary sparse-memory view used only while a parked native process
+    /// runs its emulated 68k context. The runner installs and removes this
+    /// view around each serialized execution interval.
+    foreign_address_space: Option<SharedGuestAddressSpace>,
 }
 
 /// An exact-state probe journals the words an idle cycle writes: a spilled
@@ -1049,10 +1054,13 @@ impl MacMemoryBus {
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && self.foreign_address_space.is_none()
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = self.foreign_address_space.is_none()
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         let count_usize = count as usize;
         let translated_src = self.range_translates_contiguously(src, count_usize);
         let translated_dst = self.range_translates_contiguously(dst, count_usize);
@@ -1124,6 +1132,7 @@ impl MacMemoryBus {
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
+            foreign_address_space: None,
         };
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
 
@@ -1219,7 +1228,93 @@ impl MacMemoryBus {
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
+            foreign_address_space: None,
         }
+    }
+
+    /// Attach one parked process's sparse mappings for a serialized 68k run.
+    ///
+    /// # Safety
+    ///
+    /// `memory` must remain alive and unmoved until
+    /// [`Self::detach_guest_address_space`] is called, and no other adapter
+    /// may access it during that interval.
+    pub(crate) unsafe fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
+        debug_assert!(self.foreign_address_space.is_none());
+        self.foreign_address_space = Some(memory);
+    }
+
+    pub(crate) fn detach_guest_address_space(&mut self) {
+        self.foreign_address_space = None;
+    }
+
+    #[inline]
+    fn foreign_read_u8(&self, address: u32) -> Option<u8> {
+        let memory = self.foreign_address_space?;
+        // SAFETY: attachment requires the runner to serialize the parked
+        // native process with this bus.
+        unsafe { memory.read_u8(address) }
+    }
+
+    #[inline]
+    fn foreign_read_u16(&self, address: u32) -> Option<u16> {
+        let memory = self.foreign_address_space?;
+        // SAFETY: see `foreign_read_u8`.
+        unsafe { memory.read_u16_be(address) }
+    }
+
+    #[inline]
+    fn foreign_read_u32(&self, address: u32) -> Option<u32> {
+        let memory = self.foreign_address_space?;
+        // SAFETY: see `foreign_read_u8`.
+        unsafe { memory.read_u32_be(address) }
+    }
+
+    #[inline]
+    fn foreign_write_u8_if_mapped(&mut self, address: u32, value: u8) -> bool {
+        let Some(memory) = self.foreign_address_space else {
+            return false;
+        };
+        // A readable but non-writable mapping is still authoritative: ignore
+        // the store instead of falling through into same-address flat RAM.
+        // SAFETY: see `attach_guest_address_space`.
+        unsafe {
+            if memory.read_u8(address).is_none() {
+                return false;
+            }
+            let _ = memory.write_u8(address, value);
+        }
+        true
+    }
+
+    #[inline]
+    fn foreign_write_u16_if_mapped(&mut self, address: u32, value: u16) -> bool {
+        let Some(memory) = self.foreign_address_space else {
+            return false;
+        };
+        // SAFETY: see `attach_guest_address_space`.
+        unsafe {
+            if memory.read_u16_be(address).is_none() {
+                return false;
+            }
+            let _ = memory.write_u16_be(address, value);
+        }
+        true
+    }
+
+    #[inline]
+    fn foreign_write_u32_if_mapped(&mut self, address: u32, value: u32) -> bool {
+        let Some(memory) = self.foreign_address_space else {
+            return false;
+        };
+        // SAFETY: see `attach_guest_address_space`.
+        unsafe {
+            if memory.read_u32_be(address).is_none() {
+                return false;
+            }
+            let _ = memory.write_u32_be(address, value);
+        }
+        true
     }
 
     /// Begin journaling original RAM bytes for an exact-state execution
@@ -1624,6 +1719,10 @@ impl MacMemoryBus {
     /// tracing are active so diagnostics still observe each destination byte.
     #[inline]
     pub fn copy_ram_bytes(&mut self, src: u32, dst: u32, len: u32) -> bool {
+        if self.foreign_address_space.is_some() {
+            self.block_move(src, dst, len);
+            return true;
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -1666,6 +1765,20 @@ impl MacMemoryBus {
     /// translation without allocating a scratch row.
     #[inline]
     pub fn copy_mapped_ram_bytes(&mut self, src: u32, dst: u32, len: u32, map: &[u8; 256]) -> bool {
+        if self.foreign_address_space.is_some() {
+            if dst > src && dst < src.saturating_add(len) {
+                for offset in (0..len).rev() {
+                    let value = map[self.read_byte(src.wrapping_add(offset)) as usize];
+                    self.write_byte(dst.wrapping_add(offset), value);
+                }
+            } else {
+                for offset in 0..len {
+                    let value = map[self.read_byte(src.wrapping_add(offset)) as usize];
+                    self.write_byte(dst.wrapping_add(offset), value);
+                }
+            }
+            return true;
+        }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -1792,6 +1905,7 @@ impl MacMemoryBus {
     /// accesses — fastmem reads/writes bypass those hooks entirely.
     pub(crate) fn fast_mem_window(&mut self) -> Option<(*mut u8, u32)> {
         if !self.addressing_32_bit
+            || self.foreign_address_space.is_some()
             || fb_write_trace_range().is_some()
             || mem_read_trace_active()
             || mem_write_trace_active()
@@ -1826,7 +1940,9 @@ impl MemoryBus for MacMemoryBus {
     #[inline]
     fn read_byte(&self, address: u32) -> u8 {
         let address = self.translate_guest_address(address);
-        let v = if address < self.ram_size {
+        let v = if let Some(value) = self.foreign_read_u8(address) {
+            value
+        } else if address < self.ram_size {
             self.ram.get_in_bounds(address as usize)
         } else if let Some(value) = Self::boot_rom_shadow_byte(address) {
             value
@@ -1847,6 +1963,17 @@ impl MemoryBus for MacMemoryBus {
     /// the byte-by-byte path when the read straddles `self.ram_size`.
     #[inline]
     fn read_word(&self, address: u32) -> u16 {
+        let foreign_address = self.translate_guest_address(address);
+        if let Some(value) = self.foreign_read_u16(foreign_address) {
+            maybe_log_mem_read(address, 2, value as u32);
+            return value;
+        }
+        if self.foreign_address_space.is_some() {
+            let value = (u16::from(self.read_byte(address)) << 8)
+                | u16::from(self.read_byte(address.wrapping_add(1)));
+            maybe_log_mem_read(address, 2, value as u32);
+            return value;
+        }
         let translated = self.range_translates_contiguously(address, 2);
         let v = if translated.is_some_and(|address| (address as u64) + 2 <= self.ram_size as u64) {
             let address = translated.unwrap();
@@ -1866,6 +1993,17 @@ impl MemoryBus for MacMemoryBus {
     /// slice index when the 4 bytes lie wholly within `self.ram_size`.
     #[inline]
     fn read_long(&self, address: u32) -> u32 {
+        let foreign_address = self.translate_guest_address(address);
+        if let Some(value) = self.foreign_read_u32(foreign_address) {
+            maybe_log_mem_read(address, 4, value);
+            return value;
+        }
+        if self.foreign_address_space.is_some() {
+            let value = (u32::from(self.read_word(address)) << 16)
+                | u32::from(self.read_word(address.wrapping_add(2)));
+            maybe_log_mem_read(address, 4, value);
+            return value;
+        }
         let translated = self.range_translates_contiguously(address, 4);
         let v = if translated.is_some_and(|address| (address as u64) + 4 <= self.ram_size as u64) {
             let address = translated.unwrap();
@@ -1881,6 +2019,10 @@ impl MemoryBus for MacMemoryBus {
 
     fn write_byte(&mut self, address: u32, value: u8) {
         let address = self.translate_guest_address(address);
+        if self.foreign_write_u8_if_mapped(address, value) {
+            maybe_log_mem_write(address, 1, value as u32);
+            return;
+        }
         if self.readonly_code_overlaps(address, 1) {
             return;
         }
@@ -2048,6 +2190,11 @@ impl MemoryBus for MacMemoryBus {
     /// needs per-byte dispatch through `write_byte`.
     #[inline]
     fn write_word(&mut self, address: u32, value: u16) {
+        let foreign_address = self.translate_guest_address(address);
+        if self.foreign_write_u16_if_mapped(foreign_address, value) {
+            maybe_log_mem_write(address, 2, value as u32);
+            return;
+        }
         let translated = self.range_translates_contiguously(address, 2);
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, 2) {
@@ -2058,10 +2205,13 @@ impl MemoryBus for MacMemoryBus {
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && self.foreign_address_space.is_none()
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = self.foreign_address_space.is_none()
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 2 <= self.ram_size as u64)
         {
@@ -2084,6 +2234,11 @@ impl MemoryBus for MacMemoryBus {
     /// Same fast-path optimisation as `write_word`.
     #[inline]
     fn write_long(&mut self, address: u32, value: u32) {
+        let foreign_address = self.translate_guest_address(address);
+        if self.foreign_write_u32_if_mapped(foreign_address, value) {
+            maybe_log_mem_write(address, 4, value);
+            return;
+        }
         let translated = self.range_translates_contiguously(address, 4);
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, 4) {
@@ -2093,10 +2248,13 @@ impl MemoryBus for MacMemoryBus {
 
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
+            && self.foreign_address_space.is_none()
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = fb_write_trace_range().is_none() && self.write_probe_original.is_none();
+        let fast = self.foreign_address_space.is_none()
+            && fb_write_trace_range().is_none()
+            && self.write_probe_original.is_none();
         if let Some(address) =
             translated.filter(|&address| (address as u64) + 4 <= self.ram_size as u64)
         {
@@ -2120,6 +2278,11 @@ impl MemoryBus for MacMemoryBus {
     /// that pulls more than a few bytes at once.
     #[inline]
     fn read_bytes(&self, address: u32, len: usize) -> Vec<u8> {
+        if self.foreign_address_space.is_some() {
+            return (0..len)
+                .map(|offset| self.read_byte(address.wrapping_add(offset as u32)))
+                .collect();
+        }
         let translated = self.range_translates_contiguously(address, len);
         let address = translated.unwrap_or(address);
         let end = (address as u64).saturating_add(len as u64);
@@ -2141,6 +2304,12 @@ impl MemoryBus for MacMemoryBus {
     /// copying twice per row.
     #[inline]
     fn read_bytes_into(&self, address: u32, dst: &mut [u8]) {
+        if self.foreign_address_space.is_some() {
+            for (offset, byte) in dst.iter_mut().enumerate() {
+                *byte = self.read_byte(address.wrapping_add(offset as u32));
+            }
+            return;
+        }
         let len = dst.len();
         let translated = self.range_translates_contiguously(address, len);
         let address = translated.unwrap_or(address);
@@ -2162,6 +2331,12 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
+        if self.foreign_address_space.is_some() {
+            for (offset, byte) in data.iter().copied().enumerate() {
+                self.write_byte(address.wrapping_add(offset as u32), byte);
+            }
+            return;
+        }
         let translated = self.range_translates_contiguously(address, data.len());
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, data.len() as u32) {
@@ -2193,6 +2368,12 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
+        if self.foreign_address_space.is_some() {
+            for offset in 0..len {
+                self.write_byte(address.wrapping_add(offset), 0);
+            }
+            return;
+        }
         let translated = self.range_translates_contiguously(address, len as usize);
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, len) {
@@ -2234,6 +2415,12 @@ impl MemoryBus for MacMemoryBus {
         if count == 0 {
             return;
         }
+        if self.foreign_address_space.is_some() {
+            for offset in 0..count {
+                self.write_byte(address.wrapping_add(offset.wrapping_mul(stride)), value);
+            }
+            return;
+        }
         let span = u64::from(stride) * u64::from(count - 1) + 1;
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
@@ -2264,6 +2451,12 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
+        if self.foreign_address_space.is_some() {
+            for offset in 0..len {
+                self.write_byte(address.wrapping_add(offset), value);
+            }
+            return;
+        }
         let translated = self.range_translates_contiguously(address, len as usize);
         let protected_address = translated.unwrap_or(address);
         if self.readonly_code_overlaps(protected_address, len) {

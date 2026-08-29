@@ -35,6 +35,15 @@ struct PowerPcCallOrigin {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct M68kExecution {
+    entry: u32,
+    initial_sp: u32,
+    return_pc: u32,
+    final_sp: u32,
+    started: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuestCallOrigin {
     M68k(M68kCallOrigin),
     PowerPc(PowerPcCallOrigin),
@@ -44,6 +53,15 @@ enum GuestCallOrigin {
 struct GuestCallFrame {
     target: GuestCallTarget,
     origin: GuestCallOrigin,
+    m68k_execution: Option<M68kExecution>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingM68kExecution {
+    pub(crate) entry: u32,
+    pub(crate) initial_sp: u32,
+    pub(crate) return_pc: u32,
+    pub(crate) final_sp: u32,
 }
 
 /// One process's nested guest-procedure continuation stack.
@@ -53,6 +71,14 @@ struct GuestCallFrame {
 /// same live process.
 #[derive(Debug, Default)]
 pub(crate) struct SharedGuestCallStack(Rc<RefCell<Vec<GuestCallFrame>>>);
+
+impl PartialEq for SharedGuestCallStack {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0.borrow() == *other.0.borrow()
+    }
+}
+
+impl Eq for SharedGuestCallStack {}
 
 impl Clone for SharedGuestCallStack {
     fn clone(&self) -> Self {
@@ -95,7 +121,74 @@ impl SharedGuestCallStack {
                 return_pc,
                 final_sp,
             }),
+            m68k_execution: None,
         });
+    }
+
+    /// Park a native caller and retain the emulated 68k execution interval
+    /// that will satisfy it. The caller's PowerPC registers remain in its CPU
+    /// context; only the documented return state is applied at completion.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_powerpc_to_m68k(
+        &self,
+        target: GuestCallTarget,
+        entry: u32,
+        initial_sp: u32,
+        return_pc: u32,
+        final_sp: u32,
+        final_pc: u32,
+        restore_rtoc: u32,
+        return_gpr3: PpcNativeReturnGpr3,
+    ) {
+        debug_assert_eq!(target.isa, GuestIsa::M68k);
+        self.0.borrow_mut().push(GuestCallFrame {
+            target,
+            origin: GuestCallOrigin::PowerPc(PowerPcCallOrigin {
+                return_pc,
+                final_pc,
+                restore_rtoc,
+                return_gpr3,
+            }),
+            m68k_execution: Some(M68kExecution {
+                entry,
+                initial_sp,
+                return_pc,
+                final_sp,
+                started: false,
+            }),
+        });
+    }
+
+    /// Return the top cross-ISA 68k interval and mark its CPU context active.
+    pub(crate) fn activate_m68k(&self) -> Option<PendingM68kExecution> {
+        let mut frames = self.0.borrow_mut();
+        let execution = frames.last_mut()?.m68k_execution.as_mut()?;
+        let pending = PendingM68kExecution {
+            entry: execution.entry,
+            initial_sp: execution.initial_sp,
+            return_pc: execution.return_pc,
+            final_sp: execution.final_sp,
+        };
+        execution.started = true;
+        Some(pending)
+    }
+
+    pub(crate) fn active_m68k(&self) -> Option<PendingM68kExecution> {
+        let frames = self.0.borrow();
+        let execution = frames.last()?.m68k_execution?;
+        execution.started.then_some(PendingM68kExecution {
+            entry: execution.entry,
+            initial_sp: execution.initial_sp,
+            return_pc: execution.return_pc,
+            final_sp: execution.final_sp,
+        })
+    }
+
+    pub(crate) fn has_m68k_execution(&self) -> bool {
+        self.0
+            .borrow()
+            .last()
+            .is_some_and(|frame| frame.m68k_execution.is_some())
     }
 
     /// Move the continuation embedded in a CPU action into the process stack
@@ -130,6 +223,7 @@ impl SharedGuestCallStack {
                 restore_rtoc,
                 return_gpr3,
             }),
+            m68k_execution: None,
         });
         cpu.pc = target.entry;
         cpu.lr = return_pc;
@@ -158,6 +252,46 @@ impl SharedGuestCallStack {
         let GuestCallOrigin::PowerPc(origin) = frame.origin else {
             unreachable!();
         };
+        Self::apply_powerpc_return(cpu, origin);
+        true
+    }
+
+    /// Complete an emulated 68k interval for its parked native caller.
+    pub(crate) fn complete_m68k_for_powerpc(
+        &self,
+        post_call_pc: u32,
+        final_sp: u32,
+        cpu: &mut PpcCpu,
+    ) -> bool {
+        let frame = {
+            let frames = self.0.borrow();
+            let Some(frame) = frames.last().copied() else {
+                return false;
+            };
+            let GuestCallOrigin::PowerPc(_) = frame.origin else {
+                return false;
+            };
+            let Some(execution) = frame.m68k_execution else {
+                return false;
+            };
+            if !execution.started
+                || post_call_pc != execution.return_pc
+                || final_sp != execution.final_sp
+            {
+                return false;
+            }
+            frame
+        };
+        self.0.borrow_mut().pop();
+
+        let GuestCallOrigin::PowerPc(origin) = frame.origin else {
+            unreachable!();
+        };
+        Self::apply_powerpc_return(cpu, origin);
+        true
+    }
+
+    fn apply_powerpc_return(cpu: &mut PpcCpu, origin: PowerPcCallOrigin) {
         match origin.return_gpr3 {
             PpcNativeReturnGpr3::Preserve => {}
             PpcNativeReturnGpr3::Mask(mask) => cpu.gpr[3] &= mask,
@@ -174,7 +308,6 @@ impl SharedGuestCallStack {
         cpu.gpr[2] = origin.restore_rtoc;
         cpu.lr = origin.final_pc;
         cpu.pc = origin.final_pc;
-        true
     }
 
     /// Complete the top classic frame only after its trampoline restored the
@@ -336,6 +469,44 @@ mod tests {
         cpu.pc = RETURN_PC;
         assert!(calls.complete_powerpc(&mut cpu));
         assert_eq!(cpu.pc, 0x2000);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn cross_isa_frame_activates_once_and_restores_its_native_caller() {
+        let calls = SharedGuestCallStack::default();
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[2] = 0xaaaa_0000;
+        calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+            0x4000,
+            0x3004,
+            0x5000,
+            0x6000,
+            PpcNativeReturnGpr3::Preserve,
+        );
+
+        assert!(calls.active_m68k().is_none());
+        assert!(calls.has_m68k_execution());
+        assert_eq!(
+            calls.activate_m68k(),
+            Some(PendingM68kExecution {
+                entry: 0x2000,
+                initial_sp: 0x3000,
+                return_pc: 0x4000,
+                final_sp: 0x3004,
+            })
+        );
+        assert_eq!(calls.active_m68k(), calls.activate_m68k());
+        assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3000, &mut cpu));
+        assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, &mut cpu));
+        assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x5000, 0x5000, 0x6000));
         assert!(calls.is_empty());
     }
 
