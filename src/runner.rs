@@ -208,42 +208,6 @@ pub(crate) fn trace_load_enabled() -> bool {
     *TRACE_LOAD_ENABLED.get_or_init(|| std::env::var_os("SYSTEMLESS_TRACE_LOAD").is_some())
 }
 
-/// If `pc` matches a `GetTrapAddress` fake-pointer pattern, return a
-/// human-readable hint identifying the trap that the game most
-/// likely tried to JMP/JSR through. Else `None`.
-///
-/// Background: older Systemless runs used unique-per-trap fake addresses for
-/// Trap Manager probes. Current real OS and Toolbox getter routes return
-/// protected callable gateways, but this decoder remains useful for old traces
-/// and the deliberately unreachable legacy Toolbox test route.
-///
-/// Fake-pointer ranges (matching trap/memory.rs ranges):
-///   OS-style:    `$00F00000 | (trap_word as u32)` — range
-///                `$00F00000-$00F0FFFF`.
-///   Tool-style:  `$CAFE0000 + (trap_word & 0x3FF)` — range
-///                `$CAFE0000-$CAFE03FF`.
-pub fn decode_fakeptr_pc(pc: u32) -> Option<String> {
-    if (0x00F00000..=0x00F0FFFF).contains(&pc) {
-        let trap_word = (pc & 0xFFFF) as u16;
-        Some(format!(
-            "PC matches GetTrapAddress fake-ptr ($A046/$A346/$A746) for trap ${:04X} — \
-             game likely JMP/JSR'd through a legacy unique-address placeholder. Current \
-             Trap Manager getters return callable gateways instead.",
-            trap_word
-        ))
-    } else if (0xCAFE0000..=0xCAFE03FF).contains(&pc) {
-        let trap_num = (pc - 0xCAFE0000) as u16;
-        let trap_word = 0xA800 | trap_num;
-        Some(format!(
-            "PC matches GetToolTrapAddress fake-ptr for trap ${:04X} (tool num=${:03X}) — \
-             this address is produced only by the unreachable legacy test route.",
-            trap_word, trap_num
-        ))
-    } else {
-        None
-    }
-}
-
 // Per-opcode M68K histogram, opt-in via
 // `SYSTEMLESS_TRACE_OPCODE_COUNTS=1`. Complements the trap histogram
 // (which only sees A-line traps). Populated in `run_steps_internal`
@@ -5423,17 +5387,6 @@ impl FixtureRunner {
                     pc, count, sp, opcode
                 );
                 self.dump_invalid_pc_state();
-                if let Some(hint) = decode_fakeptr_pc(pc) {
-                    eprintln!("[RUN_STEPS]   {}", hint);
-                } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
-                    eprintln!(
-                        "[RUN_STEPS]   PC drifted ${:X} bytes from a fake-ptr entry at \
-                         ${:08X}. {}",
-                        pc.wrapping_sub(entry_pc),
-                        entry_pc,
-                        hint
-                    );
-                }
                 self.halted = true;
                 self.halted_pc = Some(pc);
                 self.halted_sp = Some(sp);
@@ -8675,7 +8628,7 @@ impl FixtureRunner {
     }
 
     /// Halt at the CPU's current position with the standard crash
-    /// diagnostics (stop banner, fake-ptr hints, trace dump). Shared by
+    /// diagnostics (stop banner and trace dump). Shared by
     /// the batch-exit arms (TRAP #n / BKPT / illegal instruction) that
     /// previously funneled through `StepResult::Stopped`.
     fn halt_with_stop_diagnostics(&mut self, count: usize) {
@@ -8686,17 +8639,6 @@ impl FixtureRunner {
             halted_pc,
             self.bus.read_word(halted_pc)
         );
-        if let Some(hint) = decode_fakeptr_pc(halted_pc) {
-            eprintln!("[RUN_STEPS]   {}", hint);
-        } else if let Some((entry_pc, hint)) = self.trace_find_fakeptr_entry() {
-            eprintln!(
-                "[RUN_STEPS]   PC drifted ${:X} bytes from a fake-ptr entry at \
-                 ${:08X}. {}",
-                halted_pc.wrapping_sub(entry_pc),
-                entry_pc,
-                hint
-            );
-        }
         self.halted = true;
         self.halted_pc = Some(halted_pc);
         self.halted_sp = Some(self.cpu.read_reg(Register::A7));
@@ -10686,23 +10628,6 @@ impl FixtureRunner {
         }
         self.dump_trace();
         Err(Error::Timeout(count))
-    }
-
-    /// Walk the trace_buffer (most-recent first) and return the first
-    /// PC that decode_fakeptr_pc recognises, plus its hint. Used by
-    /// the halt log to surface drifted PCs that landed in unmapped
-    /// memory after a JSR through a GetTrapAddress fakeptr — the
-    /// halted PC itself can be 0x1000+ bytes past the original entry,
-    /// well outside the documented fakeptr range, so a direct decode
-    /// of the halted PC misses it. The trace_buffer is opt-in via
-    /// SYSTEMLESS_TRACE_BUFFER=1; without it this scan returns None.
-    fn trace_find_fakeptr_entry(&self) -> Option<(u32, String)> {
-        for (pc, _op, _a0, _sp, _a6, _a5) in self.trace_buffer.iter().rev() {
-            if let Some(hint) = decode_fakeptr_pc(*pc) {
-                return Some((*pc, hint));
-            }
-        }
-        None
     }
 
     /// Print the last N executed instructions to stderr in PC/Op/Reg

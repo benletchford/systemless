@@ -961,8 +961,8 @@ impl super::TrapDispatcher {
                     let addr = self.get_or_create_tool_trap_trampoline(bus, canonical_tool_trap);
                     cpu.write_reg(Register::A0, addr);
                 } else if (trap_table_key & 0x0800) != 0 {
-                    // Tool trap (bit 11 set in the word): hand back a
-                    // callable trampoline so JSR-through-fake-ptr works.
+                    // Tool trap (bit 11 set in the word): return the
+                    // callable gateway for the selected table row.
                     let addr = self.get_or_create_tool_trap_trampoline(bus, trap_table_key);
                     cpu.write_reg(Register::A0, addr);
                 } else {
@@ -1000,44 +1000,6 @@ impl super::TrapDispatcher {
                 // cases (watchpoint armed, crosses RAM boundary).
                 bus.block_move(src, dst, count);
                 cpu.write_reg(Register::D0, 0);
-                Ok(())
-            }
-
-            // Phantom GetToolTrapAddress arm for is_tool=true && idx=0x346.
-            //
-            // Real GetTrapAddress / GetOSTrapAddress / GetToolTrapAddress
-            // (trap words $A046 / $A146 / $A346 / $A746) all have bit
-            // 11 = 0, so they reach the (false, 0x46) handler above —
-            // *not* this arm. No assigned trap word in the IM trap
-            // tables has lower-10-bits 0x346 with bit 11 set, so this
-            // handler is unreachable from real guest code.
-            //
-            // Kept (rather than excised) only because legacy lib tests
-            // call dispatch_memory(true, 0x346, ...) directly to
-            // exercise the historical $CAFE0xxx fake-ptr emit path —
-            // that path's *decoder* in runner.rs::decode_fakeptr_pc is
-            // still active diagnostic surface (see
-            // decode_fakeptr_pc_recognizes_tool_style_range).
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_returns_native_table_entry_and_preserves_stack
-            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_keeps_docking_dispatch_distinct
-            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_creates_stable_trampoline_for_tool_trap_word
-            //   src/trap/memory.rs::tests::test_get_tool_trap_address_tool
-            // Inside Macintosh Volume II, II-384
-            // (phantom GetToolTrapAddress) ($AB46): Unreachable from real guest code; emits $CAFE0xxx fake-ptr only via direct dispatch_memory test calls
-            (true, 0x346) => {
-                let trap_word = cpu.read_reg(Register::D0) as u16;
-                let canonical_tool_trap = 0xA800 | (trap_word & 0x03FF);
-                if let Some(addr) = self.native_trap_handler(bus, canonical_tool_trap) {
-                    cpu.write_reg(Register::A0, addr);
-                } else if (trap_word & 0x0800) != 0 {
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_word);
-                    cpu.write_reg(Register::A0, addr);
-                } else {
-                    let t = trap_word as u32 & 0x3FF;
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + t);
-                }
                 Ok(())
             }
 
@@ -6673,10 +6635,6 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let addr = cpu.read_reg(Register::A0);
         assert_ne!(addr, 0, "GetTrapAddress should return a routine address");
-        assert!(
-            !(0x00F00000..=0x00F0FFFF).contains(&addr),
-            "GetTrapAddress should return a callable gateway, not a fake pointer"
-        );
         assert_eq!(bus.read_word(addr), 0xA044);
         assert_eq!(bus.read_word(addr + 2), 0x4E75);
 
@@ -6833,132 +6791,15 @@ mod tests {
     }
 
     #[test]
-    fn phantom_gettooltrapaddress_returns_native_table_entry_and_preserves_stack() {
+    fn ab46_has_no_phantom_gettooltrapaddress_route() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0x1357_BEEF);
-        dispatcher.native_trap_table.insert(0xA89F, 0x00F0_2468);
-
         cpu.write_reg(Register::D0, 0xA89F);
+        cpu.write_reg(Register::A0, 0x1234_5678);
+
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should be handled"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A0),
-            0x00F0_2468,
-            "native trap-table entries should take precedence"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0x1357_BEEF,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
-    }
 
-    #[test]
-    fn phantom_gettooltrapaddress_keeps_docking_dispatch_distinct() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0x0BAD_F00D);
-
-        cpu.write_reg(Register::D0, 0x257);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress should handle DockingDispatch"
-        );
-        assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
-        let docking_addr = cpu.read_reg(Register::A0);
-
-        cpu.write_reg(Register::D0, 0x26E);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress should handle Unimplemented"
-        );
-        assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
-        let unimplemented_addr = cpu.read_reg(Register::A0);
-
-        assert_ne!(
-            docking_addr, unimplemented_addr,
-            "even the legacy diagnostic path must not invent an unavailable alias"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0x0BAD_F00D,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
-    }
-
-    #[test]
-    fn phantom_gettooltrapaddress_creates_stable_trampoline_for_tool_trap_word() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0xCAFE_BABE);
-
-        cpu.write_reg(Register::D0, 0xA89F);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should handle tool-trap words"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed"
-        );
-        let first_addr = cpu.read_reg(Register::A0);
-        assert_ne!(
-            first_addr, 0,
-            "tool-trap trampoline address should be nonzero"
-        );
-        bus.write_word(first_addr, 0);
-
-        cpu.write_reg(Register::D0, 0xA89F);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should handle repeated tool-trap words"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed on repeated lookup"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A0),
-            first_addr,
-            "tool-trap trampoline lookup should be stable"
-        );
-        assert_eq!(
-            bus.read_word(first_addr),
-            0xAC9F,
-            "repeated lookup should restore the ROM-like auto-pop trap word"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0xCAFE_BABE,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
+        assert!(result.is_none());
+        assert_eq!(cpu.read_reg(Register::A0), 0x1234_5678);
     }
 
     #[test]
@@ -12099,40 +11940,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_tool_trap_address_tool() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0xAA55_AA55);
-
-        cpu.write_reg(Register::D0, 0x0234);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress (tool) should be handled"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "GetToolTrapAddress (tool) should succeed"
-        );
-        let addr = cpu.read_reg(Register::A0);
-        assert_eq!(
-            addr,
-            0xCAFE0000 + 0x0234,
-            "GetToolTrapAddress (tool) should return 0xCAFE0000 + (trap & 0x3FF) in A0"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "GetToolTrapAddress (tool) should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0xAA55_AA55,
-            "GetToolTrapAddress (tool) should leave caller stack memory untouched"
-        );
-    }
-
-    #[test]
     fn gettooltrapaddress_trap_word_variant_returns_callable_trampoline() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
@@ -12155,10 +11962,6 @@ mod tests {
 
         let addr = cpu.read_reg(Register::A0);
         assert_ne!(addr, 0, "tool-trap trampoline address should be nonzero");
-        assert!(
-            !(0xCAFE0000..=0xCAFE03FF).contains(&addr),
-            "A746 variant must return a callable trampoline, not a CAFE fake-ptr"
-        );
         assert_eq!(
             bus.read_word(addr),
             0xACEC,

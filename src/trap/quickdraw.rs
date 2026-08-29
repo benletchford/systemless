@@ -381,6 +381,23 @@ fn encode_text_face_style(face: i16) -> u16 {
 }
 
 impl super::TrapDispatcher {
+    fn get_or_create_std_pix_gateway(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        let unimplemented = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
+        if self.std_pix_gateway == 0 {
+            self.std_pix_gateway = bus.alloc_synthetic(6);
+            bus.protect_readonly_code(self.std_pix_gateway, 6);
+        }
+        // StdPix is a distinct callable procedure with no A-line identity.
+        // QuickTime (1993), pp. 3-137--3-139 defines its eight-argument ABI.
+        // Preserve a unique callable address and fail through the documented
+        // `_Unimplemented` routine until the operation is implemented, rather
+        // than exposing a host marker or guessing partial drawing semantics.
+        bus.write_readonly_code_word(self.std_pix_gateway, 0x4EF9);
+        bus.write_readonly_code_word(self.std_pix_gateway + 2, (unimplemented >> 16) as u16);
+        bus.write_readonly_code_word(self.std_pix_gateway + 4, unimplemented as u16);
+        self.std_pix_gateway
+    }
+
     fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
         let needle = name.trim();
         if needle.is_empty() {
@@ -2109,20 +2126,9 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw 1994, 3-130
             //
             // Fills the 13-field QDProcs record with pointers to the standard
-            // low-level QuickDraw bottleneck routines. Real ROM writes actual
-            // ROM code addresses; Systemless writes synthesized $00F0AXXX fake
-            // addresses matching what `GetTrapAddress` returns for each
-            // `Std*` trap (memory.rs:340..372 — the canonical reverse-encoding
-            // for OS-trap fake-ptrs). Apps that only compare the field against
-            // their own installed routine (the common idiom for "is this still
-            // the default bottleneck?") see a stable non-NIL marker; apps that
-            // actually JSR to the field would land on the fake address, which
-            // faults clean if reached. The previous trap word for commentProc
-            // was incorrectly $A89F (`_Unimplemented` per IM:VI 31831 + the
-            // existing $A89F arm at quickdraw.rs:10287); the canonical trap is
-            // $A8F1 `StdComment` per IM:I I-198 + the existing $A8F1 arm at
-            // quickdraw.rs:7659.
-            // SetStdProcs ($A8EA): Writes 13 synthesized $00F0AXXX ProcPtr markers per QDProcs field order; markers match GetTrapAddress($A0XX) reverse encoding so apps comparing slot vs GetTrapAddress(_StdXxx) detect the default per IM:I I-197 + Imaging With QD 3-130
+            // low-level QuickDraw bottleneck routines. Each field receives the
+            // stable protected callable gateway for its standard Toolbox trap,
+            // so pointer comparison and direct JSR use the same identity.
             (true, 0x0EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let procs_ptr = bus.read_long(sp);
@@ -2133,7 +2139,7 @@ impl super::TrapDispatcher {
                 //   textProc, lineProc, rectProc, rRectProc, ovalProc,
                 //   arcProc, polyProc, rgnProc, bitsProc, commentProc,
                 //   txMeasProc, getPicProc, putPicProc
-                const STD_PROC_TRAPS: [u32; 13] = [
+                const STD_PROC_TRAPS: [u16; 13] = [
                     0xA882, // StdText
                     0xA890, // StdLine
                     0xA8A0, // StdRect
@@ -2150,7 +2156,8 @@ impl super::TrapDispatcher {
                 ];
                 if procs_ptr != 0 {
                     for (i, trap) in STD_PROC_TRAPS.iter().enumerate() {
-                        bus.write_long(procs_ptr + (i as u32) * 4, 0x00F00000 | trap);
+                        let gateway = self.get_or_create_tool_trap_trampoline(bus, *trap);
+                        bus.write_long(procs_ptr + (i as u32) * 4, gateway);
                     }
                 }
                 Ok(())
@@ -10918,16 +10925,9 @@ impl super::TrapDispatcher {
             // matches that shape: 15 non-NIL routine pointers followed by
             // 5 NIL reserved slots.
             //
-            // Systemless mirrors SetStdProcs' fake-ptr strategy for the 15
-            // concrete routines: synthesize stable $00F0AXXX markers that
-            // match GetTrapAddress(_StdXxx) comparisons where a trap exists,
-            // plus a stable non-NIL synthetic marker for StdPix (which is
-            // exposed only through SetStdCProcs rather than an A-line trap),
-            // then zero the 5 remaining reserved slots. This keeps caller-
-            // visible default-proc identity for code that snapshots CQDProcs,
-            // patches one slot, then later compares against the saved
-            // defaults.
-            // SetStdCProcs ($AA4E): Writes synthesized ProcPtr markers for textProc..putPicProc + opcodeProc (StdOpcodeProc $ABF8) + newProc1 (StdPix), then zeros reserved newProc2..newProc6 per IM:V V-77/V-91 + Imaging With QuickDraw 7-82..7-83 + QuickTime 1993 3-137..3-138
+            // Trap-backed fields receive their protected callable gateways.
+            // StdPix has no A-line identity, so its distinct callable gateway
+            // remains explicitly nonterminal and reaches `_Unimplemented`.
             (true, 0x24E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let procs_ptr = bus.read_long(sp);
@@ -10936,11 +10936,9 @@ impl super::TrapDispatcher {
                     // CQDProcs field order per IM:V V-91 / IWQD 4-60:
                     //   13 inherited QDProcs slots + opcodeProc + newProc1
                     //   (StdPix) + 5 remaining reserved newProc slots.
-                    //   Write the 15 concrete defaults as
-                    //   synthesized trap markers, then leave the reserved
-                    //   extension slots NIL.
-                    const STD_PIX_FAKE_PROC: u32 = 0x00F05058;
-                    const STD_COLOR_PROC_TRAPS: [u32; 14] = [
+                    //   Write the 15 concrete defaults as callable system
+                    //   entries, then leave the reserved extension slots NIL.
+                    const STD_COLOR_PROC_TRAPS: [u16; 14] = [
                         0xA882, // textProc (StdText)
                         0xA890, // lineProc (StdLine)
                         0xA8A0, // rectProc (StdRect)
@@ -10957,9 +10955,11 @@ impl super::TrapDispatcher {
                         0xABF8, // opcodeProc (StdOpcodeProc)
                     ];
                     for (i, trap) in STD_COLOR_PROC_TRAPS.iter().enumerate() {
-                        bus.write_long(procs_ptr + (i as u32) * 4, 0x00F00000 | trap);
+                        let gateway = self.get_or_create_tool_trap_trampoline(bus, *trap);
+                        bus.write_long(procs_ptr + (i as u32) * 4, gateway);
                     }
-                    bus.write_long(procs_ptr + 14 * 4, STD_PIX_FAKE_PROC); // newProc1 (StdPix)
+                    let std_pix = self.get_or_create_std_pix_gateway(bus);
+                    bus.write_long(procs_ptr + 14 * 4, std_pix); // newProc1 (StdPix)
                     for i in 15..20u32 {
                         bus.write_long(procs_ptr + i * 4, 0);
                     }
@@ -20605,7 +20605,7 @@ impl super::TrapDispatcher {
     /// `grafProcs` is the last field of both GrafPort and CGrafPort, at offset
     /// 104 (IM:I I-155; IM:V V-77), and `bitsProc` is the ninth of the thirteen
     /// QDProcs slots, at offset 32 within the record (IM:I I-197). SetStdProcs
-    /// and SetStdCProcs fill that slot with the synthesized `$00F0A8EB` marker,
+    /// and SetStdCProcs fill that slot with the protected StdBits gateway,
     /// which means "the standard proc" and must not be called back into.
     ///
     /// Returns `None` while we are nested inside a previous tail call, so a
@@ -20621,7 +20621,7 @@ impl super::TrapDispatcher {
             return None;
         }
         let bits_proc = bus.read_long(graf_procs + 32);
-        if bits_proc == 0 || (bits_proc & 0xFFFF_0000) == 0x00F0_0000 {
+        if bits_proc == 0 || self.tool_trap_trampolines.get(&0xA8EB).copied() == Some(bits_proc) {
             return None;
         }
         if let Some((active_proc, active_sp)) = self.bits_proc_reentry {
@@ -29960,37 +29960,26 @@ mod tests {
     fn setstdprocs_consumes_qdprocs_pointer_and_writes_13_standard_slots() {
         // IM:I I-197..I-198: SetStdProcs fills all 13 QDProcs fields with
         // the standard bottleneck routines in record order.
-        // Systemless writes synthesised $00F0AXXX markers that correspond to
-        // those standard bottlenecks.
         let (mut d, mut cpu, mut bus) = setup();
         let procs_ptr = 0x300000u32;
         bus.write_long(TEST_SP, procs_ptr);
         let result = d.dispatch_quickdraw(true, 0x0EA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        // QDProcs field order per IM:I-196. Each field = 0x00F00000 | trap.
-        const EXPECTED: [u32; 13] = [
-            0x00F0A882, // textProc (StdText)
-            0x00F0A890, // lineProc (StdLine)
-            0x00F0A8A0, // rectProc (StdRect)
-            0x00F0A8AF, // rRectProc (StdRRect)
-            0x00F0A8B6, // ovalProc (StdOval)
-            0x00F0A8BD, // arcProc (StdArc)
-            0x00F0A8C5, // polyProc (StdPoly)
-            0x00F0A8D1, // rgnProc (StdRgn)
-            0x00F0A8EB, // bitsProc (StdBits)
-            0x00F0A8F1, // commentProc (StdComment) — corrected from $A89F (Unimplemented) per IM:I I-198
-            0x00F0A8ED, // txMeasProc (StdTxMeas)
-            0x00F0A8EE, // getPicProc (StdGetPic)
-            0x00F0A8F0, // putPicProc (StdPutPic)
+        const TRAPS: [u16; 13] = [
+            0xA882, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1, 0xA8ED,
+            0xA8EE, 0xA8F0,
         ];
-        for (i, expected) in EXPECTED.iter().enumerate() {
-            assert_eq!(
-                bus.read_long(procs_ptr + (i as u32) * 4),
-                *expected,
-                "QDProcs field {} should be synthesised trap marker",
-                i
-            );
+        for (i, trap) in TRAPS.into_iter().enumerate() {
+            let gateway = bus.read_long(procs_ptr + (i as u32) * 4);
+            d.current_trap_word = 0xA746;
+            cpu.write_reg(Register::D0, u32::from(trap & 0x03FF));
+            let result = d.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A0), gateway);
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
+            bus.write_word(gateway, 0);
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
         }
     }
 
@@ -30010,31 +29999,21 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x24E, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        const EXPECTED: [u32; 15] = [
-            0x00F0A882, // textProc (StdText)
-            0x00F0A890, // lineProc (StdLine)
-            0x00F0A8A0, // rectProc (StdRect)
-            0x00F0A8AF, // rRectProc (StdRRect)
-            0x00F0A8B6, // ovalProc (StdOval)
-            0x00F0A8BD, // arcProc (StdArc)
-            0x00F0A8C5, // polyProc (StdPoly)
-            0x00F0A8D1, // rgnProc (StdRgn)
-            0x00F0A8EB, // bitsProc (StdBits)
-            0x00F0A8F1, // commentProc (StdComment)
-            0x00F0A8ED, // txMeasProc (StdTxMeas)
-            0x00F0A8EE, // getPicProc (StdGetPic)
-            0x00F0A8F0, // putPicProc (StdPutPic)
-            0x00F0ABF8, // opcodeProc (StdOpcodeProc)
-            0x00F05058, // newProc1 (StdPix synthetic marker)
+        const TRAPS: [u16; 14] = [
+            0xA882, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1, 0xA8ED,
+            0xA8EE, 0xA8F0, 0xABF8,
         ];
-        for (i, expected) in EXPECTED.iter().enumerate() {
-            assert_eq!(
-                bus.read_long(cprocs_ptr + (i as u32) * 4),
-                *expected,
-                "CQDProcs field {} should be synthesised trap marker",
-                i
-            );
+        for (i, trap) in TRAPS.into_iter().enumerate() {
+            let gateway = bus.read_long(cprocs_ptr + (i as u32) * 4);
+            assert_eq!(d.tool_trap_trampolines.get(&trap), Some(&gateway));
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
         }
+        let std_pix = bus.read_long(cprocs_ptr + 14 * 4);
+        let unimplemented = d.tool_trap_trampolines[&0xAA6E];
+        assert_eq!(std_pix, d.std_pix_gateway);
+        assert_ne!(std_pix, unimplemented);
+        assert_eq!(bus.read_word(std_pix), 0x4EF9);
+        assert_eq!(bus.read_long(std_pix + 2), unimplemented);
     }
 
     #[test]
@@ -30671,13 +30650,14 @@ mod tests {
     }
 
     #[test]
-    fn copybits_ignores_the_synthesized_standard_bitsproc_marker() {
-        // SetStdProcs writes $00F0A8EB into the bitsProc slot to mean "the
-        // standard proc" (IM:I I-197). Calling back into that marker address
-        // would jump into nothing, so CopyBits must do the transfer itself.
+    fn copybits_uses_the_builtin_path_for_the_standard_bitsproc_gateway() {
+        // SetStdProcs installs the callable StdBits gateway in bitsProc
+        // (IM:I I-197). CopyBits is already executing that standard operation,
+        // so it must draw directly rather than recursively tail-call itself.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         d.current_port = 0x181000;
-        let _ = setup_copybits_through_port_bottleneck(&mut bus, 0x00F0_A8EB);
+        let std_bits = d.get_or_create_tool_trap_trampoline(&mut bus, 0xA8EB);
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, std_bits);
         cpu.write_reg(Register::PC, 0x0004_5678);
 
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);

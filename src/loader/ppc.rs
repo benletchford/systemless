@@ -24854,20 +24854,12 @@ fn dispatch_supported_import(
             memory,
             heap_cursor,
             heap_limit,
-            ptrs,
-            free_ptr_blocks,
             toolbox_startup,
             GuestIsa::PowerPc,
         ),
-        PpcImportDispatcherTarget::CallOSTrapUniversalProc => ppc_call_os_trap_universal_proc(
-            cpu,
-            memory,
-            heap_cursor,
-            heap_limit,
-            ptrs,
-            free_ptr_blocks,
-            toolbox_startup,
-        ),
+        PpcImportDispatcherTarget::CallOSTrapUniversalProc => {
+            ppc_call_os_trap_universal_proc(cpu, memory, heap_cursor, heap_limit, toolbox_startup)
+        }
         PpcImportDispatcherTarget::NGetTrapAddress
         | PpcImportDispatcherTarget::GetToolTrapAddress
         | PpcImportDispatcherTarget::GetOSTrapAddress => {
@@ -41104,8 +41096,6 @@ fn ppc_call_universal_proc(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     toolbox_startup: &mut PpcToolboxStartupState,
     raw_isa: GuestIsa,
 ) -> Option<PpcImportAction> {
@@ -41124,19 +41114,6 @@ fn ppc_call_universal_proc(
     let return_gpr3 = ppc_call_universal_proc_return_gpr3(proc_info);
     let selector = ppc_call_universal_proc_selector(cpu, memory, proc_info).ok()?;
     let arguments = ppc_call_universal_proc_arguments(cpu, memory, proc_info).ok()?;
-    if let Some(trap_word) = ppc_fake_trap_word(proc_ptr) {
-        return ppc_call_fake_trap_universal_proc(
-            cpu,
-            memory,
-            heap_cursor,
-            heap_limit,
-            ptrs,
-            free_ptr_blocks,
-            trap_word,
-            selector,
-            arguments.as_deref(),
-        );
-    }
     if memory.read_u32_be(proc_ptr) == Some(0x40c0_007c)
         && memory.read_u32_be(proc_ptr.wrapping_add(4)) == Some(0x0700_4e75)
     {
@@ -41701,90 +41678,11 @@ fn ppc_push_m68k_stack_value(
     Some(())
 }
 
-fn ppc_call_fake_trap_universal_proc(
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    trap_word: u16,
-    selector: Option<u32>,
-    arguments: Option<&[u32]>,
-) -> Option<PpcImportAction> {
-    match trap_word {
-        // Universal Interfaces 3.4 CursorDevices.h and the
-        // CursorDeviceDispatch ($AADB) contract documented by the classic
-        // Device Manager: selectors 0..13 return OSErr. Next/first-device
-        // selectors 11 and 12 clear the caller's CrsrDevicePtr output.
-        0xAADB => {
-            let selector = selector? as u16;
-            if selector > 13 {
-                return Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)));
-            }
-            if matches!(selector, 11 | 12) {
-                let output = arguments?.get(1).copied()?;
-                if output != 0 {
-                    memory.write_u32_be(output, 0)?;
-                }
-            }
-            Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
-        }
-        // DisplayDispatch ($ABEB), selector $36, is the 68K implementation
-        // behind DMNewDisplayModeList in Universal Interfaces 3.4 Displays.h.
-        // Its D0-dispatched ProcInfo places the selector before the five API
-        // parameters. Mixed Mode Manager translates those parameters before
-        // entering the trap (Inside Macintosh: PowerPC System Software,
-        // 1994, pp. 2-12 and 2-42), so route the translated values through the
-        // same mode-list model as the native InterfaceLib import.
-        0xABEB if selector == Some(0x36) => {
-            let arguments = arguments?;
-            let result = ppc_dm_new_display_mode_list_values(
-                memory,
-                heap_cursor,
-                heap_limit,
-                ptrs,
-                free_ptr_blocks,
-                *arguments.get(1)?,
-                *arguments.get(4)?,
-                *arguments.get(5)?,
-            );
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        // DisplayDispatch selector $37 is DMGetIndexedDisplayModeFromList.
-        // The five translated arguments are list, index, reserved, iterator
-        // UPP, and user data. Invoke the PowerPC iterator through its routine
-        // descriptor exactly as the native InterfaceLib entry point does.
-        0xABEB if selector == Some(0x37) => {
-            let arguments = arguments?;
-            ppc_dm_get_indexed_display_mode_values(
-                cpu,
-                memory,
-                *arguments.get(1)?,
-                *arguments.get(2)?,
-                *arguments.get(4)?,
-                *arguments.get(5)?,
-            )
-        }
-        // DisplayDispatch selector $2C is DMDisposeList. Universal Interfaces
-        // defines DMListType as opaque; releasing it invalidates the complete
-        // mode-list allocation returned by selector $36.
-        0xABEB if selector == Some(0x2C) => {
-            let result =
-                ppc_dm_dispose_list_values(memory, ptrs, free_ptr_blocks, *arguments?.get(1)?);
-            Some(PpcImportAction::Return(ppc_i16_result(result)))
-        }
-        _ => None,
-    }
-}
-
 fn ppc_call_os_trap_universal_proc(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Option<PpcImportAction> {
     if (cpu.gpr[4] & PPC_PROCINFO_CALLING_CONVENTION_MASK) != PPC_PROCINFO_REGISTER_BASED {
@@ -41795,8 +41693,6 @@ fn ppc_call_os_trap_universal_proc(
         memory,
         heap_cursor,
         heap_limit,
-        ptrs,
-        free_ptr_blocks,
         toolbox_startup,
         // Inside Macintosh: PowerPC System Software (1994), pp. 1-67 and
         // 2-42--2-43: unlike an ordinary native CallUniversalProc raw
@@ -72048,10 +71944,6 @@ fn ppc_set_logical_trap_address(
     }
 }
 
-fn ppc_fake_trap_word(address: u32) -> Option<u16> {
-    (address & 0xffff_0000 == 0x00f0_0000).then_some(address as u16)
-}
-
 fn ppc_write_rect(
     memory: &mut PpcSectionMem,
     rect_ptr: u32,
@@ -91516,6 +91408,31 @@ mod tests {
         );
         assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
         assert_eq!(loaded.cpu.gpr[3], descriptor);
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_rejects_fake_trap_addresses() {
+        // Inside Macintosh: PowerPC System Software (1994), pp. 1-67--1-68
+        // and 2-42--2-43: CallUniversalProc accepts an actual universal
+        // procedure pointer. A host-encoded trap word is not a procedure.
+        let pef = synthetic_pef_with_import(b"CallUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let fake_address = 0x00F0_AADBu32;
+        loaded.cpu.gpr[3] = fake_address;
+        loaded.cpu.gpr[4] = test_stack_proc_info(PPC_PROCINFO_SIZE_TWO, &[]);
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 0);
+        assert_eq!(probe.unsupported_import_index, Some(0));
+        assert_eq!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_IMPORT_TRAP_BASE,
+                cycles: 4,
+            }
+        );
+        assert_eq!(loaded.cpu.gpr[3], fake_address);
     }
 
     #[test]

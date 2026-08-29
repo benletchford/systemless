@@ -1759,6 +1759,12 @@ pub struct TrapDispatcher {
     /// [`Self::get_or_create_tool_trap_trampoline`]. Inside Macintosh Volume
     /// II, II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
     pub(crate) tool_trap_trampolines: HashMap<u16, u32>,
+    /// Protected callable nonterminal entry returned as the standard `StdPix`
+    /// procedure by `SetStdCProcs`. QuickTime (1993), pp. 3-137--3-139 defines
+    /// the distinct eight-argument routine; until that operation is complete,
+    /// its unique gateway jumps to the source-backed `_Unimplemented` routine
+    /// instead of exposing a noncallable host marker.
+    pub(crate) std_pix_gateway: u32,
     /// Substitution strings most recently set via `ParamText`. Indices
     /// 0..3 correspond to `^0`..`^3` placeholders in any subsequently
     /// drawn dialog/alert static-text item. Inside Macintosh Volume I,
@@ -3448,6 +3454,7 @@ impl TrapDispatcher {
             system_mdef_cache: HashMap::new(),
             os_trap_trampolines: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
+            std_pix_gateway: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
             vfs: HashMap::new(),
@@ -6529,10 +6536,9 @@ impl TrapDispatcher {
 
     /// Allocate (and cache) a tool-trap trampoline for the given
     /// trap word. Used by GetTrapAddress / GetToolTrapAddress when
-    /// no native handler is installed: instead of returning a bare
-    /// fake-ptr that crashes when the guest does `JSR (A0)`, we
-    /// hand back the address of a 2-byte stub containing the
-    /// auto-pop variant of the canonical tool-trap word.
+    /// no native handler is installed. The returned address names a protected
+    /// two-byte stub containing the auto-pop variant of the canonical
+    /// tool-trap word.
     ///
     /// Stub layout — exactly 2 bytes:
     /// ```text
@@ -6863,9 +6869,7 @@ impl TrapDispatcher {
             None
         };
         if self.trap_tables_materialized {
-            let entry = if self.default_trap_gateway(canonical) == Some(handler)
-                || (handler & 0xFFFF_0000) == 0x00F0_0000
-            {
+            let entry = if self.default_trap_gateway(canonical) == Some(handler) {
                 self.default_trap_gateway(canonical).unwrap_or(handler)
             } else {
                 handler
@@ -6876,9 +6880,7 @@ impl TrapDispatcher {
             } else {
                 bus.write_long(raw_entry, entry);
             }
-        } else if self.default_trap_gateway(canonical) == Some(handler)
-            || (handler & 0xFFFF_0000) == 0x00F0_0000
-        {
+        } else if self.default_trap_gateway(canonical) == Some(handler) {
             self.native_trap_table.remove(&canonical);
         } else {
             self.native_trap_table.insert(canonical, handler);
@@ -8798,6 +8800,28 @@ mod tests {
         assert_eq!(
             bus.read_long(old_head + 4),
             dispatcher.default_trap_gateway(trap_word).unwrap()
+        );
+    }
+
+    #[test]
+    fn trap_setter_preserves_an_arbitrary_00f0_pointer_exactly() {
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-29--8-31:
+        // Set/NSet installs the supplied address; no guest address range is a
+        // host-only restoration token.
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        let trap_word = 0xA004;
+        let handler = 0x00F0_A004;
+
+        dispatcher.install_trap_address(&mut bus, trap_word, handler);
+
+        assert_eq!(
+            dispatcher.trap_table_address(&bus, trap_word),
+            Some(handler)
+        );
+        assert_eq!(
+            dispatcher.native_trap_handler(&bus, trap_word),
+            Some(handler)
         );
     }
 
