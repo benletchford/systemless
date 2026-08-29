@@ -3905,9 +3905,11 @@ impl TrapDispatcher {
                 ref_num,
                 name: normalized,
                 root_dir_id,
-                // Extracted images are immutable even when their on-disk
-                // volume header was not locked at creation time.
-                attributes: attributes | 0x8000,
+                // Extracted images are immutable media. Report the VCB's
+                // hardware-lock bit so PBHGetVInfo agrees with mutations,
+                // which return wPrErr (hardware volume lock). Inside
+                // Macintosh: Files, pp. 2-127, 2-144, and 2-329.
+                attributes: attributes | 0x0080,
                 file_count,
                 allocation_block_count,
                 allocation_block_size,
@@ -3945,7 +3947,7 @@ impl TrapDispatcher {
     /// Return whether a VFS path belongs to an extracted disk-image volume.
     /// Resource-fork mirrors use a `__rsrc__` prefix, so strip it before
     /// resolving the volume root. The synthetic boot volume remains writable;
-    /// extracted image volumes are read-only by construction.
+    /// extracted image volumes are immutable by construction.
     pub(crate) fn vfs_path_is_read_only(&self, path: &str) -> bool {
         let path = path.strip_prefix("__rsrc__").unwrap_or(path);
         self.vfs_volume_for_path(path).is_some()

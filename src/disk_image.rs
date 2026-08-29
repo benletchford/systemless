@@ -119,8 +119,7 @@ pub fn extract_dc42_or_hfs(bytes: &[u8]) -> Result<Option<DiskImageContents>, St
             rsrc,
             file_type: file.file_type,
             creator: file.creator,
-            // The classic-HFS path does not currently expose fdFlags.
-            finder_flags: 0,
+            finder_flags: file.finder_flags,
         });
     }
 
