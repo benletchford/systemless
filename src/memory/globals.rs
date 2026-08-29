@@ -13,6 +13,12 @@ use std::collections::HashMap;
 /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99.
 pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
 
+/// Unit-table size for Systemless's Mac OS 8.1 machine profile. Inside
+/// Macintosh Volume V (1986), p. V-215 documents a 64-entry table that grows
+/// in 16-entry increments up to 128 entries; 96 preserves that documented
+/// layout while leaving the upper expansion range available to guest code.
+pub(crate) const DEFAULT_UNIT_TABLE_ENTRY_COUNT: u16 = 96;
+
 /// Low-memory global variable addresses
 pub mod addr {
     // System globals
@@ -23,6 +29,10 @@ pub mod addr {
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
     pub const THE_ZONE: u32 = 0x0118; // Current heap zone (ptr)
+    /// UTableBase: pointer to the first Device Manager unit-table entry.
+    /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
+    /// 3.4 LowMem.h lines 246--264.
+    pub const U_TABLE_BASE: u32 = 0x011C;
     /// SysEvtMask: current process's low-level event posting mask (word).
     /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99--2-100;
     /// Inside Macintosh Volume III (1985), low-memory globals table.
@@ -35,6 +45,10 @@ pub mod addr {
     /// the current key state indexed by key code; MPW's SysEqu.h names the
     /// low-memory mirror `KeyMapLM` at $0174.
     pub const KEY_MAP_LM: u32 = 0x0174;
+    /// UnitNtryCnt: number of handles in the Device Manager unit table.
+    /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
+    /// 3.4 LowMem.h lines 4304--4324.
+    pub const UNIT_NTRY_CNT: u32 = 0x01D2;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
     /// MemErr: current value of MemError (word).
     /// Inside Macintosh Volume IV, IV-80; low-memory table IV-246.

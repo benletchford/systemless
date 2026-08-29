@@ -3734,6 +3734,21 @@ impl FixtureRunner {
             free_bytes,
             free_bytes as f64 / (1024.0 * 1024.0)
         );
+
+        // The Device Manager unit table is a nonrelocatable array of DCE
+        // handles addressed through UTableBase; UnitNtryCnt is its entry
+        // count. Inside Macintosh: Devices (1994), pp. 1-8--1-9. Use 96 for
+        // the Mac OS 8.1 machine profile, within the documented 64-to-128
+        // expandable range (Inside Macintosh Volume V, 1986, p. V-215).
+        let unit_table_entry_count = crate::memory::globals::DEFAULT_UNIT_TABLE_ENTRY_COUNT;
+        let unit_table = self.bus.alloc(u32::from(unit_table_entry_count) * 4);
+        if unit_table != 0 {
+            self.bus
+                .fill_zeros(unit_table, u32::from(unit_table_entry_count) * 4);
+        }
+        self.bus.write_long(addr::U_TABLE_BASE, unit_table);
+        self.bus
+            .write_word(addr::UNIT_NTRY_CNT, unit_table_entry_count);
         self.seed_current_application_file_manager_state();
 
         // AppParmHandle: handle to Finder information about files selected
@@ -18049,6 +18064,49 @@ mod tests {
             runner.bus.read_byte(sound_base),
             0x80,
             "legacy SoundBase buffer starts at neutral amplitude"
+        );
+    }
+
+    #[test]
+    fn init_app_materializes_the_device_manager_unit_table() {
+        use crate::memory::globals::{addr, DEFAULT_UNIT_TABLE_ENTRY_COUNT};
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+
+        runner.init_app(&app);
+
+        let table = runner.bus.read_long(addr::U_TABLE_BASE);
+        assert_ne!(table, 0, "UTableBase should address the unit table");
+        assert_eq!(
+            runner.bus.read_word(addr::UNIT_NTRY_CNT),
+            DEFAULT_UNIT_TABLE_ENTRY_COUNT
+        );
+        assert_eq!(
+            runner.bus.get_alloc_size(table),
+            Some(u32::from(DEFAULT_UNIT_TABLE_ENTRY_COUNT) * 4)
+        );
+        assert!(
+            runner
+                .bus
+                .read_bytes(table, usize::from(DEFAULT_UNIT_TABLE_ENTRY_COUNT) * 4)
+                .iter()
+                .all(|&byte| byte == 0),
+            "the unit table should start with nil DCE handles"
         );
     }
 

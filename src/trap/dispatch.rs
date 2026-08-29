@@ -1260,7 +1260,9 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// `Power.h` lines 447--461 and 705--731 declares the sleep-queue record and
 /// register entry points; lines 650--701 and 733--791 declares the idle-state
 /// and serial-power entry points;
-/// `StringCompare.h` lines 567--596 retains the comparison APIs.
+/// `StringCompare.h` lines 567--596 retains the comparison APIs;
+/// `Devices.h` lines 1109--1141 declares DriverInstall and its bit-10
+/// DriverInstallReserveMem form.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
     Unclassified,
@@ -1294,6 +1296,8 @@ pub(crate) enum OsRoutineVariant {
     PowerIdleUpdate,
     PowerIdleState,
     PowerSerial,
+    DriverInstall,
+    DriverInstallReserveMemory,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1399,6 +1403,13 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x85, 0x0200) => OsRoutineVariant::PowerIdleUpdate,
         (0x85, 0x0400) => OsRoutineVariant::PowerIdleState,
         (0x85, 0x0600) => OsRoutineVariant::PowerSerial,
+
+        // Devices 1994, pp. 1-83--1-85 and UI 3.4 Devices.h lines
+        // 1109--1141: bit 10 selects DriverInstallReserveMem, which calls
+        // ReserveMem before the shared DCE installation. Bit 9 and the
+        // combined form have no reviewed meanings.
+        (0x3D, 0x0000) => OsRoutineVariant::DriverInstall,
+        (0x3D, 0x0400) => OsRoutineVariant::DriverInstallReserveMemory,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -8213,15 +8224,15 @@ mod tests {
     #[test]
     fn raw_routes_classify_only_source_backed_os_routine_variants() {
         use OsRoutineVariant::{
-            CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
-            FileHfsSynchronous, FileSynchronous, GestaltQuery, GestaltRegister, GestaltReplace,
-            LowerText, ParameterBlockAsynchronous, ParameterBlockImmediate,
-            ParameterBlockSynchronous, PowerIdleState, PowerIdleUpdate, PowerSerial,
-            SleepQueueInstall, SleepQueueRemove, StripText, StripUpperText, SystemHeap,
-            SystemHeapClear, TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
-            TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal, TrapAddressLegacy,
-            TrapAddressNewOs, TrapAddressNewTool, Unclassified, UpperStringPreserveMarks,
-            UpperStringStripMarks, UpperText,
+            CurrentHeap, CurrentHeapClear, DriverInstall, DriverInstallReserveMemory,
+            FileAsynchronous, FileHfsAsynchronous, FileHfsSynchronous, FileSynchronous,
+            GestaltQuery, GestaltRegister, GestaltReplace, LowerText, ParameterBlockAsynchronous,
+            ParameterBlockImmediate, ParameterBlockSynchronous, PowerIdleState, PowerIdleUpdate,
+            PowerSerial, SleepQueueInstall, SleepQueueRemove, StripText, StripUpperText,
+            SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
+            TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
+            TrapAddressLegacy, TrapAddressNewOs, TrapAddressNewTool, Unclassified,
+            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8285,6 +8296,28 @@ mod tests {
                 raw_trap_route(0xA6AD | return_a0).os_routine_variant,
                 Unclassified,
                 "combined Gestalt Manager modifier bits are undeclared"
+            );
+        }
+
+        // Inside Macintosh: Devices (1994), pp. 1-83--1-85; UI 3.4
+        // Devices.h lines 1109--1141 declares DriverInstall $A03D and
+        // DriverInstallReserveMem $A43D.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA03D | return_a0).os_routine_variant,
+                DriverInstall
+            );
+            assert_eq!(
+                raw_trap_route(0xA43D | return_a0).os_routine_variant,
+                DriverInstallReserveMemory
+            );
+            assert_eq!(
+                raw_trap_route(0xA23D | return_a0).os_routine_variant,
+                Unclassified
+            );
+            assert_eq!(
+                raw_trap_route(0xA63D | return_a0).os_routine_variant,
+                Unclassified
             );
         }
 
@@ -8483,7 +8516,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 272);
+        assert_eq!(classified, 276);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
