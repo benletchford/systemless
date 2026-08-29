@@ -42,6 +42,7 @@ pub(crate) struct HfsFileEntry {
     pub(crate) rel_path: PathBuf,
     pub(crate) file_type: [u8; 4],
     pub(crate) creator: [u8; 4],
+    pub(crate) finder_flags: u16,
     cnid: u32,
     data_fork: Fork,
     resource_fork: Fork,
@@ -84,6 +85,7 @@ struct RawFile {
     cnid: u32,
     file_type: [u8; 4],
     creator: [u8; 4],
+    finder_flags: u16,
     data_fork: Fork,
     resource_fork: Fork,
 }
@@ -181,6 +183,7 @@ impl<'a> HfsVolume<'a> {
                     rel_path,
                     file_type: file.file_type,
                     creator: file.creator,
+                    finder_flags: file.finder_flags,
                     cnid: file.cnid,
                     data_fork: file.data_fork,
                     resource_fork: file.resource_fork,
@@ -460,6 +463,10 @@ fn parse_catalog_btree(bytes: &[u8]) -> Result<(HashMap<u32, RawDir>, Vec<RawFil
                     cnid,
                     file_type: array_4(data, 4)?,
                     creator: array_4(data, 8)?,
+                    // Finder Interface, Inside Macintosh: Macintosh Toolbox
+                    // Essentials, pp. 7-32 and 7-47: fdFlags follows the
+                    // four-byte type and creator fields in FInfo.
+                    finder_flags: be_u16(data, 12)?,
                     data_fork: Fork {
                         logical_size: be_u32(data, 26)?,
                         extents: parse_extent_record(data, 74)?,
@@ -704,6 +711,7 @@ mod tests {
                 20,
                 *b"APPL",
                 *b"TEST",
+                0x4000,
                 5,
                 [extent(2, 1), Extent::default(), Extent::default()],
                 4,
@@ -730,6 +738,7 @@ mod tests {
         assert_eq!(file.rel_path, PathBuf::from("Games/Café/Demo"));
         assert_eq!(file.file_type, *b"APPL");
         assert_eq!(file.creator, *b"TEST");
+        assert_eq!(file.finder_flags, 0x4000);
         assert_eq!(volume.read_data_fork(file).unwrap(), b"hello");
         assert_eq!(volume.read_rsrc_fork(file).unwrap(), b"rsrc");
 
@@ -747,7 +756,9 @@ mod tests {
         assert_eq!(extracted.rsrc, b"rsrc");
         assert_eq!(extracted.file_type, *b"APPL");
         assert_eq!(extracted.creator, *b"TEST");
-        assert_eq!(extracted.finder_flags, 0);
+        // Inside Macintosh: Macintosh Toolbox Essentials, p. 7-47 defines
+        // isInvisible as Finder flag bit 14 (0x4000).
+        assert_eq!(extracted.finder_flags, 0x4000);
     }
 
     #[test]
@@ -781,6 +792,7 @@ mod tests {
                 20,
                 *b"TEXT",
                 *b"ttxt",
+                0,
                 1,
                 [extent(7, 2), Extent::default(), Extent::default()],
                 0,
@@ -846,6 +858,7 @@ mod tests {
                 20,
                 *b"DATA",
                 *b"TEST",
+                0,
                 3 * BLOCK_SIZE as u32 + 4,
                 [extent(4, 1), extent(5, 1), extent(6, 1)],
                 0,
@@ -978,6 +991,7 @@ mod tests {
         cnid: u32,
         file_type: [u8; 4],
         creator: [u8; 4],
+        finder_flags: u16,
         data_size: u32,
         data_extents: ExtentRecord,
         resource_size: u32,
@@ -988,6 +1002,7 @@ mod tests {
         data[0] = 2;
         data[4..8].copy_from_slice(&file_type);
         data[8..12].copy_from_slice(&creator);
+        put_u16(data, 12, finder_flags);
         put_u32(data, 20, cnid);
         put_u32(data, 26, data_size);
         put_u32(data, 36, resource_size);

@@ -15240,7 +15240,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 22), volume_ref as u16);
         assert_eq!(bus.read_pstring(name_buf), b"Legend CD");
-        assert_eq!(bus.read_word(pb + 38), 0x8080, "ioVAtrb");
+        assert_eq!(bus.read_word(pb + 38), 0x0080, "ioVAtrb");
     }
 
     #[test]

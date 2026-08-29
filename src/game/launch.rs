@@ -3192,13 +3192,14 @@ mod tests {
     }
 
     #[test]
-    fn disk_image_payload_registers_a_read_only_file_manager_volume() {
+    fn disk_image_payload_registers_a_hardware_locked_file_manager_volume() {
         let mut builder = hfsplus::testutil::HfsPlusImageBuilder::new();
         builder.add_file("Data File", b"contents", 0o100644);
         let image_bytes = builder.build();
         let image = crate::disk_image::extract_dc42_or_hfs(&image_bytes)
             .unwrap()
             .expect("HFS+ image");
+        assert_eq!(image.volume_info.attributes & 0x0080, 0);
         let volume_name = image.volume_name.clone();
         let mut runner = new_runner();
         let mut executable = None;
@@ -3214,7 +3215,12 @@ mod tests {
             .vfs_volume_by_name(&volume_name)
             .expect("mounted File Manager volume");
         assert_eq!(volume.ref_num, -2);
-        assert_ne!(volume.attributes & 0x8000, 0, "software-locked volume");
+        assert_ne!(volume.attributes & 0x0080, 0, "hardware-locked volume");
+        assert_eq!(
+            volume.attributes & 0x8000,
+            0,
+            "software lock must retain the source state"
+        );
         assert!(runner
             .dispatcher()
             .vfs_path_is_read_only(&format!("{volume_name}/Data File")));
