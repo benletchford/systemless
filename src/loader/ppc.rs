@@ -22,16 +22,16 @@ use crate::managers::resource::{
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries,
-    for_each_standard_hierarchy_indicator_pixel, for_each_standard_scroll_down_indicator_pixel,
-    for_each_standard_scroll_up_indicator_pixel, install_menu_list_copy,
-    is_standard_system_menu_title, laid_out_menu_item_count, merge_menu_color_entries,
-    new_standard_menu_record, standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
-    standard_menu_gray_pattern_is_ink, standard_menu_height, standard_menu_highlighted_value,
-    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
-    standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
-    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
-    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable, MenuDefinitionInvocation,
-    MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
+    for_each_standard_hierarchy_indicator_pixel, for_each_standard_menu_bar_corner_pixel,
+    for_each_standard_scroll_down_indicator_pixel, for_each_standard_scroll_up_indicator_pixel,
+    install_menu_list_copy, is_standard_system_menu_title, laid_out_menu_item_count,
+    merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
+    standard_menu_bar_title_baseline, standard_menu_gray_pattern_is_ink, standard_menu_height,
+    standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_item_layout, standard_menu_text_advance, standard_menu_title_advance,
+    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
+    standard_submenu_layout, ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable,
+    MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
     MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
@@ -69598,6 +69598,17 @@ fn ppc_draw_menu_bar_with_colors(
             let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
         }
     }
+    for_each_standard_menu_bar_corner_pixel(
+        ppc_u32_to_i16_saturating(front_buffer.width),
+        |x, y| {
+            let _ = ppc_quickdraw_write_raw_pixel(
+                memory,
+                front_buffer,
+                (i32::from(x), i32::from(y)),
+                black,
+            );
+        },
+    );
 
     let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return true;
@@ -79446,6 +79457,55 @@ mod tests {
         }
     }
 
+    // IM:I 1985 p. I-281 and IM:V 1986 p. V-120: the main-screen desktop
+    // excludes the standard rounded outer corners beneath the menu bar.
+    #[test]
+    fn native_draw_menu_bar_uses_the_shared_rounded_corner_mask() {
+        let pef = synthetic_pef_with_import(b"DrawMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        for depth in [1, 2, 4, 8, 16] {
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
+
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let black =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+            let white =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+            let mut rounded_corner_pixels = Vec::new();
+            for_each_standard_menu_bar_corner_pixel(
+                ppc_u32_to_i16_saturating(front.width),
+                |x, y| rounded_corner_pixels.push((x, y)),
+            );
+            let right_start = i32::try_from(front.width).unwrap() - 6;
+            for y in 0..5 {
+                for x in (0..6).chain(right_start..i32::try_from(front.width).unwrap()) {
+                    let expected = if rounded_corner_pixels.contains(&(x as i16, y as i16)) {
+                        black
+                    } else {
+                        white
+                    };
+                    assert_eq!(
+                        ppc_quickdraw_read_pixel(&mut loaded.memory, front, (x, y)),
+                        Some(expected),
+                        "{depth}bpp rounded corner mask pixel ({x}, {y})",
+                    );
+                }
+            }
+        }
+    }
+
     // MTE 1992 pp. 3-109--3-110: DeleteMenu resolves duplicate IDs in the
     // hierarchical section before it considers regular menu-bar entries.
     #[test]
@@ -82471,7 +82531,8 @@ mod tests {
         ));
         let white = ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE);
         let black = ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK);
-        assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE), Some(white));
+        assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE), Some(black));
+        assert_eq!(loaded.memory.read_u8(PPC_MAIN_SCREEN_BASE + 5), Some(white));
         let mark_outline = pict::closest_clut_index(
             crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE[0][0],
             crate::ui_art::RETRO_COMPUTER_MENU_MARK_PALETTE[0][1],
@@ -144100,7 +144161,13 @@ mod tests {
             };
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (0, 0),),
-                Some(white)
+                Some(black),
+                "{depth}bpp DrawMenuBar did not preserve the rounded corner mask",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (5, 0),),
+                Some(white),
+                "{depth}bpp rounded corner mask extended into the menu-bar interior",
             );
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (0, 19),),

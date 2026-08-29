@@ -4,8 +4,9 @@ use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    is_standard_system_menu_title, standard_menu_bar_system_mark_top,
-    standard_menu_bar_title_baseline, standard_menu_title_advance, TrackedMenuPaneView,
+    for_each_standard_menu_bar_corner_pixel, is_standard_system_menu_title,
+    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
+    standard_menu_title_advance, TrackedMenuPaneView,
 };
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
@@ -2813,53 +2814,34 @@ impl super::TrapDispatcher {
         screen_width: i16,
         screen_height: i16,
     ) {
-        // The standard menu bar stamps the classic rounded screen-corner
-        // mask when drawn at the top edge. IM:I I-354 defines DrawMenuBar
-        // as the routine that redraws the current menu bar.
-        const LEFT: &[(i16, i16)] = &[
-            (0, 0),
-            (1, 0),
-            (2, 0),
-            (3, 0),
-            (4, 0),
-            (0, 1),
-            (1, 1),
-            (2, 1),
-            (0, 2),
-            (1, 2),
-            (0, 3),
-            (0, 4),
-        ];
         let black_index = Self::menu_standard_pixel_index(bus, pixel_size, true);
-        for &(x, y) in LEFT {
-            for dst_x in [x, screen_width - 1 - x] {
-                if let Some(pixel_index) = black_index {
-                    Self::fb_set_pixel_index(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        dst_x,
-                        y,
-                        pixel_index,
-                    );
-                } else {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        dst_x,
-                        y,
-                        true,
-                    );
-                }
+        for_each_standard_menu_bar_corner_pixel(screen_width, |x, y| {
+            if let Some(pixel_index) = black_index {
+                Self::fb_set_pixel_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    pixel_index,
+                );
+            } else {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    true,
+                );
             }
-        }
+        });
     }
 
     /// Blit the front window's port pixels to the screen framebuffer.

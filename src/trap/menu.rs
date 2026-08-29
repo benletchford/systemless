@@ -12266,11 +12266,23 @@ mod tests {
             10,
             "menu-bar bottom rule should use MainDevice black"
         );
-        assert_eq!(
-            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 0, 0),
-            10,
-            "rounded corner mask should use MainDevice black"
-        );
+        let mut rounded_corner_pixels = Vec::new();
+        crate::menu_manager::for_each_standard_menu_bar_corner_pixel(128, |x, y| {
+            rounded_corner_pixels.push((x, y));
+        });
+        for y in 0..5 {
+            for x in (0..6).chain(122..128) {
+                assert_eq!(
+                    packed_4bpp_screen_pixel_index(&bus, base, row_bytes, x, y),
+                    if rounded_corner_pixels.contains(&(x, y)) {
+                        10
+                    } else {
+                        5
+                    },
+                    "rounded corner mask pixel ({x}, {y})",
+                );
+            }
+        }
         let regions = disp.menu_title_regions();
         assert!((1..19).any(|y| {
             (regions[0].0..regions[0].1)

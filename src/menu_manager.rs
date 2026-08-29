@@ -1286,6 +1286,37 @@ pub(crate) fn standard_menu_gray_pattern_is_ink(x: i16, y: i16) -> bool {
     (i32::from(x) + i32::from(y)).rem_euclid(2) == 0
 }
 
+/// Visit every black pixel in the standard main-screen corner mask.
+///
+/// The Window Manager defines the desktop as a 16-by-16-curvature rounded
+/// rectangle below the menu bar, leaving these outer-screen corners outside
+/// `GrayRgn`. The menu-bar definition preserves that mask when it redraws the
+/// strip. Inside Macintosh Volume I (1985), p. I-281; Inside Macintosh Volume
+/// V (1986), p. V-120.
+pub(crate) fn for_each_standard_menu_bar_corner_pixel(
+    screen_width: i16,
+    mut visit: impl FnMut(i16, i16),
+) {
+    const LEFT_CORNER: &[(i16, i16)] = &[
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (3, 0),
+        (4, 0),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (0, 2),
+        (1, 2),
+        (0, 3),
+        (0, 4),
+    ];
+    for &(x, y) in LEFT_CORNER {
+        visit(x, y);
+        visit(screen_width.saturating_sub(1).saturating_sub(x), y);
+    }
+}
+
 /// Compute `MenuInfo.menuWidth` for the standard Mac OS 8.1 MDEF.
 ///
 /// Every item reserves 32 pixels around its text and leading icon slot.
@@ -4122,6 +4153,23 @@ mod tests {
         assert_eq!(region.highlighted_rect(20), (1, 9, 19, 48));
         assert_eq!(standard_menu_bar_title_baseline(20, 11, 2), 14);
         assert_eq!(standard_menu_bar_system_mark_top(20, 11, 2), 4);
+    }
+
+    #[test]
+    fn standard_menu_bar_corner_mask_is_shared_between_gateways() {
+        let mut pixels = Vec::new();
+        for_each_standard_menu_bar_corner_pixel(128, |x, y| pixels.push((x, y)));
+
+        assert_eq!(pixels.len(), 24);
+        assert_eq!(pixels[0], (0, 0));
+        assert_eq!(pixels[1], (127, 0));
+        assert!(pixels.contains(&(4, 0)));
+        assert!(pixels.contains(&(123, 0)));
+        assert!(pixels.contains(&(0, 4)));
+        assert!(pixels.contains(&(127, 4)));
+        assert!(!pixels.contains(&(5, 0)));
+        assert!(!pixels.contains(&(3, 1)));
+        assert!(!pixels.contains(&(1, 3)));
     }
 
     #[test]
