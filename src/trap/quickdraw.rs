@@ -9,8 +9,8 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
 use crate::trap::dispatch::{
-    CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState, RecentColorTableFetch,
-    ScreenCopyBitsRect, INVERSE_TABLE_CACHE_LIMIT,
+    selector_operation_route, CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState,
+    RecentColorTableFetch, ScreenCopyBitsRect, SelectorOperationRoute, INVERSE_TABLE_CACHE_LIMIT,
 };
 use crate::Result;
 use std::sync::OnceLock;
@@ -118,6 +118,18 @@ static TRACE_DIALOG_PORT_DUMP: OnceLock<bool> = OnceLock::new();
 static DUMP_COPYBITS_SRC_PATH: OnceLock<Option<String>> = OnceLock::new();
 static TRACE_PALETTE: OnceLock<bool> = OnceLock::new();
 static PALETTE_STRICT: OnceLock<bool> = OnceLock::new();
+const QD_EXTENSIONS_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_qd_extensions_operations.rs");
+
+fn qd_extensions_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xAB1D {
+        return None;
+    }
+    selector_operation_route(QD_EXTENSIONS_OPERATION_ROUTES, selector)
+}
 static PALETTE_AS_GAME_WROTE: OnceLock<bool> = OnceLock::new();
 static PICT_SEED_CLUT_DISABLED: OnceLock<bool> = OnceLock::new();
 static TRACE_QD_COLORS: OnceLock<bool> = OnceLock::new();
@@ -6938,62 +6950,18 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== QDExtensions / GWorld ==========
-
-            // QDExtensions dispatcher ($AB1D)
-            // Per IM:VI Table C-1 + Table C-3 line 58031+ the
-            // canonical trap-word name is _QDExtensions (a
-            // selector-based dispatcher), NOT NewGWorld. Selector
-            // table per IM:VI Table C-3 lines 58031..58058:
-            //   $0000 NewGWorld          $0001 LockPixels
-            //   $0002 UnlockPixels       $0003 UpdateGWorld
-            //   $0004 DisposeGWorld      $0005 GetGWorld
-            //   $0006 SetGWorld          $0007 CTabChanged
-            //   $0008 PixPatChanged      $0009 PortChanged
-            //   $000A GDeviceChanged     $000B AllowPurgePixels
-            //   $000C NoPurgePixels      $000D GetPixelsState
-            //   $000E SetPixelsState     $000F GetPixBaseAddr
-            //   $0010 NewScreenBuffer    $0011 DisposeScreenBuffer
-            //   $0012 GetGWorldDevice    $0013 QDDone
-            //   $0014 OffscreenVersion   $0015 NewTempScreenBuffer
-            //
-            // Systemless handles the documented selector set here:
-            // 0x0000 NewGWorld / 0x0001 LockPixels / 0x0002
-            // UnlockPixels / 0x0003 UpdateGWorld / 0x0004
-            // DisposeGWorld / 0x0005 GetGWorld / 0x0006 SetGWorld
-            // / 0x0007 CTabChanged / 0x0008 PixPatChanged /
-            // 0x0009 PortChanged / 0x000A GDeviceChanged / 0x000D
-            // GetPixelsState / 0x000E SetPixelsState / 0x000F
-            // GetPixBaseAddr / 0x0012 GetGWorldDevice / 0x0016
-            // PixMap32Bit / 0x0017 GetGWorldPixMap. Missing: 0x000B
-            // AllowPurgePixels (no-op-ok since no purgeable axis),
-            // 0x000C NoPurgePixels (same), 0x0010 NewScreenBuffer
-            // / 0x0011 DisposeScreenBuffer (no off-screen-buffer
-            // axis), 0x0013 QDDone / 0x0014 OffscreenVersion /
-            // 0x0015 NewTempScreenBuffer (System 7.5+ extras).
-            //
-            // Apps using legacy alias trap-words ($AB04 LockPixels
-            // direct, $AB05 UnlockPixels direct, $AB1E GetGWorld
-            // direct, $AB1F DisposeGWorld direct, $AB1C SetGWorld
-            // direct) bypass this dispatcher and land on
-            // dedicated arms — see the legacy-alias trap-doc lines
-            // at quickdraw.rs:5764 ($AB04) / 5793 ($AB05) /
-            // 5697 ($AB1E) / 5681 ($AB1F) / 5722 ($AB1C). Both
-            // dispatch paths reach the same Systemless HLE state.
-            //
-            // ## Trap-name mislabel fix
-            //
-            // Trap-doc Notes column previously said "NewGWorld |
-            // Complete" — both wrong: the trap-word's canonical
-            // name is QDExtensions per IM:VI Table C-1; status
-            // is Partial (5 missing selectors documented above).
-            // Fixed via the trap-name verification audit pattern.
-            // Imaging With QuickDraw 1994, Chapter 6
-            // Inside Macintosh Volume VI, 17-13..17-30
-            // QDExtensions ($AB1D): Selector-based dispatcher per IM:VI Table C-3 lines 58031..58058. Handles the documented selectors here: NewGWorld / LockPixels / UnlockPixels / UpdateGWorld / DisposeGWorld / GetGWorld / SetGWorld / CTabChanged / PixPatChanged / PortChanged / GDeviceChanged / AllowPurgePixels / NoPurgePixels / GetPixelsState / SetPixelsState / GetPixBaseAddr / PixMap32Bit / GetGWorldDevice / GetGWorldPixMap / QDDone / OffscreenVersion / NewScreenBuffer / DisposeScreenBuffer / NewTempScreenBuffer. Legacy alias trap-words $AB04 LockPixels / $AB05 UnlockPixels / $AB1C SetGWorld / $AB1E GetGWorld / $AB1F DisposeGWorld bypass this dispatcher.
+            // QDExtensions ($AB1D)
+            // Dispatches offscreen QuickDraw routines selected by the complete D0 value.
+            // FUNCTION NewGWorld(VAR offscreenGWorld: GWorldPtr; pixelDepth: INTEGER;
+            //     boundsRect: Rect; cTable: CTabHandle; aGDevice: GDHandle;
+            //     flags: GWorldFlags): QDErr;
+            // Imaging With QuickDraw (1994), pp. 3-125 to 3-126, 4-102 to 4-103,
+            //     and 6-22 to 6-46.
             (true, 0x31D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
+                let operation = qd_extensions_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = selector & 0xFFFF;
                 let param_bytes = (selector >> 16) & 0xFFFF;
                 match routine {
@@ -24507,6 +24475,75 @@ mod tests {
             bus.read_word(addr + 4) as i16,
             bus.read_word(addr + 6) as i16,
         )
+    }
+
+    #[test]
+    fn qd_extensions_generated_routes_preserve_exact_long_values() {
+        assert_eq!(super::QD_EXTENSIONS_OPERATION_ROUTES.len(), 23);
+        assert!(super::QD_EXTENSIONS_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0004_0001, "LockPixels"),
+            (0x0004_0002, "UnlockPixels"),
+            (0x0004_0004, "DisposeGWorld"),
+            (0x0004_0007, "CTabChanged"),
+            (0x0004_0008, "PixPatChanged"),
+            (0x0004_0009, "PortChanged"),
+            (0x0004_000A, "GDeviceChanged"),
+            (0x0004_000B, "AllowPurgePixels"),
+            (0x0004_000C, "NoPurgePixels"),
+            (0x0004_000D, "GetPixelsState"),
+            (0x0004_000F, "GetPixBaseAddr"),
+            (0x0004_0011, "DisposeScreenBuffer"),
+            (0x0004_0012, "GetGWorldDevice"),
+            (0x0004_0013, "QDDone"),
+            (0x0004_0016, "PixMap32Bit"),
+            (0x0004_0017, "GetGWorldPixMap"),
+            (0x0008_0005, "GetGWorld"),
+            (0x0008_0006, "SetGWorld"),
+            (0x0008_000E, "SetPixelsState"),
+            (0x000E_0010, "NewScreenBuffer"),
+            (0x000E_0015, "NewTempScreenBuffer"),
+            (0x0016_0000, "NewGWorld"),
+            (0x0016_0003, "UpdateGWorld"),
+        ] {
+            let route =
+                super::qd_extensions_operation_route(0xAB1D, selector).expect("QDExtensions route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xAA1D, 0x0004_0001),
+            (0xAB1D, 0x0000_0001),
+            (0xAB1D, 0x0005_0001),
+            (0xAB1D, 0x0004_000E),
+            (0xAB1D, 0x0000_0014),
+            (0xAB1D, 0x0000_203C),
+        ] {
+            assert!(super::qd_extensions_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn qd_extensions_dispatch_records_exact_identity_and_rejects_wrong_parameter_size() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.current_trap_word = 0xAB1D;
+
+        cpu.write_reg(Register::D0, 0x0004_0008);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.expect("QDExtensions arm").is_ok());
+        assert_eq!(
+            d.current_selector_operation,
+            Some(super::QD_EXTENSIONS_OPERATION_ROUTES[4].operation_id)
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0005_0008);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.expect("QDExtensions arm").is_ok());
+        assert_eq!(d.current_selector_operation, None);
     }
 
     #[test]
