@@ -6063,7 +6063,7 @@ impl super::TrapDispatcher {
             // PPC ($A0DD)
             // Dispatches PPC Toolbox operations selected in D0.
             // Register ABI: D0 = selector/result; parameter-block routines use A0.
-            // Inside Macintosh: Interapplication Communication (1993), pp. 11-50, 11-54.
+            // Inside Macintosh: Interapplication Communication (1993), p. 11-51.
             //
             // Systemless models the observable PPC Toolbox state:
             // selector $0000 (`PPCInit`) flips the init bit for
