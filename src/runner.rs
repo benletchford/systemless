@@ -1966,6 +1966,10 @@ impl FixtureRunner {
             crate::memory::globals::addr::SYS_EVT_MASK,
             crate::memory::globals::DEFAULT_SYS_EVT_MASK,
         );
+        bus.write_word(
+            crate::memory::globals::addr::MENU_FLASH,
+            crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
+        );
         let profile = crate::machine_profile::reference_machine_profile();
         let visible_row_bytes =
             (u32::from(profile.screen_width) * u32::from(config.screen_depth)).div_ceil(8);
@@ -4027,6 +4031,7 @@ impl FixtureRunner {
         // values copied at CPU-slice boundaries.
         for (address, len) in [
             (addr::SYS_EVT_MASK, 2),
+            (addr::MENU_FLASH, 2),
             (addr::RND_SEED, 4),
             (addr::TICKS, 4),
             (addr::TIME, 4),
@@ -11867,6 +11872,15 @@ mod tests {
             runner.bus.write_long(address, runner_value);
             assert_eq!(ppc_app.memory.read_u32_be(address), Some(runner_value));
         }
+
+        assert_eq!(
+            runner.bus.read_word(addr::MENU_FLASH),
+            crate::memory::globals::DEFAULT_MENU_FLASH_COUNT
+        );
+        ppc_app.memory.write_u16_be(addr::MENU_FLASH, 1).unwrap();
+        assert_eq!(runner.bus.read_word(addr::MENU_FLASH), 1);
+        runner.bus.write_word(addr::MENU_FLASH, 2);
+        assert_eq!(ppc_app.memory.read_u16_be(addr::MENU_FLASH), Some(2));
     }
 
     #[test]

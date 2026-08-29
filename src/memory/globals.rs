@@ -84,7 +84,9 @@ pub mod addr {
     /// Inside Macintosh Volume V (1986), pp. V-228–V-230.
     pub const MENU_LIST: u32 = 0x0A1C;
     pub const MBAR_HEIGHT: u32 = 0x0BAA; // Menu bar height in pixels (word) - Inside Macintosh V, V-245
-    pub const MENU_FLASH: u32 = 0x0A24; // Number of times menu item blinks (word) - Inside Macintosh Volume I, I-361
+    /// MenuFlash: number of times a selected menu item blinks.
+    /// Macintosh Toolbox Essentials (1992), p. 3-142.
+    pub const MENU_FLASH: u32 = 0x0A24;
 
     /// MenuDisable: menu ID + item number of the last menu item the cursor
     /// passed over while a menu was down (4 bytes, LongInt — high word =
@@ -291,6 +293,10 @@ pub mod addr {
     pub const CUR_STACK_BASE: u32 = 0x0908; // Stack base (ptr)
     pub const APPL_LIMIT: u32 = 0x0130; // Application heap limit (ptr)
 }
+
+/// Initial MenuFlash value installed by the General Controls panel.
+/// Macintosh Toolbox Essentials (1992), p. 3-142.
+pub const DEFAULT_MENU_FLASH_COUNT: u16 = 3;
 
 /// Manager for low-memory globals
 pub struct LowMemGlobals {

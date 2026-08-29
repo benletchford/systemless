@@ -37,7 +37,8 @@ use crate::menu_manager::{
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
     StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
     TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM,
+    STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{
@@ -1100,6 +1101,7 @@ pub enum PpcImportDispatcherTarget {
     GetMenuBar,
     GetNewMBar,
     LMGetMenuList,
+    LMGetMenuFlash,
     LMGetPaintWhite,
     LMGetSysMap,
     LMSetPaintWhite,
@@ -1107,6 +1109,7 @@ pub enum PpcImportDispatcherTarget {
     LMSetACount,
     LMSetANumber,
     LMSetDlgFont,
+    SetMenuFlash,
     ClearMenuBar,
     SetMenuBar,
     GetMenuHandle,
@@ -13093,6 +13096,10 @@ pub fn load_pef_application_with_config(
         crate::memory::globals::addr::SYS_EVT_MASK,
         crate::memory::globals::DEFAULT_SYS_EVT_MASK,
     );
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::MENU_FLASH,
+        crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
+    );
     let _ = memory.write_u16_be(PPC_MBAR_HEIGHT_ADDR, 20);
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
     // PaintOne normally starts with PaintWhite enabled. Carbon's generated
@@ -14559,6 +14566,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "GetMenuBar") => PpcImportDispatcherTarget::GetMenuBar,
         ("InterfaceLib", "GetNewMBar") => PpcImportDispatcherTarget::GetNewMBar,
         ("InterfaceLib", "LMGetMenuList") => PpcImportDispatcherTarget::LMGetMenuList,
+        ("InterfaceLib", "LMGetMenuFlash") => PpcImportDispatcherTarget::LMGetMenuFlash,
         ("InterfaceLib", "LMGetPaintWhite") => PpcImportDispatcherTarget::LMGetPaintWhite,
         ("InterfaceLib", "LMGetSysMap") => PpcImportDispatcherTarget::LMGetSysMap,
         ("InterfaceLib", "LMSetPaintWhite") => PpcImportDispatcherTarget::LMSetPaintWhite,
@@ -14566,6 +14574,9 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "LMSetACount") => PpcImportDispatcherTarget::LMSetACount,
         ("InterfaceLib", "LMSetANumber") => PpcImportDispatcherTarget::LMSetANumber,
         ("InterfaceLib", "LMSetDlgFont") => PpcImportDispatcherTarget::LMSetDlgFont,
+        ("InterfaceLib", "LMSetMenuFlash") | ("InterfaceLib", "SetMenuFlash") => {
+            PpcImportDispatcherTarget::SetMenuFlash
+        }
         ("InterfaceLib", "ErrorSound") => PpcImportDispatcherTarget::NoOpPreserve,
         ("InterfaceLib", "ClearMenuBar") => PpcImportDispatcherTarget::ClearMenuBar,
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
@@ -16301,6 +16312,11 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::LMGetMenuList => {
             Some(PpcImportAction::Return(current_menu_list))
         }
+        PpcImportDispatcherTarget::LMGetMenuFlash => Some(PpcImportAction::Return(ppc_i16_result(
+            memory
+                .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT) as i16,
+        ))),
         PpcImportDispatcherTarget::LMGetPaintWhite => Some(PpcImportAction::Return(u32::from(
             memory.read_u16_be(0x09dc).unwrap_or(1) != 0,
         ))),
@@ -16329,6 +16345,16 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::LMSetDlgFont => {
             let _ = memory.write_u16_be(crate::memory::globals::addr::DLG_FONT, cpu.gpr[3] as u16);
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::SetMenuFlash => {
+            // SetMenuFlash
+            // Sets the number of times a selected menu item blinks and stores
+            // the value in the MenuFlash low-memory global.
+            // PROCEDURE SetMenuFlash(count: INTEGER);
+            // Macintosh Toolbox Essentials (1992), p. 3-142.
+            let _ =
+                memory.write_u16_be(crate::memory::globals::addr::MENU_FLASH, cpu.gpr[3] as u16);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ClearMenuBar => {
@@ -16542,6 +16568,44 @@ fn dispatch_supported_import(
                     vfs_resources,
                     *current_resource_refnum,
                 ))
+            } else if toolbox_startup.menu_tracking.as_ref().is_some_and(|state| {
+                state.kind == MenuTrackingKind::MenuBar && state.flash_remaining > 0
+            }) {
+                let mut state = toolbox_startup.menu_tracking.take().unwrap();
+                if state.flash_delay > 0 {
+                    state.flash_delay -= 1;
+                    toolbox_startup.menu_tracking = Some(state);
+                    return Some(PpcImportAction::Yield(u64::MAX));
+                }
+                state.flash_remaining -= 1;
+                state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
+                let result = state.flash_result;
+                if state.flash_remaining == 0 {
+                    toolbox_startup.menu_tracking = Some(state);
+                    let result = ppc_complete_menu_bar_tracking_with_colors(
+                        memory,
+                        gworlds,
+                        screen_clut,
+                        menu_colors,
+                        toolbox_startup,
+                        result,
+                    )
+                    .unwrap_or(result);
+                    return Some(PpcImportAction::Return(result));
+                }
+                if let Some(selected) = ppc_deepest_highlighted_menu_item(&state) {
+                    ppc_redraw_standard_menu_tracking_flash(
+                        memory,
+                        gworlds,
+                        screen_clut,
+                        menu_colors,
+                        &state,
+                        selected,
+                        state.flash_remaining & 1 == 0,
+                    );
+                }
+                toolbox_startup.menu_tracking = Some(state);
+                Some(PpcImportAction::Yield(u64::MAX))
             } else if toolbox_startup
                 .menu_tracking
                 .as_ref()
@@ -16643,6 +16707,29 @@ fn dispatch_supported_import(
                     Some(PpcImportAction::Return(0))
                 }
             } else {
+                if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
+                    if let Some((menu_handle, item)) =
+                        ppc_tracked_menu_selection(memory, state, input)
+                    {
+                        let menu_id = memory
+                            .read_u32_be(menu_handle)
+                            .filter(|ptr| *ptr != 0)
+                            .and_then(|menu| memory.read_u16_be(menu))
+                            .unwrap_or(0);
+                        let result = (u32::from(menu_id) << 16) | u32::from(item as u16);
+                        if result != 0 {
+                            let state = toolbox_startup.menu_tracking.as_mut().unwrap();
+                            if state.begin_flash(
+                                memory
+                                    .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                                    .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
+                                result,
+                            ) {
+                                return Some(PpcImportAction::Yield(u64::MAX));
+                            }
+                        }
+                    }
+                }
                 let result = if let Some(result) = ppc_finish_menu_bar_tracking_with_colors(
                     memory,
                     gworlds,
@@ -66598,7 +66685,7 @@ fn ppc_continue_custom_popup_menu_tracking(
             return PpcImportAction::Yield(u64::MAX);
         }
         state.flash_remaining -= 1;
-        state.flash_delay = 3;
+        state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
         let remaining = state.flash_remaining;
         let result = state.flash_result;
         if remaining == 0 {
@@ -66730,9 +66817,26 @@ fn ppc_continue_custom_popup_menu_tracking(
             };
             if result != 0 {
                 let state = startup.menu_tracking.as_mut().unwrap();
-                state.flash_remaining = 6;
-                state.flash_delay = 3;
-                state.flash_result = result;
+                let flash_enabled = state.begin_flash(
+                    memory
+                        .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                        .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
+                    result,
+                );
+                if !flash_enabled {
+                    if let Some(state) = startup.menu_tracking.take() {
+                        if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                            == Some(state.front_buffer)
+                        {
+                            ppc_restore_menu_tracking(memory, state.front_buffer, &state);
+                        }
+                    }
+                    startup.clear_active_menu_definition();
+                    startup.popup_menu_call = None;
+                    ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
+                    cpu.lr = call.return_address;
+                    return PpcImportAction::Return(result);
+                }
                 return PpcImportAction::Yield(u64::MAX);
             }
             if let Some(state) = startup.menu_tracking.take() {
@@ -66824,7 +66928,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 ppc_restore_menu_tracking(memory, state.front_buffer, &state);
                 return PpcImportAction::Return(result);
             }
-            state.flash_delay = 3;
+            state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
             let visible_item = if state.flash_remaining & 1 == 0 {
                 state.highlighted_item
             } else {
@@ -66859,9 +66963,17 @@ fn ppc_dispatch_pop_up_menu_select(
                 .and_then(|menu| memory.read_u16_be(menu))
                 .unwrap_or(0);
             let result = (u32::from(menu_id) << 16) | u32::from(highlighted_item as u16);
-            state.flash_remaining = 6;
-            state.flash_delay = 3;
-            state.flash_result = result;
+            let flash_enabled = state.begin_flash(
+                memory
+                    .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                    .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
+                result,
+            );
+            if !flash_enabled {
+                startup.popup_menu_call = None;
+                ppc_restore_menu_tracking(memory, state.front_buffer, &state);
+                return PpcImportAction::Return(result);
+            }
             ppc_redraw_tracked_menu(
                 memory,
                 gworlds,
@@ -67913,6 +68025,42 @@ fn ppc_draw_open_tracked_submenus(
     }
 }
 
+// The standard MDEF alternately highlights and unhighlights only the chosen
+// leaf while its parent hierarchy remains open. MenuFlash supplies the repeat
+// count. Macintosh Toolbox Essentials (1992), pp. 3-115 and 3-142.
+fn ppc_redraw_standard_menu_tracking_flash(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+    state: &PpcMenuTracking,
+    selected: (u32, i16),
+    visible: bool,
+) {
+    ppc_restore_menu_tracking(memory, state.front_buffer, state);
+    let root_item = if !visible && selected.0 == state.menu_handle {
+        0
+    } else {
+        state.highlighted_item
+    };
+    ppc_draw_tracked_menu(memory, gworlds, screen_clut, menu_colors, state, root_item);
+    for submenu in &state.submenus {
+        let visible_item = if !visible && selected.0 == submenu.menu_handle {
+            0
+        } else {
+            submenu.highlighted_item
+        };
+        ppc_draw_tracked_menu(
+            memory,
+            gworlds,
+            screen_clut,
+            menu_colors,
+            submenu,
+            visible_item,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_update_menu_tracking(
     memory: &mut PpcSectionMem,
@@ -68045,6 +68193,20 @@ fn ppc_tracked_menu_selection(
                 .then_some((state.menu_handle, item))
         })
         .flatten()
+}
+
+fn ppc_deepest_highlighted_menu_item(state: &PpcMenuTracking) -> Option<(u32, i16)> {
+    state
+        .submenus
+        .iter()
+        .rev()
+        .find_map(|submenu| {
+            (submenu.highlighted_item > 0)
+                .then_some((submenu.menu_handle, submenu.highlighted_item))
+        })
+        .or_else(|| {
+            (state.highlighted_item > 0).then_some((state.menu_handle, state.highlighted_item))
+        })
 }
 
 #[cfg(test)]
@@ -68305,7 +68467,7 @@ fn ppc_continue_custom_menu_bar_tracking(
             return PpcImportAction::Yield(u64::MAX);
         }
         state.flash_remaining -= 1;
-        state.flash_delay = 3;
+        state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
         let remaining = state.flash_remaining;
         let result = state.flash_result;
         if remaining == 0 {
@@ -68417,9 +68579,37 @@ fn ppc_continue_custom_menu_bar_tracking(
     };
     if result != 0 {
         let state = startup.menu_tracking.as_mut().unwrap();
-        state.flash_remaining = 6;
-        state.flash_delay = 3;
-        state.flash_result = result;
+        let flash_enabled = state.begin_flash(
+            memory
+                .read_u16_be(crate::memory::globals::addr::MENU_FLASH)
+                .unwrap_or(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT),
+            result,
+        );
+        if !flash_enabled {
+            if let Some(state) = startup.menu_tracking.take() {
+                if ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+                    == Some(state.front_buffer)
+                {
+                    ppc_restore_menu_tracking(memory, state.front_buffer, &state);
+                }
+            }
+            let menu_list = ppc_current_menu_list(memory);
+            ppc_set_menu_command_highlight_with_colors(
+                memory,
+                gworlds,
+                menu_list,
+                result,
+                None,
+                screen_clut,
+                menu_colors,
+                startup.host_menu_bar_hidden,
+            );
+            startup.clear_active_menu_definition();
+            startup.menu_select_call = None;
+            ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
+            cpu.lr = call.return_address;
+            return PpcImportAction::Return(result);
+        }
         return PpcImportAction::Yield(u64::MAX);
     }
     if let Some(state) = startup.menu_tracking.take() {
@@ -68600,7 +68790,6 @@ fn ppc_finish_menu_bar_tracking_with_colors(
     startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
 ) -> Option<u32> {
-    let current_menu_list = ppc_current_menu_list(memory);
     if startup
         .menu_tracking
         .as_ref()
@@ -68608,9 +68797,9 @@ fn ppc_finish_menu_bar_tracking_with_colors(
     {
         return None;
     }
-    let state = startup.menu_tracking.take()?;
+    let state = startup.menu_tracking.as_ref()?;
     let selection = (!startup.host_menu_bar_hidden)
-        .then(|| ppc_tracked_menu_selection(memory, &state, input))
+        .then(|| ppc_tracked_menu_selection(memory, state, input))
         .flatten();
     let result = selection
         .and_then(|(menu_handle, item)| {
@@ -68621,6 +68810,26 @@ fn ppc_finish_menu_bar_tracking_with_colors(
                 .map(|menu_id| (u32::from(menu_id) << 16) | u32::from(item as u16))
         })
         .unwrap_or(0);
+    ppc_complete_menu_bar_tracking_with_colors(
+        memory,
+        gworlds,
+        screen_clut,
+        menu_colors,
+        startup,
+        result,
+    )
+}
+
+fn ppc_complete_menu_bar_tracking_with_colors(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+    startup: &mut PpcToolboxStartupState,
+    result: u32,
+) -> Option<u32> {
+    let current_menu_list = ppc_current_menu_list(memory);
+    let state = startup.menu_tracking.take()?;
     if let Some(front) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD) {
         if front == state.front_buffer {
             ppc_restore_menu_tracking(memory, front, &state);
@@ -83136,6 +83345,18 @@ mod tests {
             PpcImportDispatcherTarget::FlashMenuBar
         );
         assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetMenuFlash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMGetMenuFlash"),
+            PpcImportDispatcherTarget::LMGetMenuFlash
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "LMSetMenuFlash"),
+            PpcImportDispatcherTarget::SetMenuFlash
+        );
+        assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
             PpcImportDispatcherTarget::MenuNoop
         );
@@ -83147,6 +83368,39 @@ mod tests {
             dispatcher_target_for_import("InterfaceLib", "MenuChoice"),
             PpcImportDispatcherTarget::MenuChoice
         );
+    }
+
+    #[test]
+    fn native_menu_flash_accessors_use_the_live_low_memory_word() {
+        let pef = synthetic_pef_with_import(b"SetMenuFlash");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(crate::memory::globals::addr::MENU_FLASH),
+            Some(crate::memory::globals::DEFAULT_MENU_FLASH_COUNT)
+        );
+
+        loaded.cpu.gpr[3] = 0xcafe_0001;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetMenuFlash);
+        assert_eq!(loaded.cpu.gpr[3], 0xcafe_0001);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(crate::memory::globals::addr::MENU_FLASH),
+            Some(1)
+        );
+
+        loaded.cpu.gpr[3] = 0xdead_beef;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuFlash);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, u16::MAX)
+            .unwrap();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuFlash);
+        assert_eq!(loaded.cpu.gpr[3], u32::MAX);
     }
 
     #[test]
@@ -136535,11 +136789,15 @@ mod tests {
             mouse_h: tracking.popup_left + 4,
             ..PpcInputSnapshot::default()
         };
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
+            .unwrap();
         loaded.set_input_snapshot(item_two_release);
         let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let flash = loaded.toolbox_startup.menu_tracking.as_ref().unwrap();
-        assert_eq!(flash.flash_remaining, 6);
+        assert_eq!(flash.flash_remaining, 2);
         assert_eq!(flash.highlighted_item, 2);
         assert_eq!(flash.flash_result, (300u32 << 16) | 2);
 
@@ -137122,6 +137380,10 @@ mod tests {
             PpcRunResult::CycleLimit { .. }
         ));
         let switched = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
+            .unwrap();
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
             mouse_v: switched.popup_top + 6,
@@ -137129,10 +137391,71 @@ mod tests {
             ..PpcInputSnapshot::default()
         });
         let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(
+            loaded
+                .toolbox_startup
+                .menu_tracking
+                .as_ref()
+                .map(|state| state.flash_remaining),
+            Some(2)
+        );
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: 0,
+            mouse_h: 0,
+            ..PpcInputSnapshot::default()
+        });
+        loaded
+            .toolbox_startup
+            .menu_tracking
+            .as_mut()
+            .unwrap()
+            .flash_delay = 0;
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        loaded
+            .toolbox_startup
+            .menu_tracking
+            .as_mut()
+            .unwrap()
+            .flash_delay = 0;
+        let probe = loaded.run_with_hle_imports(64);
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(loaded.cpu.gpr[3], (129u32 << 16) | 1);
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = point(10, file_left + 2);
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 0)
+            .unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 10,
+            mouse_h: file_left + 2,
+            ..PpcInputSnapshot::default()
+        });
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: tracking.popup_top + 6,
+            mouse_h: tracking.popup_left + 4,
+            ..PpcInputSnapshot::default()
+        });
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.cpu.gpr[3], (128u32 << 16) | 1);
+        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
     }
 
     #[test]

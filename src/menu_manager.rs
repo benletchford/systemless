@@ -10,6 +10,16 @@ pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
 /// Size of one guest `MCEntry` in a live menu color information table.
 pub(crate) const MENU_COLOR_ENTRY_SIZE: usize = 30;
 
+/// Convert the guest-visible `MenuFlash` count to alternating visible/hidden
+/// phases. A count of zero disables blinking; every positive count contributes
+/// one unhighlight and one rehighlight phase. Macintosh Toolbox Essentials
+/// (1992), p. 3-142; Inside Macintosh Volume I (1985), p. I-366.
+pub(crate) fn menu_flash_phase_count(count: u16) -> u32 {
+    u32::from(count) * 2
+}
+
+pub(crate) const STANDARD_MENU_FLASH_PHASE_DELAY: u8 = 3;
+
 /// Horizontal origin of the first standard menu title's logical hit cell.
 pub(crate) const STANDARD_MENU_BAR_FIRST_TITLE_LEFT: i16 = 11;
 
@@ -443,7 +453,7 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) highlighted_item: i16,
     /// Application-defined item drawing and hit-testing for the root pane.
     pub(crate) definition: Option<MenuDefinitionTracking>,
-    pub(crate) flash_remaining: u8,
+    pub(crate) flash_remaining: u32,
     pub(crate) flash_delay: u8,
     pub(crate) flash_result: u32,
     pub(crate) saved_width: i16,
@@ -550,6 +560,20 @@ impl_tracked_menu_pane_view!(TrackedMenuPane);
 impl<MenuRef: Copy, Surface, Pixel, Appearance>
     MenuTrackingState<MenuRef, Surface, Pixel, Appearance>
 {
+    /// Begin the Menu Manager-owned release blink using the live MenuFlash
+    /// count. Returns false when blinking is disabled and the adapter should
+    /// complete the originating call immediately.
+    pub(crate) fn begin_flash(&mut self, count: u16, result: u32) -> bool {
+        self.flash_remaining = menu_flash_phase_count(count);
+        self.flash_delay = if self.flash_remaining == 0 {
+            0
+        } else {
+            STANDARD_MENU_FLASH_PHASE_DELAY
+        };
+        self.flash_result = result;
+        self.flash_remaining != 0
+    }
+
     pub(crate) fn active_definition_pane(&self) -> Option<MenuDefinitionPane> {
         self.submenus
             .iter()
@@ -2796,6 +2820,24 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_flash_count_expands_to_visible_and_hidden_phases() {
+        assert_eq!(menu_flash_phase_count(0), 0);
+        assert_eq!(menu_flash_phase_count(1), 2);
+        assert_eq!(menu_flash_phase_count(3), 6);
+        assert_eq!(menu_flash_phase_count(u16::MAX), 131_070);
+
+        let mut tracking = tracking_with_child(1u32, 2);
+        assert!(tracking.begin_flash(1, 0x0080_0002));
+        assert_eq!(tracking.flash_remaining, 2);
+        assert_eq!(tracking.flash_delay, STANDARD_MENU_FLASH_PHASE_DELAY);
+        assert_eq!(tracking.flash_result, 0x0080_0002);
+        assert!(!tracking.begin_flash(0, 0x0080_0003));
+        assert_eq!(tracking.flash_remaining, 0);
+        assert_eq!(tracking.flash_delay, 0);
+        assert_eq!(tracking.flash_result, 0x0080_0003);
+    }
 
     #[test]
     fn menu_definition_call_preserves_the_shared_five_argument_contract() {

@@ -26,7 +26,7 @@ use crate::menu_manager::{
     StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane,
     TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE,
     STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
+    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -2252,7 +2252,7 @@ impl super::TrapDispatcher {
                                 return Some(Ok(()));
                             }
                             tracking.flash_remaining -= 1;
-                            tracking.flash_delay = 3;
+                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                             let remaining = tracking.flash_remaining;
                             let result = tracking.flash_result;
                             if remaining == 0 {
@@ -2329,9 +2329,13 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 4, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
-                                tracking.flash_remaining = 6;
-                                tracking.flash_delay = 3;
-                                tracking.flash_result = result;
+                                let flash_enabled = tracking.begin_flash(
+                                    bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                    result,
+                                );
+                                if !flash_enabled {
+                                    self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                                }
                             }
                         }
                         return Some(Ok(()));
@@ -2350,7 +2354,7 @@ impl super::TrapDispatcher {
                         }
                         // Advance to next toggle
                         t.flash_remaining -= 1;
-                        t.flash_delay = 3; // frames to hold next phase
+                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                         let new_remaining = t.flash_remaining;
 
                         if new_remaining == 0 {
@@ -2425,19 +2429,28 @@ impl super::TrapDispatcher {
                                         })
                                 })
                                 .unwrap_or((0, 0));
-                            // Start flashing: 6 toggles = 3 flashes
+                            // MenuFlash stores the caller-selected blink count;
+                            // each blink has one hidden and one visible phase.
                             let tracking = self.menu_tracking.as_mut().unwrap();
-                            tracking.flash_remaining = 6;
-                            tracking.flash_delay = 3;
-                            tracking.flash_result = result;
+                            let flash_enabled = tracking.begin_flash(
+                                bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                result,
+                            );
                             self.record_menuselect_input_trace(
                                 "release",
                                 None,
                                 Some(active_menu),
                                 Some(item_idx),
                                 Some(result),
-                                "start_flash",
+                                if !flash_enabled {
+                                    "blink_disabled"
+                                } else {
+                                    "start_flash"
+                                },
                             );
+                            if !flash_enabled {
+                                self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                            }
                         } else {
                             // No item selected — return 0 immediately
                             let (sp, active_menu) = self
@@ -2650,7 +2663,7 @@ impl super::TrapDispatcher {
                                 return Some(Ok(()));
                             }
                             tracking.flash_remaining -= 1;
-                            tracking.flash_delay = 3;
+                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                             let remaining = tracking.flash_remaining;
                             let result = tracking.flash_result;
                             if remaining == 0 {
@@ -2699,9 +2712,13 @@ impl super::TrapDispatcher {
                                 self.finish_custom_menu_tracking(cpu, bus, 10, 0);
                             } else {
                                 let tracking = self.menu_tracking.as_mut().unwrap();
-                                tracking.flash_remaining = 6;
-                                tracking.flash_delay = 3;
-                                tracking.flash_result = result;
+                                let flash_enabled = tracking.begin_flash(
+                                    bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                    result,
+                                );
+                                if !flash_enabled {
+                                    self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                                }
                             }
                         }
                         return Some(Ok(()));
@@ -2715,7 +2732,7 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
                         t.flash_remaining -= 1;
-                        t.flash_delay = 3;
+                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                         let new_remaining = t.flash_remaining;
 
                         if new_remaining == 0 {
@@ -2736,9 +2753,13 @@ impl super::TrapDispatcher {
                         let result = self.menu_tracking_selection_result(bus);
                         if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
-                            tracking.flash_remaining = 6;
-                            tracking.flash_delay = 3;
-                            tracking.flash_result = result;
+                            let flash_enabled = tracking.begin_flash(
+                                bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                result,
+                            );
+                            if !flash_enabled {
+                                self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                            }
                         } else {
                             let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
@@ -7439,6 +7460,11 @@ mod tests {
         assert_eq!(bus.read_word(trampoline + 58), 0);
 
         bus.write_word(trampoline + 58, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -7446,7 +7472,7 @@ mod tests {
             .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .is_ok());
-        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 2);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
 
@@ -14703,7 +14729,7 @@ mod tests {
     }
 
     #[test]
-    fn menuselect_release_over_item_selects_without_prior_tracking_refire() {
+    fn setmenuflash_zero_returns_release_selection_without_blinking() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
@@ -14737,18 +14763,20 @@ mod tests {
 
         let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.mouse_pos = (top + 17, left + 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         disp.mouse_button = false;
+        cpu.write_reg(Register::A7, TEST_SP);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        assert_eq!(
-            disp.menu_tracking
-                .as_ref()
-                .map(|tracking| tracking.flash_result),
-            Some(0x0209_0002),
-            "mouse-up over Save must select it even without a separate held-button refire"
-        );
+        assert_eq!(disp.menu_tracking, None);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(TEST_SP + 4), 0x0209_0002);
     }
 
     struct MenuKeyThemeSnapshot {
