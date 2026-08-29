@@ -16771,19 +16771,58 @@ fn dispatch_supported_import(
                     Some(PpcImportAction::Return(0))
                 }
             } else {
-                if let Some(mut state) = toolbox_startup.menu_tracking.take() {
-                    ppc_update_menu_tracking(
+                // MenuSelect owns one interaction from the supplied mouse-down
+                // point until release. Even when the host observes release on
+                // this first execution slice, create and finish the same
+                // retained tracking state rather than deriving an item from a
+                // separate fixed-height shortcut. Macintosh Toolbox Essentials
+                // (1992), pp. 3-114--3-116.
+                let mut tracking_updated = false;
+                if toolbox_startup.menu_tracking.is_none() {
+                    if let Some(action) = ppc_begin_custom_menu_bar_tracking(
+                        cpu,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        gworlds,
+                        screen_clut,
+                        menu_colors,
+                        toolbox_startup,
+                        current_gworld,
+                        current_gdevice,
+                        cpu.gpr[3],
+                        vfs_resources,
+                    ) {
+                        return Some(action);
+                    }
+                    ppc_track_menu_while_held_with_resources(
                         memory,
                         gworlds,
                         screen_clut,
                         menu_colors,
-                        current_menu_list,
-                        &mut state,
+                        toolbox_startup,
+                        cpu.gpr[3],
                         input,
                         vfs_resources,
                         *current_resource_refnum,
                     );
-                    toolbox_startup.menu_tracking = Some(state);
+                    tracking_updated = true;
+                }
+                if !tracking_updated {
+                    if let Some(mut state) = toolbox_startup.menu_tracking.take() {
+                        ppc_update_menu_tracking(
+                            memory,
+                            gworlds,
+                            screen_clut,
+                            menu_colors,
+                            current_menu_list,
+                            &mut state,
+                            input,
+                            vfs_resources,
+                            *current_resource_refnum,
+                        );
+                        toolbox_startup.menu_tracking = Some(state);
+                    }
                 }
                 if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
                     if let Some((menu_handle, item)) =
@@ -16808,29 +16847,27 @@ fn dispatch_supported_import(
                         }
                     }
                 }
-                let result = if let Some(result) = ppc_finish_menu_bar_tracking_with_colors(
+                let result = ppc_finish_menu_bar_tracking_with_colors(
                     memory,
                     gworlds,
                     screen_clut,
                     menu_colors,
                     toolbox_startup,
                     input,
-                ) {
-                    result
-                } else {
-                    let result = ppc_menu_select(memory, current_menu_list, cpu.gpr[3], input);
+                )
+                .unwrap_or_else(|| {
                     ppc_set_menu_command_highlight_with_colors(
                         memory,
                         gworlds,
                         current_menu_list,
-                        result,
+                        0,
                         None,
                         screen_clut,
                         menu_colors,
                         toolbox_startup.host_menu_bar_hidden,
                     );
-                    result
-                };
+                    0
+                });
                 Some(PpcImportAction::Return(result))
             }
         }
@@ -69121,40 +69158,6 @@ fn ppc_finish_menu_bar_tracking(
     )
 }
 
-fn ppc_menu_select(
-    memory: &mut PpcSectionMem,
-    menu_list_handle: u32,
-    initial_point: u32,
-    input: PpcInputSnapshot,
-) -> u32 {
-    // Inside Macintosh Volume V (1986), pp. V-228--V-230: the live
-    // DynamicMenuList owns each regular title's menuLeft and the rightmost
-    // lastRight boundary. Use the same shared title lookup as retained PPC
-    // tracking and the 68k gateway instead of reconstructing those cells
-    // from independently measured title text.
-    let Some((menu_handle, _title_left)) =
-        ppc_menu_handle_at_title_point(memory, menu_list_handle, initial_point)
-    else {
-        return 0;
-    };
-    let Some(menu) = memory.read_u32_be(menu_handle).filter(|menu| *menu != 0) else {
-        return 0;
-    };
-    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
-    let count = ppc_count_menu_items(memory, menu_handle) as i16;
-    let relative_v = i32::from(input.mouse_v) - i32::from(menu_bar_height);
-    let item = if relative_v >= 0 {
-        i16::try_from(relative_v / 16 + 1).unwrap_or(i16::MAX)
-    } else {
-        0
-    };
-    if item > 0 && item <= count && ppc_menu_item_is_selectable(memory, menu_handle, item) {
-        let menu_id = memory.read_u16_be(menu).unwrap_or(0);
-        return (u32::from(menu_id) << 16) | u32::from(item as u16);
-    }
-    0
-}
-
 /// Materialize one resource-backed menu for both `GetMenu` and `GetNewMBar`.
 /// Unlike raw Resource Manager lookup, `GetMenu` reads both the MENU and its
 /// definition procedure into memory. Macintosh Toolbox Essentials (1992),
@@ -79624,34 +79627,6 @@ mod tests {
             ppc_menu_handle_at_title_point(&mut loaded.memory, menu_list_handle, 80),
             None
         );
-        assert_eq!(
-            ppc_menu_select(
-                &mut loaded.memory,
-                menu_list_handle,
-                40,
-                PpcInputSnapshot {
-                    mouse_v: 21,
-                    mouse_h: 40,
-                    ..PpcInputSnapshot::default()
-                },
-            ),
-            (128 << 16) | 1,
-            "the fallback MenuSelect path must use the live guest menuLeft"
-        );
-        assert_eq!(
-            ppc_menu_select(
-                &mut loaded.memory,
-                menu_list_handle,
-                STANDARD_MENU_BAR_FIRST_TITLE_LEFT as u16 as u32,
-                PpcInputSnapshot {
-                    mouse_v: 21,
-                    mouse_h: STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
-                    ..PpcInputSnapshot::default()
-                },
-            ),
-            0,
-            "the stale pre-mutation title cell must not remain selectable"
-        );
         loaded
             .memory
             .write_u16_be(menu_list + 2, definition.last_right as u16)
@@ -79669,19 +79644,6 @@ mod tests {
                 first_non_title_h as u16 as u32,
             ),
             None
-        );
-        assert_eq!(
-            ppc_menu_select(
-                &mut loaded.memory,
-                menu_list_handle,
-                first_non_title_h as u16 as u32,
-                PpcInputSnapshot {
-                    mouse_v: 21,
-                    mouse_h: first_non_title_h,
-                    ..PpcInputSnapshot::default()
-                },
-            ),
-            0
         );
 
         let menu_bar_bytes = 20 * ppc_main_screen_row_bytes();
@@ -83306,19 +83268,6 @@ mod tests {
             loaded.toolbox_startup.pending_native_menu_selection,
             Some((129, 1))
         );
-        assert_eq!(
-            ppc_menu_select(
-                &mut loaded.memory,
-                menu_list_handle,
-                42,
-                PpcInputSnapshot {
-                    mouse_v: 21,
-                    mouse_h: 42,
-                    ..PpcInputSnapshot::default()
-                },
-            ),
-            (129 << 16) | 1
-        );
         let popup_probe = PPC_MAIN_SCREEN_BASE + 20 * ppc_main_screen_row_bytes() + 35;
         let popup_before = loaded.memory.read_u8(popup_probe).unwrap();
         ppc_track_menu_while_held(
@@ -83530,21 +83479,6 @@ mod tests {
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, PPC_MAIN_SCREEN_BASE, menu_bar_len),
             Some(unhighlighted_bar.clone())
-        );
-
-        assert_eq!(
-            ppc_menu_select(
-                &mut loaded.memory,
-                menu_list_handle,
-                12,
-                PpcInputSnapshot {
-                    mouse_v: 60,
-                    mouse_h: 12,
-                    ..PpcInputSnapshot::default()
-                },
-            ),
-            0,
-            "the synchronous MenuSelect path returned a divider"
         );
 
         ppc_track_menu_while_held(
@@ -137779,6 +137713,50 @@ mod tests {
             );
         }
         loaded.toolbox_startup.menu_tracking = Some(tracking);
+    }
+
+    #[test]
+    fn hle_import_runner_menu_select_initial_release_uses_retained_rows() {
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"File",
+            b"Icon row;Second",
+        );
+        let icon = ppc_menu_item_attribute_address(&mut loaded.memory, menu, 1, 0).unwrap();
+        loaded.memory.write_u8(icon, 1).unwrap();
+        loaded
+            .memory
+            .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 0)
+            .unwrap();
+
+        let title_left = STANDARD_MENU_BAR_FIRST_TITLE_LEFT;
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let expected =
+            ppc_begin_menu_bar_tracking(&mut loaded.memory, front, menu, title_left).unwrap();
+        assert_eq!(expected.item_appearances[0].height, 34);
+
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MenuSelect;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = (10u32 << 16) | u32::from((title_left + 2) as u16);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: expected.popup_top + 20,
+            mouse_h: expected.popup_left + 4,
+            ..PpcInputSnapshot::default()
+        });
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.cpu.gpr[3], (128u32 << 16) | 1);
+        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+        assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
     }
 
     #[test]
