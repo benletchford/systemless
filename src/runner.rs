@@ -6471,7 +6471,7 @@ impl FixtureRunner {
 
     /// Run the top parked native-to-68k call without recursively borrowing
     /// either CPU adapter. A-lines return to the same process dispatcher; the
-    /// exact gateway PC and restored 68k stack close the switch frame and
+    /// exact switch-frame return PC and restored 68k stack close the call and
     /// resume the PowerPC continuation.
     fn run_pending_m68k_guest_call(
         &mut self,
@@ -6481,24 +6481,11 @@ impl FixtureRunner {
         let active = ppc_app.guest_calls.active_m68k();
         let pending = active.or_else(|| ppc_app.guest_calls.activate_m68k())?;
         if active.is_none() {
-            for register in [
-                Register::D0,
-                Register::D1,
-                Register::D2,
-                Register::D3,
-                Register::D4,
-                Register::D5,
-                Register::D6,
-                Register::D7,
-                Register::A0,
-                Register::A1,
-                Register::A2,
-                Register::A3,
-                Register::A4,
-                Register::A5,
-                Register::A6,
-            ] {
-                self.cpu.write_reg(register, 0);
+            for (index, value) in pending.registers.data.into_iter().enumerate() {
+                self.cpu.core.set_d(index, value);
+            }
+            for (index, value) in pending.registers.address.into_iter().enumerate() {
+                self.cpu.core.set_a(index, value);
             }
             self.cpu.write_reg(Register::A7, pending.initial_sp);
             self.cpu.write_reg(Register::PC, pending.entry);
@@ -6507,11 +6494,7 @@ impl FixtureRunner {
         if self.cpu.read_reg(Register::PC) == pending.return_pc
             && self.cpu.read_reg(Register::A7) == pending.final_sp
         {
-            let completed = ppc_app.guest_calls.complete_m68k_for_powerpc(
-                pending.return_pc,
-                pending.final_sp,
-                &mut ppc_app.cpu,
-            );
+            let completed = self.complete_pending_m68k_guest_call(ppc_app, pending);
             return Some((0, completed));
         }
         if max_steps == 0 {
@@ -6530,11 +6513,7 @@ impl FixtureRunner {
         let mut running = true;
         while executed < max_steps {
             if self.cpu.read_reg(Register::PC) == pending.return_pc {
-                running = ppc_app.guest_calls.complete_m68k_for_powerpc(
-                    pending.return_pc,
-                    self.cpu.read_reg(Register::A7),
-                    &mut ppc_app.cpu,
-                );
+                running = self.complete_pending_m68k_guest_call(ppc_app, pending);
                 break;
             }
             let batch = self.cpu.run_batch(
@@ -6551,11 +6530,7 @@ impl FixtureRunner {
             match batch.exit {
                 BatchExit::BudgetExhausted => break,
                 BatchExit::WatchedPc { pc } if pc == pending.return_pc => {
-                    running = ppc_app.guest_calls.complete_m68k_for_powerpc(
-                        pc,
-                        self.cpu.read_reg(Register::A7),
-                        &mut ppc_app.cpu,
-                    );
+                    running = self.complete_pending_m68k_guest_call(ppc_app, pending);
                     break;
                 }
                 BatchExit::AlineTrap { opcode } => {
@@ -6581,6 +6556,38 @@ impl FixtureRunner {
         }
         self.bus.detach_guest_address_space();
         Some((executed, running))
+    }
+
+    fn complete_pending_m68k_guest_call(
+        &mut self,
+        ppc_app: &mut PpcLoadedApp,
+        pending: crate::guest_call::PendingM68kExecution,
+    ) -> bool {
+        use crate::guest_call::M68kResultSource;
+
+        let result = match pending.result {
+            None => None,
+            Some(M68kResultSource::Data(index)) => Some(self.cpu.core.d(usize::from(index))),
+            Some(M68kResultSource::Address(index)) => Some(self.cpu.core.a(usize::from(index))),
+            Some(M68kResultSource::Memory { address, size }) => {
+                let value = match size {
+                    1 => ppc_app.memory.read_u8(address).map(u32::from),
+                    2 => ppc_app.memory.read_u16_be(address).map(u32::from),
+                    4 => ppc_app.memory.read_u32_be(address),
+                    _ => None,
+                };
+                let Some(value) = value else {
+                    return false;
+                };
+                Some(value)
+            }
+        };
+        ppc_app.guest_calls.complete_m68k_for_powerpc(
+            pending.return_pc,
+            self.cpu.read_reg(Register::A7),
+            result,
+            &mut ppc_app.cpu,
+        )
     }
 
     fn prepare_ppc_execution_clock(&self, ppc_app: &mut PpcLoadedApp) {
@@ -13431,6 +13438,8 @@ mod tests {
             INITIAL_SP,
             RETURN_PC,
             INITIAL_SP + 4,
+            crate::guest_call::M68kRegisterState::default(),
+            Some(crate::guest_call::M68kResultSource::Data(0)),
             PPC_CODE_BASE,
             0,
             PpcNativeReturnGpr3::Preserve,
@@ -13449,6 +13458,7 @@ mod tests {
         assert!(runner.dispatcher.guest_calls.is_empty());
         let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
         assert_eq!(ppc_app.memory.read_u32_be(RESULT), Some(41));
+        assert_eq!(ppc_app.cpu.gpr[3], 41);
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.lr, PPC_CODE_BASE);
         assert_eq!(runner.bus.read_long(RESULT), 0);

@@ -40,6 +40,8 @@ struct M68kExecution {
     initial_sp: u32,
     return_pc: u32,
     final_sp: u32,
+    registers: M68kRegisterState,
+    result: Option<M68kResultSource>,
     started: bool,
 }
 
@@ -62,6 +64,21 @@ pub(crate) struct PendingM68kExecution {
     pub(crate) initial_sp: u32,
     pub(crate) return_pc: u32,
     pub(crate) final_sp: u32,
+    pub(crate) registers: M68kRegisterState,
+    pub(crate) result: Option<M68kResultSource>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct M68kRegisterState {
+    pub(crate) data: [u32; 8],
+    pub(crate) address: [u32; 7],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum M68kResultSource {
+    Data(u8),
+    Address(u8),
+    Memory { address: u32, size: u8 },
 }
 
 /// One process's nested guest-procedure continuation stack.
@@ -136,6 +153,8 @@ impl SharedGuestCallStack {
         initial_sp: u32,
         return_pc: u32,
         final_sp: u32,
+        registers: M68kRegisterState,
+        result: Option<M68kResultSource>,
         final_pc: u32,
         restore_rtoc: u32,
         return_gpr3: PpcNativeReturnGpr3,
@@ -154,6 +173,8 @@ impl SharedGuestCallStack {
                 initial_sp,
                 return_pc,
                 final_sp,
+                registers,
+                result,
                 started: false,
             }),
         });
@@ -168,6 +189,8 @@ impl SharedGuestCallStack {
             initial_sp: execution.initial_sp,
             return_pc: execution.return_pc,
             final_sp: execution.final_sp,
+            registers: execution.registers,
+            result: execution.result,
         };
         execution.started = true;
         Some(pending)
@@ -181,6 +204,8 @@ impl SharedGuestCallStack {
             initial_sp: execution.initial_sp,
             return_pc: execution.return_pc,
             final_sp: execution.final_sp,
+            registers: execution.registers,
+            result: execution.result,
         })
     }
 
@@ -261,6 +286,7 @@ impl SharedGuestCallStack {
         &self,
         post_call_pc: u32,
         final_sp: u32,
+        result: Option<u32>,
         cpu: &mut PpcCpu,
     ) -> bool {
         let frame = {
@@ -277,6 +303,7 @@ impl SharedGuestCallStack {
             if !execution.started
                 || post_call_pc != execution.return_pc
                 || final_sp != execution.final_sp
+                || execution.result.is_some() != result.is_some()
             {
                 return false;
             }
@@ -287,6 +314,9 @@ impl SharedGuestCallStack {
         let GuestCallOrigin::PowerPc(origin) = frame.origin else {
             unreachable!();
         };
+        if let Some(result) = result {
+            cpu.gpr[3] = result;
+        }
         Self::apply_powerpc_return(cpu, origin);
         true
     }
@@ -487,6 +517,8 @@ mod tests {
             0x3000,
             0x4000,
             0x3004,
+            M68kRegisterState::default(),
+            None,
             0x5000,
             0x6000,
             PpcNativeReturnGpr3::Preserve,
@@ -501,11 +533,13 @@ mod tests {
                 initial_sp: 0x3000,
                 return_pc: 0x4000,
                 final_sp: 0x3004,
+                registers: M68kRegisterState::default(),
+                result: None,
             })
         );
         assert_eq!(calls.active_m68k(), calls.activate_m68k());
-        assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3000, &mut cpu));
-        assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, &mut cpu));
+        assert!(!calls.complete_m68k_for_powerpc(0x4000, 0x3000, None, &mut cpu));
+        assert!(calls.complete_m68k_for_powerpc(0x4000, 0x3004, None, &mut cpu));
         assert_eq!((cpu.pc, cpu.lr, cpu.gpr[2]), (0x5000, 0x5000, 0x6000));
         assert!(calls.is_empty());
     }

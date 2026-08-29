@@ -2930,10 +2930,10 @@ pub struct PpcToolboxStartupState {
     popup_menu_call: Option<PpcPopUpMenuCall>,
     /// Reused guest storage for the by-reference MDEF rectangle and item.
     menu_def_scratch: u32,
-    /// Adapter-owned 68k gateway and stack used when a native caller selects
-    /// a classic MDEF record through Mixed Mode.
-    menu_def_m68k_gateway: u32,
-    menu_def_m68k_stack_top: u32,
+    /// Process-owned 68k switch marker/gateway and stack used whenever native
+    /// PowerPC enters classic code through Mixed Mode.
+    mixed_mode_m68k_gateway: u32,
+    mixed_mode_m68k_stack_top: u32,
     guest_calls: SharedGuestCallStack,
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
@@ -2995,8 +2995,8 @@ impl Default for PpcToolboxStartupState {
             menu_definition_saved_gworld: None,
             popup_menu_call: None,
             menu_def_scratch: 0,
-            menu_def_m68k_gateway: 0,
-            menu_def_m68k_stack_top: 0,
+            mixed_mode_m68k_gateway: 0,
+            mixed_mode_m68k_stack_top: 0,
             guest_calls: SharedGuestCallStack::default(),
             go_away_tracking: None,
             drag_window_tracking: None,
@@ -24784,9 +24784,15 @@ fn dispatch_supported_import(
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::CallUniversalProc => {
-            ppc_call_universal_proc(cpu, memory, heap_cursor, heap_limit, ptrs, free_ptr_blocks)
-        }
+        PpcImportDispatcherTarget::CallUniversalProc => ppc_call_universal_proc(
+            cpu,
+            memory,
+            heap_cursor,
+            heap_limit,
+            ptrs,
+            free_ptr_blocks,
+            toolbox_startup,
+        ),
         PpcImportDispatcherTarget::CallOSTrapUniversalProc => ppc_call_os_trap_universal_proc(
             cpu,
             memory,
@@ -24794,6 +24800,7 @@ fn dispatch_supported_import(
             heap_limit,
             ptrs,
             free_ptr_blocks,
+            toolbox_startup,
         ),
         PpcImportDispatcherTarget::GetTrapAddress
         | PpcImportDispatcherTarget::GetToolTrapAddress
@@ -41036,6 +41043,7 @@ fn ppc_call_universal_proc(
     heap_limit: u32,
     ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Option<PpcImportAction> {
     let proc_ptr = cpu.gpr[3];
     let proc_info = cpu.gpr[4];
@@ -41081,30 +41089,426 @@ fn ppc_call_universal_proc(
         // changed an interrupt mask, so consuming the saved token is a no-op.
         return Some(PpcImportAction::ReturnPreserve);
     }
-    let target = ppc_resolve_callback_target(memory, proc_ptr, restore_rtoc, selector)?;
-    memory.read_u32_be(target.entry)?;
+    let target = resolve_guest_procedure(
+        memory,
+        proc_ptr,
+        restore_rtoc,
+        selector,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    )?;
+    match target.isa {
+        GuestIsa::PowerPc => {
+            memory.read_u32_be(target.entry)?;
+        }
+        GuestIsa::M68k => {
+            memory.read_u16_be(target.entry)?;
+        }
+    }
 
-    match arguments {
-        Some(mut args) => {
-            if selector.is_some()
-                && (target.routine_flags & PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR) != 0
+    match target.isa {
+        GuestIsa::PowerPc => {
+            match arguments {
+                Some(mut args) => {
+                    if selector.is_some()
+                        && (target.routine_flags & PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR) != 0
+                        && !args.is_empty()
+                    {
+                        args.remove(0);
+                    }
+                    ppc_install_native_call_arguments(cpu, memory, &args)?
+                }
+                None => ppc_install_legacy_call_universal_proc_arguments(cpu),
+            }
+            Some(PpcImportAction::CallNative {
+                entry: target.entry,
+                rtoc: target.rtoc,
+                return_pc: PPC_GUEST_CALL_RETURN_PC,
+                final_pc,
+                restore_rtoc,
+                return_gpr3,
+            })
+        }
+        GuestIsa::M68k => ppc_begin_m68k_universal_proc(
+            cpu,
+            memory,
+            heap_cursor,
+            heap_limit,
+            toolbox_startup,
+            target,
+            proc_info,
+            selector,
+            arguments?,
+            final_pc,
+            return_gpr3,
+        ),
+    }
+}
+
+const PPC_MIXED_MODE_M68K_GATEWAY_SIZE: u32 = 52;
+const PPC_MIXED_MODE_M68K_RETURN_OFFSET: u32 = 50;
+const PPC_MIXED_MODE_M68K_STACK_SIZE: u32 = 64 * 1024;
+
+fn ppc_mixed_mode_m68k_storage(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    startup: &mut PpcToolboxStartupState,
+) -> Option<(u32, u32)> {
+    if startup.mixed_mode_m68k_gateway == 0 {
+        startup.mixed_mode_m68k_gateway = ppc_heap_alloc(
+            memory,
+            heap_cursor,
+            heap_limit,
+            PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
+            true,
+        );
+        if startup.mixed_mode_m68k_gateway == 0 {
+            return None;
+        }
+        memory.write_u16_be(
+            startup.mixed_mode_m68k_gateway + PPC_MIXED_MODE_M68K_RETURN_OFFSET,
+            0x4e71,
+        )?;
+    }
+    if startup.mixed_mode_m68k_stack_top == 0 {
+        let base = ppc_heap_alloc(
+            memory,
+            heap_cursor,
+            heap_limit,
+            PPC_MIXED_MODE_M68K_STACK_SIZE,
+            true,
+        );
+        if base == 0 {
+            return None;
+        }
+        startup.mixed_mode_m68k_stack_top = base.checked_add(PPC_MIXED_MODE_M68K_STACK_SIZE)?;
+    }
+    Some((
+        startup.mixed_mode_m68k_gateway,
+        startup.mixed_mode_m68k_stack_top,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_begin_m68k_universal_proc(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    startup: &mut PpcToolboxStartupState,
+    target: GuestProcedure,
+    proc_info: u32,
+    selector: Option<u32>,
+    arguments: Vec<u32>,
+    final_pc: u32,
+    return_gpr3: PpcNativeReturnGpr3,
+) -> Option<PpcImportAction> {
+    use crate::guest_call::{M68kRegisterState, M68kResultSource};
+
+    // The 68k side follows the stack/register layouts in Inside Macintosh:
+    // PowerPC System Software (1994), pp. 1-42--1-43 and 2-12--2-20. In
+    // particular, Pascal results precede left-to-right parameters, MPW C and
+    // THINK C parameters are pushed right-to-left, and THINK C alone places a
+    // one-byte argument in the high byte of its aligned stack word.
+    let convention = proc_info & PPC_PROCINFO_CALLING_CONVENTION_MASK;
+    let result_size = (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x03;
+    if convention == PPC_PROCINFO_SPECIAL_CASE {
+        return None;
+    }
+    let mut registers = M68kRegisterState::default();
+    // Native processes expose their compatibility globals through the
+    // synthetic mini-A5 world returned by SetCurrentA5/LMGetCurrentA5.
+    registers.address[5] = PPC_DATA_BASE;
+    let mut stack_arguments = Vec::<(u32, u32)>::new();
+
+    match convention {
+        PPC_PROCINFO_REGISTER_BASED => {
+            let result_register = (proc_info >> PPC_PROCINFO_REGISTER_RESULT_LOCATION_PHASE) & 0x1f;
+            if result_size == PPC_PROCINFO_SIZE_NONE
+                && matches!(
+                    result_register,
+                    PPC_PROCINFO_REGISTER_CCR_C
+                        | PPC_PROCINFO_REGISTER_CCR_V
+                        | PPC_PROCINFO_REGISTER_CCR_Z
+                        | PPC_PROCINFO_REGISTER_CCR_N
+                        | PPC_PROCINFO_REGISTER_CCR_X
+                )
             {
-                if !args.is_empty() {
-                    args.remove(0);
+                return None;
+            }
+            if arguments.len() > PPC_PROCINFO_MAX_REGISTER_PARAMETERS {
+                return None;
+            }
+            for (index, value) in arguments.into_iter().enumerate() {
+                let shift = PPC_PROCINFO_REGISTER_PARAMETER_PHASE
+                    + u32::try_from(index).ok()? * PPC_PROCINFO_REGISTER_PARAMETER_WIDTH;
+                let field = (proc_info >> shift) & 0x1f;
+                let register = (field >> PPC_PROCINFO_REGISTER_PARAMETER_WHICH_SHIFT)
+                    & PPC_PROCINFO_REGISTER_PARAMETER_WHICH_MASK;
+                ppc_set_m68k_input_register(&mut registers, register, value)?;
+            }
+        }
+        PPC_PROCINFO_PASCAL_STACK_BASED
+        | PPC_PROCINFO_C_STACK_BASED
+        | PPC_PROCINFO_THINK_C_STACK_BASED => {
+            let sizes = ppc_m68k_stack_argument_sizes(proc_info, false)?;
+            if sizes.len() != arguments.len() {
+                return None;
+            }
+            stack_arguments.extend(arguments.into_iter().zip(sizes));
+        }
+        PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED
+        | PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED
+        | PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED
+        | PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED => {
+            let sizes = ppc_m68k_stack_argument_sizes(proc_info, true)?;
+            if sizes.len() != arguments.len() {
+                return None;
+            }
+            let mut pairs: Vec<_> = arguments.into_iter().zip(sizes).collect();
+            let selector_size = (proc_info >> PPC_PROCINFO_DISPATCHED_SELECTOR_SIZE_PHASE) & 0x03;
+            let selector_pair = if selector_size == PPC_PROCINFO_SIZE_NONE {
+                None
+            } else if pairs.is_empty() {
+                return None;
+            } else {
+                Some(pairs.remove(0))
+            };
+            let pass_selector = (target.routine_flags & PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR) == 0;
+            if pass_selector {
+                if let Some((value, size)) = selector_pair {
+                    match convention {
+                        PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED
+                        | PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED => {
+                            registers.data[0] = value;
+                        }
+                        PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED => {
+                            registers.data[1] = value;
+                        }
+                        PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED => {
+                            pairs.insert(0, (value, size));
+                        }
+                        _ => unreachable!(),
+                    }
+                } else if selector.is_some() {
+                    return None;
                 }
             }
-            ppc_install_native_call_arguments(cpu, memory, &args)?
+            stack_arguments = pairs;
         }
-        None => ppc_install_legacy_call_universal_proc_arguments(cpu),
+        _ => return None,
     }
-    Some(PpcImportAction::CallNative {
-        entry: target.entry,
-        rtoc: target.rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
+
+    let (gateway, stack_top) =
+        ppc_mixed_mode_m68k_storage(memory, heap_cursor, heap_limit, startup)?;
+    let return_pc = gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?;
+    if stack_top < 4 {
+        return None;
+    }
+
+    let pascal = matches!(
+        convention,
+        PPC_PROCINFO_PASCAL_STACK_BASED
+            | PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED
+            | PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED
+            | PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED
+    );
+    let think_c = convention == PPC_PROCINFO_THINK_C_STACK_BASED;
+    let mut sp = stack_top;
+    let mut result = None;
+    let pascal_result_sp = if pascal && result_size != PPC_PROCINFO_SIZE_NONE {
+        let value_address = ppc_reserve_m68k_stack_value(memory, &mut sp, result_size, false)?;
+        result = Some(M68kResultSource::Memory {
+            address: value_address,
+            size: ppc_procinfo_value_size(result_size)?,
+        });
+        Some(sp)
+    } else {
+        None
+    };
+
+    let argument_bytes: u32 = stack_arguments.iter().try_fold(0u32, |total, (_, size)| {
+        total.checked_add(ppc_m68k_stack_slot_size(*size)?)
+    })?;
+    if matches!(
+        convention,
+        PPC_PROCINFO_C_STACK_BASED
+            | PPC_PROCINFO_THINK_C_STACK_BASED
+            | PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED
+    ) {
+        for (value, size) in stack_arguments.into_iter().rev() {
+            ppc_push_m68k_stack_value(memory, &mut sp, value, size, think_c)?;
+        }
+    } else {
+        for (value, size) in stack_arguments {
+            ppc_push_m68k_stack_value(memory, &mut sp, value, size, think_c)?;
+        }
+    }
+    let parameter_sp = sp;
+    sp = sp.checked_sub(4)?;
+    memory.write_u32_be(sp, return_pc)?;
+    let initial_sp = sp;
+
+    let final_sp = if pascal {
+        pascal_result_sp.unwrap_or(stack_top)
+    } else {
+        parameter_sp
+    };
+    if pascal && final_sp != initial_sp.checked_add(4 + argument_bytes)? {
+        return None;
+    }
+    if !pascal && result_size != PPC_PROCINFO_SIZE_NONE {
+        result = match convention {
+            PPC_PROCINFO_C_STACK_BASED
+            | PPC_PROCINFO_THINK_C_STACK_BASED
+            | PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED => Some(M68kResultSource::Data(0)),
+            PPC_PROCINFO_REGISTER_BASED => {
+                let register = (proc_info >> PPC_PROCINFO_REGISTER_RESULT_LOCATION_PHASE) & 0x1f;
+                Some(ppc_m68k_result_register(register)?)
+            }
+            _ => return None,
+        };
+    }
+
+    startup.guest_calls.begin_powerpc_to_m68k(
+        crate::guest_call::GuestCallTarget {
+            isa: target.isa,
+            entry: target.entry,
+            rtoc: target.rtoc,
+        },
+        target.entry,
+        initial_sp,
+        return_pc,
+        final_sp,
+        registers,
+        result,
         final_pc,
-        restore_rtoc,
+        cpu.gpr[2],
         return_gpr3,
-    })
+    );
+    Some(PpcImportAction::Halt)
+}
+
+fn ppc_m68k_stack_argument_sizes(proc_info: u32, dispatched: bool) -> Option<Vec<u32>> {
+    let mut sizes = Vec::new();
+    if dispatched {
+        let selector_size = (proc_info >> PPC_PROCINFO_DISPATCHED_SELECTOR_SIZE_PHASE) & 0x03;
+        if selector_size != PPC_PROCINFO_SIZE_NONE {
+            sizes.push(selector_size);
+        }
+        for index in 0..PPC_PROCINFO_MAX_DISPATCHED_STACK_PARAMETERS {
+            let shift = PPC_PROCINFO_DISPATCHED_PARAMETER_PHASE
+                + u32::try_from(index).ok()? * PPC_PROCINFO_STACK_PARAMETER_WIDTH;
+            let size = (proc_info >> shift) & 0x03;
+            if size == PPC_PROCINFO_SIZE_NONE {
+                break;
+            }
+            sizes.push(size);
+        }
+    } else {
+        for index in 0..PPC_PROCINFO_MAX_STACK_PARAMETERS {
+            let shift = PPC_PROCINFO_STACK_PARAMETER_PHASE
+                + u32::try_from(index).ok()? * PPC_PROCINFO_STACK_PARAMETER_WIDTH;
+            let size = (proc_info >> shift) & 0x03;
+            if size == PPC_PROCINFO_SIZE_NONE {
+                break;
+            }
+            sizes.push(size);
+        }
+    }
+    Some(sizes)
+}
+
+fn ppc_set_m68k_input_register(
+    registers: &mut crate::guest_call::M68kRegisterState,
+    register: u32,
+    value: u32,
+) -> Option<()> {
+    match register {
+        0..=3 => registers.data[usize::try_from(register).ok()?] = value,
+        4..=7 => registers.address[usize::try_from(register - 4).ok()?] = value,
+        _ => return None,
+    }
+    Some(())
+}
+
+fn ppc_m68k_result_register(register: u32) -> Option<crate::guest_call::M68kResultSource> {
+    use crate::guest_call::M68kResultSource;
+
+    match register {
+        0..=3 => Some(M68kResultSource::Data(u8::try_from(register).ok()?)),
+        4..=7 => Some(M68kResultSource::Address(u8::try_from(register - 4).ok()?)),
+        8..=11 => Some(M68kResultSource::Data(u8::try_from(register - 4).ok()?)),
+        12..=14 => Some(M68kResultSource::Address(u8::try_from(register - 8).ok()?)),
+        // Inside Macintosh: PowerPC System Software (1994), p. 2-14 notes
+        // that the emulator-return transition clears the low five CCR bits.
+        PPC_PROCINFO_REGISTER_CCR_C
+        | PPC_PROCINFO_REGISTER_CCR_V
+        | PPC_PROCINFO_REGISTER_CCR_Z
+        | PPC_PROCINFO_REGISTER_CCR_N
+        | PPC_PROCINFO_REGISTER_CCR_X => None,
+        _ => None,
+    }
+}
+
+fn ppc_procinfo_value_size(size: u32) -> Option<u8> {
+    match size {
+        PPC_PROCINFO_SIZE_ONE => Some(1),
+        PPC_PROCINFO_SIZE_TWO => Some(2),
+        PPC_PROCINFO_SIZE_FOUR => Some(4),
+        _ => None,
+    }
+}
+
+fn ppc_m68k_stack_slot_size(size: u32) -> Option<u32> {
+    match size {
+        PPC_PROCINFO_SIZE_ONE | PPC_PROCINFO_SIZE_TWO => Some(2),
+        PPC_PROCINFO_SIZE_FOUR => Some(4),
+        _ => None,
+    }
+}
+
+fn ppc_reserve_m68k_stack_value(
+    memory: &mut PpcSectionMem,
+    sp: &mut u32,
+    size: u32,
+    high_byte: bool,
+) -> Option<u32> {
+    let slot_size = ppc_m68k_stack_slot_size(size)?;
+    *sp = sp.checked_sub(slot_size)?;
+    match size {
+        PPC_PROCINFO_SIZE_ONE => {
+            memory.write_u16_be(*sp, 0)?;
+            Some(if high_byte { *sp } else { sp.checked_add(1)? })
+        }
+        PPC_PROCINFO_SIZE_TWO => {
+            memory.write_u16_be(*sp, 0)?;
+            Some(*sp)
+        }
+        PPC_PROCINFO_SIZE_FOUR => {
+            memory.write_u32_be(*sp, 0)?;
+            Some(*sp)
+        }
+        _ => None,
+    }
+}
+
+fn ppc_push_m68k_stack_value(
+    memory: &mut PpcSectionMem,
+    sp: &mut u32,
+    value: u32,
+    size: u32,
+    high_byte: bool,
+) -> Option<()> {
+    let address = ppc_reserve_m68k_stack_value(memory, sp, size, high_byte)?;
+    match size {
+        PPC_PROCINFO_SIZE_ONE => memory.write_u8(address, value as u8)?,
+        PPC_PROCINFO_SIZE_TWO => memory.write_u16_be(address, value as u16)?,
+        PPC_PROCINFO_SIZE_FOUR => memory.write_u32_be(address, value)?,
+        _ => return None,
+    }
+    Some(())
 }
 
 fn ppc_call_fake_trap_universal_proc(
@@ -41191,11 +41595,20 @@ fn ppc_call_os_trap_universal_proc(
     heap_limit: u32,
     ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    toolbox_startup: &mut PpcToolboxStartupState,
 ) -> Option<PpcImportAction> {
     if (cpu.gpr[4] & PPC_PROCINFO_CALLING_CONVENTION_MASK) != PPC_PROCINFO_REGISTER_BASED {
         return None;
     }
-    ppc_call_universal_proc(cpu, memory, heap_cursor, heap_limit, ptrs, free_ptr_blocks)
+    ppc_call_universal_proc(
+        cpu,
+        memory,
+        heap_cursor,
+        heap_limit,
+        ptrs,
+        free_ptr_blocks,
+        toolbox_startup,
+    )
 }
 
 fn ppc_snd_new_channel(
@@ -66788,8 +67201,6 @@ fn ppc_dispatch_native_menu_definition_with_return(
 }
 
 const MDEF_PASCAL_PROC_INFO: u32 = 0x0000_ff80;
-const MDEF_M68K_GATEWAY_SIZE: u32 = 52;
-const MDEF_M68K_STACK_SIZE: u32 = 64 * 1024;
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_begin_m68k_menu_definition(
@@ -66810,28 +67221,15 @@ fn ppc_begin_m68k_menu_definition(
     if target.proc_info != 0 && target.proc_info != MDEF_PASCAL_PROC_INFO {
         return None;
     }
-    if startup.menu_def_m68k_gateway == 0 {
-        startup.menu_def_m68k_gateway = ppc_heap_alloc(
-            memory,
-            heap_cursor,
-            heap_limit,
-            MDEF_M68K_GATEWAY_SIZE,
-            true,
-        );
-    }
-    if startup.menu_def_m68k_stack_top == 0 {
-        let base = ppc_heap_alloc(memory, heap_cursor, heap_limit, MDEF_M68K_STACK_SIZE, true);
-        startup.menu_def_m68k_stack_top = base.checked_add(MDEF_M68K_STACK_SIZE)?;
-    }
-    let gateway = startup.menu_def_m68k_gateway;
-    let stack_top = startup.menu_def_m68k_stack_top;
-    if gateway == 0 || stack_top < 4 {
+    let (gateway, stack_top) =
+        ppc_mixed_mode_m68k_storage(memory, heap_cursor, heap_limit, startup)?;
+    if stack_top < 4 {
         return None;
     }
 
     let return_slot = stack_top - 4;
     let saved_register_sp = return_slot - 32;
-    let return_pc = gateway + 50;
+    let return_pc = gateway + PPC_MIXED_MODE_M68K_RETURN_OFFSET;
     let write_word = |memory: &mut PpcSectionMem, offset: u32, value: u16| {
         memory.write_u16_be(gateway + offset, value)
     };
@@ -66867,6 +67265,12 @@ fn ppc_begin_m68k_menu_definition(
         return_slot,
         return_pc,
         stack_top,
+        {
+            let mut registers = crate::guest_call::M68kRegisterState::default();
+            registers.address[5] = PPC_DATA_BASE;
+            registers
+        },
+        None,
         final_pc,
         cpu.gpr[2],
         return_gpr3,
@@ -79033,16 +79437,45 @@ mod tests {
             cpu.set_cpu_type(REFERENCE_MACHINE_PROFILE.cpu_type());
             cpu.pc = pending.entry;
             cpu.set_a(7, pending.initial_sp);
+            for (index, value) in pending.registers.data.into_iter().enumerate() {
+                cpu.set_d(index, value);
+            }
+            for (index, value) in pending.registers.address.into_iter().enumerate() {
+                cpu.set_a(index, value);
+            }
             let result = cpu.run_batch(&mut loaded.memory, 4096, &[pending.return_pc]);
             assert_eq!(
                 result.exit,
                 m68k::BatchExit::WatchedPc {
                     pc: pending.return_pc
-                }
+                },
+                "entry=${:08X} pc=${:08X} sp=${:08X} return=${:08X}",
+                pending.entry,
+                cpu.pc,
+                cpu.a(7),
+                pending.return_pc,
             );
+            let result = match pending.result {
+                None => None,
+                Some(crate::guest_call::M68kResultSource::Data(index)) => {
+                    Some(cpu.d(usize::from(index)))
+                }
+                Some(crate::guest_call::M68kResultSource::Address(index)) => {
+                    Some(cpu.a(usize::from(index)))
+                }
+                Some(crate::guest_call::M68kResultSource::Memory { address, size }) => {
+                    Some(match size {
+                        1 => u32::from(loaded.memory.read_u8(address).unwrap()),
+                        2 => u32::from(loaded.memory.read_u16_be(address).unwrap()),
+                        4 => loaded.memory.read_u32_be(address).unwrap(),
+                        _ => panic!("unsupported 68k result size {size}"),
+                    })
+                }
+            };
             assert!(loaded.guest_calls.complete_m68k_for_powerpc(
                 cpu.pc,
                 cpu.a(7),
+                result,
                 &mut loaded.cpu,
             ));
 
@@ -84757,8 +85190,8 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(menu + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu + 4), Some(45));
         assert!(loaded.guest_calls.is_empty());
-        assert_ne!(loaded.toolbox_startup.menu_def_m68k_gateway, 0);
-        assert_ne!(loaded.toolbox_startup.menu_def_m68k_stack_top, 0);
+        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k_gateway, 0);
+        assert_ne!(loaded.toolbox_startup.mixed_mode_m68k_stack_top, 0);
     }
 
     #[test]
@@ -90566,6 +90999,233 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_call_universal_proc_executes_m68k_pascal_descriptor_and_result() {
+        let pef = synthetic_pef_with_import(b"CallUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let proc_info = test_stack_proc_info(PPC_PROCINFO_SIZE_FOUR, &[PPC_PROCINFO_SIZE_FOUR]);
+        install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            callback_entry,
+            proc_info,
+            0,
+            &[
+                0x202f, 0x0004, // MOVE.L 4(SP),D0
+                0x5e80, // ADDQ.L #7,D0
+                0x2f40, 0x0008, // MOVE.L D0,8(SP)
+                0x4e74, 0x0004, // RTD #4
+            ],
+        );
+        loaded.cpu.gpr[3] = descriptor;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        assert_eq!(
+            loaded.memory.read_u32_be(pending.initial_sp + 4),
+            Some(0x1234_5678)
+        );
+        assert_eq!(pending.final_sp, pending.initial_sp + 8);
+        drain_test_m68k_guest_calls(&mut loaded);
+        assert_eq!(loaded.cpu.gpr[3], 0x1234_567f);
+        assert!(loaded.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_lays_out_m68k_pascal_stack_sizes() {
+        let pef = synthetic_pef_with_import(b"CallUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let proc_info = test_stack_proc_info(
+            PPC_PROCINFO_SIZE_NONE,
+            &[
+                PPC_PROCINFO_SIZE_ONE,
+                PPC_PROCINFO_SIZE_TWO,
+                PPC_PROCINFO_SIZE_FOUR,
+            ],
+        );
+        install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            callback_entry,
+            proc_info,
+            0,
+            &[0x4e74, 0x0008], // RTD #8
+        );
+        loaded.cpu.gpr[3] = descriptor;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5] = 0x1234_5678;
+        loaded.cpu.gpr[6] = 0x8765_4321;
+        loaded.cpu.gpr[7] = 0xcafe_babe;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        let frame = pending.initial_sp;
+        assert_eq!(loaded.memory.read_u32_be(frame), Some(pending.return_pc));
+        assert_eq!(loaded.memory.read_u32_be(frame + 4), Some(0xcafe_babe));
+        assert_eq!(loaded.memory.read_u16_be(frame + 8), Some(0x4321));
+        assert_eq!(loaded.memory.read_u8(frame + 10), Some(0));
+        assert_eq!(loaded.memory.read_u8(frame + 11), Some(0x78));
+        assert_eq!(pending.final_sp, frame + 12);
+        drain_test_m68k_guest_calls(&mut loaded);
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_distinguishes_mpw_and_think_c_bytes() {
+        for (convention, byte_offset) in [
+            (PPC_PROCINFO_C_STACK_BASED, 1),
+            (PPC_PROCINFO_THINK_C_STACK_BASED, 0),
+        ] {
+            let pef = synthetic_pef_with_import(b"CallUniversalProc");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let descriptor = PPC_HEAP_BASE + 0x1000;
+            let callback_entry = PPC_HEAP_BASE + 0x2000;
+            let proc_info = test_stack_proc_info(
+                PPC_PROCINFO_SIZE_FOUR,
+                &[
+                    PPC_PROCINFO_SIZE_ONE,
+                    PPC_PROCINFO_SIZE_TWO,
+                    PPC_PROCINFO_SIZE_FOUR,
+                ],
+            ) | convention;
+            install_test_m68k_callback(
+                &mut loaded,
+                descriptor,
+                callback_entry,
+                proc_info,
+                0,
+                &[0x7007, 0x4e75], // MOVEQ #7,D0; RTS
+            );
+            loaded.cpu.gpr[3] = descriptor;
+            loaded.cpu.gpr[4] = proc_info;
+            loaded.cpu.gpr[5] = 0x1234_5678;
+            loaded.cpu.gpr[6] = 0x8765_4321;
+            loaded.cpu.gpr[7] = 0xcafe_babe;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            let frame = pending.initial_sp;
+            assert_eq!(loaded.memory.read_u8(frame + 4 + byte_offset), Some(0x78));
+            assert_eq!(loaded.memory.read_u16_be(frame + 6), Some(0x4321));
+            assert_eq!(loaded.memory.read_u32_be(frame + 8), Some(0xcafe_babe));
+            assert_eq!(pending.final_sp, frame + 4);
+            drain_test_m68k_guest_calls(&mut loaded);
+            assert_eq!(loaded.cpu.gpr[3], 7);
+        }
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_maps_m68k_register_arguments_and_result() {
+        let pef = synthetic_pef_with_import(b"CallUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let proc_info = test_register_proc_info_with_result_location(
+            PPC_PROCINFO_SIZE_FOUR,
+            4,
+            &[(1, PPC_PROCINFO_SIZE_TWO), (7, PPC_PROCINFO_SIZE_FOUR)],
+        );
+        install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            callback_entry,
+            proc_info,
+            0,
+            &[
+                0x207c, 0xcafe, 0xbabe, // MOVEA.L #$CAFEBABE,A0
+                0x4e75, // RTS
+            ],
+        );
+        loaded.cpu.gpr[3] = descriptor;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5] = 0xabcd_7654;
+        loaded.cpu.gpr[6] = 0x1234_5678;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        assert_eq!(pending.registers.data[1], 0x7654);
+        assert_eq!(pending.registers.address[3], 0x1234_5678);
+        assert_eq!(pending.registers.address[5], PPC_DATA_BASE);
+        assert_eq!(pending.final_sp, pending.initial_sp + 4);
+        drain_test_m68k_guest_calls(&mut loaded);
+        assert_eq!(loaded.cpu.gpr[3], 0xcafe_babe);
+    }
+
+    #[test]
+    fn hle_import_runner_call_universal_proc_places_m68k_dispatched_selectors() {
+        for (convention, selector_register, flags) in [
+            (PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED, Some(0), 0),
+            (PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED, Some(1), 0),
+            (
+                PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED,
+                None,
+                PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR,
+            ),
+            (PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED, None, 0),
+        ] {
+            let pef = synthetic_pef_with_import(b"CallUniversalProc");
+            let mut loaded = load_pef_application(&pef).unwrap();
+            let descriptor = PPC_HEAP_BASE + 0x1000;
+            let callback_entry = PPC_HEAP_BASE + 0x2000;
+            let proc_info = test_dispatched_stack_proc_info(
+                convention,
+                PPC_PROCINFO_SIZE_NONE,
+                PPC_PROCINFO_SIZE_TWO,
+                &[PPC_PROCINFO_SIZE_FOUR],
+            );
+            let stack_selector = convention == PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED;
+            let cleanup = if stack_selector && flags == 0 { 6 } else { 4 };
+            install_test_m68k_callback(
+                &mut loaded,
+                descriptor,
+                callback_entry,
+                proc_info,
+                flags,
+                &[0x4e74, cleanup],
+            );
+            loaded.cpu.gpr[3] = descriptor;
+            loaded.cpu.gpr[4] = proc_info;
+            loaded.cpu.gpr[5] = 0x1234_5678;
+            loaded.cpu.gpr[6] = 0xcafe_babe;
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1);
+            let pending = loaded.guest_calls.activate_m68k().unwrap();
+            if let Some(register) = selector_register {
+                assert_eq!(pending.registers.data[register], 0x5678);
+            } else {
+                assert_eq!(pending.registers.data[0], 0);
+                assert_eq!(pending.registers.data[1], 0);
+            }
+            assert_eq!(
+                loaded.memory.read_u32_be(pending.initial_sp + 4),
+                Some(0xcafe_babe)
+            );
+            if stack_selector {
+                assert_eq!(
+                    loaded.memory.read_u16_be(pending.initial_sp + 8),
+                    Some(0x5678)
+                );
+            }
+            drain_test_m68k_guest_calls(&mut loaded);
+        }
+    }
+
+    #[test]
     fn hle_import_runner_call_universal_proc_decodes_stack_procinfo_sizes() {
         let pef = synthetic_pef_with_import(b"CallUniversalProc");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -91588,6 +92248,43 @@ mod tests {
         assert_eq!(loaded.cpu.gpr[3], 0xa121);
         assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(0xa11c));
         assert_eq!(loaded.memory.read_u32_be(callback_rtoc + 4), Some(0x20));
+    }
+
+    #[test]
+    fn hle_import_runner_call_ostrap_universal_proc_enters_m68k_register_descriptor() {
+        let pef = synthetic_pef_with_import(b"CallOSTrapUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let proc_info = test_register_proc_info_with_result_location(
+            PPC_PROCINFO_SIZE_TWO,
+            0,
+            &[(1, PPC_PROCINFO_SIZE_TWO)],
+        );
+        install_test_m68k_callback(
+            &mut loaded,
+            descriptor,
+            callback_entry,
+            proc_info,
+            0,
+            &[
+                0x2001, // MOVE.L D1,D0
+                0x5a80, // ADDQ.L #5,D0
+                0x4e75, // RTS
+            ],
+        );
+        loaded.cpu.gpr[3] = descriptor;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5] = 0xffff_a11c;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        assert_eq!(pending.registers.data[1], 0xa11c);
+        drain_test_m68k_guest_calls(&mut loaded);
+        assert_eq!(loaded.cpu.gpr[3], 0xa121);
     }
 
     #[test]
@@ -151705,6 +152402,43 @@ mod tests {
             .memory
             .write_u32_be(tvector + 4, callback_rtoc)
             .unwrap();
+    }
+
+    fn install_test_m68k_callback(
+        loaded: &mut PpcLoadedApp,
+        descriptor: u32,
+        callback_entry: u32,
+        proc_info: u32,
+        routine_flags: u16,
+        callback_words: &[u16],
+    ) {
+        let mut callback = Vec::new();
+        for word in callback_words {
+            callback.extend_from_slice(&word.to_be_bytes());
+        }
+        loaded.heap_cursor = loaded
+            .heap_cursor
+            .max(descriptor + 0x100)
+            .max(callback_entry + u32::try_from(callback.len()).unwrap());
+        loaded.memory.add_region(callback_entry, callback);
+        loaded.memory.add_region(descriptor, vec![0; 0x100]);
+        loaded
+            .memory
+            .write_u16_be(descriptor, PPC_MIXED_MODE_TRAP)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(descriptor + 2, PPC_ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        loaded.memory.write_u16_be(descriptor + 10, 0).unwrap();
+        assert!(ppc_write_routine_record(
+            &mut loaded.memory,
+            descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+            proc_info,
+            PPC_ROUTINE_RECORD_M68K_ISA,
+            routine_flags,
+            callback_entry,
+        ));
     }
 
     fn compatibility_binding(
