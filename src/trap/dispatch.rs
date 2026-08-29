@@ -1240,6 +1240,8 @@ pub(crate) enum TrapTableProfile {
 pub(crate) struct TrapTableProcessContext {
     profile: TrapTableProfile,
     raw_entries: Vec<u32>,
+    raw_exception_vectors: [u32; 2],
+    default_exception_vectors: [u32; 2],
     pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
     current_trap_caller: Option<u32>,
 }
@@ -2143,6 +2145,11 @@ pub struct TrapDispatcher {
     /// Machine profile belonging to the currently installed process table.
     /// `None` means no application trap context is active.
     pub(crate) trap_table_profile: Option<TrapTableProfile>,
+    /// Generated default handlers for exception vectors 10 (`$28`) and 11
+    /// (`$2C`) in the active process context. The writable low-memory vector
+    /// cells remain authoritative: a different value delegates the fault to
+    /// guest 68k code instead of the HLE path.
+    pub(crate) trap_exception_vector_defaults: Option<[u32; 2]>,
     /// Original calls retained for each active native trap handler. The value
     /// is a LIFO stack because a patch can re-enter the same A-line trap before
     /// the outer invocation follows its saved daisy-chain link. Inside
@@ -3473,6 +3480,7 @@ impl TrapDispatcher {
             native_trap_table: TrapWordMap::default(),
             trap_tables_materialized: false,
             trap_table_profile: None,
+            trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
@@ -6452,6 +6460,18 @@ impl TrapDispatcher {
         head
     }
 
+    /// Allocate the protected restart gateway named by a generated exception
+    /// vector. Line-A and line-F faults stack the faulting instruction's PC;
+    /// RTE therefore retries it after the writable vector cell has been
+    /// restored. Ordinary generated-default dispatch is recognized before
+    /// entering this gateway.
+    fn create_exception_vector_gateway(bus: &mut MacMemoryBus) -> u32 {
+        let gateway = bus.alloc_synthetic(2);
+        bus.write_readonly_code_word(gateway, 0x4E73); // RTE
+        bus.protect_readonly_code(gateway, 2);
+        gateway
+    }
+
     /// Create an inactive, profile-complete table for a new process.
     /// Permanent come-from heads belong to this context, while callable
     /// gateways remain system-owned and may be shared by every process.
@@ -6503,9 +6523,15 @@ impl TrapDispatcher {
             };
             raw_entries[index] = self.create_trap_come_from_head(bus, raw_entries[index]);
         }
+        let default_exception_vectors = [
+            Self::create_exception_vector_gateway(bus),
+            Self::create_exception_vector_gateway(bus),
+        ];
         TrapTableProcessContext {
             profile,
             raw_entries,
+            raw_exception_vectors: default_exception_vectors,
+            default_exception_vectors,
             pending_native_trap_calls: HashMap::new(),
             current_trap_caller: None,
         }
@@ -6531,6 +6557,10 @@ impl TrapDispatcher {
             TrapTableProcessContext {
                 profile,
                 raw_entries,
+                raw_exception_vectors: [bus.read_long(0x28), bus.read_long(0x2C)],
+                default_exception_vectors: self
+                    .trap_exception_vector_defaults
+                    .expect("active trap profile must have exception-vector defaults"),
                 pending_native_trap_calls: std::mem::take(&mut self.pending_native_trap_calls),
                 current_trap_caller: self.current_trap_caller.take(),
             }
@@ -6553,9 +6583,12 @@ impl TrapDispatcher {
                 incoming.raw_entries[toolbox_offset + usize::from(slot)],
             );
         }
+        bus.write_long(0x28, incoming.raw_exception_vectors[0]);
+        bus.write_long(0x2C, incoming.raw_exception_vectors[1]);
         self.pending_native_trap_calls = incoming.pending_native_trap_calls;
         self.current_trap_caller = incoming.current_trap_caller;
         self.trap_table_profile = Some(incoming.profile);
+        self.trap_exception_vector_defaults = Some(incoming.default_exception_vectors);
         self.trap_tables_materialized = true;
         self.native_trap_table = TrapWordMap::default();
         outgoing
@@ -6567,6 +6600,7 @@ impl TrapDispatcher {
         self.pending_native_trap_calls.clear();
         self.current_trap_caller = None;
         self.trap_table_profile = None;
+        self.trap_exception_vector_defaults = None;
         self.trap_tables_materialized = false;
     }
 
@@ -6581,6 +6615,22 @@ impl TrapDispatcher {
     ) {
         let context = self.create_trap_table_process_context(bus, profile);
         let _ = self.switch_trap_table_process_context(bus, context);
+    }
+
+    /// Whether low-memory exception vector 10 still names this process's
+    /// generated A-line dispatcher identity. Before a process topology is
+    /// materialized, retain the historical direct-HLE behavior used by
+    /// focused manager tests.
+    pub(crate) fn aline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
+        self.trap_exception_vector_defaults
+            .is_none_or(|defaults| bus.read_long(0x28) == defaults[0])
+    }
+
+    /// Whether low-memory exception vector 11 still names this process's
+    /// generated line-F handler identity.
+    pub(crate) fn fline_vector_is_default(&self, bus: &MacMemoryBus) -> bool {
+        self.trap_exception_vector_defaults
+            .is_none_or(|defaults| bus.read_long(0x2C) == defaults[1])
     }
 
     /// Return the logical address currently selected by a materialized raw
@@ -7704,6 +7754,37 @@ mod tests {
     }
 
     #[test]
+    fn machine_profiles_generate_distinct_protected_exception_vector_defaults() {
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            let (mut dispatcher, _cpu, mut bus) = setup();
+            dispatcher.materialize_trap_tables(&mut bus, profile);
+            let defaults = dispatcher.trap_exception_vector_defaults.unwrap();
+
+            assert_ne!(defaults[0], defaults[1]);
+            assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], defaults);
+            for &gateway in &defaults {
+                assert_ne!(gateway, 0);
+                assert_eq!(bus.read_word(gateway), 0x4E73); // RTE
+                bus.write_word(gateway, 0x4E71);
+                assert_eq!(bus.read_word(gateway), 0x4E73, "gateway is protected");
+
+                for slot in 0..OS_TRAP_TABLE_SLOTS {
+                    assert_ne!(
+                        gateway,
+                        bus.read_long(OS_TRAP_TABLE_BASE + u32::from(slot) * 4)
+                    );
+                }
+                for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+                    assert_ne!(
+                        gateway,
+                        bus.read_long(TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn machine_profiles_materialize_their_observed_come_from_sets() {
         for (profile, expected) in [
             (TrapTableProfile::M68k68040, M68K_68040_COME_FROM_TRAPS),
@@ -7744,6 +7825,10 @@ mod tests {
 
         dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
         let first_head = bus.read_long(protected_entry);
+        let first_defaults = dispatcher.trap_exception_vector_defaults.unwrap();
+        assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], first_defaults);
+        let first_aline_patch = 0x0020_F000;
+        bus.write_long(0x28, first_aline_patch);
         dispatcher.install_trap_address(&mut bus, protected_word, first_protected_patch);
         bus.write_long(direct_entry, first_direct_patch);
         dispatcher.pending_native_trap_calls.insert(
@@ -7763,7 +7848,10 @@ mod tests {
             .switch_trap_table_process_context(&mut bus, fresh_second)
             .expect("first process context must be saved");
         let second_head = bus.read_long(protected_entry);
+        let second_defaults = dispatcher.trap_exception_vector_defaults.unwrap();
         assert_ne!(second_head, first_head);
+        assert_ne!(second_defaults, first_defaults);
+        assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], second_defaults);
         assert_eq!(
             dispatcher.trap_table_profile,
             Some(TrapTableProfile::PowerPc604)
@@ -7799,6 +7887,12 @@ mod tests {
             Some(first_protected_patch)
         );
         assert_eq!(bus.read_long(direct_entry), first_direct_patch);
+        assert_eq!(bus.read_long(0x28), first_aline_patch);
+        assert_eq!(bus.read_long(0x2C), first_defaults[1]);
+        assert_eq!(
+            dispatcher.trap_exception_vector_defaults,
+            Some(first_defaults)
+        );
         assert!(dispatcher.pending_native_trap_calls.contains_key(&0xA039));
         assert!(!dispatcher.pending_native_trap_calls.contains_key(&0xA975));
         assert_eq!(dispatcher.current_trap_caller, Some(0x0023_1000));
@@ -7812,6 +7906,11 @@ mod tests {
             Some(second_protected_patch)
         );
         assert_eq!(bus.read_long(direct_entry), second_direct_patch);
+        assert_eq!([bus.read_long(0x28), bus.read_long(0x2C)], second_defaults);
+        assert_eq!(
+            dispatcher.trap_exception_vector_defaults,
+            Some(second_defaults)
+        );
         assert!(dispatcher.pending_native_trap_calls.contains_key(&0xA975));
         assert!(!dispatcher.pending_native_trap_calls.contains_key(&0xA039));
         assert_eq!(dispatcher.current_trap_caller, Some(0x0024_1000));
@@ -7819,6 +7918,7 @@ mod tests {
         dispatcher.teardown_trap_table_process_context();
         assert!(!dispatcher.trap_tables_materialized);
         assert_eq!(dispatcher.trap_table_profile, None);
+        assert_eq!(dispatcher.trap_exception_vector_defaults, None);
         assert!(dispatcher.pending_native_trap_calls.is_empty());
         assert_eq!(dispatcher.current_trap_caller, None);
     }

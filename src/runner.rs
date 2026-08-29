@@ -5622,10 +5622,15 @@ impl FixtureRunner {
                     // exit at PC 0) exactly like the old per-step checks.
                 }
                 BatchExit::FlineTrap { .. } => {
-                    // Preserved legacy behavior (see M68kCpu::step): F-line
-                    // opcodes execute as 2-byte no-ops. PC has already
-                    // advanced past the opcode word; accounting happened
-                    // via `executed` above.
+                    // A writable vector 11 is the guest's architectural
+                    // authority. Only the generated profile default retains
+                    // the HLE's legacy no-op policy for unsupported F-line
+                    // words; a replacement receives the real 68040 frame.
+                    // Inside Macintosh Volume III (1985), p. III-17 names
+                    // `$2C` as the Line 1111 emulator vector.
+                    if !self.dispatcher.fline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_fline_exception(&mut self.bus);
+                    }
                 }
                 BatchExit::Stopped => {
                     // STOP retired mid-batch. Halt silently, matching the
@@ -5663,6 +5668,18 @@ impl FixtureRunner {
                     // word's own address is in `ppc` (PC already advanced
                     // past it).
                     let pc = self.cpu.core.ppc;
+
+                    // The processor enters the Trap Dispatcher through
+                    // exception vector 10 at `$28`. If guest code replaced
+                    // that process-scoped vector, build the architectural
+                    // exception frame and execute its handler instead of
+                    // making the write inert. Inside Macintosh Volume I
+                    // (1985), p. I-89; Interapplication Communication
+                    // (1993), p. 1-87.
+                    if !self.dispatcher.aline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        continue;
+                    }
 
                     // An exact-cycle probe permits only journal-complete
                     // traps (see `idle_cycle_trap_is_journal_complete`);
@@ -6606,6 +6623,10 @@ impl FixtureRunner {
                     break;
                 }
                 BatchExit::AlineTrap { opcode } => {
+                    if !self.dispatcher.aline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        continue;
+                    }
                     if self
                         .dispatcher
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -6619,8 +6640,12 @@ impl FixtureRunner {
                     }
                 }
                 BatchExit::WatchedPc { .. } => continue,
+                BatchExit::FlineTrap { .. } => {
+                    if !self.dispatcher.fline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_fline_exception(&mut self.bus);
+                    }
+                }
                 BatchExit::Stopped
-                | BatchExit::FlineTrap { .. }
                 | BatchExit::TrapInstruction { .. }
                 | BatchExit::Breakpoint { .. }
                 | BatchExit::IllegalInstruction { .. } => {
@@ -10869,6 +10894,11 @@ impl FixtureRunner {
                     return Ok(());
                 }
                 StepResult::Aline(opcode) => {
+                    if !self.dispatcher.aline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_aline_exception(&mut self.bus);
+                        count += 1;
+                        continue;
+                    }
                     match self
                         .dispatcher
                         .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -10896,6 +10926,11 @@ impl FixtureRunner {
                             self.dump_trace();
                             return Err(e);
                         }
+                    }
+                }
+                StepResult::Fline(_opcode) => {
+                    if !self.dispatcher.fline_vector_is_default(&self.bus) {
+                        self.cpu.core.take_fline_exception(&mut self.bus);
                     }
                 }
             }
@@ -14028,6 +14063,67 @@ mod tests {
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.lr, PPC_CODE_BASE);
         assert_eq!(runner.bus.read_long(RESULT), 0);
+    }
+
+    #[test]
+    fn parked_powerpc_to_68k_call_obeys_guest_vector_10() {
+        const M68K_ENTRY: u32 = 0x0301_1000;
+        const HANDLER: u32 = 0x0301_1100;
+        const STACK_BASE: u32 = 0x0303_1000;
+        const INITIAL_SP: u32 = STACK_BASE + 0x80;
+        const RETURN_PC: u32 = 0x0304_1000;
+        const MARKER: u32 = 0xA10E_6040;
+
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        ppc_app.memory.add_region(
+            M68K_ENTRY,
+            vec![
+                0xA9, 0x75, // TickCount: must enter the replacement vector
+                0x4E, 0x75, // RTS
+            ],
+        );
+        ppc_app.memory.add_region(
+            HANDLER,
+            vec![
+                0x2C, 0x3C, 0xA1, 0x0E, 0x60, 0x40, // MOVE.L #MARKER,D6
+                0x54, 0xAF, 0x00, 0x02, // ADDQ.L #2,2(SP)
+                0x4E, 0x73, // RTE
+            ],
+        );
+        ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: M68K_ENTRY,
+                rtoc: 0,
+            },
+            M68K_ENTRY,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 4,
+            crate::guest_call::M68kRegisterState::default(),
+            Some(crate::guest_call::M68kResultSource::Data(6)),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+
+        // Interapplication Communication (1993), p. 1-87: an A-line causes
+        // the processor to fetch vector 10 from `$28` and jump to it. The
+        // parked 68k adapter must preserve that rule while PPC owns the app.
+        runner.bus.write_long(0x28, HANDLER);
+        let (_steps, running) = runner.run_steps(64, None);
+
+        assert!(running);
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        assert_eq!(ppc_app.cpu.gpr[3], MARKER);
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
     }
 
     #[test]
@@ -24091,6 +24187,113 @@ mod tests {
             assert_eq!(runner.bus.read_word(off), 123u16, "v at ${:04X}", off);
             assert_eq!(runner.bus.read_word(off + 2), 456u16, "h at ${:04X}", off);
         }
+    }
+
+    /// A-line execution reaches the Trap Dispatcher through vector 10 at
+    /// `$28`; line-F reaches the Line 1111 emulator through vector 11 at
+    /// `$2C`. Both cells are writable system globals, so replacing either one
+    /// must expose the processor's format-0 frame to guest code rather than
+    /// silently entering HLE. Inside Macintosh Volume I (1985), p. I-89;
+    /// Inside Macintosh Volume III (1985), p. III-17.
+    #[test]
+    fn guest_line_vectors_receive_architectural_frames_and_restore_defaults() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
+        let defaults = runner.dispatcher.trap_exception_vector_defaults.unwrap();
+        let original_sp = 0x007F_FFC0;
+
+        // MOVE.L #marker,D6; ADDQ.L #2,2(SP); RTE. The handler advances the
+        // faulting PC in the format-0 frame before returning.
+        let aline_handler = 0x0010_1000;
+        runner.bus.write_word(aline_handler, 0x2C3C);
+        runner.bus.write_long(aline_handler + 2, 0xA10E_0010);
+        runner.bus.write_word(aline_handler + 6, 0x54AF);
+        runner.bus.write_word(aline_handler + 8, 0x0002);
+        runner.bus.write_word(aline_handler + 10, 0x4E73);
+        runner.bus.write_long(0x28, aline_handler);
+
+        let aline_program = 0x0010_0000;
+        runner.bus.write_word(aline_program, 0xA975); // TickCount
+        runner.bus.write_word(aline_program + 2, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, aline_program);
+        runner.cpu.write_reg(Register::A7, original_sp);
+
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        let aline_frame = original_sp - 8;
+        assert_eq!(runner.cpu.read_reg(Register::PC), aline_handler);
+        assert_eq!(runner.cpu.read_reg(Register::A7), aline_frame);
+        assert_eq!(runner.bus.read_long(aline_frame + 2), aline_program);
+        assert_eq!(runner.bus.read_word(aline_frame + 6), 0x0028);
+        assert_eq!(runner.run_steps(3, None), (3, true));
+        assert_eq!(runner.cpu.read_reg(Register::D6), 0xA10E_0010);
+        assert_eq!(runner.cpu.read_reg(Register::A7), original_sp);
+        assert_eq!(runner.cpu.read_reg(Register::PC), aline_program + 2);
+
+        // Restoring the generated vector re-enables the ordinary HLE path.
+        runner.bus.write_long(0x28, defaults[0]);
+        runner.cpu.write_reg(Register::PC, aline_program);
+        let trap_count = runner.dispatcher.trap_count;
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        assert_eq!(runner.dispatcher.trap_count, trap_count + 1);
+        assert_eq!(runner.cpu.read_reg(Register::PC), aline_program + 2);
+
+        // Repeat the same architectural proof for an unsupported F-line word.
+        let fline_handler = 0x0010_1100;
+        runner.bus.write_word(fline_handler, 0x2A3C); // MOVE.L #marker,D5
+        runner.bus.write_long(fline_handler + 2, 0xF11E_0011);
+        runner.bus.write_word(fline_handler + 6, 0x54AF);
+        runner.bus.write_word(fline_handler + 8, 0x0002);
+        runner.bus.write_word(fline_handler + 10, 0x4E73);
+        runner.bus.write_long(0x2C, fline_handler);
+
+        let fline_program = 0x0010_0200;
+        runner.bus.write_word(fline_program, 0xF000);
+        runner.bus.write_word(fline_program + 2, 0x4E71);
+        runner.cpu.write_reg(Register::PC, fline_program);
+        runner.cpu.write_reg(Register::A7, original_sp);
+
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        let fline_frame = original_sp - 8;
+        assert_eq!(runner.cpu.read_reg(Register::PC), fline_handler);
+        assert_eq!(runner.cpu.read_reg(Register::A7), fline_frame);
+        assert_eq!(runner.bus.read_long(fline_frame + 2), fline_program);
+        assert_eq!(runner.bus.read_word(fline_frame + 6), 0x002C);
+        assert_eq!(runner.run_steps(3, None), (3, true));
+        assert_eq!(runner.cpu.read_reg(Register::D5), 0xF11E_0011);
+        assert_eq!(runner.cpu.read_reg(Register::A7), original_sp);
+        assert_eq!(runner.cpu.read_reg(Register::PC), fline_program + 2);
+        runner.bus.write_long(0x2C, defaults[1]);
+    }
+
+    /// FNOP is a valid 68040 coprocessor instruction, not a Line 1111
+    /// exception. Keeping a replacement vector 11 installed while it executes
+    /// proves opcode classification happens before exception delegation.
+    #[test]
+    fn valid_68040_fpu_opcode_does_not_enter_guest_vector_11() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
+        let fline_handler = 0x0010_1100;
+        runner.bus.write_word(fline_handler, 0x2E3C); // MOVE.L #sentinel,D7
+        runner.bus.write_long(fline_handler + 2, 0xBADF_11E0);
+        runner.bus.write_word(fline_handler + 6, 0x4E73);
+        runner.bus.write_long(0x2C, fline_handler);
+
+        let program = 0x0010_0000;
+        runner.bus.write_word(program, 0xF280); // FNOP
+        runner.bus.write_word(program + 2, 0x0000);
+        runner.bus.write_word(program + 4, 0x4E71); // NOP
+        runner.cpu.write_reg(Register::PC, program);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.cpu.write_reg(Register::D7, 0x1357_2468);
+
+        assert_eq!(runner.run_steps(1, None), (1, true));
+        assert_eq!(runner.cpu.read_reg(Register::PC), program + 4);
+        assert_eq!(runner.cpu.read_reg(Register::A7), 0x007F_FFC0);
+        assert_eq!(runner.cpu.read_reg(Register::D7), 0x1357_2468);
     }
 
     /// Running a `DIVU.W D0,D1` with `D0 = 0` must not halt the
