@@ -1243,6 +1243,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// Macintosh: Processes* (1994), pp. 3-18--3-20.
 /// Trap Manager legacy, new-OS, and new-Tool forms come from *Inside Macintosh:
 /// Operating System Utilities* (1994), pp. 8-27--8-31 and 8-32--8-33.
+/// Gestalt, NewGestalt, and ReplaceGestalt come from the same book,
+/// pp. 1-31--1-36.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares reviewed exact
@@ -1250,6 +1252,7 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// 404--455), `Devices.h` (lines 905--1044, 1282--1415), and `Files.h` (lines
 /// 1315--3343); `Timer.h` lines 74--100 declares InsTime and InsXTime;
 /// `Patches.h` lines 80--231 declares the Trap Manager forms;
+/// `Gestalt.h` lines 55--105 declares the three Gestalt Manager forms;
 /// `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
@@ -1276,6 +1279,9 @@ pub(crate) enum OsRoutineVariant {
     TrapAddressLegacy,
     TrapAddressNewOs,
     TrapAddressNewTool,
+    GestaltQuery,
+    GestaltRegister,
+    GestaltReplace,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1357,6 +1363,14 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x46 | 0x47, 0x0000) => OsRoutineVariant::TrapAddressLegacy,
         (0x46 | 0x47, 0x0200) => OsRoutineVariant::TrapAddressNewOs,
         (0x46 | 0x47, 0x0600) => OsRoutineVariant::TrapAddressNewTool,
+
+        // Operating System Utilities 1994, pp. 1-31--1-36 and UI 3.4
+        // Gestalt.h lines 55--105: the three operations share slot $AD.
+        // Bit 9 selects NewGestalt and bit 10 selects ReplaceGestalt; the
+        // combined form has no declaration and remains unclassified.
+        (0xAD, 0x0000) => OsRoutineVariant::GestaltQuery,
+        (0xAD, 0x0200) => OsRoutineVariant::GestaltRegister,
+        (0xAD, 0x0400) => OsRoutineVariant::GestaltReplace,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -8154,12 +8168,13 @@ mod tests {
     fn raw_routes_classify_only_source_backed_os_routine_variants() {
         use OsRoutineVariant::{
             CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
-            FileHfsSynchronous, FileSynchronous, LowerText, ParameterBlockAsynchronous,
-            ParameterBlockImmediate, ParameterBlockSynchronous, StripText, StripUpperText,
-            SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
-            TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
-            TrapAddressLegacy, TrapAddressNewOs, TrapAddressNewTool, Unclassified,
-            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
+            FileHfsSynchronous, FileSynchronous, GestaltQuery, GestaltRegister, GestaltReplace,
+            LowerText, ParameterBlockAsynchronous, ParameterBlockImmediate,
+            ParameterBlockSynchronous, StripText, StripUpperText, SystemHeap, SystemHeapClear,
+            TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
+            TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal, TrapAddressLegacy,
+            TrapAddressNewOs, TrapAddressNewTool, Unclassified, UpperStringPreserveMarks,
+            UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8202,6 +8217,28 @@ mod tests {
                     "bit 10 without the new-system bit is undeclared"
                 );
             }
+        }
+
+        // Inside Macintosh: Operating System Utilities (1994),
+        // pp. 1-31--1-36; UI 3.4 Gestalt.h lines 55--105.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA0AD | return_a0).os_routine_variant,
+                GestaltQuery
+            );
+            assert_eq!(
+                raw_trap_route(0xA2AD | return_a0).os_routine_variant,
+                GestaltRegister
+            );
+            assert_eq!(
+                raw_trap_route(0xA4AD | return_a0).os_routine_variant,
+                GestaltReplace
+            );
+            assert_eq!(
+                raw_trap_route(0xA6AD | return_a0).os_routine_variant,
+                Unclassified,
+                "combined Gestalt Manager modifier bits are undeclared"
+            );
         }
 
         // Inside Macintosh: Processes (1994), pp. 3-18--3-20; UI 3.4
@@ -8359,7 +8396,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 256);
+        assert_eq!(classified, 262);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,

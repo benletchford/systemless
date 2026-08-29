@@ -3297,10 +3297,8 @@ impl super::TrapDispatcher {
             // Gestalt family: _Gestalt ($A1AD), _NewGestalt ($A3AD),
             // _ReplaceGestalt ($A5AD). All three OS traps share the
             // low byte $AD and so reach the same dispatch arm — the
-            // dispatcher only forwards bits 0..7 for OS traps. We
-            // distinguish them by reading the original 16-bit trap
-            // word from `current_trap_word` (set by the dispatcher
-            // before each handler runs).
+            // dispatcher only forwards bits 0..7 for OS traps. The central
+            // raw route retains their operation identity before that mask.
             //
             // Trap word table per Inside Macintosh Volume VI, p. 6-308.
             // FUNCTION/Pascal signatures and register conventions per
@@ -3314,7 +3312,7 @@ impl super::TrapDispatcher {
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
-                match self.current_trap_word {
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
                     // _NewGestalt ($A3AD)
                     //
                     //   FUNCTION NewGestalt (selector: OSType;
@@ -3366,7 +3364,7 @@ impl super::TrapDispatcher {
                     //
                     // Regression coverage:
                     //   newgestalt_register_only_calling_convention_preserves_stack
-                    0xA3AD => {
+                    OsRoutineVariant::GestaltRegister => {
                         let already_known = is_builtin_gestalt_selector(&sel)
                             || self.gestalt_registry.contains_key(&selector);
                         if already_known {
@@ -3432,7 +3430,7 @@ impl super::TrapDispatcher {
                     //
                     // Regression coverage:
                     //   replacegestalt_register_only_calling_convention_preserves_stack
-                    0xA5AD => {
+                    OsRoutineVariant::GestaltReplace => {
                         let new_fn = cpu.read_reg(Register::A0);
                         if let Some(old_fn) = self.gestalt_registry.insert(selector, new_fn) {
                             cpu.write_reg(Register::A0, old_fn);
@@ -3450,7 +3448,7 @@ impl super::TrapDispatcher {
                         }
                         return Some(Ok(()));
                     }
-                    // `_Gestalt` ($A1AD) and structural flag variants fall
+                    // `_Gestalt` ($A1AD) and unresolved modifier forms fall
                     // through to the query handler below.
                     _ => {}
                 }
@@ -14289,6 +14287,37 @@ mod tests {
                 std::str::from_utf8(selector_bytes).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn gestalt_mutators_keep_their_operation_when_the_a0_return_bit_changes() {
+        // Inside Macintosh: Operating System Utilities (1994),
+        // pp. 1-31--1-36 defines the three slot-$AD operations. Chapter 8,
+        // pp. 8-10--8-14 defines bit 8 independently as the dispatcher's A0
+        // preservation choice. UI 3.4 Gestalt.h lines 55--105 declares the
+        // ordinary $A3AD/$A5AD words; clearing bit 8 must not turn either
+        // operation into a Gestalt query.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let selector = u32::from_be_bytes(*b"A0op");
+        let first_fn = 0x0040_1000;
+        let replacement_fn = 0x0040_2000;
+
+        cpu.write_reg(Register::D0, selector);
+        cpu.write_reg(Register::A0, first_fn);
+        call_trap_word(&mut disp, 0xA2AD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.gestalt_registry.get(&selector), Some(&first_fn));
+
+        cpu.write_reg(Register::D0, selector);
+        cpu.write_reg(Register::A0, replacement_fn);
+        call_trap_word(&mut disp, 0xA4AD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.gestalt_registry.get(&selector), Some(&replacement_fn));
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            replacement_fn,
+            "cleared bit 8 makes the dispatcher restore the caller's A0"
+        );
     }
 
     // ================================================================
