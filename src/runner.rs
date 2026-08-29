@@ -1074,13 +1074,45 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
     (is_tool, trap_num)
 }
 
-/// Traps an exact idle-cycle proof may observe without cancelling: every
-/// consequence lands in CPU registers or guest RAM, so the exact-state
-/// journal sees any real change. Event polls only qualify when they
-/// returned a null event; SystemTask only without periodic host work --
-/// callers pass those runtime facts in. ONE definition, consulted from
-/// both the inline pre-dispatch check and the post-dispatch quiescence
-/// classification (they were once two hand-synced copies and drifted).
+/// Traps an exact idle-cycle proof may observe without cancelling.
+///
+/// The prover parks a wait loop behind two independent gates, and a trap
+/// is admitted here only if it cannot beat either:
+///
+/// 1. **The proof.** Two arrivals at the same trap site in the same tick
+///    must show an identical `CpuArchitecturalSnapshot` *and* a write
+///    journal in which every guest-RAM byte written during the cycle
+///    still holds its original value (`try_exact_idle_cycle_fastfwd`).
+/// 2. **The park.** A proven cycle is reused only while guest memory, the
+///    CPU snapshot, `IdleCycleHostSnapshot` (mouse, keys, caps lock, the
+///    window list, any staged native menu selection) and the guest tick
+///    are all unchanged and the Event Manager has nothing to deliver
+///    (`try_resume_proven_idle_cycle`). A park is at most one tick.
+///
+/// A trap is *journal-complete* -- admissible -- when every input it acts
+/// on is CPU state, guest RAM or the current tick, and every consequence
+/// of calling it is either nothing at all or a write through the bus into
+/// guest RAM, so that any real difference between two iterations shows
+/// up in one of the two comparisons above. Concretely, before admitting a
+/// trap check all of:
+///
+/// - it reads no host state outside `IdleCycleHostSnapshot` -- or, if it
+///   reads a host mirror (the window list, a staged menu selection), every
+///   mutation of that mirror is also written into journaled guest RAM or
+///   posts an event the park gate sees;
+/// - on any path that writes guest RAM it writes *before* it touches
+///   host-cached state the journal cannot see (TEIdle's caret stamps
+///   precede its draw; MoveTo, which only mirrors pnLoc into dispatcher
+///   state, is the counter-example and stays out);
+/// - its only other effects are diagnostics (trace `eprintln!`s).
+///
+/// Event polls only qualify when they returned a null event; SystemTask
+/// only without periodic host work -- callers pass those runtime facts
+/// in. ONE definition, consulted from both the inline pre-dispatch check
+/// and the post-dispatch quiescence classification (they were once two
+/// hand-synced copies and drifted). The membership test
+/// `journal_complete_traps_do_not_cancel_an_idle_probe` covers both the
+/// plain and the auto-pop encodings.
 fn idle_cycle_trap_is_journal_complete(
     opcode: u16,
     null_event: bool,
@@ -1088,8 +1120,20 @@ fn idle_cycle_trap_is_journal_complete(
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
-        // GlobalToLocal: pure register/memory transform.
-        (true, 0x0071) => true,
+        // Pure transforms of a Point on the stack (quickdraw.rs).
+        (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
+        // TEIdle (dialog.rs `textedit_idle`) reads the TERec and the tick and
+        // either returns having written nothing, or stamps caretState and
+        // caretTime into guest RAM *before* it paints -- that ordering is
+        // what lets the journal fail a proof a due blink lands in.
+        (true, 0x01DA) => true, // TEIdle
+        // Window Manager queries (window.rs) whose results reach the guest
+        // through RAM and the stack. The host window list they read is
+        // rewritten into the guest chain (journaled) by every mutation
+        // (`sync_window_list_links`), a staged native menu selection is
+        // always paired with a pending event the parked resume sees, and
+        // `IdleCycleHostSnapshot` carries both besides.
+        (true, 0x0117) | (true, 0x0124) | (true, 0x012C) => true, // GetWRefCon, FrontWindow, FindWindow
         // Input-poll family: GetMouse/StillDown/Button/TickCount/GetKeys.
         (true, 0x0172..=0x0176) => true,
         // SANE Pack4/Pack5: pure transforms of stack operands.
@@ -21041,10 +21085,12 @@ mod tests {
     }
 
     #[test]
-    fn poll_traps_and_sane_do_not_cancel_an_idle_probe() {
+    fn journal_complete_traps_do_not_cancel_an_idle_probe() {
         // EV Override's crawl idles in a GetKeys/Button cycle interleaved
-        // with SANE math; the proof must survive every one of those traps
-        // and still cancel on anything with unjournaled consequences.
+        // with SANE math; SimCity 2000's dialog loops poll LocalToGlobal,
+        // the Window Manager queries and TEIdle. The proof must survive every
+        // one of those traps, in the plain and the auto-pop encodings, and
+        // still cancel on anything with unjournaled consequences.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
@@ -21053,15 +21099,18 @@ mod tests {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(runner.idle_cycle_probe.is_some());
 
-        for opcode in [0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC] {
+        for opcode in [
+            0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917,
+            0xA924, 0xA92C, 0xA9DA, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+        ] {
             runner.note_idle_cycle_trap_result(opcode);
             assert!(
                 runner.idle_cycle_probe.is_some(),
-                "poll/SANE trap {opcode:04X} must not cancel the probe"
+                "journal-complete trap {opcode:04X} must not cancel the probe"
             );
         }
-        // A drawing trap has host-visible consequences the journal cannot
-        // observe; it must cancel.
+        // MoveTo mirrors pnLoc into dispatcher state the journal cannot
+        // see; anything with host-cached consequences must cancel.
         runner.note_idle_cycle_trap_result(0xA893);
         assert!(runner.idle_cycle_probe.is_none());
     }
@@ -21103,6 +21152,84 @@ mod tests {
         assert_eq!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
         runner.dispatcher.pending_native_menu_selection = Some((3, 1));
         assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    }
+
+    #[test]
+    fn window_and_textedit_mutators_still_cancel_an_idle_probe() {
+        // The admission is a list of specific traps, not a range: the
+        // neighbours that mutate host-mirrored window or TextEdit state
+        // must go on cancelling.
+        for opcode in [0xA918u16, 0xA91F, 0xA928, 0xA929, 0xA9D8, 0xA9D9, 0xA9DC] {
+            let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+            let trap_pc = 0x0002_0000u32;
+            runner.cpu.write_reg(Register::A7, 0x0008_0000);
+            runner.dispatcher.tick_count = 100;
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+            runner.note_idle_cycle_trap_result(opcode);
+            assert!(
+                runner.idle_cycle_probe.is_none(),
+                "{opcode:04X} must cancel the probe"
+            );
+        }
+    }
+
+    #[test]
+    fn teidle_inside_a_proof_parks_when_idle_and_fails_on_memory_when_it_blinks() {
+        // TEIdle is admitted because it either writes nothing or stamps
+        // caretState/caretTime into guest RAM before it paints. Both halves
+        // of that claim, through the real handler under a real probe.
+        for (blink_due, expect_park) in [(false, true), (true, false)] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let trap_pc = 0x0002_0000u32;
+            let sp = 0x0010_0000u32;
+            let te_handle = 0x0020_0000u32;
+            let te_rec = 0x0020_0100u32;
+            runner.cpu.write_reg(Register::PC, trap_pc + 2);
+            runner.cpu.core.ppc = trap_pc;
+            runner.cpu.core.ir = 0xA975; // the loop's TickCount anchor
+            runner.bus.write_long(0x016A, 100);
+            runner.dispatcher.tick_count = 100;
+            runner.bus.write_long(te_handle, te_rec);
+            runner.bus.write_word(te_rec + 0x20, 5); // selStart
+            runner.bus.write_word(te_rec + 0x22, 5); // selEnd: an insertion point
+            runner.bus.write_word(te_rec + 0x24, 1); // active
+            runner
+                .bus
+                .write_long(te_rec + 0x34, if blink_due { 60 } else { 100 }); // caretTime
+            runner.bus.write_word(te_rec + 0x38, 0); // caretState
+                                                     // The argument slot holds hTE before the journal opens, so the
+                                                     // loop's push below rewrites the same bytes.
+            runner.bus.write_long(sp - 4, te_handle);
+            runner.cpu.write_reg(Register::A7, sp);
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+
+            let before = CpuArchitecturalSnapshot::capture(&runner.cpu.core);
+            // One loop iteration: push hTE, call TEIdle (which pops it).
+            runner.cpu.write_reg(Register::A7, sp - 4);
+            runner.bus.write_long(sp - 4, te_handle);
+            let result =
+                runner
+                    .dispatcher
+                    .dispatch_dialog(true, 0x1DA, &mut runner.cpu, &mut runner.bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+            runner.note_idle_cycle_trap_result(0xA9DA);
+            assert!(runner.idle_cycle_probe.is_some(), "TEIdle is admitted");
+            assert_eq!(
+                before,
+                CpuArchitecturalSnapshot::capture(&runner.cpu.core),
+                "TEIdle must leave the architectural state as it found it"
+            );
+            assert_eq!(runner.bus.read_word(te_rec + 0x38), u16::from(blink_due));
+
+            let parked = runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105));
+            assert_eq!(parked, expect_park, "blink_due={blink_due}");
+            assert_eq!(runner.idle_cycle_sleep.is_some(), expect_park);
+        }
     }
 
     #[test]

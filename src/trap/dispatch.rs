@@ -2269,6 +2269,13 @@ pub struct TrapDispatcher {
     pub(crate) go_away_flag: bool,
     /// Window list in front-to-back order.
     /// Macintosh Toolbox Essentials 1992, p. 4-65
+    ///
+    /// Invariant the idle-cycle prover relies on: every mutation of this
+    /// host mirror is also written into the guest window chain
+    /// (`sync_window_list_links`), so a proof's write journal sees it;
+    /// the parked-cycle host snapshot carries a copy besides. FrontWindow
+    /// and FindWindow are admitted to proofs on that basis
+    /// (`runner::idle_cycle_trap_is_journal_complete`).
     pub(crate) window_list: Vec<u32>,
     /// Set once the game has entered fullscreen (window covers entire screen
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
@@ -2306,6 +2313,12 @@ pub struct TrapDispatcher {
     /// A host-native menu selection waiting for the guest's normal
     /// FindWindow -> MenuSelect event path.  It is consumed only by
     /// MenuSelect and revalidated against the live menu list there.
+    ///
+    /// Invariant the idle-cycle prover relies on: this is only ever staged
+    /// together with `pending_native_menu_event`, so a parked cycle sees a
+    /// deliverable event and resumes instead of reusing a FindWindow
+    /// answer that would now say `inMenuBar`; the parked-cycle host
+    /// snapshot carries a copy besides.
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     /// Latched menu-bar mouseDown corresponding to
     /// `pending_native_menu_selection`. Unlike an ordinary queued event, this

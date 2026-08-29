@@ -2709,6 +2709,11 @@ impl super::TrapDispatcher {
             return;
         }
 
+        // Stamp before painting. Idle-cycle proofs admit TEIdle on the
+        // strength of these two guest-RAM writes preceding any draw: the
+        // draw path below mutates host-cached port state the write journal
+        // cannot see, and it is these stamps that make a proof containing a
+        // blink fail on memory (runner.rs, idle_cycle_trap_is_journal_complete).
         let caret_state = bus.read_word(te_ptr + Self::TE_CARET_STATE_OFFSET);
         bus.write_word(
             te_ptr + Self::TE_CARET_STATE_OFFSET,
