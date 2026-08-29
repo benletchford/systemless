@@ -24,6 +24,8 @@ static TRACE_LOADSEG: OnceLock<bool> = OnceLock::new();
 
 const RESOURCE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_resource_dispatch_operations.rs");
+const HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_high_level_fs_dispatch_operations.rs");
 
 fn resource_dispatch_operation_route(
     trap_word: u16,
@@ -33,6 +35,16 @@ fn resource_dispatch_operation_route(
         return None;
     }
     selector_operation_route(RESOURCE_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn high_level_fs_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xAA52 {
+        return None;
+    }
+    selector_operation_route(HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES, selector)
 }
 
 const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
@@ -6430,12 +6442,15 @@ impl super::TrapDispatcher {
             }
 
             // HighLevelFSDispatch ($AA52)
-            // HighLevelFSDispatch ($AA52): Selectors: 1=FSMakeFSSpec, 2=FSpOpenDF,
-            // 3=FSpOpenRF,
-            // 4=FSpCreate, 5=FSpDirCreate, 6=FSpDelete, 9=FSpSetFLock,
-            // 10=FSpRstFLock, 13=FSpOpenResFile, 14=FSpCreateResFile
+            // Dispatches high-level File Manager FSSpec routines selected in D0.
+            // FUNCTION FSMakeFSSpec(vRefNum: INTEGER; dirID: LONGINT; fileName: Str255; VAR spec: FSSpec): OSErr;
+            // Inside Macintosh: Files (1992), pp. 2-154 to 2-168.
             (true, 0x252) => {
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation =
+                    high_level_fs_dispatch_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector & 0xFFFF;
                 eprintln!("[TRAP] HighLevelFSDispatch Selector={}", selector);
                 match selector {
                     1 => {
@@ -13048,6 +13063,69 @@ mod tests {
     // ================================================================
     // 13a. HighLevelFSDispatch (0x252) selector 1 — FSMakeFSSpec
     // ================================================================
+    #[test]
+    fn high_level_fs_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES.len(), 15);
+        assert!(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (1, "FSMakeFSSpec"),
+            (2, "FSpOpenDF"),
+            (3, "FSpOpenRF"),
+            (4, "FSpCreate"),
+            (5, "FSpDirCreate"),
+            (6, "FSpDelete"),
+            (7, "FSpGetFInfo"),
+            (8, "FSpSetFInfo"),
+            (9, "FSpSetFLock"),
+            (10, "FSpRstFLock"),
+            (11, "FSpRename"),
+            (12, "FSpCatMove"),
+            (13, "FSpOpenResFile"),
+            (14, "FSpCreateResFile"),
+            (15, "FSpExchangeFiles"),
+        ] {
+            let route = super::high_level_fs_dispatch_operation_route(0xAA52, selector)
+                .expect("HighLevelFSDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xAB52, 1),
+            (0xAA52, 0),
+            (0xAA52, 16),
+            (0xAA52, 0x0000_7001),
+            (0xAA52, 0x0001_0001),
+        ] {
+            assert!(super::high_level_fs_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn high_level_fs_dispatch_records_nonterminal_and_rejects_stale_high_word() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.current_trap_word = 0xAA52;
+
+        cpu.write_reg(Register::D0, 11);
+        let result = disp
+            .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
+            .expect("HighLevelFSDispatch arm");
+        assert!(matches!(result, Err(crate::Error::Halted)));
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES[10].operation_id)
+        );
+
+        cpu.write_reg(Register::D0, 0x0001_000B);
+        let result = disp
+            .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
+            .expect("HighLevelFSDispatch arm");
+        assert!(matches!(result, Err(crate::Error::Halted)));
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
     #[test]
     fn hlfs_dispatch_fsmakefsspec() {
         let (mut disp, mut cpu, mut bus) = setup();
