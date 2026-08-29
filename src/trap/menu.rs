@@ -1,6 +1,7 @@
 //! Menu Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries,
@@ -481,10 +482,16 @@ impl super::TrapDispatcher {
         if menu_ptr == 0 || self.menu_uses_standard_definition(bus, menu_ptr) {
             return false;
         }
-        let proc_addr = bus.read_long(bus.read_long(menu_ptr + 6));
-        if proc_addr == 0 || proc_addr >= bus.ram_size() {
+        let proc_ptr = bus.read_long(bus.read_long(menu_ptr + 6));
+        let Some(procedure) =
+            resolve_guest_procedure(bus, proc_ptr, 0, None, GuestIsa::M68k, GuestIsa::M68k)
+        else {
+            return false;
+        };
+        if procedure.isa != GuestIsa::M68k || procedure.entry >= bus.ram_size() {
             return false;
         }
+        let proc_addr = procedure.entry;
 
         // MDEFs are Pascal procedures with five arguments. The definition
         // procedure owns menuWidth/menuHeight for mSizeMsg, so the HLE only
@@ -7305,6 +7312,114 @@ mod tests {
         assert_eq!(bus.read_long(trampoline + 22), 0);
         assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
         assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
+    }
+
+    #[test]
+    fn calcmenusize_calls_the_m68k_record_from_a_fat_mdef_descriptor() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306DE0, "Fat");
+        let menu_ptr = bus.read_long(handle);
+        let descriptor = bus.alloc(
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE
+                + 2 * crate::guest_procedure::ROUTINE_RECORD_SIZE,
+        );
+        let powerpc_entry = bus.alloc(4);
+        let m68k_entry = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(
+            descriptor,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        );
+        bus.write_byte(
+            descriptor + 2,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_VERSION,
+        );
+        bus.write_word(descriptor + 10, 1);
+        let powerpc_record = descriptor + crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        bus.write_byte(
+            powerpc_record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_POWERPC_ISA,
+        );
+        bus.write_long(
+            powerpc_record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            powerpc_entry,
+        );
+        let m68k_record = powerpc_record + crate::guest_procedure::ROUTINE_RECORD_SIZE;
+        bus.write_byte(
+            m68k_record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_M68K_ISA,
+        );
+        bus.write_long(
+            m68k_record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            m68k_entry,
+        );
+        bus.write_word(m68k_entry, 0x4E75);
+        bus.write_long(mdef_handle, descriptor);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_long(trampoline + 34), m68k_entry);
+        assert_ne!(bus.read_long(trampoline + 34), powerpc_entry);
+    }
+
+    #[test]
+    fn calcmenusize_does_not_enter_a_powerpc_only_mdef_descriptor_as_m68k() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 339, 0x306DE8, "PPC");
+        let menu_ptr = bus.read_long(handle);
+        let descriptor = bus.alloc(
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE
+                + crate::guest_procedure::ROUTINE_RECORD_SIZE,
+        );
+        let powerpc_entry = bus.alloc(4);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(
+            descriptor,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        );
+        bus.write_byte(
+            descriptor + 2,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_VERSION,
+        );
+        bus.write_word(descriptor + 10, 0);
+        let record = descriptor + crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        bus.write_byte(
+            record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_POWERPC_ISA,
+        );
+        bus.write_long(
+            record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            powerpc_entry,
+        );
+        bus.write_long(mdef_handle, descriptor);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(disp.menu_def_trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
     }
 
     #[test]

@@ -15,6 +15,25 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::event_queue::{QueuedEvent, SharedEventQueue};
+use crate::guest_procedure::{
+    is_routine_descriptor, resolve_guest_procedure, GuestIsa,
+    ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
+    ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP as PPC_MIXED_MODE_TRAP,
+    ROUTINE_DESCRIPTOR_VERSION as PPC_ROUTINE_DESCRIPTOR_VERSION,
+    ROUTINE_FLAG_DONT_PASS_SELECTOR as PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR,
+    ROUTINE_FLAG_USE_NATIVE_ISA as PPC_ROUTINE_FLAG_USE_NATIVE_ISA,
+    ROUTINE_RECORD_FLAGS_OFFSET as PPC_ROUTINE_RECORD_FLAGS_OFFSET,
+    ROUTINE_RECORD_ISA_OFFSET as PPC_ROUTINE_RECORD_ISA_OFFSET,
+    ROUTINE_RECORD_M68K_ISA as PPC_ROUTINE_RECORD_M68K_ISA,
+    ROUTINE_RECORD_POWERPC_ISA as PPC_ROUTINE_RECORD_POWERPC_ISA,
+    ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET as PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+    ROUTINE_RECORD_SIZE as PPC_ROUTINE_RECORD_SIZE,
+};
+#[cfg(test)]
+use crate::guest_procedure::{
+    ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE as PPC_ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE,
+    ROUTINE_RECORD_SELECTOR_OFFSET as PPC_ROUTINE_RECORD_SELECTOR_OFFSET,
+};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::managers::resource::{
     serialize_resource_fork_with_attrs, ResourceFork, ResourceForkEntry,
@@ -196,20 +215,6 @@ const PPC_UNMAPPED_MEMORY_EXCEPTION: u32 = 4;
 const PPC_UNMAPPED_MEMORY_ERROR: u32 = 5;
 const PPC_WRITE_REFERENCE: u32 = 0;
 const PPC_READ_REFERENCE: u32 = 1;
-const PPC_MIXED_MODE_TRAP: u16 = 0xAAFE;
-const PPC_ROUTINE_DESCRIPTOR_VERSION: u8 = 7;
-const PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE: u32 = 12;
-const PPC_ROUTINE_RECORD_SIZE: u32 = 20;
-const PPC_ROUTINE_RECORD_ISA_OFFSET: u32 = 5;
-const PPC_ROUTINE_RECORD_FLAGS_OFFSET: u32 = 6;
-const PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET: u32 = 8;
-const PPC_ROUTINE_RECORD_SELECTOR_OFFSET: u32 = 16;
-const PPC_ROUTINE_RECORD_M68K_ISA: u8 = 0;
-const PPC_ROUTINE_RECORD_POWERPC_ISA: u8 = 1;
-const PPC_ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE: u16 = 0x0001;
-const PPC_ROUTINE_FLAG_USE_NATIVE_ISA: u16 = 0x0004;
-const PPC_ROUTINE_FLAG_DONT_PASS_SELECTOR: u16 = 0x0008;
-const PPC_ROUTINE_FLAG_DISPATCHED_DEFAULT: u16 = 0x0010;
 const PPC_PROCINFO_CALLING_CONVENTION_MASK: u32 = 0x0f;
 const PPC_PROCINFO_PASCAL_STACK_BASED: u32 = 0;
 const PPC_PROCINFO_C_STACK_BASED: u32 = 1;
@@ -66746,7 +66751,7 @@ fn ppc_native_menu_definition_target(
     // Resource MDEFs without a native routine descriptor contain 68k code.
     // Executing those from a native process requires the Mixed Mode 68k
     // emulator gateway; never reinterpret their instruction bytes as PPC.
-    if resource_backed && !ppc_is_routine_descriptor(memory, proc_ptr) {
+    if resource_backed && !is_routine_descriptor(memory, proc_ptr) {
         return None;
     }
     let target = ppc_resolve_callback_target(memory, proc_ptr, cpu.gpr[2], None)?;
@@ -66783,9 +66788,7 @@ fn ppc_menu_uses_native_definition(
     menu_handle: u32,
 ) -> bool {
     ppc_custom_menu_definition_proc(memory, resources, menu_handle).is_some_and(
-        |(proc_ptr, resource_backed)| {
-            !resource_backed || ppc_is_routine_descriptor(memory, proc_ptr)
-        },
+        |(proc_ptr, resource_backed)| !resource_backed || is_routine_descriptor(memory, proc_ptr),
     )
 }
 
@@ -78640,128 +78643,20 @@ fn ppc_resolve_callback_target(
     default_rtoc: u32,
     selector: Option<u32>,
 ) -> Option<PpcCallbackTarget> {
-    if proc_ptr == 0 {
-        return None;
-    }
-    if ppc_is_routine_descriptor(memory, proc_ptr) {
-        return ppc_resolve_routine_descriptor_target(memory, proc_ptr, default_rtoc, selector);
-    }
-    if let Some(target) =
-        ppc_resolve_routine_descriptor_target(memory, proc_ptr, default_rtoc, selector)
-    {
-        return Some(target);
-    }
-    Some(ppc_resolve_tvector_or_raw_target(
+    let procedure = resolve_guest_procedure(
         memory,
         proc_ptr,
         default_rtoc,
-    ))
-}
-
-fn ppc_is_routine_descriptor(memory: &mut PpcSectionMem, descriptor: u32) -> bool {
-    memory.read_u16_be(descriptor) == Some(PPC_MIXED_MODE_TRAP)
-        && memory.read_u8(descriptor + 2) == Some(PPC_ROUTINE_DESCRIPTOR_VERSION)
-}
-
-fn ppc_resolve_routine_descriptor_target(
-    memory: &mut PpcSectionMem,
-    descriptor: u32,
-    default_rtoc: u32,
-    selector: Option<u32>,
-) -> Option<PpcCallbackTarget> {
-    if memory.read_u16_be(descriptor)? != PPC_MIXED_MODE_TRAP
-        || memory.read_u8(descriptor + 2)? != PPC_ROUTINE_DESCRIPTOR_VERSION
-    {
-        return None;
-    }
-
-    let routine_count = memory.read_u16_be(descriptor + 10)? as i16;
-    if routine_count < 0 {
-        return None;
-    }
-    let mut first_powerpc_target = None;
-    let mut default_powerpc_target = None;
-    for index in 0..=u32::from(routine_count as u16) {
-        let Some(record) = descriptor
-            .checked_add(PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE)
-            .and_then(|base| base.checked_add(index.checked_mul(PPC_ROUTINE_RECORD_SIZE)?))
-        else {
-            break;
-        };
-        let Some(isa) = memory.read_u8(record + PPC_ROUTINE_RECORD_ISA_OFFSET) else {
-            break;
-        };
-        if isa != PPC_ROUTINE_RECORD_POWERPC_ISA {
-            continue;
-        }
-        let Some(proc_info) = memory.read_u32_be(record) else {
-            break;
-        };
-        let Some(flags) = memory.read_u16_be(record + PPC_ROUTINE_RECORD_FLAGS_OFFSET) else {
-            break;
-        };
-        let Some(mut proc_descriptor) =
-            memory.read_u32_be(record + PPC_ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET)
-        else {
-            break;
-        };
-        if proc_descriptor == 0 {
-            continue;
-        }
-        if (flags & PPC_ROUTINE_FLAG_PROC_DESCRIPTOR_RELATIVE) != 0 {
-            let Some(relative_proc_descriptor) = descriptor.checked_add(proc_descriptor) else {
-                continue;
-            };
-            proc_descriptor = relative_proc_descriptor;
-        }
-        let mut target = ppc_resolve_tvector_or_raw_target(memory, proc_descriptor, default_rtoc);
-        target.proc_info = proc_info;
-        target.routine_flags = flags;
-        if first_powerpc_target.is_none() {
-            first_powerpc_target = Some(target);
-        }
-        if let Some(selector) = selector {
-            if memory.read_u32_be(record + PPC_ROUTINE_RECORD_SELECTOR_OFFSET) == Some(selector) {
-                return Some(target);
-            }
-            if (flags & PPC_ROUTINE_FLAG_DISPATCHED_DEFAULT) != 0 {
-                default_powerpc_target = Some(target);
-            }
-        } else {
-            return Some(target);
-        }
-    }
-    if selector.is_some() {
-        default_powerpc_target.or(first_powerpc_target)
-    } else {
-        None
-    }
-}
-
-fn ppc_resolve_tvector_or_raw_target(
-    memory: &mut PpcSectionMem,
-    proc_ptr: u32,
-    default_rtoc: u32,
-) -> PpcCallbackTarget {
-    if let (Some(entry), Some(rtoc)) = (
-        memory.read_u32_be(proc_ptr),
-        memory.read_u32_be(proc_ptr.wrapping_add(4)),
-    ) {
-        if entry != 0 && memory.read_u32_be(entry).is_some() {
-            return PpcCallbackTarget {
-                entry,
-                rtoc,
-                proc_info: 0,
-                routine_flags: 0,
-            };
-        }
-    }
-    PpcCallbackTarget {
-        entry: proc_ptr,
-        rtoc: default_rtoc,
-        proc_info: 0,
-        routine_flags: 0,
-    }
+        selector,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    )?;
+    (procedure.isa == GuestIsa::PowerPc).then_some(PpcCallbackTarget {
+        entry: procedure.entry,
+        rtoc: procedure.rtoc,
+        proc_info: procedure.proc_info,
+        routine_flags: procedure.routine_flags,
+    })
 }
 
 fn import_addresses(

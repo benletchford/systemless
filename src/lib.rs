@@ -57,6 +57,7 @@ pub mod display;
 mod error;
 mod event_queue;
 pub mod game;
+mod guest_procedure;
 pub mod loader;
 mod mac_roman;
 pub mod machine_profile;
