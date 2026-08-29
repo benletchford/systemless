@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.9](https://github.com/benletchford/systemless/compare/v0.23.8...v0.23.9) (2026-08-29)
+
+
+### Bug Fixes
+
+* restore kiosk chrome and indexed palettes ([131fd1a](https://github.com/benletchford/systemless/commit/131fd1afdb3f21f9431b80460a7f27e46ff59040))
+
 ## [0.23.8](https://github.com/benletchford/systemless/compare/v0.23.7...v0.23.8) (2026-08-28)
 
 
