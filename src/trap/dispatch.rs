@@ -1224,6 +1224,61 @@ pub(crate) const OS_TRAP_TABLE_SLOTS: u16 = 0x0100;
 pub(crate) const TOOLBOX_TRAP_TABLE_SLOTS: u16 = 0x0400;
 pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 
+/// Source-backed meanings for OS-trap routine bits 10 and 9.
+///
+/// These bits are private to each OS routine; they must not be interpreted as
+/// global dispatcher flags. The Memory Manager meanings below come from
+/// *Inside Macintosh: Memory* (1992), pp. 2-31, 2-33, 2-35, 2-53--2-55,
+/// 2-65--2-68, and 2-71--2-74. The text transformations come from *Inside
+/// Macintosh*, Volume VI (1991), pp. 14-62--14-63 and Appendix C, table C-2.
+/// Universal Interfaces 3.4 independently declares the corresponding exact
+/// A-line words in `MacMemory.h` (lines 436--1010, 1331--1362) and
+/// `TextUtils.h` (lines 404--455).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OsRoutineVariant {
+    Unclassified,
+    CurrentHeap,
+    SystemHeap,
+    CurrentHeapClear,
+    SystemHeapClear,
+    LowerText,
+    StripText,
+    UpperText,
+    StripUpperText,
+}
+
+const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
+    if (raw_word & 0x0800) != 0 {
+        return OsRoutineVariant::Unclassified;
+    }
+
+    let slot = raw_word & 0x00FF;
+    let routine_bits = raw_word & 0x0600;
+    match (slot, routine_bits) {
+        // NewPtr and NewHandle use bit 10 for SYS and bit 9 for CLEAR.
+        (0x1E | 0x22, 0x0000) => OsRoutineVariant::CurrentHeap,
+        (0x1E | 0x22, 0x0200) => OsRoutineVariant::CurrentHeapClear,
+        (0x1E | 0x22, 0x0400) => OsRoutineVariant::SystemHeap,
+        (0x1E | 0x22, 0x0600) => OsRoutineVariant::SystemHeapClear,
+
+        // These Memory Manager routines document only bit 10 as SYS. Leave
+        // their bit-9 forms unclassified rather than inventing a meaning.
+        (0x1C | 0x1D | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0000) => {
+            OsRoutineVariant::CurrentHeap
+        }
+        (0x1C | 0x1D | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0400) => {
+            OsRoutineVariant::SystemHeap
+        }
+
+        // LowerText, StripText, UpperText, and StripUpperText share slot $56.
+        (0x56, 0x0000) => OsRoutineVariant::LowerText,
+        (0x56, 0x0200) => OsRoutineVariant::StripText,
+        (0x56, 0x0400) => OsRoutineVariant::UpperText,
+        (0x56, 0x0600) => OsRoutineVariant::StripUpperText,
+        _ => OsRoutineVariant::Unclassified,
+    }
+}
+
 /// One raw A-line word's table selection and preserved variant metadata.
 ///
 /// The Trap Dispatcher must classify the complete word before masking it to
@@ -1240,6 +1295,7 @@ pub(crate) struct RawTrapRoute {
     pub(crate) table_address: u32,
     pub(crate) is_toolbox: bool,
     pub(crate) os_flags: u16,
+    pub(crate) os_routine_variant: OsRoutineVariant,
     pub(crate) os_returns_a0: bool,
     pub(crate) toolbox_auto_pop: bool,
 }
@@ -1252,6 +1308,7 @@ const EMPTY_RAW_TRAP_ROUTE: RawTrapRoute = RawTrapRoute {
     table_address: 0,
     is_toolbox: false,
     os_flags: 0,
+    os_routine_variant: OsRoutineVariant::Unclassified,
     os_returns_a0: false,
     toolbox_auto_pop: false,
 };
@@ -1287,6 +1344,7 @@ const fn generate_raw_trap_routes() -> [RawTrapRoute; 4096] {
             },
             is_toolbox,
             os_flags: if is_toolbox { 0 } else { raw_word & 0x0700 },
+            os_routine_variant: classify_os_routine_variant(raw_word),
             os_returns_a0: !is_toolbox && (raw_word & 0x0100) != 0,
             toolbox_auto_pop: is_toolbox && (raw_word & 0x0400) != 0,
         };
@@ -7976,6 +8034,83 @@ mod tests {
                 assert!(!route.toolbox_auto_pop);
             }
         }
+    }
+
+    #[test]
+    fn raw_routes_classify_only_source_backed_os_routine_variants() {
+        use OsRoutineVariant::{
+            CurrentHeap, CurrentHeapClear, LowerText, StripText, StripUpperText, SystemHeap,
+            SystemHeapClear, Unclassified, UpperText,
+        };
+
+        // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
+        // Interfaces 3.4 MacMemory.h lines 436--485 and 550--599.
+        for slot in [0x1Eu16, 0x22] {
+            for return_a0 in [0x0000u16, 0x0100] {
+                for (routine_bits, expected) in [
+                    (0x0000, CurrentHeap),
+                    (0x0200, CurrentHeapClear),
+                    (0x0400, SystemHeap),
+                    (0x0600, SystemHeapClear),
+                ] {
+                    assert_eq!(
+                        raw_trap_route(0xA000 | slot | return_a0 | routine_bits).os_routine_variant,
+                        expected
+                    );
+                }
+            }
+        }
+
+        // IM:Memory documents SYS, but not bit 9, for these routines. UI 3.4
+        // MacMemory.h declares the current/system pairs at lines 517--533,
+        // 631--695, 862--1010, and 1331--1362.
+        for slot in [0x1Cu16, 0x1D, 0x28, 0x40, 0x4C, 0x4D, 0x61, 0x62, 0x66] {
+            for return_a0 in [0x0000u16, 0x0100] {
+                assert_eq!(
+                    raw_trap_route(0xA000 | slot | return_a0).os_routine_variant,
+                    CurrentHeap
+                );
+                assert_eq!(
+                    raw_trap_route(0xA400 | slot | return_a0).os_routine_variant,
+                    SystemHeap
+                );
+                assert_eq!(
+                    raw_trap_route(0xA200 | slot | return_a0).os_routine_variant,
+                    Unclassified
+                );
+                assert_eq!(
+                    raw_trap_route(0xA600 | slot | return_a0).os_routine_variant,
+                    Unclassified
+                );
+            }
+        }
+
+        // Inside Macintosh VI, pp. 14-62--14-63 and Appendix C table C-2;
+        // Universal Interfaces 3.4 TextUtils.h lines 404--455.
+        for return_a0 in [0x0000u16, 0x0100] {
+            for (routine_bits, expected) in [
+                (0x0000, LowerText),
+                (0x0200, StripText),
+                (0x0400, UpperText),
+                (0x0600, StripUpperText),
+            ] {
+                assert_eq!(
+                    raw_trap_route(0xA056 | return_a0 | routine_bits).os_routine_variant,
+                    expected
+                );
+            }
+        }
+
+        let classified = (0xA000u16..=0xAFFF)
+            .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
+            .count();
+        assert_eq!(classified, 60);
+        assert_eq!(
+            raw_trap_route(0xA200).os_routine_variant,
+            Unclassified,
+            "an unrelated OS bit-9 form must not acquire invented semantics"
+        );
+        assert_eq!(raw_trap_route(0xAE56).os_routine_variant, Unclassified);
     }
 
     #[test]

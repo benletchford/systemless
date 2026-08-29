@@ -1,5 +1,6 @@
 //! Memory Manager trap handlers.
 
+use super::dispatch::{raw_trap_route, OsRoutineVariant};
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
@@ -602,12 +603,15 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         let result = match (is_tool, trap_num) {
             // ========== Memory Manager ==========
-            // NewPtr ($A01E) / NewPtrSys ($A11E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
+            // NewPtr ($A11E) / NewPtrSys ($A51E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
             // Allocates a nonrelocatable block. CLEAR variants zero the memory.
-            // Inside Macintosh Volume II, II-37
-            // NewPtr / NewPtrClear / NewPtrSys ($A01E): Allocates via `bus.alloc()`, returns ptr in A0; CLEAR variant ($A31E) zeros memory per IM:II II-37
+            // Inside Macintosh: Memory (1992), pp. 2-35--2-37.
+            // Allocates via `bus.alloc()` and returns the pointer in A0;
+            // CLEAR variants zero memory and SYS variants do not extend the
+            // application-zone header.
             (false, 0x1E) => {
                 let size = cpu.read_reg(Register::D0);
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 // `Size` is a signed Macintosh LONGINT. Reject negative
                 // requests before converting them into an unsigned heap
                 // allocation; otherwise an error value can wrap the bump
@@ -625,11 +629,17 @@ impl super::TrapDispatcher {
                     // Trap bit 10 selects the system-heap variants. Keep the
                     // application-zone header synchronized only for ordinary
                     // NewPtr/NewPtrClear allocations.
-                    if (self.current_trap_word & 0x0400) == 0 {
+                    if matches!(
+                        variant,
+                        OsRoutineVariant::CurrentHeap | OsRoutineVariant::CurrentHeapClear
+                    ) {
                         include_application_allocation_in_zone(bus, ptr, size);
                     }
-                    // Check CLEAR bit (bit 9 = 0x0200 in trap word)
-                    if (self.current_trap_word & 0x0200) != 0 && size > 0 {
+                    if matches!(
+                        variant,
+                        OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
+                    ) && size > 0
+                    {
                         bus.fill_zeros(ptr, size);
                     } else {
                         scribble_uninitialized_allocation(bus, ptr, size);
@@ -646,6 +656,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-27
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 // `Size` is a signed Macintosh LONGINT; negative sizes are
                 // invalid and must not be passed to the unsigned allocator.
                 if (size as i32) < 0 {
@@ -659,8 +670,11 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                // Check CLEAR bit (bit 9 = 0x0200 in trap word)
-                if (self.current_trap_word & 0x0200) != 0 && size > 0 {
+                if matches!(
+                    variant,
+                    OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
+                ) && size > 0
+                {
                     bus.fill_zeros(ptr, size);
                 } else {
                     scribble_uninitialized_allocation(bus, ptr, size);
@@ -2565,22 +2579,15 @@ impl super::TrapDispatcher {
             (false, 0x56) => {
                 let ptr = cpu.read_reg(Register::A0);
                 let len = cpu.read_reg(Register::D0) & 0xFFFF;
-                let bits = (self.current_trap_word >> 9) & 0x03;
-                let do_upper = (bits & 0x02) != 0;
-                let do_strip = (bits & 0x01) != 0;
-                let do_lower = bits == 0x00;
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 for i in 0..len {
                     let ch = bus.read_byte(ptr + i);
-                    let result = if do_upper && do_strip {
-                        mac_roman_to_upper(ch, true)
-                    } else if do_upper {
-                        mac_roman_to_upper(ch, false)
-                    } else if do_strip {
-                        mac_roman_strip_diacriticals(ch)
-                    } else if do_lower {
-                        mac_roman_to_lower(ch)
-                    } else {
-                        ch
+                    let result = match variant {
+                        OsRoutineVariant::LowerText => mac_roman_to_lower(ch),
+                        OsRoutineVariant::StripText => mac_roman_strip_diacriticals(ch),
+                        OsRoutineVariant::UpperText => mac_roman_to_upper(ch, false),
+                        OsRoutineVariant::StripUpperText => mac_roman_to_upper(ch, true),
+                        _ => ch,
                     };
                     bus.write_byte(ptr + i, result);
                 }
