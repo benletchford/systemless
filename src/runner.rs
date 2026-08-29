@@ -18396,6 +18396,51 @@ mod tests {
     }
 
     #[test]
+    fn profile_unimplemented_gateway_executes_system_error_12() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let gateway = runner
+            .dispatcher
+            .trap_table_address(&runner.bus, 0xAA6E)
+            .unwrap();
+        assert_eq!(runner.bus.read_word(gateway), 0xAE6E);
+        let call_site = 0x0002_0000;
+        let initial_sp = 0x007F_FE00;
+        runner.bus.write_word(call_site, 0x4E90); // JSR (A0)
+        runner.cpu.write_reg(Register::A0, gateway);
+        runner.cpu.write_reg(Register::A7, initial_sp);
+        runner.cpu.write_reg(Register::PC, call_site);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert_eq!(steps, 2);
+        assert!(!running);
+        assert_eq!(runner.dispatcher.current_trap_caller, Some(call_site + 2));
+        assert_eq!(
+            runner
+                .bus
+                .read_word(crate::memory::globals::addr::DS_ERR_CODE),
+            12
+        );
+    }
+
+    #[test]
     fn init_app_seeds_cursor_task_low_memory_vector() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let app = LoadedApp {

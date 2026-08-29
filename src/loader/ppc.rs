@@ -90903,6 +90903,20 @@ mod tests {
         assert_eq!(bus.read_long(second_head), 0x6006_4ef9);
         assert_eq!(bus.read_long(second_head + 4), original);
 
+        loaded.cpu.gpr[3] = 0xAA6E;
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        let unimplemented = loaded.cpu.gpr[3];
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0xAA57;
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_ne!(loaded.cpu.gpr[3], unimplemented);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = u32::from(trap_word);
         loaded.cpu.gpr[4] = 1;
         loaded.run_with_hle_imports(64);

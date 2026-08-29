@@ -1243,11 +1243,23 @@ const M68K_68040_COME_FROM_TRAPS: &[u16] = &[
 
 const POWERPC_604_COME_FROM_TRAPS: &[u16] = &[0xA823, 0xA851, 0xA996, 0xA999, 0xAAFB];
 
+// Both selected Mac OS 8.1 profiles identify the modern 1,024-entry Toolbox
+// table's `$AA6E` slot as the `Unimplemented` logical identity. All other
+// captured slots have callable defaults. IM:OSUtils (1994), pp. 8-22 and
+// 8-32; IM:Overview (1992), pp. 9-14--9-15.
+const MAC_OS_81_UNIMPLEMENTED_TRAPS: &[u16] = &[0xAA6E];
+
 impl TrapTableProfile {
     fn come_from_traps(self) -> &'static [u16] {
         match self {
             Self::M68k68040 => M68K_68040_COME_FROM_TRAPS,
             Self::PowerPc604 => POWERPC_604_COME_FROM_TRAPS,
+        }
+    }
+
+    fn unimplemented_traps(self) -> &'static [u16] {
+        match self {
+            Self::M68k68040 | Self::PowerPc604 => MAC_OS_81_UNIMPLEMENTED_TRAPS,
         }
     }
 }
@@ -6436,9 +6448,16 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
     ) {
+        let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
-            let default = self.get_or_create_os_trap_trampoline(bus, trap_word);
+            let default = if profile.unimplemented_traps().contains(&trap_word) {
+                self.os_trap_trampolines
+                    .insert(trap_word, unimplemented_gateway);
+                unimplemented_gateway
+            } else {
+                self.get_or_create_os_trap_trampoline(bus, trap_word)
+            };
             let entry = self
                 .native_trap_table
                 .get(&trap_word)
@@ -6448,7 +6467,13 @@ impl TrapDispatcher {
         }
         for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
             let trap_word = 0xA800 | slot;
-            let default = self.get_or_create_tool_trap_trampoline(bus, trap_word);
+            let default = if profile.unimplemented_traps().contains(&trap_word) {
+                self.tool_trap_trampolines
+                    .insert(trap_word, unimplemented_gateway);
+                unimplemented_gateway
+            } else {
+                self.get_or_create_tool_trap_trampoline(bus, trap_word)
+            };
             let entry = self
                 .native_trap_table
                 .get(&trap_word)
@@ -6463,22 +6488,34 @@ impl TrapDispatcher {
         self.trap_tables_materialized = true;
     }
 
+    /// Return the logical address currently selected by a materialized raw
+    /// table entry. Trap Manager getters use this view even when the address
+    /// is the default gateway; dispatch uses [`Self::native_trap_handler`] to
+    /// distinguish that default from an installed patch.
+    pub(crate) fn trap_table_address(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
+        if !self.trap_tables_materialized {
+            return None;
+        }
+        let canonical = Self::canonical_trap_word(trap_word);
+        let installed = bus.read_long(Self::raw_trap_table_entry(canonical));
+        Some(
+            match resolve_trap_table_target(installed, |address| Some(bus.read_long(address))) {
+                Some(TrapTableTarget::Direct(target)) => target,
+                Some(TrapTableTarget::Protected {
+                    logical_successor, ..
+                }) => logical_successor,
+                None => installed,
+            },
+        )
+    }
+
     /// Return the current non-default handler for a canonical trap slot.
     /// Once low-memory tables exist, their bytes are the source of truth so a
     /// guest can patch a trap with an ordinary longword store.
     pub(crate) fn native_trap_handler(&self, bus: &MacMemoryBus, trap_word: u16) -> Option<u32> {
         let canonical = Self::canonical_trap_word(trap_word);
         if self.trap_tables_materialized {
-            let installed = bus.read_long(Self::raw_trap_table_entry(canonical));
-            let logical = match resolve_trap_table_target(installed, |address| {
-                Some(bus.read_long(address))
-            }) {
-                Some(TrapTableTarget::Direct(target)) => target,
-                Some(TrapTableTarget::Protected {
-                    logical_successor, ..
-                }) => logical_successor,
-                None => installed,
-            };
+            let logical = self.trap_table_address(bus, canonical)?;
             if self.default_trap_gateway(canonical) == Some(logical) {
                 None
             } else {
@@ -7595,6 +7632,36 @@ mod tests {
                 }
             }
             assert_eq!(observed, expected);
+        }
+    }
+
+    #[test]
+    fn machine_profiles_classify_only_aa6e_as_unimplemented() {
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            let (mut dispatcher, _cpu, mut bus) = setup();
+            dispatcher.materialize_trap_tables(&mut bus, profile);
+            let unimplemented = dispatcher.trap_table_address(&bus, 0xAA6E).unwrap();
+            let mut matching_slots = Vec::new();
+
+            for slot in 0..OS_TRAP_TABLE_SLOTS {
+                let word = 0xA000 | slot;
+                if dispatcher.trap_table_address(&bus, word) == Some(unimplemented) {
+                    matching_slots.push(word);
+                }
+            }
+            for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+                let word = 0xA800 | slot;
+                if dispatcher.trap_table_address(&bus, word) == Some(unimplemented) {
+                    matching_slots.push(word);
+                }
+            }
+
+            assert_eq!(matching_slots, [0xAA6E]);
+            assert_eq!(bus.read_word(unimplemented), 0xAE6E);
+            assert_ne!(
+                dispatcher.trap_table_address(&bus, 0xAA57),
+                Some(unimplemented)
+            );
         }
     }
 

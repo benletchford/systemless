@@ -940,10 +940,14 @@ impl super::TrapDispatcher {
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_variant = self.current_trap_word & 0x0FFF;
-                // Check the selected raw table first (returns an address set
-                // either through SetTrapAddress or by a direct guest write).
+                // Once initialized, return the logical view of the selected
+                // raw table entry, including an unchanged default. This keeps
+                // profile availability probes tied to the materialized table
+                // rather than reconstructing them from host assumptions.
                 let trap_table_key = self.trap_address_table_key(trap_word);
-                if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
+                if let Some(addr) = self.trap_table_address(bus, trap_table_key) {
+                    cpu.write_reg(Register::A0, addr);
+                } else if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
                     cpu.write_reg(Register::A0, addr);
                 } else if trap_variant == 0x746 {
                     // Real GetToolTrapAddress/GetToolBoxTrapAddress
@@ -951,32 +955,10 @@ impl super::TrapDispatcher {
                     // in D0. Return a callable tool-trap trampoline so
                     // guests can JSR/JMP through the result.
                     //
-                    // DockingDispatch (0x257) is absent on the generic
-                    // target, so collapse that probe to _Unimplemented
-                    // (0xA89F) just like the other probe forms.
                     let trap_num = trap_word & 0x03FF;
-                    let canonical_tool_trap = if trap_num == 0x257 {
-                        0xA89F
-                    } else {
-                        0xA800 | trap_num
-                    };
+                    let canonical_tool_trap = 0xA800 | trap_num;
                     let addr = self.get_or_create_tool_trap_trampoline(bus, canonical_tool_trap);
                     cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0xAA57 {
-                    // DockingDispatch is PowerBook-only. On the generic
-                    // non-PowerBook target we alias the probe to the
-                    // existing _Unimplemented trampoline so callers that
-                    // compare against GetTrapAddress($A89F) see the trap
-                    // as absent rather than as a callable DockingDispatch
-                    // entry. IM:II II-384; IM:I I-89.
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, 0xA89F);
-                    cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0x257 {
-                    // NGetTrapAddress() probe for DockingDispatch uses
-                    // the low-number tool-trap form. Alias that probe to
-                    // the same unimplemented sentinel used for 0x09F so
-                    // selector-0 availability checks compare equal.
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + 0x09F);
                 } else if (trap_table_key & 0x0800) != 0 {
                     // Tool trap (bit 11 set in the word): hand back a
                     // callable trampoline so JSR-through-fake-ptr works.
@@ -1038,7 +1020,7 @@ impl super::TrapDispatcher {
             //
             // Contract coverage:
             //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_returns_native_table_entry_and_preserves_stack
-            //   src/trap/memory.rs::tests::test_get_tool_trap_address_docking_dispatch_aliases_unimplemented_probe
+            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_keeps_docking_dispatch_distinct
             //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_creates_stable_trampoline_for_tool_trap_word
             //   src/trap/memory.rs::tests::test_get_tool_trap_address_tool
             // Inside Macintosh Volume II, II-384
@@ -1048,12 +1030,6 @@ impl super::TrapDispatcher {
                 let canonical_tool_trap = 0xA800 | (trap_word & 0x03FF);
                 if let Some(addr) = self.native_trap_handler(bus, canonical_tool_trap) {
                     cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0x257 {
-                    // DockingDispatch probe uses the low-number tool-trap
-                    // form when callers go through NGetTrapAddress.
-                    // Mirror the same fake-ptr sentinel as the Unimplemented
-                    // tool trap probe so the two addresses compare equal.
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + 0x09F);
                 } else if (trap_word & 0x0800) != 0 {
                     let addr = self.get_or_create_tool_trap_trampoline(bus, trap_word);
                     cpu.write_reg(Register::A0, addr);
@@ -6809,8 +6785,10 @@ mod tests {
     }
 
     #[test]
-    fn test_get_trap_address_docking_dispatch_aliases_unimplemented_vector() {
+    fn get_trap_address_does_not_misclassify_docking_dispatch_as_unimplemented() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher
+            .materialize_trap_tables(&mut bus, crate::trap::dispatch::TrapTableProfile::M68k68040);
 
         cpu.write_reg(Register::D0, 0xAA57);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
@@ -6821,7 +6799,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let docking_addr = cpu.read_reg(Register::A0);
 
-        cpu.write_reg(Register::D0, 0xA89F);
+        cpu.write_reg(Register::D0, 0xAA6E);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
         assert!(
             result.is_some(),
@@ -6830,9 +6808,9 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let unimplemented_addr = cpu.read_reg(Register::A0);
 
-        assert_eq!(
+        assert_ne!(
             docking_addr, unimplemented_addr,
-            "DockingDispatch should alias the _Unimplemented trampoline on the generic target"
+            "the selected profile captures DockingDispatch as callable"
         );
     }
 
@@ -6871,7 +6849,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_tool_trap_address_docking_dispatch_aliases_unimplemented_probe() {
+    fn phantom_gettooltrapaddress_keeps_docking_dispatch_distinct() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0x0BAD_F00D);
@@ -6885,7 +6863,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
         let docking_addr = cpu.read_reg(Register::A0);
 
-        cpu.write_reg(Register::D0, 0x09F);
+        cpu.write_reg(Register::D0, 0x26E);
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
         assert!(
             result.is_some(),
@@ -6894,9 +6872,9 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
         let unimplemented_addr = cpu.read_reg(Register::A0);
 
-        assert_eq!(
+        assert_ne!(
             docking_addr, unimplemented_addr,
-            "DockingDispatch should alias the _Unimplemented probe sentinel on the generic target"
+            "even the legacy diagnostic path must not invent an unavailable alias"
         );
         assert_eq!(
             cpu.read_reg(Register::A7),

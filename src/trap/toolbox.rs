@@ -4869,6 +4869,15 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
         Some(match (is_tool, trap_num) {
+            // Unimplemented ($AA6E)
+            // Triggers the fatal unimplemented-core-routine system error.
+            // PROCEDURE Unimplemented;
+            // Inside Macintosh: Operating System Utilities (1994), p. 8-32
+            (true, 0x26E) => {
+                bus.write_word(crate::memory::globals::addr::DS_ERR_CODE, 12);
+                Err(crate::Error::Halted)
+            }
+
             // ========== Toolbox Event Traps ==========
 
             // GetNextEvent ($A970) - Toolbox variant
@@ -15780,13 +15789,12 @@ impl super::TrapDispatcher {
             // (Duo 2x0 series); routes dock/undock notifications and
             // power-state events. Selector convention: D0 = routine
             // number per the standard System 7 dispatcher pattern.
-            // No documented Gestalt selector — apps probe via
-            // NGetTrapAddress($AA57) returning _Unimplemented when
-            // running on non-PowerBook hardware.
+            // No documented Gestalt selector. The selected Mac OS 8.1
+            // profiles expose a callable table entry distinct from the
+            // modern $AA6E Unimplemented identity.
             //
             // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. No current corpus title
-            // is PowerBook-specific.
+            // preserved, stack untouched.
             //
             // Regression coverage:
             //   dockingdispatch_*
