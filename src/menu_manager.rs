@@ -2078,6 +2078,62 @@ impl MenuItems {
         true
     }
 
+    /// Insert named resources using the standard Menu Manager policy.
+    ///
+    /// Resource-derived items are sorted alphabetically without reordering
+    /// existing items, names beginning with `.` or `%` are hidden, and an
+    /// exact name already present in the menu is not inserted again. New
+    /// items use the documented enabled, plain, unmarked, iconless defaults.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-101--3-104.
+    pub(crate) fn insert_resource_names(
+        &mut self,
+        names: impl IntoIterator<Item = Vec<u8>>,
+        after_item: i16,
+    ) -> bool {
+        let existing = self
+            .items
+            .iter()
+            .map(|item| item.text.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut seen = std::collections::HashSet::new();
+        let mut names = names
+            .into_iter()
+            .filter_map(|mut name| {
+                name.truncate(255);
+                (!name.is_empty()
+                    && !matches!(name.first(), Some(b'.' | b'%'))
+                    && !existing.contains(&name)
+                    && seen.insert(name.clone()))
+                .then_some(name)
+            })
+            .collect::<Vec<_>>();
+        names.sort_by(|left, right| {
+            crate::mac_roman::decode_mac_roman(left)
+                .to_lowercase()
+                .cmp(&crate::mac_roman::decode_mac_roman(right).to_lowercase())
+                .then_with(|| left.cmp(right))
+        });
+        if names.is_empty() {
+            return false;
+        }
+
+        let insertion = usize::try_from(after_item.max(0))
+            .unwrap_or(0)
+            .min(self.items.len());
+        self.items.splice(
+            insertion..insertion,
+            names.into_iter().map(|text| MenuItem {
+                text,
+                icon: 0,
+                command: 0,
+                mark: 0,
+                style: 0,
+                enabled: true,
+            }),
+        );
+        true
+    }
+
     pub(crate) fn delete(&mut self, item_number: i16) -> bool {
         let Some(index) = menu_item_index(item_number) else {
             return false;
@@ -3912,6 +3968,50 @@ mod tests {
         assert_eq!(decoded.items[1].mark, b'=');
         assert_eq!(decoded.items[1].style, 0x03);
         assert!(!decoded.items[2].enabled);
+    }
+
+    #[test]
+    fn resource_name_insertion_filters_sorts_deduplicates_and_uses_defaults() {
+        let mut original = vec![0; 15];
+        original[10..14].copy_from_slice(&u32::MAX.to_be_bytes());
+        original.extend_from_slice(&[0]);
+        let mut items = MenuItems::decode(&original).expect("decode empty menu");
+        assert!(items.append_specs(b"Existing;Tail"));
+
+        assert!(items.insert_resource_names(
+            [
+                b"Zulu".to_vec(),
+                b".Hidden".to_vec(),
+                b"Existing".to_vec(),
+                b"alpha".to_vec(),
+                b"%Metadata".to_vec(),
+                b"Beta".to_vec(),
+                b"alpha".to_vec(),
+            ],
+            1,
+        ));
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.text.as_slice())
+                .collect::<Vec<_>>(),
+            [
+                b"Existing".as_slice(),
+                b"alpha".as_slice(),
+                b"Beta".as_slice(),
+                b"Zulu".as_slice(),
+                b"Tail".as_slice(),
+            ]
+        );
+        for item in &items.items[1..4] {
+            assert!(item.enabled);
+            assert_eq!(
+                (item.icon, item.command, item.mark, item.style),
+                (0, 0, 0, 0)
+            );
+        }
+        assert!(!items.insert_resource_names([b"Existing".to_vec()], i16::MAX));
     }
 
     #[test]

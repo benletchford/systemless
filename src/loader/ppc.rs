@@ -1090,6 +1090,8 @@ pub enum PpcImportDispatcherTarget {
     DeleteMenu,
     AppendMenu,
     InsertMenuItem,
+    AppendResMenu,
+    InsertResMenu,
     EnableMenuItem,
     DisableMenuItem,
     SetItemMark,
@@ -14555,6 +14557,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "InsertMenuItem") | ("InterfaceLib", "InsMenuItem") => {
             PpcImportDispatcherTarget::InsertMenuItem
         }
+        ("InterfaceLib", "AppendResMenu") | ("InterfaceLib", "AddResMenu") => {
+            PpcImportDispatcherTarget::AppendResMenu
+        }
+        ("InterfaceLib", "InsertResMenu") => PpcImportDispatcherTarget::InsertResMenu,
         ("InterfaceLib", "EnableItem") => PpcImportDispatcherTarget::EnableMenuItem,
         ("InterfaceLib", "DisableItem") => PpcImportDispatcherTarget::DisableMenuItem,
         ("InterfaceLib", "SetItemMark") => PpcImportDispatcherTarget::SetItemMark,
@@ -14582,7 +14588,6 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar")
-        | ("InterfaceLib", "AppendResMenu")
         | ("InterfaceLib", "OpenCPicture")
         | ("InterfaceLib", "ClosePicture")
         | ("InterfaceLib", "LSetDrawingMode")
@@ -16231,6 +16236,55 @@ fn dispatch_supported_import(
                 cpu.gpr[4],
                 cpu.gpr[5] as u16 as i16,
             );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::AppendResMenu => {
+            // AppendResMenu
+            // Appends the alphabetized names of matching resources.
+            // PROCEDURE AppendResMenu(theMenu: MenuHandle; theType: ResType);
+            // Macintosh Toolbox Essentials (1992), pp. 3-101--3-102.
+            let result = ppc_insert_resource_menu(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                vfs_resources,
+                *current_resource_refnum,
+                resource_load_enabled,
+                last_resource_error,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                i16::MAX,
+            );
+            *last_mem_error = result;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InsertResMenu => {
+            // InsertResMenu
+            // Inserts alphabetized matching resource names after one item.
+            // PROCEDURE InsertResMenu(theMenu: MenuHandle; theType: ResType;
+            //                         afterItem: Integer);
+            // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104.
+            let result = ppc_insert_resource_menu(
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                vfs_resources,
+                *current_resource_refnum,
+                resource_load_enabled,
+                last_resource_error,
+                cpu.gpr[3],
+                cpu.gpr[4],
+                cpu.gpr[5] as u16 as i16,
+            );
+            *last_mem_error = result;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EnableMenuItem => {
@@ -66137,6 +66191,130 @@ fn ppc_insert_menu_items(
     )
 }
 
+fn ppc_resource_menu_indices(
+    resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    requested_type: u32,
+) -> Vec<usize> {
+    let font_type = u32::from_be_bytes(*b"FONT");
+    let resource_types = if requested_type == font_type {
+        [Some(u32::from_be_bytes(*b"FOND")), Some(font_type)]
+    } else {
+        [Some(requested_type), None]
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut indices = Vec::new();
+    for resource_type in resource_types.into_iter().flatten() {
+        for current in [true, false] {
+            for (index, resource) in resources.iter().enumerate() {
+                if resource.res_type != resource_type
+                    || resource.ref_num == PPC_CLOSED_RESOURCE_REF_NUM
+                    || resource.name.is_empty()
+                    || (resource.ref_num == current_resource_refnum) != current
+                {
+                    continue;
+                }
+                if seen.insert((resource_type, resource.res_id)) {
+                    indices.push(index);
+                }
+            }
+        }
+    }
+    indices
+}
+
+fn ppc_insert_resource_menu_names(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut [PpcHandleRecord],
+    menu_handle: u32,
+    names: Vec<Vec<u8>>,
+    after_item: i16,
+) -> i16 {
+    let Some(original) = ppc_menu_handle_bytes(memory, handles, menu_handle) else {
+        return PPC_NIL_HANDLE_ERR;
+    };
+    let Some(mut items) = MenuItems::decode(&original) else {
+        return PPC_PARAM_ERR;
+    };
+    if !items.insert_resource_names(names, after_item) {
+        return PPC_NO_ERR;
+    }
+    let Some(bytes) = items.rebuild(&original) else {
+        return PPC_PARAM_ERR;
+    };
+    ppc_replace_menu_bytes(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        menu_handle,
+        &bytes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_insert_resource_menu(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    resources: &mut [PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    resource_load_enabled: &mut bool,
+    last_resource_error: &mut i16,
+    menu_handle: u32,
+    requested_type: u32,
+    after_item: i16,
+) -> i16 {
+    // AppendResMenu and InsertResMenu force SetResLoad(TRUE) and read every
+    // matching resource before returning. Macintosh Toolbox Essentials
+    // (1992), pp. 3-101--3-104.
+    *resource_load_enabled = true;
+    let indices = ppc_resource_menu_indices(resources, current_resource_refnum, requested_type);
+    let mut names = Vec::with_capacity(indices.len());
+    for index in indices {
+        let name = resources[index].name.clone();
+        if ppc_materialize_vfs_resource_handle(
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            resources,
+            index,
+            true,
+            last_resource_error,
+        ) == 0
+        {
+            return *last_mem_error;
+        }
+        names.push(name);
+    }
+    if requested_type == u32::from_be_bytes(*b"FONT") {
+        for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
+            if id != crate::quickdraw::fonts::FONT_APPLICATION {
+                names.push(crate::mac_roman::encode_mac_roman_lossy(name));
+            }
+        }
+    }
+    ppc_insert_resource_menu_names(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        menu_handle,
+        names,
+        after_item,
+    )
+}
+
 fn ppc_set_menu_item_enabled(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -83394,6 +83572,18 @@ mod tests {
             PpcImportDispatcherTarget::MenuNoop
         );
         assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "AppendResMenu"),
+            PpcImportDispatcherTarget::AppendResMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "AddResMenu"),
+            PpcImportDispatcherTarget::AppendResMenu
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "InsertResMenu"),
+            PpcImportDispatcherTarget::InsertResMenu
+        );
+        assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "HMGetHelpMenuHandle"),
             PpcImportDispatcherTarget::HMGetHelpMenuHandle
         );
@@ -83434,6 +83624,163 @@ mod tests {
             .unwrap();
         run_test_import(&mut loaded, PpcImportDispatcherTarget::LMGetMenuFlash);
         assert_eq!(loaded.cpu.gpr[3], u32::MAX);
+    }
+
+    #[test]
+    fn native_insert_and_append_res_menu_share_resource_name_policy() {
+        let pef = synthetic_pef_with_import(b"InsertResMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            128,
+            b"Apple",
+            b"Existing;Tail",
+        );
+        let current = loaded.current_resource_refnum;
+        let record = |ref_num, res_id, name: &[u8], byte| PpcVfsResourceRecord {
+            ref_num,
+            path: format!("Resources {ref_num}"),
+            res_type: u32::from_be_bytes(*b"DRVR"),
+            res_id,
+            name: name.to_vec(),
+            data: vec![byte],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        };
+        loaded.vfs_resources.extend([
+            record(current, 103, b"Zulu", 1),
+            record(current, 104, b"Alpha", 2),
+            record(current, 105, b".Hidden", 3),
+            record(current, 106, b"Existing", 4),
+            record(2, 103, b"Shadowed", 5),
+            record(2, 107, b"Beta", 6),
+        ]);
+        loaded.resource_load_enabled = false;
+        loaded.cpu.gpr[3] = menu;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"DRVR");
+        loaded.cpu.gpr[5] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InsertResMenu);
+
+        let items = ppc_menu_items_from_memory(&mut loaded.memory, menu).unwrap();
+        assert_eq!(
+            items
+                .items
+                .iter()
+                .map(|item| item.text.as_slice())
+                .collect::<Vec<_>>(),
+            [
+                b"Existing".as_slice(),
+                b"Alpha".as_slice(),
+                b"Beta".as_slice(),
+                b"Zulu".as_slice(),
+                b"Tail".as_slice(),
+            ]
+        );
+        for item in &items.items[1..4] {
+            assert!(item.enabled);
+            assert_eq!(
+                (item.icon, item.command, item.mark, item.style),
+                (0, 0, 0, 0)
+            );
+        }
+        assert!(loaded.resource_load_enabled);
+        for resource in &loaded.vfs_resources {
+            if resource.name == b"Shadowed" {
+                assert_eq!(
+                    resource.handle, 0,
+                    "closer type/ID must shadow this resource"
+                );
+            } else {
+                assert_ne!(resource.handle, 0, "matching resources must be loaded");
+                assert_ne!(loaded.memory.read_u32_be(resource.handle), Some(0));
+            }
+        }
+
+        loaded.vfs_resources.push(record(2, 108, b"Gamma", 7));
+        loaded.cpu.gpr[3] = menu;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"DRVR");
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AppendResMenu);
+        assert_eq!(
+            ppc_menu_items_from_memory(&mut loaded.memory, menu)
+                .unwrap()
+                .items
+                .iter()
+                .map(|item| item.text.as_slice())
+                .collect::<Vec<_>>(),
+            [
+                b"Existing".as_slice(),
+                b"Alpha".as_slice(),
+                b"Beta".as_slice(),
+                b"Zulu".as_slice(),
+                b"Tail".as_slice(),
+                b"Gamma".as_slice(),
+            ]
+        );
+        assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_append_res_menu_gives_fond_names_precedence_and_adds_builtin_fonts() {
+        let pef = synthetic_pef_with_import(b"AppendResMenu");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 129, b"Font", b"");
+        let current = loaded.current_resource_refnum;
+        loaded.vfs_resources.extend([
+            PpcVfsResourceRecord {
+                ref_num: current,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"FONT"),
+                res_id: 7,
+                name: b"Custom Face".to_vec(),
+                data: vec![1],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+            PpcVfsResourceRecord {
+                ref_num: current,
+                path: "Test App".to_string(),
+                res_type: u32::from_be_bytes(*b"FOND"),
+                res_id: 8,
+                name: b"Custom Face".to_vec(),
+                data: vec![2],
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            },
+        ]);
+
+        loaded.cpu.gpr[3] = menu;
+        loaded.cpu.gpr[4] = u32::from_be_bytes(*b"FONT");
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::AppendResMenu);
+
+        let names = ppc_menu_items_from_memory(&mut loaded.memory, menu)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|item| item.text)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.as_slice() == b"Custom Face")
+                .count(),
+            1,
+            "the FOND name must suppress the later FONT duplicate"
+        );
+        for expected in [b"Chicago".as_slice(), b"Geneva", b"Monaco", b"New York"] {
+            assert!(names.iter().any(|name| name == expected));
+        }
+        assert!(!names.iter().any(|name| name == b"Application"));
+        assert!(loaded
+            .vfs_resources
+            .iter()
+            .all(|resource| resource.handle != 0));
     }
 
     #[test]

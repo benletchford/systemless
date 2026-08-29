@@ -360,37 +360,6 @@ fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
         .collect()
 }
 
-/// Rebuild the enableFlags longword from a Menu's enabled state and write it
-/// back to the guest-memory MENU record at offset 10.
-/// Inside Macintosh Volume I, I-345: bit 0 = menu enabled; bits 1–31 = items.
-///
-/// Start from $FFFFFFFF (all bits set, matching NewMenu's seed) and CLEAR
-/// bits for disabled items. Real Mac ROM preserves the high bits for
-/// non-existent items rather than rebuilding from scratch, so a disable
-/// of item 2 yields $FFFFFFFB (not $0000001B).
-fn sync_enable_flags(bus: &mut MacMemoryBus, menu: &Menu) {
-    if menu.handle == 0 {
-        return;
-    }
-    let menu_ptr = bus.read_long(menu.handle);
-    if menu_ptr == 0 {
-        return;
-    }
-    let mut flags: u32 = 0xFFFFFFFF;
-    if !menu.enabled {
-        flags &= !1u32;
-    }
-    for (i, item) in menu.items.iter().enumerate() {
-        if i >= 31 {
-            break;
-        }
-        if !item.enabled {
-            flags &= !(1u32 << (i + 1));
-        }
-    }
-    bus.write_long(menu_ptr + 10, flags);
-}
-
 /// Refresh cached menu contents from the guest-owned MenuInfo record.
 /// Applications and menu definition procedures can inspect and change this
 /// record directly, so rendering or writing a cached copy back without first
@@ -419,58 +388,6 @@ fn refresh_menu_from_memory(bus: &MacMemoryBus, menu: &mut Menu) {
     menu.title = parsed.title;
     menu.items = parsed.items;
     menu.enabled = parsed.enabled;
-}
-
-/// Serialise a Menu's items into the guest-memory MENU record.
-/// Per IM:I I-355: menuData starts at `menu_ptr + 14` and contains the
-/// title (Pascal string) followed by items. Each item is a Pascal
-/// string for the item text followed by 4 attribute bytes:
-/// icon (1), keyEquiv (1), mark (1), style (1). The items list is
-/// terminated by a length-0 byte.
-///
-/// Without this sync, the `count_menu_items_from_memory` path (used by
-/// CountMItems and CalcMenuSize to stay compatible with GetMenu-loaded
-/// menus) finds only the NewMenu-seeded terminator and reports 0 items
-/// even though AppendMenu populated `self.menus`.
-///
-fn serialized_menu_record_size(bus: &MacMemoryBus, menu: &Menu) -> u32 {
-    let menu_ptr = bus.read_long(menu.handle);
-    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-    menu.items.iter().fold(16 + title_len, |size, item| {
-        size.saturating_add(5 + internal_menu_string_bytes(&item.text).len().min(255) as u32)
-    })
-}
-
-fn write_menu_items_to_memory(
-    bus: &mut MacMemoryBus,
-    menu: &Menu,
-    menu_ptr: u32,
-    menu_record_size: u32,
-) {
-    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-    let mut offset = 15 + title_len;
-    for item in &menu.items {
-        let encoded = internal_menu_string_bytes(&item.text);
-        let bytes = encoded.as_slice();
-        let text_len = bytes.len().min(255) as u32;
-        let item_size = 1 + text_len + 4;
-        if offset + item_size + 1 > menu_record_size {
-            break;
-        }
-        bus.write_byte(menu_ptr + offset, text_len as u8);
-        for (i, b) in bytes.iter().take(text_len as usize).enumerate() {
-            bus.write_byte(menu_ptr + offset + 1 + i as u32, *b);
-        }
-        let attr_base = menu_ptr + offset + 1 + text_len;
-        bus.write_byte(attr_base, item.icon);
-        bus.write_byte(attr_base + 1, item.key_equiv);
-        bus.write_byte(attr_base + 2, item.mark);
-        bus.write_byte(attr_base + 3, item.style);
-        offset += item_size;
-    }
-    if offset < menu_record_size {
-        bus.write_byte(menu_ptr + offset, 0);
-    }
 }
 
 fn looks_like_menu_ptr(bus: &MacMemoryBus, menu_ptr: u32) -> bool {
@@ -1581,44 +1498,6 @@ impl super::TrapDispatcher {
         );
     }
 
-    fn ensure_menu_record_capacity(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        menu_handle: u32,
-        min_size: u32,
-    ) -> u32 {
-        if menu_handle == 0 {
-            return 0;
-        }
-        let menu_ptr = bus.read_long(menu_handle);
-        if menu_ptr == 0 {
-            return 0;
-        }
-        let current_size = bus
-            .get_alloc_size(menu_ptr)
-            .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
-        if current_size >= min_size {
-            return menu_ptr;
-        }
-
-        self.resize_resource_allocation(bus, menu_handle, menu_ptr, min_size)
-    }
-
-    fn serialise_menu_items_to_memory(&mut self, bus: &mut MacMemoryBus, menu: &Menu) {
-        if menu.handle == 0 || bus.read_long(menu.handle) == 0 {
-            return;
-        }
-        let required_size = serialized_menu_record_size(bus, menu).max(256);
-        let menu_ptr = self.ensure_menu_record_capacity(bus, menu.handle, required_size);
-        if menu_ptr == 0 {
-            return;
-        }
-        let record_size = bus
-            .get_alloc_size(menu_ptr)
-            .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
-        write_menu_items_to_memory(bus, menu, menu_ptr, record_size);
-    }
-
     fn mutate_menu_items(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -1666,6 +1545,43 @@ impl super::TrapDispatcher {
             }
         }
         true
+    }
+
+    /// Collect and materialize the resource names consumed by AppendResMenu
+    /// and InsertResMenu.
+    ///
+    /// A `FONT` request gives `FOND` names precedence before legacy `FONT`
+    /// names. Both routines restore automatic resource loading before they
+    /// return; filtering, sorting, duplicate suppression, insertion, and item
+    /// defaults remain shared `MenuItems` policy. Macintosh Toolbox
+    /// Essentials (1992), pp. 3-101--3-104.
+    fn resource_menu_names(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        requested_type: [u8; 4],
+    ) -> Vec<Vec<u8>> {
+        self.res_load = true;
+        let resource_types = if requested_type == *b"FONT" {
+            [Some(*b"FOND"), Some(*b"FONT")]
+        } else {
+            [Some(requested_type), None]
+        };
+        let mut names = Vec::new();
+        for resource_type in resource_types.into_iter().flatten() {
+            for (refnum, id, name, ptr) in self.named_resource_records_of_type(resource_type) {
+                let _ =
+                    self.get_or_create_resource_handle_in_file(bus, resource_type, id, ptr, refnum);
+                names.push(encode_mac_roman_lossy(&name));
+            }
+        }
+        if requested_type == *b"FONT" {
+            for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
+                if id != crate::quickdraw::fonts::FONT_APPLICATION {
+                    names.push(encode_mac_roman_lossy(name));
+                }
+            }
+        }
+        names
     }
 
     fn refresh_menus_from_memory(&mut self, bus: &MacMemoryBus) {
@@ -2064,16 +1980,7 @@ impl super::TrapDispatcher {
             // Essentials 1992, 3-101..3-102 (AppendResMenu — System 7
             // alias for AddResMenu).
             //
-            // Per IM:I I-353 / IM:V V-242: walks the resource fork in
-            // search order, appending each named resource of `theType`
-            // as a menu item. Resources whose name starts with `.` or
-            // `%` are skipped (Apple's convention for hidden DA names
-            // and font-family marker entries). Items are appended in
-            // resource-map order — sorted by ID ascending in our HLE,
-            // matching the on-disk map-table layout per IM:I I-118.
-            //
             // Stack: SP+0 theType (4), SP+4 theMenu handle (4). Pop 8.
-            // AddResMenu ($A94D): Walks the current resource search order, appends named resources of theType (skip names starting with '.' or '%') per IM:I I-353
             (true, 0x14D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let res_type_word = bus.read_long(sp);
@@ -2081,53 +1988,10 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 8);
 
                 let res_type = res_type_word.to_be_bytes();
-                let mut entries = self.named_resources_of_type(res_type);
-                if res_type == *b"FONT" {
-                    // Systemless's built-in bitmap families are HLE data, not
-                    // guest FONT resources. AddResMenu must nevertheless make
-                    // those installed families visible to applications that
-                    // build a Font menu from the Font Manager resource type.
-                    // Inside Macintosh Volume I (1985), pp. I-217, I-353.
-                    for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
-                        if id == crate::quickdraw::fonts::FONT_APPLICATION
-                            || entries.iter().any(|(_, entry)| entry == name)
-                        {
-                            continue;
-                        }
-                        entries.push((id, name.to_string()));
-                    }
-                    entries.sort_by_key(|(id, _)| *id);
-                }
-
-                let mut touched: Option<Menu> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    for (_id, name) in entries {
-                        if name.is_empty() || name.starts_with('.') || name.starts_with('%') {
-                            continue;
-                        }
-                        // Per IM:I I-358 AddResMenu's "no duplicates"
-                        // contract: if an item with this exact text
-                        // already exists, skip it. Real Mac does this
-                        // case-sensitively.
-                        if menu.items.iter().any(|it| it.text == name) {
-                            continue;
-                        }
-                        menu.items.push(MenuItem {
-                            text: name,
-                            icon: 0,
-                            key_equiv: 0,
-                            mark: 0,
-                            style: 0,
-                            enabled: true,
-                        });
-                    }
-                    sync_enable_flags(bus, menu);
-                    touched = Some(menu.clone());
-                }
-                if let Some(m) = touched {
-                    self.serialise_menu_items_to_memory(bus, &m);
-                }
+                let names = self.resource_menu_names(bus, res_type);
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.insert_resource_names(names, i16::MAX)
+                });
                 Ok(())
             }
 
@@ -3594,12 +3458,7 @@ impl super::TrapDispatcher {
             //   N (>= 1)   — insert after item N
             //   >= count   — append (degrades to AddResMenu)
             //
-            // Items are sorted alphabetically by name (IM:IV IV-56) via
-            // named_resources_of_type; same `.`/`%` skip rules and
-            // no-duplicate contract as AddResMenu.
-            //
             // Stack: SP+0 afterItem (2), SP+2 theType (4), SP+6 theMenu handle (4). Pop 10.
-            // InsertResMenu ($A951): Walks the current resource search order, inserts named resources of theType after `afterItem` (skip names starting with '.' or '%'), sorted alphabetically per IM:IV IV-56
             (true, 0x151) => {
                 let sp = cpu.read_reg(Register::A7);
                 let after_item = bus.read_word(sp) as i16;
@@ -3608,39 +3467,10 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 10);
 
                 let res_type = res_type_word.to_be_bytes();
-                let entries = self.named_resources_of_type(res_type);
-
-                let mut touched: Option<Menu> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    let base = (after_item.max(0) as usize).min(menu.items.len());
-                    let mut offset = 0usize;
-                    for (_id, name) in entries {
-                        if name.is_empty() || name.starts_with('.') || name.starts_with('%') {
-                            continue;
-                        }
-                        if menu.items.iter().any(|it| it.text == name) {
-                            continue;
-                        }
-                        menu.items.insert(
-                            base + offset,
-                            MenuItem {
-                                text: name,
-                                icon: 0,
-                                key_equiv: 0,
-                                mark: 0,
-                                style: 0,
-                                enabled: true,
-                            },
-                        );
-                        offset += 1;
-                    }
-                    sync_enable_flags(bus, menu);
-                    touched = Some(menu.clone());
-                }
-                if let Some(m) = touched {
-                    self.serialise_menu_items_to_memory(bus, &m);
-                }
+                let names = self.resource_menu_names(bus, res_type);
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.insert_resource_names(names, after_item)
+                });
                 Ok(())
             }
 
@@ -6952,9 +6782,32 @@ mod tests {
     }
 
     #[test]
-    fn addresmenu_exposes_builtin_font_families_without_guest_resources() {
+    fn addresmenu_prioritizes_fond_names_loads_resources_and_exposes_builtin_fonts() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 331, 0x306A00, "Font");
+        let fond_ptr = bus.alloc(1);
+        let font_ptr = bus.alloc(1);
+        bus.write_byte(fond_ptr, 1);
+        bus.write_byte(font_ptr, 2);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::new(),
+                    named: std::collections::HashMap::from([
+                        ((*b"FONT", "Custom Face".to_string()), (7, font_ptr)),
+                        ((*b"FOND", "Custom Face".to_string()), (8, fond_ptr)),
+                    ]),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        disp.res_load = false;
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, u32::from_be_bytes(*b"FONT"));
@@ -6965,6 +6818,7 @@ mod tests {
                 .is_ok(),
             "AddResMenu should succeed"
         );
+        assert!(disp.res_load, "AppendResMenu must restore SetResLoad(TRUE)");
 
         let menu = disp
             .menus
@@ -6981,6 +6835,18 @@ mod tests {
             !menu.items.iter().any(|item| item.text == "Application"),
             "the applFont selector is not a user-facing family"
         );
+        assert_eq!(
+            menu.items
+                .iter()
+                .filter(|item| item.text == "Custom Face")
+                .count(),
+            1,
+            "the FOND name must suppress the later FONT duplicate"
+        );
+        for (resource_type, id, ptr) in [(*b"FOND", 8, fond_ptr), (*b"FONT", 7, font_ptr)] {
+            let resource_handle = disp.resource_handles_by_key[&(0, resource_type, id)];
+            assert_eq!(bus.read_long(resource_handle), ptr);
+        }
     }
 
     // IM:I I-360: SetItemStyle takes one Style value, one item index,

@@ -6271,37 +6271,39 @@ impl TrapDispatcher {
     }
 
     /// Collect every named resource of `res_type` reachable through the
-    /// current resource search order. Returns `(id, name)` pairs sorted
-    /// by id ascending — matching the on-disk resource-map order real
-    /// Mac AddResMenu / InsertResMenu walks per IM:I I-353.
-    /// Resources without a name are NOT returned (those don't surface
-    /// in AddResMenu's output). Inside Macintosh Volume I, I-353
-    pub(crate) fn named_resources_of_type(&self, res_type: [u8; 4]) -> Vec<(i16, String)> {
+    /// current resource search order. The returned file identity and data
+    /// pointer let AppendResMenu materialize every matching resource after it
+    /// restores `SetResLoad(TRUE)`. Names are sorted alphabetically, and an
+    /// ID found in a closer map shadows the same type/ID in later maps.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-101--3-104.
+    pub(crate) fn named_resource_records_of_type(
+        &self,
+        res_type: [u8; 4],
+    ) -> Vec<(u16, i16, String, u32)> {
         let res_type = Self::normalize_ostype(res_type);
         let Some(resources) = self.resources.as_ref() else {
             return Vec::new();
         };
         let mut seen_ids = std::collections::HashSet::new();
-        let mut entries: Vec<(i16, String)> = Vec::new();
+        let mut entries = Vec::new();
         for refnum in self.resource_search_order() {
             let Some(file) = resources.files.get(&refnum) else {
                 continue;
             };
-            for ((rt, n), (id, _)) in &file.named {
+            for ((rt, name), (id, ptr)) in &file.named {
                 if *rt != res_type {
                     continue;
                 }
-                // Per IM:I I-353 / IM:V V-242, AddResMenu should not
-                // surface duplicates that overlay a closer file later
-                // in the chain. Dedup on id (the resource map's
-                // primary key per type).
                 if seen_ids.insert(*id) {
-                    entries.push((*id, n.clone()));
+                    entries.push((refnum, *id, name.clone(), *ptr));
                 }
             }
         }
-        // IM:IV IV-56: "AddResMenu and InsertResMenu both sort the items alphabetically"
-        entries.sort_by(|(_, a), (_, b)| a.to_lowercase().cmp(&b.to_lowercase()));
+        entries.sort_by(|(_, _, left, _), (_, _, right, _)| {
+            left.to_lowercase()
+                .cmp(&right.to_lowercase())
+                .then_with(|| left.cmp(right))
+        });
         entries
     }
 
