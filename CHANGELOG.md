@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.13](https://github.com/benletchford/systemless/compare/v0.23.12...v0.23.13) (2026-08-29)
+
+
+### Bug Fixes
+
+* **ppc:** route dialog events ([#975](https://github.com/benletchford/systemless/issues/975)) ([37846cb](https://github.com/benletchford/systemless/commit/37846cbf891f841a7dca355cbda44b009b3c9c9a))
+
 ## [0.23.12](https://github.com/benletchford/systemless/compare/v0.23.11...v0.23.12) (2026-08-29)
 
 
