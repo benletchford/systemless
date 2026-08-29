@@ -692,6 +692,7 @@ const PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE: u32 = 16 + PPC_ISP_NEED_SIZE;
 const PPC_ISP_ELEMENT_NEED_INDEX_OFFSET: u32 = 8;
 const PPC_ISP_ELEMENT_NEED_SOURCE_OFFSET: u32 = 12;
 const PPC_ISP_ELEMENT_NEED_RECORD_OFFSET: u32 = 16;
+const PPC_ISP_ELEMENT_LIST_RECORD_SIZE: u32 = 8;
 const PPC_ISP_ELEMENT_KIND_BUTTON: u32 = 0x6275_746e;
 const PPC_ISP_ELEMENT_KIND_DPAD: u32 = 0x6470_6164;
 const PPC_ISP_ELEMENT_KIND_AXIS: u32 = 0x6178_6973;
@@ -1627,6 +1628,9 @@ pub enum PpcImportDispatcherTarget {
     QADeviceGetNextEngine,
     QAEngineGestalt,
     ISpElementNewVirtualFromNeeds,
+    ISpElementListNew,
+    ISpElementListGetNextEvent,
+    ISpElementListFlush,
     ISpDevicesExtract,
     ISpDevicesExtractByClass,
     ISpDeviceGetDefinition,
@@ -14328,6 +14332,13 @@ fn dispatcher_target_for_import(
         ("InputSprocketLib", "ISpElement_NewVirtualFromNeeds") => {
             PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds
         }
+        ("InputSprocketLib", "ISpElementList_New") => PpcImportDispatcherTarget::ISpElementListNew,
+        ("InputSprocketLib", "ISpElementList_GetNextEvent") => {
+            PpcImportDispatcherTarget::ISpElementListGetNextEvent
+        }
+        ("InputSprocketLib", "ISpElementList_Flush") => {
+            PpcImportDispatcherTarget::ISpElementListFlush
+        }
         ("InputSprocketLib", "ISpDevices_Extract") => PpcImportDispatcherTarget::ISpDevicesExtract,
         ("InputSprocketLib", "ISpDevices_ExtractByClass") => {
             PpcImportDispatcherTarget::ISpDevicesExtractByClass
@@ -23890,6 +23901,17 @@ fn dispatch_supported_import(
                 input_sprocket,
                 input_sprocket_virtual_elements,
             )),
+        )),
+        PpcImportDispatcherTarget::ISpElementListNew => {
+            Some(PpcImportAction::Return(ppc_i16_result(
+                ppc_isp_element_list_new(cpu, memory, heap_cursor, heap_limit),
+            )))
+        }
+        PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_element_list_get_next_event(cpu, memory)),
+        )),
+        PpcImportDispatcherTarget::ISpElementListFlush => Some(PpcImportAction::Return(
+            ppc_i16_result(ppc_isp_element_list_flush(cpu)),
         )),
         PpcImportDispatcherTarget::ISpDevicesExtract => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_devices_extract(cpu, memory)),
@@ -53794,6 +53816,76 @@ fn ppc_isp_element_new_virtual_from_needs(
     input_sprocket.last_virtual_elements_out_ptr = out_elements_ptr;
     virtual_elements.extend(created_records);
     PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_new(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+) -> i16 {
+    let count = cpu.gpr[3];
+    let elements_ptr = cpu.gpr[4];
+    let out_list_ptr = cpu.gpr[5];
+    let flags = cpu.gpr[6];
+    let Some(elements_size) = count.checked_mul(4) else {
+        return PPC_PARAM_ERR;
+    };
+    if out_list_ptr == 0
+        || !ppc_memory_can_write_bytes(memory, out_list_ptr, 4)
+        || (count > 0
+            && (elements_ptr == 0
+                || !ppc_memory_can_read_bytes(memory, elements_ptr, elements_size)))
+    {
+        return PPC_PARAM_ERR;
+    }
+
+    // Apple Game Sprockets Legacy Reference (2003), ISpElementList_New:
+    // the returned value is an opaque list reference initialized with the
+    // supplied elements. Keep only the state needed by the empty event queue.
+    let _ = memory.write_u32_be(out_list_ptr, 0);
+    let list = ppc_heap_alloc(
+        memory,
+        heap_cursor,
+        heap_limit,
+        PPC_ISP_ELEMENT_LIST_RECORD_SIZE,
+        true,
+    );
+    if list == 0 {
+        return PPC_MEM_FULL_ERR;
+    }
+    if memory.write_u32_be(list, count).is_none()
+        || memory.write_u32_be(list + 4, flags).is_none()
+        || memory.write_u32_be(out_list_ptr, list).is_none()
+    {
+        return PPC_MEM_FULL_ERR;
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_get_next_event(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+    let list = cpu.gpr[3];
+    let was_event_ptr = cpu.gpr[6];
+    if list == 0 || was_event_ptr == 0 || !ppc_memory_can_write_bytes(memory, was_event_ptr, 1) {
+        return PPC_PARAM_ERR;
+    }
+
+    // Apple Game Sprockets Legacy Reference (2003),
+    // ISpElementList_GetNextEvent: outWasEvent is false when the FIFO is empty.
+    if memory.write_u8(was_event_ptr, 0).is_none() {
+        return PPC_PARAM_ERR;
+    }
+    PPC_NO_ERR
+}
+
+fn ppc_isp_element_list_flush(cpu: &PpcCpu) -> i16 {
+    if cpu.gpr[3] == 0 {
+        PPC_PARAM_ERR
+    } else {
+        // Systemless does not queue InputSprocket events yet, so a valid list
+        // is already in the documented post-flush state.
+        PPC_NO_ERR
+    }
 }
 
 fn ppc_isp_read_need_record(memory: &mut PpcSectionMem, need_ptr: u32) -> Option<Vec<u8>> {
@@ -141877,6 +141969,61 @@ mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], version_ptr);
         assert_eq!(loaded.memory.read_u32_be(version_ptr), Some(0x0170_8000));
+    }
+
+    #[test]
+    fn hle_import_runner_creates_input_sprocket_element_list() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_New");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let elements_ptr = PPC_DATA_BASE + 0x1000;
+        let out_list_ptr = PPC_DATA_BASE + 0x1100;
+        loaded.memory.add_region(elements_ptr, vec![0; 8]);
+        loaded.memory.add_region(out_list_ptr, vec![0; 4]);
+        loaded.cpu.gpr[3] = 2;
+        loaded.cpu.gpr[4] = elements_ptr;
+        loaded.cpu.gpr[5] = out_list_ptr;
+        loaded.cpu.gpr[6] = 0x1234;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let list = loaded.memory.read_u32_be(out_list_ptr).unwrap();
+        assert_ne!(list, 0);
+        assert_eq!(loaded.memory.read_u32_be(list), Some(2));
+        assert_eq!(loaded.memory.read_u32_be(list + 4), Some(0x1234));
+    }
+
+    #[test]
+    fn hle_import_runner_polls_empty_input_sprocket_element_list() {
+        let pef =
+            synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_GetNextEvent");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let was_event_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(was_event_ptr, vec![0xff]);
+        loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+        loaded.cpu.gpr[6] = was_event_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u8(was_event_ptr), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_flushes_input_sprocket_element_list() {
+        let pef = synthetic_pef_with_library_import(b"InputSprocketLib", b"ISpElementList_Flush");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cpu.gpr[3] = PPC_HEAP_BASE;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     }
 
     #[test]
