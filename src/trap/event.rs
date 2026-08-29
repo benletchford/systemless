@@ -834,6 +834,7 @@ impl super::TrapDispatcher {
             (false, 0x70) => {
                 let event_mask = cpu.read_reg(Register::D0) as u16;
                 let event_ptr = cpu.read_reg(Register::A0);
+                self.service_invalid_menu_bar(bus);
                 // tick_count is maintained by the runner via advance_guest_tick()
 
                 let (what, message, where_v, where_h, modifiers, has_event) =

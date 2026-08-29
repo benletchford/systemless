@@ -1109,6 +1109,7 @@ pub enum PpcImportDispatcherTarget {
     LMSetDlgFont,
     SetMenuFlash,
     ClearMenuBar,
+    InvalMenuBar,
     SetMenuBar,
     GetMenuHandle,
     DrawMenuBar,
@@ -14587,8 +14588,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FlashMenuBar") => PpcImportDispatcherTarget::FlashMenuBar,
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
-        ("InterfaceLib", "InvalMenuBar")
-        | ("InterfaceLib", "OpenCPicture")
+        ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
+        ("InterfaceLib", "OpenCPicture")
         | ("InterfaceLib", "ClosePicture")
         | ("InterfaceLib", "LSetDrawingMode")
         | ("InterfaceLib", "DrawGrowIcon")
@@ -15479,7 +15480,7 @@ fn dispatch_supported_import(
     scrap: &mut PpcScrapState,
     list_manager: &mut PpcListManagerState,
     input: PpcInputSnapshot,
-    event_queue: &mut VecDeque<PpcQueuedEvent>,
+    event_queue: &mut SharedEventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<PpcImportAction> {
     if is_quickdraw_3d_library(&binding.library_name)
@@ -16481,6 +16482,8 @@ fn dispatch_supported_import(
             ppc_get_menu_handle(memory, current_menu_list, cpu.gpr[3] as u16 as i16),
         )),
         PpcImportDispatcherTarget::DrawMenuBar => {
+            // An explicit draw satisfies any earlier deferred request.
+            event_queue.take_menu_bar_invalidation();
             toolbox_startup.menu_bar_draw_count =
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
             if !toolbox_startup.host_menu_bar_hidden {
@@ -16493,6 +16496,15 @@ fn dispatch_supported_import(
                     MenuColorTable::new(&menu_color_bytes),
                 );
             }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::InvalMenuBar => {
+            // InvalMenuBar
+            // Marks the menu bar for one redraw during the next Toolbox
+            // Event Manager scan; repeated calls coalesce.
+            // PROCEDURE InvalMenuBar;
+            // Macintosh Toolbox Essentials (1992), pp. 3-93 and 3-114.
+            event_queue.invalidate_menu_bar();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FlashMenuBar => {
@@ -21477,6 +21489,15 @@ fn dispatch_supported_import(
                 PpcImportDispatcherTarget::GetOSEvent
             );
             if !os_only {
+                ppc_service_invalid_menu_bar(
+                    event_queue,
+                    memory,
+                    handles,
+                    gworlds,
+                    current_menu_list,
+                    screen_clut,
+                    toolbox_startup,
+                );
                 ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask);
             }
             let (what, message, where_v, where_h, modifiers, has_event) =
@@ -21523,6 +21544,15 @@ fn dispatch_supported_import(
                 PpcImportDispatcherTarget::OSEventAvail
             );
             if !os_only {
+                ppc_service_invalid_menu_bar(
+                    event_queue,
+                    memory,
+                    handles,
+                    gworlds,
+                    current_menu_list,
+                    screen_clut,
+                    toolbox_startup,
+                );
                 ppc_enqueue_open_application_event_if_needed(apple_events, event_queue, event_mask);
             }
             let (what, message, where_v, where_h, modifiers, has_event) =
@@ -70278,6 +70308,32 @@ fn ppc_draw_menu_bar_with_colors(
     true
 }
 
+fn ppc_service_invalid_menu_bar(
+    event_queue: &mut SharedEventQueue,
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    gworlds: &[PpcGWorldRecord],
+    menu_list_handle: u32,
+    screen_clut: &[[u16; 3]; 256],
+    startup: &mut PpcToolboxStartupState,
+) -> bool {
+    if !event_queue.take_menu_bar_invalidation() {
+        return false;
+    }
+    startup.menu_bar_draw_count = startup.menu_bar_draw_count.saturating_add(1);
+    if !startup.host_menu_bar_hidden {
+        let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+        let _ = ppc_draw_menu_bar_with_colors(
+            memory,
+            gworlds,
+            menu_list_handle,
+            screen_clut,
+            MenuColorTable::new(&menu_color_bytes),
+        );
+    }
+    true
+}
+
 #[cfg(test)]
 fn ppc_draw_menu_bar(
     memory: &mut PpcSectionMem,
@@ -78845,7 +78901,10 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
+    use crate::memory::MemoryBus;
+    use crate::trap::test_helpers::{setup_with_port, TEST_SP};
     use ppc::PpcMemory;
 
     fn test_q3_object(object: u32, object_type: u32) -> PpcQ3ObjectRecord {
@@ -83569,7 +83628,7 @@ mod tests {
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
-            PpcImportDispatcherTarget::MenuNoop
+            PpcImportDispatcherTarget::InvalMenuBar
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "AppendResMenu"),
@@ -83591,6 +83650,109 @@ mod tests {
             dispatcher_target_for_import("InterfaceLib", "MenuChoice"),
             PpcImportDispatcherTarget::MenuChoice
         );
+    }
+
+    #[test]
+    fn native_inval_menu_bar_defers_and_coalesces_one_draw_until_an_event_scan() {
+        let pef = synthetic_pef_with_import(b"InvalMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        assert!(ppc_quickdraw_write_pixel(
+            &mut loaded.memory,
+            front,
+            (100, 5),
+            PPC_RGB_BLACK,
+        ));
+        let dirty = ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 5));
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalMenuBar);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalMenuBar);
+        assert!(loaded.event_queue.menu_bar_is_invalid());
+        assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 0);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 5)),
+            dirty,
+            "InvalMenuBar must not draw synchronously"
+        );
+
+        let event = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(event, vec![0xaa; 16]);
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = event;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::OSEventAvail);
+        assert!(
+            loaded.event_queue.menu_bar_is_invalid(),
+            "low-level OS event scans must not consume Toolbox redraw work"
+        );
+        assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 0);
+
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = event;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNextEvent);
+        assert!(!loaded.event_queue.menu_bar_is_invalid());
+        assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 1);
+        assert_ne!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 5)),
+            dirty,
+            "the next Toolbox event scan must perform DrawMenuBar"
+        );
+
+        assert!(ppc_quickdraw_write_pixel(
+            &mut loaded.memory,
+            front,
+            (100, 5),
+            PPC_RGB_BLACK,
+        ));
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = event;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetNextEvent);
+        assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 1);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (100, 5)),
+            dirty,
+            "the deferred redraw must be consumed exactly once"
+        );
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::InvalMenuBar);
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
+        assert!(!loaded.event_queue.menu_bar_is_invalid());
+        assert_eq!(loaded.toolbox_startup.menu_bar_draw_count, 2);
+    }
+
+    #[test]
+    fn attached_68k_and_powerpc_event_adapters_share_menu_bar_invalidation() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        classic.sent_open_app_event = true;
+        let pef = synthetic_pef_with_import(b"InvalMenuBar");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.share_event_queue(&classic.event_queue);
+
+        assert!(classic
+            .dispatch_menu(true, 0x01D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert!(native.event_queue.menu_bar_is_invalid());
+        let native_event = PPC_DATA_BASE + 0x1000;
+        native.memory.add_region(native_event, vec![0; 16]);
+        native.cpu.gpr[3] = 0;
+        native.cpu.gpr[4] = native_event;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
+        assert!(!classic.event_queue.menu_bar_is_invalid());
+        assert_eq!(native.toolbox_startup.menu_bar_draw_count, 1);
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::InvalMenuBar);
+        assert!(classic.event_queue.menu_bar_is_invalid());
+        let classic_event = classic_bus.alloc(16);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        classic_bus.write_long(TEST_SP, classic_event);
+        classic_bus.write_word(TEST_SP + 4, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x171, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert!(!native.event_queue.menu_bar_is_invalid());
     }
 
     #[test]

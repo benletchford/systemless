@@ -1592,6 +1592,20 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Perform the one deferred DrawMenuBar requested through InvalMenuBar.
+    /// The Toolbox Event Manager calls this while scanning for update work;
+    /// repeated invalidations coalesce in the shared event state. Macintosh
+    /// Toolbox Essentials (1992), pp. 3-93 and 3-114.
+    pub(crate) fn service_invalid_menu_bar(&mut self, bus: &mut MacMemoryBus) -> bool {
+        if !self.event_queue.take_menu_bar_invalidation() {
+            return false;
+        }
+        self.release_initial_menu_bar_kiosk();
+        self.refresh_menus_from_memory(bus);
+        self.draw_menu_bar_to_fb(bus);
+        true
+    }
+
     /// Reconcile the 68k presentation cache with the authoritative guest
     /// MenuList without replacing cached item presentation state for handles
     /// already known to the adapter.
@@ -1855,6 +1869,8 @@ impl super::TrapDispatcher {
             // DrawMenuBar ($A937): Renders menu-bar titles for menus currently
             // in the menu list (InsertMenu-installed) per IM:I I-352/I-354.
             (true, 0x137) => {
+                // An explicit draw satisfies any earlier deferred request.
+                self.event_queue.take_menu_bar_invalidation();
                 // Initial kiosk mode is only a frontend launch policy. A
                 // guest DrawMenuBar call is an explicit request to present its
                 // menus, so ownership returns to the guest before rendering.
@@ -3581,19 +3597,12 @@ impl super::TrapDispatcher {
             // Calling-convention behavior (Apple headers and BasiliskII
             // agree): both preserve A7 across the call.
             //
-            // Apple-vs-BasiliskII divergence on the side effect:
-            // BasiliskII System 7.5.3 ROM Menu Manager sets the
-            // documented menu-bar-invalid flag honored by GetNextEvent.
-            // Systemless HLE is a true no-op (`Ok(())`) because the host
-            // runtime redraws the entire chrome per frame from the
-            // current menu list, so there is no separate "dirty" flag
-            // to honor. The visible-side-effect "menu bar gets
-            // redrawn" path is intentionally not modeled and reserved
-            // for in-Rust state inspection.
-            //
             // Regression coverage:
             //   src/trap/menu.rs::invalmenubar_procedure_call_preserves_stack_pointer
-            (true, 0x01D) => Ok(()),
+            (true, 0x01D) => {
+                self.event_queue.invalidate_menu_bar();
+                Ok(())
+            }
 
             // SetItemCmd ($A84F)
             // Sets the command-key byte for a menu item.
@@ -5905,6 +5914,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
+    use super::super::TrapDispatcher;
     use super::{
         count_menu_items_from_memory, menu_list_from_memory, parse_appendmenu_items,
         parse_menu_resource, test_tracked_menu_state, Menu, MenuItem, MC_ENTRY_SIZE,
@@ -10402,6 +10412,87 @@ mod tests {
             cpu.read_reg(Register::A7),
             sp_before_five,
             "InvalMenuBar must preserve A7 across a 5-call composition"
+        );
+    }
+
+    #[test]
+    fn invalmenubar_defers_and_coalesces_one_draw_until_a_toolbox_event_scan() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.sent_open_app_event = true;
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let (base, row_bytes, width, height, depth) = disp.get_screen_params();
+        TrapDispatcher::fb_set_pixel(
+            &mut bus, base, row_bytes, depth, width, height, 100, 5, true,
+        );
+        let dirty =
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5);
+
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp.event_queue.menu_bar_is_invalid());
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "InvalMenuBar must not draw synchronously"
+        );
+
+        cpu.write_reg(Register::D0, 0);
+        cpu.write_reg(Register::A0, 0x0020_0000);
+        assert!(disp
+            .dispatch_event(false, 0x030, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(
+            disp.event_queue.menu_bar_is_invalid(),
+            "low-level OS event scans must not consume Toolbox redraw work"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0x0020_0000);
+        bus.write_word(TEST_SP + 4, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x171, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(!disp.event_queue.menu_bar_is_invalid());
+        assert_ne!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "the next Toolbox event scan must perform DrawMenuBar"
+        );
+
+        TrapDispatcher::fb_set_pixel(
+            &mut bus, base, row_bytes, depth, width, height, 100, 5, true,
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_toolbox(true, 0x171, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "the deferred redraw must be consumed exactly once"
+        );
+
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp
+            .dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(
+            !disp.event_queue.menu_bar_is_invalid(),
+            "an explicit DrawMenuBar must satisfy the deferred request"
         );
     }
 

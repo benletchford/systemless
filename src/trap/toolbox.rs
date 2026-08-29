@@ -4880,6 +4880,8 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_invalid_menu_bar(bus);
+
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
                 self.debug_get_next_event_count = self.debug_get_next_event_count.saturating_add(1);
@@ -4914,6 +4916,8 @@ impl super::TrapDispatcher {
                 let sleep = (bus.read_long(sp + 4) as i32).max(0) as u32;
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
+
+                self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
@@ -5012,6 +5016,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
+
+                self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
 
