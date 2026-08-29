@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.17](https://github.com/benletchford/systemless/compare/v0.23.16...v0.23.17) (2026-08-29)
+
+
+### Bug Fixes
+
+* recycle PowerPC picture loading allocations ([#990](https://github.com/benletchford/systemless/issues/990)) ([ad826ab](https://github.com/benletchford/systemless/commit/ad826abe89a91967c41080eaf702eea5d69ee004))
+
 ## [0.23.16](https://github.com/benletchford/systemless/compare/v0.23.15...v0.23.16) (2026-08-29)
 
 
