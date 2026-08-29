@@ -23039,12 +23039,18 @@ impl super::TrapDispatcher {
         // independently valid physical mapping while updating the logical
         // GDevice table; treating the latter as a physical palette
         // reinterprets already indexed artwork through unrelated colors.
-        // A sequence immediately following a fade has no independently valid
-        // physical mapping: its prior DAC contents are the dimmed palette,
-        // so the new full table must install its RGB values physically.
+        // After a full-table fade, the DAC contents are only a dimmed
+        // derivative of the stable physical mapping. Restore that mapping
+        // before publishing the client-owned logical colors: installing the
+        // logical table physically would reinterpret pixels that were already
+        // authored for the stable device indices. This is observable in both
+        // Prince of Destruction's registration PICT and Marathon 2's first
+        // gameplay palette transition.
         // Inside Macintosh Volume V (1986), pp. V-142..V-143.
         if target_is_screen && sequence_uses_client_ids && !transient_fade_table {
-            if !previous_frame_was_dimmed {
+            if previous_frame_was_dimmed {
+                self.device_clut = self.color_manager_clut;
+            } else {
                 let gdh = self.set_entries_target_gdevice_handle(bus);
                 let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
                 if ctab != 0 {
@@ -43779,7 +43785,7 @@ mod tests {
     }
 
     #[test]
-    fn test_setentries_client_id_sequence_after_fade_installs_incoming_physical_palette() {
+    fn test_setentries_client_id_sequence_after_fade_restores_stable_physical_palette() {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
@@ -43796,8 +43802,7 @@ mod tests {
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
-        assert_eq!(d.device_clut[42], [0x2A00, 0xD500, 0x5500]);
-        assert_ne!(d.device_clut, baseline);
+        assert_eq!(d.device_clut, baseline);
         assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
         let ctab_handle = d.current_gdevice_ctab_handle(&bus);
         let ctab = bus.read_long(ctab_handle);
