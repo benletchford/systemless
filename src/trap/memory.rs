@@ -174,6 +174,7 @@ const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
 const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
+const MEM_WZ_ERR: u32 = (-111i32) as u32;
 const DT_QTYPE: u16 = 7;
 const NOT_HELD_ERR: u32 = (-621i32) as u32;
 const NOT_LOCKED_ERR: u32 = (-623i32) as u32;
@@ -1457,27 +1458,79 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ReallocateHandle ($A027)
-            // Allocates a new relocatable block for a handle whose master pointer is nil
-            // (purged or disposed), updating the master pointer to the new block.
+            // ReallocateHandle ($A027) / ReallocateHandleSys ($A427)
+            // Replaces any existing relocatable block and updates the master
+            // pointer. The new block is unlocked, unpurgeable, and has
+            // undefined contents. Systemless has one flat guest heap, so the
+            // current- and system-heap forms share allocation behavior while
+            // retaining their exact raw-word identity in RawTrapRoute.
             // PROCEDURE ReallocateHandle (h: Handle; logicalSize: Size);
-            // Inside Macintosh: Memory 1992, 2-44
+            // Inside Macintosh: Memory (1992), pp. 2-52--2-53; Universal
+            // Interfaces 3.4 MacMemory.h lines 1184--1202.
             (false, 0x27) => {
                 let handle = cpu.read_reg(Register::A0);
                 let size = cpu.read_reg(Register::D0);
+
+                // A Handle must still own its four-byte master-pointer slot.
+                // A disposed handle is a free block and reports memWZErr.
+                if handle == 0 || bus.get_alloc_size(handle) != Some(4) {
+                    write_memory_result(cpu, bus, MEM_WZ_ERR);
+                    return Some(Ok(()));
+                }
+                // Size is a signed LONGINT. Reject negative requests before
+                // entering the unsigned allocator, preserving the master
+                // pointer and handle state on this error path.
+                if (size as i32) < 0 {
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
+
+                // Allocate first so an allocation failure leaves the old
+                // master pointer and block intact, as the documented atomic
+                // error contract requires.
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
                 } else {
-                    // Drop the old ptr→handle mapping (if any) and
-                    // install the new one.
+                    scribble_uninitialized_allocation(bus, ptr, size);
                     let old_ptr = bus.read_long(handle);
+                    let indexed_old_ptr = self
+                        .loaded_handles
+                        .get(&handle)
+                        .map(|entry| entry.0)
+                        .unwrap_or(old_ptr);
                     if old_ptr != 0 {
                         self.ptr_to_handle.remove(&old_ptr);
+                        bus.free(old_ptr);
                     }
                     bus.write_long(handle, ptr);
                     self.ptr_to_handle.insert(ptr, handle);
-                    cpu.write_reg(Register::D0, 0);
+                    if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                        entry.0 = ptr;
+                    }
+                    if let Some(resources) = self.resources.as_mut() {
+                        for file in resources.files.values_mut() {
+                            for loaded_ptr in file.loaded.values_mut() {
+                                if *loaded_ptr == indexed_old_ptr {
+                                    *loaded_ptr = ptr;
+                                }
+                            }
+                            for (_id, named_ptr) in file.named.values_mut() {
+                                if *named_ptr == indexed_old_ptr {
+                                    *named_ptr = ptr;
+                                }
+                            }
+                        }
+                    }
+                    // Reallocation resets only the lock and purge flags. Any
+                    // resource marker remains a property of the handle.
+                    if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
+                        *bits &= !0xC0;
+                        if *bits == 0 {
+                            self.handle_state_bits.remove(&handle);
+                        }
+                    }
+                    write_memory_result(cpu, bus, NO_ERR);
                 }
                 Ok(())
             }
@@ -9175,36 +9228,102 @@ mod tests {
     }
 
     #[test]
-    fn test_reallocate_handle() {
+    fn reallocate_handle_current_and_system_forms_replace_block_and_reset_state() {
+        // Memory (1992), pp. 2-52--2-53: both entry points replace any
+        // existing block with undefined contents and leave it unlocked and
+        // unpurgeable. UI 3.4 MacMemory.h lines 1184--1202 supplies the exact
+        // $A027/$A427 words; the emulator's flat heap makes their guest state
+        // equivalent.
+        for trap_word in [0xA027u16, 0xA427] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, 128);
+            dispatcher
+                .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let handle = cpu.read_reg(Register::A0);
+            let old_ptr = bus.read_long(handle);
+            dispatcher.ptr_to_handle.insert(old_ptr, handle);
+            dispatcher.handle_state_bits.insert(handle, 0xE0);
+
+            cpu.write_reg(Register::A0, handle);
+            cpu.write_reg(Register::D0, 17);
+            let result = dispatcher.dispatch_memory(false, 0x27, &mut cpu, &mut bus);
+
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::A0), handle);
+            let new_ptr = bus.read_long(handle);
+            assert_ne!(new_ptr, old_ptr);
+            assert_eq!(
+                bus.get_alloc_size(old_ptr),
+                None,
+                "old block must be released"
+            );
+            assert_eq!(bus.get_alloc_size(new_ptr), Some(17));
+            assert_eq!(bus.read_bytes(new_ptr, 17), vec![0xA5; 17]);
+            assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), None);
+            assert_eq!(dispatcher.ptr_to_handle.get(&new_ptr), Some(&handle));
+            assert_eq!(
+                dispatcher.handle_state_bits.get(&handle),
+                Some(&0x20),
+                "lock/purge bits clear while the resource bit survives"
+            );
+        }
+    }
+
+    #[test]
+    fn reallocate_handle_error_preserves_master_pointer_block_and_state() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        // First create a handle via NewHandle
-        cpu.write_reg(Register::D0, 128);
-        let result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok(), "NewHandle (setup) should succeed");
+        dispatcher.current_trap_word = 0xA027;
+        cpu.write_reg(Register::D0, 32);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         let handle = cpu.read_reg(Register::A0);
         let old_ptr = bus.read_long(handle);
+        dispatcher.handle_state_bits.insert(handle, 0xC0);
 
-        // Now reallocate it with a new size
         cpu.write_reg(Register::A0, handle);
-        cpu.write_reg(Register::D0, 2048);
-        let result = dispatcher.dispatch_memory(false, 0x27, &mut cpu, &mut bus);
-        assert!(result.is_some(), "ReallocateHandle should be handled");
-        assert!(result.unwrap().is_ok(), "ReallocateHandle should succeed");
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "ReallocateHandle should set D0 to 0"
-        );
-        let new_ptr = bus.read_long(handle);
-        assert!(
-            new_ptr >= 0x200000,
-            "ReallocateHandle should update handle to a valid pointer, got ${:08X}",
-            new_ptr
-        );
-        assert_ne!(
-            new_ptr, old_ptr,
-            "ReallocateHandle should allocate a new block (different from old ptr)"
-        );
+        cpu.write_reg(Register::D0, u32::MAX);
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_FULL_ERR);
+        assert_eq!(bus.read_long(handle), old_ptr);
+        assert_eq!(bus.get_alloc_size(old_ptr), Some(32));
+        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), Some(&handle));
+        assert_eq!(dispatcher.handle_state_bits.get(&handle), Some(&0xC0));
+    }
+
+    #[test]
+    fn reallocate_handle_rejects_a_disposed_master_pointer_slot() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 8);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 16);
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_WZ_ERR);
+        assert_eq!(bus.get_alloc_size(handle), None);
     }
 
     #[test]

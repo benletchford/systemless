@@ -1262,7 +1262,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// and serial-power entry points;
 /// `StringCompare.h` lines 567--596 retains the comparison APIs;
 /// `Devices.h` lines 1109--1141 declares DriverInstall and its bit-10
-/// DriverInstallReserveMem form.
+/// DriverInstallReserveMem form; `MacMemory.h` lines 1184--1202 declares
+/// ReallocateHandle and ReallocateHandleSys.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
     Unclassified,
@@ -1333,10 +1334,10 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
 
         // These Memory Manager routines document only bit 10 as SYS. Leave
         // their bit-9 forms unclassified rather than inventing a meaning.
-        (0x1C | 0x1D | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0000) => {
+        (0x1C | 0x1D | 0x27 | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0000) => {
             OsRoutineVariant::CurrentHeap
         }
-        (0x1C | 0x1D | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0400) => {
+        (0x1C | 0x1D | 0x27 | 0x28 | 0x40 | 0x4C | 0x4D | 0x61 | 0x62 | 0x66, 0x0400) => {
             OsRoutineVariant::SystemHeap
         }
 
@@ -8443,8 +8444,10 @@ mod tests {
 
         // IM:Memory documents SYS, but not bit 9, for these routines. UI 3.4
         // MacMemory.h declares the current/system pairs at lines 517--533,
-        // 631--695, 862--1010, and 1331--1362.
-        for slot in [0x1Cu16, 0x1D, 0x28, 0x40, 0x4C, 0x4D, 0x61, 0x62, 0x66] {
+        // 631--695, 862--1010, 1184--1202, and 1331--1362.
+        for slot in [
+            0x1Cu16, 0x1D, 0x27, 0x28, 0x40, 0x4C, 0x4D, 0x61, 0x62, 0x66,
+        ] {
             for return_a0 in [0x0000u16, 0x0100] {
                 assert_eq!(
                     raw_trap_route(0xA000 | slot | return_a0).os_routine_variant,
@@ -8516,7 +8519,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 276);
+        assert_eq!(classified, 280);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
