@@ -28,9 +28,21 @@ static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
 
 const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_slot_manager_operations.rs");
+const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_alias_dispatch_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
+}
+
+fn alias_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA823 {
+        return None;
+    }
+    selector_operation_route(ALIAS_DISPATCH_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -13102,15 +13114,16 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== AliasDispatch ($A823) ==========
-
             // AliasDispatch ($A823)
-            // Selector-based dispatcher for Alias Manager routines.
-            // Selector in D0.
-            // Inside Macintosh Volume VI, 9-17; Files 1992, 4-15
+            // Dispatches Alias Manager routines selected in D0.
+            // Register ABI: D0 = selector; each routine uses its documented Pascal stack frame.
+            // Inside Macintosh: Files (1992), pp. 4-15 to 4-33.
             (true, 0x023) => {
                 let sp = cpu.read_reg(Register::A7);
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = alias_dispatch_operation_route(0xA823, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector & 0xFFFF;
                 match selector {
                     // FindFolder (selector $0000)
                     // FUNCTION FindFolder(vRefNum: INTEGER; folderType: OSType;
@@ -16637,15 +16650,16 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        quicktime_movie_metadata, slot_manager_operation_route, AE_ERR_ACCESSOR_NOT_FOUND,
-        AE_ERR_DESC_NOT_FOUND, AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC,
-        AE_EVENT_ID_ANSWER, AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC,
-        AE_KEY_DESIRED_CLASS, AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA,
-        AE_KEY_KEY_FORM, AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION,
+        alias_dispatch_operation_route, quicktime_movie_metadata, slot_manager_operation_route,
+        AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND, AE_ERR_HANDLER_NOT_FOUND,
+        AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER, AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER,
+        AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS, AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR,
+        AE_KEY_KEY_DATA, AE_KEY_KEY_FORM, AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION,
         AE_SEND_MODE_WAIT_REPLY, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER,
-        AE_TYPE_TYPE, AE_TYPE_WILDCARD, SLOT_MANAGER_OPERATION_ROUTES,
-        STANDARD_FILE_GET_DIALOG_HEIGHT, STANDARD_FILE_GET_DIALOG_WIDTH,
-        STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT, STANDARD_FILE_GET_VOLUME_RECT,
+        AE_TYPE_TYPE, AE_TYPE_WILDCARD, ALIAS_DISPATCH_OPERATION_ROUTES,
+        SLOT_MANAGER_OPERATION_ROUTES, STANDARD_FILE_GET_DIALOG_HEIGHT,
+        STANDARD_FILE_GET_DIALOG_WIDTH, STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT,
+        STANDARD_FILE_GET_VOLUME_RECT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
@@ -27580,6 +27594,52 @@ mod tests {
         assert_eq!(bus.read_word(dst_ptr + 2), 0x2468);
         assert_eq!(bus.read_word(dst_ptr + 4), 0x2468);
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+    }
+
+    #[test]
+    fn aliasdispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(ALIAS_DISPATCH_OPERATION_ROUTES.len(), 7);
+        assert!(ALIAS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let new_alias = alias_dispatch_operation_route(0xA823, 0x0002).expect("NewAlias route");
+        assert_eq!(new_alias.routine_name, "NewAlias");
+        assert_eq!(
+            new_alias.operation_id,
+            "selector-operation:_AliasDispatch:0x0002:d0-moveq-immediate:8"
+        );
+
+        assert!(alias_dispatch_operation_route(0xA823, 0x7002).is_none());
+        assert!(alias_dispatch_operation_route(0xA823, 0x0001_0002).is_none());
+        assert!(alias_dispatch_operation_route(0xAA23, 0x0002).is_none());
+    }
+
+    #[test]
+    fn aliasdispatch_records_every_generated_operation_and_rejects_opcode_spelling() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in ALIAS_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            bus.write_bytes(TEST_SP, &[0; 32]);
+            let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+            assert!(result.is_some());
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x7002);
+        bus.write_bytes(TEST_SP, &[0; 32]);
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert_eq!(disp.current_selector_operation, None);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001_0002);
+        bus.write_bytes(TEST_SP, &[0; 32]);
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     // AliasDispatch ($A823) / selector $0000 FindFolder

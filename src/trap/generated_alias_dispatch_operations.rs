@@ -1,0 +1,38 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_AliasDispatch:0x0002:d0-moveq-immediate:8",
+        "NewAlias",
+    ),
+    SelectorOperationRoute::new(
+        0x0003,
+        "selector-operation:_AliasDispatch:0x0003:d0-moveq-immediate:8",
+        "ResolveAlias",
+    ),
+    SelectorOperationRoute::new(
+        0x0005,
+        "selector-operation:_AliasDispatch:0x0005:d0-moveq-immediate:8",
+        "MatchAlias",
+    ),
+    SelectorOperationRoute::new(
+        0x0006,
+        "selector-operation:_AliasDispatch:0x0006:d0-moveq-immediate:8",
+        "UpdateAlias",
+    ),
+    SelectorOperationRoute::new(
+        0x0007,
+        "selector-operation:_AliasDispatch:0x0007:d0-moveq-immediate:8",
+        "GetAliasInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0008,
+        "selector-operation:_AliasDispatch:0x0008:d0-moveq-immediate:8",
+        "NewAliasMinimal",
+    ),
+    SelectorOperationRoute::new(
+        0x0009,
+        "selector-operation:_AliasDispatch:0x0009:d0-moveq-immediate:8",
+        "NewAliasMinimalFromFullPath",
+    ),
+]
