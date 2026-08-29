@@ -24841,6 +24841,7 @@ fn dispatch_supported_import(
             ptrs,
             free_ptr_blocks,
             toolbox_startup,
+            GuestIsa::PowerPc,
         ),
         PpcImportDispatcherTarget::CallOSTrapUniversalProc => ppc_call_os_trap_universal_proc(
             cpu,
@@ -41084,6 +41085,7 @@ fn ppc_call_universal_proc(
     ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     toolbox_startup: &mut PpcToolboxStartupState,
+    raw_isa: GuestIsa,
 ) -> Option<PpcImportAction> {
     let proc_ptr = cpu.gpr[3];
     let proc_info = cpu.gpr[4];
@@ -41135,7 +41137,7 @@ fn ppc_call_universal_proc(
         restore_rtoc,
         selector,
         GuestIsa::PowerPc,
-        GuestIsa::PowerPc,
+        raw_isa,
     )?;
     match target.isa {
         GuestIsa::PowerPc => {
@@ -41766,6 +41768,10 @@ fn ppc_call_os_trap_universal_proc(
         ptrs,
         free_ptr_blocks,
         toolbox_startup,
+        // Inside Macintosh: PowerPC System Software (1994), pp. 1-67 and
+        // 2-42--2-43: unlike an ordinary native CallUniversalProc raw
+        // pointer, an OS-trap universal pointer may be direct 680x0 code.
+        GuestIsa::M68k,
     )
 }
 
@@ -92809,6 +92815,46 @@ mod tests {
         assert_eq!(pending.registers.data[1], 0xa11c);
         drain_test_m68k_guest_calls(&mut loaded);
         assert_eq!(loaded.cpu.gpr[3], 0xa121);
+    }
+
+    #[test]
+    fn hle_import_runner_call_ostrap_universal_proc_enters_raw_m68k_trap_code() {
+        let pef = synthetic_pef_with_import(b"CallOSTrapUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let callback_words = [
+            0x2001u16, // MOVE.L D1,D0
+            0x5a80,    // ADDQ.L #5,D0
+            0x4e75,    // RTS
+        ];
+        loaded.memory.add_region(
+            callback_entry,
+            callback_words
+                .into_iter()
+                .flat_map(u16::to_be_bytes)
+                .collect(),
+        );
+        loaded.heap_cursor = loaded.heap_cursor.max(callback_entry + 6);
+        let proc_info = test_register_proc_info_with_result_location(
+            PPC_PROCINFO_SIZE_TWO,
+            0,
+            &[(1, PPC_PROCINFO_SIZE_TWO), (0, PPC_PROCINFO_SIZE_FOUR)],
+        );
+        loaded.cpu.gpr[3] = callback_entry;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5] = 0xffff_a11e;
+        loaded.cpu.gpr[6] = 0x20;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        let pending = loaded.guest_calls.activate_m68k().unwrap();
+        assert_eq!(pending.entry, callback_entry);
+        assert_eq!(pending.registers.data[1], 0xa11e);
+        assert_eq!(pending.registers.data[0], 0x20);
+        drain_test_m68k_guest_calls(&mut loaded);
+        assert_eq!(loaded.cpu.gpr[3], 0xa123);
     }
 
     #[test]
