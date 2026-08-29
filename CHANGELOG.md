@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.16](https://github.com/benletchford/systemless/compare/v0.23.15...v0.23.16) (2026-08-29)
+
+
+### Bug Fixes
+
+* dispose PowerPC dialogs as windows ([0d98ec4](https://github.com/benletchford/systemless/commit/0d98ec459fb4c3704d5bdfc841b4f5ba1f7d5345))
+
 ## [0.23.15](https://github.com/benletchford/systemless/compare/v0.23.14...v0.23.15) (2026-08-29)
 
 
