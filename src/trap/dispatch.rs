@@ -7827,6 +7827,325 @@ mod tests {
         }
     }
 
+    fn call_trap_manager_getter<C: CpuOps>(
+        dispatcher: &mut TrapDispatcher,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        getter: u16,
+        trap_word: u16,
+    ) -> u32 {
+        cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
+        let saved_gateway = dispatcher
+            .default_trap_gateway(getter)
+            .expect("materialized Trap Manager getter gateway");
+        cpu.write_reg(Register::PC, saved_gateway + 2);
+        dispatcher
+            .dispatch(getter, cpu, bus)
+            .unwrap_or_else(|error| panic!("getter ${getter:04X} for ${trap_word:04X}: {error:?}"));
+        cpu.read_reg(Register::A0)
+    }
+
+    fn call_trap_manager_setter<C: CpuOps>(
+        dispatcher: &mut TrapDispatcher,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        setter: u16,
+        trap_word: u16,
+        handler: u32,
+    ) {
+        cpu.write_reg(Register::D0, 0xFFFF_0000 | u32::from(trap_word));
+        cpu.write_reg(Register::A0, handler);
+        let saved_gateway = dispatcher
+            .default_trap_gateway(setter)
+            .expect("materialized Trap Manager setter gateway");
+        cpu.write_reg(Register::PC, saved_gateway + 2);
+        dispatcher
+            .dispatch(setter, cpu, bus)
+            .unwrap_or_else(|error| panic!("setter ${setter:04X} for ${trap_word:04X}: {error:?}"));
+    }
+
+    #[test]
+    fn generated_profile_slots_exhaustively_roundtrip_classic_patch_lifecycle() {
+        // The typed and legacy Trap Manager operations must observe the same
+        // process table used by A-line dispatch. Saved logical pointers remain
+        // callable after a patch, nested replacement restores in LIFO order,
+        // and a raw table write bypasses any permanent come-from head. Inside
+        // Macintosh: Operating System Utilities (1994), pp. 8-23--8-33.
+        const RETURN_PC: u32 = 0x001F_0002;
+        const SP: u32 = 0x001F_FF00;
+        const FIRST_PATCH_BASE: u32 = 0x0028_0000;
+        const SECOND_PATCH_BASE: u32 = 0x0029_0000;
+        const RAW_PATCH_BASE: u32 = 0x002A_0000;
+
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            dispatcher.materialize_trap_tables(&mut bus, profile);
+
+            for table_index in 0..(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS) {
+                let is_toolbox = table_index >= OS_TRAP_TABLE_SLOTS;
+                let slot = if is_toolbox {
+                    table_index - OS_TRAP_TABLE_SLOTS
+                } else {
+                    table_index
+                };
+                let trap_word = if is_toolbox {
+                    0xA800 | slot
+                } else {
+                    0xA000 | slot
+                };
+                let getter = if is_toolbox { 0xA746 } else { 0xA346 };
+                let setter = if is_toolbox { 0xA647 } else { 0xA247 };
+                let route = profile.route(trap_word);
+                let raw_entry = route.raw.table_address;
+                let initial_raw = bus.read_long(raw_entry);
+                let default = dispatcher.trap_table_address(&bus, trap_word).unwrap();
+                let first_patch = FIRST_PATCH_BASE + u32::from(table_index) * 4;
+                let second_patch = SECOND_PATCH_BASE + u32::from(table_index) * 4;
+                let raw_patch = RAW_PATCH_BASE + u32::from(table_index) * 4;
+
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    default,
+                    "{profile:?} typed default getter ${trap_word:04X}"
+                );
+
+                let legacy_uses_os = matches!(slot, 0x000..=0x04F | 0x054 | 0x057);
+                if legacy_uses_os != is_toolbox {
+                    assert_eq!(
+                        call_trap_manager_getter(
+                            &mut dispatcher,
+                            &mut cpu,
+                            &mut bus,
+                            0xA146,
+                            trap_word,
+                        ),
+                        default,
+                        "{profile:?} legacy default getter ${trap_word:04X}"
+                    );
+                }
+
+                call_trap_manager_setter(
+                    &mut dispatcher,
+                    &mut cpu,
+                    &mut bus,
+                    setter,
+                    trap_word,
+                    first_patch,
+                );
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    first_patch,
+                    "{profile:?} first patch ${trap_word:04X}"
+                );
+                if route.has_permanent_come_from {
+                    assert_eq!(
+                        bus.read_long(raw_entry),
+                        initial_raw,
+                        "{profile:?} protected raw head ${trap_word:04X}"
+                    );
+                } else {
+                    assert_eq!(
+                        bus.read_long(raw_entry),
+                        first_patch,
+                        "{profile:?} direct raw patch ${trap_word:04X}"
+                    );
+                }
+
+                let saved_first = call_trap_manager_getter(
+                    &mut dispatcher,
+                    &mut cpu,
+                    &mut bus,
+                    getter,
+                    trap_word,
+                );
+                call_trap_manager_setter(
+                    &mut dispatcher,
+                    &mut cpu,
+                    &mut bus,
+                    setter,
+                    trap_word,
+                    second_patch,
+                );
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    second_patch,
+                    "{profile:?} nested patch ${trap_word:04X}"
+                );
+                call_trap_manager_setter(
+                    &mut dispatcher,
+                    &mut cpu,
+                    &mut bus,
+                    setter,
+                    trap_word,
+                    saved_first,
+                );
+
+                let variants = if is_toolbox { 2 } else { 8 };
+                for variant in 0..variants {
+                    let raw_word = if is_toolbox {
+                        trap_word | (variant << 10)
+                    } else {
+                        trap_word | (variant << 8)
+                    };
+                    cpu.write_reg(Register::PC, RETURN_PC);
+                    cpu.write_reg(Register::A7, SP);
+                    cpu.write_reg(Register::D1, 0xD1D1_BEEF);
+                    if is_toolbox && variant != 0 {
+                        bus.write_long(SP, RETURN_PC);
+                    }
+
+                    dispatcher.dispatch(raw_word, &mut cpu, &mut bus).unwrap();
+                    let argument_sp = if is_toolbox && variant != 0 {
+                        SP + 4
+                    } else {
+                        SP
+                    };
+                    let handler_sp = argument_sp - 4;
+
+                    assert_eq!(
+                        cpu.read_reg(Register::PC),
+                        first_patch,
+                        "{profile:?} patched variant ${raw_word:04X}"
+                    );
+                    assert_eq!(
+                        cpu.read_reg(Register::A7),
+                        handler_sp,
+                        "{profile:?} handler SP ${raw_word:04X}"
+                    );
+                    assert_eq!(bus.read_long(handler_sp), RETURN_PC);
+                    if !is_toolbox {
+                        assert_eq!(
+                            cpu.read_reg(Register::D1),
+                            0xD1D1_0000 | u32::from(raw_word),
+                            "{profile:?} full OS word ${raw_word:04X}"
+                        );
+                    }
+
+                    cpu.write_reg(Register::PC, RETURN_PC);
+                    cpu.write_reg(Register::A7, argument_sp);
+                    dispatcher.retire_returned_native_trap_call(&mut cpu);
+                    assert!(
+                        dispatcher.pending_native_trap_calls.is_empty(),
+                        "{profile:?} retired ${raw_word:04X}"
+                    );
+                }
+
+                // The saved default remains an executable OS trap-plus-RTS or
+                // Toolbox auto-pop A-line while its table slot is patched.
+                if is_toolbox {
+                    assert_eq!(bus.read_word(default), trap_word | 0x0400);
+                } else {
+                    assert_eq!(bus.read_word(default), trap_word);
+                    assert_eq!(bus.read_word(default + 2), 0x4E75);
+                }
+
+                call_trap_manager_setter(
+                    &mut dispatcher,
+                    &mut cpu,
+                    &mut bus,
+                    setter,
+                    trap_word,
+                    default,
+                );
+                assert_eq!(bus.read_long(raw_entry), initial_raw);
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    default,
+                    "{profile:?} restored default ${trap_word:04X}"
+                );
+
+                if legacy_uses_os != is_toolbox {
+                    call_trap_manager_setter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        0xA047,
+                        trap_word,
+                        first_patch,
+                    );
+                    assert_eq!(
+                        call_trap_manager_getter(
+                            &mut dispatcher,
+                            &mut cpu,
+                            &mut bus,
+                            getter,
+                            trap_word,
+                        ),
+                        first_patch,
+                        "{profile:?} legacy setter ${trap_word:04X}"
+                    );
+                    call_trap_manager_setter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        0xA047,
+                        trap_word,
+                        default,
+                    );
+                    assert_eq!(bus.read_long(raw_entry), initial_raw);
+                }
+
+                bus.write_long(raw_entry, raw_patch);
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    raw_patch,
+                    "{profile:?} raw table patch ${trap_word:04X}"
+                );
+                cpu.write_reg(Register::PC, RETURN_PC);
+                cpu.write_reg(Register::A7, SP);
+                dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+                assert_eq!(cpu.read_reg(Register::PC), raw_patch);
+                cpu.write_reg(Register::PC, RETURN_PC);
+                cpu.write_reg(Register::A7, SP);
+                dispatcher.retire_returned_native_trap_call(&mut cpu);
+                assert!(dispatcher.pending_native_trap_calls.is_empty());
+
+                bus.write_long(raw_entry, initial_raw);
+                assert_eq!(
+                    call_trap_manager_getter(
+                        &mut dispatcher,
+                        &mut cpu,
+                        &mut bus,
+                        getter,
+                        trap_word,
+                    ),
+                    default,
+                    "{profile:?} raw restore ${trap_word:04X}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn trap_word_map_preserves_the_hashmap_contract() {
         let mut map = super::TrapWordMap::default();
