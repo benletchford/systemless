@@ -940,9 +940,10 @@ impl super::TrapDispatcher {
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_variant = self.current_trap_word & 0x0FFF;
-                // Check native trap table first (returns address set by SetTrapAddress)
+                // Check the selected raw table first (returns an address set
+                // either through SetTrapAddress or by a direct guest write).
                 let trap_table_key = self.trap_address_table_key(trap_word);
-                if let Some(&addr) = self.native_trap_table.get(&trap_table_key) {
+                if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
                     cpu.write_reg(Register::A0, addr);
                 } else if trap_variant == 0x746 {
                     // Real GetToolTrapAddress/GetToolBoxTrapAddress
@@ -1044,7 +1045,8 @@ impl super::TrapDispatcher {
             // (phantom GetToolTrapAddress) ($AB46): Unreachable from real guest code; emits $CAFE0xxx fake-ptr only via direct dispatch_memory test calls
             (true, 0x346) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
-                if let Some(&addr) = self.native_trap_table.get(&trap_word) {
+                let canonical_tool_trap = 0xA800 | (trap_word & 0x03FF);
+                if let Some(addr) = self.native_trap_handler(bus, canonical_tool_trap) {
                     cpu.write_reg(Register::A0, addr);
                 } else if trap_word == 0x257 {
                     // DockingDispatch probe uses the low-number tool-trap
@@ -1071,32 +1073,10 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
-                // Restore-to-default detection: when SetTrapAddress
-                // sees an address that *we* handed back from a prior
-                // GetTrapAddress, the game is
-                // saying "put it back the way you found it" and the
-                // correct response is to remove our native_trap_table
-                // entry so subsequent traps go through the HLE
-                // dispatcher chain again.
-                //
-                // Without the trampoline arm, games that read +
-                // restore tool-trap addresses (e.g. Steel Fighters'
-                // ExitToShell shim) would store the trampoline
-                // address back into native_trap_table, and dispatch
-                // would JMP to the trampoline, which re-traps with
-                // auto-pop, which re-enters dispatch, which JMPs to
-                // the trampoline … infinite loop.
-                let is_legacy_fakeptr = (handler_addr & 0xFFFF0000) == 0x00F00000;
-                let is_trampoline = self
-                    .os_trap_trampolines
-                    .values()
-                    .chain(self.tool_trap_trampolines.values())
-                    .any(|&addr| addr == handler_addr);
-                if is_legacy_fakeptr || is_trampoline {
-                    self.native_trap_table.remove(&trap_table_key);
-                } else {
-                    self.native_trap_table.insert(trap_table_key, handler_addr);
-                }
+                // The helper updates the writable guest table as well as the
+                // pre-initialization mirror. Writing that slot's default
+                // callable gateway restores HLE dispatch without recursion.
+                self.install_trap_address(bus, trap_table_key, handler_addr);
                 Ok(())
             }
 

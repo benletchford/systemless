@@ -1089,9 +1089,11 @@ pub(crate) struct InverseTableCacheEntry {
     pub bytes: Vec<u8>,
 }
 
-/// Native trap dispatch table.
+/// Pre-initialization mirror of native trap installations.
 ///
-/// Consulted on every A-line trap dispatch. The default `HashMap` paid
+/// Focused dispatcher tests and early startup consult this before the raw
+/// guest tables exist. Once materialized, the guest longs are authoritative.
+/// The default `HashMap` paid
 /// SipHash plus a SwissTable probe per lookup, and a linear scan is
 /// unbounded: `SetTrapAddress`/`NSetTrapAddress` can populate arbitrarily
 /// many slots, so an application that patches many traps would make the
@@ -1168,6 +1170,17 @@ impl TrapWordMap {
         }
     }
 }
+
+/// Mac OS 8.1 trap-table layout selected by the reference machine profile.
+/// The Operating System table contains 256 routine addresses and the Toolbox
+/// table contains 1,024. Inside Macintosh: Operating System Utilities (1994),
+/// pp. 8-4--8-6 describes the table shapes; Inside Macintosh Volume VI (1991),
+/// Gestalt Manager constants `gestaltOSTable` and `gestaltToolboxTable`, expose
+/// their bases to applications.
+pub(crate) const OS_TRAP_TABLE_BASE: u32 = 0x0400;
+pub(crate) const TOOLBOX_TRAP_TABLE_BASE: u32 = 0x0E00;
+pub(crate) const OS_TRAP_TABLE_SLOTS: u16 = 0x0100;
+pub(crate) const TOOLBOX_TRAP_TABLE_SLOTS: u16 = 0x0400;
 
 /// Trap dispatcher with resource fork access and emulator state.
 pub struct TrapDispatcher {
@@ -2018,12 +2031,17 @@ pub struct TrapDispatcher {
     pub(crate) recording_picture: Option<(u32, i16, i16, i16, i16, Vec<u8>)>,
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
-    /// Native trap dispatch table: maps raw trap word -> native 68K handler address.
-    /// Populated by SetTrapAddress ($A047/$A647). When an A-line instruction fires
-    /// and a native handler exists, the dispatcher simulates a JSR to the handler
-    /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
-    /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
+    /// Pre-initialization mirror mapping a canonical trap word to a native 68K
+    /// handler. SetTrapAddress keeps it coherent for focused unit tests, but
+    /// initialized runners dispatch from the writable guest tables. Native
+    /// handlers execute as simulated JSR targets, allowing CRT-installed
+    /// LoadSeg, UnloadSeg, and ExitToShell patches to relocate code normally.
     pub(crate) native_trap_table: TrapWordMap,
+    /// Whether the selected profile's two raw trap tables have been written
+    /// into guest low memory. Before application initialization, focused trap
+    /// unit tests retain the host-map fallback; afterwards the guest longs are
+    /// authoritative, including writes performed directly by native code.
+    pub(crate) trap_tables_materialized: bool,
     /// Original calls retained for each active native trap handler. The value
     /// is a LIFO stack because a patch can re-enter the same A-line trap before
     /// the outer invocation follows its saved daisy-chain link. Inside
@@ -3352,6 +3370,7 @@ impl TrapDispatcher {
             recording_picture: None,
             recording_picture_bitmap: None,
             native_trap_table: TrapWordMap::default(),
+            trap_tables_materialized: false,
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
@@ -6287,6 +6306,105 @@ impl TrapDispatcher {
         addr
     }
 
+    fn canonical_trap_word(trap_word: u16) -> u16 {
+        if (trap_word & 0x0800) != 0 {
+            0xA800 | (trap_word & 0x03FF)
+        } else {
+            0xA000 | (trap_word & 0x00FF)
+        }
+    }
+
+    fn raw_trap_table_entry(trap_word: u16) -> u32 {
+        if (trap_word & 0x0800) != 0 {
+            TOOLBOX_TRAP_TABLE_BASE + u32::from(trap_word & 0x03FF) * 4
+        } else {
+            OS_TRAP_TABLE_BASE + u32::from(trap_word & 0x00FF) * 4
+        }
+    }
+
+    fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
+        let canonical = Self::canonical_trap_word(trap_word);
+        if (canonical & 0x0800) != 0 {
+            self.tool_trap_trampolines.get(&canonical).copied()
+        } else {
+            self.os_trap_trampolines.get(&canonical).copied()
+        }
+    }
+
+    /// Materialize the selected machine profile's complete raw Trap Manager
+    /// tables. Every default entry is a stable, callable gateway into its HLE
+    /// implementation. The table storage itself remains writable; only the
+    /// generated gateway instructions are protected.
+    pub(crate) fn materialize_trap_tables(&mut self, bus: &mut MacMemoryBus) {
+        for slot in 0..OS_TRAP_TABLE_SLOTS {
+            let trap_word = 0xA000 | slot;
+            let default = self.get_or_create_os_trap_trampoline(bus, trap_word);
+            let entry = self
+                .native_trap_table
+                .get(&trap_word)
+                .copied()
+                .unwrap_or(default);
+            bus.write_long(Self::raw_trap_table_entry(trap_word), entry);
+        }
+        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+            let trap_word = 0xA800 | slot;
+            let default = self.get_or_create_tool_trap_trampoline(bus, trap_word);
+            let entry = self
+                .native_trap_table
+                .get(&trap_word)
+                .copied()
+                .unwrap_or(default);
+            bus.write_long(Self::raw_trap_table_entry(trap_word), entry);
+        }
+        self.trap_tables_materialized = true;
+    }
+
+    /// Return the current non-default handler for a canonical trap slot.
+    /// Once low-memory tables exist, their bytes are the source of truth so a
+    /// guest can patch a trap with an ordinary longword store.
+    pub(crate) fn native_trap_handler(
+        &self,
+        bus: &MacMemoryBus,
+        trap_word: u16,
+    ) -> Option<u32> {
+        let canonical = Self::canonical_trap_word(trap_word);
+        if self.trap_tables_materialized {
+            let installed = bus.read_long(Self::raw_trap_table_entry(canonical));
+            if self.default_trap_gateway(canonical) == Some(installed) {
+                None
+            } else {
+                Some(installed)
+            }
+        } else {
+            self.native_trap_table.get(&canonical).copied()
+        }
+    }
+
+    pub(crate) fn install_trap_address(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        trap_word: u16,
+        handler: u32,
+    ) {
+        let canonical = Self::canonical_trap_word(trap_word);
+        if self.default_trap_gateway(canonical) == Some(handler)
+            || (handler & 0xFFFF_0000) == 0x00F0_0000
+        {
+            self.native_trap_table.remove(&canonical);
+        } else {
+            self.native_trap_table.insert(canonical, handler);
+        }
+        if self.trap_tables_materialized {
+            let entry = self
+                .native_trap_table
+                .get(&canonical)
+                .copied()
+                .or_else(|| self.default_trap_gateway(canonical))
+                .unwrap_or(handler);
+            bus.write_long(Self::raw_trap_table_entry(canonical), entry);
+        }
+    }
+
     fn retain_native_trap_call(&mut self, trap_word: u16, call: NativeTrapCallState) {
         self.pending_native_trap_calls
             .entry(trap_word)
@@ -6319,13 +6437,8 @@ impl TrapDispatcher {
     /// Whether the canonical OS or Toolbox slot selected by an A-line word
     /// currently has a guest patch. Runner fast paths must defer to normal
     /// dispatch whenever this is true.
-    pub(crate) fn has_native_trap_patch(&self, trap_word: u16) -> bool {
-        let canonical = if (trap_word & 0x0800) != 0 {
-            0xA800 | (trap_word & 0x03FF)
-        } else {
-            0xA000 | (trap_word & 0x00FF)
-        };
-        self.native_trap_table.get(&canonical).is_some()
+    pub(crate) fn has_native_trap_patch(&self, bus: &MacMemoryBus, trap_word: u16) -> bool {
+        self.native_trap_handler(bus, trap_word).is_some()
     }
 
     /// Retire a native trap invocation that returned directly instead of
@@ -7043,7 +7156,7 @@ impl TrapDispatcher {
                 .is_some_and(|&addr| pc == addr + 2)
                 || saved_tool_daisy_chain_call);
         if !default_os_gateway_call && !default_tool_gateway_call {
-            if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
+            if let Some(handler_addr) = self.native_trap_handler(bus, base_trap) {
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
@@ -7187,6 +7300,12 @@ impl Default for TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::cpu::{CpuOps, Register};
+    use crate::trap::menu::test_tracked_menu_state;
+    use crate::trap::test_helpers::setup;
+    use std::collections::VecDeque;
+
     #[test]
     fn trap_word_map_preserves_the_hashmap_contract() {
         let mut map = super::TrapWordMap::default();
@@ -7253,11 +7372,66 @@ mod tests {
         }
     }
 
-    use super::*;
-    use crate::cpu::{CpuOps, Register};
-    use crate::trap::menu::test_tracked_menu_state;
-    use crate::trap::test_helpers::setup;
-    use std::collections::VecDeque;
+    #[test]
+    fn materialized_trap_tables_contain_all_callable_profile_entries() {
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus);
+
+        for slot in 0..OS_TRAP_TABLE_SLOTS {
+            let entry = bus.read_long(OS_TRAP_TABLE_BASE + u32::from(slot) * 4);
+            assert_ne!(entry, 0, "OS trap slot ${slot:02X}");
+            assert_eq!(bus.read_word(entry), 0xA000 | slot);
+            assert_eq!(bus.read_word(entry + 2), 0x4E75);
+        }
+        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+            let entry = bus.read_long(TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4);
+            assert_ne!(entry, 0, "Toolbox trap slot ${slot:03X}");
+            assert_eq!(bus.read_word(entry), (0xA800 | slot) | 0x0400);
+        }
+    }
+
+    #[test]
+    fn direct_raw_table_write_is_authoritative_for_dispatch() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus);
+        let handler = 0x0021_0000;
+        let return_pc = 0x0020_0002;
+        let sp = 0x003F_FF00;
+        bus.write_long(TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4, handler);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher.dispatch(0xA975, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), handler);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(bus.read_long(sp - 4), return_pc);
+        assert!(dispatcher.has_native_trap_patch(&bus, 0xA975));
+    }
+
+    #[test]
+    fn trap_manager_apis_and_raw_table_long_stay_coherent() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus);
+        let entry_address = TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        let default = bus.read_long(entry_address);
+        let handler = 0x0021_0000;
+
+        cpu.write_reg(Register::D0, 0xA975);
+        cpu.write_reg(Register::A0, handler);
+        dispatcher.dispatch(0xA047, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(entry_address), handler);
+
+        cpu.write_reg(Register::D0, 0xA975);
+        dispatcher.dispatch(0xA146, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), handler);
+
+        cpu.write_reg(Register::D0, 0xA975);
+        cpu.write_reg(Register::A0, default);
+        dispatcher.dispatch(0xA047, &mut cpu, &mut bus).unwrap();
+        assert_eq!(bus.read_long(entry_address), default);
+        assert!(!dispatcher.has_native_trap_patch(&bus, 0xA975));
+    }
 
     fn make_single_resource_fork_bytes(res_type: [u8; 4], res_id: i16, data: &[u8]) -> Vec<u8> {
         make_single_resource_fork_bytes_with_attrs(res_type, res_id, data, 0)

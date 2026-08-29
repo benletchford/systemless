@@ -3868,18 +3868,10 @@ impl FixtureRunner {
             );
         }
 
-        // The OS trap table begins at $0400 and stores callable routine
-        // addresses by low-byte trap number. SwapMMUMode is $A05D, placing
-        // its table entry at $0574. Inside Macintosh Volume V, V-593
-        // documents both the trap number and its register-based mode swap.
-        // Some clients call the table entry directly rather than executing
-        // the A-line opcode, so seed a real trap-and-return trampoline.
-        // Allocate this only after reserving the application zone header.
-        let swap_mmu_mode_trampoline = self.bus.alloc(4);
-        self.bus.write_word(swap_mmu_mode_trampoline, 0xA05D); // SwapMMUMode
-        self.bus.write_word(swap_mmu_mode_trampoline + 2, 0x4E75); // RTS
-        self.bus
-            .write_long(addr::SWAP_MMU_MODE_TRAP, swap_mmu_mode_trampoline);
+        // Mac OS exposes complete writable OS and Toolbox dispatch tables in
+        // low memory. Materialize all 1,280 callable entries before installing
+        // the adjacent QuickDraw vectors. IM:OSUtils 1994, pp. 8-4--8-6.
+        self.dispatcher.materialize_trap_tables(&mut self.bus);
         // JHideCursor ($0800): argument-free QuickDraw cursor bottleneck.
         // Adapt a direct JSR to the existing A-line trap by removing the JSR
         // return address before dispatch and jumping back afterward.
@@ -3969,6 +3961,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::TIME, time);
         let rnd_seed = self.launch_rnd_seed_override.unwrap_or(time);
         self.bus.write_long(addr::RND_SEED, rnd_seed);
+        self.dispatcher.materialize_trap_tables(&mut self.bus);
         self.share_ppc_runtime_globals(&mut ppc_app);
         ppc_app.share_event_queue(&self.dispatcher.event_queue);
         ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
@@ -4039,6 +4032,14 @@ impl FixtureRunner {
         // and 68k callers must observe one backing allocation rather than
         // values copied at CPU-slice boundaries.
         for (address, len) in [
+            (
+                crate::trap::dispatch::OS_TRAP_TABLE_BASE,
+                u32::from(crate::trap::dispatch::OS_TRAP_TABLE_SLOTS) * 4,
+            ),
+            (
+                crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
+                u32::from(crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS) * 4,
+            ),
             (addr::SYS_EVT_MASK, 2),
             (addr::MENU_FLASH, 2),
             (addr::MENU_DISABLE, 4),
@@ -5691,7 +5692,9 @@ impl FixtureRunner {
                     // 3-line body directly. Counters still update so
                     // logs and the trap histogram reflect real
                     // dispatch count.
-                    if opcode == 0xA975 && !self.dispatcher.has_native_trap_patch(opcode) {
+                    if opcode == 0xA975
+                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                    {
                         let sp = self.cpu.core.a(7);
                         let tick = self.dispatcher.tick_count;
                         self.bus.write_long(sp, tick);
@@ -5741,7 +5744,9 @@ impl FixtureRunner {
                     // loop entirely. Rewind PC directly and continue.
                     // Counters still update so logs and the trap
                     // histogram reflect real dispatch count.
-                    if opcode == 0xA991 && !self.dispatcher.has_native_trap_patch(opcode) {
+                    if opcode == 0xA991
+                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                    {
                         // Extracted into `modaldialog_refire_is_noop` so
                         // the gate logic is unit-tested. See its
                         // doc-comment for the full list of conditions.
@@ -5830,7 +5835,9 @@ impl FixtureRunner {
                     // controls. The handler is pure stack/Rect arithmetic, so
                     // inline the exact Pascal ABI and keep accounting aligned
                     // with TrapDispatcher::dispatch.
-                    if opcode == 0xA8AD && !self.dispatcher.has_native_trap_patch(opcode) {
+                    if opcode == 0xA8AD
+                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                    {
                         let sp = self.cpu.core.a(7);
                         let rect_ptr = self.bus.read_long(sp);
                         let pt_v = self.bus.read_word(sp + 4) as i16;
@@ -5874,7 +5881,9 @@ impl FixtureRunner {
                     // Marathon polls this heavily while waiting at terminal
                     // panels. Reuse the dispatcher helpers so event filtering
                     // and EventRecord layout stay centralized.
-                    if opcode == 0xA971 && !self.dispatcher.has_native_trap_patch(opcode) {
+                    if opcode == 0xA971
+                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                    {
                         let sp = self.cpu.core.a(7);
                         let event_ptr = self.bus.read_long(sp);
                         let event_mask = self.bus.read_word(sp + 4);
@@ -12096,6 +12105,18 @@ mod tests {
             ppc_app.memory.read_u32_be(addr::RND_SEED),
             Some(0x7654_3210)
         );
+        let toolbox_entry = crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        let default_tick_count = runner.bus.read_long(toolbox_entry);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(toolbox_entry),
+            Some(default_tick_count),
+            "PPC and 68k adapters must see one materialized trap table"
+        );
+        ppc_app
+            .memory
+            .write_u32_be(toolbox_entry, 0x0021_0000)
+            .expect("write shared Toolbox trap entry");
+        assert_eq!(runner.bus.read_long(toolbox_entry), 0x0021_0000);
         assert_eq!(ppc_app.cpu.time_base(), 0x8877_6655_4433_2211);
     }
 

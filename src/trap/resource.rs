@@ -184,6 +184,8 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
         b"vers"
             | b"sysv"
             | b"sysa"
+            | b"ostt"
+            | b"tbtt"
             | b"evnt"
             | b"edtn"
             | b"ppc "
@@ -567,7 +569,7 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        let Some(handler_addr) = self.native_trap_table.get(&0xA9A0).copied() else {
+        let Some(handler_addr) = self.native_trap_handler(bus, 0xA9A0) else {
             return false;
         };
 
@@ -3471,6 +3473,18 @@ impl super::TrapDispatcher {
                     // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
                     b"sysa" => {
                         cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltOSTable / gestaltToolboxTable return the bases
+                    // of the two writable raw dispatch tables. Inside
+                    // Macintosh Volume VI (1991), Gestalt Manager constants;
+                    // OSUtils 1994, pp. 8-4--8-6.
+                    b"ostt" => {
+                        cpu.write_reg(Register::A0, super::dispatch::OS_TRAP_TABLE_BASE);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    b"tbtt" => {
+                        cpu.write_reg(Register::A0, super::dispatch::TOOLBOX_TRAP_TABLE_BASE);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltAppleEventsAttr ('evnt') -> AppleEvents present
@@ -13851,6 +13865,21 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::A0), 1);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn gestalt_reports_materialized_trap_table_bases() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for (selector, expected) in [
+            (*b"ostt", crate::trap::dispatch::OS_TRAP_TABLE_BASE),
+            (*b"tbtt", crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE),
+        ] {
+            cpu.write_reg(Register::D0, u32::from_be_bytes(selector));
+            call_trap_word(&mut disp, 0xA0AD, &mut cpu, &mut bus).unwrap();
+            assert_eq!(cpu.read_reg(Register::A0), expected);
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+        }
     }
 
     #[test]

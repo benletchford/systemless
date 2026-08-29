@@ -46967,6 +46967,11 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
             u32::from(REFERENCE_MACHINE_PROFILE.system_version_bcd),
             PPC_NO_ERR,
         )),
+        b"ostt" => Some((crate::trap::dispatch::OS_TRAP_TABLE_BASE, PPC_NO_ERR)),
+        b"tbtt" => Some((
+            crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
+            PPC_NO_ERR,
+        )),
         b"evnt" => Some((0x0001, PPC_NO_ERR)),
         b"cput" => Some((PPC_GESTALT_CPU_604, PPC_NO_ERR)),
         b"proc" => Some((PPC_GESTALT_PROCESSOR_POWERPC, PPC_NO_ERR)),
