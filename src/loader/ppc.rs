@@ -2660,6 +2660,7 @@ pub(crate) struct PpcStdSignalState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PpcDialogCallbackCompletion {
     ReturnPreserve,
+    Return(u32),
     Yield,
 }
 
@@ -15203,8 +15204,8 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::AppleEventCompatibility,
         (
             "InterfaceLib",
-            "AppendDITL" | "CountDITL" | "FindDialogItem" | "HideDialogItem" | "ShortenDITL"
-            | "ShowDialogItem" | "UpdateDialog",
+            "AppendDITL" | "CountDITL" | "DialogSelect" | "FindDialogItem" | "HideDialogItem"
+            | "IsDialogEvent" | "ShortenDITL" | "ShowDialogItem" | "UpdateDialog",
         ) => PpcImportDispatcherTarget::DialogCompatibility,
         (
             "InterfaceLib",
@@ -24630,6 +24631,155 @@ fn ppc_dispatch_dialog_compatibility(
 ) -> PpcImportAction {
     let dialog = cpu.gpr[3];
     match binding.symbol_name.as_str() {
+        "IsDialogEvent" => {
+            let result = ppc_read_dialog_event(memory, cpu.gpr[3])
+                .and_then(|event| {
+                    let dialog = ppc_dialog_for_event(memory, gworlds, event.what, event.message)?;
+                    Some(match event.what {
+                        6 | 8 => event.message == dialog,
+                        1 => ppc_dialog_global_bounds(memory, gworlds, dialog).is_some_and(
+                            |bounds| {
+                                event.where_v >= bounds.0
+                                    && event.where_v < bounds.2
+                                    && event.where_h >= bounds.1
+                                    && event.where_h < bounds.3
+                            },
+                        ),
+                        _ => true,
+                    })
+                })
+                .unwrap_or(false);
+            PpcImportAction::Return(u32::from(result))
+        }
+        "DialogSelect" => {
+            if let Some(action) = ppc_resume_dialog_callbacks(cpu, memory, dialog_callback_stack) {
+                return action;
+            }
+            let event_ptr = cpu.gpr[3];
+            let dialog_out_ptr = cpu.gpr[4];
+            let item_hit_ptr = cpu.gpr[5];
+            let Some(event) = ppc_read_dialog_event(memory, event_ptr) else {
+                return PpcImportAction::Return(0);
+            };
+            let Some(dialog) = ppc_dialog_for_event(memory, gworlds, event.what, event.message)
+            else {
+                return PpcImportAction::Return(0);
+            };
+            let Some(bounds) = ppc_dialog_global_bounds(memory, gworlds, dialog) else {
+                return PpcImportAction::Return(0);
+            };
+            let Some(items) = ppc_dialog_items_for_dialog(memory, handles, dialog) else {
+                return PpcImportAction::Return(0);
+            };
+            if matches!(event.what, 6 | 8) && dialog_out_ptr != 0 {
+                let _ = memory.write_u32_be(dialog_out_ptr, dialog);
+            }
+            match event.what {
+                6 if event.message == dialog => {
+                    *current_gworld = dialog;
+                    *current_gdevice =
+                        ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+                    let _ = ppc_draw_dialog(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        screen_clut,
+                        vfs_resources,
+                        current_resource_refnum,
+                        dialog,
+                    );
+                    ppc_begin_dialog_callbacks(
+                        cpu,
+                        memory,
+                        dialog_callback_stack,
+                        dialog,
+                        &items,
+                        bounds,
+                        PpcDialogCallbackCompletion::Return(0),
+                    )
+                }
+                1 if event.where_v >= bounds.0
+                    && event.where_v < bounds.2
+                    && event.where_h >= bounds.1
+                    && event.where_h < bounds.3 =>
+                {
+                    let Some(hit) = ppc_dialog_item_at_global_point(
+                        &items,
+                        bounds,
+                        event.where_v,
+                        event.where_h,
+                    ) else {
+                        return PpcImportAction::Return(0);
+                    };
+                    if dialog_out_ptr != 0 {
+                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
+                    }
+                    if item_hit_ptr != 0 {
+                        let _ = memory.write_u16_be(item_hit_ptr, hit);
+                    }
+                    if items
+                        .get(usize::from(hit).saturating_sub(1))
+                        .is_some_and(|item| {
+                            item.item_type & !PPC_DIALOG_ITEM_DISABLED == PPC_DIALOG_ITEM_EDIT_TEXT
+                        })
+                    {
+                        let te_handle = memory
+                            .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                            .unwrap_or(0);
+                        ppc_te_click(
+                            memory,
+                            handles,
+                            te_handle,
+                            event.where_v.saturating_sub(bounds.0),
+                            event.where_h.saturating_sub(bounds.1),
+                            event.modifiers & 0x0200 != 0,
+                            event.when,
+                        );
+                    }
+                    PpcImportAction::Return(1)
+                }
+                3 | 5 => {
+                    let te_handle = memory
+                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                        .unwrap_or(0);
+                    let edit_item = memory
+                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                        .unwrap_or(u16::MAX)
+                        .saturating_add(1);
+                    let character = event.message as u8;
+                    let editable = edit_item != 0
+                        && items
+                            .get(usize::from(edit_item).saturating_sub(1))
+                            .is_some_and(|item| {
+                                item.item_type & !PPC_DIALOG_ITEM_DISABLED
+                                    == PPC_DIALOG_ITEM_EDIT_TEXT
+                            });
+                    if !editable || !matches!(character, 0x08 | 0x20..=0x7e) {
+                        return PpcImportAction::Return(0);
+                    }
+                    *last_mem_error = ppc_te_key(
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        handles,
+                        te_handle,
+                        character,
+                    );
+                    if *last_mem_error != PPC_NO_ERR {
+                        return PpcImportAction::Return(0);
+                    }
+                    if dialog_out_ptr != 0 {
+                        let _ = memory.write_u32_be(dialog_out_ptr, dialog);
+                    }
+                    if item_hit_ptr != 0 {
+                        let _ = memory.write_u16_be(item_hit_ptr, edit_item);
+                    }
+                    PpcImportAction::Return(1)
+                }
+                _ => PpcImportAction::Return(0),
+            }
+        }
         "CountDITL" => PpcImportAction::Return(
             ppc_dialog_items_for_dialog(memory, handles, dialog)
                 .and_then(|items| u32::try_from(items.len()).ok())
@@ -60334,6 +60484,48 @@ fn ppc_dialog_items_for_dialog(
     ppc_parse_dialog_items(&bytes)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcDialogEvent {
+    what: u16,
+    message: u32,
+    when: u32,
+    where_v: i16,
+    where_h: i16,
+    modifiers: u16,
+}
+
+fn ppc_read_dialog_event(memory: &mut PpcSectionMem, event_ptr: u32) -> Option<PpcDialogEvent> {
+    Some(PpcDialogEvent {
+        what: memory.read_u16_be(event_ptr)?,
+        message: memory.read_u32_be(event_ptr.checked_add(2)?)?,
+        when: memory.read_u32_be(event_ptr.checked_add(6)?)?,
+        where_v: memory.read_u16_be(event_ptr.checked_add(10)?)? as i16,
+        where_h: memory.read_u16_be(event_ptr.checked_add(12)?)? as i16,
+        modifiers: memory.read_u16_be(event_ptr.checked_add(14)?)?,
+    })
+}
+
+fn ppc_dialog_for_event(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    what: u16,
+    message: u32,
+) -> Option<u32> {
+    // Inside Macintosh Volume I (1985), pp. I-416--I-417: update and
+    // activate events name their window in `message`; other dialog events
+    // are routed to the frontmost visible dialog.
+    if matches!(what, 6 | 8)
+        && memory.read_u16_be(message.checked_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)?) == Some(2)
+    {
+        return Some(message);
+    }
+    gworlds.iter().rev().find_map(|record| {
+        (memory.read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET)) == Some(2)
+            && ppc_window_is_visible(memory, record.port))
+        .then_some(record.port)
+    })
+}
+
 fn ppc_dialog_global_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -60422,6 +60614,7 @@ fn ppc_next_dialog_callback(
             cpu.gpr[2] = state.restore_rtoc;
             return match state.completion {
                 PpcDialogCallbackCompletion::ReturnPreserve => PpcImportAction::ReturnPreserve,
+                PpcDialogCallbackCompletion::Return(value) => PpcImportAction::Return(value),
                 PpcDialogCallbackCompletion::Yield => PpcImportAction::Yield(u64::MAX),
             };
         }
@@ -60468,6 +60661,7 @@ fn ppc_begin_dialog_callbacks(
     if callbacks.is_empty() {
         return match completion {
             PpcDialogCallbackCompletion::ReturnPreserve => PpcImportAction::ReturnPreserve,
+            PpcDialogCallbackCompletion::Return(value) => PpcImportAction::Return(value),
             PpcDialogCallbackCompletion::Yield => PpcImportAction::Yield(u64::MAX),
         };
     }
@@ -131748,6 +131942,98 @@ mod tests {
         let mut standard_items = user_items.to_vec();
         standard_items.push(user_item(PPC_DIALOG_ITEM_BUTTON, (60, 60, 80, 140)));
         assert!(!ppc_dialog_is_game_managed(bounds, &standard_items));
+    }
+
+    #[test]
+    fn is_dialog_event_routes_front_dialog_input_and_rejects_foreign_updates() {
+        let pef = synthetic_pef_with_import(b"IsDialogEvent");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let event_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(event_ptr, vec![0; 16]);
+        loaded
+            .memory
+            .write_u16_be(PPC_MAIN_GWORLD + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        ppc_write_event_record(&mut loaded.memory, event_ptr, 3, b'G' as u32, 0, 20, 30, 0);
+        loaded.cpu.gpr[3] = event_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        ppc_write_event_record(
+            &mut loaded.memory,
+            event_ptr,
+            6,
+            PPC_MAIN_GWORLD + 0x100,
+            0,
+            20,
+            30,
+            0,
+        );
+        loaded.cpu.gpr[3] = event_ptr;
+        loaded.run_with_hle_imports(64);
+
+        assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+
+    #[test]
+    fn dialog_select_reports_enabled_item_hit_in_front_dialog() {
+        let pef = synthetic_pef_with_import(b"DialogSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let event_ptr = scratch;
+        let dialog_out_ptr = scratch + 16;
+        let item_hit_ptr = scratch + 20;
+        loaded.memory.add_region(scratch, vec![0; 32]);
+        loaded
+            .memory
+            .write_u16_be(PPC_MAIN_GWORLD + PPC_CWINDOW_WINDOW_KIND_OFFSET, 2)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(PPC_MAIN_GWORLD + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        let mut ditl = vec![0; 18];
+        ditl[6..8].copy_from_slice(&10i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&40i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&90i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+        ditl[15] = 2;
+        ditl[16..18].copy_from_slice(b"OK");
+        let items = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &ditl,
+        );
+        loaded
+            .memory
+            .write_u32_be(PPC_MAIN_GWORLD + PPC_DIALOG_ITEMS_OFFSET, items)
+            .unwrap();
+        ppc_write_event_record(&mut loaded.memory, event_ptr, 1, 0, 0, 20, 30, 0);
+        loaded.cpu.gpr[3] = event_ptr;
+        loaded.cpu.gpr[4] = dialog_out_ptr;
+        loaded.cpu.gpr[5] = item_hit_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        assert_eq!(
+            loaded.memory.read_u32_be(dialog_out_ptr),
+            Some(PPC_MAIN_GWORLD)
+        );
+        assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
     }
 
     #[test]
