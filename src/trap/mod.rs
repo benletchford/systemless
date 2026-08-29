@@ -37,6 +37,7 @@ pub(crate) mod types;
 mod window;
 
 pub use dispatch::TrapDispatcher;
+pub(crate) use memory::mac_roman_to_upper;
 pub(crate) use sound::{
     decode_interleaved_stereo_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
     parse_aiff_samples,
