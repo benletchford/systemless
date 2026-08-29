@@ -1320,6 +1320,7 @@ pub(crate) enum TrapAdapterId {
     Sound,
     Toolbox,
     Sane,
+    Unimplemented,
     Nonterminal,
 }
 
@@ -7369,6 +7370,29 @@ impl TrapDispatcher {
         None
     }
 
+    /// Dispatch the profile-defined `_Unimplemented` operation separately
+    /// from manager adapters. Modern 1,024-entry Toolbox tables identify
+    /// `$AA6E` as this routine, and invoking it raises system error 12.
+    /// Inside Macintosh: Operating System Utilities (1994), pp. 8-22, 8-32;
+    /// Inside Macintosh: Overview (1992), pp. 9-14--9-15.
+    fn raise_unimplemented(bus: &mut MacMemoryBus) -> Result<()> {
+        bus.write_word(crate::memory::globals::addr::DS_ERR_CODE, 12);
+        Err(Error::Halted)
+    }
+
+    fn dispatch_unimplemented<C: CpuOps>(
+        &mut self,
+        is_tool: bool,
+        trap_num: u16,
+        _cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) -> Option<Result<()>> {
+        Some(match (is_tool, trap_num) {
+            (true, 0x26E) => Self::raise_unimplemented(bus),
+            _ => return None,
+        })
+    }
+
     /// Main trap dispatch entry point. Decodes the trap word and routes to
     /// the appropriate sub-dispatcher module.
     pub fn dispatch<C: CpuOps>(
@@ -7733,10 +7757,17 @@ impl TrapDispatcher {
         let declared_route = *default_trap_route(effective_trap);
         let mut selected_adapter = TrapAdapterId::Nonterminal;
         let result = self
-            .dispatch_memory(is_tool, trap_num, cpu, bus)
+            .dispatch_unimplemented(is_tool, trap_num, cpu, bus)
             .map(|result| {
-                selected_adapter = TrapAdapterId::Memory;
+                selected_adapter = TrapAdapterId::Unimplemented;
                 result
+            })
+            .or_else(|| {
+                self.dispatch_memory(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Memory;
+                        result
+                    })
             })
             .or_else(|| {
                 self.dispatch_event(is_tool, trap_num, cpu, bus)
@@ -8725,6 +8756,10 @@ mod tests {
 
     #[test]
     fn machine_profiles_classify_only_aa6e_as_unimplemented() {
+        let declared = default_trap_route(0xAA6E);
+        assert!(declared.allows(TrapAdapterId::Unimplemented));
+        assert!(!declared.allows(TrapAdapterId::Toolbox));
+
         for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
             let (mut dispatcher, _cpu, mut bus) = setup();
             dispatcher.materialize_trap_tables(&mut bus, profile);
@@ -8751,6 +8786,22 @@ mod tests {
                 Some(unimplemented)
             );
         }
+    }
+
+    #[test]
+    fn aa6e_uses_the_terminal_unimplemented_adapter() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        bus.write_word(crate::memory::globals::addr::DS_ERR_CODE, 0xBEEF);
+
+        let result = dispatcher.dispatch(0xAA6E, &mut cpu, &mut bus);
+
+        assert!(matches!(result, Err(crate::Error::Halted)));
+        assert_eq!(dispatcher.current_trap_operation, 0xAA6E);
+        assert_eq!(
+            dispatcher.current_trap_adapter,
+            TrapAdapterId::Unimplemented
+        );
+        assert_eq!(bus.read_word(crate::memory::globals::addr::DS_ERR_CODE), 12);
     }
 
     #[test]

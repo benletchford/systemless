@@ -4869,15 +4869,6 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
         Some(match (is_tool, trap_num) {
-            // Unimplemented ($AA6E)
-            // Triggers the fatal unimplemented-core-routine system error.
-            // PROCEDURE Unimplemented;
-            // Inside Macintosh: Operating System Utilities (1994), p. 8-32
-            (true, 0x26E) => {
-                bus.write_word(crate::memory::globals::addr::DS_ERR_CODE, 12);
-                Err(crate::Error::Halted)
-            }
-
             // ========== Toolbox Event Traps ==========
 
             // GetNextEvent ($A970) - Toolbox variant
