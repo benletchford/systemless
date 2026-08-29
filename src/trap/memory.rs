@@ -472,7 +472,7 @@ impl super::TrapDispatcher {
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
-        match self.current_trap_word & 0x0FFF {
+        let typed_word = match self.current_trap_word & 0x0FFF {
             // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
             // Inside Macintosh: Operating System Utilities 1994, pp. 8-27
             // and 8-30: trapNum may be an A-line instruction or trap number;
@@ -494,7 +494,8 @@ impl super::TrapDispatcher {
                     0xA800 | trap_num
                 }
             }
-        }
+        };
+        super::dispatch::raw_trap_route(typed_word).canonical_word
     }
 
     fn looks_like_callable_proc(bus: &MacMemoryBus, proc_ptr: u32) -> bool {

@@ -71994,11 +71994,12 @@ fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
 }
 
 fn ppc_raw_trap_table_entry(trap_word: u16, toolbox: bool) -> u32 {
-    if toolbox {
-        crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE + u32::from(trap_word & 0x03ff) * 4
+    let typed_word = if toolbox {
+        0xA800 | (trap_word & 0x03FF)
     } else {
-        crate::trap::dispatch::OS_TRAP_TABLE_BASE + u32::from(trap_word & 0x00ff) * 4
-    }
+        0xA000 | (trap_word & 0x00FF)
+    };
+    crate::trap::dispatch::raw_trap_route(typed_word).table_address
 }
 
 fn ppc_logical_trap_address(

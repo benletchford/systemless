@@ -1183,6 +1183,84 @@ pub(crate) const OS_TRAP_TABLE_SLOTS: u16 = 0x0100;
 pub(crate) const TOOLBOX_TRAP_TABLE_SLOTS: u16 = 0x0400;
 pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 
+/// One raw A-line word's table selection and preserved variant metadata.
+///
+/// The Trap Dispatcher must classify the complete word before masking it to
+/// a table slot. Operating System words use bits 10--8 as routine/A0 flags
+/// and bits 7--0 as the slot; Toolbox words use bit 10 as auto-pop and bits
+/// 9--0 as the slot. Inside Macintosh: Operating System Utilities (1994),
+/// pp. 8-10--8-15 and 8-20--8-21.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RawTrapRoute {
+    pub(crate) raw_word: u16,
+    pub(crate) canonical_word: u16,
+    pub(crate) table_slot: u16,
+    pub(crate) table_index: u16,
+    pub(crate) table_address: u32,
+    pub(crate) is_toolbox: bool,
+    pub(crate) os_flags: u16,
+    pub(crate) os_returns_a0: bool,
+    pub(crate) toolbox_auto_pop: bool,
+}
+
+const EMPTY_RAW_TRAP_ROUTE: RawTrapRoute = RawTrapRoute {
+    raw_word: 0,
+    canonical_word: 0,
+    table_slot: 0,
+    table_index: 0,
+    table_address: 0,
+    is_toolbox: false,
+    os_flags: 0,
+    os_returns_a0: false,
+    toolbox_auto_pop: false,
+};
+
+const fn generate_raw_trap_routes() -> [RawTrapRoute; 4096] {
+    let mut routes = [EMPTY_RAW_TRAP_ROUTE; 4096];
+    let mut low_word = 0u16;
+    while low_word < 4096 {
+        let raw_word = 0xA000 | low_word;
+        let is_toolbox = (raw_word & 0x0800) != 0;
+        let table_slot = if is_toolbox {
+            raw_word & 0x03FF
+        } else {
+            raw_word & 0x00FF
+        };
+        routes[low_word as usize] = RawTrapRoute {
+            raw_word,
+            canonical_word: if is_toolbox {
+                0xA800 | table_slot
+            } else {
+                0xA000 | table_slot
+            },
+            table_slot,
+            table_index: if is_toolbox {
+                OS_TRAP_TABLE_SLOTS + table_slot
+            } else {
+                table_slot
+            },
+            table_address: if is_toolbox {
+                TOOLBOX_TRAP_TABLE_BASE + table_slot as u32 * 4
+            } else {
+                OS_TRAP_TABLE_BASE + table_slot as u32 * 4
+            },
+            is_toolbox,
+            os_flags: if is_toolbox { 0 } else { raw_word & 0x0700 },
+            os_returns_a0: !is_toolbox && (raw_word & 0x0100) != 0,
+            toolbox_auto_pop: is_toolbox && (raw_word & 0x0400) != 0,
+        };
+        low_word += 1;
+    }
+    routes
+}
+
+/// Complete generated routing denominator for `$A000..=$AFFF`.
+const RAW_TRAP_ROUTES: [RawTrapRoute; 4096] = generate_raw_trap_routes();
+
+pub(crate) fn raw_trap_route(trap_word: u16) -> &'static RawTrapRoute {
+    &RAW_TRAP_ROUTES[usize::from(trap_word & 0x0FFF)]
+}
+
 /// The observable target behind a raw trap-table long.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TrapTableTarget {
@@ -1227,6 +1305,14 @@ pub(crate) fn resolve_trap_table_target(
 pub(crate) enum TrapTableProfile {
     M68k68040,
     PowerPc604,
+}
+
+/// Profile-specific classification layered over the generated raw-word map.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProfileTrapRoute {
+    pub(crate) raw: RawTrapRoute,
+    pub(crate) default_is_unimplemented: bool,
+    pub(crate) has_permanent_come_from: bool,
 }
 
 /// Application-context portion of the writable Trap Manager topology.
@@ -1277,6 +1363,15 @@ impl TrapTableProfile {
     fn unimplemented_traps(self) -> &'static [u16] {
         match self {
             Self::M68k68040 | Self::PowerPc604 => MAC_OS_81_UNIMPLEMENTED_TRAPS,
+        }
+    }
+
+    pub(crate) fn route(self, trap_word: u16) -> ProfileTrapRoute {
+        let raw = *raw_trap_route(trap_word);
+        ProfileTrapRoute {
+            raw,
+            default_is_unimplemented: self.unimplemented_traps().contains(&raw.canonical_word),
+            has_permanent_come_from: self.come_from_traps().contains(&raw.canonical_word),
         }
     }
 }
@@ -6362,7 +6457,7 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
     ) -> u32 {
-        let canonical_trap_word = 0xA800 | (trap_word & 0x03FF);
+        let canonical_trap_word = raw_trap_route(0xA800 | (trap_word & 0x03FF)).canonical_word;
         if let Some(&addr) = self.tool_trap_trampolines.get(&canonical_trap_word) {
             // The returned address represents a ROM trap entry. Re-seed the
             // synthetic instruction on every lookup so guest code that
@@ -6387,7 +6482,7 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         trap_word: u16,
     ) -> u32 {
-        let canonical_trap_word = 0xA000 | (trap_word & 0x00FF);
+        let canonical_trap_word = raw_trap_route(0xA000 | (trap_word & 0x00FF)).canonical_word;
         if let Some(&addr) = self.os_trap_trampolines.get(&canonical_trap_word) {
             bus.write_readonly_code_word(addr, canonical_trap_word);
             bus.write_readonly_code_word(addr + 2, 0x4E75);
@@ -6402,19 +6497,11 @@ impl TrapDispatcher {
     }
 
     fn canonical_trap_word(trap_word: u16) -> u16 {
-        if (trap_word & 0x0800) != 0 {
-            0xA800 | (trap_word & 0x03FF)
-        } else {
-            0xA000 | (trap_word & 0x00FF)
-        }
+        raw_trap_route(trap_word).canonical_word
     }
 
     fn raw_trap_table_entry(trap_word: u16) -> u32 {
-        if (trap_word & 0x0800) != 0 {
-            TOOLBOX_TRAP_TABLE_BASE + u32::from(trap_word & 0x03FF) * 4
-        } else {
-            OS_TRAP_TABLE_BASE + u32::from(trap_word & 0x00FF) * 4
-        }
+        raw_trap_route(trap_word).table_address
     }
 
     fn default_trap_gateway(&self, trap_word: u16) -> Option<u32> {
@@ -6470,43 +6557,45 @@ impl TrapDispatcher {
         let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
-            let default = if profile.unimplemented_traps().contains(&trap_word) {
+            let route = profile.route(trap_word);
+            let default = if route.default_is_unimplemented {
                 self.os_trap_trampolines
                     .insert(trap_word, unimplemented_gateway);
                 unimplemented_gateway
             } else {
                 self.get_or_create_os_trap_trampoline(bus, trap_word)
             };
-            raw_entries.push(
-                self.native_trap_table
-                    .get(&trap_word)
-                    .copied()
-                    .unwrap_or(default),
-            );
+            let default = self
+                .native_trap_table
+                .get(&trap_word)
+                .copied()
+                .unwrap_or(default);
+            raw_entries.push(if route.has_permanent_come_from {
+                self.create_trap_come_from_head(bus, default)
+            } else {
+                default
+            });
         }
         for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
             let trap_word = 0xA800 | slot;
-            let default = if profile.unimplemented_traps().contains(&trap_word) {
+            let route = profile.route(trap_word);
+            let default = if route.default_is_unimplemented {
                 self.tool_trap_trampolines
                     .insert(trap_word, unimplemented_gateway);
                 unimplemented_gateway
             } else {
                 self.get_or_create_tool_trap_trampoline(bus, trap_word)
             };
-            raw_entries.push(
-                self.native_trap_table
-                    .get(&trap_word)
-                    .copied()
-                    .unwrap_or(default),
-            );
-        }
-        for &trap_word in profile.come_from_traps() {
-            let index = if (trap_word & 0x0800) != 0 {
-                usize::from(OS_TRAP_TABLE_SLOTS + (trap_word & 0x03FF))
+            let default = self
+                .native_trap_table
+                .get(&trap_word)
+                .copied()
+                .unwrap_or(default);
+            raw_entries.push(if route.has_permanent_come_from {
+                self.create_trap_come_from_head(bus, default)
             } else {
-                usize::from(trap_word & 0x00FF)
-            };
-            raw_entries[index] = self.create_trap_come_from_head(bus, raw_entries[index]);
+                default
+            });
         }
         let default_exception_vectors = [
             Self::create_exception_vector_gateway(bus),
@@ -7298,17 +7387,17 @@ impl TrapDispatcher {
                 );
             }
         }
-        let is_tool = (trap & 0x0800) != 0;
+        // Preserve the complete A-line classification before any table mask
+        // is applied. Every later consumer uses this generated route, so OS
+        // flag bits and Toolbox auto-pop cannot be reconstructed differently
+        // by separate dispatch paths.
+        let route = raw_trap_route(trap);
+        let is_tool = route.is_toolbox;
         // Count game traps: from game code (PC < 0x800000), NOT during
         // menu/dialog tracking loops (synthetic HLE re-dispatches), and
         // NOT idle-loop traps (GetNextEvent, WaitNextEvent, EventAvail)
         // which fire at wildly different rates depending on CPU speed.
-        // Extract canonical trap number (strip toolbox/auto-pop bits)
-        let trap_number = if (trap & 0x0800) != 0 {
-            trap & 0x03FF
-        } else {
-            trap & 0x00FF
-        };
+        let trap_number = route.table_slot;
         let is_idle_trap = match trap_number {
             0x0170 => true,            // GetNextEvent ($A970)
             0x0060 if is_tool => true, // WaitNextEvent ($A860), not HFSDispatch ($A060)
@@ -7337,54 +7426,26 @@ impl TrapDispatcher {
             self.trap_histogram[(trap & 0xFFF) as usize] =
                 self.trap_histogram[(trap & 0xFFF) as usize].saturating_add(1);
         }
-        let auto_pop = is_tool && (trap & 0x0400) != 0;
-        let trap_num = if is_tool {
-            trap & 0x03FF
-        } else {
-            trap & 0x00FF
-        };
+        let auto_pop = route.toolbox_auto_pop;
+        let trap_num = route.table_slot;
         let pc = cpu.read_reg(Register::PC);
 
         if trace_guest_pc_traps_enabled() && (0x00235000..=0x00238000).contains(&pc) {
             eprintln!(
                 "[PC-TRAP] PC=${:08X} trap=${:04X} base=${:04X} tool={} auto_pop={}",
-                pc,
-                trap,
-                if is_tool {
-                    0xA800 | (trap & 0x03FF)
-                } else {
-                    0xA000 | (trap & 0x00FF)
-                },
-                is_tool,
-                auto_pop,
+                pc, trap, route.canonical_word, is_tool, auto_pop,
             );
         }
         if trace_all_traps_enabled() {
             eprintln!(
                 "[ALL-TRAP] PC=${:08X} trap=${:04X} base=${:04X} tool={} num=0x{:03X}",
-                pc,
-                trap,
-                if is_tool {
-                    0xA800 | (trap & 0x03FF)
-                } else {
-                    0xA000 | (trap & 0x00FF)
-                },
-                is_tool,
-                trap_num,
+                pc, trap, route.canonical_word, is_tool, trap_num,
             );
         }
         if trace_dialog_traps_enabled() && self.dialog_tracking.is_some() {
             eprintln!(
                 "[DIALOG-TRAP] PC=${:08X} trap=${:04X} base=${:04X} tool={} auto_pop={}",
-                pc,
-                trap,
-                if is_tool {
-                    0xA800 | (trap & 0x03FF)
-                } else {
-                    0xA000 | (trap & 0x00FF)
-                },
-                is_tool,
-                auto_pop,
+                pc, trap, route.canonical_word, is_tool, auto_pop,
             );
         }
 
@@ -7407,11 +7468,7 @@ impl TrapDispatcher {
         // relocation that our HLE LoadSeg cannot replicate. We simulate
         // a JSR to the native handler: push return address, set PC.
         // The base trap word (without variant/auto-pop bits) is used for lookup.
-        let base_trap = if is_tool {
-            0xA800 | (trap & 0x03FF)
-        } else {
-            0xA000 | (trap & 0x00FF)
-        };
+        let base_trap = route.canonical_word;
         // A pointer returned before a patch was installed remains the saved
         // address of the original system routine. The OS gateway is the
         // canonical trap followed by RTS, so recognize its exact trap PC and
@@ -7603,6 +7660,81 @@ mod tests {
     use crate::trap::menu::test_tracked_menu_state;
     use crate::trap::test_helpers::setup;
     use std::collections::VecDeque;
+
+    #[test]
+    fn generated_raw_trap_routes_cover_every_a_line_word_exactly() {
+        for low_word in 0u16..0x1000 {
+            let word = 0xA000 | low_word;
+            let route = raw_trap_route(word);
+            assert_eq!(route.raw_word, word);
+            if (word & 0x0800) != 0 {
+                let slot = word & 0x03FF;
+                assert!(route.is_toolbox);
+                assert_eq!(route.table_slot, slot);
+                assert_eq!(route.table_index, OS_TRAP_TABLE_SLOTS + slot);
+                assert_eq!(
+                    route.table_address,
+                    TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4
+                );
+                assert_eq!(route.canonical_word, 0xA800 | slot);
+                assert_eq!(route.os_flags, 0);
+                assert!(!route.os_returns_a0);
+                assert_eq!(route.toolbox_auto_pop, (word & 0x0400) != 0);
+            } else {
+                let slot = word & 0x00FF;
+                assert!(!route.is_toolbox);
+                assert_eq!(route.table_slot, slot);
+                assert_eq!(route.table_index, slot);
+                assert_eq!(
+                    route.table_address,
+                    OS_TRAP_TABLE_BASE + u32::from(slot) * 4
+                );
+                assert_eq!(route.canonical_word, 0xA000 | slot);
+                assert_eq!(route.os_flags, word & 0x0700);
+                assert_eq!(route.os_returns_a0, (word & 0x0100) != 0);
+                assert!(!route.toolbox_auto_pop);
+            }
+        }
+    }
+
+    #[test]
+    fn generated_profile_routes_cover_all_raw_words_and_live_table_cells() {
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            let (mut dispatcher, _cpu, mut bus) = setup();
+            dispatcher.materialize_trap_tables(&mut bus, profile);
+            let unimplemented = dispatcher.default_trap_gateway(0xAA6E).unwrap();
+
+            for low_word in 0u16..0x1000 {
+                let word = 0xA000 | low_word;
+                let route = profile.route(word);
+                let table_entry = route.raw.table_address;
+                assert_eq!(
+                    table_entry,
+                    TrapDispatcher::raw_trap_table_entry(word),
+                    "raw word ${word:04X}"
+                );
+                let raw_target = bus.read_long(table_entry);
+                assert_eq!(
+                    route.has_permanent_come_from,
+                    bus.read_long(raw_target) == COME_FROM_PATCH_SIGNATURE,
+                    "raw word ${word:04X}"
+                );
+                let logical = dispatcher.trap_table_address(&bus, word).unwrap();
+                assert_eq!(
+                    route.default_is_unimplemented,
+                    logical == unimplemented,
+                    "raw word ${word:04X}"
+                );
+                assert_eq!(
+                    logical,
+                    dispatcher
+                        .trap_table_address(&bus, route.raw.canonical_word)
+                        .unwrap(),
+                    "variant ${word:04X} must select its canonical slot"
+                );
+            }
+        }
+    }
 
     #[test]
     fn trap_word_map_preserves_the_hashmap_contract() {
