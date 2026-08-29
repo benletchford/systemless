@@ -88,6 +88,12 @@ pub mod addr {
     /// Macintosh Toolbox Essentials (1992), p. 3-142.
     pub const MENU_FLASH: u32 = 0x0A24;
 
+    /// TheMenu: ID of the menu that owns the current selection/highlight.
+    /// For a submenu selection this remains the submenu ID even though its
+    /// owning regular title is the one displayed as highlighted.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-115--3-119.
+    pub const THE_MENU: u32 = 0x0A26;
+
     /// MenuDisable: menu ID + item number of the last menu item the cursor
     /// passed over while a menu was down (4 bytes, LongInt — high word =
     /// menuID, low word = itemNumber). Maintained by the standard menu

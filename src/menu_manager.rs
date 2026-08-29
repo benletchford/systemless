@@ -2073,6 +2073,11 @@ pub(crate) struct MenuKeySelection {
     pub(crate) item_number: i16,
 }
 
+struct DecodedMenuPartitions {
+    regular: Vec<(u32, MenuKeyMenu)>,
+    hierarchical: Vec<(u32, MenuKeyMenu)>,
+}
+
 impl MenuKeySelection {
     pub(crate) fn packed_result(self) -> u32 {
         (u32::from(self.menu_id as u16) << 16) | u32::from(self.item_number as u16)
@@ -2855,6 +2860,19 @@ impl MenuList {
             })
     }
 
+    /// Find a title-bearing menu by ID without searching the hierarchical
+    /// partition. `HiliteMenu` accepts only a menu that has a menu-bar title;
+    /// a submenu ID therefore clears the current title just like an unknown
+    /// ID. Macintosh Toolbox Essentials (1992), p. 3-119.
+    pub(crate) fn find_regular_handle_by_id(
+        &self,
+        requested_id: i16,
+        mut menu_id: impl FnMut(u32) -> Option<i16>,
+    ) -> Option<u32> {
+        self.regular_handles()
+            .find(|handle| menu_id(*handle) == Some(requested_id))
+    }
+
     /// Resolve a submenu only from the current list's hierarchical partition.
     /// `MenuSelect` searches this partition for the ID stored by the parent
     /// item. Macintosh Toolbox Essentials (1992), pp. 3-53--3-55.
@@ -2923,14 +2941,9 @@ impl MenuList {
             return None;
         }
 
-        let regular = self
-            .regular_handles()
-            .filter_map(|handle| decode_menu(handle).map(|menu| (handle, menu)))
-            .collect::<Vec<_>>();
-        let hierarchical = self
-            .hierarchical_handles()
-            .filter_map(|handle| decode_menu(handle).map(|menu| (handle, menu)))
-            .collect::<Vec<_>>();
+        let decoded = self.decoded_menu_partitions(&mut decode_menu);
+        let regular = &decoded.regular;
+        let hierarchical = &decoded.hierarchical;
 
         let (menu_handle, menu, item_number, hierarchical_match) = regular
             .iter()
@@ -2946,7 +2959,10 @@ impl MenuList {
             })?;
 
         let owner_handle = if hierarchical_match {
-            Self::owning_regular_handle(menu_handle, &regular, &hierarchical)
+            Self::find_owning_regular_menu(regular, hierarchical, |handle, _menu| {
+                handle == menu_handle
+            })
+            .map(|(handle, _id)| handle)
         } else {
             Some(menu_handle)
         };
@@ -2969,18 +2985,51 @@ impl MenuList {
         })
     }
 
-    fn owning_regular_handle(
-        target_handle: u32,
+    /// Resolve the regular menu-bar title that owns an installed menu ID.
+    ///
+    /// `TheMenu` contains the selected submenu's ID, while `DrawMenuBar` and
+    /// `FlashMenuBar` keep the regular title that opened its hierarchy
+    /// highlighted. The traversal is bounded against malformed circular
+    /// hierarchies. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119,
+    /// 3-138, and 3-142.
+    pub(crate) fn owning_regular_menu(
+        &self,
+        target_id: i16,
+        mut decode_menu: impl FnMut(u32) -> Option<MenuKeyMenu>,
+    ) -> Option<(u32, i16)> {
+        let decoded = self.decoded_menu_partitions(&mut decode_menu);
+        Self::find_owning_regular_menu(&decoded.regular, &decoded.hierarchical, |_handle, menu| {
+            menu.id == target_id
+        })
+    }
+
+    fn decoded_menu_partitions(
+        &self,
+        decode_menu: &mut impl FnMut(u32) -> Option<MenuKeyMenu>,
+    ) -> DecodedMenuPartitions {
+        let regular = self
+            .regular_handles()
+            .filter_map(|handle| decode_menu(handle).map(|menu| (handle, menu)))
+            .collect();
+        let hierarchical = self
+            .hierarchical_handles()
+            .filter_map(|handle| decode_menu(handle).map(|menu| (handle, menu)))
+            .collect();
+        DecodedMenuPartitions {
+            regular,
+            hierarchical,
+        }
+    }
+
+    fn find_owning_regular_menu(
         regular: &[(u32, MenuKeyMenu)],
         hierarchical: &[(u32, MenuKeyMenu)],
-    ) -> Option<u32> {
-        for (root_handle, _root) in regular {
+        mut is_target: impl FnMut(u32, &MenuKeyMenu) -> bool,
+    ) -> Option<(u32, i16)> {
+        for (root_handle, root) in regular {
             let mut pending = vec![*root_handle];
             let mut visited = Vec::new();
             while let Some(handle) = pending.pop() {
-                if handle == target_handle {
-                    return Some(*root_handle);
-                }
                 if visited.contains(&handle) {
                     continue;
                 }
@@ -2990,6 +3039,9 @@ impl MenuList {
                     .chain(hierarchical.iter())
                     .find(|(candidate, _menu)| *candidate == handle)
                     .map(|(_handle, menu)| menu)?;
+                if is_target(handle, menu) {
+                    return Some((*root_handle, root.id));
+                }
                 for submenu_id in menu
                     .items
                     .iter()
@@ -3565,11 +3617,18 @@ mod tests {
                 40 => (
                     40,
                     true,
-                    vec![MenuKeyItem {
-                        command: b'H',
-                        mark: 0,
-                        enabled: true,
-                    }],
+                    vec![
+                        MenuKeyItem {
+                            command: b'H',
+                            mark: 0,
+                            enabled: true,
+                        },
+                        MenuKeyItem {
+                            command: 0x1b,
+                            mark: 40,
+                            enabled: true,
+                        },
+                    ],
                 ),
                 _ => return None,
             };
@@ -3589,6 +3648,14 @@ mod tests {
         let unattached = list.menu_key_selection(b'U', decode).unwrap();
         assert_eq!(unattached.menu_handle, 30);
         assert_eq!(unattached.owner_handle, None);
+        assert_eq!(list.owning_regular_menu(20, decode), Some((20, 20)));
+        assert_eq!(list.owning_regular_menu(40, decode), Some((10, 10)));
+        assert_eq!(list.owning_regular_menu(30, decode), None);
+        assert_eq!(
+            list.owning_regular_menu(999, decode),
+            None,
+            "a circular hierarchy must terminate without inventing an owner"
+        );
         assert_eq!(
             list.menu_key_selection(b'X', |handle| {
                 let mut menu = decode(handle)?;

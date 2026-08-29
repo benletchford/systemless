@@ -266,7 +266,7 @@ const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
 // choice this is the submenu ID even though its originating regular title is
 // visibly highlighted. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119;
 // Inside Macintosh Volume V (1986), pp. V-244 and V-571.
-const PPC_THE_MENU_ADDR: u32 = 0x0000_0a26;
+const PPC_THE_MENU_ADDR: u32 = crate::memory::globals::addr::THE_MENU;
 fn ppc_current_menu_list(memory: &mut PpcSectionMem) -> u32 {
     memory
         .read_u32_be(crate::memory::globals::addr::MENU_LIST)
@@ -67320,28 +67320,31 @@ fn ppc_menu_key(
     menu_list_handle: u32,
     key: u8,
 ) -> Option<MenuKeySelection> {
-    ppc_menu_list_definition(memory, menu_list_handle)?.menu_key_selection(key, |menu_handle| {
-        let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
-        let flags = memory.read_u32_be(menu + 10)?;
-        let items = (1..=ppc_count_menu_items(memory, menu_handle))
-            .map(|item| {
-                let item = item as i16;
-                MenuKeyItem {
-                    command: ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
-                        .and_then(|address| memory.read_u8(address))
-                        .unwrap_or(0),
-                    mark: ppc_menu_item_attribute_address(memory, menu_handle, item, 2)
-                        .and_then(|address| memory.read_u8(address))
-                        .unwrap_or(0),
-                    enabled: item > 31 || flags & (1u32 << item) != 0,
-                }
-            })
-            .collect();
-        Some(MenuKeyMenu {
-            id: memory.read_u16_be(menu)? as i16,
-            enabled: flags & 1 != 0,
-            items,
+    ppc_menu_list_definition(memory, menu_list_handle)?
+        .menu_key_selection(key, |menu_handle| ppc_menu_key_menu(memory, menu_handle))
+}
+
+fn ppc_menu_key_menu(memory: &mut PpcSectionMem, menu_handle: u32) -> Option<MenuKeyMenu> {
+    let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
+    let flags = memory.read_u32_be(menu + 10)?;
+    let items = (1..=ppc_count_menu_items(memory, menu_handle))
+        .map(|item| {
+            let item = item as i16;
+            MenuKeyItem {
+                command: ppc_menu_item_attribute_address(memory, menu_handle, item, 1)
+                    .and_then(|address| memory.read_u8(address))
+                    .unwrap_or(0),
+                mark: ppc_menu_item_attribute_address(memory, menu_handle, item, 2)
+                    .and_then(|address| memory.read_u8(address))
+                    .unwrap_or(0),
+                enabled: item > 31 || flags & (1u32 << item) != 0,
+            }
         })
+        .collect();
+    Some(MenuKeyMenu {
+        id: memory.read_u16_be(menu)? as i16,
+        enabled: flags & 1 != 0,
+        items,
     })
 }
 
@@ -69862,42 +69865,15 @@ fn ppc_root_menu_id_for_selection(
     menu_list_handle: u32,
     selected_menu_id: i16,
 ) -> i16 {
-    // A submenu command names its owning submenu in TheMenu, while the
-    // visible highlight remains on the regular title that began the path.
-    // Follow the installed hierarchy back to that title and contain malformed
-    // circular graphs. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119
-    // and 3-138.
     let Some(menu_list) = ppc_menu_list_definition(memory, menu_list_handle) else {
         return 0;
     };
-    for root_handle in menu_list.regular_handles() {
-        let Some(root) = memory.read_u32_be(root_handle).filter(|menu| *menu != 0) else {
-            continue;
-        };
-        let root_id = memory.read_u16_be(root).unwrap_or(0) as i16;
-        let mut pending = vec![root_handle];
-        let mut visited = Vec::new();
-        while let Some(menu_handle) = pending.pop() {
-            if visited.contains(&menu_handle) {
-                continue;
-            }
-            visited.push(menu_handle);
-            let Some(menu) = memory.read_u32_be(menu_handle).filter(|menu| *menu != 0) else {
-                continue;
-            };
-            if memory.read_u16_be(menu).map(|id| id as i16) == Some(selected_menu_id) {
-                return root_id;
-            }
-            for item in 1..=ppc_count_menu_items(memory, menu_handle) {
-                if let Some(submenu_handle) =
-                    ppc_submenu_handle_for_item(memory, menu_list_handle, menu_handle, item as i16)
-                {
-                    pending.push(submenu_handle);
-                }
-            }
-        }
-    }
-    0
+    menu_list
+        .owning_regular_menu(selected_menu_id, |menu_handle| {
+            ppc_menu_key_menu(memory, menu_handle)
+        })
+        .map(|(_handle, menu_id)| menu_id)
+        .unwrap_or(0)
 }
 
 fn ppc_flash_entire_menu_bar_with_colors(

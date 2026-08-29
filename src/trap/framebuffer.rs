@@ -2645,6 +2645,10 @@ impl super::TrapDispatcher {
                 );
             }
         }
+
+        if let Some(menu_idx) = self.current_menu_bar_highlight_index(bus) {
+            self.highlight_menu_title(bus, menu_idx);
+        }
     }
 
     pub(super) fn is_system_menu_mark_title(title: &str) -> bool {

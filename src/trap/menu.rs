@@ -620,6 +620,7 @@ impl super::TrapDispatcher {
             self.restore_menu_tracking_pixels(bus, saved);
         }
         if kind == Some(MenuTrackingKind::MenuBar) {
+            bus.write_word(addr::THE_MENU, 0);
             self.draw_menu_bar_to_fb(bus);
         } else {
             self.restore_visible_dialog_snapshots(bus);
@@ -641,6 +642,7 @@ impl super::TrapDispatcher {
             self.restore_menu_tracking_pixels(bus, saved);
         }
         if kind == Some(MenuTrackingKind::MenuBar) {
+            bus.write_word(addr::THE_MENU, (result >> 16) as u16);
             self.draw_menu_bar_to_fb(bus);
         } else {
             self.restore_visible_dialog_snapshots(bus);
@@ -1420,6 +1422,21 @@ impl super::TrapDispatcher {
 
     fn current_menu_list(&self, bus: &MacMemoryBus) -> Option<SharedMenuList> {
         menu_list_from_memory(bus, bus.read_long(addr::MENU_LIST))
+    }
+
+    pub(super) fn current_menu_bar_highlight_index(&self, bus: &MacMemoryBus) -> Option<usize> {
+        let selected_menu_id = bus.read_word(addr::THE_MENU) as i16;
+        if selected_menu_id == 0 {
+            return None;
+        }
+        let (owner_handle, _owner_id) = self
+            .current_menu_list(bus)?
+            .owning_regular_menu(selected_menu_id, |handle| {
+                menu_key_menu_from_memory(bus, handle)
+            })?;
+        self.menus
+            .iter()
+            .position(|menu| menu.handle == owner_handle)
     }
 
     fn replace_current_menu_list(
@@ -2217,6 +2234,7 @@ impl super::TrapDispatcher {
                                 .map(|submenu| submenu.highlighted_item)
                                 .unwrap_or(saved.highlighted_item);
                             self.restore_menu_tracking_pixels(bus, saved);
+                            bus.write_word(addr::THE_MENU, (result >> 16) as u16);
                             self.draw_menu_bar_to_fb(bus);
                             bus.write_long(sp + 4, result);
                             cpu.write_reg(Register::A7, sp + 4);
@@ -2307,6 +2325,7 @@ impl super::TrapDispatcher {
                                 .unwrap();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
+                            bus.write_word(addr::THE_MENU, 0);
                             self.draw_menu_bar_to_fb(bus);
                             self.finish_menu_no_hit(bus, cpu, sp, 4);
                             self.record_menuselect_input_trace(
@@ -2711,63 +2730,29 @@ impl super::TrapDispatcher {
             // HiliteMenu ($A938)
             // Highlights or unhighlights a menu title in the menu bar.
             // PROCEDURE HiliteMenu(menuID: INTEGER);
-            // Inside Macintosh Volume I (1985), pp. I-355..I-356
-            //
-            // Per IM:I I-356: "HiliteMenu highlights the title of the
-            // given menu, or does nothing if the title is already
-            // highlighted. Since only one menu title can be highlighted
-            // at a time, it unhighlights any previously highlighted
-            // menu title. If menuID is 0 (or isn't the ID of any menu
-            // in the menu list), HiliteMenu simply unhighlights
-            // whichever menu title is highlighted (if any)."
-            //
-            // Tool-bit Pascal PROCEDURE calling convention: the caller
-            // pushes the 2-byte menuID INTEGER, the trap pops it, no
-            // FUNCTION result slot is written. MPW Universal Headers
-            // Menus.h declares
-            //     EXTERN_API(void) HiliteMenu(MenuID menuID)
-            //                                ONEWORDINLINE(0xA938);
-            //
-            // Stack discipline:
-            //   - A7 unchanged across the call after the 2-byte menuID
-            //     argument is consumed (no FUNCTION result slot, no
-            //     other stack frame).
-            //
-            // Behaviors intentionally not modeled here:
-            //   - The visible menu bar redraw. BasiliskII System 7.5.3
-            //     ROM unconditionally stamps a menu bar strip with the
-            //     named menu's title highlighted (or unhighlighted when
-            //     menuID=0). Systemless's HLE skips the
-            //     `draw_menu_bar_to_fb` call when `self.menus.is_empty()`
-            //     because the host runtime draws the menu bar directly
-            //     from the Rust menu list and would otherwise produce a
-            //     spare bottom-border line in the no-menu case (a
-            //     visible divergence from BII observed in earlier
-            //     iterations).
-            //   - The active dropdown / menu-tracking state. Systemless
-            //     tracks open dropdowns in `self.menu_tracking` and
-            //     restores saved pixels via `restore_dropdown_pixels`
-            //     when HiliteMenu is called; BII's TheMenu lowmem
-            //     global is structurally different.
+            // Macintosh Toolbox Essentials (1992), pp. 3-119 and 3-153.
             (true, 0x138) => {
                 let sp = cpu.read_reg(Register::A7);
-                let _menu_id = bus.read_word(sp) as i16;
+                let requested_menu_id = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
 
                 // If there's still a dropdown open, close it
                 if let Some(tracking) = self.menu_tracking.take() {
-                    self.restore_dropdown_pixels(
-                        bus,
-                        tracking.dropdown_rect(),
-                        &tracking.saved_pixels,
-                    );
+                    self.restore_menu_tracking_pixels(bus, tracking);
                 }
-                // Redraw menu bar without any highlight. Skip when the
-                // app has no menus installed -- real ROM doesn't stamp
-                // a menu-bar strip in that case, so Systemless shouldn't
-                // either (the spare bottom-border line was a visible
-                // divergence from BasiliskII for HiliteMenu-without-
-                // InsertMenu callers).
+                let target_menu_id = self
+                    .current_menu_list(bus)
+                    .and_then(|menu_list| {
+                        menu_list.find_regular_handle_by_id(requested_menu_id, |handle| {
+                            let menu = bus.read_long(handle);
+                            (menu != 0).then(|| bus.read_word(menu) as i16)
+                        })
+                    })
+                    .map_or(0, |_| requested_menu_id);
+                bus.write_word(addr::THE_MENU, target_menu_id as u16);
+                // Skip drawing when the app has no installed menus; the low
+                // memory state is still cleared above, but no spare menu-bar
+                // border is stamped into the framebuffer.
                 if !self.menus.is_empty() {
                     self.draw_menu_bar_to_fb(bus);
                 }
@@ -2792,14 +2777,13 @@ impl super::TrapDispatcher {
                     })
                 });
                 let result = selection.map_or(0, |selection| selection.packed_result());
-                // IM:I I-356 says MenuKey highlights the matching menu title
-                // and IM:V V-245 says a hierarchical result highlights its
-                // owning regular title. The app later calls HiliteMenu(0).
-                if let Some(menu_idx) = selection
-                    .and_then(|selection| selection.owner_handle)
-                    .and_then(|owner| self.menus.iter().position(|menu| menu.handle == owner))
-                {
-                    self.highlight_menu_title(bus, menu_idx);
+                // The selected submenu ID remains in TheMenu while the
+                // shared hierarchy resolver redraws its owning regular title.
+                // A miss clears any prior command-key highlight, matching the
+                // native PowerPC gateway.
+                bus.write_word(addr::THE_MENU, (result >> 16) as u16);
+                if !self.menus.is_empty() {
+                    self.draw_menu_bar_to_fb(bus);
                 }
 
                 if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
@@ -4318,6 +4302,7 @@ impl super::TrapDispatcher {
             return false;
         };
         let menu = &self.menus[menu_idx];
+        let menu_id = menu.id;
         let menu_ptr = bus.read_long(menu.handle);
         let custom_definition = menu_ptr != 0 && !self.menu_uses_standard_definition(bus, menu_ptr);
 
@@ -4343,6 +4328,11 @@ impl super::TrapDispatcher {
         };
         let dropdown_rect = layout.rect();
 
+        // TheMenu owns the retained title identity. Redrawing before the
+        // pane opens restores any prior title and highlights this one.
+        bus.write_word(addr::THE_MENU, menu_id as u16);
+        self.draw_menu_bar_to_fb(bus);
+
         // Save pixels under dropdown
         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
 
@@ -4351,9 +4341,6 @@ impl super::TrapDispatcher {
         } else {
             self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
         }
-
-        // Highlight the menu title in the menu bar
-        self.highlight_menu_title(bus, menu_idx);
 
         let mut tracking =
             tracked_menu_state(MenuTrackingKind::MenuBar, menu_idx, dropdown_rect, saved);
@@ -5596,6 +5583,32 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn invert_menu_title_index(&self, bus: &mut MacMemoryBus, menu_idx: usize) -> bool {
+        let Some((_idx, region)) = self
+            .current_menu_title_regions_with_indices(bus)
+            .into_iter()
+            .find(|(idx, _region)| *idx == menu_idx)
+        else {
+            return false;
+        };
+        let Some(menu) = self.menus.get(menu_idx) else {
+            return false;
+        };
+        let (_screen_base, _row_bytes, _screen_width, _screen_height, pixel_size) =
+            self.get_screen_params();
+        let hilite_indexes = Self::menu_hilite_pixel_indexes(
+            bus,
+            self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
+            Self::menu_title_pixel_index(bus, menu.id, pixel_size),
+            pixel_size,
+        );
+        let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+        let (top, left, bottom, right) = region.highlighted_rect(menu_bar_height);
+        self.invert_menu_bar_rect(bus, top, left, bottom, right, hilite_indexes);
+        self.redraw_color_system_menu_mark_title(bus, menu_idx, region.title_origin());
+        true
+    }
+
     fn flash_menu_bar(&self, bus: &mut MacMemoryBus, menu_id: i16) {
         if self.fullscreen_locked || self.menu_bar_hidden {
             return;
@@ -5611,21 +5624,18 @@ impl super::TrapDispatcher {
         }
 
         if menu_id != 0 {
-            if let Some((idx, region)) = self
+            if let Some((idx, _region)) = self
                 .current_menu_title_regions_with_indices(bus)
                 .into_iter()
                 .find(|(idx, _region)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
             {
-                let menu = &self.menus[idx];
-                let hilite_indexes = Self::menu_hilite_pixel_indexes(
-                    bus,
-                    self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
-                    Self::menu_title_pixel_index(bus, menu.id, pixel_size),
-                    pixel_size,
-                );
-                let (top, left, bottom, right) = region.highlighted_rect(menu_bar_height);
-                self.invert_menu_bar_rect(bus, top, left, bottom, right, hilite_indexes);
-                self.redraw_color_system_menu_mark_title(bus, idx, region.title_origin());
+                let current = self.current_menu_bar_highlight_index(bus);
+                if let Some(previous_idx) = current.filter(|previous_idx| *previous_idx != idx) {
+                    self.invert_menu_title_index(bus, previous_idx);
+                }
+                self.invert_menu_title_index(bus, idx);
+                let target_menu_id = if current == Some(idx) { 0 } else { menu_id };
+                bus.write_word(addr::THE_MENU, target_menu_id as u16);
                 return;
             }
         }
@@ -9077,6 +9087,11 @@ mod tests {
         assert_eq!(
             menu_key_result(&mut disp, &mut cpu, &mut bus, b'H'),
             (231u32 << 16) | 1
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::THE_MENU),
+            231,
+            "TheMenu must retain the selected submenu ID rather than its root title ID"
         );
         let after = title_region_pixels(&bus, base, row_bytes, left, right);
         assert!(
@@ -13636,6 +13651,50 @@ mod tests {
             disp.menu_tracking.is_none(),
             "HiliteMenu(0) should clear active menu tracking/highlight state"
         );
+    }
+
+    #[test]
+    fn hilitemenu_retains_one_live_title_and_drawmenubar_replays_it() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 243, 0x30B800, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, file, 0x30B840, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        let child = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 244, 0x30B880, "Recent");
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, child, -1);
+        disp.draw_menu_bar_to_fb(&mut bus);
+        let normal = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 243);
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(crate::memory::globals::addr::THE_MENU), 243);
+        let highlighted = bus.read_bytes(base, (row_bytes * 64) as usize);
+        assert_ne!(highlighted, normal, "HiliteMenu must highlight its title");
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            highlighted,
+            "DrawMenuBar must replay the title retained in TheMenu"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 244);
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::THE_MENU),
+            0,
+            "a submenu ID has no title for HiliteMenu to highlight"
+        );
+        assert_eq!(bus.read_bytes(base, (row_bytes * 64) as usize), normal);
     }
 
     // Five HiliteMenu(0) dispatches in sequence preserve A7 cumulatively.
