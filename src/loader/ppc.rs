@@ -21,16 +21,18 @@ use crate::managers::resource::{
 };
 use crate::memory::{GuestAddressSpace as PpcSectionMem, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    compiled_menu_color_entries, filter_menu_color_entries, install_menu_list_copy,
+    compiled_menu_color_entries, filter_menu_color_entries,
+    for_each_standard_hierarchy_indicator_pixel, for_each_standard_scroll_down_indicator_pixel,
+    for_each_standard_scroll_up_indicator_pixel, install_menu_list_copy,
     is_standard_system_menu_title, laid_out_menu_item_count, merge_menu_color_entries,
     new_standard_menu_record, standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
-    standard_menu_height, standard_menu_icon_kind, standard_menu_icon_resource_id,
-    standard_menu_item_layout, standard_menu_text_advance, standard_menu_title_advance,
-    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
-    standard_submenu_layout, ColorIconLayout, MenuBarResource, MenuBarTitleRegion,
-    MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
-    MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
-    MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
+    standard_menu_gray_pattern_is_ink, standard_menu_height, standard_menu_icon_kind,
+    standard_menu_icon_resource_id, standard_menu_item_layout, standard_menu_text_advance,
+    standard_menu_title_advance, standard_menu_width, standard_popup_menu_layout,
+    standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
+    MenuBarTitleRegion, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
+    MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
+    MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
     StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
     TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
@@ -67374,7 +67376,11 @@ fn ppc_draw_tracked_menu(
         if is_separator {
             let separator_y = layout.separator_y;
             for x in 4..state.popup_width().saturating_sub(4) {
-                if front.depth == 1 && (state.popup_left().saturating_add(x) + separator_y) & 1 != 0
+                if front.depth == 1
+                    && !standard_menu_gray_pattern_is_ink(
+                        state.popup_left().saturating_add(x),
+                        separator_y,
+                    )
                 {
                     continue;
                 }
@@ -67443,21 +67449,18 @@ fn ppc_draw_tracked_menu(
         );
 
         if is_hierarchical {
-            for dx in 0..7i16 {
-                let x = layout.indicator_left.saturating_add(dx);
-                let half_height = dx.min(6 - dx);
-                for dy in -half_height..=half_height {
+            for_each_standard_hierarchy_indicator_pixel(
+                layout.indicator_left,
+                layout.indicator_mid_y,
+                |x, y| {
                     let _ = ppc_quickdraw_write_raw_pixel(
                         memory,
                         front,
-                        (
-                            i32::from(x),
-                            i32::from(layout.indicator_mid_y.saturating_add(dy)),
-                        ),
+                        (i32::from(x), i32::from(y)),
                         content_pixel,
                     );
-                }
-            }
+                },
+            );
         } else if has_command_key {
             ppc_draw_text_chars(
                 memory,
@@ -67484,7 +67487,7 @@ fn ppc_draw_tracked_menu(
                         .saturating_add(state.popup_width())
                         .saturating_sub(1)
                 {
-                    if (x + y) & 1 != 0 {
+                    if !standard_menu_gray_pattern_is_ink(x, y) {
                         let _ = ppc_quickdraw_write_raw_pixel(
                             memory,
                             front,
@@ -67501,41 +67504,24 @@ fn ppc_draw_tracked_menu(
     // Inside Macintosh Volume V (1986), pp. V-248--V-249.
     let center_x = state.popup_left().saturating_add(state.popup_width() / 2);
     if scroll_up {
-        for dy in 0..6i16 {
-            for dx in -dy..=dy {
-                let _ = ppc_quickdraw_write_raw_pixel(
-                    memory,
-                    front,
-                    (
-                        i32::from(center_x.saturating_add(dx)),
-                        i32::from(state.popup_top().saturating_add(4).saturating_add(dy)),
-                    ),
-                    black,
-                );
-            }
-        }
+        for_each_standard_scroll_up_indicator_pixel(center_x, state.popup_top(), |x, y| {
+            let _ =
+                ppc_quickdraw_write_raw_pixel(memory, front, (i32::from(x), i32::from(y)), black);
+        });
     }
     if scroll_down {
-        for dy in 0..6i16 {
-            let half_width = 5i16.saturating_sub(dy);
-            for dx in -half_width..=half_width {
+        for_each_standard_scroll_down_indicator_pixel(
+            center_x,
+            state.popup_top().saturating_add(state.popup_height()),
+            |x, y| {
                 let _ = ppc_quickdraw_write_raw_pixel(
                     memory,
                     front,
-                    (
-                        i32::from(center_x.saturating_add(dx)),
-                        i32::from(
-                            state
-                                .popup_top()
-                                .saturating_add(state.popup_height())
-                                .saturating_sub(10)
-                                .saturating_add(dy),
-                        ),
-                    ),
+                    (i32::from(x), i32::from(y)),
                     black,
                 );
-            }
-        }
+            },
+        );
     }
 }
 

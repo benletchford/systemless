@@ -1219,6 +1219,73 @@ pub(crate) fn standard_menu_item_layout(
     }
 }
 
+/// Visit every pixel in the standard right-pointing hierarchical-menu mark.
+///
+/// The standard MDEF places this filled triangle in the keyboard-equivalent
+/// column. Keeping its raster in the Menu Manager prevents CPU gateways from
+/// choosing different indicator shapes. Inside Macintosh Volume V (1986),
+/// pp. V-23 and V-236; Macintosh Toolbox Essentials (1992), p. 3-133.
+pub(crate) fn for_each_standard_hierarchy_indicator_pixel(
+    left: i16,
+    mid_y: i16,
+    mut visit: impl FnMut(i16, i16),
+) {
+    for dx in 0..7i16 {
+        let half_height = dx.min(6 - dx);
+        for dy in -half_height..=half_height {
+            visit(left.saturating_add(dx), mid_y.saturating_add(dy));
+        }
+    }
+}
+
+/// Visit every pixel in the standard upward scrolling indicator.
+///
+/// The supplied edge is the top of the menu rectangle. Inside Macintosh
+/// Volume V (1986), pp. V-248--V-249.
+pub(crate) fn for_each_standard_scroll_up_indicator_pixel(
+    center_x: i16,
+    top: i16,
+    mut visit: impl FnMut(i16, i16),
+) {
+    for dy in 0..6i16 {
+        for dx in -dy..=dy {
+            visit(
+                center_x.saturating_add(dx),
+                top.saturating_add(4).saturating_add(dy),
+            );
+        }
+    }
+}
+
+/// Visit every pixel in the standard downward scrolling indicator.
+///
+/// The supplied edge is the bottom of the menu rectangle. Inside Macintosh
+/// Volume V (1986), pp. V-248--V-249.
+pub(crate) fn for_each_standard_scroll_down_indicator_pixel(
+    center_x: i16,
+    bottom: i16,
+    mut visit: impl FnMut(i16, i16),
+) {
+    for dy in 0..6i16 {
+        let half_width = 5i16.saturating_sub(dy);
+        for dx in -half_width..=half_width {
+            visit(
+                center_x.saturating_add(dx),
+                bottom.saturating_sub(10).saturating_add(dy),
+            );
+        }
+    }
+}
+
+/// Return whether the port-aligned QuickDraw `gray` pattern has an ink bit.
+///
+/// The predefined pattern is `$AA, $55, ...`; menu separators and monochrome
+/// dimming use the same phase in both CPU gateways. Imaging With QuickDraw
+/// (1994), p. 2-36 and pp. 3-5--3-6.
+pub(crate) fn standard_menu_gray_pattern_is_ink(x: i16, y: i16) -> bool {
+    (i32::from(x) + i32::from(y)).rem_euclid(2) == 0
+}
+
 /// Compute `MenuInfo.menuWidth` for the standard Mac OS 8.1 MDEF.
 ///
 /// Every item reserves 32 pixels around its text and leading icon slot.
@@ -3206,6 +3273,63 @@ mod tests {
         );
         assert_eq!(normal.icon_left, 29);
         assert_eq!(normal.text_left, 62);
+    }
+
+    #[test]
+    fn standard_menu_symbol_rasters_and_gray_phase_are_shared_between_gateways() {
+        let mut hierarchy = Vec::new();
+        for_each_standard_hierarchy_indicator_pixel(40, 30, |x, y| {
+            hierarchy.push((x, y));
+        });
+        assert_eq!(hierarchy.len(), 25);
+        assert_eq!(
+            (40..=46)
+                .map(|x| hierarchy
+                    .iter()
+                    .filter(|(pixel_x, _)| *pixel_x == x)
+                    .count())
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 7, 5, 3, 1],
+        );
+        assert!(hierarchy.contains(&(40, 30)));
+        assert!(hierarchy.contains(&(43, 27)));
+        assert!(hierarchy.contains(&(43, 33)));
+        assert!(hierarchy.contains(&(46, 30)));
+
+        let mut scroll_up = Vec::new();
+        for_each_standard_scroll_up_indicator_pixel(50, 10, |x, y| scroll_up.push((x, y)));
+        assert_eq!(scroll_up.len(), 36);
+        assert_eq!(
+            (14..=19)
+                .map(|y| scroll_up
+                    .iter()
+                    .filter(|(_, pixel_y)| *pixel_y == y)
+                    .count())
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 7, 9, 11],
+        );
+
+        let mut scroll_down = Vec::new();
+        for_each_standard_scroll_down_indicator_pixel(50, 80, |x, y| {
+            scroll_down.push((x, y));
+        });
+        assert_eq!(scroll_down.len(), 36);
+        assert_eq!(
+            (70..=75)
+                .map(|y| {
+                    scroll_down
+                        .iter()
+                        .filter(|(_, pixel_y)| *pixel_y == y)
+                        .count()
+                })
+                .collect::<Vec<_>>(),
+            vec![11, 9, 7, 5, 3, 1],
+        );
+
+        assert!(standard_menu_gray_pattern_is_ink(0, 0));
+        assert!(!standard_menu_gray_pattern_is_ink(1, 0));
+        assert!(!standard_menu_gray_pattern_is_ink(-1, 0));
+        assert!(standard_menu_gray_pattern_is_ink(-1, 1));
     }
 
     #[test]

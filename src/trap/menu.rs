@@ -3,9 +3,11 @@
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
-    compiled_menu_color_entries, filter_menu_color_entries, hierarchical_menu_id,
-    install_menu_list_copy, laid_out_menu_item_count,
-    merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
+    compiled_menu_color_entries, filter_menu_color_entries,
+    for_each_standard_hierarchy_indicator_pixel, for_each_standard_scroll_down_indicator_pixel,
+    for_each_standard_scroll_up_indicator_pixel, hierarchical_menu_id, install_menu_list_copy,
+    laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
+    new_standard_menu_record, standard_menu_gray_pattern_is_ink,
     standard_menu_height as shared_standard_menu_height, standard_menu_icon_kind,
     standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance as shared_standard_menu_text_advance,
@@ -5379,9 +5381,9 @@ impl super::TrapDispatcher {
                             pixel_index,
                         ),
                         // 50% grey pattern: set pixels where the pattern bit
-                        // is on. Imaging With QuickDraw 1994 p. 3-9.
+                        // is on. Imaging With QuickDraw 1994 pp. 3-5--3-6.
                         None => {
-                            if (x + sep_y) % 2 == 0 {
+                            if standard_menu_gray_pattern_is_ink(x, sep_y) {
                                 if let Some(pixel_index) = name_pixel_index {
                                     Self::fb_set_pixel_index(
                                         bus,
@@ -5534,36 +5536,34 @@ impl super::TrapDispatcher {
             if is_hierarchical {
                 // IM:V V-23 / V-236: hierarchical items show a right-pointing
                 // indicator; their mark byte is the submenu ID, not a checkmark.
-                for dx in 0..7 {
-                    let x = layout.indicator_left + dx;
-                    let half_height = dx.min(6 - dx);
-                    for dy in -half_height..=half_height {
-                        match content_index(command_pixel_index) {
-                            Some(pixel_index) => Self::fb_set_pixel_index(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                layout.indicator_mid_y + dy,
-                                pixel_index,
-                            ),
-                            None => Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                layout.indicator_mid_y + dy,
-                                true,
-                            ),
-                        }
-                    }
-                }
+                for_each_standard_hierarchy_indicator_pixel(
+                    layout.indicator_left,
+                    layout.indicator_mid_y,
+                    |x, y| match content_index(command_pixel_index) {
+                        Some(pixel_index) => Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            pixel_index,
+                        ),
+                        None => Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        ),
+                    },
+                );
             }
 
             // MTE 1992 pp. 3-12 and 3-16 define marks and Command-key
@@ -5617,11 +5617,12 @@ impl super::TrapDispatcher {
             // fallback when GetGray reports it cannot grey the content.
             // The pattern is `$AA $55 …` aligned to the port origin, so its
             // bits are on where x + y is even and the glyph keeps only those
-            // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994 p. 3-9.
+            // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994
+            // pp. 3-5--3-6.
             if dim_with_pattern && !provider_row_chrome {
                 for y in item_top..item_bottom {
                     for x in (left + 1)..(right - 1) {
-                        if (x + y) % 2 != 0 {
+                        if !standard_menu_gray_pattern_is_ink(x, y) {
                             if let Some(bg_index) = dropdown_bg_index {
                                 Self::fb_set_pixel_index(
                                     bus,
@@ -5677,31 +5678,14 @@ impl super::TrapDispatcher {
         // that edge. Inside Macintosh Volume V (1986), pp. V-248--V-249.
         let center_x = left.saturating_add(right.saturating_sub(left) / 2);
         if scroll_up {
-            for dy in 0..6i16 {
-                for dx in -dy..=dy {
-                    Self::menu_set_standard_pixel(
-                        bus,
-                        screen,
-                        center_x.saturating_add(dx),
-                        top.saturating_add(4).saturating_add(dy),
-                        true,
-                    );
-                }
-            }
+            for_each_standard_scroll_up_indicator_pixel(center_x, top, |x, y| {
+                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+            });
         }
         if scroll_down {
-            for dy in 0..6i16 {
-                let half_width = 5i16.saturating_sub(dy);
-                for dx in -half_width..=half_width {
-                    Self::menu_set_standard_pixel(
-                        bus,
-                        screen,
-                        center_x.saturating_add(dx),
-                        bottom.saturating_sub(10).saturating_add(dy),
-                        true,
-                    );
-                }
-            }
+            for_each_standard_scroll_down_indicator_pixel(center_x, bottom, |x, y| {
+                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+            });
         }
     }
 
