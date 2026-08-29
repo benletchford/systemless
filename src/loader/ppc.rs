@@ -15800,7 +15800,12 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CloseResFile => {
             ppc_close_res_file(
                 cpu,
+                memory,
+                handles,
+                free_handle_blocks,
+                handle_states,
                 resource_files,
+                vfs_resource_files,
                 vfs_resources,
                 current_resource_refnum,
                 last_resource_error,
@@ -18459,6 +18464,9 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
+                free_handle_blocks,
+                ptrs,
+                free_ptr_blocks,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 *current_gdevice,
@@ -18518,16 +18526,38 @@ fn dispatch_supported_import(
                 } else {
                     live_ctable
                 };
+                let ctable_reclaim_base = allocation.and_then(|allocation| {
+                    handles
+                        .iter()
+                        .find(|handle| handle.handle == ctable_handle && ctable_handle != 0)
+                        .filter(|handle| {
+                            allocation.allocation_end == *heap_cursor
+                                && handle
+                                    .handle
+                                    .checked_add(ppc_allocation_size(4).unwrap_or(0))
+                                    == Some(handle.ptr)
+                                && handle
+                                    .ptr
+                                    .checked_add(ppc_allocation_size(handle.capacity).unwrap_or(0))
+                                    == Some(allocation.origin_base)
+                        })
+                        .map(|handle| handle.handle)
+                });
                 if ctable_handle != 0 && ctable_handle != PPC_MAIN_CTABLE_HANDLE {
-                    let _ =
-                        ppc_dispose_tracked_handle(ctable_handle, memory, handles, handle_states);
+                    ppc_recycle_handle(
+                        memory,
+                        handles,
+                        free_handle_blocks,
+                        handle_states,
+                        ctable_handle,
+                    );
                     toolbox_startup
                         .indexed_screen_ctables
                         .retain(|_, handle| *handle != ctable_handle);
                 }
                 let reclaim_base = allocation
                     .filter(|allocation| allocation.allocation_end == *heap_cursor)
-                    .map(|allocation| allocation.origin_base)
+                    .map(|allocation| ctable_reclaim_base.unwrap_or(allocation.origin_base))
                     .or_else(|| {
                         (ppc_allocation_size(PPC_CGRAF_PORT_SIZE)
                             .and_then(|size| record.port.checked_add(size))
@@ -18535,8 +18565,22 @@ fn dispatch_supported_import(
                         .then_some(record.base_addr)
                     });
                 if let Some(reclaim_base) = reclaim_base {
+                    ptrs.retain(|record| record.ptr != reclaim_base);
+                    if ctable_reclaim_base.is_some() {
+                        if let Some(allocation) = allocation {
+                            ptrs.retain(|record| record.ptr != allocation.origin_base);
+                        }
+                        free_handle_blocks.retain(|record| record.handle != ctable_handle);
+                    }
                     *heap_cursor = reclaim_base;
                     ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(reclaim_base));
+                } else if let Some(allocation) = allocation {
+                    if let Some(index) = ptrs
+                        .iter()
+                        .position(|record| record.ptr == allocation.origin_base)
+                    {
+                        free_ptr_blocks.push(ptrs.remove(index));
+                    }
                 }
             }
             if *current_gworld == port {
@@ -21642,6 +21686,9 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
+                free_handle_blocks,
+                ptrs,
+                free_ptr_blocks,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 *current_gdevice,
@@ -48299,6 +48346,9 @@ fn ppc_new_gworld(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gdevice: u32,
@@ -48423,20 +48473,20 @@ fn ppc_new_gworld(
         return PPC_PARAM_ERR;
     }
 
-    let mut allocation_sizes = vec![pixel_allocation_size, PPC_PIXMAP_SIZE, 4];
-    if let Some(bytes) = ctable_bytes.as_ref() {
-        allocation_sizes.push(4);
-        allocation_sizes.push(u32::try_from(bytes.len()).unwrap_or(u32::MAX));
-    }
-    allocation_sizes.push(PPC_CGRAF_PORT_SIZE);
-    if !ppc_heap_can_alloc_sequence(*heap_cursor, heap_limit, &allocation_sizes) {
+    let raw_allocation_size = [
+        pixel_allocation_size,
+        PPC_PIXMAP_SIZE,
+        4,
+        PPC_CGRAF_PORT_SIZE,
+    ]
+    .into_iter()
+    .try_fold(0u32, |total, size| {
+        total.checked_add(ppc_allocation_size(size)?)
+    });
+    let Some(raw_allocation_size) = raw_allocation_size else {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return PPC_MEM_FULL_ERR;
-    }
-
-    let base_addr = ppc_heap_alloc(memory, heap_cursor, heap_limit, pixel_allocation_size, true);
-    let pixmap = ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_PIXMAP_SIZE, true);
-    let pixmap_handle = ppc_heap_alloc(memory, heap_cursor, heap_limit, 4, true);
+    };
     // Imaging With QuickDraw (1994), pp. 6-12 and 6-16--6-20: an
     // offscreen world owns a PixMap and associated ColorTable. noNewDevice
     // reuses the requested GDevice record, not its mutable ColorTable handle;
@@ -48444,9 +48494,33 @@ fn ppc_new_gworld(
     // pixels already rendered into the offscreen world.
     let ctable_handle = ctable_bytes
         .as_deref()
-        .map(|bytes| ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, bytes))
+        .map(|bytes| {
+            ppc_alloc_recyclable_handle_with_bytes(
+                memory,
+                heap_cursor,
+                heap_limit,
+                handles,
+                free_handle_blocks,
+                bytes,
+            )
+        })
         .unwrap_or(0);
-    let port = ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_CGRAF_PORT_SIZE, true);
+    // Keep all nonrelocatable GWorld storage in one tracked pointer block so
+    // DisposeGWorld can return a middle-of-heap allocation for later reuse.
+    // Allocate it after the relocatable color table so an otherwise-current
+    // world can still contract the bump heap when it is disposed.
+    let base_addr = ppc_alloc_ptr(
+        memory,
+        heap_cursor,
+        heap_limit,
+        ptrs,
+        free_ptr_blocks,
+        raw_allocation_size,
+        true,
+    );
+    let pixmap = base_addr.saturating_add(ppc_allocation_size(pixel_allocation_size).unwrap_or(0));
+    let pixmap_handle = pixmap.saturating_add(ppc_allocation_size(PPC_PIXMAP_SIZE).unwrap_or(0));
+    let port = pixmap_handle.saturating_add(ppc_allocation_size(4).unwrap_or(0));
     if base_addr == 0
         || pixmap == 0
         || pixmap_handle == 0
@@ -48454,6 +48528,17 @@ fn ppc_new_gworld(
         || port == 0
     {
         *last_mem_error = PPC_MEM_FULL_ERR;
+        if let Some(index) = ptrs.iter().position(|record| record.ptr == base_addr) {
+            free_ptr_blocks.push(ptrs.remove(index));
+        }
+        if let Some(index) = handles
+            .iter()
+            .position(|record| record.handle == ctable_handle && ctable_handle != 0)
+        {
+            let record = handles.remove(index);
+            let _ = memory.write_u32_be(record.handle, 0);
+            free_handle_blocks.push(record);
+        }
         return PPC_MEM_FULL_ERR;
     }
 
@@ -48495,7 +48580,7 @@ fn ppc_new_gworld(
             pixel_capacity: ppc_allocation_size(pixel_allocation_size)
                 .unwrap_or(pixel_allocation_size),
             ctable_handle,
-            allocation_end: *heap_cursor,
+            allocation_end: base_addr.saturating_add(raw_allocation_size),
         },
     );
     if ppc_gworld_trace_enabled() {
@@ -53215,6 +53300,9 @@ fn ppc_dsp_alt_buffer_new(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gdevice: u32,
@@ -53269,6 +53357,9 @@ fn ppc_dsp_alt_buffer_new(
         heap_limit,
         last_mem_error,
         handles,
+        free_handle_blocks,
+        ptrs,
+        free_ptr_blocks,
         gworlds,
         gworld_allocations,
         current_gdevice,
@@ -57607,13 +57698,23 @@ fn ppc_release_resource(
     // More Macintosh Toolbox Essentials (1993), pp. 1-22 and 1-107:
     // ReleaseResource frees the resource data and invalidates its handle so
     // the application heap can satisfy later allocations from that storage.
+    ppc_recycle_handle(memory, handles, free_handle_blocks, handle_states, handle);
+    record.handle = 0;
+    *last_resource_error = PPC_NO_ERR;
+}
+
+fn ppc_recycle_handle(
+    memory: &mut PpcSectionMem,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    handle: u32,
+) {
     if let Some(index) = handles.iter().position(|record| record.handle == handle) {
         free_handle_blocks.push(handles.remove(index));
     }
     ppc_forget_handle_state(handle, handle_states);
     let _ = memory.write_u32_be(handle, 0);
-    record.handle = 0;
-    *last_resource_error = PPC_NO_ERR;
 }
 
 fn ppc_detach_resource(
@@ -74109,17 +74210,48 @@ fn ppc_open_resource_path(
 
 fn ppc_close_res_file(
     cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
+    vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: &mut i16,
     last_resource_error: &mut i16,
 ) {
     let ref_num = cpu.gpr[3] as u16 as i16;
+    ppc_update_res_file(
+        cpu,
+        memory,
+        handles,
+        resource_files,
+        vfs_resource_files,
+        vfs_resources,
+        *current_resource_refnum,
+        last_resource_error,
+    );
+    if *last_resource_error != PPC_NO_ERR {
+        return;
+    }
+    // Inside Macintosh, Volume I (1985), p. I-115: CloseResFile updates the
+    // file, then calls ReleaseResource for every resource in that file.
+    // Detached resources have no associated record handle and remain owned by
+    // the application.
+    let resource_handles: Vec<u32> = vfs_resources
+        .iter()
+        .filter(|resource| resource.ref_num == ref_num && resource.handle != 0)
+        .map(|resource| resource.handle)
+        .collect();
+    for handle in resource_handles {
+        ppc_recycle_handle(memory, handles, free_handle_blocks, handle_states, handle);
+    }
     resource_files.retain(|file| file.ref_num != ref_num);
     for resource in vfs_resources
         .iter_mut()
         .filter(|resource| resource.ref_num == ref_num)
     {
+        resource.handle = 0;
         resource.ref_num = PPC_CLOSED_RESOURCE_REF_NUM;
     }
     if ref_num == *current_resource_refnum {
@@ -122904,6 +123036,70 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_dispose_gworld_reuses_non_tail_allocation() {
+        let pef = synthetic_pef_with_import(b"NewGWorld");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr = scratch;
+        let gworld_out_ptr = scratch + 8;
+        loaded.memory.add_region(scratch, vec![0; 16]);
+        ppc_write_rect(&mut loaded.memory, bounds_ptr, 0, 0, 70, 24).unwrap();
+        loaded.cpu.gpr[3] = gworld_out_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = bounds_ptr;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[8] = 1 << 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        let first_port = loaded.memory.read_u32_be(gworld_out_ptr).unwrap();
+        let first_base = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == first_port)
+            .unwrap()
+            .base_addr;
+
+        let retained = ppc_alloc_ptr(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.ptrs,
+            &mut loaded.free_ptr_blocks,
+            4096,
+            true,
+        );
+        assert_ne!(retained, 0);
+        let heap_cursor_with_retained_data = loaded.heap_cursor;
+
+        loaded.cpu.gpr[3] = first_port;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeGWorld);
+
+        assert_eq!(loaded.heap_cursor, heap_cursor_with_retained_data);
+        assert!(loaded
+            .free_ptr_blocks
+            .iter()
+            .any(|record| record.ptr == first_base));
+
+        loaded.cpu.gpr[3] = gworld_out_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = bounds_ptr;
+        loaded.cpu.gpr[6] = 0;
+        loaded.cpu.gpr[7] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[8] = 1 << 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
+        let second_port = loaded.memory.read_u32_be(gworld_out_ptr).unwrap();
+        let second_base = loaded
+            .gworlds
+            .iter()
+            .find(|record| record.port == second_port)
+            .unwrap()
+            .base_addr;
+
+        assert_eq!(second_base, first_base);
+        assert_eq!(loaded.heap_cursor, heap_cursor_with_retained_data);
+    }
+
+    #[test]
     fn hle_import_runner_update_then_dispose_preserves_unrelated_heap_tail() {
         const CLIP_PIX: u32 = 1 << 28;
 
@@ -131135,6 +131331,77 @@ mod tests {
         assert_eq!(loaded.cpu.gpr[3], handle);
         assert_eq!(loaded.handles.len(), 1);
         assert_eq!(loaded.heap_cursor, heap_cursor);
+    }
+
+    #[test]
+    fn hle_import_runner_close_res_file_recycles_loaded_resource_handles() {
+        let pef = synthetic_pef_with_import(b"Get1Resource");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let ref_num = PPC_FIRST_FILE_REF_NUM;
+        loaded.current_resource_refnum = ref_num;
+        loaded.resource_files.push(PpcResourceFileRecord {
+            ref_num,
+            path: "Frame.PICR".to_string(),
+        });
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num,
+            path: "Frame.PICR".to_string(),
+            res_type: u32::from_be_bytes(*b"PICT"),
+            res_id: 1016,
+            name: Vec::new(),
+            data: vec![0x5a; 11_160],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+        loaded.cpu.gpr[3] = u32::from_be_bytes(*b"PICT");
+        loaded.cpu.gpr[4] = 1016;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        let resource_handle = loaded.cpu.gpr[3];
+        let allocated_heap_cursor = loaded.heap_cursor;
+        assert_ne!(resource_handle, 0);
+        assert_eq!(loaded.vfs_resources[0].handle, resource_handle);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::CloseResFile;
+        loaded.cpu.gpr[3] = ref_num as u16 as u32;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert!(loaded.resource_files.is_empty());
+        assert_eq!(loaded.current_resource_refnum, 0);
+        assert_eq!(loaded.vfs_resources[0].ref_num, PPC_CLOSED_RESOURCE_REF_NUM);
+        assert_eq!(loaded.vfs_resources[0].handle, 0);
+        assert_eq!(loaded.memory.read_u32_be(resource_handle), Some(0));
+        assert!(!loaded
+            .handles
+            .iter()
+            .any(|record| record.handle == resource_handle));
+        assert!(loaded
+            .free_handle_blocks
+            .iter()
+            .any(|record| record.handle == resource_handle));
+        assert!(!loaded
+            .handle_states
+            .iter()
+            .any(|record| record.handle == resource_handle));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewHandle { clear: false };
+        loaded.cpu.gpr[3] = 11_000;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], resource_handle);
+        assert_eq!(loaded.heap_cursor, allocated_heap_cursor);
     }
 
     #[test]
