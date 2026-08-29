@@ -30,6 +30,7 @@ const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_slot_manager_operations.rs");
 const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_alias_dispatch_operations.rs");
+const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -43,6 +44,13 @@ fn alias_dispatch_operation_route(
         return None;
     }
     selector_operation_route(ALIAS_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn ppc_operation_route(trap_word: u16, selector: u32) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA0DD {
+        return None;
+    }
+    selector_operation_route(PPC_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -6052,10 +6060,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // PPC ($A0DD) — PPC Toolbox dispatch (inter-app communication)
-            // D0 = selector, A0 = parameter block.
-            // Inside Macintosh: Interapplication Communication (1993),
-            // pp. 7-39, 7-41 to 7-42, 7-57.
+            // PPC ($A0DD)
+            // Dispatches PPC Toolbox operations selected in D0.
+            // Register ABI: D0 = selector/result; parameter-block routines use A0.
+            // Inside Macintosh: Interapplication Communication (1993), pp. 11-50, 11-54.
             //
             // Systemless models the observable PPC Toolbox state:
             // selector $0000 (`PPCInit`) flips the init bit for
@@ -6064,7 +6072,10 @@ impl super::TrapDispatcher {
             // Selector $0000 and selector $000A are handled on both the
             // pre-init and post-init local paths.
             (false, 0x0DD) => {
-                let selector = cpu.read_reg(Register::D0) as u16;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = ppc_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector as u16;
                 let pb = cpu.read_reg(Register::A0);
                 let not_init_err = (-900i32) as u32;
 
@@ -16650,13 +16661,14 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        alias_dispatch_operation_route, quicktime_movie_metadata, slot_manager_operation_route,
-        AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND, AE_ERR_HANDLER_NOT_FOUND,
-        AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER, AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER,
-        AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS, AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR,
-        AE_KEY_KEY_DATA, AE_KEY_KEY_FORM, AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION,
-        AE_SEND_MODE_WAIT_REPLY, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER,
-        AE_TYPE_TYPE, AE_TYPE_WILDCARD, ALIAS_DISPATCH_OPERATION_ROUTES,
+        alias_dispatch_operation_route, ppc_operation_route, quicktime_movie_metadata,
+        slot_manager_operation_route, AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND,
+        AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER,
+        AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS,
+        AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA, AE_KEY_KEY_FORM,
+        AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION, AE_SEND_MODE_WAIT_REPLY,
+        AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER, AE_TYPE_TYPE,
+        AE_TYPE_WILDCARD, ALIAS_DISPATCH_OPERATION_ROUTES, PPC_OPERATION_ROUTES,
         SLOT_MANAGER_OPERATION_ROUTES, STANDARD_FILE_GET_DIALOG_HEIGHT,
         STANDARD_FILE_GET_DIALOG_WIDTH, STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT,
         STANDARD_FILE_GET_VOLUME_RECT,
@@ -17040,6 +17052,43 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(post_pb + IO_RESULT), 0);
         assert_eq!(bus.read_word(post_pb + ACTUAL_COUNT), 0);
+    }
+
+    #[test]
+    fn ppc_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(PPC_OPERATION_ROUTES.len(), 1);
+        assert!(PPC_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let init = ppc_operation_route(0xA0DD, 0x0000).expect("PPCInit route");
+        assert_eq!(init.routine_name, "PPCInit");
+        assert_eq!(
+            init.operation_id,
+            "selector-operation:_PPC:0x0000:d0-moveq-immediate:8"
+        );
+
+        assert!(ppc_operation_route(0xA1DD, 0x0000).is_none());
+        assert!(ppc_operation_route(0xA0DD, 0x7000).is_none());
+        assert!(ppc_operation_route(0xA0DD, 0x0001_0000).is_none());
+    }
+
+    #[test]
+    fn ppc_dispatch_records_ppcinit_and_rejects_unregistered_identity_forms() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 0x0000);
+        disp.dispatch(0xA0DD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(PPC_OPERATION_ROUTES[0].operation_id)
+        );
+
+        for (trap_word, selector) in [(0xA1DD, 0x0000), (0xA0DD, 0x7000), (0xA0DD, 0x0001_0000)] {
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(disp.current_selector_operation, None);
+        }
     }
 
     // Pack15 ($A831) — Picture Utilities
