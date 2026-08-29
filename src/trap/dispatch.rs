@@ -1229,6 +1229,21 @@ pub(crate) enum TrapTableProfile {
     PowerPc604,
 }
 
+/// Application-context portion of the writable Trap Manager topology.
+///
+/// The Process Manager saves process-specific system globals when it switches
+/// applications, and application-installed patches are available only while
+/// that application's context is active. Inside Macintosh: Processes (1994),
+/// pp. 1-3, 1-7--1-8, and 1-12. Keep the raw cells here rather than a decoded
+/// handler map: direct writes and protected daisy chains must round-trip
+/// without losing their guest-visible representation.
+pub(crate) struct TrapTableProcessContext {
+    profile: TrapTableProfile,
+    raw_entries: Vec<u32>,
+    pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
+    current_trap_caller: Option<u32>,
+}
+
 // Permanent come-from heads observed in the selected Mac OS 8.1 profiles.
 // Trap Manager APIs expose and replace the successor behind each head, while
 // the raw low-memory table continues to contain the head itself. IM:OSUtils
@@ -2114,16 +2129,20 @@ pub struct TrapDispatcher {
     /// Complete bitmap PICT captured by CopyBits during OpenPicture.
     pub(crate) recording_picture_bitmap: Option<Vec<u8>>,
     /// Pre-initialization mirror mapping a canonical trap word to a native 68K
-    /// handler. SetTrapAddress keeps it coherent for focused unit tests, but
-    /// initialized runners dispatch from the writable guest tables. Native
-    /// handlers execute as simulated JSR targets, allowing CRT-installed
-    /// LoadSeg, UnloadSeg, and ExitToShell patches to relocate code normally.
+    /// handler. SetTrapAddress keeps it coherent for focused unit tests. It is
+    /// cleared when a process table is activated; initialized runners dispatch
+    /// exclusively from writable guest cells. Native handlers execute as
+    /// simulated JSR targets, allowing CRT-installed LoadSeg, UnloadSeg, and
+    /// ExitToShell patches to relocate code normally.
     pub(crate) native_trap_table: TrapWordMap,
     /// Whether the selected profile's two raw trap tables have been written
     /// into guest low memory. Before application initialization, focused trap
     /// unit tests retain the host-map fallback; afterwards the guest longs are
     /// authoritative, including writes performed directly by native code.
     pub(crate) trap_tables_materialized: bool,
+    /// Machine profile belonging to the currently installed process table.
+    /// `None` means no application trap context is active.
+    pub(crate) trap_table_profile: Option<TrapTableProfile>,
     /// Original calls retained for each active native trap handler. The value
     /// is a LIFO stack because a patch can re-enter the same A-line trap before
     /// the outer invocation follows its saved daisy-chain link. Inside
@@ -3453,6 +3472,7 @@ impl TrapDispatcher {
             recording_picture_bitmap: None,
             native_trap_table: TrapWordMap::default(),
             trap_tables_materialized: false,
+            trap_table_profile: None,
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
@@ -6422,14 +6442,7 @@ impl TrapDispatcher {
     /// patch. Its first four bytes are the Trap Manager signature
     /// `$60064EF9`: normal entry branches around the exit JMP to a minimal
     /// patch body, which then branches back to that same logical successor.
-    fn create_trap_come_from_head(&mut self, bus: &mut MacMemoryBus, trap_word: u16) -> u32 {
-        let canonical = Self::canonical_trap_word(trap_word);
-        let successor = self
-            .native_trap_table
-            .get(&canonical)
-            .copied()
-            .or_else(|| self.default_trap_gateway(canonical))
-            .expect("trap gateway must exist before its come-from head");
+    fn create_trap_come_from_head(&mut self, bus: &mut MacMemoryBus, successor: u32) -> u32 {
         let head = bus.alloc_synthetic(10);
         bus.write_readonly_code_word(head, 0x6006); // BRA.S patch body
         bus.write_readonly_code_word(head + 2, 0x4EF9); // exit JMP absolute
@@ -6437,6 +6450,124 @@ impl TrapDispatcher {
         bus.write_readonly_code_word(head + 8, 0x60F8); // patch body: BRA.S exit JMP
         bus.protect_readonly_code(head, 10);
         head
+    }
+
+    /// Create an inactive, profile-complete table for a new process.
+    /// Permanent come-from heads belong to this context, while callable
+    /// gateways remain system-owned and may be shared by every process.
+    pub(crate) fn create_trap_table_process_context(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        profile: TrapTableProfile,
+    ) -> TrapTableProcessContext {
+        let mut raw_entries =
+            Vec::with_capacity(usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS));
+        let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
+        for slot in 0..OS_TRAP_TABLE_SLOTS {
+            let trap_word = 0xA000 | slot;
+            let default = if profile.unimplemented_traps().contains(&trap_word) {
+                self.os_trap_trampolines
+                    .insert(trap_word, unimplemented_gateway);
+                unimplemented_gateway
+            } else {
+                self.get_or_create_os_trap_trampoline(bus, trap_word)
+            };
+            raw_entries.push(
+                self.native_trap_table
+                    .get(&trap_word)
+                    .copied()
+                    .unwrap_or(default),
+            );
+        }
+        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+            let trap_word = 0xA800 | slot;
+            let default = if profile.unimplemented_traps().contains(&trap_word) {
+                self.tool_trap_trampolines
+                    .insert(trap_word, unimplemented_gateway);
+                unimplemented_gateway
+            } else {
+                self.get_or_create_tool_trap_trampoline(bus, trap_word)
+            };
+            raw_entries.push(
+                self.native_trap_table
+                    .get(&trap_word)
+                    .copied()
+                    .unwrap_or(default),
+            );
+        }
+        for &trap_word in profile.come_from_traps() {
+            let index = if (trap_word & 0x0800) != 0 {
+                usize::from(OS_TRAP_TABLE_SLOTS + (trap_word & 0x03FF))
+            } else {
+                usize::from(trap_word & 0x00FF)
+            };
+            raw_entries[index] = self.create_trap_come_from_head(bus, raw_entries[index]);
+        }
+        TrapTableProcessContext {
+            profile,
+            raw_entries,
+            pending_native_trap_calls: HashMap::new(),
+            current_trap_caller: None,
+        }
+    }
+
+    /// Save the active application's trap context and restore another one.
+    /// The returned context owns the exact raw cells and in-flight native
+    /// patch frames of the process that was switched out.
+    pub(crate) fn switch_trap_table_process_context(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        incoming: TrapTableProcessContext,
+    ) -> Option<TrapTableProcessContext> {
+        let outgoing = self.trap_table_profile.map(|profile| {
+            let mut raw_entries =
+                Vec::with_capacity(usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS));
+            for slot in 0..OS_TRAP_TABLE_SLOTS {
+                raw_entries.push(bus.read_long(OS_TRAP_TABLE_BASE + u32::from(slot) * 4));
+            }
+            for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+                raw_entries.push(bus.read_long(TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4));
+            }
+            TrapTableProcessContext {
+                profile,
+                raw_entries,
+                pending_native_trap_calls: std::mem::take(&mut self.pending_native_trap_calls),
+                current_trap_caller: self.current_trap_caller.take(),
+            }
+        });
+
+        debug_assert_eq!(
+            incoming.raw_entries.len(),
+            usize::from(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS)
+        );
+        let toolbox_offset = usize::from(OS_TRAP_TABLE_SLOTS);
+        for slot in 0..OS_TRAP_TABLE_SLOTS {
+            bus.write_long(
+                OS_TRAP_TABLE_BASE + u32::from(slot) * 4,
+                incoming.raw_entries[usize::from(slot)],
+            );
+        }
+        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
+            bus.write_long(
+                TOOLBOX_TRAP_TABLE_BASE + u32::from(slot) * 4,
+                incoming.raw_entries[toolbox_offset + usize::from(slot)],
+            );
+        }
+        self.pending_native_trap_calls = incoming.pending_native_trap_calls;
+        self.current_trap_caller = incoming.current_trap_caller;
+        self.trap_table_profile = Some(incoming.profile);
+        self.trap_tables_materialized = true;
+        self.native_trap_table = TrapWordMap::default();
+        outgoing
+    }
+
+    /// Discard the active application's trap context during process teardown.
+    pub(crate) fn teardown_trap_table_process_context(&mut self) {
+        self.native_trap_table = TrapWordMap::default();
+        self.pending_native_trap_calls.clear();
+        self.current_trap_caller = None;
+        self.trap_table_profile = None;
+        self.trap_tables_materialized = false;
     }
 
     /// Materialize the selected machine profile's complete raw Trap Manager
@@ -6448,44 +6579,8 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
     ) {
-        let unimplemented_gateway = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
-        for slot in 0..OS_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA000 | slot;
-            let default = if profile.unimplemented_traps().contains(&trap_word) {
-                self.os_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_os_trap_trampoline(bus, trap_word)
-            };
-            let entry = self
-                .native_trap_table
-                .get(&trap_word)
-                .copied()
-                .unwrap_or(default);
-            bus.write_long(Self::raw_trap_table_entry(trap_word), entry);
-        }
-        for slot in 0..TOOLBOX_TRAP_TABLE_SLOTS {
-            let trap_word = 0xA800 | slot;
-            let default = if profile.unimplemented_traps().contains(&trap_word) {
-                self.tool_trap_trampolines
-                    .insert(trap_word, unimplemented_gateway);
-                unimplemented_gateway
-            } else {
-                self.get_or_create_tool_trap_trampoline(bus, trap_word)
-            };
-            let entry = self
-                .native_trap_table
-                .get(&trap_word)
-                .copied()
-                .unwrap_or(default);
-            bus.write_long(Self::raw_trap_table_entry(trap_word), entry);
-        }
-        for &trap_word in profile.come_from_traps() {
-            let head = self.create_trap_come_from_head(bus, trap_word);
-            bus.write_long(Self::raw_trap_table_entry(trap_word), head);
-        }
-        self.trap_tables_materialized = true;
+        let context = self.create_trap_table_process_context(bus, profile);
+        let _ = self.switch_trap_table_process_context(bus, context);
     }
 
     /// Return the logical address currently selected by a materialized raw
@@ -6543,26 +6638,26 @@ impl TrapDispatcher {
         } else {
             None
         };
-        if self.default_trap_gateway(canonical) == Some(handler)
-            || (handler & 0xFFFF_0000) == 0x00F0_0000
-        {
-            self.native_trap_table.remove(&canonical);
-        } else {
-            self.native_trap_table.insert(canonical, handler);
-        }
         if self.trap_tables_materialized {
-            let entry = self
-                .native_trap_table
-                .get(&canonical)
-                .copied()
-                .or_else(|| self.default_trap_gateway(canonical))
-                .unwrap_or(handler);
+            let entry = if self.default_trap_gateway(canonical) == Some(handler)
+                || (handler & 0xFFFF_0000) == 0x00F0_0000
+            {
+                self.default_trap_gateway(canonical).unwrap_or(handler)
+            } else {
+                handler
+            };
             let raw_entry = Self::raw_trap_table_entry(canonical);
             if let Some(last_head) = protected_tail {
                 Self::write_readonly_code_long(bus, last_head + 4, entry);
             } else {
                 bus.write_long(raw_entry, entry);
             }
+        } else if self.default_trap_gateway(canonical) == Some(handler)
+            || (handler & 0xFFFF_0000) == 0x00F0_0000
+        {
+            self.native_trap_table.remove(&canonical);
+        } else {
+            self.native_trap_table.insert(canonical, handler);
         }
     }
 
@@ -7633,6 +7728,99 @@ mod tests {
             }
             assert_eq!(observed, expected);
         }
+    }
+
+    #[test]
+    fn process_switch_restores_raw_trap_topology_and_native_call_frames() {
+        let (mut dispatcher, _cpu, mut bus) = setup();
+        let protected_word = 0xA823;
+        let direct_word = 0xA975;
+        let protected_entry = TrapDispatcher::raw_trap_table_entry(protected_word);
+        let direct_entry = TrapDispatcher::raw_trap_table_entry(direct_word);
+        let first_protected_patch = 0x0021_0000;
+        let first_direct_patch = 0x0021_1000;
+        let second_protected_patch = 0x0022_0000;
+        let second_direct_patch = 0x0022_1000;
+
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        let first_head = bus.read_long(protected_entry);
+        dispatcher.install_trap_address(&mut bus, protected_word, first_protected_patch);
+        bus.write_long(direct_entry, first_direct_patch);
+        dispatcher.pending_native_trap_calls.insert(
+            0xA039,
+            vec![NativeTrapCallState {
+                return_pc: 0x0023_0000,
+                argument_sp: 0x003F_FF00,
+                preserved_d_regs: [1; 5],
+                preserved_a_regs: [2; 5],
+            }],
+        );
+        dispatcher.current_trap_caller = Some(0x0023_1000);
+
+        let fresh_second =
+            dispatcher.create_trap_table_process_context(&mut bus, TrapTableProfile::PowerPc604);
+        let first_context = dispatcher
+            .switch_trap_table_process_context(&mut bus, fresh_second)
+            .expect("first process context must be saved");
+        let second_head = bus.read_long(protected_entry);
+        assert_ne!(second_head, first_head);
+        assert_eq!(
+            dispatcher.trap_table_profile,
+            Some(TrapTableProfile::PowerPc604)
+        );
+        assert!(!dispatcher.has_native_trap_patch(&bus, protected_word));
+        assert!(!dispatcher.has_native_trap_patch(&bus, direct_word));
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+        assert_eq!(dispatcher.current_trap_caller, None);
+
+        dispatcher.install_trap_address(&mut bus, protected_word, second_protected_patch);
+        bus.write_long(direct_entry, second_direct_patch);
+        dispatcher.pending_native_trap_calls.insert(
+            0xA975,
+            vec![NativeTrapCallState {
+                return_pc: 0x0024_0000,
+                argument_sp: 0x003F_FE00,
+                preserved_d_regs: [3; 5],
+                preserved_a_regs: [4; 5],
+            }],
+        );
+        dispatcher.current_trap_caller = Some(0x0024_1000);
+
+        let second_context = dispatcher
+            .switch_trap_table_process_context(&mut bus, first_context)
+            .expect("second process context must be saved");
+        assert_eq!(
+            dispatcher.trap_table_profile,
+            Some(TrapTableProfile::M68k68040)
+        );
+        assert_eq!(bus.read_long(protected_entry), first_head);
+        assert_eq!(
+            dispatcher.trap_table_address(&bus, protected_word),
+            Some(first_protected_patch)
+        );
+        assert_eq!(bus.read_long(direct_entry), first_direct_patch);
+        assert!(dispatcher.pending_native_trap_calls.contains_key(&0xA039));
+        assert!(!dispatcher.pending_native_trap_calls.contains_key(&0xA975));
+        assert_eq!(dispatcher.current_trap_caller, Some(0x0023_1000));
+
+        let _first_context = dispatcher
+            .switch_trap_table_process_context(&mut bus, second_context)
+            .expect("restored first context must be saved again");
+        assert_eq!(bus.read_long(protected_entry), second_head);
+        assert_eq!(
+            dispatcher.trap_table_address(&bus, protected_word),
+            Some(second_protected_patch)
+        );
+        assert_eq!(bus.read_long(direct_entry), second_direct_patch);
+        assert!(dispatcher.pending_native_trap_calls.contains_key(&0xA975));
+        assert!(!dispatcher.pending_native_trap_calls.contains_key(&0xA039));
+        assert_eq!(dispatcher.current_trap_caller, Some(0x0024_1000));
+
+        dispatcher.teardown_trap_table_process_context();
+        assert!(!dispatcher.trap_tables_materialized);
+        assert_eq!(dispatcher.trap_table_profile, None);
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+        assert_eq!(dispatcher.current_trap_caller, None);
     }
 
     #[test]

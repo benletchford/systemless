@@ -3404,6 +3404,7 @@ impl FixtureRunner {
         replacement.audio = self.audio.take();
         replacement.audio_buffer = std::mem::take(&mut self.audio_buffer);
 
+        self.dispatcher.teardown_trap_table_process_context();
         eprintln!("[LAUNCH] Switched foreground application to {normalized}");
         *self = replacement;
         Ok(())
@@ -13316,6 +13317,9 @@ mod tests {
 
         let app = runner.load_app(&current_fork).expect("load current app");
         runner.init_app(&app);
+        let tick_count_entry = crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE + 0x175 * 4;
+        runner.bus.write_long(tick_count_entry, 0x0020_1000);
+        assert!(runner.dispatcher.has_native_trap_patch(&runner.bus, 0xA975));
         runner.bus.write_long(addr::TICKS, 1234);
         runner.bus.write_long(addr::TIME, 0x1020_3040);
         runner.bus.write_long(addr::RND_SEED, 0x89AB_CDEF);
@@ -13349,6 +13353,10 @@ mod tests {
         );
         assert_eq!(runner.bus.read_long(addr::TIME), 0x1020_3040);
         assert_eq!(runner.bus.read_long(addr::RND_SEED), 0x89AB_CDEF);
+        assert!(
+            !runner.dispatcher.has_native_trap_patch(&runner.bus, 0xA975),
+            "application trap patches must be torn down at a foreground launch"
+        );
         let cur_ap_len = runner.bus.read_byte(addr::CUR_APNAME) as usize;
         let cur_ap_name = String::from_utf8(
             (0..cur_ap_len)
