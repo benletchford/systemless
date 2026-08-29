@@ -6700,6 +6700,10 @@ impl FixtureRunner {
         }
         self.cpu.write_reg(Register::PC, resume.return_pc);
         self.cpu.write_reg(Register::A7, resume.final_sp);
+        // A native RoutineDescriptor can be the head of a raw A-line patch.
+        // Mixed Mode resumes at the synthesized JSR continuation directly,
+        // so retire that Trap Manager frame before the next 68k instruction.
+        self.dispatcher.retire_returned_native_trap_call(&self.cpu);
         true
     }
 
@@ -14136,6 +14140,153 @@ mod tests {
             Some(ARGUMENT + 7)
         );
         assert_eq!(ppc_app.memory.read_u32_be(ppc_app.cpu.gpr[1]), Some(0));
+    }
+
+    #[test]
+    fn raw_os_trap_patch_can_execute_a_native_routine_descriptor() {
+        use crate::guest_call::{GuestCallTarget, M68kRegisterState, M68kResultSource};
+        use crate::guest_procedure::{
+            GuestIsa, ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_M68K_ISA, ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, ROUTINE_RECORD_SIZE,
+        };
+        use crate::mixed_mode::proc_info;
+
+        const TRAP: u16 = 0xA11E; // NewPtr
+        const BYTE_COUNT: u32 = 0x1234;
+        const DESCRIPTOR: u32 = 0x0301_0000;
+        const TVECTOR: u32 = 0x0301_0100;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const M68K_FALLBACK: u32 = 0x0301_0200;
+        const M68K_ENTRY: u32 = 0x0301_0300;
+        const M68K_STACK: u32 = 0x0302_0000;
+        const INITIAL_SP: u32 = M68K_STACK + 0x80;
+        const RETURN_PC: u32 = 0x0302_0100;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+        ppc_app
+            .memory
+            .add_region(CALLBACK, 0x4e80_0020u32.to_be_bytes().to_vec()); // blr
+        ppc_app.memory.add_region(DESCRIPTOR, vec![0; 0x400]);
+        ppc_app.memory.add_region(M68K_STACK, vec![0; 0x200]);
+        ppc_app
+            .memory
+            .write_u16_be(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        ppc_app.memory.write_u16_be(DESCRIPTOR + 10, 1).unwrap();
+
+        // NewPtr's documented register-based ProcInfo passes the actual trap
+        // word from D1 first, then the allocation size from D0, and returns
+        // the pointer in A0. Inside Macintosh: PowerPC System Software (1994),
+        // pp. 1-67--1-68, Listing 1-14.
+        let proc_info = proc_info::REGISTER_BASED
+            | (proc_info::SIZE_FOUR << proc_info::RESULT_SIZE_PHASE)
+            | (4 << proc_info::REGISTER_RESULT_LOCATION_PHASE)
+            | (6 << proc_info::REGISTER_PARAMETER_PHASE)
+            | (3 << (proc_info::REGISTER_PARAMETER_PHASE + proc_info::REGISTER_PARAMETER_WIDTH));
+        let m68k_record = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        ppc_app.memory.write_u32_be(m68k_record, proc_info).unwrap();
+        ppc_app
+            .memory
+            .write_u8(
+                m68k_record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_M68K_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(
+                m68k_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                M68K_FALLBACK,
+            )
+            .unwrap();
+        let native_record = m68k_record + ROUTINE_RECORD_SIZE;
+        ppc_app
+            .memory
+            .write_u32_be(native_record, proc_info)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(
+                native_record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_POWERPC_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(
+                native_record + ROUTINE_RECORD_FLAGS_OFFSET,
+                ROUTINE_FLAG_USE_NATIVE_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(
+                native_record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+                TVECTOR,
+            )
+            .unwrap();
+        ppc_app.memory.write_u32_be(TVECTOR, CALLBACK).unwrap();
+        ppc_app.memory.write_u32_be(TVECTOR + 4, 0).unwrap();
+        ppc_app.memory.write_u16_be(M68K_FALLBACK, 0x4e75).unwrap();
+        ppc_app.memory.write_u16_be(M68K_ENTRY, TRAP).unwrap();
+        ppc_app.memory.write_u16_be(M68K_ENTRY + 2, 0x4e75).unwrap();
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        let mut registers = M68kRegisterState::default();
+        registers.data[0] = BYTE_COUNT;
+        registers.data[1] = 0xdead_beef;
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: M68K_ENTRY,
+                rtoc: 0,
+            },
+            M68K_ENTRY,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 4,
+            registers,
+            Some(M68kResultSource::Address(0)),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, TRAP, DESCRIPTOR);
+
+        let (m68k_steps, m68k_running) = runner.run_steps(2, None);
+        assert!(m68k_steps > 0);
+        assert!(m68k_running);
+        let pending = runner
+            .dispatcher
+            .guest_calls
+            .pending_powerpc_from_m68k()
+            .expect("native record should be pending");
+        assert_eq!(pending.arguments.as_slice(), &[u32::from(TRAP), BYTE_COUNT]);
+
+        let (steps, running) = runner.run_steps(64, None);
+
+        assert!(steps > 0);
+        assert!(running);
+        assert!(!runner.is_halted());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(ppc_app.cpu.gpr[3], u32::from(TRAP));
     }
 
     #[test]

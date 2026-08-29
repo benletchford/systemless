@@ -7235,6 +7235,13 @@ impl TrapDispatcher {
                 || saved_tool_daisy_chain_call);
         if !default_os_gateway_call && !default_tool_gateway_call {
             if let Some(handler_addr) = self.native_trap_handler(bus, base_trap) {
+                if !is_tool {
+                    // The OS Trap Dispatcher passes the actual A-line word in
+                    // D1 so a register-based native patch can distinguish trap
+                    // variants. Inside Macintosh: PowerPC System Software
+                    // (1994), pp. 1-67--1-68, Listing 1-14.
+                    cpu.write_reg(Register::D1, u32::from(trap));
+                }
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
