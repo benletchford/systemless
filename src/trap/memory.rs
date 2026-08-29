@@ -27,6 +27,8 @@ const SERIAL_POWER_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_serial_power_operations.rs");
 const SCSI_ATOMIC_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_scsi_atomic_operations.rs");
+const DEBUG_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_debug_util_operations.rs");
 
 fn memory_dispatch_operation_route(
     trap_word: u16,
@@ -70,6 +72,16 @@ fn scsi_atomic_operation_route(
         return None;
     }
     selector_operation_route(SCSI_ATOMIC_OPERATION_ROUTES, selector)
+}
+
+fn debug_util_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA08D {
+        return None;
+    }
+    selector_operation_route(DEBUG_UTIL_OPERATION_ROUTES, selector)
 }
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
@@ -3488,60 +3500,29 @@ impl super::TrapDispatcher {
             }
 
             // DebugUtil ($A08D)
-            // Debug utility selector-dispatch trap.
-            // Inside Macintosh Volume VI (1991), pp. 28-30..28-31; and
-            // Appendix C table C-3 (p. C-4) selector map:
-            //     | Selector | Routine             |
-            //     | $0000    | DebuggerGetMax      |
-            //     | $0001    | DebuggerEnter       |
-            //     | $0002    | DebuggerExit        |
-            //     | $0003    | DebuggerPoll        |
-            //     | $0004    | GetPageState        |
-            //     | $0005    | PageFaultFatal      |
-            //     | $0006    | DebuggerLockMemory  |
-            //     | $0007    | DebuggerUnlockMemory|
-            //     | $0008    | EnterSupervisorMode |
-            //
-            // Register convention:
-            //     D0 entry: selector (and selector-specific arg for some)
-            //     D0 exit:  result code or selector-specific return value
-            //     A0/A1 entry: selector-specific args (e.g. address)
-            // No Pascal stack frame is consumed and no result slot is
-            // allocated.
-            //
-            // MPW Universal Headers (MacMemory.h) expose each selector as
-            // a separate TWOWORDINLINE thunk, e.g.
-            //   EXTERN_API( long )
-            //   DebuggerGetMax(void) TWOWORDINLINE(0x7000, 0xA08D);
-            // which inlines "MOVEQ #0,D0" followed by the trap word.
-            //
-            // Systemless HLE models the safe selector-query path for
-            // DebuggerGetMax ($0000): it returns the highest documented
-            // selector number without entering the debugger, mutating
-            // page state, or changing supervisor mode. The other
-            // documented helper selectors are modelled as safe no-ops
-            // that still preserve the register-only OS-bit-trap calling
-            // convention (stack discipline).
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::debugutil_debuggergetmax_returns_max_selector_and_preserves_stack_pointer
-            //   src/trap/memory.rs::tests::debugutil_other_selectors_preserve_non_d0_registers
-            //   src/trap/memory.rs::tests::debugutil_five_call_composition_preserves_stack_across_documented_selectors
-            //   src/trap/memory.rs::tests::debugutil_debuggerpoll_five_call_composition_preserves_stack_across_repeated_selector_three_calls
-            (false, 0x8D) => match cpu.read_reg(Register::D0) {
-                0 => {
-                    cpu.write_reg(Register::D0, 8);
-                    Ok(())
+            // Dispatches virtual-memory debugger support routines selected in D0.
+            // FUNCTION DebuggerGetMax: LongInt;
+            // Inside Macintosh: Memory (1992), pp. 3-34 to 3-40.
+            (false, 0x8D) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = debug_util_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+
+                match raw_selector {
+                    0 => {
+                        cpu.write_reg(Register::D0, 8);
+                        Ok(())
+                    }
+                    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 => {
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    _ => {
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
                 }
-                1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 => {
-                    cpu.write_reg(Register::D0, 0);
-                    Ok(())
-                }
-                _ => {
-                    cpu.write_reg(Register::D0, 0);
-                    Ok(())
-                }
-            },
+            }
 
             // NMInstall ($A05E)
             // Installs a notification request.
@@ -8259,6 +8240,59 @@ mod tests {
             sp_before,
             "CommToolboxDispatch should preserve the caller stack pointer for the three-item dialog"
         );
+    }
+
+    #[test]
+    fn debug_util_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::DEBUG_UTIL_OPERATION_ROUTES.len(), 9);
+        assert!(super::DEBUG_UTIL_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0, "DebuggerGetMax"),
+            (1, "DebuggerEnter"),
+            (2, "DebuggerExit"),
+            (3, "DebuggerPoll"),
+            (4, "GetPageState"),
+            (5, "PageFaultFatal"),
+            (6, "DebuggerLockMemory"),
+            (7, "DebuggerUnlockMemory"),
+            (8, "EnterSupervisorMode"),
+        ] {
+            let route =
+                super::debug_util_operation_route(0xA08D, selector).expect("DebugUtil route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA18D, 0),
+            (0xA08D, 9),
+            (0xA08D, 0x0000_7000),
+            (0xA08D, 0x0001_0000),
+        ] {
+            assert!(super::debug_util_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn debug_util_dispatch_records_fixed_routes_only() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        for route in super::DEBUG_UTIL_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA08D, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for selector in [9, 0x0000_7000, 0x0001_0000] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA08D, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     #[test]
