@@ -25,6 +25,8 @@ const IDLE_STATE_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_idle_state_operations.rs");
 const SERIAL_POWER_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_serial_power_operations.rs");
+const SCSI_ATOMIC_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_scsi_atomic_operations.rs");
 
 fn memory_dispatch_operation_route(
     trap_word: u16,
@@ -58,6 +60,16 @@ fn power_control_operation_route(
         _ => return None,
     };
     selector_operation_route(routes, selector)
+}
+
+fn scsi_atomic_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA089 {
+        return None;
+    }
+    selector_operation_route(SCSI_ATOMIC_OPERATION_ROUTES, selector)
 }
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
@@ -3304,19 +3316,14 @@ impl super::TrapDispatcher {
             }
 
             // SCSIAtomic ($A089)
-            // SCSI Manager 4.3 dispatch.
-            // Inside Macintosh: Devices (1994), pp. 4-49 to 4-50.
-            // Systemless models the SCSIGetVirtualIDInfo branch used by
-            // SCSIAtomic: the request header must be well formed, the
-            // nominal missing-ID lookup returns noErr / scsiExists =
-            // false, and malformed headers are rejected before the
-            // lookup path with scsiQLinkInvalid / scsiPBLengthError /
-            // scsiRequestInvalid.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::scsiaction_scsigetvirtualidinfo_missing_virtual_id_clears_exists_and_preserves_stack
-            // SCSIAtomic ($A089): selector $0001 (SCSIAction) / SCSIGetVirtualIDInfo virtual-ID lookup, no virtual bus -> noErr + scsiExists false
+            // Dispatches SCSI Manager 4.3 client and XPT operations selected in D0.
+            // FUNCTION SCSIAction (scsiPB: SCSI_PBPtr): OSErr;
+            // Inside Macintosh: Devices (1994), pp. 4-38 to 4-39 and 4-54 to 4-58.
             (false, 0x89) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = scsi_atomic_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+
                 const SCSI_PB_Q_LINK_OFFSET: u32 = 0;
                 const SCSI_PB_LENGTH_OFFSET: u32 = 6;
                 const SCSI_PB_FUNCTION_CODE_OFFSET: u32 = 8;
@@ -5154,6 +5161,57 @@ mod tests {
             0x1234_5678,
             0x10,
         );
+    }
+
+    #[test]
+    fn scsi_atomic_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::SCSI_ATOMIC_OPERATION_ROUTES.len(), 5);
+        assert!(super::SCSI_ATOMIC_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (1, "SCSIAction"),
+            (2, "SCSIRegisterBus"),
+            (3, "SCSIDeregisterBus"),
+            (4, "SCSIReregisterBus"),
+            (5, "SCSIKillXPT"),
+        ] {
+            let route = super::scsi_atomic_operation_route(0xA089, selector)
+                .expect("fixed SCSIAtomic route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA189, 1),
+            (0xA089, 0),
+            (0xA089, 6),
+            (0xA089, 0x0000_7001),
+            (0xA089, 0x0001_0001),
+        ] {
+            assert!(super::scsi_atomic_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn scsi_atomic_dispatch_records_fixed_routes_only() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A0, 0);
+
+        for route in super::SCSI_ATOMIC_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA089, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for selector in [0, 6, 0x0000_7001, 0x0001_0001] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA089, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     #[test]
