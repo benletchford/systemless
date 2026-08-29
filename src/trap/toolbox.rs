@@ -15796,27 +15796,22 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // MixedModeDispatch ($AA59) — Mixed Mode Manager
-            // Inside Macintosh: PowerPC System Software 1994
-            // (PPC SS 1994 line 2774: `_MixedModeMagic` is the
-            // mixed-mode A-trap that bridges 68K → PowerPC and
-            // PowerPC → 68K calls through Universal Procedure
-            // Pointers). Selector convention: A0 = UniversalProcPtr
-            // record; D0 = routine number for some MMM-internal
-            // services (CallUniversalProc / NewRoutineDescriptor /
-            // DisposeRoutineDescriptor).
-            // No documented Gestalt selector — MMM presence is
-            // implied by gestaltCFMAttr (CFM and MMM ship together).
-            //
-            // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. Systemless is a 68K-only HLE,
-            // so any MMM call (a PPC-side caller transitioning back
-            // to 68K) is unreachable in practice.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::mixedmodedispatch_returns_noerr_and_preserves_stack_pointer
-            // MixedModeDispatch ($AA59): PPC SS 1994 ch.7 2774 (`_MixedModeMagic`). A0=UPP record, D0 selector. No Gestalt — implied by 'cfrg'. HLE: D0=0, registers + stack preserved (68K-only HLE, MMM unreachable).
+            // MixedModeDispatch ($AA59)
+            // Dispatches private Mixed Mode Manager services; this is distinct
+            // from the executable `$AAFE` word in a RoutineDescriptor.
+            // (private dispatcher; selector ABI remains unclassified)
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-4--2-8.
             (true, 0x259) => return_noerr(cpu),
+
+            // goMixedModeTrap ($AAFE)
+            // Enters the Mixed Mode Manager through the executable first word
+            // of a RoutineDescriptor and selects its architecture record.
+            // (private executable RoutineDescriptor entry; no Pascal signature)
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-8--2-12
+            // and 2-37--2-38.
+            (true, 0x2FE) => {
+                crate::mixed_mode::enter_m68k_routine_descriptor(cpu, bus, &self.guest_calls)
+            }
 
             // CodeFragmentDispatch ($AA5A) — Code Fragment Manager
             // Inside Macintosh: PowerPC System Software 1994

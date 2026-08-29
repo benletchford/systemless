@@ -6179,6 +6179,16 @@ impl FixtureRunner {
             cycles_per_tick,
             cycles_per_tick.saturating_sub(remaining_cycles),
         );
+        if ppc_app.guest_calls.pending_powerpc_from_m68k().is_some()
+            && ppc_app.activate_powerpc_from_m68k().is_none()
+        {
+            self.halted = true;
+            self.halted_pc = Some(self.cpu.read_reg(Register::PC));
+            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+            self.ppc_app = Some(ppc_app);
+            return (0, false);
+        }
         if ppc_app.guest_calls.has_m68k_execution() {
             let (mixed_steps, running) = self
                 .run_pending_m68k_guest_call(&mut ppc_app, ppc_max_steps)
@@ -6219,9 +6229,15 @@ impl FixtureRunner {
         };
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
+        let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
         let mixed_mode_budget =
             ppc_max_steps.saturating_sub(usize::try_from(ppc_cycles).unwrap_or(usize::MAX));
-        let mixed_mode = self.run_pending_m68k_guest_call(&mut ppc_app, mixed_mode_budget);
+        let mixed_mode = if resumed_m68k {
+            self.run_pending_m68k_guest_call(&mut ppc_app, mixed_mode_budget)
+                .or(Some((0, true)))
+        } else {
+            self.run_pending_m68k_guest_call(&mut ppc_app, mixed_mode_budget)
+        };
         let mixed_mode_cycles = mixed_mode.map_or(0, |(cycles, _)| cycles as u64);
         let cycles = ppc_cycles.saturating_add(mixed_mode_cycles);
         let pc = ppc_app.cpu.pc;
@@ -6542,6 +6558,9 @@ impl FixtureRunner {
                         running = false;
                         break;
                     }
+                    if ppc_app.guest_calls.has_powerpc_from_m68k() {
+                        break;
+                    }
                 }
                 BatchExit::WatchedPc { .. } => continue,
                 BatchExit::Stopped
@@ -6556,6 +6575,58 @@ impl FixtureRunner {
         }
         self.bus.detach_guest_address_space();
         Some((executed, running))
+    }
+
+    fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
+        use crate::guest_call::M68kResultTarget;
+
+        let Some(resume) = ppc_app.guest_calls.take_m68k_resume() else {
+            return false;
+        };
+        let mask_value = |value: u32, size: u8| match size {
+            1 => Some(value & 0xff),
+            2 => Some(value & 0xffff),
+            4 => Some(value),
+            _ => None,
+        };
+        let result_applied = match resume.result {
+            None => true,
+            Some(M68kResultTarget::Data { index, size }) => mask_value(resume.powerpc.gpr3, size)
+                .is_some_and(|value| {
+                    self.cpu.core.set_d(usize::from(index), value);
+                    true
+                }),
+            Some(M68kResultTarget::Address { index, size }) => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| {
+                    self.cpu.core.set_a(usize::from(index), value);
+                    true
+                })
+            }
+            Some(M68kResultTarget::Ccr { mask }) => {
+                // Native return values always arrive in R3; Mixed Mode then
+                // copies that value to the ProcInfo-selected 68k destination,
+                // including a CCR bit. Inside Macintosh: PowerPC System
+                // Software (1994), pp. 2-10--2-12.
+                let set = resume.powerpc.gpr3 != 0;
+                let ccr = (self.cpu.core.get_ccr() & !mask) | if set { mask } else { 0 };
+                self.cpu.core.set_ccr(ccr);
+                true
+            }
+            Some(M68kResultTarget::Memory { address, size }) => {
+                mask_value(resume.powerpc.gpr3, size).is_some_and(|value| match size {
+                    1 => ppc_app.memory.write_u8(address, value as u8).is_some(),
+                    2 => ppc_app.memory.write_u16_be(address, value as u16).is_some(),
+                    4 => ppc_app.memory.write_u32_be(address, value).is_some(),
+                    _ => false,
+                })
+            }
+        };
+        if !result_applied {
+            return false;
+        }
+        self.cpu.write_reg(Register::PC, resume.return_pc);
+        self.cpu.write_reg(Register::A7, resume.final_sp);
+        true
     }
 
     fn complete_pending_m68k_guest_call(
@@ -13428,7 +13499,7 @@ mod tests {
         ppc_app.memory.add_region(RESULT, vec![0; 4]);
         ppc_app.memory.add_region(STACK_BASE, vec![0; 0x100]);
         ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
-        ppc_app.guest_calls.begin_powerpc_to_m68k(
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
             crate::guest_call::GuestCallTarget {
                 isa: crate::guest_procedure::GuestIsa::M68k,
                 entry: M68K_ENTRY,
@@ -13443,7 +13514,7 @@ mod tests {
             PPC_CODE_BASE,
             0,
             PpcNativeReturnGpr3::Preserve,
-        );
+        ));
         let (first_steps, first_running) = runner.run_steps(2, None);
         assert_eq!(first_steps, 2);
         assert!(first_running);
@@ -13462,6 +13533,177 @@ mod tests {
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.lr, PPC_CODE_BASE);
         assert_eq!(runner.bus.read_long(RESULT), 0);
+    }
+
+    #[test]
+    fn parked_native_call_can_enter_powerpc_through_a_68k_routine_descriptor() {
+        use crate::guest_procedure::{
+            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+        };
+        use crate::mixed_mode::proc_info;
+
+        const DESCRIPTOR: u32 = 0x0301_0000;
+        const TVECTOR: u32 = 0x0301_0100;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const CALLBACK_RTOC: u32 = 0x0301_0200;
+        const M68K_STACK: u32 = 0x0302_0000;
+        const INITIAL_SP: u32 = M68K_STACK + 0x80;
+        const RETURN_PC: u32 = 0x0302_0100;
+        const ARGUMENT: u32 = 0x10;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("PPC app");
+        ppc_app
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+        ppc_app.memory.add_region(
+            CALLBACK,
+            [
+                0x3863_0007u32, // addi r3,r3,7
+                0x4e80_0020,    // blr
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+        ppc_app.memory.add_region(DESCRIPTOR, vec![0; 0x400]);
+        ppc_app.memory.add_region(M68K_STACK, vec![0; 0x200]);
+        let proc_info = proc_info::PASCAL_STACK_BASED
+            | (proc_info::SIZE_FOUR << proc_info::RESULT_SIZE_PHASE)
+            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE);
+        ppc_app
+            .memory
+            .write_u16_be(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP)
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u8(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION)
+            .unwrap();
+        ppc_app.memory.write_u16_be(DESCRIPTOR + 10, 0).unwrap();
+        let record = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        ppc_app.memory.write_u32_be(record, proc_info).unwrap();
+        ppc_app
+            .memory
+            .write_u8(
+                record + ROUTINE_RECORD_ISA_OFFSET,
+                ROUTINE_RECORD_POWERPC_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u16_be(
+                record + ROUTINE_RECORD_FLAGS_OFFSET,
+                ROUTINE_FLAG_USE_NATIVE_ISA,
+            )
+            .unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, TVECTOR)
+            .unwrap();
+        ppc_app.memory.write_u32_be(TVECTOR, CALLBACK).unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(TVECTOR + 4, CALLBACK_RTOC)
+            .unwrap();
+        ppc_app.memory.write_u32_be(INITIAL_SP, RETURN_PC).unwrap();
+        ppc_app
+            .memory
+            .write_u32_be(INITIAL_SP + 4, ARGUMENT)
+            .unwrap();
+        assert!(ppc_app.guest_calls.begin_powerpc_to_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: DESCRIPTOR,
+                rtoc: 0,
+            },
+            DESCRIPTOR,
+            INITIAL_SP,
+            RETURN_PC,
+            INITIAL_SP + 8,
+            crate::guest_call::M68kRegisterState::default(),
+            Some(crate::guest_call::M68kResultSource::Memory {
+                address: INITIAL_SP + 8,
+                size: 4,
+            }),
+            PPC_CODE_BASE,
+            0,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let (m68k_steps, m68k_running) = runner.run_steps(2, None);
+        assert!(m68k_steps > 0);
+        assert!(m68k_running);
+        assert!(
+            runner.dispatcher.guest_calls.has_powerpc_from_m68k(),
+            "steps={m68k_steps} running={m68k_running} halted={} frames={} active={:?} pending_ppc={:?} pc=${:08x} sp=${:08x}",
+            runner.is_halted(),
+            runner.dispatcher.guest_calls.len(),
+            runner.dispatcher.guest_calls.active_m68k(),
+            runner
+                .dispatcher
+                .guest_calls
+                .pending_powerpc_from_m68k(),
+            runner.cpu.read_reg(Register::PC),
+            runner.cpu.read_reg(Register::A7),
+        );
+
+        let (powerpc_steps, running) = runner.run_steps(64, None);
+        assert!(powerpc_steps > 0);
+        assert!(running);
+        assert!(!runner.is_halted());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app retained");
+        assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
+        assert_eq!(ppc_app.cpu.gpr[3], ARGUMENT + 7);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(INITIAL_SP + 8),
+            Some(ARGUMENT + 7)
+        );
+        assert_eq!(ppc_app.memory.read_u32_be(ppc_app.cpu.gpr[1]), Some(0));
+    }
+
+    #[test]
+    fn reverse_powerpc_return_sets_only_the_selected_68k_ccr_bit() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.cpu.core.set_ccr(0x10);
+        assert!(runner.dispatcher.guest_calls.begin_m68k_to_powerpc(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::PowerPc,
+                entry: PPC_CODE_BASE,
+                rtoc: 0,
+            },
+            crate::guest_call::PowerPcArguments::from_slice(&[]).unwrap(),
+            0x0010_0000,
+            0x0010_1000,
+            Some(crate::guest_call::M68kResultTarget::Ccr { mask: 0x04 }),
+        ));
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        let return_pc = 0x01f0_4000;
+        ppc_app
+            .guest_calls
+            .activate_powerpc_from_m68k(&mut ppc_app.cpu, return_pc)
+            .unwrap();
+        ppc_app.cpu.pc = return_pc;
+        ppc_app.cpu.gpr[3] = 1;
+        assert!(ppc_app
+            .guest_calls
+            .complete_powerpc_for_m68k(&mut ppc_app.cpu));
+
+        assert!(runner.resume_m68k_after_powerpc(&mut ppc_app));
+
+        assert_eq!(runner.cpu.core.get_ccr(), 0x14);
+        assert_eq!(runner.cpu.read_reg(Register::PC), 0x0010_0000);
+        assert_eq!(runner.cpu.read_reg(Register::A7), 0x0010_1000);
+        assert!(ppc_app.guest_calls.is_empty());
+        runner.ppc_app = Some(ppc_app);
     }
 
     #[test]

@@ -220,32 +220,45 @@ const PPC_UNMAPPED_MEMORY_EXCEPTION: u32 = 4;
 const PPC_UNMAPPED_MEMORY_ERROR: u32 = 5;
 const PPC_WRITE_REFERENCE: u32 = 0;
 const PPC_READ_REFERENCE: u32 = 1;
-const PPC_PROCINFO_CALLING_CONVENTION_MASK: u32 = 0x0f;
-const PPC_PROCINFO_PASCAL_STACK_BASED: u32 = 0;
-const PPC_PROCINFO_C_STACK_BASED: u32 = 1;
-const PPC_PROCINFO_REGISTER_BASED: u32 = 2;
-const PPC_PROCINFO_THINK_C_STACK_BASED: u32 = 5;
-const PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED: u32 = 8;
-const PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED: u32 = 9;
-const PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED: u32 = 12;
-const PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED: u32 = 14;
-const PPC_PROCINFO_SPECIAL_CASE: u32 = 15;
-const PPC_PROCINFO_RESULT_SIZE_PHASE: u32 = 4;
-const PPC_PROCINFO_STACK_PARAMETER_PHASE: u32 = 6;
-const PPC_PROCINFO_STACK_PARAMETER_WIDTH: u32 = 2;
-const PPC_PROCINFO_DISPATCHED_SELECTOR_SIZE_PHASE: u32 = 6;
-const PPC_PROCINFO_DISPATCHED_PARAMETER_PHASE: u32 = 8;
-const PPC_PROCINFO_REGISTER_RESULT_LOCATION_PHASE: u32 = 6;
-const PPC_PROCINFO_REGISTER_PARAMETER_PHASE: u32 = 11;
-const PPC_PROCINFO_REGISTER_PARAMETER_WIDTH: u32 = 5;
-const PPC_PROCINFO_REGISTER_PARAMETER_SIZE_MASK: u32 = 0x03;
-const PPC_PROCINFO_REGISTER_PARAMETER_WHICH_SHIFT: u32 = 2;
-const PPC_PROCINFO_REGISTER_PARAMETER_WHICH_MASK: u32 = 0x07;
-const PPC_PROCINFO_REGISTER_CCR_C: u32 = 16;
-const PPC_PROCINFO_REGISTER_CCR_V: u32 = 17;
-const PPC_PROCINFO_REGISTER_CCR_Z: u32 = 18;
-const PPC_PROCINFO_REGISTER_CCR_N: u32 = 19;
-const PPC_PROCINFO_REGISTER_CCR_X: u32 = 20;
+const PPC_PROCINFO_CALLING_CONVENTION_MASK: u32 =
+    crate::mixed_mode::proc_info::CALLING_CONVENTION_MASK;
+const PPC_PROCINFO_PASCAL_STACK_BASED: u32 = crate::mixed_mode::proc_info::PASCAL_STACK_BASED;
+const PPC_PROCINFO_C_STACK_BASED: u32 = crate::mixed_mode::proc_info::C_STACK_BASED;
+const PPC_PROCINFO_REGISTER_BASED: u32 = crate::mixed_mode::proc_info::REGISTER_BASED;
+const PPC_PROCINFO_THINK_C_STACK_BASED: u32 = crate::mixed_mode::proc_info::THINK_C_STACK_BASED;
+const PPC_PROCINFO_D0_DISPATCHED_PASCAL_STACK_BASED: u32 =
+    crate::mixed_mode::proc_info::D0_DISPATCHED_PASCAL_STACK_BASED;
+const PPC_PROCINFO_D0_DISPATCHED_C_STACK_BASED: u32 =
+    crate::mixed_mode::proc_info::D0_DISPATCHED_C_STACK_BASED;
+const PPC_PROCINFO_D1_DISPATCHED_PASCAL_STACK_BASED: u32 =
+    crate::mixed_mode::proc_info::D1_DISPATCHED_PASCAL_STACK_BASED;
+const PPC_PROCINFO_STACK_DISPATCHED_PASCAL_STACK_BASED: u32 =
+    crate::mixed_mode::proc_info::STACK_DISPATCHED_PASCAL_STACK_BASED;
+const PPC_PROCINFO_SPECIAL_CASE: u32 = crate::mixed_mode::proc_info::SPECIAL_CASE;
+const PPC_PROCINFO_RESULT_SIZE_PHASE: u32 = crate::mixed_mode::proc_info::RESULT_SIZE_PHASE;
+const PPC_PROCINFO_STACK_PARAMETER_PHASE: u32 = crate::mixed_mode::proc_info::STACK_PARAMETER_PHASE;
+const PPC_PROCINFO_STACK_PARAMETER_WIDTH: u32 = crate::mixed_mode::proc_info::STACK_PARAMETER_WIDTH;
+const PPC_PROCINFO_DISPATCHED_SELECTOR_SIZE_PHASE: u32 =
+    crate::mixed_mode::proc_info::DISPATCHED_SELECTOR_SIZE_PHASE;
+const PPC_PROCINFO_DISPATCHED_PARAMETER_PHASE: u32 =
+    crate::mixed_mode::proc_info::DISPATCHED_PARAMETER_PHASE;
+const PPC_PROCINFO_REGISTER_RESULT_LOCATION_PHASE: u32 =
+    crate::mixed_mode::proc_info::REGISTER_RESULT_LOCATION_PHASE;
+const PPC_PROCINFO_REGISTER_PARAMETER_PHASE: u32 =
+    crate::mixed_mode::proc_info::REGISTER_PARAMETER_PHASE;
+const PPC_PROCINFO_REGISTER_PARAMETER_WIDTH: u32 =
+    crate::mixed_mode::proc_info::REGISTER_PARAMETER_WIDTH;
+const PPC_PROCINFO_REGISTER_PARAMETER_SIZE_MASK: u32 =
+    crate::mixed_mode::proc_info::REGISTER_PARAMETER_SIZE_MASK;
+const PPC_PROCINFO_REGISTER_PARAMETER_WHICH_SHIFT: u32 =
+    crate::mixed_mode::proc_info::REGISTER_PARAMETER_WHICH_SHIFT;
+const PPC_PROCINFO_REGISTER_PARAMETER_WHICH_MASK: u32 =
+    crate::mixed_mode::proc_info::REGISTER_PARAMETER_WHICH_MASK;
+const PPC_PROCINFO_REGISTER_CCR_C: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_C;
+const PPC_PROCINFO_REGISTER_CCR_V: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_V;
+const PPC_PROCINFO_REGISTER_CCR_Z: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_Z;
+const PPC_PROCINFO_REGISTER_CCR_N: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_N;
+const PPC_PROCINFO_REGISTER_CCR_X: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_X;
 const PPC_CR0_LT_BIT: u8 = 0;
 const PPC_CR0_EQ_BIT: u8 = 2;
 const PPC_SPECIAL_CASE_CARET_HOOK: u32 = 0;
@@ -261,13 +274,15 @@ const PPC_SPECIAL_CASE_TE_RECALC: u32 = 9;
 const PPC_SPECIAL_CASE_TE_DO_TEXT: u32 = 10;
 const PPC_SPECIAL_CASE_GNE_FILTER_PROC: u32 = 11;
 const PPC_SPECIAL_CASE_MBAR_HOOK: u32 = 12;
-const PPC_PROCINFO_SIZE_NONE: u32 = 0;
-const PPC_PROCINFO_SIZE_ONE: u32 = 1;
-const PPC_PROCINFO_SIZE_TWO: u32 = 2;
-const PPC_PROCINFO_SIZE_FOUR: u32 = 3;
-const PPC_PROCINFO_MAX_STACK_PARAMETERS: usize = 13;
-const PPC_PROCINFO_MAX_DISPATCHED_STACK_PARAMETERS: usize = 12;
-const PPC_PROCINFO_MAX_REGISTER_PARAMETERS: usize = 4;
+const PPC_PROCINFO_SIZE_NONE: u32 = crate::mixed_mode::proc_info::SIZE_NONE;
+const PPC_PROCINFO_SIZE_ONE: u32 = crate::mixed_mode::proc_info::SIZE_ONE;
+const PPC_PROCINFO_SIZE_TWO: u32 = crate::mixed_mode::proc_info::SIZE_TWO;
+const PPC_PROCINFO_SIZE_FOUR: u32 = crate::mixed_mode::proc_info::SIZE_FOUR;
+const PPC_PROCINFO_MAX_STACK_PARAMETERS: usize = crate::mixed_mode::proc_info::MAX_STACK_PARAMETERS;
+const PPC_PROCINFO_MAX_DISPATCHED_STACK_PARAMETERS: usize =
+    crate::mixed_mode::proc_info::MAX_DISPATCHED_STACK_PARAMETERS;
+const PPC_PROCINFO_MAX_REGISTER_PARAMETERS: usize =
+    crate::mixed_mode::proc_info::MAX_REGISTER_PARAMETERS;
 const PPC_CALL_UNIVERSAL_PROC_FIXED_WORD_PARAMETERS: usize = 2;
 const PPC_CALL_UNIVERSAL_PROC_REGISTER_VARARGS: usize = 6;
 const PPC_NATIVE_PARAMETER_GPR_COUNT: usize = 8;
@@ -5097,6 +5112,50 @@ impl PpcLoadedApp {
         self.toolbox_startup.guest_calls.attach_to(guest_calls);
     }
 
+    /// Park the current native context and enter a PowerPC routine selected by
+    /// a 68k RoutineDescriptor. The new ABI frame protects the parked caller's
+    /// linkage and parameter areas while the shared continuation owns return.
+    pub(crate) fn activate_powerpc_from_m68k(&mut self) -> Option<()> {
+        let pending = self.guest_calls.pending_powerpc_from_m68k()?;
+        let parameter_slots = pending
+            .arguments
+            .as_slice()
+            .len()
+            .max(PPC_NATIVE_PARAMETER_GPR_COUNT);
+        let parameter_bytes = u32::try_from(parameter_slots).ok()?.checked_mul(4)?;
+        let required = PPC_PARAMETER_AREA_OFFSET.checked_add(parameter_bytes)?;
+        let frame_size = required.max(PPC_INITIAL_STACK_FRAME_SIZE).checked_add(15)? & !15;
+        let caller_sp = self.cpu.gpr[1];
+        let callback_sp = caller_sp.checked_sub(frame_size)? & !15;
+        if callback_sp < self.stack_base
+            || !ppc_memory_can_write_bytes(&mut self.memory, callback_sp, frame_size)
+            || !ppc_zero_guest_bytes(&mut self.memory, callback_sp, frame_size)
+        {
+            return None;
+        }
+        self.memory
+            .write_u32_be(callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET, caller_sp)?;
+        self.memory
+            .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET, self.cpu.cr)?;
+        self.memory
+            .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET, self.cpu.lr)?;
+        self.memory
+            .write_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET, self.cpu.gpr[2])?;
+
+        let pending = self
+            .guest_calls
+            .activate_powerpc_from_m68k(&mut self.cpu, PPC_GUEST_CALL_RETURN_PC)?;
+        self.cpu.gpr[1] = callback_sp;
+        self.cpu.pc = pending.target.entry;
+        self.cpu.lr = PPC_GUEST_CALL_RETURN_PC;
+        self.cpu.gpr[2] = pending.target.rtoc;
+        ppc_install_native_call_arguments(
+            &mut self.cpu,
+            &mut self.memory,
+            pending.arguments.as_slice(),
+        )
+    }
+
     /// Copy the live PowerPC Menu Manager list into the same frontend-neutral
     /// model used by the 68k Toolbox implementation.
     pub fn guest_menu_snapshot(&mut self) -> GuestMenuSnapshot {
@@ -8151,6 +8210,9 @@ impl PpcLoadedApp {
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     if guest_calls.complete_powerpc(cpu) {
                         return PpcImportAction::Continue;
+                    }
+                    if guest_calls.complete_powerpc_for_m68k(cpu) {
+                        return PpcImportAction::Halt;
                     }
                     unsupported_import_index = Some(index);
                     return PpcImportAction::Halt;
@@ -41371,7 +41433,7 @@ fn ppc_begin_m68k_universal_proc(
         };
     }
 
-    startup.guest_calls.begin_powerpc_to_m68k(
+    if !startup.guest_calls.begin_powerpc_to_m68k(
         crate::guest_call::GuestCallTarget {
             isa: target.isa,
             entry: target.entry,
@@ -41386,7 +41448,9 @@ fn ppc_begin_m68k_universal_proc(
         final_pc,
         cpu.gpr[2],
         return_gpr3,
-    );
+    ) {
+        return None;
+    }
     Some(PpcImportAction::Halt)
 }
 
@@ -67255,7 +67319,7 @@ fn ppc_begin_m68k_menu_definition(
     write_word(memory, 48, 0x4e75)?; // RTS
     memory.write_u32_be(return_slot, return_pc)?;
 
-    startup.guest_calls.begin_powerpc_to_m68k(
+    if !startup.guest_calls.begin_powerpc_to_m68k(
         crate::guest_call::GuestCallTarget {
             isa: target.isa,
             entry: target.entry,
@@ -67274,7 +67338,9 @@ fn ppc_begin_m68k_menu_definition(
         final_pc,
         cpu.gpr[2],
         return_gpr3,
-    );
+    ) {
+        return None;
+    }
     Some(PpcImportAction::Halt)
 }
 
@@ -90950,6 +91016,73 @@ mod tests {
             Some(callback_rtoc)
         );
         assert!(loaded.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn reverse_mixed_mode_activation_builds_a_protected_native_parameter_area() {
+        let pef = synthetic_pef();
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let caller = loaded.cpu.clone();
+        let values: Vec<u32> = (1..=crate::guest_call::MAX_POWERPC_GUEST_ARGUMENTS as u32)
+            .map(|value| 0x1000_0000 | value)
+            .collect();
+        let arguments = crate::guest_call::PowerPcArguments::from_slice(&values).unwrap();
+        assert!(loaded.guest_calls.begin_m68k_to_powerpc(
+            crate::guest_call::GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: PPC_CODE_BASE + 0x1000,
+                rtoc: PPC_DATA_BASE + 0x2000,
+            },
+            arguments,
+            0x0010_0000,
+            0x0010_1000,
+            None,
+        ));
+
+        loaded.activate_powerpc_from_m68k().unwrap();
+
+        let callback_sp = loaded.cpu.gpr[1];
+        assert!(callback_sp < caller.gpr[1]);
+        assert_eq!(callback_sp & 0x0f, 0);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(callback_sp + PPC_LINKAGE_BACK_CHAIN_OFFSET),
+            Some(caller.gpr[1])
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(callback_sp + PPC_LINKAGE_SAVED_CR_OFFSET),
+            Some(caller.cr)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(callback_sp + PPC_LINKAGE_SAVED_LR_OFFSET),
+            Some(caller.lr)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(callback_sp + PPC_LINKAGE_SAVED_RTOC_OFFSET),
+            Some(caller.gpr[2])
+        );
+        assert_eq!(
+            &loaded.cpu.gpr[3..=10],
+            &values[..PPC_NATIVE_PARAMETER_GPR_COUNT]
+        );
+        for (index, value) in values.into_iter().enumerate() {
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(ppc_parameter_area_slot_addr(callback_sp, index).unwrap()),
+                Some(value)
+            );
+        }
+        assert_eq!(loaded.cpu.pc, PPC_CODE_BASE + 0x1000);
+        assert_eq!(loaded.cpu.lr, PPC_GUEST_CALL_RETURN_PC);
+        assert_eq!(loaded.cpu.gpr[2], PPC_DATA_BASE + 0x2000);
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub(crate) struct GuestCallTarget {
 struct M68kCallOrigin {
     return_pc: u32,
     final_sp: u32,
+    result: Option<M68kResultTarget>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,17 +46,26 @@ struct M68kExecution {
     started: bool,
 }
 
+#[derive(Clone, Debug)]
+struct PowerPcExecution {
+    arguments: PowerPcArguments,
+    return_pc: Option<u32>,
+    parked_cpu: Option<Box<PpcCpu>>,
+    completed: Option<PowerPcReturnState>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuestCallOrigin {
     M68k(M68kCallOrigin),
     PowerPc(PowerPcCallOrigin),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct GuestCallFrame {
     target: GuestCallTarget,
     origin: GuestCallOrigin,
     m68k_execution: Option<M68kExecution>,
+    powerpc_execution: Option<PowerPcExecution>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,6 +90,79 @@ pub(crate) enum M68kResultSource {
     Address(u8),
     Memory { address: u32, size: u8 },
 }
+
+pub(crate) const MAX_POWERPC_GUEST_ARGUMENTS: usize = 13;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PowerPcArguments {
+    values: [u32; MAX_POWERPC_GUEST_ARGUMENTS],
+    len: u8,
+}
+
+impl PowerPcArguments {
+    pub(crate) fn from_slice(values: &[u32]) -> Option<Self> {
+        if values.len() > MAX_POWERPC_GUEST_ARGUMENTS {
+            return None;
+        }
+        let mut arguments = Self {
+            values: [0; MAX_POWERPC_GUEST_ARGUMENTS],
+            len: u8::try_from(values.len()).ok()?,
+        };
+        arguments.values[..values.len()].copy_from_slice(values);
+        Some(arguments)
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u32] {
+        &self.values[..usize::from(self.len)]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum M68kResultTarget {
+    Data { index: u8, size: u8 },
+    Address { index: u8, size: u8 },
+    Ccr { mask: u8 },
+    Memory { address: u32, size: u8 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PowerPcReturnState {
+    pub(crate) gpr3: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingPowerPcExecution {
+    pub(crate) target: GuestCallTarget,
+    pub(crate) arguments: PowerPcArguments,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct M68kResume {
+    pub(crate) return_pc: u32,
+    pub(crate) final_sp: u32,
+    pub(crate) result: Option<M68kResultTarget>,
+    pub(crate) powerpc: PowerPcReturnState,
+}
+
+impl PartialEq for GuestCallFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.origin == other.origin
+            && self.m68k_execution == other.m68k_execution
+            && match (&self.powerpc_execution, &other.powerpc_execution) {
+                (None, None) => true,
+                (Some(left), Some(right)) => {
+                    left.arguments == right.arguments
+                        && left.return_pc == right.return_pc
+                        && left.parked_cpu.is_some() == right.parked_cpu.is_some()
+                        && left.completed == right.completed
+                }
+                _ => false,
+            }
+    }
+}
+
+impl Eq for GuestCallFrame {}
 
 /// One process's nested guest-procedure continuation stack.
 ///
@@ -137,9 +220,41 @@ impl SharedGuestCallStack {
             origin: GuestCallOrigin::M68k(M68kCallOrigin {
                 return_pc,
                 final_sp,
+                result: None,
             }),
             m68k_execution: None,
+            powerpc_execution: None,
         });
+    }
+
+    pub(crate) fn begin_m68k_to_powerpc(
+        &self,
+        target: GuestCallTarget,
+        arguments: PowerPcArguments,
+        return_pc: u32,
+        final_sp: u32,
+        result: Option<M68kResultTarget>,
+    ) -> bool {
+        if self.has_powerpc_from_m68k() {
+            return false;
+        }
+        debug_assert_eq!(target.isa, GuestIsa::PowerPc);
+        self.0.borrow_mut().push(GuestCallFrame {
+            target,
+            origin: GuestCallOrigin::M68k(M68kCallOrigin {
+                return_pc,
+                final_sp,
+                result,
+            }),
+            m68k_execution: None,
+            powerpc_execution: Some(PowerPcExecution {
+                arguments,
+                return_pc: None,
+                parked_cpu: None,
+                completed: None,
+            }),
+        });
+        true
     }
 
     /// Park a native caller and retain the emulated 68k execution interval
@@ -158,7 +273,13 @@ impl SharedGuestCallStack {
         final_pc: u32,
         restore_rtoc: u32,
         return_gpr3: PpcNativeReturnGpr3,
-    ) {
+    ) -> bool {
+        // A reverse native call leaves its 68k caller live in the sole 68k
+        // core. A further native-to-68k call needs another parked 68k context;
+        // reject it until the process stack owns that context explicitly.
+        if self.has_powerpc_from_m68k() {
+            return false;
+        }
         debug_assert_eq!(target.isa, GuestIsa::M68k);
         self.0.borrow_mut().push(GuestCallFrame {
             target,
@@ -177,7 +298,93 @@ impl SharedGuestCallStack {
                 result,
                 started: false,
             }),
+            powerpc_execution: None,
         });
+        true
+    }
+
+    pub(crate) fn pending_powerpc_from_m68k(&self) -> Option<PendingPowerPcExecution> {
+        let frames = self.0.borrow();
+        let frame = frames.last()?;
+        let GuestCallOrigin::M68k(_) = frame.origin else {
+            return None;
+        };
+        let execution = frame.powerpc_execution.as_ref()?;
+        (execution.return_pc.is_none() && execution.completed.is_none()).then_some(
+            PendingPowerPcExecution {
+                target: frame.target,
+                arguments: execution.arguments,
+            },
+        )
+    }
+
+    pub(crate) fn activate_powerpc_from_m68k(
+        &self,
+        cpu: &mut PpcCpu,
+        return_pc: u32,
+    ) -> Option<PendingPowerPcExecution> {
+        let mut frames = self.0.borrow_mut();
+        let frame = frames.last_mut()?;
+        let GuestCallOrigin::M68k(_) = frame.origin else {
+            return None;
+        };
+        let execution = frame.powerpc_execution.as_mut()?;
+        if execution.return_pc.is_some() || execution.completed.is_some() {
+            return None;
+        }
+        execution.parked_cpu = Some(Box::new(cpu.clone()));
+        execution.return_pc = Some(return_pc);
+        Some(PendingPowerPcExecution {
+            target: frame.target,
+            arguments: execution.arguments,
+        })
+    }
+
+    pub(crate) fn has_powerpc_from_m68k(&self) -> bool {
+        self.0.borrow().last().is_some_and(|frame| {
+            matches!(frame.origin, GuestCallOrigin::M68k(_)) && frame.powerpc_execution.is_some()
+        })
+    }
+
+    pub(crate) fn complete_powerpc_for_m68k(&self, cpu: &mut PpcCpu) -> bool {
+        let mut frames = self.0.borrow_mut();
+        let Some(frame) = frames.last_mut() else {
+            return false;
+        };
+        let GuestCallOrigin::M68k(_) = frame.origin else {
+            return false;
+        };
+        let Some(execution) = frame.powerpc_execution.as_mut() else {
+            return false;
+        };
+        if execution.completed.is_some() || execution.return_pc != Some(cpu.pc) {
+            return false;
+        }
+        let Some(parked_cpu) = execution.parked_cpu.take() else {
+            return false;
+        };
+        let result = PowerPcReturnState { gpr3: cpu.gpr[3] };
+        let elapsed_time_base = cpu.time_base();
+        *cpu = *parked_cpu;
+        cpu.set_time_base(elapsed_time_base);
+        execution.completed = Some(result);
+        true
+    }
+
+    pub(crate) fn take_m68k_resume(&self) -> Option<M68kResume> {
+        let mut frames = self.0.borrow_mut();
+        let frame = frames.last()?;
+        let GuestCallOrigin::M68k(origin) = frame.origin else {
+            return None;
+        };
+        let powerpc = frame.powerpc_execution.as_ref()?.completed?;
+        frames.pop();
+        Some(M68kResume {
+            return_pc: origin.return_pc,
+            final_sp: origin.final_sp,
+            result: origin.result,
+            powerpc,
+        })
     }
 
     /// Return the top cross-ISA 68k interval and mark its CPU context active.
@@ -249,6 +456,7 @@ impl SharedGuestCallStack {
                 return_gpr3,
             }),
             m68k_execution: None,
+            powerpc_execution: None,
         });
         cpu.pc = target.entry;
         cpu.lr = return_pc;
@@ -260,8 +468,8 @@ impl SharedGuestCallStack {
     /// synthetic return import. A frame belonging to 68k remains untouched.
     pub(crate) fn complete_powerpc(&self, cpu: &mut PpcCpu) -> bool {
         let frame = {
-            let frames = self.0.borrow();
-            let Some(frame) = frames.last().copied() else {
+            let mut frames = self.0.borrow_mut();
+            let Some(frame) = frames.last() else {
                 return false;
             };
             let GuestCallOrigin::PowerPc(origin) = frame.origin else {
@@ -270,9 +478,8 @@ impl SharedGuestCallStack {
             if frame.target.isa != GuestIsa::PowerPc || cpu.pc != origin.return_pc {
                 return false;
             }
-            frame
+            frames.pop().expect("verified PowerPC frame")
         };
-        self.0.borrow_mut().pop();
 
         let GuestCallOrigin::PowerPc(origin) = frame.origin else {
             unreachable!();
@@ -290,8 +497,8 @@ impl SharedGuestCallStack {
         cpu: &mut PpcCpu,
     ) -> bool {
         let frame = {
-            let frames = self.0.borrow();
-            let Some(frame) = frames.last().copied() else {
+            let mut frames = self.0.borrow_mut();
+            let Some(frame) = frames.last() else {
                 return false;
             };
             let GuestCallOrigin::PowerPc(_) = frame.origin else {
@@ -307,9 +514,8 @@ impl SharedGuestCallStack {
             {
                 return false;
             }
-            frame
+            frames.pop().expect("verified 68k execution frame")
         };
-        self.0.borrow_mut().pop();
 
         let GuestCallOrigin::PowerPc(origin) = frame.origin else {
             unreachable!();
@@ -503,11 +709,105 @@ mod tests {
     }
 
     #[test]
+    fn reverse_transition_parks_and_restores_the_native_context_and_elapsed_time() {
+        let calls = SharedGuestCallStack::default();
+        let arguments = PowerPcArguments::from_slice(&[1, 2, 3]).unwrap();
+        assert!(calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0x2000,
+            },
+            arguments,
+            0x3000,
+            0x4000,
+            Some(M68kResultTarget::Data { index: 2, size: 2 }),
+        ));
+
+        let mut cpu = PpcCpu::new();
+        cpu.pc = 0x5000;
+        cpu.lr = 0x6000;
+        cpu.gpr[1] = 0x7000;
+        cpu.gpr[2] = 0x8000;
+        cpu.gpr[3] = 0x9000;
+        cpu.set_time_base(10);
+        assert_eq!(
+            calls.activate_powerpc_from_m68k(&mut cpu, RETURN_PC),
+            Some(PendingPowerPcExecution {
+                target: GuestCallTarget {
+                    isa: GuestIsa::PowerPc,
+                    entry: 0x1000,
+                    rtoc: 0x2000,
+                },
+                arguments,
+            })
+        );
+        assert!(calls
+            .activate_powerpc_from_m68k(&mut cpu, RETURN_PC)
+            .is_none());
+
+        cpu.pc = RETURN_PC;
+        cpu.lr = 0xaaaa;
+        cpu.gpr[1] = 0xbbbb;
+        cpu.gpr[2] = 0xcccc;
+        cpu.gpr[3] = 0x1234_5678;
+        cpu.set_time_base(50);
+        assert!(!calls.complete_powerpc(&mut cpu));
+        assert!(calls.complete_powerpc_for_m68k(&mut cpu));
+
+        assert_eq!((cpu.pc, cpu.lr), (0x5000, 0x6000));
+        assert_eq!(
+            (cpu.gpr[1], cpu.gpr[2], cpu.gpr[3]),
+            (0x7000, 0x8000, 0x9000)
+        );
+        assert_eq!(cpu.time_base(), 50);
+        let resume = calls.take_m68k_resume().unwrap();
+        assert_eq!((resume.return_pc, resume.final_sp), (0x3000, 0x4000));
+        assert_eq!(resume.powerpc.gpr3, 0x1234_5678);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn reverse_transition_rejects_a_deeper_native_to_68k_call_without_losing_its_frame() {
+        let calls = SharedGuestCallStack::default();
+        assert!(calls.begin_m68k_to_powerpc(
+            GuestCallTarget {
+                isa: GuestIsa::PowerPc,
+                entry: 0x1000,
+                rtoc: 0x2000,
+            },
+            PowerPcArguments::from_slice(&[]).unwrap(),
+            0x3000,
+            0x4000,
+            None,
+        ));
+
+        assert!(!calls.begin_powerpc_to_m68k(
+            GuestCallTarget {
+                isa: GuestIsa::M68k,
+                entry: 0x5000,
+                rtoc: 0,
+            },
+            0x5000,
+            0x6000,
+            0x7000,
+            0x6004,
+            M68kRegisterState::default(),
+            None,
+            0x8000,
+            0x9000,
+            PpcNativeReturnGpr3::Preserve,
+        ));
+        assert_eq!(calls.len(), 1);
+        assert!(calls.has_powerpc_from_m68k());
+    }
+
+    #[test]
     fn cross_isa_frame_activates_once_and_restores_its_native_caller() {
         let calls = SharedGuestCallStack::default();
         let mut cpu = PpcCpu::new();
         cpu.gpr[2] = 0xaaaa_0000;
-        calls.begin_powerpc_to_m68k(
+        assert!(calls.begin_powerpc_to_m68k(
             GuestCallTarget {
                 isa: GuestIsa::M68k,
                 entry: 0x1000,
@@ -522,7 +822,7 @@ mod tests {
             0x5000,
             0x6000,
             PpcNativeReturnGpr3::Preserve,
-        );
+        ));
 
         assert!(calls.active_m68k().is_none());
         assert!(calls.has_m68k_execution());

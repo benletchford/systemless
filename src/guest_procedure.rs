@@ -95,21 +95,19 @@ impl GuestProcedureMemory for GuestAddressSpace {
 
 impl GuestProcedureMemory for MacMemoryBus {
     fn procedure_read_u8(&mut self, address: u32) -> Option<u8> {
-        (address < self.ram_size()).then(|| self.read_byte(address))
+        // A native process's 68k compatibility context can resolve UPPs in
+        // the attached shared address space above flat 68k RAM. The normal
+        // bus read performs that translation and returns zero for an
+        // unmapped address, which fails descriptor validation safely.
+        Some(self.read_byte(address))
     }
 
     fn procedure_read_u16(&mut self, address: u32) -> Option<u16> {
-        address
-            .checked_add(2)
-            .filter(|end| *end <= self.ram_size())
-            .map(|_| self.read_word(address))
+        address.checked_add(2).map(|_| self.read_word(address))
     }
 
     fn procedure_read_u32(&mut self, address: u32) -> Option<u32> {
-        address
-            .checked_add(4)
-            .filter(|end| *end <= self.ram_size())
-            .map(|_| self.read_long(address))
+        address.checked_add(4).map(|_| self.read_long(address))
     }
 }
 
