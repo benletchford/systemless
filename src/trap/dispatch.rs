@@ -1975,14 +1975,6 @@ pub struct TrapDispatcher {
     /// ~20-30ns measurement overhead per trap when enabled. Dump via
     /// `print_trap_timing_histogram`.
     pub trap_time_ns: Box<[u64; 4096]>,
-    /// Per-trap count of inline-skipped dispatches. Incremented by the
-    /// runner's pre-dispatch fast paths for each *virtual* trap entry that
-    /// bypassed the real `dispatch()` body. Combined with
-    /// `trap_histogram\[idx\]` (total entries) and `trap_time_ns\[idx\]`
-    /// (only counts non-inline dispatches), gives:
-    ///   `actual_dispatches = trap_histogram\[idx\] - inline_skipped\[idx\]`
-    ///   `per-actual-dispatch ns = trap_time_ns\[idx\] / actual_dispatches`
-    pub inline_skipped: Box<[u64; 4096]>,
     /// Number of copybits_screen events emitted (screen-affecting draws).
     pub copybits_screen_count: u64,
     /// Most recent sizeable CopyBits blit into the screen framebuffer.
@@ -3166,16 +3158,10 @@ impl TrapDispatcher {
         for (idx, ns, count) in entries.iter().take(top_n) {
             let as_tool = 0xA800 | *idx;
             let as_os = 0xA000 | (*idx & 0xFF);
-            // Distinguish inline-skipped (counted but bypassed real dispatch)
-            // from real dispatches (counted AND timed). The per-real-dispatch
-            // ns figure is the actionable number — the inline-padded average
-            // dilutes it toward zero.
-            let inline = self.inline_skipped[*idx as usize];
-            let real_dispatches = count.saturating_sub(inline);
-            let real_avg_ns = ns.checked_div(real_dispatches).unwrap_or(0);
+            let avg_ns = ns.checked_div(*count).unwrap_or(0);
             eprintln!(
-                "[TRAP-TIME]   {:>11} ns total  {:>7} ns/real-call  ({:>10} real / {:>10} inline)  idx=${:03X} (tool ${:04X} / os ${:04X})",
-                ns, real_avg_ns, real_dispatches, inline, idx, as_tool, as_os
+                "[TRAP-TIME]   {:>11} ns total  {:>7} ns/call  ({:>10} calls)  idx=${:03X} (tool ${:04X} / os ${:04X})",
+                ns, avg_ns, count, idx, as_tool, as_os
             );
         }
     }
@@ -3424,7 +3410,6 @@ impl TrapDispatcher {
             game_trap_count: 0,
             trap_histogram: Box::new([0u64; 4096]),
             trap_time_ns: Box::new([0u64; 4096]),
-            inline_skipped: Box::new([0u64; 4096]),
             copybits_screen_count: 0,
             last_screen_copybits_rect: None,
             last_screen_frame_rect: None,
@@ -7348,7 +7333,7 @@ impl TrapDispatcher {
         // Counts ALL dispatches (system + game), not the game_trap_count
         // filtered subset, so the full mix including ROM/system traps is
         // visible.
-        if trap_histogram_enabled() {
+        if trap_histogram_enabled() || trap_timing_enabled() {
             self.trap_histogram[(trap & 0xFFF) as usize] =
                 self.trap_histogram[(trap & 0xFFF) as usize].saturating_add(1);
         }

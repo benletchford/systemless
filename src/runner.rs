@@ -1059,33 +1059,6 @@ fn spin_wait_fastfwd_gate(
     !yield_for_ui || has_tick_cap
 }
 
-/// Pure decision function for the ModalDialog noop-refire skip. ALL
-/// of these must be true for the skip to fire:
-///   - mode is headless (`yield_for_ui = false`)
-///   - dialog tracking is active (`has_tracking = true`)
-///   - no filter proc callback is due (`filter_allows_noop`)
-///   - no button flash animating (`flash_remaining_zero`)
-///   - initial draw procs all completed (`draw_procs_done`)
-///   - dialog pixels already captured (`rendered_pixels_final`)
-///   - event queue is empty (no input pending)
-fn modaldialog_refire_is_noop(
-    yield_for_ui: bool,
-    has_tracking: bool,
-    filter_allows_noop: bool,
-    flash_remaining_zero: bool,
-    draw_procs_done: bool,
-    rendered_pixels_final: bool,
-    event_queue_empty: bool,
-) -> bool {
-    !yield_for_ui
-        && has_tracking
-        && filter_allows_noop
-        && flash_remaining_zero
-        && draw_procs_done
-        && rendered_pixels_final
-        && event_queue_empty
-}
-
 /// Some tracking traps should block the application's foreground event
 /// loop without advancing the app-visible tick clock in GUI mode. ModalDialog
 /// is different: the dialog manager is itself the active event loop, and
@@ -5696,273 +5669,6 @@ impl FixtureRunner {
                         self.cancel_idle_cycle_detector();
                     }
 
-                    // --- Runner-inline fast paths for hot traps ---
-                    //
-                    // Rule of thumb: only inline a trap's body here if
-                    // BOTH hold:
-                    //   (a) per-call saving > ~100ns (handler does
-                    //       non-trivial work relative to dispatch
-                    //       overhead), AND
-                    //   (b) call count > ~5M per reference workload.
-                    // Below either threshold, the dispatch-cost
-                    // saving is swamped by I-cache pressure from
-                    // adding more code to this hot loop.
-                    //
-                    // Current inlines:
-                    //   $A975 TickCount
-                    //   $A991 ModalDialog no-op
-                    // plus:
-                    //   $A975 spin-wait fast-fwd — detects TickCount
-                    //       compare-and-branch templates and advances
-                    //       guest ticks.
-                    // --- end guidance ---
-
-                    // Pre-dispatch fast path for TickCount ($A975).
-                    // Handler body is `read self.tick_count` (cached)
-                    // + write to SP. Skip the full dispatch →
-                    // `dispatch_toolbox` → match chain; inline the
-                    // 3-line body directly. Counters still update so
-                    // logs and the trap histogram reflect real
-                    // dispatch count.
-                    if opcode == 0xA975
-                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
-                    {
-                        let sp = self.cpu.core.a(7);
-                        let tick = self.dispatcher.tick_count;
-                        self.bus.write_long(sp, tick);
-                        self.dispatcher.trap_count += 1;
-                        self.dispatcher.current_trap_word = opcode;
-                        let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] =
-                            self.dispatcher.trap_histogram[idx].saturating_add(1);
-                        // Count this entry as inline-skipped — the
-                        // fast path bypassed dispatch().
-                        self.dispatcher.inline_skipped[idx] =
-                            self.dispatcher.inline_skipped[idx].saturating_add(1);
-
-                        // Generic TickCount spin-wait fast-forward.
-                        // Check post-trap bytes against the spin-wait
-                        // template; if matched, skip straight past the
-                        // loop. m68k's step() advances PC past the A-trap
-                        // (read_imm_16 does pc += 2), so the post-trap
-                        // PC is already at pc + 2.
-                        if spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap) {
-                            let post_trap_pc = pc.wrapping_add(2);
-                            let hit_cap =
-                                self.try_tickcount_spin_fastfwd(post_trap_pc, tick_cap, &mut count);
-                            // Loops the decoded templates cannot match --
-                            // EV Override's crawl polls TickCount from a
-                            // cycle that interleaves scans and SANE math,
-                            // 26M times a session -- still prove out via
-                            // the general exact-cycle machinery. Anchor it
-                            // here because this inline path bypasses the
-                            // dispatch-site anchor entirely.
-                            if !hit_cap && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap) {
-                                break;
-                            }
-                            if hit_cap {
-                                break;
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Pre-dispatch fast skip for no-op ModalDialog
-                    // refires. When dialog tracking is active and no
-                    // state change is possible this step (draw procs
-                    // done, pixels already captured, no filter, no
-                    // flash animation, no queued events), skip the
-                    // full dispatch → handler → post-dispatch rewind
-                    // loop entirely. Rewind PC directly and continue.
-                    // Counters still update so logs and the trap
-                    // histogram reflect real dispatch count.
-                    if opcode == 0xA991
-                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
-                    {
-                        // Extracted into `modaldialog_refire_is_noop` so
-                        // the gate logic is unit-tested. See its
-                        // doc-comment for the full list of conditions.
-                        let (
-                            has_tracking,
-                            filter_allows_noop,
-                            flash_remaining_zero,
-                            draw_procs_done,
-                            rendered_pixels_final,
-                        ) = self
-                            .dispatcher
-                            .dialog_tracking
-                            .as_ref()
-                            .map(|t| {
-                                let idle_dialog_mouse =
-                                    self.dispatcher.mouse_down_over_dialog_button()
-                                        || self.dispatcher.mouse_down_over_dialog_plain_user_item()
-                                        || (self.dispatcher.event_queue.is_empty()
-                                            && self
-                                                .dispatcher
-                                                .pending_dialog_plain_user_item_mouse_down());
-                                let paced_filter_idle = t.filter_proc != 0
-                                    && t.last_filter_event.is_none()
-                                    && !idle_dialog_mouse
-                                    && self.dialog_filter_null_event_already_sent_this_tick(
-                                        t.dialog_ptr,
-                                    )
-                                    && !self.dialog_filter_has_real_event_pending(t.dialog_ptr);
-                                (
-                                    true,
-                                    t.filter_proc == 0 || paced_filter_idle,
-                                    t.flash_remaining == 0,
-                                    t.draw_procs_done,
-                                    t.rendered_pixels_final,
-                                )
-                            })
-                            .unwrap_or((false, false, false, false, false));
-                        let noop_refire = modaldialog_refire_is_noop(
-                            yield_for_ui,
-                            has_tracking,
-                            filter_allows_noop,
-                            flash_remaining_zero,
-                            draw_procs_done,
-                            rendered_pixels_final,
-                            self.dispatcher.event_queue.is_empty(),
-                        );
-                        if noop_refire {
-                            // Batch additional virtual no-op refires
-                            // without re-entering `cpu.step`. Each saved
-                            // step avoids the PC save + register snapshot
-                            // + opcode fetch + `dispatch_group_a` branch
-                            // path.
-                            let idx = (opcode & 0xFFF) as usize;
-                            self.dispatcher.trap_count += 1;
-                            self.dispatcher.current_trap_word = opcode;
-                            self.dispatcher.trap_histogram[idx] =
-                                self.dispatcher.trap_histogram[idx].saturating_add(1);
-                            // Count inline-skipped entries separately
-                            // from real dispatches so the trap-timing
-                            // histogram can show per-real-dispatch ns.
-                            self.dispatcher.inline_skipped[idx] =
-                                self.dispatcher.inline_skipped[idx].saturating_add(1);
-                            const BATCH: u32 = 64;
-                            let mut budget = BATCH - 1;
-                            while budget > 0 && count < max_steps && !tick_cap_reached {
-                                tick_cap_reached = self.charge_tick_budget(1, tick_cap);
-                                if tick_cap_reached {
-                                    break;
-                                }
-                                count += 1;
-                                self.total_instructions = self.total_instructions.wrapping_add(1);
-                                self.dispatcher.trap_count += 1;
-                                self.dispatcher.trap_histogram[idx] =
-                                    self.dispatcher.trap_histogram[idx].saturating_add(1);
-                                self.dispatcher.inline_skipped[idx] =
-                                    self.dispatcher.inline_skipped[idx].saturating_add(1);
-                                budget -= 1;
-                            }
-                            self.cpu.write_reg(Register::PC, pc);
-                            continue;
-                        }
-                    }
-
-                    // Pre-dispatch fast path for PtInRect ($A8AD).
-                    // EV calls this millions of times while walking dialog
-                    // controls. The handler is pure stack/Rect arithmetic, so
-                    // inline the exact Pascal ABI and keep accounting aligned
-                    // with TrapDispatcher::dispatch.
-                    if opcode == 0xA8AD
-                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
-                    {
-                        let sp = self.cpu.core.a(7);
-                        let rect_ptr = self.bus.read_long(sp);
-                        let pt_v = self.bus.read_word(sp + 4) as i16;
-                        let pt_h = self.bus.read_word(sp + 6) as i16;
-                        let top = self.bus.read_word(rect_ptr) as i16;
-                        let left = self.bus.read_word(rect_ptr + 2) as i16;
-                        let bottom = self.bus.read_word(rect_ptr + 4) as i16;
-                        let right = self.bus.read_word(rect_ptr + 6) as i16;
-                        let in_rect = pt_v >= top && pt_v < bottom && pt_h >= left && pt_h < right;
-                        self.bus
-                            .write_word(sp + 8, if in_rect { 0x0100 } else { 0 });
-                        self.cpu.write_reg(Register::A7, sp + 8);
-
-                        self.dispatcher.trap_count += 1;
-                        self.dispatcher.current_trap_word = opcode;
-                        if pc < 0x0080_0000
-                            && !self.dispatcher.is_menu_tracking()
-                            && !self.dispatcher.is_dialog_tracking()
-                            && !self.dispatcher.is_control_tracking()
-                            && !self.dispatcher.is_window_tracking()
-                            && !self.dispatcher.is_grow_window_tracking()
-                            && !self.dispatcher.is_region_tracking()
-                        {
-                            self.dispatcher.game_trap_count += 1;
-                        }
-                        let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] =
-                            self.dispatcher.trap_histogram[idx].saturating_add(1);
-                        self.dispatcher.inline_skipped[idx] =
-                            self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        if self.service_pending_launch_application(true, false) {
-                            if self.halted {
-                                return (count, false);
-                            }
-                            continue;
-                        }
-                        continue;
-                    }
-
-                    // Pre-dispatch fast path for EventAvail ($A971).
-                    // Marathon polls this heavily while waiting at terminal
-                    // panels. Reuse the dispatcher helpers so event filtering
-                    // and EventRecord layout stay centralized.
-                    if opcode == 0xA971
-                        && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
-                    {
-                        let sp = self.cpu.core.a(7);
-                        let event_ptr = self.bus.read_long(sp);
-                        let event_mask = self.bus.read_word(sp + 4);
-
-                        if let Some(ev) = self.dispatcher.peek_toolbox_event(&self.bus, event_mask)
-                        {
-                            self.dispatcher.write_event_record(
-                                &mut self.bus,
-                                event_ptr,
-                                ev.what,
-                                ev.message,
-                                ev.where_v,
-                                ev.where_h,
-                                ev.modifiers,
-                            );
-                            self.bus.write_word(sp + 6, 0xFFFF);
-                        } else {
-                            self.dispatcher.write_event_record(
-                                &mut self.bus,
-                                event_ptr,
-                                0,
-                                0,
-                                self.dispatcher.mouse_pos.0,
-                                self.dispatcher.mouse_pos.1,
-                                self.dispatcher.current_event_modifiers(),
-                            );
-                            self.bus.write_word(sp + 6, 0);
-                        }
-                        self.cpu.write_reg(Register::A7, sp + 6);
-
-                        self.dispatcher.trap_count += 1;
-                        self.dispatcher.current_trap_word = opcode;
-                        let idx = (opcode & 0xFFF) as usize;
-                        self.dispatcher.trap_histogram[idx] =
-                            self.dispatcher.trap_histogram[idx].saturating_add(1);
-                        self.dispatcher.inline_skipped[idx] =
-                            self.dispatcher.inline_skipped[idx].saturating_add(1);
-                        let null_event = self.note_idle_cycle_trap_result(opcode);
-                        if null_event
-                            && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
-                            && self.try_exact_null_event_cycle_fastfwd(pc, tick_cap)
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-
                     self.dispatcher.yield_for_ui = yield_for_ui;
                     match self
                         .dispatcher
@@ -5970,6 +5676,23 @@ impl FixtureRunner {
                     {
                         Ok(()) => {
                             let null_event = self.note_idle_cycle_trap_result(opcode);
+                            // TickCount spin-loop acceleration is a post-dispatch
+                            // control-flow optimization. The generated trap gateway,
+                            // native-patch routing, canonical Toolbox operation, and
+                            // accounting above always run before it can take effect.
+                            if opcode == 0xA975
+                                && !self.dispatcher.has_native_trap_patch(&self.bus, opcode)
+                                && spin_wait_fastfwd_enabled_for(yield_for_ui, tick_cap)
+                            {
+                                let hit_cap = self.try_tickcount_spin_fastfwd(
+                                    pc.wrapping_add(2),
+                                    tick_cap,
+                                    &mut count,
+                                );
+                                if hit_cap {
+                                    break;
+                                }
+                            }
                             let extra_tick_cost = hle_trap_extra_tick_cost(opcode)
                                 .saturating_add(self.dispatcher.take_hle_tick_cost());
                             if extra_tick_cost > 0
@@ -6155,8 +5878,25 @@ impl FixtureRunner {
                             return (count, false);
                         }
                         Err(Error::UnimplementedTrap(t)) => {
-                            eprintln!("[RUN_STEPS] Unimplemented trap ${:04X} — skipping", t);
-                            self.cpu.write_reg(Register::PC, pc + 2);
+                            // This is an internal registry/implementation gap,
+                            // not the profile's callable `_Unimplemented`
+                            // routine (which takes the documented fatal
+                            // SysError 12 path). With no classified operation
+                            // there is no valid stack, result, CCR, or memory
+                            // effect to synthesize, so execution must stop at
+                            // the faulting A-line instead of advancing into an
+                            // undefined guest state.
+                            eprintln!(
+                                "[RUN_STEPS] Unimplemented trap ${:04X} at PC=${:08X} — halting",
+                                t, pc
+                            );
+                            self.halted = true;
+                            self.halted_pc = Some(pc);
+                            self.halted_trap = Some(t);
+                            self.halted_sp = Some(self.cpu.read_reg(Register::A7));
+                            self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
+                            self.dump_trace();
+                            return (count, false);
                         }
                         Err(e) => {
                             eprintln!(
@@ -11654,7 +11394,7 @@ mod tests {
     }
 
     #[test]
-    fn native_trap_patch_bypasses_the_tickcount_runner_inline_path() {
+    fn native_trap_patch_bypasses_the_tickcount_default_operation() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap = 0x0020_0000u32;
         let handler = 0x0020_0100u32;
@@ -11665,7 +11405,6 @@ mod tests {
         runner.bus.write_word(handler, 0x4E75);
         runner.bus.write_long(sp, result_sentinel);
         runner.dispatcher.native_trap_table.insert(0xA975, handler);
-        let inline_before = runner.dispatcher.inline_skipped[0x175];
         runner.cpu.write_reg(Register::PC, trap);
         runner.cpu.write_reg(Register::A7, sp);
 
@@ -11676,7 +11415,6 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::PC), trap + 2);
         assert_eq!(runner.cpu.read_reg(Register::A7), sp);
         assert_eq!(runner.bus.read_long(sp), result_sentinel);
-        assert_eq!(runner.dispatcher.inline_skipped[0x175], inline_before);
         assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
     }
 
@@ -21891,33 +21629,6 @@ mod tests {
         assert!(spin_wait_fastfwd_gate(true, false, true, false));
     }
 
-    /// Regression gates for the ModalDialog noop-refire skip. The GUI
-    /// gate is the most critical because tick-driven animations
-    /// require real refires.
-    #[test]
-    fn modaldialog_refire_skip_gui_mode_never_fires() {
-        // yield_for_ui=true should ALWAYS prevent the skip,
-        // regardless of the other conditions.
-        for has_tracking in [false, true] {
-            for events in [false, true] {
-                assert!(
-                    !modaldialog_refire_is_noop(
-                        true, // yield_for_ui = GUI
-                        has_tracking,
-                        true, // all "noop" conditions
-                        true,
-                        true,
-                        true,
-                        events,
-                    ),
-                    "GUI mode must never skip refires (has_tracking={}, events={})",
-                    has_tracking,
-                    events
-                );
-            }
-        }
-    }
-
     #[test]
     fn tracking_refire_freeze_policy_keeps_modaldialog_ticks_live() {
         // Menu/control tracking may freeze app-visible ticks while the GUI
@@ -22395,35 +22106,6 @@ mod tests {
     }
 
     #[test]
-    fn modaldialog_refire_skip_headless_requires_all_conditions() {
-        // In headless mode, ALL noop conditions must be true.
-        // Each condition false alone must prevent the skip.
-        assert!(modaldialog_refire_is_noop(
-            false, true, true, true, true, true, true,
-        ));
-
-        // Each one off in turn should prevent the skip.
-        assert!(!modaldialog_refire_is_noop(
-            false, false, true, true, true, true, true,
-        ));
-        assert!(!modaldialog_refire_is_noop(
-            false, true, false, true, true, true, true,
-        ));
-        assert!(!modaldialog_refire_is_noop(
-            false, true, true, false, true, true, true,
-        ));
-        assert!(!modaldialog_refire_is_noop(
-            false, true, true, true, false, true, true,
-        ));
-        assert!(!modaldialog_refire_is_noop(
-            false, true, true, true, true, false, true,
-        ));
-        assert!(!modaldialog_refire_is_noop(
-            false, true, true, true, true, true, false,
-        ));
-    }
-
-    #[test]
     fn spin_fastfwd_rejects_wrong_branch_target() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
@@ -22448,47 +22130,30 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    /// Regression gate for the `inline_skipped` counter on the
-    /// TickCount fast path. Without this, a future change that
-    /// removes the increment (or moves it to a path that doesn't
-    /// actually fire) would silently produce wrong real-vs-inline
-    /// counts in the timing histogram, masking real per-dispatch
-    /// costs.
     #[test]
-    fn tickcount_inline_skip_increments_inline_skipped() {
+    fn tickcount_runner_uses_canonical_dispatch_and_accounting() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         // Plain TickCount call: SUBQ.W #4, A7 ; _TickCount ; NOP
-        // The runner's pre-dispatch fast path recognises 0xA975,
-        // writes the tick to (A7), and continues without calling
-        // dispatch().
         runner.bus.write_word(base, 0x594F); // SUBQ.W #4, A7 (reserve LONGINT slot)
         runner.bus.write_word(base + 2, 0xA975); // _TickCount
         runner.bus.write_word(base + 4, 0x4E71); // NOP (sentinel)
         runner.cpu.write_reg(Register::PC, base);
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
-        runner.dispatcher.tick_count = 0;
-        runner.bus.write_long(0x016A, 0);
+        runner.dispatcher.tick_count = 0x1234_5678;
+        runner.bus.write_long(0x016A, 0x1234_5678);
         runner.set_instructions_per_tick(1_000_000);
 
-        let idx = (0xA975u16 & 0xFFF) as usize;
-        let before = runner.dispatcher.inline_skipped[idx];
-
-        // Two steps: the SUBQ first, then the trap that triggers the inline.
+        let before_traps = runner.dispatcher.trap_count;
+        // Two steps: the SUBQ first, then canonical trap dispatch.
         let (steps, running) = runner.run_steps(2, None);
-        assert!(running, "runner should not halt on a plain trap fast path");
+        assert!(
+            running,
+            "runner should not halt on a canonical TickCount trap"
+        );
         assert_eq!(steps, 2);
-
-        let after = runner.dispatcher.inline_skipped[idx];
-        assert_eq!(
-            after - before,
-            1,
-            "TickCount fast path must increment inline_skipped[$0175]"
-        );
-        assert_eq!(
-            runner.dispatcher.trap_histogram[idx], 1,
-            "the same path must also increment trap_histogram[$0175]"
-        );
+        assert_eq!(runner.bus.read_long(0x000F_FFFC), 0x1234_5678);
+        assert_eq!(runner.dispatcher.trap_count - before_traps, 1);
     }
 
     #[test]
@@ -22508,6 +22173,30 @@ mod tests {
             runner.halted_by_exit_to_shell(),
             "ExitToShell halt must be classified as a clean application exit"
         );
+    }
+
+    #[test]
+    fn unimplemented_trap_halts_at_the_faulting_instruction() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let base = 0x0001_0000u32;
+        let sp = 0x0010_0000u32;
+        runner.bus.write_word(base, 0xAFFE);
+        runner.bus.write_word(base + 2, 0x4E71);
+        runner.cpu.write_reg(Register::PC, base);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let (steps, running) = runner.run_steps(1, None);
+
+        assert_eq!(steps, 1);
+        assert!(
+            !running,
+            "an unclassified HLE row must fail closed (pc=${:08X})",
+            runner.cpu.read_reg(Register::PC)
+        );
+        assert!(runner.is_halted());
+        assert_eq!(runner.halted_pc(), Some(base));
+        assert_eq!(runner.halted_trap(), Some(0xAFFE));
+        assert_eq!(runner.halted_sp(), Some(sp));
     }
 
     #[test]
@@ -22564,7 +22253,7 @@ mod tests {
     }
 
     #[test]
-    fn ptinrect_inline_path_matches_pascal_stack_contract() {
+    fn ptinrect_runner_dispatch_matches_pascal_stack_contract() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         let sp = 0x0010_0000u32;
@@ -22583,24 +22272,25 @@ mod tests {
         runner.bus.write_word(rect + 4, 40); // bottom
         runner.bus.write_word(rect + 6, 50); // right
 
-        let idx = (0xA8ADu16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
+        let before_traps = runner.dispatcher.trap_count;
         let before_game = runner.dispatcher.game_trap_count;
 
         let (steps, running) = runner.run_steps(1, None);
 
-        assert!(running, "runner should not halt on PtInRect inline path");
+        assert!(
+            running,
+            "runner should not halt on canonical PtInRect dispatch"
+        );
         assert_eq!(steps, 1);
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
         assert_eq!(runner.cpu.read_reg(Register::A7), sp + 8);
         assert_eq!(runner.bus.read_word(sp + 8), 0x0100);
-        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 1);
-        assert_eq!(runner.dispatcher.trap_histogram[idx], 1);
+        assert_eq!(runner.dispatcher.trap_count - before_traps, 1);
         assert_eq!(runner.dispatcher.game_trap_count - before_game, 1);
     }
 
     #[test]
-    fn eventavail_inline_path_peeks_without_dequeueing() {
+    fn eventavail_runner_dispatch_peeks_without_dequeueing() {
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let base = 0x0001_0000u32;
         let sp = 0x0010_0000u32;
@@ -22614,13 +22304,15 @@ mod tests {
         runner.bus.write_word(sp + 4, 0x0008); // keyDownMask
         runner.dispatcher.push_key_down(0x31, b' ');
 
-        let idx = (0xA971u16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
+        let before_traps = runner.dispatcher.trap_count;
         let before_game = runner.dispatcher.game_trap_count;
 
         let (steps, running) = runner.run_steps(1, None);
 
-        assert!(running, "runner should not halt on EventAvail inline path");
+        assert!(
+            running,
+            "runner should not halt on canonical EventAvail dispatch"
+        );
         assert_eq!(steps, 1);
         assert_eq!(runner.cpu.read_reg(Register::PC), base + 2);
         assert_eq!(runner.cpu.read_reg(Register::A7), sp + 6);
@@ -22635,126 +22327,11 @@ mod tests {
             1,
             "EventAvail must not dequeue the matching event"
         );
-        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 1);
-        assert_eq!(runner.dispatcher.trap_histogram[idx], 1);
+        assert_eq!(runner.dispatcher.trap_count - before_traps, 1);
         assert_eq!(
             runner.dispatcher.game_trap_count, before_game,
             "EventAvail remains excluded from game_trap_count as an idle trap"
         );
-    }
-
-    /// Regression gate for the `inline_skipped` counter on the
-    /// ModalDialog batched no-op refire path. The runner's pre-
-    /// dispatch fast path increments `inline_skipped[$0191]` once
-    /// for the entry plus `BATCH-1=63` times in the inner loop.
-    /// Without this test, a regression that drops the increment
-    /// would silently make ModalDialog look ~99% inline-skipped
-    /// without surfacing anywhere else.
-    #[test]
-    fn modaldialog_batched_skip_increments_inline_skipped_by_batch() {
-        use crate::trap::dispatch::DialogTrackingState;
-        use std::collections::VecDeque;
-
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        // Bare ModalDialog at PC. The runner-level fast path rewinds
-        // PC after each fire, so re-firing repeatedly into the same
-        // trap word is the production behaviour.
-        runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
-        runner.dispatcher.tick_count = 0;
-        runner.bus.write_long(0x016A, 0);
-        runner.set_instructions_per_tick(1_000_000);
-
-        // Populate dialog_tracking so the noop_refire pure-decision
-        // function returns true. modaldialog_refire_is_noop requires
-        // ALL of: tracking present, filter_proc=0, flash_remaining=0,
-        // draw_procs_done, rendered_pixels_final, event queue empty
-        // (and yield_for_ui = false in headless run_steps).
-        runner.dispatcher.dialog_tracking = Some(DialogTrackingState {
-            dialog_ptr: 0x0020_0000,
-            bounds: (0, 0, 32, 32),
-            title: String::new(),
-            proc_id: 1,
-            items: Vec::new(),
-            default_item: 0,
-            cancel_item: 0,
-            edit_text: String::new(),
-            edit_item: 0,
-            saved_pixels: Vec::new(),
-            stack_ptr: 0,
-            item_hit_ptr: 0,
-            rendered_pixels: Vec::new(),
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_item: 0,
-            edit_text_modified: false,
-            draw_proc_queue: VecDeque::new(),
-            draw_procs_done: true,
-            rendered_pixels_final: true,
-            filter_proc: 0,
-            game_managed: false,
-            last_filter_event: None,
-            popup_draws: Vec::new(),
-            active_popup: None,
-            active_button: None,
-            active_user_item: None,
-        });
-
-        let idx = (0xA991u16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
-        let before_hist = runner.dispatcher.trap_histogram[idx];
-
-        // BATCH=64 in the runner. With max_steps=64 we should observe
-        // exactly one entry + 63 batched iterations = 64 increments.
-        let (steps, _running) = runner.run_steps(64, None);
-
-        assert_eq!(
-            steps, 64,
-            "max_steps cap exhausted by 64 batched no-op refires"
-        );
-        let after_inline = runner.dispatcher.inline_skipped[idx];
-        let after_hist = runner.dispatcher.trap_histogram[idx];
-        assert_eq!(
-            after_inline - before_inline,
-            64,
-            "batched skip must increment inline_skipped[$0191] by BATCH=64"
-        );
-        assert_eq!(
-            after_hist - before_hist,
-            64,
-            "trap_histogram and inline_skipped must increment in lockstep on the inline path"
-        );
-    }
-
-    #[test]
-    fn modaldialog_batched_skip_applies_after_paced_filter_null_event() {
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        let base = 0x0001_0000u32;
-        let filter_proc = 0x0001_1000u32;
-        let dialog_ptr = 0x0020_0000u32;
-        runner.bus.write_word(base, 0xA991); // _ModalDialog
-        runner.cpu.write_reg(Register::PC, base);
-        runner.cpu.write_reg(Register::A7, 0x0010_0000);
-        runner.dispatcher.tick_count = 42;
-        runner.bus.write_long(0x016A, 42);
-        runner.set_instructions_per_tick(1_000_000);
-        runner.dispatcher.dialog_tracking =
-            Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
-        runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
-
-        let idx = (0xA991u16 & 0xFFF) as usize;
-        let before_inline = runner.dispatcher.inline_skipped[idx];
-        let before_hist = runner.dispatcher.trap_histogram[idx];
-
-        let (steps, running) = runner.run_steps(64, None);
-
-        assert!(running);
-        assert_eq!(steps, 64);
-        assert_eq!(runner.cpu.read_reg(Register::PC), base);
-        assert_eq!(runner.dispatcher.inline_skipped[idx] - before_inline, 64);
-        assert_eq!(runner.dispatcher.trap_histogram[idx] - before_hist, 64);
     }
 
     #[test]
