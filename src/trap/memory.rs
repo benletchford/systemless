@@ -1772,18 +1772,28 @@ impl super::TrapDispatcher {
 
             // ========== Time Manager ==========
 
-            // InsTime ($A058)
-            // Installs a task record into the Time Manager queue.
-            // PROCEDURE InsTime(tmTaskPtr: QElemPtr);
-            // Processes 1994, 3-18
+            // InsTime / InsXTime ($A058/$A458)
+            // Installs an original or extended task record into the Time Manager queue.
+            // PROCEDURE InsTime (tmTaskPtr: QElemPtr);
+            // PROCEDURE InsXTime (tmTaskPtr: QElemPtr);
+            // Inside Macintosh: Processes (1994), pp. 3-18--3-20
             // TMTask layout: qLink(+0,4) qType(+4,2) tmAddr(+6,4) tmCount(+10,4)
+            // Extended fields: tmWakeUp(+14,4) tmReserved(+18,4)
             (false, 0x58) => {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let tm_addr = bus.read_long(task_ptr + 6);
+                let extended = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::TimeTaskExtended
+                );
+                if !extended || bus.read_long(task_ptr + 14) == 0 {
+                    self.timer_extended_wakeups.remove(&task_ptr);
+                }
                 // Remove any existing task for the same record address
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
                 self.timer_tasks.push(super::dispatch::TimerTask {
                     task_ptr,
+                    extended,
                     tm_addr,
                     active: false,
                     fire_at_tick: 0,
@@ -1852,8 +1862,8 @@ impl super::TrapDispatcher {
                 // We use 60 (not 60.15) to keep integer arithmetic exact for common
                 // millisecond values.
                 // Positive = milliseconds, negative = negated microseconds.
-                let delay_subticks = if delay == 0 {
-                    SUBTICKS_PER_TICK // Fire ASAP (next tick)
+                let requested_delay_subticks = if delay == 0 {
+                    0
                 } else if delay > 0 {
                     (delay as u64) * 60_000
                 } else {
@@ -1863,7 +1873,44 @@ impl super::TrapDispatcher {
                 let current_subtick = self
                     .timer_current_subtick
                     .max(current_ticks as u64 * SUBTICKS_PER_TICK);
-                let fire_at_subtick = current_subtick.saturating_add(delay_subticks);
+                let task_kind = self
+                    .timer_tasks
+                    .iter()
+                    .find(|task| task.task_ptr == task_ptr)
+                    .map(|task| task.extended);
+                let fire_at_subtick = if task_kind == Some(true) {
+                    // Processes 1994, pp. 3-8--3-9: an extended task whose
+                    // tmWakeUp is nonzero schedules relative to its preceding
+                    // intended expiry, eliminating callback/interrupt drift.
+                    // A target already in the past has an actual delay of 0,
+                    // while the intended (past) target remains the next base.
+                    let prior_wakeup = if bus.read_long(task_ptr + 14) == 0 {
+                        None
+                    } else {
+                        self.timer_extended_wakeups.get(&task_ptr).copied()
+                    };
+                    let intended_wakeup = prior_wakeup
+                        .unwrap_or(current_subtick)
+                        .saturating_add(requested_delay_subticks);
+                    self.timer_extended_wakeups
+                        .insert(task_ptr, intended_wakeup);
+                    // tmWakeUp is explicitly an opaque internal format. Keep
+                    // it nonzero so guest code can preserve or reset it, while
+                    // the exact deadline remains in manager-owned state.
+                    let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
+                    bus.write_long(task_ptr + 14, opaque_wakeup);
+                    intended_wakeup.max(current_subtick)
+                } else {
+                    // Preserve the established next-tick scheduling boundary
+                    // for an original task's zero-delay "as soon as interrupts
+                    // are enabled" request.
+                    let delay_subticks = if delay == 0 {
+                        SUBTICKS_PER_TICK
+                    } else {
+                        requested_delay_subticks
+                    };
+                    current_subtick.saturating_add(delay_subticks)
+                };
                 let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
                 if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
                     task.active = true;
@@ -9295,6 +9342,84 @@ mod tests {
         let result = dispatcher.dispatch_memory(false, 0x58, &mut cpu, &mut bus);
         assert!(result.is_some(), "InsTime should be handled");
         assert!(result.unwrap().is_ok(), "InsTime should succeed (no-op)");
+    }
+
+    #[test]
+    fn ins_x_time_reprime_uses_the_previous_intended_expiry() {
+        // Inside Macintosh: Processes (1994), pp. 3-8--3-9 and 3-19:
+        // InsXTime selects the extended record. A nonzero tmWakeUp makes the
+        // next PrimeTime delay relative to the preceding intended expiry,
+        // not to callback latency; RmvTime/InsXTime may preserve that value.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+        bus.write_long(0x016A, 100);
+        bus.write_long(task_ptr + 6, 0x1234_5678);
+        bus.write_long(task_ptr + 14, 0);
+
+        dispatcher.current_trap_word = 0xA458;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(dispatcher.timer_tasks[0].extended);
+
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 10);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dispatcher.timer_tasks[0].fire_at_subtick, 100_600_000);
+        assert_ne!(bus.read_long(task_ptr + 14), 0);
+
+        dispatcher.timer_current_subtick = 100_750_000;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(dispatcher.timer_tasks.is_empty());
+
+        dispatcher.current_trap_word = 0xA458;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 10);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            dispatcher.timer_tasks[0].fire_at_subtick, 101_200_000,
+            "callback latency must not shift the extended task's frequency"
+        );
+        assert_eq!(
+            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            Some(&101_200_000)
+        );
+
+        dispatcher.timer_current_subtick = 102_000_000;
+        dispatcher.timer_tasks[0].active = false;
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 1);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dispatcher.timer_tasks[0].fire_at_subtick, 102_000_000,
+            "an intended expiry in the past must receive an actual zero delay"
+        );
+        assert_eq!(
+            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            Some(&101_260_000),
+            "the past intended expiry remains the drift-free base"
+        );
     }
 
     #[test]

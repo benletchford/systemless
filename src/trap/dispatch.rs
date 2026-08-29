@@ -794,6 +794,8 @@ pub(crate) struct RecentColorTableFetch {
 pub struct TimerTask {
     /// Guest address of the TMTask record
     pub task_ptr: u32,
+    /// Whether InsXTime installed the extended, drift-free record form.
+    pub extended: bool,
     /// Address of the callback procedure (from tmAddr at task_ptr+6)
     pub tm_addr: u32,
     /// Whether the task is primed (waiting to fire)
@@ -1237,12 +1239,15 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// UpperString's MARKS form comes from the same book, pp. 5-64--5-65.
 /// Parameter-block synchronous, immediate, and asynchronous forms come from
 /// *Inside Macintosh: Devices* (1994), p. 1-16.
+/// Original and extended Time Manager task installation comes from *Inside
+/// Macintosh: Processes* (1994), pp. 3-18--3-20.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares reviewed exact
 /// words in `MacMemory.h` (lines 436--1010, 1331--1362), `TextUtils.h` (lines
 /// 404--455), `Devices.h` (lines 905--1044, 1282--1415), and `Files.h` (lines
-/// 1315--3343); `StringCompare.h` lines 567--596 retains the comparison APIs.
+/// 1315--3343); `Timer.h` lines 74--100 declares InsTime and InsXTime;
+/// `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
     Unclassified,
@@ -1263,6 +1268,8 @@ pub(crate) enum OsRoutineVariant {
     ParameterBlockSynchronous,
     ParameterBlockImmediate,
     ParameterBlockAsynchronous,
+    TimeTaskOriginal,
+    TimeTaskExtended,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1330,6 +1337,12 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x01..=0x06, 0x0000) => OsRoutineVariant::ParameterBlockSynchronous,
         (0x01..=0x06, 0x0200) => OsRoutineVariant::ParameterBlockImmediate,
         (0x01..=0x06, 0x0400) => OsRoutineVariant::ParameterBlockAsynchronous,
+
+        // Processes 1994, pp. 3-18--3-20 and UI 3.4 Timer.h lines 74--100:
+        // bit 10 selects InsXTime's extended, drift-free TMTask record.
+        // Bit 9 has no documented meaning for this slot.
+        (0x58, 0x0000) => OsRoutineVariant::TimeTaskOriginal,
+        (0x58, 0x0400) => OsRoutineVariant::TimeTaskExtended,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -2517,6 +2530,11 @@ pub struct TrapDispatcher {
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: Vec<TimerTask>,
+    /// Exact scheduled wake-up retained for extended Time Manager records.
+    /// The guest `tmWakeUp` representation is explicitly private to the
+    /// manager; this map preserves its semantic deadline across RmvTime and
+    /// InsXTime without exposing host units. Processes 1994, pp. 3-8--3-9.
+    pub(crate) timer_extended_wakeups: HashMap<u32, u64>,
     /// Exact Time Manager time while a callback is being delivered.
     pub(crate) timer_current_subtick: u64,
     /// Installed Vertical Retrace Manager tasks.
@@ -3832,6 +3850,7 @@ impl TrapDispatcher {
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Vec::new(),
+            timer_extended_wakeups: HashMap::new(),
             timer_current_subtick: 0,
             vbl_tasks: Vec::new(),
             system_vbl_queue_anchor: 0,
@@ -8124,8 +8143,8 @@ mod tests {
             FileHfsSynchronous, FileSynchronous, LowerText, ParameterBlockAsynchronous,
             ParameterBlockImmediate, ParameterBlockSynchronous, StripText, StripUpperText,
             SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
-            TextCompareFoldCaseAndMarks, TextCompareStripMarks, Unclassified,
-            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
+            TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
+            Unclassified, UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8144,6 +8163,27 @@ mod tests {
                     );
                 }
             }
+        }
+
+        // Inside Macintosh: Processes (1994), pp. 3-18--3-20; UI 3.4
+        // Timer.h lines 74--100 declare InsTime $A058 and InsXTime $A458.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA058 | return_a0).os_routine_variant,
+                TimeTaskOriginal
+            );
+            assert_eq!(
+                raw_trap_route(0xA458 | return_a0).os_routine_variant,
+                TimeTaskExtended
+            );
+            assert_eq!(
+                raw_trap_route(0xA258 | return_a0).os_routine_variant,
+                Unclassified
+            );
+            assert_eq!(
+                raw_trap_route(0xA658 | return_a0).os_routine_variant,
+                Unclassified
+            );
         }
 
         // Inside Macintosh: Text (1993), pp. 5-64--5-65.
@@ -8280,7 +8320,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 240);
+        assert_eq!(classified, 244);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,

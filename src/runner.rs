@@ -18710,6 +18710,7 @@ mod tests {
 
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            extended: false,
             tm_addr: 0x0004_1234,
             active: true,
             fire_at_tick: 10,
@@ -18762,6 +18763,7 @@ mod tests {
         runner.bus.write_word(callback_addr, 0x4E75); // RTS
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            extended: false,
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 101,
@@ -18801,6 +18803,7 @@ mod tests {
         runner.tick_budget = runner.instructions_per_tick as i32;
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            extended: false,
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 101,
@@ -18846,6 +18849,7 @@ mod tests {
         });
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            extended: false,
             tm_addr: callback_addr,
             active: true,
             fire_at_tick: 102,
@@ -18885,6 +18889,7 @@ mod tests {
         runner.dispatcher.timer_tasks.extend([
             TimerTask {
                 task_ptr: 0x0039_38C8,
+                extended: false,
                 tm_addr: 0x0002_0000,
                 active: true,
                 fire_at_tick: 10,
@@ -18893,6 +18898,7 @@ mod tests {
             },
             TimerTask {
                 task_ptr: 0x0039_3900,
+                extended: false,
                 tm_addr: 0x0002_1000,
                 active: true,
                 fire_at_tick: 10,
@@ -18942,6 +18948,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr,
+            extended: false,
             tm_addr: 0x0002_0000,
             active: true,
             fire_at_tick: 10,
