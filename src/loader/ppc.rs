@@ -3083,6 +3083,25 @@ pub struct PpcVfsDirectory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcVfsVolumeRecord {
+    pub ref_num: i16,
+    pub name: String,
+    pub root_dir_id: u32,
+    pub attributes: u16,
+    pub file_count: u16,
+    pub allocation_block_count: u16,
+    pub allocation_block_size: u32,
+    pub clump_size: u32,
+    pub free_blocks: u16,
+    pub bitmap_start: u16,
+    pub allocation_pointer: u16,
+    pub allocation_start: u16,
+    pub next_catalog_id: u32,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcCfmConnection {
     pub id: u32,
     pub library_name: String,
@@ -4893,6 +4912,7 @@ pub struct PpcLoadedApp {
     pub quickdraw_text_mode: i16,
     pub quickdraw_text_size: i16,
     pub quickdraw_cursor_level: i16,
+    pub vfs_volumes: Vec<PpcVfsVolumeRecord>,
     pub vfs_directories: Vec<PpcVfsDirectory>,
     pub next_vfs_dir_id: u32,
     pub default_dir_id: u32,
@@ -8042,6 +8062,7 @@ impl PpcLoadedApp {
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let mut quickdraw_cursor_level = self.quickdraw_cursor_level;
+        let vfs_volumes = std::mem::take(&mut self.vfs_volumes);
         let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
         let mut next_vfs_dir_id = self.next_vfs_dir_id;
         let mut default_dir_id = self.default_dir_id;
@@ -8535,6 +8556,7 @@ impl PpcLoadedApp {
                         &mut quickdraw_text_mode,
                         &mut quickdraw_text_size,
                         &mut quickdraw_cursor_level,
+                        &vfs_volumes,
                         &mut vfs_directories,
                         &mut next_vfs_dir_id,
                         default_dir_id,
@@ -8893,6 +8915,7 @@ impl PpcLoadedApp {
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
         self.quickdraw_cursor_level = quickdraw_cursor_level;
+        self.vfs_volumes = vfs_volumes;
         self.vfs_directories = vfs_directories;
         self.next_vfs_dir_id = next_vfs_dir_id;
         self.default_dir_id = default_dir_id;
@@ -8950,6 +8973,10 @@ impl PpcLoadedApp {
         self.next_vfs_dir_id = next_dir_id
             .max(max_seeded_dir_id.saturating_add(1))
             .max(PPC_FIRST_DYNAMIC_DIR_ID);
+    }
+
+    pub fn seed_vfs_volumes(&mut self, volumes: Vec<PpcVfsVolumeRecord>) {
+        self.vfs_volumes = volumes;
     }
 
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
@@ -13378,6 +13405,7 @@ pub fn load_pef_application_with_config(
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         quickdraw_cursor_level: 0,
+        vfs_volumes: Vec::new(),
         vfs_directories: initial_ppc_vfs_directories(),
         next_vfs_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
         default_dir_id: PPC_ROOT_DIR_ID,
@@ -14804,7 +14832,10 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "PBSetCatInfo")
         | ("InterfaceLib", "PBSetCatInfoSync")
         | ("InterfaceLib", "PBSetCatInfoAsync") => PpcImportDispatcherTarget::PBSetCatInfo,
-        ("InterfaceLib", "PBHGetVInfo")
+        ("InterfaceLib", "PBGetVInfo")
+        | ("InterfaceLib", "PBGetVInfoSync")
+        | ("InterfaceLib", "PBGetVInfoAsync")
+        | ("InterfaceLib", "PBHGetVInfo")
         | ("InterfaceLib", "PBHGetVInfoSync")
         | ("InterfaceLib", "PBHGetVInfoAsync") => PpcImportDispatcherTarget::PBHGetVInfo,
         ("InterfaceLib", "PBGetFCBInfo")
@@ -15431,6 +15462,7 @@ fn dispatch_supported_import(
     quickdraw_text_mode: &mut i16,
     quickdraw_text_size: &mut i16,
     quickdraw_cursor_level: &mut i16,
+    vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &mut Vec<PpcVfsDirectory>,
     next_vfs_dir_id: &mut u32,
     default_dir_id: u32,
@@ -19301,6 +19333,7 @@ fn dispatch_supported_import(
             ppc_pb_get_cat_info(
                 cpu,
                 memory,
+                vfs_volumes,
                 vfs_directories,
                 vfs_files,
                 vfs_resource_files,
@@ -19319,7 +19352,7 @@ fn dispatch_supported_import(
             ),
         ))),
         PpcImportDispatcherTarget::PBHGetVInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_pbh_get_v_info(cpu, memory),
+            ppc_pbh_get_v_info(cpu, memory, vfs_volumes),
         ))),
         PpcImportDispatcherTarget::PBGetFCBInfo => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_pb_get_fcb_info(
@@ -70542,6 +70575,7 @@ struct PpcCatalogEntry {
 fn ppc_pb_get_cat_info(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     vfs_resource_files: &[PpcVfsResourceFileRecord],
@@ -70569,7 +70603,6 @@ fn ppc_pb_get_cat_info(
     let Some(requested_dir_id) = memory.read_u32_be(pb + 48) else {
         return PPC_PARAM_ERR;
     };
-    let resolved_vref = ppc_resolve_volume_ref_num(vref);
     let effective_dir_id = ppc_resolve_directory_id(vref, requested_dir_id, default_dir_id);
     let name_bytes = if name_ptr == 0 {
         Vec::new()
@@ -70579,7 +70612,20 @@ fn ppc_pb_get_cat_info(
             None => return ppc_complete_pb(memory, pb, PPC_PARAM_ERR),
         }
     };
-    if effective_dir_id > 1
+    let requested_name = decode_mac_roman(&name_bytes);
+    let absolute_pathname = !requested_name.starts_with(':') && requested_name.contains(':');
+    let pathname_volume = (!requested_name.starts_with(':'))
+        .then(|| requested_name.split_once(':').map(|(volume, _)| volume))
+        .flatten()
+        .and_then(|name| {
+            vfs_volumes
+                .iter()
+                .find(|volume| volume.name.eq_ignore_ascii_case(name))
+        });
+    let resolved_vref =
+        pathname_volume.map_or_else(|| ppc_resolve_volume_ref_num(vref), |volume| volume.ref_num);
+    if !absolute_pathname
+        && effective_dir_id > 1
         && ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none()
     {
         return ppc_complete_pb(memory, pb, PPC_DIR_NF_ERR);
@@ -71065,7 +71111,11 @@ fn ppc_set_finfo_for_path(
     found
 }
 
-fn ppc_pbh_get_v_info(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+fn ppc_pbh_get_v_info(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
     let pb = cpu.gpr[3];
     if pb == 0 || !ppc_memory_can_write_bytes(memory, pb, 122) {
         return PPC_PARAM_ERR;
@@ -71079,35 +71129,117 @@ fn ppc_pbh_get_v_info(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     let Some(volume_index) = memory.read_u16_be(pb + 28).map(|value| value as i16) else {
         return PPC_PARAM_ERR;
     };
-    if volume_index > 1 || (volume_index == 0 && !matches!(vref_num, 0 | PPC_BOOT_VOLUME_REF_NUM)) {
-        return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
-    }
+    let requested_name = if name_ptr == 0 {
+        String::new()
+    } else {
+        ppc_read_pstring_bytes(memory, name_ptr)
+            .map(|name| decode_mac_roman(&name))
+            .unwrap_or_default()
+    };
 
-    let volume_name = crate::trap::TrapDispatcher::boot_volume_name().as_bytes();
-    if name_ptr != 0 && !ppc_optional_pstring_output_can_write(memory, name_ptr, volume_name) {
+    // Inside Macintosh: Files (1992), pp. 2-144--2-146: a positive
+    // ioVolIndex enumerates the VCB queue, zero selects by name or reference,
+    // and a negative index uses the standard name/reference search order.
+    let boot_volume = || PpcVfsVolumeRecord {
+        ref_num: PPC_BOOT_VOLUME_REF_NUM,
+        name: crate::trap::TrapDispatcher::boot_volume_name().to_string(),
+        root_dir_id: PPC_ROOT_DIR_ID,
+        attributes: 0,
+        file_count: 0,
+        allocation_block_count: u16::MAX,
+        allocation_block_size: 4096,
+        clump_size: 4096,
+        free_blocks: 0x8000,
+        bitmap_start: 3,
+        allocation_pointer: 4,
+        allocation_start: 3,
+        next_catalog_id: 1024,
+        created_date: 0,
+        modified_date: 0,
+    };
+    let volume_by_name = |name: &str| {
+        let volume_name = name.split(':').next().unwrap_or(name);
+        if volume_name.eq_ignore_ascii_case(crate::trap::TrapDispatcher::boot_volume_name()) {
+            Some(boot_volume())
+        } else {
+            vfs_volumes
+                .iter()
+                .find(|volume| volume.name.eq_ignore_ascii_case(volume_name))
+                .cloned()
+        }
+    };
+    let volume_by_ref = |requested_ref: i16| {
+        if requested_ref == PPC_BOOT_VOLUME_REF_NUM {
+            Some(boot_volume())
+        } else {
+            vfs_volumes
+                .iter()
+                .find(|volume| volume.ref_num == requested_ref)
+                .cloned()
+        }
+    };
+    let selected = if volume_index == 0 {
+        if vref_num != 0 {
+            volume_by_ref(vref_num)
+        } else if !requested_name.is_empty() {
+            volume_by_name(&requested_name)
+        } else {
+            Some(boot_volume())
+        }
+    } else if volume_index > 0 {
+        if volume_index == 1 {
+            Some(boot_volume())
+        } else {
+            vfs_volumes.get((volume_index - 2) as usize).cloned()
+        }
+    } else if requested_name.contains(':') {
+        volume_by_name(&requested_name)
+    } else if vref_num != 0 {
+        volume_by_ref(vref_num)
+    } else if !requested_name.is_empty() {
+        volume_by_name(&requested_name)
+    } else {
+        Some(boot_volume())
+    };
+    let Some(volume) = selected else {
+        if ppc_hle_trace_enabled() {
+            eprintln!(
+                "[PPC-TRACE] PBHGetVInfo index={volume_index} vref={vref_num} name={requested_name:?} -> nsvErr"
+            );
+        }
+        return ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+    };
+
+    let volume_name = encode_mac_roman_lossy(&volume.name);
+    if name_ptr != 0 && !ppc_optional_pstring_output_can_write(memory, name_ptr, &volume_name) {
         return ppc_complete_pb(memory, pb, PPC_PARAM_ERR);
     }
     if name_ptr != 0 {
-        let _ = ppc_write_pstring_bytes(memory, name_ptr, volume_name);
+        let _ = ppc_write_pstring_bytes(memory, name_ptr, &volume_name);
     }
 
-    // Inside Macintosh: Files (1992), 2-144 through 2-146 and the
-    // HVolumeParam layout on 2-238: PBHGetVInfo returns the selected volume's
-    // reference, allocation geometry, HFS signature, drive, and Finder IDs.
+    if ppc_hle_trace_enabled() {
+        eprintln!(
+            "[PPC-TRACE] PBHGetVInfo index={volume_index} vref={vref_num} name={requested_name:?} -> {:?} ({})",
+            volume.name, volume.ref_num
+        );
+    }
+
+    // Inside Macintosh: Files (1992), p. 2-238: HVolumeParam layout.
     let writes = [
-        memory.write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16),
-        memory.write_u32_be(pb + 30, 0),
-        memory.write_u32_be(pb + 34, 0),
-        memory.write_u16_be(pb + 38, 0),
-        memory.write_u16_be(pb + 40, 0),
-        memory.write_u16_be(pb + 42, 3),
-        memory.write_u16_be(pb + 44, 4),
-        memory.write_u16_be(pb + 46, u16::MAX),
-        memory.write_u32_be(pb + 48, 4096),
-        memory.write_u32_be(pb + 52, 4096),
-        memory.write_u16_be(pb + 56, 3),
-        memory.write_u32_be(pb + 58, 1024),
-        memory.write_u16_be(pb + 62, 0x8000),
+        memory.write_u16_be(pb + 22, volume.ref_num as u16),
+        memory.write_u32_be(pb + 30, volume.created_date),
+        memory.write_u32_be(pb + 34, volume.modified_date),
+        memory.write_u16_be(pb + 38, volume.attributes),
+        memory.write_u16_be(pb + 40, volume.file_count),
+        memory.write_u16_be(pb + 42, volume.bitmap_start),
+        memory.write_u16_be(pb + 44, volume.allocation_pointer),
+        memory.write_u16_be(pb + 46, volume.allocation_block_count),
+        memory.write_u32_be(pb + 48, volume.allocation_block_size),
+        memory.write_u32_be(pb + 52, volume.clump_size),
+        memory.write_u16_be(pb + 56, volume.allocation_start),
+        memory.write_u32_be(pb + 58, volume.next_catalog_id),
+        memory.write_u16_be(pb + 62, volume.free_blocks),
         memory.write_u16_be(pb + 64, 0x4244),
         memory.write_u16_be(pb + 66, 1),
         memory.write_u16_be(pb + 68, (-33i16) as u16),
@@ -71287,16 +71419,24 @@ fn ppc_catalog_entry_for_lookup(
         });
     }
 
-    let parent_path = ppc_directory_path_for_id(vfs_directories, dir_id)?;
-    let normalized_name = ppc_normalize_vfs_path(&decode_mac_roman(name_bytes));
+    let decoded_name = decode_mac_roman(name_bytes);
+    let normalized_name = ppc_normalize_vfs_path(&decoded_name);
     if normalized_name.is_empty() {
         return None;
     }
-    let path = ppc_join_vfs_path(parent_path, &normalized_name);
+    // Inside Macintosh: Files (1992), pp. 2-6--2-7: a pathname beginning
+    // with a volume name is absolute, while a leading colon is relative.
+    let absolute = !decoded_name.starts_with(':') && decoded_name.contains(':');
+    let path = if absolute {
+        normalized_name
+    } else {
+        let parent_path = ppc_directory_path_for_id(vfs_directories, dir_id)?;
+        ppc_join_vfs_path(parent_path, &normalized_name)
+    };
     if ppc_directory_id_for_path(vfs_directories, &path).is_some() {
         return Some(PpcCatalogEntry {
+            name: ppc_vfs_basename_bytes(&path),
             path,
-            name: name_bytes.to_vec(),
             is_directory: true,
         });
     }
@@ -71304,8 +71444,8 @@ fn ppc_catalog_entry_for_lookup(
         || ppc_vfs_resource_file_index(vfs_resource_files, &path).is_some()
     {
         return Some(PpcCatalogEntry {
+            name: ppc_vfs_basename_bytes(&path),
             path,
-            name: name_bytes.to_vec(),
             is_directory: false,
         });
     }
@@ -127374,6 +127514,70 @@ mod tests {
     }
 
     #[test]
+    fn pb_get_cat_info_resolves_a_full_path_on_a_mounted_volume() {
+        let pef = synthetic_pef_with_import(b"PBGetCatInfoSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+            ref_num: -2,
+            name: "Gridz™ CD".to_string(),
+            root_dir_id: 42,
+            attributes: 0x8080,
+            file_count: 1,
+            allocation_block_count: 100,
+            allocation_block_size: 2048,
+            clump_size: 2048,
+            free_blocks: 0,
+            bitmap_start: 3,
+            allocation_pointer: 4,
+            allocation_start: 5,
+            next_catalog_id: 44,
+            created_date: 0,
+            modified_date: 0,
+        }]);
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: 42,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Gridz™ CD".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Gridz™ CD/ToolBot Power Supply".to_string(),
+            data: b"license".to_vec(),
+            creator: 0,
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 128;
+        loaded.memory.add_region(pb, vec![0; 256]);
+        write_ppc_pstring(
+            &mut loaded.memory,
+            name_ptr,
+            b"Gridz\xaa CD:ToolBot Power Supply",
+        );
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+        loaded.memory.write_u16_be(pb + 28, 0).unwrap();
+        loaded.memory.write_u32_be(pb + 48, 164).unwrap();
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.memory.read_u16_be(pb + 22), Some((-2i16) as u16));
+        assert_eq!(loaded.memory.read_u32_be(pb + 100), Some(42));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
+            Some(b"ToolBot Power Supply".to_vec())
+        );
+    }
+
+    #[test]
     fn hle_import_runner_handles_get_vol() {
         let pef = synthetic_pef_with_import(b"GetVol");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -133937,6 +134141,69 @@ mod tests {
             }
         ));
         assert_eq!(loaded.memory.read_u16_be(item_hit_ptr), Some(1));
+    }
+
+    #[test]
+    fn pbh_get_v_info_enumerates_and_selects_mounted_volumes() {
+        let pef = synthetic_pef_with_import(b"PBGetVInfoSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.seed_vfs_volumes(vec![PpcVfsVolumeRecord {
+            ref_num: -2,
+            name: "Gridz™ CD".to_string(),
+            root_dir_id: 42,
+            attributes: 0x8080,
+            file_count: 38,
+            allocation_block_count: 400,
+            allocation_block_size: 2048,
+            clump_size: 4096,
+            free_blocks: 12,
+            bitmap_start: 3,
+            allocation_pointer: 4,
+            allocation_start: 5,
+            next_catalog_id: 81,
+            created_date: 0x1234_5678,
+            modified_date: 0x2345_6789,
+        }]);
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 0x100;
+        loaded.memory.add_region(pb, vec![0; 0x200]);
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 28, 2).unwrap();
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u16_be(pb + 22), Some((-2i16) as u16));
+        assert_eq!(loaded.memory.read_u16_be(pb + 38), Some(0x8080));
+        assert_eq!(loaded.memory.read_u16_be(pb + 40), Some(38));
+        assert_eq!(loaded.memory.read_u32_be(pb + 48), Some(2048));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr),
+            Some(encode_mac_roman_lossy("Gridz™ CD"))
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = pb;
+        loaded.memory.write_u16_be(pb + 28, 3).unwrap();
+        let _ = loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NSV_ERR));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = pb;
+        loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+        loaded.memory.write_u16_be(pb + 28, 0).unwrap();
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            name_ptr,
+            &encode_mac_roman_lossy("Gridz™ CD:ToolBot Power Supply"),
+        ));
+        let _ = loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.memory.read_u16_be(pb + 22), Some((-2i16) as u16));
     }
 
     #[test]
