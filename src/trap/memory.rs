@@ -1,6 +1,8 @@
 //! Memory Manager trap handlers.
 
-use super::dispatch::{raw_trap_route, OsRoutineVariant};
+use super::dispatch::{
+    raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
+};
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
@@ -12,6 +14,23 @@ static TRACE_MEMORY: OnceLock<bool> = OnceLock::new();
 static TRACE_VIDEO_DRIVER: OnceLock<bool> = OnceLock::new();
 static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
+
+const MEMORY_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_memory_dispatch_operations.rs");
+const MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_memory_dispatch_a0_result_operations.rs");
+
+fn memory_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    let routes = match trap_word {
+        0xA05C => MEMORY_DISPATCH_OPERATION_ROUTES,
+        0xA15C => MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES,
+        _ => return None,
+    };
+    selector_operation_route(routes, selector)
+}
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
 /// Universal Interfaces 3.4 LowMem.h; Processes 1994, p. 4-28.
@@ -4189,9 +4208,14 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_empty_range_returns_paramerr_and_preserves_table
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_unlocked_range_returns_notlockederr
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_locked_multpage_range_returns_two_and_preserves_table
-            // MemoryDispatch ($A05C): Tracks Hold/Lock page state and implements GetPhysical lock-check + identity mapping; selectors per IM:Memory 1992 pp.3-25..3-32
+            // MemoryDispatch ($A05C) / MemoryDispatchA0Result ($A15C)
+            // Tracks virtual-memory page state and reports physical mappings.
+            // D0: selector/result; A0: address/table/result; A1: count.
+            // Inside Macintosh: Memory (1992), pp. 3-25 to 3-32.
             (false, 0x5C) => {
                 let selector = cpu.read_reg(Register::D0);
+                let operation = memory_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let address = cpu.read_reg(Register::A0);
                 let count = cpu.read_reg(Register::A1);
                 match selector {
@@ -4571,6 +4595,70 @@ mod tests {
     use std::collections::HashMap;
 
     // ==================== OS Traps (is_tool=false) ====================
+
+    #[test]
+    fn memorydispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::MEMORY_DISPATCH_OPERATION_ROUTES.len(), 5);
+        assert!(super::MEMORY_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+        assert_eq!(super::MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES.len(), 1);
+
+        let hold =
+            super::memory_dispatch_operation_route(0xA05C, 0x0000).expect("HoldMemory route");
+        assert_eq!(hold.routine_name, "HoldMemory");
+        assert_eq!(
+            hold.operation_id,
+            "selector-operation:_MemoryDispatch:0x0000:d0-moveq-immediate:8"
+        );
+
+        let physical =
+            super::memory_dispatch_operation_route(0xA15C, 0x0005).expect("GetPhysical route");
+        assert_eq!(physical.routine_name, "GetPhysical");
+        assert_eq!(
+            physical.operation_id,
+            "selector-operation:_MemoryDispatchA0Result:0x0005:d0-moveq-immediate:8"
+        );
+
+        assert!(super::memory_dispatch_operation_route(0xA05C, 0x0005).is_none());
+        assert!(super::memory_dispatch_operation_route(0xA15C, 0x0000).is_none());
+        assert!(super::memory_dispatch_operation_route(0xA05C, 0x0001_0000).is_none());
+    }
+
+    #[test]
+    fn memorydispatch_records_every_generated_operation_for_its_exact_trap_form() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for route in super::MEMORY_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            cpu.write_reg(Register::A0, 0);
+            cpu.write_reg(Register::A1, 0);
+            dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        let get_physical = &super::MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES[0];
+        cpu.write_reg(Register::D0, u32::from(get_physical.selector));
+        cpu.write_reg(Register::A0, 0);
+        cpu.write_reg(Register::A1, 0);
+        dispatcher.dispatch(0xA15C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some(get_physical.operation_id)
+        );
+
+        cpu.write_reg(Register::D0, 0x0005);
+        cpu.write_reg(Register::A0, 0);
+        cpu.write_reg(Register::A1, 0);
+        dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.current_selector_operation, None);
+
+        cpu.write_reg(Register::D0, 0x0001_0000);
+        dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.current_selector_operation, None);
+    }
 
     #[test]
     fn test_new_ptr() {

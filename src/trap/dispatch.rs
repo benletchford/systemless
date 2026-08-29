@@ -29,6 +29,38 @@ pub(crate) const BOOT_VOLUME_NAME: &str = "MacintoshHD";
 pub(crate) const BOOT_VOLUME_REF_NUM: i16 = -1;
 const VFS_HFS_LITERAL_SLASH: char = '\u{F02F}';
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SelectorOperationRoute {
+    pub(crate) selector: u16,
+    pub(crate) operation_id: &'static str,
+    pub(crate) routine_name: &'static str,
+}
+
+impl SelectorOperationRoute {
+    pub(crate) const fn new(
+        selector: u16,
+        operation_id: &'static str,
+        routine_name: &'static str,
+    ) -> Self {
+        Self {
+            selector,
+            operation_id,
+            routine_name,
+        }
+    }
+}
+
+pub(crate) fn selector_operation_route(
+    routes: &'static [SelectorOperationRoute],
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    let selector = u16::try_from(selector).ok()?;
+    routes
+        .binary_search_by_key(&selector, |route| route.selector)
+        .ok()
+        .map(|index| &routes[index])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenCopyBitsRect {
     pub src_top: i16,

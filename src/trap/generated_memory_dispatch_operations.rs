@@ -1,0 +1,28 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0000,
+        "selector-operation:_MemoryDispatch:0x0000:d0-moveq-immediate:8",
+        "HoldMemory",
+    ),
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_MemoryDispatch:0x0001:d0-moveq-immediate:8",
+        "UnholdMemory",
+    ),
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_MemoryDispatch:0x0002:d0-moveq-immediate:8",
+        "LockMemory",
+    ),
+    SelectorOperationRoute::new(
+        0x0003,
+        "selector-operation:_MemoryDispatch:0x0003:d0-moveq-immediate:8",
+        "UnlockMemory",
+    ),
+    SelectorOperationRoute::new(
+        0x0004,
+        "selector-operation:_MemoryDispatch:0x0004:d0-moveq-immediate:8",
+        "LockMemoryContiguous",
+    ),
+]

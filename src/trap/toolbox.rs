@@ -10,10 +10,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::dispatch::{
-    raw_trap_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable,
-    AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState, OsRoutineVariant,
-    StandardFileGetEntry, StandardFileGetTrackingState, StandardFilePutTrackingState,
-    SyntheticAppleEvent,
+    raw_trap_route, selector_operation_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor,
+    AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState,
+    OsRoutineVariant, SelectorOperationRoute, StandardFileGetEntry, StandardFileGetTrackingState,
+    StandardFilePutTrackingState, SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -26,32 +26,11 @@ static TRACE_AE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETKEYS_NONZERO: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SelectorOperationRoute {
-    selector: u16,
-    operation_id: &'static str,
-    routine_name: &'static str,
-}
-
-impl SelectorOperationRoute {
-    const fn new(selector: u16, operation_id: &'static str, routine_name: &'static str) -> Self {
-        Self {
-            selector,
-            operation_id,
-            routine_name,
-        }
-    }
-}
-
 const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_slot_manager_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
-    let selector = u16::try_from(selector).ok()?;
-    SLOT_MANAGER_OPERATION_ROUTES
-        .binary_search_by_key(&selector, |route| route.selector)
-        .ok()
-        .map(|index| &SLOT_MANAGER_OPERATION_ROUTES[index])
+    selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
