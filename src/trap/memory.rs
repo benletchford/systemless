@@ -3082,16 +3082,49 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::tests::internalwait_five_call_composition_preserves_stack_across_alternating_selectors
             (false, 0x7F) => Ok(()),
 
-            // PMgrOp ($A085)
-            // Power Manager operations.
-            // Inside Macintosh Volume V
-            //
-            // D0 = selector. No-op — we don't have hardware power management.
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::pmgrop_returns_noerr_and_preserves_stack_pointer_in_noop_path
-            // PMgrOp ($A085): Returns noErr; no hardware power management; per IM:V
-            (false, 0x85) => return_noerr(cpu),
+            // IdleUpdate ($A285), IdleState ($A485), SerialPower ($A685)
+            // Resets the activity timer, controls nested idle inhibition, or
+            // changes logical serial-port power according to D0.
+            // FUNCTION IdleUpdate: LongInt;
+            // PROCEDURE EnableIdle; PROCEDURE DisableIdle;
+            // FUNCTION GetCPUSpeed: LongInt;
+            // PROCEDURE AOn; PROCEDURE AOnIgnoreModem; PROCEDURE BOn;
+            // PROCEDURE AOff; PROCEDURE BOff;
+            // Inside Macintosh: Devices (1994), pp. 6-29--6-30, 6-33--6-35.
+            // Universal Interfaces 3.4 Power.h lines 650--701 and 733--791.
+            (false, 0x85) => {
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::PowerIdleUpdate => {
+                        self.power_idle_last_update_tick = self.tick_count;
+                        cpu.write_reg(Register::D0, self.tick_count);
+                    }
+                    OsRoutineVariant::PowerIdleState => {
+                        let selector = cpu.read_reg(Register::D0) as i32;
+                        if selector < 0 {
+                            cpu.write_reg(
+                                Register::D0,
+                                crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz
+                                    as u32,
+                            );
+                        } else if selector == 0 {
+                            self.power_idle_disable_count =
+                                self.power_idle_disable_count.saturating_sub(1);
+                        } else {
+                            self.power_idle_disable_count =
+                                self.power_idle_disable_count.saturating_add(1);
+                        }
+                    }
+                    OsRoutineVariant::PowerSerial => match cpu.read_reg(Register::D0) as u8 {
+                        0x04 | 0x05 => self.serial_port_a_powered = true,
+                        0x00 => self.serial_port_b_powered = true,
+                        0x84 => self.serial_port_a_powered = false,
+                        0x80 => self.serial_port_b_powered = false,
+                        _ => {}
+                    },
+                    _ => cpu.write_reg(Register::D0, 0),
+                }
+                Ok(())
+            }
 
             // IOPInfoAccess ($A086)
             // Access IOP information.
@@ -5127,24 +5160,44 @@ mod tests {
     }
 
     #[test]
-    fn pmgrop_returns_noerr_and_preserves_stack_pointer_in_noop_path() {
-        // Inside Macintosh: Devices (1994), Power Manager chapter.
-        // PMgrOp is the no-op Power Manager dispatcher on systems with no
-        // hardware power management. The HLE path should consume no Pascal
-        // arguments, return noErr in D0, and leave A7 untouched.
+    fn power_manager_modifier_forms_preserve_stack_and_manager_state() {
+        // Inside Macintosh: Devices (1994), pp. 6-29--6-30 and 6-33--6-35;
+        // Universal Interfaces 3.4 Power.h lines 650--701 and 733--791.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
 
+        dispatcher.tick_count = 0x1234_5678;
+        dispatcher.dispatch(0xA285, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+        assert_eq!(dispatcher.power_idle_last_update_tick, 0x1234_5678);
+
+        for selector in [1, 2] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA585, &mut cpu, &mut bus).unwrap();
+        }
+        assert_eq!(dispatcher.power_idle_disable_count, 2);
         cpu.write_reg(Register::D0, 0);
-        let result = dispatcher.dispatch_memory(false, 0x85, &mut cpu, &mut bus);
-        assert!(result.is_some(), "PMgrOp should be handled");
-        assert!(result.unwrap().is_ok(), "PMgrOp should succeed");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "PMgrOp should return noErr");
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.power_idle_disable_count, 1);
+        cpu.write_reg(Register::D0, u32::MAX);
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
         assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "PMgrOp should preserve the caller stack pointer"
+            cpu.read_reg(Register::D0),
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz as u32
         );
+
+        for (selector, a_power, b_power) in [
+            (0x04u32, true, false),
+            (0x00, true, true),
+            (0xFFFF_FF84, false, true),
+            (0xFFFF_FF80, false, false),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA785, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.serial_port_a_powered, a_power);
+            assert_eq!(dispatcher.serial_port_b_powered, b_power);
+        }
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
     }
 
     fn assert_no_hardware_trap_returns_noerr_and_preserves_stack(trap_num: u16, trap_name: &str) {

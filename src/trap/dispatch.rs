@@ -1247,6 +1247,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// pp. 1-31--1-36.
 /// SleepQInstall and SleepQRemove come from *Inside Macintosh: Devices*
 /// (1994), pp. 6-18, 6-26, and 6-33.
+/// IdleUpdate, IdleState, and SerialPower come from the same book,
+/// pp. 6-29--6-30 and 6-33--6-35.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares reviewed exact
@@ -1256,7 +1258,8 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// `Patches.h` lines 80--231 declares the Trap Manager forms;
 /// `Gestalt.h` lines 55--105 declares the three Gestalt Manager forms;
 /// `Power.h` lines 447--461 and 705--731 declares the sleep-queue record and
-/// register entry points;
+/// register entry points; lines 650--701 and 733--791 declares the idle-state
+/// and serial-power entry points;
 /// `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
@@ -1288,6 +1291,9 @@ pub(crate) enum OsRoutineVariant {
     GestaltReplace,
     SleepQueueInstall,
     SleepQueueRemove,
+    PowerIdleUpdate,
+    PowerIdleState,
+    PowerSerial,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1385,6 +1391,14 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         // bit 10 removes it. The combined form has no reviewed semantics.
         (0x8A, 0x0200) => OsRoutineVariant::SleepQueueInstall,
         (0x8A, 0x0400) => OsRoutineVariant::SleepQueueRemove,
+
+        // Devices 1994, pp. 6-29--6-30 and 6-33--6-35; UI 3.4 Power.h
+        // lines 650--701 and 733--791: bits 9 and 10 distinguish the three
+        // Power Manager entry points sharing slot $85. The bare form has no
+        // reviewed routine identity.
+        (0x85, 0x0200) => OsRoutineVariant::PowerIdleUpdate,
+        (0x85, 0x0400) => OsRoutineVariant::PowerIdleState,
+        (0x85, 0x0600) => OsRoutineVariant::PowerSerial,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -2128,6 +2142,16 @@ pub struct TrapDispatcher {
     pub(crate) preserve_glyph: bool,
     /// Simulated tick count
     pub(crate) tick_count: u32,
+    /// Tick at which IdleUpdate last reset the Power Manager activity timer.
+    /// Inside Macintosh: Devices (1994), p. 6-29.
+    pub(crate) power_idle_last_update_tick: u32,
+    /// Unbalanced DisableIdle calls. EnableIdle cancels at most one call.
+    /// Inside Macintosh: Devices (1994), pp. 6-15 and 6-29--6-30.
+    pub(crate) power_idle_disable_count: u32,
+    /// Logical serial-port power selected through `_SerialPower`.
+    /// Inside Macintosh: Devices (1994), pp. 6-33--6-35.
+    pub(crate) serial_port_a_powered: bool,
+    pub(crate) serial_port_b_powered: bool,
     pub(crate) fade_trace_remaining: u32,
     /// Total guest instructions retired so far.
     pub(crate) instruction_count: u64,
@@ -3736,6 +3760,10 @@ impl TrapDispatcher {
             outline_preferred: false,
             preserve_glyph: false,
             tick_count: 0,
+            power_idle_last_update_tick: 0,
+            power_idle_disable_count: 0,
+            serial_port_a_powered: false,
+            serial_port_b_powered: false,
             fade_trace_remaining: 0,
             instruction_count: 0,
             front_window: 0,
@@ -8188,11 +8216,12 @@ mod tests {
             CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
             FileHfsSynchronous, FileSynchronous, GestaltQuery, GestaltRegister, GestaltReplace,
             LowerText, ParameterBlockAsynchronous, ParameterBlockImmediate,
-            ParameterBlockSynchronous, SleepQueueInstall, SleepQueueRemove, StripText,
-            StripUpperText, SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
-            TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
-            TrapAddressLegacy, TrapAddressNewOs, TrapAddressNewTool, Unclassified,
-            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
+            ParameterBlockSynchronous, PowerIdleState, PowerIdleUpdate, PowerSerial,
+            SleepQueueInstall, SleepQueueRemove, StripText, StripUpperText, SystemHeap,
+            SystemHeapClear, TextCompareExact, TextCompareFoldCase, TextCompareFoldCaseAndMarks,
+            TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal, TrapAddressLegacy,
+            TrapAddressNewOs, TrapAddressNewTool, Unclassified, UpperStringPreserveMarks,
+            UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8274,6 +8303,28 @@ mod tests {
                 raw_trap_route(0xA68A | return_a0).os_routine_variant,
                 Unclassified,
                 "combined sleep-queue modifier bits have no reviewed semantics"
+            );
+        }
+
+        // Inside Macintosh: Devices (1994), pp. 6-29--6-30 and 6-33--6-35;
+        // UI 3.4 Power.h lines 650--701 and 733--791.
+        for return_a0 in [0x0000u16, 0x0100] {
+            assert_eq!(
+                raw_trap_route(0xA285 | return_a0).os_routine_variant,
+                PowerIdleUpdate
+            );
+            assert_eq!(
+                raw_trap_route(0xA485 | return_a0).os_routine_variant,
+                PowerIdleState
+            );
+            assert_eq!(
+                raw_trap_route(0xA685 | return_a0).os_routine_variant,
+                PowerSerial
+            );
+            assert_eq!(
+                raw_trap_route(0xA085 | return_a0).os_routine_variant,
+                Unclassified,
+                "the bare slot has no reviewed Power Manager routine identity"
             );
         }
 
@@ -8432,7 +8483,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 266);
+        assert_eq!(classified, 272);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
