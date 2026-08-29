@@ -3969,6 +3969,7 @@ impl FixtureRunner {
         self.share_ppc_runtime_globals(&mut ppc_app);
         ppc_app.share_event_queue(&self.dispatcher.event_queue);
         ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
+        ppc_app.share_guest_calls(&self.dispatcher.guest_calls);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }
@@ -13222,8 +13223,30 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
+    }
+
+    #[test]
+    fn ppc_initialization_attaches_both_cpu_adapters_to_one_guest_call_stack() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        runner.dispatcher.guest_calls.begin_m68k(
+            crate::guest_call::GuestCallTarget {
+                isa: crate::guest_procedure::GuestIsa::M68k,
+                entry: 0x1000,
+                rtoc: 0,
+            },
+            0x2000,
+            0x3000,
+        );
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        assert_eq!(ppc_app.guest_calls.len(), 1);
+        assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
+        assert!(runner.dispatcher.guest_calls.is_empty());
     }
 
     #[test]
@@ -13893,6 +13916,7 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -14788,6 +14812,7 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -14952,6 +14977,7 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -15364,6 +15390,7 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState {
                 front_buffer_gworld: PPC_DSP_BACK_GWORLD,
                 back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -15687,6 +15714,7 @@ mod tests {
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
+            guest_calls: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

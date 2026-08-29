@@ -15,6 +15,7 @@ use super::pef::{
 };
 use super::ApplicationSizeResource;
 use crate::event_queue::{QueuedEvent, SharedEventQueue};
+use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::{
     is_routine_descriptor, resolve_guest_procedure, GuestIsa,
     ROUTINE_DESCRIPTOR_HEADER_SIZE as PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE,
@@ -185,6 +186,10 @@ const PPC_CLOSED_RESOURCE_REF_NUM: i16 = i16::MIN;
 const PPC_PICT_INFO_SIZE: u32 = 104;
 const PPC_CFM_MAIN_STUB_COUNT: u32 = 256;
 const PPC_IMPORT_CAPACITY: u32 = 4096;
+// The final mapped trap is reserved for process-owned guest-call returns and
+// does not reduce the 4,096 application/CFM binding capacity.
+const PPC_IMPORT_SLOT_COUNT: u32 = PPC_IMPORT_CAPACITY + 1;
+const PPC_GUEST_CALL_RETURN_IMPORT_INDEX: u32 = PPC_IMPORT_CAPACITY;
 const PPC_FIRST_CFM_CONNECTION_ID: u32 = 1;
 const PPC_CFM_FIND_LIB: u32 = 2;
 const PPC_CFM_LOAD_LIB: u32 = 1;
@@ -199,7 +204,7 @@ const PPC_LINKAGE_BACK_CHAIN_OFFSET: u32 = 0;
 const PPC_LINKAGE_SAVED_CR_OFFSET: u32 = 4;
 const PPC_LINKAGE_SAVED_LR_OFFSET: u32 = 8;
 const PPC_LINKAGE_SAVED_RTOC_OFFSET: u32 = 20;
-const PPC_MIXED_MODE_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 4;
+const PPC_GUEST_CALL_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE + PPC_GUEST_CALL_RETURN_IMPORT_INDEX * 4;
 const PPC_APPLICATION_INIT_RETURN_PC: u32 = PPC_IMPORT_TRAP_BASE - 0x100;
 const PPC_EXCEPTION_INFORMATION_SIZE: u32 = 24;
 const PPC_EXCEPTION_MACHINE_INFORMATION_SIZE: u32 = 64;
@@ -2233,6 +2238,7 @@ fn format_hle_import_action(action: &PpcImportAction) -> String {
         PpcImportAction::ReturnWithExtraCycles(value, extra_cycles) => {
             format!("return(${:08X})+{}cycles", value, extra_cycles)
         }
+        PpcImportAction::Continue => "continue".to_string(),
         PpcImportAction::Yield(cycles) => format!("yield({cycles}cycles)"),
         PpcImportAction::CallNative {
             entry,
@@ -2270,7 +2276,8 @@ fn ppc_import_action_with_extra_cycles(
         PpcImportAction::ReturnWithExtraCycles(value, existing) => {
             PpcImportAction::ReturnWithExtraCycles(value, existing.saturating_add(extra_cycles))
         }
-        action @ PpcImportAction::Yield(_)
+        action @ PpcImportAction::Continue
+        | action @ PpcImportAction::Yield(_)
         | action @ PpcImportAction::CallNative { .. }
         | action @ PpcImportAction::RaiseException(_)
         | action @ PpcImportAction::Halt => action,
@@ -4941,6 +4948,7 @@ pub struct PpcLoadedApp {
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
     pub(crate) event_queue: SharedEventQueue,
+    pub(crate) guest_calls: SharedGuestCallStack,
     pub draw_sprocket: PpcDrawSprocketState,
 }
 
@@ -5074,6 +5082,10 @@ impl PpcLoadedApp {
         if self.toolbox_startup.menu_tracking.is_none() {
             *self.toolbox_startup.menu_tracking = pending;
         }
+    }
+
+    pub(crate) fn share_guest_calls(&mut self, guest_calls: &SharedGuestCallStack) {
+        self.guest_calls.attach_to(guest_calls);
     }
 
     /// Copy the live PowerPC Menu Manager list into the same frontend-neutral
@@ -8096,6 +8108,7 @@ impl PpcLoadedApp {
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
         let mut draw_sprocket = self.draw_sprocket;
+        let guest_calls = self.guest_calls.shared_handle();
         let mut handled_import_count = 0u32;
         let mut last_import_index = None;
         let mut unsupported_import_index = None;
@@ -8125,6 +8138,13 @@ impl PpcLoadedApp {
         let result = {
             type Mem = PpcSectionMem;
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
+                if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
+                    if guest_calls.complete_powerpc(cpu) {
+                        return PpcImportAction::Continue;
+                    }
+                    unsupported_import_index = Some(index);
+                    return PpcImportAction::Halt;
+                }
                 last_import_index = Some(index);
                 let mut import_tick_count = ppc_virtual_tick_count(
                     tick_count,
@@ -8688,7 +8708,7 @@ impl PpcLoadedApp {
                             }
                         }
                         handled_import_count = handled_import_count.saturating_add(1);
-                        action
+                        guest_calls.externalize_powerpc_action(cpu, action)
                     }
                     None => {
                         if trace_this_sprocket {
@@ -8760,7 +8780,7 @@ impl PpcLoadedApp {
                         remaining_cycles,
                         self.halt_pc,
                         self.import_trap_base,
-                        PPC_IMPORT_CAPACITY,
+                        PPC_IMPORT_SLOT_COUNT,
                         &mut fetch_observer,
                         &mut write_observer,
                         &mut handle_import,
@@ -8772,7 +8792,7 @@ impl PpcLoadedApp {
                             remaining_cycles,
                             self.halt_pc,
                             self.import_trap_base,
-                            PPC_IMPORT_CAPACITY,
+                            PPC_IMPORT_SLOT_COUNT,
                             &mut fetch_observer,
                             &mut handle_import,
                         )
@@ -8782,7 +8802,7 @@ impl PpcLoadedApp {
                         remaining_cycles,
                         self.halt_pc,
                         self.import_trap_base,
-                        PPC_IMPORT_CAPACITY,
+                        PPC_IMPORT_SLOT_COUNT,
                         &mut handle_import,
                     )
                 };
@@ -13160,11 +13180,11 @@ pub fn load_pef_application_with_config(
     // GetMemFragment can bind imports while the CPU is already running.
     memory.add_readonly_region(
         PPC_IMPORT_TVECTOR_BASE,
-        import_tvector_bytes(PPC_IMPORT_CAPACITY as usize),
+        import_tvector_bytes(PPC_IMPORT_SLOT_COUNT as usize),
     );
     memory.add_readonly_region(
         PPC_IMPORT_TRAP_BASE,
-        import_trap_bytes(PPC_IMPORT_CAPACITY as usize),
+        import_trap_bytes(PPC_IMPORT_SLOT_COUNT as usize),
     );
     memory.add_region(PPC_IMPORT_DATA_BASE, vec![0; PPC_IMPORT_DATA_SIZE]);
     ppc_seed_import_data(&mut memory);
@@ -13450,6 +13470,7 @@ pub fn load_pef_application_with_config(
         section_bases,
         input: PpcInputSnapshot::default(),
         event_queue: SharedEventQueue::default(),
+        guest_calls: SharedGuestCallStack::default(),
         draw_sprocket: PpcDrawSprocketState::default(),
     })
 }
@@ -28067,7 +28088,7 @@ fn ppc_qsort_compare_next(
     Some(PpcImportAction::CallNative {
         entry: state.comparator.entry,
         rtoc: state.comparator.rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc: cpu.pc,
         restore_rtoc: state.restore_rtoc,
         return_gpr3: PpcNativeReturnGpr3::Preserve,
@@ -41069,7 +41090,7 @@ fn ppc_call_universal_proc(
     Some(PpcImportAction::CallNative {
         entry: target.entry,
         rtoc: target.rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc,
         restore_rtoc,
         return_gpr3,
@@ -46546,7 +46567,7 @@ fn ppc_get_shared_library(
     PpcImportAction::CallNative {
         entry,
         rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc,
         restore_rtoc,
         return_gpr3: PpcNativeReturnGpr3::ZeroOrSet {
@@ -46822,7 +46843,7 @@ fn ppc_get_mem_fragment(
     PpcImportAction::CallNative {
         entry,
         rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc,
         restore_rtoc,
         return_gpr3: PpcNativeReturnGpr3::ZeroOrSet {
@@ -54299,6 +54320,7 @@ fn ppc_i16_return_value(action: &PpcImportAction) -> Option<i16> {
         PpcImportAction::ReturnPreserve
         | PpcImportAction::ReturnPreserveWithExtraCycles(_)
         | PpcImportAction::ReturnWithExtraCycles(_, _)
+        | PpcImportAction::Continue
         | PpcImportAction::Yield(_)
         | PpcImportAction::CallNative { .. }
         | PpcImportAction::RaiseException(_)
@@ -58025,7 +58047,7 @@ fn ppc_process_apple_event(
     PpcImportAction::CallNative {
         entry: handler.callback.entry,
         rtoc: handler.callback.rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc: cpu.lr,
         restore_rtoc: cpu.gpr[2],
         return_gpr3: PpcNativeReturnGpr3::Preserve,
@@ -61277,7 +61299,7 @@ fn ppc_next_dialog_callback(
         return PpcImportAction::CallNative {
             entry: target.entry,
             rtoc: target.rtoc,
-            return_pc: PPC_MIXED_MODE_RETURN_PC,
+            return_pc: PPC_GUEST_CALL_RETURN_PC,
             final_pc: cpu.pc,
             restore_rtoc,
             return_gpr3: PpcNativeReturnGpr3::Preserve,
@@ -62283,7 +62305,7 @@ fn ppc_dispatch_legacy_control(
             Some(PpcImportAction::CallNative {
                 entry: target.entry,
                 rtoc: target.rtoc,
-                return_pc: PPC_MIXED_MODE_RETURN_PC,
+                return_pc: PPC_GUEST_CALL_RETURN_PC,
                 final_pc,
                 restore_rtoc,
                 return_gpr3: PpcNativeReturnGpr3::Set(ppc_i16_result(part)),
@@ -64508,7 +64530,7 @@ fn ppc_dm_get_indexed_display_mode_values(
     Some(PpcImportAction::CallNative {
         entry: target.entry,
         rtoc: target.rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc,
         restore_rtoc,
         return_gpr3: PpcNativeReturnGpr3::Set(ppc_i16_result(PPC_NO_ERR)),
@@ -66733,7 +66755,7 @@ fn ppc_dispatch_native_menu_definition_with_return(
     Some(PpcImportAction::CallNative {
         entry: target.entry,
         rtoc: target.rtoc,
-        return_pc: PPC_MIXED_MODE_RETURN_PC,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
         final_pc,
         restore_rtoc: cpu.gpr[2],
         return_gpr3,
@@ -81287,6 +81309,7 @@ mod tests {
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 2), Some(123));
         assert_eq!(loaded.memory.read_u16_be(menu_ptr + 4), Some(45));
         assert_ne!(loaded.toolbox_startup.menu_def_scratch, 0);
+        assert!(loaded.guest_calls.is_empty());
     }
 
     #[test]
@@ -90292,6 +90315,7 @@ mod tests {
             loaded.memory.read_u32_be(callback_rtoc + 8),
             Some(callback_rtoc)
         );
+        assert!(loaded.guest_calls.is_empty());
     }
 
     #[test]

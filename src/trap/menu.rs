@@ -1,6 +1,7 @@
 //! Menu Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::guest_call::GuestCallTarget;
 use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{
@@ -532,27 +533,49 @@ impl super::TrapDispatcher {
         }
 
         bus.write_long(return_slot, return_pc);
+        if return_pc != cpu.read_reg(Register::PC) {
+            self.guest_calls.begin_m68k(
+                GuestCallTarget {
+                    isa: procedure.isa,
+                    entry: procedure.entry,
+                    rtoc: procedure.rtoc,
+                },
+                return_pc,
+                final_sp,
+            );
+        }
         cpu.write_reg(Register::A7, return_slot);
         cpu.write_reg(Register::PC, trampoline);
         true
     }
 
-    fn complete_pending_menu_definition(
+    fn complete_pending_menu_definition<C: CpuOps>(
         &mut self,
+        cpu: &C,
         bus: &MacMemoryBus,
     ) -> Option<crate::menu_manager::MenuDefinitionMessage> {
         let trampoline = self.menu_def_trampoline;
-        let Some(tracking) = self.active_menu_definition_mut() else {
+        if self
+            .active_menu_definition()
+            .copied()
+            .and_then(SharedMenuDefinitionTracking::pending_invocation)
+            .is_none()
+            || trampoline == 0
+        {
             return None;
-        };
-        if tracking.pending_invocation().is_none() || trampoline == 0 {
+        }
+        if !self
+            .guest_calls
+            .complete_m68k(cpu.read_reg(Register::PC), cpu.read_reg(Register::A7))
+        {
             return None;
         }
         let bytes = bus.read_bytes(trampoline + 50, 10);
         let Ok(bytes) = <[u8; 10]>::try_from(bytes) else {
             return None;
         };
-        tracking.complete_pending(SharedMenuDefinitionInvocation::decode_result(bytes))
+        self.active_menu_definition_mut()?
+            .complete_pending(SharedMenuDefinitionInvocation::decode_result(bytes))
     }
 
     fn arm_pending_menu_definition<C: CpuOps>(
@@ -2101,7 +2124,7 @@ impl super::TrapDispatcher {
                 }
                 if self.menu_tracking.is_some() {
                     if self.active_menu_definition().is_some() {
-                        let completed = self.complete_pending_menu_definition(bus);
+                        let completed = self.complete_pending_menu_definition(cpu, bus);
                         if completed == Some(crate::menu_manager::MenuDefinitionMessage::Choose) {
                             let active_submenu = self.menu_tracking.as_ref().and_then(|tracking| {
                                 match tracking.active_definition_pane() {
@@ -2537,7 +2560,7 @@ impl super::TrapDispatcher {
                 }
                 if self.menu_tracking.is_some() {
                     if self.active_menu_definition().is_some() {
-                        let completed = self.complete_pending_menu_definition(bus);
+                        let completed = self.complete_pending_menu_definition(cpu, bus);
                         if completed == Some(crate::menu_manager::MenuDefinitionMessage::PopUp) {
                             let rect = self.active_menu_definition().unwrap().menu_rect();
                             if rect.2 <= rect.0 || rect.3 <= rect.1 {
@@ -7312,6 +7335,7 @@ mod tests {
         assert_eq!(bus.read_long(trampoline + 22), 0);
         assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
         assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
+        assert!(disp.guest_calls.is_empty());
     }
 
     #[test]
@@ -7496,6 +7520,7 @@ mod tests {
         assert_eq!(bus.read_word(trampoline + 6), 0);
         assert_eq!(bus.read_long(TEST_SP - 4), trap_pc);
         assert!(disp.is_menu_definition_callback_pending());
+        assert_eq!(disp.guest_calls.len(), 1);
         assert_eq!(disp.current_port, disp.window_manager_cport);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
@@ -7551,6 +7576,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(disp.menu_tracking, None);
         assert_eq!(disp.menu_definition_tracking, None);
+        assert!(disp.guest_calls.is_empty());
         assert_eq!(disp.current_port, original_port);
     }
 

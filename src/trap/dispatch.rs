@@ -8,6 +8,7 @@ use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::event_queue::SharedEventQueue;
+use crate::guest_call::SharedGuestCallStack;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -1680,6 +1681,8 @@ pub struct TrapDispatcher {
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: SharedMenuTracking,
+    /// Process-owned nested guest-procedure continuations shared by both CPUs.
+    pub(crate) guest_calls: SharedGuestCallStack,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
@@ -3214,6 +3217,7 @@ impl TrapDispatcher {
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             menu_tracking: SharedMenuTracking::default(),
+            guest_calls: SharedGuestCallStack::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
             menu_definition_port_state: None,
