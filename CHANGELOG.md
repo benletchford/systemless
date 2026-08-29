@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.12](https://github.com/benletchford/systemless/compare/v0.23.11...v0.23.12) (2026-08-29)
+
+
+### Bug Fixes
+
+* **ppc:** implement QuickDraw EqualPt ([#972](https://github.com/benletchford/systemless/issues/972)) ([679b545](https://github.com/benletchford/systemless/commit/679b5451a88f0f9c7e26c5cf55899651043df7a3))
+
 ## [0.23.11](https://github.com/benletchford/systemless/compare/v0.23.10...v0.23.11) (2026-08-29)
 
 
