@@ -1073,6 +1073,15 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
+                // The permanent system come-from format starts with
+                // `BRA.S +6; JMP absolute`. Installing such a routine as an
+                // application patch would splice a system head into the wrong
+                // chain, so NSetTrapAddress raises system error 12. Inside
+                // Macintosh: Operating System Utilities (1994), p. 8-30.
+                if bus.read_long(handler_addr) == 0x6006_4EF9 {
+                    bus.write_word(addr::DS_ERR_CODE, 12);
+                    return Some(Err(crate::Error::Halted));
+                }
                 // The helper updates the writable guest table as well as the
                 // pre-initialization mirror. Writing that slot's default
                 // callable gateway restores HLE dispatch without recursion.

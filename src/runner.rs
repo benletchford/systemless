@@ -18,6 +18,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
+use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -3871,7 +3872,8 @@ impl FixtureRunner {
         // Mac OS exposes complete writable OS and Toolbox dispatch tables in
         // low memory. Materialize all 1,280 callable entries before installing
         // the adjacent QuickDraw vectors. IM:OSUtils 1994, pp. 8-4--8-6.
-        self.dispatcher.materialize_trap_tables(&mut self.bus);
+        self.dispatcher
+            .materialize_trap_tables(&mut self.bus, TrapTableProfile::M68k68040);
         // JHideCursor ($0800): argument-free QuickDraw cursor bottleneck.
         // Adapt a direct JSR to the existing A-line trap by removing the JSR
         // return address before dispatch and jumping back afterward.
@@ -3961,7 +3963,8 @@ impl FixtureRunner {
         self.bus.write_long(addr::TIME, time);
         let rnd_seed = self.launch_rnd_seed_override.unwrap_or(time);
         self.bus.write_long(addr::RND_SEED, rnd_seed);
-        self.dispatcher.materialize_trap_tables(&mut self.bus);
+        self.dispatcher
+            .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
         self.share_ppc_runtime_globals(&mut ppc_app);
         ppc_app.share_event_queue(&self.dispatcher.event_queue);
         ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
@@ -18113,6 +18116,40 @@ mod tests {
             0x1234_5678,
             "SwapMMUMode must change actual guest address translation"
         );
+    }
+
+    #[test]
+    fn init_app_seeds_callable_profile_come_from_head() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let app = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007F_FFC0,
+            size_resource: None,
+        };
+        runner.init_app(&app);
+
+        let head = runner
+            .bus
+            .read_long(crate::trap::dispatch::OS_TRAP_TABLE_BASE + 0x78 * 4);
+        let successor = runner.bus.read_long(head + 4);
+        assert_eq!(runner.bus.read_long(head), 0x6006_4EF9);
+        runner.cpu.write_reg(Register::PC, head);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert!(running);
+        assert_eq!(steps, 3);
+        assert_eq!(runner.cpu.read_reg(Register::PC), successor);
     }
 
     #[test]
