@@ -1231,9 +1231,11 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// *Inside Macintosh: Memory* (1992), pp. 2-31, 2-33, 2-35, 2-53--2-55,
 /// 2-65--2-68, and 2-71--2-74. The text transformations come from *Inside
 /// Macintosh*, Volume VI (1991), pp. 14-62--14-63 and Appendix C, table C-2.
-/// Universal Interfaces 3.4 independently declares the corresponding exact
-/// A-line words in `MacMemory.h` (lines 436--1010, 1331--1362) and
-/// `TextUtils.h` (lines 404--455).
+/// File Manager synchronous, asynchronous, and HFS forms come from *Inside
+/// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
+/// summary. Universal Interfaces 3.4 independently declares the corresponding
+/// exact A-line words in `MacMemory.h` (lines 436--1010, 1331--1362),
+/// `TextUtils.h` (lines 404--455), and `Files.h` (lines 1315--3343).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
     Unclassified,
@@ -1245,6 +1247,10 @@ pub(crate) enum OsRoutineVariant {
     StripText,
     UpperText,
     StripUpperText,
+    FileSynchronous,
+    FileAsynchronous,
+    FileHfsSynchronous,
+    FileHfsAsynchronous,
 }
 
 const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
@@ -1275,6 +1281,32 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         (0x56, 0x0200) => OsRoutineVariant::StripText,
         (0x56, 0x0400) => OsRoutineVariant::UpperText,
         (0x56, 0x0600) => OsRoutineVariant::StripUpperText,
+
+        // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
+        // reviewed slots have exact basic Sync/Async declarations in UI 3.4
+        // Files.h; do not extend the meanings to other OS-table slots.
+        (
+            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x11 | 0x12 | 0x13 | 0x14
+            | 0x15 | 0x18 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45,
+            0x0000,
+        ) => OsRoutineVariant::FileSynchronous,
+        (
+            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x11 | 0x12 | 0x13 | 0x14
+            | 0x15 | 0x18 | 0x41 | 0x42 | 0x43 | 0x44 | 0x45,
+            0x0400,
+        ) => OsRoutineVariant::FileAsynchronous,
+
+        // These slots additionally have exact PBH...Sync/PBH...Async words.
+        // A200/PBHOpen is deliberately excluded because UI 3.4 also declares
+        // that word as PBOpenImmed, so one label would overstate the evidence.
+        (
+            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x14 | 0x15 | 0x41 | 0x42,
+            0x0200,
+        ) => OsRoutineVariant::FileHfsSynchronous,
+        (
+            0x07 | 0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x10 | 0x14 | 0x15 | 0x41 | 0x42,
+            0x0600,
+        ) => OsRoutineVariant::FileHfsAsynchronous,
         _ => OsRoutineVariant::Unclassified,
     }
 }
@@ -8039,7 +8071,8 @@ mod tests {
     #[test]
     fn raw_routes_classify_only_source_backed_os_routine_variants() {
         use OsRoutineVariant::{
-            CurrentHeap, CurrentHeapClear, LowerText, StripText, StripUpperText, SystemHeap,
+            CurrentHeap, CurrentHeapClear, FileAsynchronous, FileHfsAsynchronous,
+            FileHfsSynchronous, FileSynchronous, LowerText, StripText, StripUpperText, SystemHeap,
             SystemHeapClear, Unclassified, UpperText,
         };
 
@@ -8101,16 +8134,54 @@ mod tests {
             }
         }
 
+        // Files 1992, pp. 2-6 and 2-238--2-239 plus its assembly summary;
+        // UI 3.4 Files.h lines 1315--3343 declare these exact words.
+        let basic_file_slots = [
+            0x07u16, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18,
+            0x41, 0x42, 0x43, 0x44, 0x45,
+        ];
+        let hfs_file_slots = [
+            0x07u16, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x10, 0x14, 0x15, 0x41, 0x42,
+        ];
+        for return_a0 in [0x0000u16, 0x0100] {
+            for slot in basic_file_slots {
+                assert_eq!(
+                    raw_trap_route(0xA000 | slot | return_a0).os_routine_variant,
+                    FileSynchronous
+                );
+                assert_eq!(
+                    raw_trap_route(0xA400 | slot | return_a0).os_routine_variant,
+                    FileAsynchronous
+                );
+            }
+            for slot in hfs_file_slots {
+                assert_eq!(
+                    raw_trap_route(0xA200 | slot | return_a0).os_routine_variant,
+                    FileHfsSynchronous
+                );
+                assert_eq!(
+                    raw_trap_route(0xA600 | slot | return_a0).os_routine_variant,
+                    FileHfsAsynchronous
+                );
+            }
+        }
+
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 60);
+        assert_eq!(classified, 184);
         assert_eq!(
-            raw_trap_route(0xA200).os_routine_variant,
+            raw_trap_route(0xA201).os_routine_variant,
             Unclassified,
             "an unrelated OS bit-9 form must not acquire invented semantics"
         );
         assert_eq!(raw_trap_route(0xAE56).os_routine_variant, Unclassified);
+        assert_eq!(
+            raw_trap_route(0xA200).os_routine_variant,
+            Unclassified,
+            "PBHOpen/PBOpenImmed is an intentionally unresolved declaration collision"
+        );
+        assert_eq!(raw_trap_route(0xA613).os_routine_variant, Unclassified);
     }
 
     #[test]

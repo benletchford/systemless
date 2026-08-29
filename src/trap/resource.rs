@@ -11,6 +11,8 @@ use crate::{Error, Result};
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+
+use super::dispatch::{raw_trap_route, OsRoutineVariant};
 static TRACE_MENU_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FSSPEC: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RESOURCE: OnceLock<bool> = OnceLock::new();
@@ -5414,7 +5416,10 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let v_ref = bus.read_word(pb + 22) as i16;
-                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_variant = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 let dir_id = if is_hfs_variant {
                     bus.read_long(pb + 48)
                 } else {
@@ -5771,7 +5776,10 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(pb + 18);
                 let name = Self::read_pb_filename(bus, name_ptr);
                 let requested_vref = bus.read_word(pb + 22) as i16;
-                let is_hfs_set_vol = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_set_vol = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 let requested_dir_id = if is_hfs_set_vol {
                     bus.read_long(pb + 48)
                 } else {
@@ -8529,7 +8537,6 @@ impl super::TrapDispatcher {
         }
         None
     }
-
 
     fn find_vfs_directory_for_hfs_lookup(
         &mut self,
@@ -15656,7 +15663,7 @@ mod tests {
     }
 
     #[test]
-    fn pbh_create_setfinfo_then_open_honors_parent_dir_id() {
+    fn pbh_create_async_setfinfo_then_open_honors_parent_dir_id() {
         let (mut disp, mut cpu, mut bus) = setup();
         let temp_dir_id = disp.ensure_vfs_directory("Temporary Items");
 
@@ -15665,7 +15672,7 @@ mod tests {
         bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
         bus.write_long(pb + 48, temp_dir_id);
 
-        call_trap_word(&mut disp, 0xA208, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA608, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -16943,7 +16950,7 @@ mod tests {
     }
 
     #[test]
-    fn pbhsetvol_sets_default_directory_from_iowddirid_for_volume_refnum_calls() {
+    fn pbhsetvol_async_sets_default_directory_from_iowddirid_for_volume_refnum_calls() {
         // Inside Macintosh: Files (1992), pp. 2-153 to 2-154:
         // with ioNamePtr = NIL and a volume refnum in ioVRefNum,
         // PBHSetVol uses ioWDDirID as the default directory.
@@ -16957,7 +16964,7 @@ mod tests {
         bus.write_long(pb + 48, dir_id);
         bus.write_long(pb + 18, 0); // ioNamePtr = NIL
 
-        call_trap_word(&mut disp, 0xA215, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA615, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);

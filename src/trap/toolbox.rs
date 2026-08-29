@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::dispatch::{
-    AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable, AeResolveLevel,
-    AeResolveState, CooperativeThread, DialogItem, MovieState, StandardFileGetEntry,
-    StandardFileGetTrackingState, StandardFilePutTrackingState, SyntheticAppleEvent,
+    raw_trap_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable,
+    AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState, OsRoutineVariant,
+    StandardFileGetEntry, StandardFileGetTrackingState, StandardFilePutTrackingState,
+    SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -6411,7 +6412,10 @@ impl super::TrapDispatcher {
                 let wants_write = matches!(permission, 2 | 3 | 4);
                 eprintln!("[TRAP] PBOpenRF(\"{}\")", filename);
 
-                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_variant = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 if is_hfs_variant && vref != 0 && self.working_directory_info(vref).is_none() {
                     bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
                     cpu.write_reg(Register::D0, (-35i32) as u32);
@@ -23047,7 +23051,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pbh_open_rf_prefers_io_dir_id_resource_fork() {
+    fn test_pbh_open_rf_async_prefers_io_dir_id_resource_fork() {
         let (mut disp, mut cpu, mut bus) = setup();
         let target_dir_id = disp.ensure_vfs_directory("Game/Target Data");
         disp.ensure_vfs_directory("Game/Other Data");
@@ -23064,7 +23068,7 @@ mod tests {
         bus.write_word(pb + 22, TrapDispatcher::boot_volume_ref_num_u16());
         bus.write_byte(pb + 27, 1); // fsRdPerm
         bus.write_long(pb + 48, target_dir_id);
-        disp.current_trap_word = 0xA20A; // PBHOpenRF
+        disp.current_trap_word = 0xA60A; // PBHOpenRFAsync
 
         let result = disp.dispatch_toolbox(false, 0x0A, &mut cpu, &mut bus);
         assert!(result.is_some());
