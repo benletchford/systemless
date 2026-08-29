@@ -382,6 +382,83 @@ pub(crate) enum MenuTrackingKind {
     PopUp,
 }
 
+/// The standard MDEF pane whose frame and one-pixel shadow are being drawn.
+///
+/// Pull-down menus attach directly to the menu bar and therefore omit a
+/// separate top edge. Hierarchical and pop-up panes are detached rectangles;
+/// the latter starts its right shadow one pixel lower. Macintosh Toolbox
+/// Essentials (1992), pp. 3-34, 3-120, and 3-122--3-123.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StandardMenuPaneKind {
+    PullDown,
+    Hierarchical,
+    PopUp,
+}
+
+impl From<MenuTrackingKind> for StandardMenuPaneKind {
+    fn from(kind: MenuTrackingKind) -> Self {
+        match kind {
+            MenuTrackingKind::MenuBar => Self::PullDown,
+            MenuTrackingKind::PopUp => Self::PopUp,
+        }
+    }
+}
+
+/// Architecture-neutral pixel plan for standard menu-pane chrome.
+///
+/// The plan deliberately contains no framebuffer representation or color.
+/// CPU adapters erase the pane and apply the visited frame/shadow pixels to
+/// their own surfaces.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StandardMenuChrome {
+    rect: (i16, i16, i16, i16),
+    top_border: bool,
+    shadow_top: i16,
+}
+
+impl StandardMenuChrome {
+    pub(crate) fn new(kind: StandardMenuPaneKind, rect: (i16, i16, i16, i16)) -> Option<Self> {
+        let (top, left, bottom, right) = rect;
+        if top >= bottom || left >= right {
+            return None;
+        }
+        Some(Self {
+            rect,
+            top_border: kind != StandardMenuPaneKind::PullDown,
+            shadow_top: top.saturating_add(if kind == StandardMenuPaneKind::PopUp {
+                3
+            } else {
+                2
+            }),
+        })
+    }
+
+    pub(crate) fn for_each_frame_pixel(self, mut visit: impl FnMut(i16, i16)) {
+        let (top, left, bottom, right) = self.rect;
+        for y in top..bottom {
+            for x in left..right {
+                if x == left
+                    || x == right.saturating_sub(1)
+                    || y == bottom.saturating_sub(1)
+                    || (self.top_border && y == top)
+                {
+                    visit(x, y);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn for_each_shadow_pixel(self, mut visit: impl FnMut(i16, i16)) {
+        let (_top, left, bottom, right) = self.rect;
+        for y in self.shadow_top..=bottom {
+            visit(right, y);
+        }
+        for x in left.saturating_add(3)..=right {
+            visit(x, bottom);
+        }
+    }
+}
+
 /// Direction currently armed by a standard scrolling-menu indicator.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuScrollDirection {
@@ -4471,6 +4548,49 @@ mod tests {
         assert!(!pixels.contains(&(5, 0)));
         assert!(!pixels.contains(&(3, 1)));
         assert!(!pixels.contains(&(1, 3)));
+    }
+
+    #[test]
+    fn standard_menu_chrome_distinguishes_attached_and_detached_panes() {
+        let rect = (20, 11, 52, 83);
+        let pixels = |kind| {
+            let chrome = StandardMenuChrome::new(kind, rect).unwrap();
+            let mut frame = Vec::new();
+            let mut shadow = Vec::new();
+            chrome.for_each_frame_pixel(|x, y| frame.push((x, y)));
+            chrome.for_each_shadow_pixel(|x, y| shadow.push((x, y)));
+            (frame, shadow)
+        };
+
+        let (pull_down_frame, pull_down_shadow) = pixels(StandardMenuPaneKind::PullDown);
+        assert!(!pull_down_frame.contains(&(12, 20)));
+        assert!(pull_down_frame.contains(&(11, 20)));
+        assert!(pull_down_frame.contains(&(82, 20)));
+        assert!(pull_down_shadow.contains(&(83, 22)));
+        assert!(!pull_down_shadow.contains(&(83, 21)));
+        assert!(pull_down_shadow.contains(&(14, 52)));
+        assert!(!pull_down_shadow.contains(&(13, 52)));
+
+        let (hierarchy_frame, hierarchy_shadow) = pixels(StandardMenuPaneKind::Hierarchical);
+        assert!(hierarchy_frame.contains(&(12, 20)));
+        assert!(hierarchy_shadow.contains(&(83, 22)));
+
+        let (popup_frame, popup_shadow) = pixels(StandardMenuPaneKind::PopUp);
+        assert!(popup_frame.contains(&(12, 20)));
+        assert!(!popup_shadow.contains(&(83, 22)));
+        assert!(popup_shadow.contains(&(83, 23)));
+    }
+
+    #[test]
+    fn standard_menu_chrome_rejects_empty_rectangles() {
+        assert_eq!(
+            StandardMenuChrome::new(StandardMenuPaneKind::PullDown, (20, 11, 20, 83)),
+            None
+        );
+        assert_eq!(
+            StandardMenuChrome::new(StandardMenuPaneKind::PopUp, (20, 11, 52, 11)),
+            None
+        );
     }
 
     #[test]

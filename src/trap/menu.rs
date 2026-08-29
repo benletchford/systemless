@@ -23,10 +23,10 @@ use crate::menu_manager::{
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
     MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
     MenuTrackingState as SharedMenuTrackingState,
-    MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, StandardMenuIconKind,
-    StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane as SharedTrackedMenuPane,
-    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE,
-    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
+    MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, StandardMenuChrome,
+    StandardMenuIconKind, StandardMenuItemWidth, StandardMenuPaneKind, SubmenuTransition,
+    TrackedMenuPane as SharedTrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
+    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
@@ -1052,44 +1052,6 @@ impl super::TrapDispatcher {
                 screen_height,
                 x,
                 y,
-                black,
-            );
-        }
-    }
-
-    fn menu_draw_standard_hline(
-        bus: &mut MacMemoryBus,
-        screen: (u32, u32, u16, i16, i16),
-        y: i16,
-        left: i16,
-        right: i16,
-        black: bool,
-    ) {
-        let (screen_base, row_bytes, pixel_size, screen_width, screen_height) = screen;
-        if let Some(pixel_index) = Self::menu_standard_pixel_index(bus, pixel_size, black) {
-            Self::fb_hline_index(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                y,
-                left,
-                right,
-                pixel_index,
-            );
-        } else {
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                y,
-                left,
-                right,
                 black,
             );
         }
@@ -4957,23 +4919,21 @@ impl super::TrapDispatcher {
                 );
             }
 
-            if !attached_pulldown {
-                Self::menu_draw_standard_hline(bus, screen, top, left, right, true);
+            let kind = if attached_pulldown {
+                StandardMenuPaneKind::PullDown
+            } else if detached_popup {
+                StandardMenuPaneKind::PopUp
+            } else {
+                StandardMenuPaneKind::Hierarchical
+            };
+            if let Some(chrome) = StandardMenuChrome::new(kind, rect) {
+                chrome.for_each_frame_pixel(|x, y| {
+                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                });
+                chrome.for_each_shadow_pixel(|x, y| {
+                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                });
             }
-            Self::menu_draw_standard_hline(bus, screen, bottom - 1, left, right, true);
-            for y in top..bottom {
-                Self::menu_set_standard_pixel(bus, screen, left, y, true);
-                Self::menu_set_standard_pixel(bus, screen, right - 1, y, true);
-            }
-
-            // Shadow (right edge + bottom edge). Detached popup menus start
-            // the right-edge shadow one pixel lower than attached pull-downs
-            // in the System 7.5.3 MDEF reference. MTE 1992, p. 3-120.
-            let shadow_top = if detached_popup { top + 3 } else { top + 2 };
-            for y in shadow_top..=bottom {
-                Self::menu_set_standard_pixel(bus, screen, right, y, true);
-            }
-            Self::menu_draw_standard_hline(bus, screen, bottom, left + 3, right + 1, true);
         }
 
         attached_pulldown
