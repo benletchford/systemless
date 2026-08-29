@@ -3,6 +3,9 @@
 use crate::mac_roman::decode_mac_roman;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
+use std::cell::UnsafeCell;
+use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 /// Largest entry count representable by a menu-list partition byte length.
 pub(crate) const MAX_MENU_LIST_ENTRIES: usize = u16::MAX as usize / 6;
@@ -546,6 +549,34 @@ pub(crate) fn menu_choice_value(menu_id: i16, item_number: i16) -> u32 {
     (u32::from(menu_id as u16) << 16) | u32::from(item_number as u16)
 }
 
+/// Framebuffer identity retained only so the originating presentation adapter
+/// can restore its save-under pixels when a tracked pane closes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MenuTrackingSurface {
+    pub(crate) base_addr: u32,
+    pub(crate) row_bytes: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) depth: u32,
+}
+
+/// Resource bytes retained by the native presentation adapter for one menu
+/// item. Resource ownership and framebuffer writes remain adapter work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TrackedMenuIcon {
+    CIcon(Vec<u8>),
+    Icon { data: Vec<u8>, reduced: bool },
+    SmallIcon(Vec<u8>),
+}
+
+/// Presentation snapshot retained for one native standard-menu item.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TrackedMenuItemAppearance {
+    pub(crate) height: i16,
+    pub(crate) icon_kind: StandardMenuIconKind,
+    pub(crate) icon: Option<TrackedMenuIcon>,
+}
+
 /// Retained state for one visible menu pane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrackedMenuPane<MenuRef, Surface, Pixel, Appearance> {
@@ -594,6 +625,115 @@ pub(crate) struct MenuTrackingState<MenuRef, Surface, Pixel, Appearance> {
     pub(crate) saved_pixels: Vec<Pixel>,
     pub(crate) item_appearances: Vec<Appearance>,
     pub(crate) submenus: Vec<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>,
+}
+
+/// The one concrete retained Menu Manager continuation used by both CPU
+/// gateways in a process. A missing surface denotes the classic framebuffer
+/// adapter; a native surface identifies the framebuffer whose pixels were
+/// saved by the PowerPC adapter.
+pub(crate) type ProcessMenuTrackingState =
+    MenuTrackingState<u32, Option<MenuTrackingSurface>, u16, TrackedMenuItemAppearance>;
+pub(crate) type ProcessTrackedMenuPane =
+    TrackedMenuPane<u32, Option<MenuTrackingSurface>, u16, TrackedMenuItemAppearance>;
+
+#[cfg(test)]
+pub(crate) fn test_process_menu_tracking(menu_handle: u32) -> ProcessMenuTrackingState {
+    ProcessMenuTrackingState {
+        kind: MenuTrackingKind::MenuBar,
+        menu_handle,
+        popup_left: 10,
+        popup_top: 20,
+        content_top: 20,
+        scroll_direction: None,
+        popup_width: 100,
+        popup_height: 40,
+        highlighted_item: 1,
+        definition: None,
+        flash_remaining: 0,
+        flash_delay: 0,
+        flash_result: 0,
+        saved_width: 101,
+        saved_height: 41,
+        front_buffer: None,
+        saved_pixels: Vec::new(),
+        item_appearances: Vec::new(),
+        submenus: Vec::new(),
+    }
+}
+
+/// One process-scoped retained Menu Manager owner.
+///
+/// `MenuSelect` manages the complete mouse-down-through-release interaction,
+/// including hierarchical menus, while the menu list stores MenuHandles to
+/// the live MenuRecords. Macintosh Toolbox Essentials (1992), pp. 3-95--3-97
+/// and 3-114--3-119. Both CPU gateways therefore attach to this same retained
+/// continuation instead of owning parallel interaction state.
+#[derive(Debug, Default)]
+pub(crate) struct SharedMenuTracking(Rc<UnsafeCell<Option<ProcessMenuTrackingState>>>);
+
+impl Clone for SharedMenuTracking {
+    fn clone(&self) -> Self {
+        // A cloned runtime is a snapshot, not another live CPU adapter.
+        Self(Rc::new(UnsafeCell::new(self.state().clone())))
+    }
+}
+
+impl PartialEq for SharedMenuTracking {
+    fn eq(&self, other: &Self) -> bool {
+        self.state() == other.state()
+    }
+}
+
+impl Eq for SharedMenuTracking {}
+
+impl PartialEq<Option<ProcessMenuTrackingState>> for SharedMenuTracking {
+    fn eq(&self, other: &Option<ProcessMenuTrackingState>) -> bool {
+        self.state() == other
+    }
+}
+
+impl SharedMenuTracking {
+    fn state(&self) -> &Option<ProcessMenuTrackingState> {
+        // SAFETY: shared handles can only be created under the serialized
+        // ownership contract documented by `shared_handle`.
+        unsafe { &*self.0.get() }
+    }
+
+    fn state_mut(&mut self) -> &mut Option<ProcessMenuTrackingState> {
+        // SAFETY: shared handles can only be created under the serialized
+        // ownership contract documented by `shared_handle`.
+        unsafe { &mut *self.0.get() }
+    }
+
+    /// Attach another CPU adapter without copying the retained continuation.
+    ///
+    /// # Safety
+    ///
+    /// Every handle sharing this allocation must remain under one owner that
+    /// serializes access. No continuation reference may remain live while
+    /// another handle reads or mutates the allocation.
+    pub(crate) unsafe fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Option<ProcessMenuTrackingState> {
+        self.state().clone()
+    }
+}
+
+impl Deref for SharedMenuTracking {
+    type Target = Option<ProcessMenuTrackingState>;
+
+    fn deref(&self) -> &Self::Target {
+        self.state()
+    }
+}
+
+impl DerefMut for SharedMenuTracking {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state_mut()
+    }
 }
 
 /// Result of reconciling one resolved hierarchical child with the retained
@@ -3108,6 +3248,21 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloned_menu_tracking_owner_is_a_detached_runtime_snapshot() {
+        let mut live = SharedMenuTracking::default();
+        *live = Some(test_process_menu_tracking(0x0012_3456));
+
+        let mut snapshot = live.clone();
+        snapshot.as_mut().unwrap().highlighted_item = 4;
+        snapshot.as_mut().unwrap().menu_handle = 0x0065_4321;
+
+        assert_eq!(live.as_ref().unwrap().highlighted_item, 1);
+        assert_eq!(live.as_ref().unwrap().menu_handle, 0x0012_3456);
+        assert_eq!(snapshot.as_ref().unwrap().highlighted_item, 4);
+        assert_eq!(snapshot.as_ref().unwrap().menu_handle, 0x0065_4321);
+    }
 
     #[test]
     fn menu_flash_count_expands_to_visible_and_hidden_phases() {

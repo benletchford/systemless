@@ -3968,6 +3968,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::RND_SEED, rnd_seed);
         self.share_ppc_runtime_globals(&mut ppc_app);
         ppc_app.share_event_queue(&self.dispatcher.event_queue);
+        ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }

@@ -11,6 +11,7 @@ use crate::event_queue::SharedEventQueue;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::menu_manager::SharedMenuTracking;
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -1678,7 +1679,7 @@ pub struct TrapDispatcher {
     /// Menus loaded from MENU resources, in order of insertion
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
-    pub(crate) menu_tracking: Option<super::menu::MenuTrackingState>,
+    pub(crate) menu_tracking: SharedMenuTracking,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     pub(crate) menu_definition_tracking: Option<crate::menu_manager::MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
@@ -3212,7 +3213,7 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
-            menu_tracking: None,
+            menu_tracking: SharedMenuTracking::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
             menu_definition_port_state: None,
@@ -7267,7 +7268,7 @@ mod tests {
     }
 
     fn install_menu_tracking(disp: &mut TrapDispatcher) {
-        disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
+        *disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
     }
 
     fn install_dialog_tracking(disp: &mut TrapDispatcher) {
