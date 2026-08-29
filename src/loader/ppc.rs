@@ -69507,13 +69507,18 @@ fn ppc_reverse_menu_title_cell(
     }
 }
 
-fn ppc_menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
+fn ppc_menu_bar_title_metrics() -> (i16, i16) {
     let (menu_font, numerator, denominator) =
         get_font_face_scale_ratio(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
     let menu_ascent =
         ppc_scale_font_value(i32::from(menu_font.metrics.ascent), numerator, denominator);
     let menu_descent =
         ppc_scale_font_value(i32::from(menu_font.metrics.descent), numerator, denominator);
+    (menu_ascent, menu_descent)
+}
+
+fn ppc_menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
+    let (menu_ascent, menu_descent) = ppc_menu_bar_title_metrics();
     // Keep the PowerPC menu title baseline identical to the 68k Menu
     // Manager when an application changes MBarHeight: center the live system
     // font metrics inside the bar instead of assuming the default 20 pixels.
@@ -69521,13 +69526,32 @@ fn ppc_menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
 }
 
 fn ppc_menu_bar_system_mark_top(menu_bar_height: i16) -> i16 {
-    let (menu_font, numerator, denominator) =
-        get_font_face_scale_ratio(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let menu_ascent =
-        ppc_scale_font_value(i32::from(menu_font.metrics.ascent), numerator, denominator);
-    let menu_descent =
-        ppc_scale_font_value(i32::from(menu_font.metrics.descent), numerator, denominator);
+    let (menu_ascent, menu_descent) = ppc_menu_bar_title_metrics();
     standard_menu_bar_system_mark_top(menu_bar_height, menu_ascent, menu_descent)
+}
+
+fn ppc_apply_menu_title_dim_pattern(
+    memory: &mut PpcSectionMem,
+    front_buffer: PpcFrontBuffer,
+    rect: (i16, i16, i16, i16),
+    background: u16,
+) {
+    let screen_width = ppc_u32_to_i16_saturating(front_buffer.width);
+    let screen_height = ppc_u32_to_i16_saturating(front_buffer.height);
+    let (top, left, bottom, right) = rect;
+    for y in top.max(0)..bottom.min(screen_height) {
+        for x in left.max(0)..right.min(screen_width) {
+            if standard_menu_gray_pattern_is_ink(x, y) {
+                continue;
+            }
+            let _ = ppc_quickdraw_write_raw_pixel(
+                memory,
+                front_buffer,
+                (i32::from(x), i32::from(y)),
+                background,
+            );
+        }
+    }
 }
 
 fn ppc_draw_menu_bar_with_colors(
@@ -69588,6 +69612,7 @@ fn ppc_draw_menu_bar_with_colors(
     let mut highlighted_title_drawn = false;
     let menu_bar_height = i16::try_from(height).unwrap_or(i16::MAX);
     let title_v = ppc_menu_bar_title_baseline(menu_bar_height);
+    let (title_ascent, title_descent) = ppc_menu_bar_title_metrics();
     // Inside Macintosh Volume V (1986), pp. V-228--V-230: regular MenuList
     // entries carry their live menuLeft values and lastRight closes the final
     // title cell. The shared MenuList operation is therefore authoritative
@@ -69603,23 +69628,57 @@ fn ppc_draw_menu_bar_with_colors(
         let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
         let title_foreground = ppc_menu_rgb(menu_colors.title_foreground(menu_id));
         let title_background = ppc_menu_rgb(menu_colors.title_background(menu_id));
-        let (Some(title_foreground_pixel), Some(title_background_pixel)) = (
+        let dimmed_title = ppc_menu_rgb(MenuColorTable::dimmed(
+            menu_colors.title_foreground(menu_id),
+            menu_colors.title_background(menu_id),
+        ));
+        let (Some(title_foreground_pixel), Some(title_background_pixel), Some(dimmed_title_pixel)) = (
             ppc_physical_screen_color_pixel(front_buffer, title_foreground, screen_clut),
             ppc_physical_screen_color_pixel(front_buffer, title_background, screen_clut),
+            ppc_physical_screen_color_pixel(front_buffer, dimmed_title, screen_clut),
         ) else {
             continue;
         };
+        // MTE 1992 p. 3-131: DisableItem(menu, 0) disables the whole menu
+        // title, and HIG 1992 p. 54 says an unavailable title remains visible
+        // but is drawn in gray. Match the 68k standard definition procedure:
+        // use the GetGray midpoint when the device can represent it, otherwise
+        // fall back to the shared 50% gray pattern (IM:V 1986 p. V-142).
+        let menu_enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
         let title_ptr = menu.wrapping_add(14);
         let Some(title) = ppc_read_pascal_string(memory, title_ptr) else {
             continue;
         };
         let title_h = region.title_origin();
         let system_menu_mark = is_standard_system_menu_title(&title);
+        let (cell_top, cell_left, cell_bottom, cell_right) =
+            region.highlighted_rect(menu_bar_height);
+        for y in cell_top.max(0)..cell_bottom.min(ppc_u32_to_i16_saturating(front_buffer.height)) {
+            for x in cell_left.max(0)..cell_right.min(ppc_u32_to_i16_saturating(front_buffer.width))
+            {
+                let _ = ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    front_buffer,
+                    (i32::from(x), i32::from(y)),
+                    title_background_pixel,
+                );
+            }
+        }
         if system_menu_mark {
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
         } else {
+            let title_ink = if menu_enabled {
+                title_foreground
+            } else {
+                dimmed_title
+            };
+            let title_ink_pixel = if menu_enabled {
+                title_foreground_pixel
+            } else {
+                dimmed_title_pixel
+            };
             let explicit_index = ppc_indexed_depth_entry_count(front_buffer.depth)
-                .and_then(|_| u8::try_from(title_foreground_pixel).ok());
+                .and_then(|_| u8::try_from(title_ink_pixel).ok());
             ppc_draw_text_bytes(
                 memory,
                 gworlds,
@@ -69628,12 +69687,14 @@ fn ppc_draw_menu_bar_with_colors(
                 PPC_QD_TEXT_FONT_DEFAULT,
                 PPC_QD_TEXT_SIZE_SYSTEM,
                 PPC_QD_TEXT_MODE_SRC_OR,
-                title_foreground,
+                title_ink,
                 explicit_index,
                 &title,
             );
         }
-        if !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id {
+        let highlighted =
+            !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id;
+        if highlighted {
             ppc_reverse_menu_title_cell(
                 memory,
                 front_buffer,
@@ -69649,6 +69710,39 @@ fn ppc_draw_menu_bar_with_colors(
                 ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
             }
             highlighted_title_drawn = true;
+        }
+        let dim_with_pattern = !menu_enabled
+            && (system_menu_mark
+                || dimmed_title_pixel == title_foreground_pixel
+                || dimmed_title_pixel == title_background_pixel);
+        if dim_with_pattern {
+            let dim_top = if system_menu_mark {
+                1
+            } else {
+                title_v.saturating_sub(title_ascent).max(0)
+            };
+            let dim_bottom = if system_menu_mark {
+                menu_bar_height.saturating_sub(1)
+            } else {
+                title_v
+                    .saturating_add(title_descent)
+                    .min(menu_bar_height.saturating_sub(1))
+            };
+            ppc_apply_menu_title_dim_pattern(
+                memory,
+                front_buffer,
+                (
+                    dim_top,
+                    title_h,
+                    dim_bottom,
+                    title_h.saturating_add(standard_menu_title_advance(&title)),
+                ),
+                if highlighted {
+                    title_foreground_pixel
+                } else {
+                    title_background_pixel
+                },
+            );
         }
     }
     true
@@ -79130,12 +79224,13 @@ mod tests {
         let bar_background = [0xffff, 0x1111, 0x1111];
         let inherited_title = [0x1111, 0xffff, 0x1111];
         let live_title = [0x1111, 0x1111, 0xffff];
+        let title_background = [0xffff, 0xffff, 0xffff];
         let mut bar = test_menu_color_entry(0, 0, 0);
         set_rgb(&mut bar, 4, inherited_title);
         set_rgb(&mut bar, 22, bar_background);
         let mut title = test_menu_color_entry(128, 0, 0);
         set_rgb(&mut title, 4, inherited_title);
-        set_rgb(&mut title, 10, bar_background);
+        set_rgb(&mut title, 10, title_background);
         let color_bytes = [bar.as_slice(), title.as_slice()].concat();
         let color_handle = ppc_ensure_menu_color_table_handle(
             &mut loaded.memory,
@@ -79176,8 +79271,15 @@ mod tests {
         let live_pixel =
             ppc_physical_screen_color_pixel(front, ppc_menu_rgb(live_title), &loaded.screen_clut)
                 .unwrap();
+        let title_background_pixel = ppc_physical_screen_color_pixel(
+            front,
+            ppc_menu_rgb(title_background),
+            &loaded.screen_clut,
+        )
+        .unwrap();
         assert_ne!(bar_pixel, inherited_pixel);
         assert_ne!(bar_pixel, live_pixel);
+        assert_ne!(bar_pixel, title_background_pixel);
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 5)),
             Some(bar_pixel),
@@ -79191,6 +79293,11 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(region.left - 1), 2)),
+            Some(title_background_pixel),
+            "DrawMenuBar did not use the title entry RGB2 for its title cell",
+        );
         let title_pixel = (1..19)
             .flat_map(|y| (region.left..region.right).map(move |x| (x, y)))
             .find(|&(x, y)| {
@@ -79228,7 +79335,7 @@ mod tests {
                 front,
                 (i32::from(title_pixel.0), i32::from(title_pixel.1)),
             ),
-            Some(bar_pixel),
+            Some(title_background_pixel),
             "HiliteMenu did not reverse the live title foreground",
         );
         assert_eq!(
@@ -79236,6 +79343,107 @@ mod tests {
             Some(live_pixel),
             "HiliteMenu did not reverse the live title background",
         );
+    }
+
+    // MTE 1992 p. 3-131 and HIG 1992 p. 54: disabling item 0 dims the
+    // menu title without hiding it. IM:V 1986 p. V-142 specifies the GetGray
+    // midpoint and the standard definition procedure's patterned fallback.
+    #[test]
+    fn native_draw_menu_bar_dims_disabled_titles_with_shared_gray_policy() {
+        let pef = synthetic_pef_with_import(b"DrawMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        let city = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1400, 129, b"City", b"Map");
+        ppc_set_menu_item_enabled(&mut loaded.memory, &loaded.handles, city, 0, false);
+
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
+        let regions = ppc_menu_list_definition(&mut loaded.memory, menu_list_handle)
+            .unwrap()
+            .regular_title_regions();
+        assert_eq!(regions.len(), 2);
+        let baseline = i32::from(ppc_menu_bar_title_baseline(20));
+        let title_glyph_pixels = |title: &[u8], origin_x: i16| {
+            let mut cursor = i32::from(origin_x);
+            let mut pixels = Vec::new();
+            for byte in title {
+                let (glyph, data) = get_glyph(
+                    PPC_QD_TEXT_FONT_DEFAULT,
+                    PPC_QD_TEXT_SIZE_SYSTEM,
+                    char::from(*byte),
+                )
+                .unwrap();
+                for row in 0..glyph.height as usize {
+                    for column in 0..glyph.width as usize {
+                        let index = glyph.data_offset + row * glyph.width as usize + column;
+                        if index < data.len() && data[index] >= 128 {
+                            pixels.push((
+                                cursor + i32::from(glyph.origin_x) + column as i32,
+                                baseline + i32::from(glyph.origin_y) + row as i32,
+                            ));
+                        }
+                    }
+                }
+                cursor += i32::from(glyph.advance);
+            }
+            assert!(!pixels.is_empty());
+            pixels
+        };
+        let file_pixels = title_glyph_pixels(b"File", regions[0].title_origin());
+        let city_pixels = title_glyph_pixels(b"City", regions[1].title_origin());
+
+        for depth in [1, 8] {
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
+
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let black =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+            let white =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+            let gray = ppc_physical_screen_color_pixel(
+                front,
+                ppc_menu_rgb(MenuColorTable::dimmed([0; 3], [u16::MAX; 3])),
+                &loaded.screen_clut,
+            )
+            .unwrap();
+            let read = |memory: &mut PpcSectionMem, point: &(i32, i32)| {
+                ppc_quickdraw_read_pixel(memory, front, *point).unwrap()
+            };
+
+            assert!(
+                file_pixels
+                    .iter()
+                    .all(|point| read(&mut loaded.memory, point) == black),
+                "{depth}bpp enabled title did not remain solid black",
+            );
+            if depth == 8 {
+                assert_ne!(gray, black);
+                assert_ne!(gray, white);
+                assert!(
+                    city_pixels
+                        .iter()
+                        .all(|point| read(&mut loaded.memory, point) == gray),
+                    "8bpp disabled title did not use the GetGray midpoint",
+                );
+            } else {
+                let city_ink = city_pixels
+                    .iter()
+                    .map(|point| read(&mut loaded.memory, point))
+                    .collect::<Vec<_>>();
+                assert!(city_ink.contains(&black));
+                assert!(city_ink.contains(&white));
+            }
+        }
     }
 
     // MTE 1992 pp. 3-109--3-110: DeleteMenu resolves duplicate IDs in the
