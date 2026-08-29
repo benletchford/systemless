@@ -1111,6 +1111,7 @@ pub enum PpcImportDispatcherTarget {
     SetMenuBar,
     GetMenuHandle,
     DrawMenuBar,
+    FlashMenuBar,
     HMGetHelpMenuHandle,
     HiliteMenu,
     MenuNoop,
@@ -14570,6 +14571,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "SetMenuBar") => PpcImportDispatcherTarget::SetMenuBar,
         ("InterfaceLib", "GetMenuHandle") => PpcImportDispatcherTarget::GetMenuHandle,
         ("InterfaceLib", "DrawMenuBar") => PpcImportDispatcherTarget::DrawMenuBar,
+        ("InterfaceLib", "FlashMenuBar") => PpcImportDispatcherTarget::FlashMenuBar,
         ("InterfaceLib", "HMGetHelpMenuHandle") => PpcImportDispatcherTarget::HMGetHelpMenuHandle,
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar")
@@ -16413,6 +16415,44 @@ fn dispatch_supported_import(
                     current_menu_list,
                     screen_clut,
                     MenuColorTable::new(&menu_color_bytes),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FlashMenuBar => {
+            // FlashMenuBar
+            // Inverts the requested regular menu title, or the entire menu
+            // bar when the ID is zero or does not identify a regular title.
+            // PROCEDURE FlashMenuBar (menuID: INTEGER);
+            // Macintosh Toolbox Essentials (1992), pp. 3-141--3-142.
+            let requested_menu_id = cpu.gpr[3] as u16 as i16;
+            let requested_is_regular = requested_menu_id != 0
+                && ppc_regular_menu_contains_id(memory, current_menu_list, requested_menu_id);
+            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+            let menu_colors = MenuColorTable::new(&menu_color_bytes);
+            if requested_is_regular {
+                let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
+                let selected_root_menu_id =
+                    ppc_root_menu_id_for_selection(memory, current_menu_list, selected_menu_id);
+                ppc_set_menu_title_highlight_with_colors(
+                    memory,
+                    gworlds,
+                    current_menu_list,
+                    if selected_root_menu_id == requested_menu_id {
+                        0
+                    } else {
+                        requested_menu_id
+                    },
+                    screen_clut,
+                    menu_colors,
+                    toolbox_startup.host_menu_bar_hidden,
+                );
+            } else if !toolbox_startup.host_menu_bar_hidden {
+                let _ = ppc_flash_entire_menu_bar_with_colors(
+                    memory,
+                    gworlds,
+                    screen_clut,
+                    menu_colors,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -69387,6 +69427,65 @@ fn ppc_root_menu_id_for_selection(
     0
 }
 
+fn ppc_flash_entire_menu_bar_with_colors(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
+) -> bool {
+    let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
+    else {
+        return false;
+    };
+    if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
+        return false;
+    }
+    // StandardMBDF reverses the complete bar through MCEntry(0,0)'s RGB4
+    // menu-bar background and RGB1 title foreground, preserving unrelated
+    // indexed colors. Inside Macintosh Volume V (1986), pp. V-235 and V-246.
+    let (Some(background), Some(foreground), Some(black)) = (
+        ppc_physical_screen_color_pixel(
+            front_buffer,
+            ppc_menu_rgb(menu_colors.menu_bar_background()),
+            screen_clut,
+        ),
+        ppc_physical_screen_color_pixel(
+            front_buffer,
+            ppc_menu_rgb(menu_colors.title_foreground(0)),
+            screen_clut,
+        ),
+        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
+    ) else {
+        return false;
+    };
+    let height = front_buffer.height.min(u32::from(
+        memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20),
+    ));
+    for y in 0..height as i32 {
+        for x in 0..front_buffer.width as i32 {
+            let Some(pixel) = ppc_quickdraw_read_pixel(memory, front_buffer, (x, y)) else {
+                continue;
+            };
+            let reversed = standard_menu_highlighted_value(pixel, background, foreground);
+            let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), reversed);
+        }
+    }
+    // The outer-screen mask is not menu-bar content and therefore remains
+    // black while FlashMenuBar(0) reverses the strip.
+    for_each_standard_menu_bar_corner_pixel(
+        ppc_u32_to_i16_saturating(front_buffer.width),
+        |x, y| {
+            let _ = ppc_quickdraw_write_raw_pixel(
+                memory,
+                front_buffer,
+                (i32::from(x), i32::from(y)),
+                black,
+            );
+        },
+    );
+    true
+}
+
 fn ppc_set_menu_title_highlight_with_colors(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -79216,7 +79315,7 @@ mod tests {
     }
 
     #[test]
-    fn native_draw_and_hilite_menu_bar_use_live_shared_menu_colors() {
+    fn native_draw_hilite_and_flash_menu_bar_use_live_shared_menu_colors() {
         let pef = synthetic_pef_with_import(b"DrawMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
         install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
@@ -79353,6 +79452,40 @@ mod tests {
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(region.left - 1), 2),),
             Some(live_pixel),
             "HiliteMenu did not reverse the live title background",
+        );
+
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteMenu);
+        let menu_bar_bytes = front.row_bytes * 20;
+        let normal =
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes).unwrap();
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 5)),
+            Some(inherited_pixel),
+            "FlashMenuBar did not reverse live RGB4 through default RGB1",
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(title_pixel.0), i32::from(title_pixel.1)),
+            ),
+            Some(live_pixel),
+            "FlashMenuBar changed a title-specific RGB1 pixel",
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(region.left - 1), 2)),
+            Some(title_background_pixel),
+            "FlashMenuBar changed a title-specific RGB2 pixel",
+        );
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+        assert_eq!(
+            ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+            Some(normal),
+            "two live-color FlashMenuBar calls did not restore the menu bar",
         );
     }
 
@@ -80012,6 +80145,144 @@ mod tests {
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
                 Some(normal),
                 "{depth}bpp HiliteMenu(0) did not restore the menu bar"
+            );
+        }
+    }
+
+    // MTE 1992 pp. 3-141--3-142 and IM:V 1986 p. V-246: zero or an
+    // unknown ID reverses the complete bar, while a regular ID toggles that
+    // title and restores any different title first.
+    #[test]
+    fn native_flash_menu_bar_matches_whole_bar_and_title_semantics_at_supported_depths() {
+        let pef = synthetic_pef_with_import(b"FlashMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1400, 129, b"Edit", b"Cut");
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
+        let regions = ppc_menu_list_definition(&mut loaded.memory, menu_list_handle)
+            .unwrap()
+            .regular_title_regions();
+        assert_eq!(regions.len(), 2);
+
+        for depth in [1, 2, 4, 8, 16] {
+            loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+            loaded.cpu.gpr[4] = depth;
+            loaded.cpu.gpr[5] = 1;
+            loaded.cpu.gpr[6] = u32::from(depth != 1);
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+            assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 0).unwrap();
+            assert!(draw_current_test_menu_bar(&mut loaded));
+
+            let front = ppc_live_front_buffer_for_gworld(
+                &mut loaded.memory,
+                &loaded.gworlds,
+                PPC_MAIN_GWORLD,
+            )
+            .unwrap();
+            let black =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_BLACK, &loaded.screen_clut).unwrap();
+            let white =
+                ppc_physical_screen_color_pixel(front, PPC_RGB_WHITE, &loaded.screen_clut).unwrap();
+            let menu_bar_bytes = front.row_bytes * 20;
+            let normal =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes).unwrap();
+            let file_cell = (i32::from(regions[0].left - 1), 2);
+            let edit_cell = (i32::from(regions[1].left - 1), 2);
+            let bar_point = (200, 5);
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, file_cell),
+                Some(white),
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, edit_cell),
+                Some(white),
+            );
+
+            loaded.cpu.gpr[3] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.cpu.gpr[3], 0);
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, bar_point),
+                Some(black),
+                "{depth}bpp FlashMenuBar(0) did not reverse the bar background",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 0)),
+                Some(black),
+                "{depth}bpp FlashMenuBar(0) did not preserve the corner mask",
+            );
+            let whole_bar_flipped =
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes).unwrap();
+            assert_ne!(whole_bar_flipped, normal);
+
+            loaded.cpu.gpr[3] = 0;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+                Some(normal.clone()),
+                "{depth}bpp two whole-bar flashes did not restore the framebuffer",
+            );
+
+            loaded.cpu.gpr[3] = 999;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.cpu.gpr[3], 999);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+                Some(whole_bar_flipped),
+                "{depth}bpp unknown menu ID did not flash the complete bar",
+            );
+            loaded.cpu.gpr[3] = 999;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+                Some(normal.clone()),
+            );
+
+            loaded.cpu.gpr[3] = 128;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(128));
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, file_cell),
+                Some(black),
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, edit_cell),
+                Some(white),
+            );
+
+            loaded.cpu.gpr[3] = 128;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+                Some(normal.clone()),
+                "{depth}bpp flashing the selected title did not toggle it off",
+            );
+
+            loaded.cpu.gpr[3] = 128;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            loaded.cpu.gpr[3] = 129;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, file_cell),
+                Some(white),
+                "{depth}bpp previous title was not restored",
+            );
+            assert_eq!(
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, edit_cell),
+                Some(black),
+                "{depth}bpp requested title was not highlighted",
+            );
+
+            loaded.cpu.gpr[3] = 129;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::FlashMenuBar);
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
+            assert_eq!(
+                ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes),
+                Some(normal),
+                "{depth}bpp title switching did not restore the original bar",
             );
         }
     }
@@ -82859,6 +83130,10 @@ mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "DrawMenuBar"),
             PpcImportDispatcherTarget::DrawMenuBar
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "FlashMenuBar"),
+            PpcImportDispatcherTarget::FlashMenuBar
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "InvalMenuBar"),
