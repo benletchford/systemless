@@ -211,15 +211,10 @@ pub(crate) fn trace_load_enabled() -> bool {
 /// human-readable hint identifying the trap that the game most
 /// likely tried to JMP/JSR through. Else `None`.
 ///
-/// Background: `GetTrapAddress` (and friends) on Systemless return a
-/// unique-per-trap fake address so apps can compare against
-/// `_Unimplemented` without hitting cache aliasing. Apps that ONLY
-/// compare the address (the documented use) are fine. Apps that
-/// actually `JMP (A0)` / `JSR (A0)` through the fake pointer land in
-/// unmapped or garbage-filled memory and trip an IllegalInstruction
-/// 30-100 instructions later. Surfacing the trap word at halt time
-/// lets future investigators identify the missing trampoline at a
-/// glance instead of having to disassemble around the halted PC.
+/// Background: older Systemless runs used unique-per-trap fake addresses for
+/// Trap Manager probes. Current real OS and Toolbox getter routes return
+/// protected callable gateways, but this decoder remains useful for old traces
+/// and the deliberately unreachable legacy Toolbox test route.
 ///
 /// Fake-pointer ranges (matching trap/memory.rs ranges):
 ///   OS-style:    `$00F00000 | (trap_word as u32)` — range
@@ -231,8 +226,8 @@ pub fn decode_fakeptr_pc(pc: u32) -> Option<String> {
         let trap_word = (pc & 0xFFFF) as u16;
         Some(format!(
             "PC matches GetTrapAddress fake-ptr ($A046/$A346/$A746) for trap ${:04X} — \
-             game likely JMP/JSR'd through the unique-address placeholder. Implementing \
-             a re-trap trampoline at the fake-ptr address would unblock this path.",
+             game likely JMP/JSR'd through a legacy unique-address placeholder. Current \
+             Trap Manager getters return callable gateways instead.",
             trap_word
         ))
     } else if (0xCAFE0000..=0xCAFE03FF).contains(&pc) {
@@ -240,7 +235,7 @@ pub fn decode_fakeptr_pc(pc: u32) -> Option<String> {
         let trap_word = 0xA800 | trap_num;
         Some(format!(
             "PC matches GetToolTrapAddress fake-ptr for trap ${:04X} (tool num=${:03X}) — \
-             same trampoline gap as the OS-style fake-ptr range.",
+             this address is produced only by the unreachable legacy test route.",
             trap_word, trap_num
         ))
     } else {
@@ -11522,6 +11517,39 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, VecDeque};
     use std::rc::Rc;
+
+    #[test]
+    fn os_trap_address_gateway_executes_and_returns_through_the_68k_cpu() {
+        use crate::memory::globals::addr;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.dispatcher.current_trap_word = 0xA346;
+        runner.cpu.write_reg(Register::D0, 0x39);
+        runner
+            .dispatcher
+            .dispatch_memory(false, 0x46, &mut runner.cpu, &mut runner.bus)
+            .expect("GetOSTrapAddress should be handled")
+            .expect("GetOSTrapAddress should succeed");
+        let gateway = runner.cpu.read_reg(Register::A0);
+        let output = 0x0020_0000u32;
+        let return_pc = 0x0020_0100u32;
+        let sp = 0x007F_FF00u32;
+        runner.bus.write_long(addr::TIME, 0x1234_5678);
+        runner.bus.write_word(return_pc, 0x4E71);
+        runner.bus.write_long(sp, return_pc);
+        runner.cpu.write_reg(Register::A0, output);
+        runner.cpu.write_reg(Register::A7, sp);
+        runner.cpu.write_reg(Register::PC, gateway);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert_eq!(steps, 2);
+        assert!(running);
+        assert_eq!(runner.cpu.read_reg(Register::PC), return_pc);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(runner.cpu.read_reg(Register::D0), 0);
+        assert_eq!(runner.bus.read_long(output), 0x1234_5678);
+    }
 
     #[test]
     fn four_bit_runner_publishes_consistent_screen_metadata() {

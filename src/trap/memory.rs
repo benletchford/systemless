@@ -932,13 +932,11 @@ impl super::TrapDispatcher {
             // from the trap number; the newer forms select it explicitly.
             // Inside Macintosh: Operating System Utilities 1994, pp. 8-26
             // to 8-28 and 8-32 to 8-33.
-            // Tool traps get a 2-byte trampoline stub (auto-pop variant
-            // of the trap word) so games that `JSR (A0)` through the
-            // returned address re-enter the trap dispatcher cleanly
-            // instead of executing garbage memory at a bare fake-ptr.
-            // OS traps fall back to the simple `$00F0xxxx` fake-ptr
-            // because they have no auto-pop semantics. See
-            // `TrapDispatcher::get_or_create_tool_trap_trampoline`.
+            // Both tables return stable callable project-authored gateways.
+            // Toolbox gateways use the auto-pop variant so the Pascal
+            // argument frame begins below the JSR return address. OS gateways
+            // use the canonical register-based trap followed by RTS. See the
+            // two `get_or_create_*_trap_trampoline` helpers.
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_variant = self.current_trap_word & 0x0FFF;
@@ -978,18 +976,14 @@ impl super::TrapDispatcher {
                     // the same unimplemented sentinel used for 0x09F so
                     // selector-0 availability checks compare equal.
                     cpu.write_reg(Register::A0, 0xCAFE0000 + 0x09F);
-                } else if (trap_word & 0x0800) != 0 {
+                } else if (trap_table_key & 0x0800) != 0 {
                     // Tool trap (bit 11 set in the word): hand back a
                     // callable trampoline so JSR-through-fake-ptr works.
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_word);
+                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_table_key);
                     cpu.write_reg(Register::A0, addr);
                 } else {
-                    // OS trap (or bare trap number from NGetTrapAddress
-                    // where the caller only intends address comparison):
-                    // unique fake address per word so it never matches
-                    // _Unimplemented.
-                    let fake_addr = 0x00F00000 | (trap_word as u32);
-                    cpu.write_reg(Register::A0, fake_addr);
+                    let addr = self.get_or_create_os_trap_trampoline(bus, trap_table_key);
+                    cpu.write_reg(Register::A0, addr);
                 }
                 Ok(())
             }
@@ -1079,9 +1073,7 @@ impl super::TrapDispatcher {
                 let handler_addr = cpu.read_reg(Register::A0);
                 // Restore-to-default detection: when SetTrapAddress
                 // sees an address that *we* handed back from a prior
-                // GetTrapAddress (either the legacy $00F0xxxx fake-ptr
-                // range OR a tool-trap trampoline allocated by
-                // get_or_create_tool_trap_trampoline), the game is
+                // GetTrapAddress, the game is
                 // saying "put it back the way you found it" and the
                 // correct response is to remove our native_trap_table
                 // entry so subsequent traps go through the HLE
@@ -1096,8 +1088,9 @@ impl super::TrapDispatcher {
                 // the trampoline … infinite loop.
                 let is_legacy_fakeptr = (handler_addr & 0xFFFF0000) == 0x00F00000;
                 let is_trampoline = self
-                    .tool_trap_trampolines
+                    .os_trap_trampolines
                     .values()
+                    .chain(self.tool_trap_trampolines.values())
                     .any(|&addr| addr == handler_addr);
                 self.pending_native_trap_calls.remove(&trap_table_key);
                 if is_legacy_fakeptr || is_trampoline {
@@ -6697,11 +6690,54 @@ mod tests {
         assert!(result.is_some(), "GetTrapAddress should be handled");
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let addr = cpu.read_reg(Register::A0);
-        assert_eq!(
-            addr,
-            0x00F00000 | 0x0044,
-            "GetTrapAddress should return 0x00F00000 | trap_num in A0"
+        assert_ne!(addr, 0, "GetTrapAddress should return a routine address");
+        assert!(
+            !(0x00F00000..=0x00F0FFFF).contains(&addr),
+            "GetTrapAddress should return a callable gateway, not a fake pointer"
         );
+        assert_eq!(bus.read_word(addr), 0xA044);
+        assert_eq!(bus.read_word(addr + 2), 0x4E75);
+
+        bus.write_word(addr, 0);
+        cpu.write_reg(Register::D0, 0x0044);
+        dispatcher
+            .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+            .expect("GetTrapAddress should be handled")
+            .expect("GetTrapAddress should succeed repeatedly");
+        assert_eq!(cpu.read_reg(Register::A0), addr);
+        assert_eq!(bus.read_word(addr), 0xA044);
+        assert_eq!(bus.read_word(addr + 2), 0x4E75);
+    }
+
+    #[test]
+    fn restoring_an_os_trap_gateway_removes_the_installed_patch() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA346;
+        cpu.write_reg(Register::D0, 0x39);
+        dispatcher
+            .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+            .expect("GetOSTrapAddress should be handled")
+            .expect("GetOSTrapAddress should succeed");
+        let original = cpu.read_reg(Register::A0);
+
+        dispatcher.current_trap_word = 0xA247;
+        cpu.write_reg(Register::D0, 0x39);
+        cpu.write_reg(Register::A0, 0x0030_0000);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should install a patch");
+        assert_eq!(
+            dispatcher.native_trap_table.get(&0xA039),
+            Some(&0x0030_0000)
+        );
+
+        cpu.write_reg(Register::A0, original);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should restore the original");
+        assert!(dispatcher.native_trap_table.get(&0xA039).is_none());
     }
 
     #[test]

@@ -1442,15 +1442,21 @@ pub struct TrapDispatcher {
     /// MenuInfo.menuProc remains guest-visible and some applications invoke
     /// the procedure directly.
     pub(crate) system_mdef_cache: HashMap<i16, u32>,
+    /// Cache of allocated OS-trap trampolines for GetTrapAddress.
+    /// Each entry is a 4-byte allocation containing the canonical OS trap
+    /// word followed by RTS. Direct calls preserve the JSR return address on
+    /// the stack while the register-based trap runs. Calls originating at a
+    /// cached trampoline bypass a later patch so saved-old pointers continue
+    /// to reach the original system routine. Inside Macintosh: Operating
+    /// System Utilities (1994), pp. 8-23--8-30.
+    pub(crate) os_trap_trampolines: HashMap<u16, u32>,
     /// Cache of allocated tool-trap trampolines for GetTrapAddress.
     /// Each entry is a 2-byte allocation containing the auto-pop
     /// variant of the canonical tool-trap word. When the guest does
     /// `JSR (trampoline)` the dispatcher pops the saved return PC,
     /// runs the trap, and resumes at the JSR caller — see
-    /// [`Self::get_or_create_tool_trap_trampoline`]. OS traps stay on
-    /// the simpler `$00F0xxxx` fake-ptr scheme because they have no
-    /// auto-pop semantics. Inside Macintosh Volume II, II-384
-    /// (NGetTrapAddress); IM:V V-577 (auto-pop bit).
+    /// [`Self::get_or_create_tool_trap_trampoline`]. Inside Macintosh Volume
+    /// II, II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
     pub(crate) tool_trap_trampolines: HashMap<u16, u32>,
     /// Substitution strings most recently set via `ParamText`. Indices
     /// 0..3 correspond to `^0`..`^3` placeholders in any subsequently
@@ -3134,6 +3140,7 @@ impl TrapDispatcher {
             system_kmap_cache: HashMap::new(),
             system_wdef_cache: HashMap::new(),
             system_mdef_cache: HashMap::new(),
+            os_trap_trampolines: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
@@ -6231,14 +6238,10 @@ impl TrapDispatcher {
     ///   5. Dispatcher sets PC = saved return PC
     ///   6. Caller resumes at the instruction after the JSR
     ///
-    /// The auto-pop bit is only valid for tool traps. OS traps
-    /// would land here with the bit treated as a no-op flag, so
-    /// JSR-through-fake-ptr to an OS trap still drifts off into
-    /// garbage. Apps that JSR through OS-trap fake-ptrs are rarer
-    /// than tool-trap variants in practice — `GetTrapAddress`
-    /// callers typically only compare the address against
-    /// `_Unimplemented` rather than calling through it. IM:II
-    /// II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
+    /// The auto-pop bit is only valid for tool traps. OS traps use a
+    /// separate canonical-trap-plus-RTS gateway because their register
+    /// convention leaves the JSR return address at the top of the stack.
+    /// IM:II II-384 (NGetTrapAddress); IM:V V-577 (auto-pop bit).
     pub(crate) fn get_or_create_tool_trap_trampoline(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -6257,6 +6260,29 @@ impl TrapDispatcher {
         bus.write_readonly_code_word(addr, canonical_trap_word | 0x0400);
         bus.protect_readonly_code(addr, 2);
         self.tool_trap_trampolines.insert(canonical_trap_word, addr);
+        addr
+    }
+
+    /// Allocate a stable callable gateway for one Operating System trap-table
+    /// slot. OS traps use register conventions, so the JSR return address stays
+    /// at the top of the stack while the canonical A-line executes and the
+    /// following RTS returns to the caller.
+    pub(crate) fn get_or_create_os_trap_trampoline(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        trap_word: u16,
+    ) -> u32 {
+        let canonical_trap_word = 0xA000 | (trap_word & 0x00FF);
+        if let Some(&addr) = self.os_trap_trampolines.get(&canonical_trap_word) {
+            bus.write_readonly_code_word(addr, canonical_trap_word);
+            bus.write_readonly_code_word(addr + 2, 0x4E75);
+            return addr;
+        }
+        let addr = bus.alloc_synthetic(4);
+        bus.write_readonly_code_word(addr, canonical_trap_word);
+        bus.write_readonly_code_word(addr + 2, 0x4E75);
+        bus.protect_readonly_code(addr, 4);
+        self.os_trap_trampolines.insert(canonical_trap_word, addr);
         addr
     }
 
@@ -6923,7 +6949,18 @@ impl TrapDispatcher {
         } else {
             0xA000 | (trap & 0x00FF)
         };
-        if !auto_pop {
+        // A pointer returned before a patch was installed remains the saved
+        // address of the original system routine. The OS gateway is the
+        // canonical trap followed by RTS, so recognize its exact trap PC and
+        // bypass the current table head. Toolbox gateways use auto-pop for the
+        // same saved-old behavior. Inside Macintosh: Operating System
+        // Utilities (1994), pp. 8-23--8-30.
+        let default_os_gateway_call = !is_tool
+            && self
+                .os_trap_trampolines
+                .get(&base_trap)
+                .is_some_and(|&addr| pc == addr + 2);
+        if !auto_pop && !default_os_gateway_call {
             if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. The CPU core has already advanced PC past the
@@ -7224,6 +7261,28 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::PC), handler_addr);
         assert_eq!(cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(bus.read_long(sp - 4), trap_pc + 2);
+    }
+
+    #[test]
+    fn saved_os_trap_gateway_bypasses_a_later_patch() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let sp = 0x003F_FF00u32;
+        let output = 0x0020_0000u32;
+        bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
+        bus.write_long(sp, 0x0021_0000);
+        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        cpu.write_reg(Register::PC, gateway + 2);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A0, output);
+
+        dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), gateway + 2);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(output), 0x1234_5678);
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
     }
 
     #[test]
