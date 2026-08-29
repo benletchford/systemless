@@ -14,7 +14,7 @@ use crate::menu_manager::{
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
-    MenuBarTitleRegion as SharedMenuBarTitleRegion,
+    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuColorTable,
     MenuDefinitionInvocation as SharedMenuDefinitionInvocation,
     MenuDefinitionPane as SharedMenuDefinitionPane,
     MenuDefinitionTracking as SharedMenuDefinitionTracking, MenuItems as SharedMenuItems,
@@ -1079,44 +1079,8 @@ impl super::TrapDispatcher {
         }
     }
 
-    pub(super) fn menu_color_entry_ptr(
-        bus: &MacMemoryBus,
-        menu_id: i16,
-        menu_item: i16,
-    ) -> Option<u32> {
-        let handle = bus.read_long(addr::MENU_C_INFO);
-        if handle == 0 {
-            return None;
-        }
-        let data_ptr = bus.read_long(handle);
-        if data_ptr == 0 {
-            return None;
-        }
-
-        let size = bus.get_alloc_size(data_ptr).unwrap_or(0) as usize;
-        let mut offset = 0usize;
-        while offset + MC_ENTRY_SIZE <= size {
-            let entry_ptr = data_ptr + offset as u32;
-            if bus.read_word(entry_ptr) as i16 == menu_id
-                && bus.read_word(entry_ptr + 2) as i16 == menu_item
-            {
-                return Some(entry_ptr);
-            }
-            offset += MC_ENTRY_SIZE;
-        }
-        None
-    }
-
-    pub(super) fn menu_color_entry_rgb(
-        bus: &MacMemoryBus,
-        entry_ptr: u32,
-        rgb_offset: u32,
-    ) -> [u16; 3] {
-        [
-            bus.read_word(entry_ptr + rgb_offset),
-            bus.read_word(entry_ptr + rgb_offset + 2),
-            bus.read_word(entry_ptr + rgb_offset + 4),
-        ]
+    fn live_menu_color_table_bytes(bus: &MacMemoryBus) -> Vec<u8> {
+        Self::menu_color_table_bytes(bus, bus.read_long(addr::MENU_C_INFO))
     }
 
     fn menu_color_rgb_pixel_index(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
@@ -1218,16 +1182,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233 / MTE 1992 table 3-7:
-        // a menu bar entry uses RGB4 for the menu bar color. StandardMBDF
-        // looks up only MCEntry(0, 0) for DrawBar/FlipBar and otherwise uses
-        // standard white; per-title RGB2 values do not recolor the full bar.
-        let rgb = if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 22)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, false);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).menu_bar_background())
     }
 
     pub(super) fn menu_title_pixel_index(
@@ -1239,17 +1195,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-232: title entries use RGB1 for the title.
-        // If absent, the menu bar entry's RGB1 supplies the default title
-        // color; without either entry, the standard color is black.
-        let rgb = if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 4)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 4)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, true);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).title_foreground(menu_id))
     }
 
     pub(super) fn menu_title_background_pixel_index(
@@ -1262,15 +1209,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233: a title entry duplicates the
-        // menu-bar color in RGB2 for title drawing/highlighting.
-        if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            return Self::menu_color_rgb_pixel_index(
-                bus,
-                Self::menu_color_entry_rgb(bus, title, 10),
-            );
-        }
-        self.menu_bar_background_pixel_index(bus, pixel_size)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).title_background(menu_id))
     }
 
     fn menu_dropdown_background_pixel_index(
@@ -1282,17 +1222,11 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233 / MTE 1992 table 3-7:
-        // a menu title entry uses RGB4 for the pulled-down menu
-        // background; if absent, the menu bar entry uses RGB2.
-        let rgb = if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 22)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 10)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, false);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(
+            bus,
+            MenuColorTable::new(&bytes).dropdown_background(menu_id),
+        )
     }
 
     fn menu_item_component_pixel_index(
@@ -1306,18 +1240,13 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-233: item entries supply mark/name/command
-        // colors in RGB1/RGB2/RGB3. Missing item entries fall back to
-        // the menu title's default item color (RGB3), then the menu bar
-        // default item color (RGB3), then standard black.
-        let rgb = if let Some(item) = Self::menu_color_entry_ptr(bus, menu_id, menu_item) {
-            Self::menu_color_entry_rgb(bus, item, item_rgb_offset)
-        } else if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 16)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 16)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, true);
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        let colors = MenuColorTable::new(&bytes).item_colors(menu_id, menu_item);
+        let rgb = match item_rgb_offset {
+            4 => colors.mark,
+            10 => colors.name,
+            16 => colors.command,
+            _ => return None,
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
     }
@@ -1332,16 +1261,11 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-233: an item entry duplicates its menu background
-        // in RGB4 so the standard MDEF can resolve selected-item colors
-        // directly; otherwise the title/menu-bar background applies.
-        if let Some(item) = Self::menu_color_entry_ptr(bus, menu_id, menu_item) {
-            return Self::menu_color_rgb_pixel_index(
-                bus,
-                Self::menu_color_entry_rgb(bus, item, 22),
-            );
-        }
-        Self::menu_dropdown_background_pixel_index(bus, menu_id, pixel_size)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        let rgb = MenuColorTable::new(&bytes)
+            .item_colors(menu_id, menu_item)
+            .background;
+        Self::menu_color_rgb_pixel_index(bus, rgb)
     }
 
     /// Pixel value the standard definition procedures use to dim
@@ -1370,7 +1294,14 @@ impl super::TrapDispatcher {
         };
         let background = resolve(background_index, [0xFFFF; 3]);
         let content = resolve(content_index, [0; 3]);
-        Self::fb_main_screen_gray_pixel_index_between(bus, background, content)
+        let midpoint = MenuColorTable::dimmed(content, background);
+        let gray = Self::fb_main_screen_pixel_index_for_rgb(bus, midpoint)?;
+        let content_pixel = Self::fb_main_screen_pixel_index_for_rgb(bus, content);
+        let background_pixel = Self::fb_main_screen_pixel_index_for_rgb(bus, background);
+        if Some(gray) == content_pixel || Some(gray) == background_pixel {
+            return None;
+        }
+        Some(gray)
     }
 
     fn menu_hilite_pixel_indexes(

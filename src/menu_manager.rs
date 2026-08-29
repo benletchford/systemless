@@ -2167,6 +2167,101 @@ pub(crate) fn filter_menu_color_entries(
     filtered
 }
 
+const STANDARD_MENU_BLACK: [u16; 3] = [0; 3];
+const STANDARD_MENU_WHITE: [u16; 3] = [u16::MAX; 3];
+
+/// Architecture-neutral view of the live `MenuCInfo` `MCEntry` sequence.
+///
+/// The CPU adapters own the Handle and supply its current bytes. This view
+/// owns the standard MBDF/MDEF fallback chain, so direct guest writes are
+/// observed without a second retained color table. Inside Macintosh Volume V
+/// (1986), pp. V-231--V-235 and V-249--V-253; Macintosh Toolbox Essentials
+/// (1992), pp. 3-152--3-156.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MenuColorTable<'a> {
+    bytes: &'a [u8],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StandardMenuItemColors {
+    pub(crate) mark: [u16; 3],
+    pub(crate) name: [u16; 3],
+    pub(crate) command: [u16; 3],
+    pub(crate) background: [u16; 3],
+}
+
+impl<'a> MenuColorTable<'a> {
+    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    /// Resolve the menu-bar background from `MCEntry(0, 0).RGB4`.
+    pub(crate) fn menu_bar_background(self) -> [u16; 3] {
+        self.entry_rgb(0, 0, 22).unwrap_or(STANDARD_MENU_WHITE)
+    }
+
+    /// Resolve a menu title's foreground from its RGB1, then the menu-bar
+    /// entry's RGB1, then standard black.
+    pub(crate) fn title_foreground(self, menu_id: i16) -> [u16; 3] {
+        self.entry_rgb(menu_id, 0, 4)
+            .or_else(|| self.entry_rgb(0, 0, 4))
+            .unwrap_or(STANDARD_MENU_BLACK)
+    }
+
+    /// Resolve a menu title's background from its RGB2, falling back to the
+    /// menu-bar background.
+    pub(crate) fn title_background(self, menu_id: i16) -> [u16; 3] {
+        self.entry_rgb(menu_id, 0, 10)
+            .unwrap_or_else(|| self.menu_bar_background())
+    }
+
+    /// Resolve a pulled-down menu's background from its title RGB4, then the
+    /// menu-bar entry's RGB2, then standard white.
+    pub(crate) fn dropdown_background(self, menu_id: i16) -> [u16; 3] {
+        self.entry_rgb(menu_id, 0, 22)
+            .or_else(|| self.entry_rgb(0, 0, 10))
+            .unwrap_or(STANDARD_MENU_WHITE)
+    }
+
+    /// Resolve the four colors consumed while drawing one standard item.
+    /// Explicit item RGB1/RGB2/RGB3 values control its mark, name, and
+    /// command. Missing components share the title or menu-bar RGB3 default;
+    /// RGB4 is the item background and otherwise follows the menu background.
+    pub(crate) fn item_colors(self, menu_id: i16, item: i16) -> StandardMenuItemColors {
+        let fallback = self
+            .entry_rgb(menu_id, 0, 16)
+            .or_else(|| self.entry_rgb(0, 0, 16))
+            .unwrap_or(STANDARD_MENU_BLACK);
+        StandardMenuItemColors {
+            mark: self.entry_rgb(menu_id, item, 4).unwrap_or(fallback),
+            name: self.entry_rgb(menu_id, item, 10).unwrap_or(fallback),
+            command: self.entry_rgb(menu_id, item, 16).unwrap_or(fallback),
+            background: self
+                .entry_rgb(menu_id, item, 22)
+                .unwrap_or_else(|| self.dropdown_background(menu_id)),
+        }
+    }
+
+    /// RGB midpoint requested through `GetGray` for unavailable content.
+    pub(crate) fn dimmed(foreground: [u16; 3], background: [u16; 3]) -> [u16; 3] {
+        std::array::from_fn(|channel| {
+            ((u32::from(foreground[channel]) + u32::from(background[channel])) / 2) as u16
+        })
+    }
+
+    fn entry_rgb(self, menu_id: i16, item: i16, offset: usize) -> Option<[u16; 3]> {
+        let entry = self
+            .bytes
+            .chunks_exact(MENU_COLOR_ENTRY_SIZE)
+            .find(|entry| menu_color_entry_key(entry) == Some((menu_id, item)))?;
+        Some([
+            read_u16(entry, offset)?,
+            read_u16(entry, offset.checked_add(2)?)?,
+            read_u16(entry, offset.checked_add(4)?)?,
+        ])
+    }
+}
+
 fn menu_color_entry_key(entry: &[u8]) -> Option<(i16, i16)> {
     Some((read_u16(entry, 0)? as i16, read_u16(entry, 2)? as i16))
 }
@@ -2784,6 +2879,66 @@ mod tests {
             filter_menu_color_entries(&merged, |menu_id, item| menu_id == 128 && item == 2),
             second
         );
+    }
+
+    #[test]
+    fn live_menu_colors_share_mbdf_and_mdef_fallbacks() {
+        let rgb = |seed: u16| [seed, seed.wrapping_add(1), seed.wrapping_add(2)];
+        let colored_entry =
+            |menu_id: i16, item: i16, colors: [[u16; 3]; 4]| -> [u8; MENU_COLOR_ENTRY_SIZE] {
+                let mut entry = [0; MENU_COLOR_ENTRY_SIZE];
+                entry[0..2].copy_from_slice(&menu_id.to_be_bytes());
+                entry[2..4].copy_from_slice(&item.to_be_bytes());
+                for (offset, color) in [4usize, 10, 16, 22].into_iter().zip(colors) {
+                    for (channel, value) in color.into_iter().enumerate() {
+                        let channel_offset = offset + channel * 2;
+                        entry[channel_offset..channel_offset + 2]
+                            .copy_from_slice(&value.to_be_bytes());
+                    }
+                }
+                entry
+            };
+        let menu_bar = colored_entry(0, 0, [rgb(0x1000), rgb(0x2000), rgb(0x3000), rgb(0x4000)]);
+        let title = colored_entry(128, 0, [rgb(0x5000), rgb(0x6000), rgb(0x7000), rgb(0x8000)]);
+        let item = colored_entry(128, 2, [rgb(0x9000), rgb(0xa000), rgb(0xb000), rgb(0xc000)]);
+        let bytes = [menu_bar.as_slice(), title.as_slice(), item.as_slice()].concat();
+        let colors = MenuColorTable::new(&bytes);
+
+        assert_eq!(colors.menu_bar_background(), rgb(0x4000));
+        assert_eq!(colors.title_foreground(128), rgb(0x5000));
+        assert_eq!(colors.title_background(128), rgb(0x6000));
+        assert_eq!(colors.dropdown_background(128), rgb(0x8000));
+        assert_eq!(
+            colors.item_colors(128, 2),
+            StandardMenuItemColors {
+                mark: rgb(0x9000),
+                name: rgb(0xa000),
+                command: rgb(0xb000),
+                background: rgb(0xc000),
+            }
+        );
+        assert_eq!(
+            colors.item_colors(128, 1),
+            StandardMenuItemColors {
+                mark: rgb(0x7000),
+                name: rgb(0x7000),
+                command: rgb(0x7000),
+                background: rgb(0x8000),
+            }
+        );
+        assert_eq!(colors.title_foreground(129), rgb(0x1000));
+        assert_eq!(colors.title_background(129), rgb(0x4000));
+        assert_eq!(colors.dropdown_background(129), rgb(0x2000));
+        assert_eq!(
+            MenuColorTable::dimmed([0, 0x4000, u16::MAX], [u16::MAX, 0x8000, 0]),
+            [0x7fff, 0x6000, 0x7fff],
+        );
+
+        let defaults = MenuColorTable::new(&[]);
+        assert_eq!(defaults.menu_bar_background(), STANDARD_MENU_WHITE);
+        assert_eq!(defaults.title_foreground(128), STANDARD_MENU_BLACK);
+        assert_eq!(defaults.title_background(128), STANDARD_MENU_WHITE);
+        assert_eq!(defaults.dropdown_background(128), STANDARD_MENU_WHITE);
     }
 
     #[test]

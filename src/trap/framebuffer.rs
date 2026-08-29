@@ -840,6 +840,7 @@ impl super::TrapDispatcher {
     /// express an intermediate shade. Callers treat `None` the same way
     /// the standard definition procedures treat that FALSE: fall back to
     /// the 50% grey pattern.
+    #[cfg(test)]
     fn fb_gray_pixel_index_between_in_ctab(
         bus: &MacMemoryBus,
         ctab: u32,
@@ -867,15 +868,6 @@ impl super::TrapDispatcher {
         foreground: [u16; 3],
     ) -> Option<u8> {
         let ctab = Self::active_gdevice_ctab(bus)?;
-        Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
-    }
-
-    pub(crate) fn fb_main_screen_gray_pixel_index_between(
-        bus: &MacMemoryBus,
-        background: [u16; 3],
-        foreground: [u16; 3],
-    ) -> Option<u8> {
-        let ctab = Self::main_gdevice_ctab(bus)?;
         Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
     }
 
