@@ -8,8 +8,8 @@ use crate::menu_manager::{
     for_each_standard_scroll_up_indicator_pixel, hierarchical_menu_id, install_menu_list_copy,
     laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
     new_standard_menu_record, standard_menu_gray_pattern_is_ink,
-    standard_menu_height as shared_standard_menu_height, standard_menu_icon_kind,
-    standard_menu_icon_resource_id, standard_menu_item_layout,
+    standard_menu_height as shared_standard_menu_height, standard_menu_highlighted_value,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
     standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
@@ -1326,13 +1326,7 @@ impl super::TrapDispatcher {
     }
 
     fn menu_hilited_pixel_index(pixel: u8, background: u8, foreground: u8) -> u8 {
-        if pixel == background {
-            foreground
-        } else if pixel == foreground {
-            background
-        } else {
-            pixel
-        }
+        standard_menu_highlighted_value(pixel, background, foreground)
     }
 
     fn hilite_packed_menu_pixel(

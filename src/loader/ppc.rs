@@ -26,18 +26,18 @@ use crate::menu_manager::{
     for_each_standard_scroll_up_indicator_pixel, install_menu_list_copy,
     is_standard_system_menu_title, laid_out_menu_item_count, merge_menu_color_entries,
     new_standard_menu_record, standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
-    standard_menu_gray_pattern_is_ink, standard_menu_height, standard_menu_icon_kind,
-    standard_menu_icon_resource_id, standard_menu_item_layout, standard_menu_text_advance,
-    standard_menu_title_advance, standard_menu_width, standard_popup_menu_layout,
-    standard_pull_down_menu_layout, standard_submenu_layout, ColorIconLayout, MenuBarResource,
-    MenuBarTitleRegion, MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage,
-    MenuDefinitionPane, MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems,
-    MenuKeyItem, MenuKeyMenu, MenuKeySelection, MenuList as PpcMenuListDefinition,
-    MenuListInstallRequest, MenuRow, MenuRows, MenuSnapshotRecord, MenuTrackingKind,
-    MenuTrackingState, MonochromeMenuIconLayout, StandardMenuIconKind, StandardMenuItemWidth,
-    SubmenuTransition, TrackedMenuPane, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
+    standard_menu_gray_pattern_is_ink, standard_menu_height, standard_menu_highlighted_value,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
+    standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable, MenuDefinitionInvocation,
+    MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
+    MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
+    MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
+    MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
+    StandardMenuIconKind, StandardMenuItemWidth, SubmenuTransition, TrackedMenuPane,
+    TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{
@@ -16406,7 +16406,14 @@ fn dispatch_supported_import(
             toolbox_startup.menu_bar_draw_count =
                 toolbox_startup.menu_bar_draw_count.saturating_add(1);
             if !toolbox_startup.host_menu_bar_hidden {
-                let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
+                let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+                let _ = ppc_draw_menu_bar_with_colors(
+                    memory,
+                    gworlds,
+                    current_menu_list,
+                    screen_clut,
+                    MenuColorTable::new(&menu_color_bytes),
+                );
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -16426,18 +16433,22 @@ fn dispatch_supported_import(
             // highlights the requested title; zero or an unknown menu ID
             // leaves every title normal. Macintosh Toolbox Essentials
             // (1992), p. 3-119.
-            ppc_set_menu_title_highlight(
+            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+            ppc_set_menu_title_highlight_with_colors(
                 memory,
                 gworlds,
                 current_menu_list,
                 cpu.gpr[3] as u16 as i16,
                 screen_clut,
+                MenuColorTable::new(&menu_color_bytes),
                 toolbox_startup.host_menu_bar_hidden,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MenuNoop => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::MenuKey => {
+            let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+            let menu_colors = MenuColorTable::new(&menu_color_bytes);
             let selection = ppc_menu_key(memory, current_menu_list, cpu.gpr[3] as u8);
             let result = selection.map_or(0, MenuKeySelection::packed_result);
             let root_menu_id = selection
@@ -16446,13 +16457,14 @@ fn dispatch_supported_import(
                 .filter(|menu| *menu != 0)
                 .and_then(|menu| memory.read_u16_be(menu))
                 .map_or(0, |menu_id| menu_id as i16);
-            ppc_set_menu_command_highlight(
+            ppc_set_menu_command_highlight_with_colors(
                 memory,
                 gworlds,
                 current_menu_list,
                 result,
                 Some(root_menu_id),
                 screen_clut,
+                menu_colors,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if crate::trap::dispatch::trace_input_enabled() {
@@ -16502,13 +16514,14 @@ fn dispatch_supported_import(
                 let result =
                     ppc_menu_selection_result(memory, current_menu_list, menu_id, item_number)
                         .unwrap_or(0);
-                ppc_set_menu_command_highlight(
+                ppc_set_menu_command_highlight_with_colors(
                     memory,
                     gworlds,
                     current_menu_list,
                     result,
                     None,
                     screen_clut,
+                    menu_colors,
                     toolbox_startup.host_menu_bar_hidden,
                 );
                 Some(PpcImportAction::Return(result))
@@ -16590,23 +16603,25 @@ fn dispatch_supported_import(
                     Some(PpcImportAction::Return(0))
                 }
             } else {
-                let result = if let Some(result) = ppc_finish_menu_bar_tracking(
+                let result = if let Some(result) = ppc_finish_menu_bar_tracking_with_colors(
                     memory,
                     gworlds,
                     screen_clut,
+                    menu_colors,
                     toolbox_startup,
                     input,
                 ) {
                     result
                 } else {
                     let result = ppc_menu_select(memory, current_menu_list, cpu.gpr[3], input);
-                    ppc_set_menu_command_highlight(
+                    ppc_set_menu_command_highlight_with_colors(
                         memory,
                         gworlds,
                         current_menu_list,
                         result,
                         None,
                         screen_clut,
+                        menu_colors,
                         toolbox_startup.host_menu_bar_hidden,
                     );
                     result
@@ -20377,7 +20392,14 @@ fn dispatch_supported_import(
             );
             if current_menu_list != 0 {
                 if !toolbox_startup.host_menu_bar_hidden {
-                    let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
+                    let menu_color_bytes = ppc_menu_color_table_bytes(memory, handles);
+                    let _ = ppc_draw_menu_bar_with_colors(
+                        memory,
+                        gworlds,
+                        current_menu_list,
+                        screen_clut,
+                        MenuColorTable::new(&menu_color_bytes),
+                    );
                 }
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -68084,12 +68106,13 @@ fn ppc_begin_custom_menu_bar_tracking(
         state.dropdown_rect(),
     ));
     let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
-    ppc_set_menu_title_highlight(
+    ppc_set_menu_title_highlight_with_colors(
         memory,
         gworlds,
         menu_list,
         menu_id,
         screen_clut,
+        menu_colors,
         startup.host_menu_bar_hidden,
     );
     ppc_draw_tracked_menu_chrome(memory, gworlds, screen_clut, menu_colors, &state)?;
@@ -68120,13 +68143,14 @@ fn ppc_begin_custom_menu_bar_tracking(
         startup.clear_active_menu_definition();
         startup.menu_select_call = None;
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
-        ppc_set_menu_command_highlight(
+        ppc_set_menu_command_highlight_with_colors(
             memory,
             gworlds,
             menu_list,
             0,
             None,
             screen_clut,
+            menu_colors,
             startup.host_menu_bar_hidden,
         );
     }
@@ -68253,13 +68277,14 @@ fn ppc_continue_custom_menu_bar_tracking(
                 }
             }
             let menu_list = ppc_current_menu_list(memory);
-            ppc_set_menu_command_highlight(
+            ppc_set_menu_command_highlight_with_colors(
                 memory,
                 gworlds,
                 menu_list,
                 result,
                 None,
                 screen_clut,
+                menu_colors,
                 startup.host_menu_bar_hidden,
             );
             startup.clear_active_menu_definition();
@@ -68319,13 +68344,14 @@ fn ppc_continue_custom_menu_bar_tracking(
         }
         startup.clear_active_menu_definition();
         startup.menu_select_call = None;
-        ppc_set_menu_command_highlight(
+        ppc_set_menu_command_highlight_with_colors(
             memory,
             gworlds,
             menu_list,
             0,
             None,
             screen_clut,
+            menu_colors,
             startup.host_menu_bar_hidden,
         );
         ppc_restore_menu_definition_port(startup, current_gworld, current_gdevice);
@@ -68364,13 +68390,14 @@ fn ppc_continue_custom_menu_bar_tracking(
         }
     }
     let menu_list = ppc_current_menu_list(memory);
-    ppc_set_menu_command_highlight(
+    ppc_set_menu_command_highlight_with_colors(
         memory,
         gworlds,
         menu_list,
         result,
         None,
         screen_clut,
+        menu_colors,
         startup.host_menu_bar_hidden,
     );
     startup.clear_active_menu_definition();
@@ -68438,7 +68465,13 @@ fn ppc_track_menu_while_held_with_resources(
         if previous.front_buffer != front {
             ppc_restore_menu_tracking(memory, previous.front_buffer, &previous);
             let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
-            let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
+            let _ = ppc_draw_menu_bar_with_colors(
+                memory,
+                gworlds,
+                current_menu_list,
+                screen_clut,
+                menu_colors,
+            );
             return;
         }
         // MenuSelect keeps tracking while the button is held. Crossing an
@@ -68488,12 +68521,13 @@ fn ppc_track_menu_while_held_with_resources(
             .map(|menu_id| menu_id as i16)
     });
     if let Some(active_menu_id) = active_menu_id {
-        ppc_set_menu_title_highlight(
+        ppc_set_menu_title_highlight_with_colors(
             memory,
             gworlds,
             current_menu_list,
             active_menu_id,
             screen_clut,
+            menu_colors,
             startup.host_menu_bar_hidden,
         );
     }
@@ -68518,10 +68552,11 @@ fn ppc_track_menu_while_held_with_resources(
     }
 }
 
-fn ppc_finish_menu_bar_tracking(
+fn ppc_finish_menu_bar_tracking_with_colors(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
     startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
 ) -> Option<u32> {
@@ -68556,19 +68591,44 @@ fn ppc_finish_menu_bar_tracking(
     // highlighted, but TheMenu contains the selected submenu's ID. Releasing
     // over a disabled item, divider, the menu bar, or no menu clears both.
     // Macintosh Toolbox Essentials (1992), pp. 3-115--3-116.
-    ppc_set_menu_command_highlight(
+    ppc_set_menu_command_highlight_with_colors(
         memory,
         gworlds,
         current_menu_list,
         result,
         None,
         screen_clut,
+        menu_colors,
         startup.host_menu_bar_hidden,
     );
     if result == 0 && !startup.host_menu_bar_hidden {
-        let _ = ppc_draw_menu_bar(memory, gworlds, current_menu_list, screen_clut);
+        let _ = ppc_draw_menu_bar_with_colors(
+            memory,
+            gworlds,
+            current_menu_list,
+            screen_clut,
+            menu_colors,
+        );
     }
     Some(result)
+}
+
+#[cfg(test)]
+fn ppc_finish_menu_bar_tracking(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    screen_clut: &[[u16; 3]; 256],
+    startup: &mut PpcToolboxStartupState,
+    input: PpcInputSnapshot,
+) -> Option<u32> {
+    ppc_finish_menu_bar_tracking_with_colors(
+        memory,
+        gworlds,
+        screen_clut,
+        MenuColorTable::new(&[]),
+        startup,
+        input,
+    )
 }
 
 fn ppc_menu_select(
@@ -69327,12 +69387,13 @@ fn ppc_root_menu_id_for_selection(
     0
 }
 
-fn ppc_set_menu_title_highlight(
+fn ppc_set_menu_title_highlight_with_colors(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     menu_list_handle: u32,
     requested_menu_id: i16,
     screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
     menu_bar_hidden: bool,
 ) {
     let target_menu_id = if requested_menu_id != 0
@@ -69348,29 +69409,37 @@ fn ppc_set_menu_title_highlight(
     }
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, target_menu_id as u16);
     if !menu_bar_hidden {
-        let _ = ppc_draw_menu_bar(memory, gworlds, menu_list_handle, screen_clut);
+        let _ = ppc_draw_menu_bar_with_colors(
+            memory,
+            gworlds,
+            menu_list_handle,
+            screen_clut,
+            menu_colors,
+        );
     }
 }
 
-fn ppc_set_menu_command_highlight(
+fn ppc_set_menu_command_highlight_with_colors(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     menu_list_handle: u32,
     result: u32,
     known_root_menu_id: Option<i16>,
     screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
     menu_bar_hidden: bool,
 ) {
     let selected_menu_id = (result >> 16) as u16 as i16;
     let root_menu_id = known_root_menu_id.unwrap_or_else(|| {
         ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id)
     });
-    ppc_set_menu_title_highlight(
+    ppc_set_menu_title_highlight_with_colors(
         memory,
         gworlds,
         menu_list_handle,
         root_menu_id,
         screen_clut,
+        menu_colors,
         menu_bar_hidden,
     );
     // The highlighted artwork belongs to the originating regular title, but
@@ -69380,22 +69449,37 @@ fn ppc_set_menu_command_highlight(
     let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, selected_menu_id as u16);
 }
 
+#[cfg(test)]
+fn ppc_set_menu_title_highlight(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    menu_list_handle: u32,
+    requested_menu_id: i16,
+    screen_clut: &[[u16; 3]; 256],
+    menu_bar_hidden: bool,
+) {
+    ppc_set_menu_title_highlight_with_colors(
+        memory,
+        gworlds,
+        menu_list_handle,
+        requested_menu_id,
+        screen_clut,
+        MenuColorTable::new(&[]),
+        menu_bar_hidden,
+    );
+}
+
 fn ppc_reverse_menu_title_cell(
     memory: &mut PpcSectionMem,
     front_buffer: PpcFrontBuffer,
-    screen_clut: &[[u16; 3]; 256],
     region: MenuBarTitleRegion,
     menu_bar_height: i16,
+    background: u16,
+    foreground: u16,
 ) {
     if menu_bar_height <= 1 {
         return;
     }
-    let (Some(white), Some(black)) = (
-        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_WHITE, screen_clut),
-        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
-    ) else {
-        return;
-    };
     let screen_width = ppc_u32_to_i16_saturating(front_buffer.width);
     let screen_height = ppc_u32_to_i16_saturating(front_buffer.height);
     // The standard MBDF's highlighted title rectangle extends beyond the
@@ -69412,13 +69496,7 @@ fn ppc_reverse_menu_title_cell(
             else {
                 continue;
             };
-            let reversed = if pixel == white {
-                black
-            } else if pixel == black {
-                white
-            } else {
-                pixel
-            };
+            let reversed = standard_menu_highlighted_value(pixel, background, foreground);
             let _ = ppc_quickdraw_write_raw_pixel(
                 memory,
                 front_buffer,
@@ -69452,11 +69530,12 @@ fn ppc_menu_bar_system_mark_top(menu_bar_height: i16) -> i16 {
     standard_menu_bar_system_mark_top(menu_bar_height, menu_ascent, menu_descent)
 }
 
-fn ppc_draw_menu_bar(
+fn ppc_draw_menu_bar_with_colors(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     menu_list_handle: u32,
     screen_clut: &[[u16; 3]; 256],
+    menu_colors: MenuColorTable<'_>,
 ) -> bool {
     let Some(front_buffer) = ppc_live_front_buffer_for_gworld(memory, gworlds, PPC_MAIN_GWORLD)
     else {
@@ -69465,8 +69544,16 @@ fn ppc_draw_menu_bar(
     if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
         return false;
     }
-    let (Some(white), Some(black)) = (
-        ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_WHITE, screen_clut),
+    // The standard MBDF resolves the menu-bar background and each title's
+    // foreground/background from the live MenuCInfo table. Inside Macintosh
+    // Volume V (1986), pp. V-231--V-235 and V-249--V-250; Macintosh Toolbox
+    // Essentials (1992), pp. 3-152--3-156.
+    let (Some(bar_background), Some(black)) = (
+        ppc_physical_screen_color_pixel(
+            front_buffer,
+            ppc_menu_rgb(menu_colors.menu_bar_background()),
+            screen_clut,
+        ),
         ppc_physical_screen_color_pixel(front_buffer, PPC_RGB_BLACK, screen_clut),
     ) else {
         return false;
@@ -69478,7 +69565,11 @@ fn ppc_draw_menu_bar(
         return true;
     }
     for y in 0..height {
-        let pixel = if y == height - 1 { black } else { white };
+        let pixel = if y == height - 1 {
+            black
+        } else {
+            bar_background
+        };
         for x in 0..front_buffer.width as i32 {
             let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
         }
@@ -69509,6 +69600,15 @@ fn ppc_draw_menu_bar(
         let Some(menu) = memory.read_u32_be(region.handle).filter(|ptr| *ptr != 0) else {
             continue;
         };
+        let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
+        let title_foreground = ppc_menu_rgb(menu_colors.title_foreground(menu_id));
+        let title_background = ppc_menu_rgb(menu_colors.title_background(menu_id));
+        let (Some(title_foreground_pixel), Some(title_background_pixel)) = (
+            ppc_physical_screen_color_pixel(front_buffer, title_foreground, screen_clut),
+            ppc_physical_screen_color_pixel(front_buffer, title_background, screen_clut),
+        ) else {
+            continue;
+        };
         let title_ptr = menu.wrapping_add(14);
         let Some(title) = ppc_read_pascal_string(memory, title_ptr) else {
             continue;
@@ -69519,7 +69619,7 @@ fn ppc_draw_menu_bar(
             ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
         } else {
             let explicit_index = ppc_indexed_depth_entry_count(front_buffer.depth)
-                .and_then(|_| u8::try_from(black).ok());
+                .and_then(|_| u8::try_from(title_foreground_pixel).ok());
             ppc_draw_text_bytes(
                 memory,
                 gworlds,
@@ -69528,14 +69628,20 @@ fn ppc_draw_menu_bar(
                 PPC_QD_TEXT_FONT_DEFAULT,
                 PPC_QD_TEXT_SIZE_SYSTEM,
                 PPC_QD_TEXT_MODE_SRC_OR,
-                PPC_RGB_BLACK,
+                title_foreground,
                 explicit_index,
                 &title,
             );
         }
-        let menu_id = memory.read_u16_be(menu).unwrap_or(0) as i16;
         if !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id {
-            ppc_reverse_menu_title_cell(memory, front_buffer, screen_clut, region, menu_bar_height);
+            ppc_reverse_menu_title_cell(
+                memory,
+                front_buffer,
+                region,
+                menu_bar_height,
+                title_background_pixel,
+                title_foreground_pixel,
+            );
             // Color title artwork is replotted after reversing its cell so
             // only the transparent background participates in highlighting.
             // Inside Macintosh Volume V (1986), pp. V-235 and V-244.
@@ -69546,6 +69652,22 @@ fn ppc_draw_menu_bar(
         }
     }
     true
+}
+
+#[cfg(test)]
+fn ppc_draw_menu_bar(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    menu_list_handle: u32,
+    screen_clut: &[[u16; 3]; 256],
+) -> bool {
+    ppc_draw_menu_bar_with_colors(
+        memory,
+        gworlds,
+        menu_list_handle,
+        screen_clut,
+        MenuColorTable::new(&[]),
+    )
 }
 
 fn ppc_draw_system_menu_mark(
@@ -78242,11 +78364,13 @@ mod tests {
 
     fn draw_current_test_menu_bar(loaded: &mut PpcLoadedApp) -> bool {
         let menu_list = ppc_current_menu_list(&mut loaded.memory);
-        ppc_draw_menu_bar(
+        let menu_color_bytes = ppc_menu_color_table_bytes(&mut loaded.memory, &loaded.handles);
+        ppc_draw_menu_bar_with_colors(
             &mut loaded.memory,
             &loaded.gworlds,
             menu_list,
             &loaded.screen_clut,
+            MenuColorTable::new(&menu_color_bytes),
         )
     }
 
@@ -78983,6 +79107,134 @@ mod tests {
         assert!(
             contains_black(57, 80),
             "drawing must place title artwork from the live menuLeft"
+        );
+    }
+
+    #[test]
+    fn native_draw_and_hilite_menu_bar_use_live_shared_menu_colors() {
+        let pef = synthetic_pef_with_import(b"DrawMenuBar");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
+        loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 1;
+        loaded.cpu.gpr[6] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetDepth);
+
+        let set_rgb = |entry: &mut [u8; MENU_COLOR_ENTRY_SIZE], offset: usize, rgb: [u16; 3]| {
+            for (channel, value) in rgb.into_iter().enumerate() {
+                let channel_offset = offset + channel * 2;
+                entry[channel_offset..channel_offset + 2].copy_from_slice(&value.to_be_bytes());
+            }
+        };
+        let bar_background = [0xffff, 0x1111, 0x1111];
+        let inherited_title = [0x1111, 0xffff, 0x1111];
+        let live_title = [0x1111, 0x1111, 0xffff];
+        let mut bar = test_menu_color_entry(0, 0, 0);
+        set_rgb(&mut bar, 4, inherited_title);
+        set_rgb(&mut bar, 22, bar_background);
+        let mut title = test_menu_color_entry(128, 0, 0);
+        set_rgb(&mut title, 4, inherited_title);
+        set_rgb(&mut title, 10, bar_background);
+        let color_bytes = [bar.as_slice(), title.as_slice()].concat();
+        let color_handle = ppc_ensure_menu_color_table_handle(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            &mut loaded.free_handle_blocks,
+        );
+        assert_ne!(color_handle, 0);
+        assert_eq!(
+            ppc_replace_menu_bytes(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                color_handle,
+                &color_bytes,
+            ),
+            PPC_NO_ERR,
+        );
+
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
+        let front =
+            ppc_live_front_buffer_for_gworld(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let bar_pixel = ppc_physical_screen_color_pixel(
+            front,
+            ppc_menu_rgb(bar_background),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let inherited_pixel = ppc_physical_screen_color_pixel(
+            front,
+            ppc_menu_rgb(inherited_title),
+            &loaded.screen_clut,
+        )
+        .unwrap();
+        let live_pixel =
+            ppc_physical_screen_color_pixel(front, ppc_menu_rgb(live_title), &loaded.screen_clut)
+                .unwrap();
+        assert_ne!(bar_pixel, inherited_pixel);
+        assert_ne!(bar_pixel, live_pixel);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (120, 5)),
+            Some(bar_pixel),
+            "DrawMenuBar did not use the menu-bar entry RGB4",
+        );
+
+        let menu_list_handle = ppc_current_menu_list(&mut loaded.memory);
+        let region = ppc_menu_list_definition(&mut loaded.memory, menu_list_handle)
+            .unwrap()
+            .regular_title_regions()
+            .into_iter()
+            .next()
+            .unwrap();
+        let title_pixel = (1..19)
+            .flat_map(|y| (region.left..region.right).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(x), i32::from(y)))
+                    == Some(inherited_pixel)
+            })
+            .expect("inherited green title ink");
+
+        let color_data = loaded.memory.read_u32_be(color_handle).unwrap();
+        for (channel, value) in live_title.into_iter().enumerate() {
+            loaded
+                .memory
+                .write_u16_be(
+                    color_data + MENU_COLOR_ENTRY_SIZE as u32 + 4 + channel as u32 * 2,
+                    value,
+                )
+                .unwrap();
+        }
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawMenuBar);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(title_pixel.0), i32::from(title_pixel.1)),
+            ),
+            Some(live_pixel),
+            "DrawMenuBar did not reread the guest-mutated title entry",
+        );
+
+        loaded.cpu.gpr[3] = 128;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::HiliteMenu);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                front,
+                (i32::from(title_pixel.0), i32::from(title_pixel.1)),
+            ),
+            Some(bar_pixel),
+            "HiliteMenu did not reverse the live title foreground",
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (i32::from(region.left - 1), 2),),
+            Some(live_pixel),
+            "HiliteMenu did not reverse the live title background",
         );
     }
 

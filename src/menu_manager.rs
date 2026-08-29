@@ -2190,6 +2190,25 @@ pub(crate) struct StandardMenuItemColors {
     pub(crate) background: [u16; 3],
 }
 
+/// Reverse a standard MBDF/MDEF element's foreground and background values.
+///
+/// Color menu highlighting swaps only the resolved element colors and leaves
+/// unrelated pixels unchanged. Inside Macintosh Volume V (1986), pp. V-249
+/// and V-252--V-253.
+pub(crate) fn standard_menu_highlighted_value<T: Copy + Eq>(
+    value: T,
+    background: T,
+    foreground: T,
+) -> T {
+    if value == background {
+        foreground
+    } else if value == foreground {
+        background
+    } else {
+        value
+    }
+}
+
 impl<'a> MenuColorTable<'a> {
     pub(crate) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes }
@@ -2939,6 +2958,9 @@ mod tests {
         assert_eq!(defaults.title_foreground(128), STANDARD_MENU_BLACK);
         assert_eq!(defaults.title_background(128), STANDARD_MENU_WHITE);
         assert_eq!(defaults.dropdown_background(128), STANDARD_MENU_WHITE);
+        assert_eq!(standard_menu_highlighted_value(3, 3, 6), 6);
+        assert_eq!(standard_menu_highlighted_value(6, 3, 6), 3);
+        assert_eq!(standard_menu_highlighted_value(8, 3, 6), 8);
     }
 
     #[test]
