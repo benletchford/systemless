@@ -3,7 +3,7 @@
 use crate::mac_roman::decode_mac_roman;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
@@ -733,6 +733,67 @@ impl Deref for SharedMenuTracking {
 impl DerefMut for SharedMenuTracking {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.state_mut()
+    }
+}
+
+/// One process's host-presented menu command awaiting `MenuSelect`.
+///
+/// The host injects one ordinary menu-bar click and retains the selected
+/// command until the guest reaches `MenuSelect`. Both CPU adapters belong to
+/// the same process and must therefore observe and consume the same pending
+/// value; only their event and result ABI handling remains architecture-local.
+#[derive(Debug, Default)]
+pub(crate) struct SharedNativeMenuSelection(Rc<RefCell<Option<(i16, i16)>>>);
+
+impl Clone for SharedNativeMenuSelection {
+    fn clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(*self.0.borrow())))
+    }
+}
+
+impl PartialEq for SharedNativeMenuSelection {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0.borrow() == *other.0.borrow()
+    }
+}
+
+impl Eq for SharedNativeMenuSelection {}
+
+impl PartialEq<Option<(i16, i16)>> for SharedNativeMenuSelection {
+    fn eq(&self, other: &Option<(i16, i16)>) -> bool {
+        *self.0.borrow() == *other
+    }
+}
+
+impl SharedNativeMenuSelection {
+    /// Attach another CPU adapter without copying the pending selection.
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    pub(crate) fn is_none(&self) -> bool {
+        self.0.borrow().is_none()
+    }
+
+    pub(crate) fn stage(&mut self, selection: (i16, i16)) -> bool {
+        if *self.0.borrow() == Some(selection) {
+            return false;
+        }
+        *self.0.borrow_mut() = Some(selection);
+        true
+    }
+
+    pub(crate) fn take(&mut self) -> Option<(i16, i16)> {
+        self.0.borrow_mut().take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> Option<(i16, i16)> {
+        *self.0.borrow()
     }
 }
 
@@ -3262,6 +3323,20 @@ mod tests {
         assert_eq!(live.as_ref().unwrap().menu_handle, 0x0012_3456);
         assert_eq!(snapshot.as_ref().unwrap().highlighted_item, 4);
         assert_eq!(snapshot.as_ref().unwrap().menu_handle, 0x0065_4321);
+    }
+
+    #[test]
+    fn native_menu_selection_distinguishes_snapshots_from_live_cpu_handles() {
+        let mut live = SharedNativeMenuSelection::default();
+        assert!(live.stage((128, 2)));
+
+        let mut snapshot = live.clone();
+        assert_eq!(snapshot.take(), Some((128, 2)));
+        assert_eq!(live.snapshot(), Some((128, 2)));
+
+        let mut powerpc = live.shared_handle();
+        assert_eq!(powerpc.take(), Some((128, 2)));
+        assert!(live.is_none());
     }
 
     #[test]

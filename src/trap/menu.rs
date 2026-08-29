@@ -720,8 +720,7 @@ impl super::TrapDispatcher {
             .into_iter()
             .next()?;
         let selection = (menu_id, item_number);
-        if self.pending_native_menu_selection != Some(selection) {
-            self.pending_native_menu_selection = Some(selection);
+        if self.pending_native_menu_selection.stage(selection) {
             self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,

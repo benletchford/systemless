@@ -56,9 +56,9 @@ use crate::menu_manager::{
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingSurface, MonochromeMenuIconLayout,
-    ProcessMenuTrackingState, ProcessTrackedMenuPane, SharedMenuTracking, StandardMenuChrome,
-    StandardMenuIconKind, StandardMenuItemWidth, StandardMenuPaneKind, SubmenuTransition,
-    TrackedMenuIcon as PpcTrackedMenuIcon,
+    ProcessMenuTrackingState, ProcessTrackedMenuPane, SharedMenuTracking,
+    SharedNativeMenuSelection, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
+    StandardMenuPaneKind, SubmenuTransition, TrackedMenuIcon as PpcTrackedMenuIcon,
     TrackedMenuItemAppearance as PpcTrackedMenuItemAppearance, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
@@ -2917,7 +2917,7 @@ pub struct PpcToolboxStartupState {
     pub cursor_mask: [u8; 32],
     pub cursor_hot_v: i16,
     pub cursor_hot_h: i16,
-    pub pending_native_menu_selection: Option<(i16, i16)>,
+    pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     pub(crate) menu_tracking: SharedMenuTracking,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     menu_definition_tracking: Option<MenuDefinitionTracking>,
@@ -2989,7 +2989,7 @@ impl Default for PpcToolboxStartupState {
             cursor_mask: [0; 32],
             cursor_hot_v: 0,
             cursor_hot_h: 0,
-            pending_native_menu_selection: None,
+            pending_native_menu_selection: SharedNativeMenuSelection::default(),
             menu_tracking: SharedMenuTracking::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
@@ -5094,6 +5094,20 @@ impl PpcLoadedApp {
         }
     }
 
+    pub(crate) fn share_native_menu_selection(&mut self, selection: &SharedNativeMenuSelection) {
+        let pending = self.toolbox_startup.pending_native_menu_selection.take();
+        debug_assert!(
+            pending.is_none() || selection.is_none(),
+            "cannot attach two pending native menu selections"
+        );
+        self.toolbox_startup.pending_native_menu_selection = selection.shared_handle();
+        if let Some(pending) = pending {
+            self.toolbox_startup
+                .pending_native_menu_selection
+                .stage(pending);
+        }
+    }
+
     pub(crate) fn share_guest_calls(&mut self, guest_calls: &SharedGuestCallStack) {
         self.guest_calls.attach_to(guest_calls);
         self.toolbox_startup.guest_calls.attach_to(guest_calls);
@@ -5156,7 +5170,9 @@ impl PpcLoadedApp {
         if ppc_menu_selection_result(&mut self.memory, menu_list, menu_id, item_number).is_none() {
             return false;
         }
-        self.toolbox_startup.pending_native_menu_selection = Some((menu_id, item_number));
+        self.toolbox_startup
+            .pending_native_menu_selection
+            .stage((menu_id, item_number));
         true
     }
 
@@ -83650,7 +83666,10 @@ mod tests {
         assert_eq!(loaded.cpu.gpr[3], (202 << 16) | 2);
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));
 
-        loaded.toolbox_startup.pending_native_menu_selection = Some((202, 2));
+        loaded
+            .toolbox_startup
+            .pending_native_menu_selection
+            .stage((202, 2));
         run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuSelect);
         assert_eq!(loaded.cpu.gpr[3], (202 << 16) | 2);
         assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(202));

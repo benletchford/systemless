@@ -12,7 +12,7 @@ use crate::guest_call::SharedGuestCallStack;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::menu_manager::SharedMenuTracking;
+use crate::menu_manager::{SharedMenuTracking, SharedNativeMenuSelection};
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -1694,7 +1694,7 @@ pub struct TrapDispatcher {
     /// A host-native menu selection waiting for the guest's normal
     /// FindWindow -> MenuSelect event path.  It is consumed only by
     /// MenuSelect and revalidated against the live menu list there.
-    pub(crate) pending_native_menu_selection: Option<(i16, i16)>,
+    pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     /// Latched menu-bar mouseDown corresponding to
     /// `pending_native_menu_selection`. Unlike an ordinary queued event, this
     /// survives an Event Manager consumer that fetches but ignores menu-bar
@@ -3222,7 +3222,7 @@ impl TrapDispatcher {
             pending_menu_bar_build: None,
             menu_definition_port_state: None,
             menu_tracking_stack_ptr: 0,
-            pending_native_menu_selection: None,
+            pending_native_menu_selection: SharedNativeMenuSelection::default(),
             pending_native_menu_event: None,
             pending_native_menu_event_tick: None,
             control_tracking: None,

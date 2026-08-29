@@ -3975,6 +3975,7 @@ impl FixtureRunner {
         self.share_ppc_runtime_globals(&mut ppc_app);
         ppc_app.share_event_queue(&self.dispatcher.event_queue);
         ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
+        ppc_app.share_native_menu_selection(&self.dispatcher.pending_native_menu_selection);
         ppc_app.share_guest_calls(&self.dispatcher.guest_calls);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -13704,6 +13705,44 @@ mod tests {
         assert_eq!(ppc_app.guest_calls.len(), 1);
         assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
         assert!(runner.dispatcher.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn ppc_initialization_attaches_both_cpu_adapters_to_one_native_menu_selection() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        assert!(runner
+            .dispatcher
+            .pending_native_menu_selection
+            .stage((128, 2)));
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+        assert_eq!(
+            ppc_app
+                .toolbox_startup
+                .pending_native_menu_selection
+                .snapshot(),
+            Some((128, 2))
+        );
+        assert_eq!(
+            ppc_app.toolbox_startup.pending_native_menu_selection.take(),
+            Some((128, 2))
+        );
+        assert!(runner.dispatcher.pending_native_menu_selection.is_none());
+
+        assert!(ppc_app
+            .toolbox_startup
+            .pending_native_menu_selection
+            .stage((129, 3)));
+        assert_eq!(
+            runner.dispatcher.pending_native_menu_selection.take(),
+            Some((129, 3))
+        );
+        assert!(ppc_app
+            .toolbox_startup
+            .pending_native_menu_selection
+            .is_none());
     }
 
     #[test]
