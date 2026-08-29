@@ -93,14 +93,10 @@ pub mod addr {
     /// menuID, low word = itemNumber). Maintained by the standard menu
     /// definition procedure ('MDEF' 0) on each cursor-into-item transition,
     /// regardless of whether the item is enabled or disabled. Read by
-    /// MenuChoice ($AA66) when the application's MenuSelect / MenuKey
-    /// returned zero, to surface "which disabled item did the user click?"
-    /// for help/explanation UI. Per IM:V V-248 + MTb 1992 3-118 (the
+    /// MenuChoice ($AA66) when MenuSelect returned zero, to surface which
+    /// disabled item received the mouse-up event for help/explanation UI.
+    /// Per IM:V V-248 + MTb 1992 3-118 (the
     /// canonical EQU at IM:V V-571 line 8689: `MenuDisable EQU $0B54`).
-    /// Systemless's HLE reads this lowmem word directly in MenuChoice; it
-    /// still does not synthesize the MDEF cursor-tracking writes that
-    /// classic ROMs receive, so tests seed the value explicitly when they
-    /// need a deterministic result.
     /// Inside Macintosh Volume V, V-248 (MenuChoice routine description)
     /// and V-571 (assembly globals table); Macintosh Toolbox Essentials
     /// 1992, 3-118..3-119 (MenuChoice canonical chapter).

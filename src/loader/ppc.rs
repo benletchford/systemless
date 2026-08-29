@@ -25,13 +25,14 @@ use crate::menu_manager::{
     for_each_standard_hierarchy_indicator_pixel, for_each_standard_menu_bar_corner_pixel,
     for_each_standard_scroll_down_indicator_pixel, for_each_standard_scroll_up_indicator_pixel,
     install_menu_list_copy, is_standard_system_menu_title, laid_out_menu_item_count,
-    merge_menu_color_entries, new_standard_menu_record, standard_menu_bar_system_mark_top,
-    standard_menu_bar_title_baseline, standard_menu_gray_pattern_is_ink, standard_menu_height,
-    standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
-    standard_menu_item_layout, standard_menu_text_advance, standard_menu_title_advance,
-    standard_menu_width, standard_popup_menu_layout, standard_pull_down_menu_layout,
-    standard_submenu_layout, ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable,
-    MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
+    menu_choice_value, merge_menu_color_entries, new_standard_menu_record,
+    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
+    standard_menu_gray_pattern_is_ink, standard_menu_height, standard_menu_highlighted_value,
+    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
+    standard_menu_text_advance, standard_menu_title_advance, standard_menu_width,
+    standard_popup_menu_layout, standard_pull_down_menu_layout, standard_submenu_layout,
+    ColorIconLayout, MenuBarResource, MenuBarTitleRegion, MenuColorTable, MenuDefinitionInvocation,
+    MenuDefinitionMessage, MenuDefinitionPane, MenuDefinitionTracking,
     MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu, MenuKeySelection,
     MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
     MenuSnapshotRecord, MenuTrackingKind, MenuTrackingState, MonochromeMenuIconLayout,
@@ -266,11 +267,6 @@ const PPC_GRAY_RGN_ADDR: u32 = 0x0000_09ee;
 // visibly highlighted. Macintosh Toolbox Essentials (1992), pp. 3-115--3-119;
 // Inside Macintosh Volume V (1986), pp. V-244 and V-571.
 const PPC_THE_MENU_ADDR: u32 = 0x0000_0a26;
-// MenuDisable contains the packed menu ID and item number most recently
-// tracked by the menu definition procedure. Inside Macintosh Volume V
-// (1986), p. V-571; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
-const PPC_MENU_DISABLE_ADDR: u32 = 0x0000_0b54;
-
 fn ppc_current_menu_list(memory: &mut PpcSectionMem) -> u32 {
     memory
         .read_u32_be(crate::memory::globals::addr::MENU_LIST)
@@ -16546,7 +16542,9 @@ fn dispatch_supported_import(
             // standard MDEF's packed MenuDisable low-memory value unchanged.
             // Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
             Some(PpcImportAction::Return(
-                memory.read_u32_be(PPC_MENU_DISABLE_ADDR).unwrap_or(0),
+                memory
+                    .read_u32_be(crate::memory::globals::addr::MENU_DISABLE)
+                    .unwrap_or(0),
             ))
         }
         PpcImportDispatcherTarget::MenuSelect => {
@@ -16707,6 +16705,20 @@ fn dispatch_supported_import(
                     Some(PpcImportAction::Return(0))
                 }
             } else {
+                if let Some(mut state) = toolbox_startup.menu_tracking.take() {
+                    ppc_update_menu_tracking(
+                        memory,
+                        gworlds,
+                        screen_clut,
+                        menu_colors,
+                        current_menu_list,
+                        &mut state,
+                        input,
+                        vfs_resources,
+                        *current_resource_refnum,
+                    );
+                    toolbox_startup.menu_tracking = Some(state);
+                }
                 if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
                     if let Some((menu_handle, item)) =
                         ppc_tracked_menu_selection(memory, state, input)
@@ -67164,6 +67176,21 @@ fn ppc_write_menu_scrolling_globals(memory: &mut PpcSectionMem, rows: &MenuRows,
     );
 }
 
+fn ppc_write_standard_menu_choice(memory: &mut PpcSectionMem, menu_handle: u32, item_number: i16) {
+    let Some(menu_id) = memory
+        .read_u32_be(menu_handle)
+        .filter(|menu| *menu != 0)
+        .and_then(|menu| memory.read_u16_be(menu))
+        .map(|menu_id| menu_id as i16)
+    else {
+        return;
+    };
+    let _ = memory.write_u32_be(
+        crate::memory::globals::addr::MENU_DISABLE,
+        menu_choice_value(menu_id, item_number),
+    );
+}
+
 fn ppc_menu_tracking_item(
     memory: &mut PpcSectionMem,
     state: &impl TrackedMenuPaneView<
@@ -68105,6 +68132,11 @@ fn ppc_update_menu_tracking(
                 point,
             )
         };
+        ppc_write_standard_menu_choice(
+            memory,
+            state.submenus[depth].menu_handle,
+            update.menu_choice_item,
+        );
         let closed = state
             .update_highlight(Some(depth), update.item)
             .unwrap_or_default();
@@ -68145,6 +68177,7 @@ fn ppc_update_menu_tracking(
         &mut state.scroll_direction,
         point,
     );
+    ppc_write_standard_menu_choice(memory, state.menu_handle, update.menu_choice_item);
     let closed = state
         .update_highlight(None, update.item)
         .unwrap_or_default();
@@ -83412,7 +83445,7 @@ mod tests {
         for expected in [0, (128u32 << 16) | 3, (201u32 << 16) | 0xffff] {
             loaded
                 .memory
-                .write_u32_be(PPC_MENU_DISABLE_ADDR, expected)
+                .write_u32_be(crate::memory::globals::addr::MENU_DISABLE, expected)
                 .unwrap();
             loaded.cpu.pc = loaded.entry_pc;
             loaded.cpu.lr = PPC_HALT_PC;
@@ -83426,10 +83459,61 @@ mod tests {
             assert_eq!(loaded.cpu.gpr[3], expected);
             assert_eq!(loaded.cpu.gpr[1], original_sp);
             assert_eq!(
-                loaded.memory.read_u32_be(PPC_MENU_DISABLE_ADDR),
+                loaded
+                    .memory
+                    .read_u32_be(crate::memory::globals::addr::MENU_DISABLE),
                 Some(expected),
             );
         }
+    }
+
+    // The native standard MDEF must update the same live MenuDisable value as
+    // the 68k tracker even though a disabled row cannot become MenuSelect's
+    // highlighted result. Inside Macintosh Volume V (1986), pp. V-235 and
+    // V-248--V-249; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
+    #[test]
+    fn native_menuselect_disabled_item_updates_live_menuchoice_result() {
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let menu = install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open/O");
+        ppc_set_menu_item_enabled(&mut loaded.memory, &loaded.handles, menu, 1, false);
+        assert!(draw_current_test_menu_bar(&mut loaded));
+
+        let title_h = STANDARD_MENU_BAR_FIRST_TITLE_LEFT + 2;
+        loaded.cpu.gpr[3] = (u32::from(10u16) << 16) | u32::from(title_h as u16);
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: true,
+            mouse_v: 10,
+            mouse_h: title_h,
+            ..PpcInputSnapshot::default()
+        });
+        assert!(matches!(
+            loaded.run_with_hle_imports(64).result,
+            PpcRunResult::CycleLimit { .. }
+        ));
+        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+
+        loaded.set_input_snapshot(PpcInputSnapshot {
+            mouse_button: false,
+            mouse_v: tracking.popup_top + 6,
+            mouse_h: tracking.popup_left + 4,
+            ..PpcInputSnapshot::default()
+        });
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.cpu.gpr[3], 0);
+        assert_eq!(loaded.toolbox_startup.menu_tracking, None);
+
+        let expected = menu_choice_value(128, 1);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u32_be(crate::memory::globals::addr::MENU_DISABLE),
+            Some(expected),
+        );
+        loaded.cpu.gpr[3] = 0xDEAD_BEEF;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuChoice);
+        assert_eq!(loaded.cpu.gpr[3], expected);
     }
 
     #[test]

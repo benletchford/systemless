@@ -410,8 +410,23 @@ pub(crate) fn standard_menu_bar_system_mark_top(
 /// Result of one standard scrolling-menu pointer update.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MenuPointerUpdate {
+    /// Selectable item exposed to MenuSelect and the retained highlight.
     pub(crate) item: i16,
+    /// Raw standard-MDEF row written to MenuDisable for MenuChoice. Disabled
+    /// items and dividers remain observable here even though `item` is zero.
+    pub(crate) menu_choice_item: i16,
     pub(crate) scrolled: bool,
+}
+
+/// Pack the standard MDEF's live MenuDisable value.
+///
+/// The high word is the menu ID and the low word is the raw item number under
+/// the pointer. The standard MDEF updates this value while a menu is down so
+/// MenuChoice can identify a disabled item after MenuSelect returns zero.
+/// Inside Macintosh Volume V (1986), pp. V-235 and V-248--V-249; Macintosh
+/// Toolbox Essentials (1992), pp. 3-90--3-91 and 3-118--3-119.
+pub(crate) fn menu_choice_value(menu_id: i16, item_number: i16) -> u32 {
+    (u32::from(menu_id as u16) << 16) | u32::from(item_number as u16)
 }
 
 /// Retained state for one visible menu pane.
@@ -1454,7 +1469,16 @@ impl MenuRows {
             .fold(0i16, |offset, row| offset.saturating_add(row.height.max(0)))
     }
 
+    #[cfg(test)]
     pub(crate) fn item_at_offset(&self, offset: i16) -> Option<i16> {
+        let item_number = self.item_number_at_offset(offset)?;
+        let selectable = menu_item_index(item_number)
+            .and_then(|index| self.rows.get(index))
+            .is_some_and(|row| row.selectable);
+        Some(if selectable { item_number } else { 0 })
+    }
+
+    fn item_number_at_offset(&self, offset: i16) -> Option<i16> {
         if offset < 0 {
             return None;
         }
@@ -1462,8 +1486,7 @@ impl MenuRows {
         for (index, row) in self.rows.iter().enumerate() {
             let height = row.height.max(0);
             if remaining < height {
-                let item_number = i16::try_from(index + 1).ok()?;
-                return Some(if row.selectable { item_number } else { 0 });
+                return i16::try_from(index + 1).ok();
             }
             remaining = remaining.saturating_sub(height);
         }
@@ -1481,6 +1504,24 @@ impl MenuRows {
     }
 
     pub(crate) fn item_at_point_with_content_top(
+        &self,
+        rect: (i16, i16, i16, i16),
+        insets: (i16, i16, i16, i16),
+        first_item_top: i16,
+        point: (i16, i16),
+    ) -> Option<i16> {
+        let item_number =
+            self.item_number_at_point_with_content_top(rect, insets, first_item_top, point)?;
+        if item_number == 0 {
+            return Some(0);
+        }
+        let selectable = menu_item_index(item_number)
+            .and_then(|index| self.rows.get(index))
+            .is_some_and(|row| row.selectable);
+        Some(if selectable { item_number } else { 0 })
+    }
+
+    fn item_number_at_point_with_content_top(
         &self,
         rect: (i16, i16, i16, i16),
         insets: (i16, i16, i16, i16),
@@ -1505,7 +1546,7 @@ impl MenuRows {
             return Some(0);
         }
         Some(
-            self.item_at_offset(vertical.saturating_sub(first_item_top))
+            self.item_number_at_offset(vertical.saturating_sub(first_item_top))
                 .unwrap_or(0),
         )
     }
@@ -1563,6 +1604,23 @@ impl MenuRows {
         }
     }
 
+    fn menu_choice_item_at_point(
+        &self,
+        rect: (i16, i16, i16, i16),
+        content_top: i16,
+        point: (i16, i16),
+    ) -> i16 {
+        if self
+            .pointer_scroll_direction(rect, content_top, point)
+            .is_some()
+        {
+            0
+        } else {
+            self.item_number_at_point_with_content_top(rect, (0, 0, 0, 0), content_top, point)
+                .unwrap_or(0)
+        }
+    }
+
     /// Apply one standard MDEF scrolling-menu pointer update.
     ///
     /// A first call over an indicator arms that direction without selecting
@@ -1595,12 +1653,17 @@ impl MenuRows {
                 };
             }
             *armed_direction = Some(direction);
-            return MenuPointerUpdate { item: 0, scrolled };
+            return MenuPointerUpdate {
+                item: 0,
+                menu_choice_item: 0,
+                scrolled,
+            };
         }
 
         *armed_direction = None;
         MenuPointerUpdate {
             item: self.tracking_item_at_point(rect, *content_top, point),
+            menu_choice_item: self.menu_choice_item_at_point(rect, *content_top, point),
             scrolled: false,
         }
     }
@@ -3975,6 +4038,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (28, 130)),
             MenuPointerUpdate {
                 item: 15,
+                menu_choice_item: 15,
                 scrolled: false
             }
         );
@@ -3982,6 +4046,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (12, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: false
             }
         );
@@ -3989,6 +4054,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (12, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: true
             }
         );
@@ -4000,6 +4066,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (3, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: true
             }
         );
@@ -4015,6 +4082,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (556, 130)),
             MenuPointerUpdate {
                 item: 29,
+                menu_choice_item: 29,
                 scrolled: false
             }
         );
@@ -4022,6 +4090,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (572, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: false
             }
         );
@@ -4029,6 +4098,7 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (572, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: true
             }
         );
@@ -4037,10 +4107,50 @@ mod tests {
             rows.track_pointer(rect, &mut content_top, &mut armed, (581, 130)),
             MenuPointerUpdate {
                 item: 0,
+                menu_choice_item: 0,
                 scrolled: true
             }
         );
         assert_eq!((content_top, content_top + rows.total_height()), (68, 708));
+    }
+
+    #[test]
+    fn standard_pointer_update_retains_disabled_row_for_menu_choice() {
+        let rows = MenuRows::new([
+            MenuRow {
+                height: 16,
+                selectable: true,
+            },
+            MenuRow {
+                height: 6,
+                selectable: false,
+            },
+            MenuRow {
+                height: 16,
+                selectable: false,
+            },
+        ]);
+        let rect = (20, 40, 58, 140);
+        let mut content_top = rect.0;
+        let mut armed = None;
+
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (38, 60)),
+            MenuPointerUpdate {
+                item: 0,
+                menu_choice_item: 2,
+                scrolled: false,
+            },
+        );
+        assert_eq!(
+            rows.track_pointer(rect, &mut content_top, &mut armed, (48, 60)),
+            MenuPointerUpdate {
+                item: 0,
+                menu_choice_item: 3,
+                scrolled: false,
+            },
+        );
+        assert_eq!(menu_choice_value(0x0208, 3), 0x0208_0003);
     }
 
     #[test]

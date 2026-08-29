@@ -4024,7 +4024,10 @@ impl FixtureRunner {
         // RndSeed is the system random-number seed (Inside Macintosh Volume I,
         // I-195). The Vertical Retrace Manager updates Ticks and the one-second
         // interrupt updates Time (Inside Macintosh Volume II, II-202 and
-        // II-378). GetMouse, Button, and GetKeys observe the current device
+        // II-378). MenuFlash controls the selected-item blink count, while the
+        // standard MDEF updates MenuDisable for MenuChoice (Macintosh Toolbox
+        // Essentials 1992, pp. 3-118--3-119 and 3-142). GetMouse, Button, and
+        // GetKeys observe the current device
         // state, whose KeyMap is one 128-bit value (Inside Macintosh Volume I,
         // I-259–I-260). These bytes describe one running Macintosh, so native
         // and 68k callers must observe one backing allocation rather than
@@ -4032,6 +4035,7 @@ impl FixtureRunner {
         for (address, len) in [
             (addr::SYS_EVT_MASK, 2),
             (addr::MENU_FLASH, 2),
+            (addr::MENU_DISABLE, 4),
             (addr::RND_SEED, 4),
             (addr::TICKS, 4),
             (addr::TIME, 4),
@@ -11881,6 +11885,17 @@ mod tests {
         assert_eq!(runner.bus.read_word(addr::MENU_FLASH), 1);
         runner.bus.write_word(addr::MENU_FLASH, 2);
         assert_eq!(ppc_app.memory.read_u16_be(addr::MENU_FLASH), Some(2));
+
+        ppc_app
+            .memory
+            .write_u32_be(addr::MENU_DISABLE, 0x0080_0002)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(addr::MENU_DISABLE), 0x0080_0002);
+        runner.bus.write_long(addr::MENU_DISABLE, 0x0081_0003);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(addr::MENU_DISABLE),
+            Some(0x0081_0003),
+        );
     }
 
     #[test]

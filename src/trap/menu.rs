@@ -6,11 +6,11 @@ use crate::menu_manager::{
     compiled_menu_color_entries, filter_menu_color_entries,
     for_each_standard_hierarchy_indicator_pixel, for_each_standard_scroll_down_indicator_pixel,
     for_each_standard_scroll_up_indicator_pixel, hierarchical_menu_id, install_menu_list_copy,
-    laid_out_menu_item_count, merge_menu_color_entries as shared_merge_menu_color_entries,
-    new_standard_menu_record, standard_menu_gray_pattern_is_ink,
-    standard_menu_height as shared_standard_menu_height, standard_menu_highlighted_value,
-    standard_menu_icon_kind, standard_menu_icon_resource_id, standard_menu_item_layout,
-    standard_menu_text_advance as shared_standard_menu_text_advance,
+    laid_out_menu_item_count, menu_choice_value,
+    merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
+    standard_menu_gray_pattern_is_ink, standard_menu_height as shared_standard_menu_height,
+    standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_item_layout, standard_menu_text_advance as shared_standard_menu_text_advance,
     standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
     standard_pull_down_menu_layout, standard_submenu_layout,
     ColorIconLayout as SharedColorIconLayout, MenuBarResource as SharedMenuBarResource,
@@ -3839,14 +3839,9 @@ impl super::TrapDispatcher {
             //     Pascal stack discipline.
             //   * GetMCInfo / GetMCEntry return deep copies / live pointers
             //     into that table when one exists, and NIL when it does not.
-            //   * MenuChoice ($AA66) — reads lowmem MenuDisable ($0B54)
-            //     and writes that LongInt to the result slot.
-            //     Per MTb 1992 3-118..3-119 + IM:V V-248, when MenuSelect
-            //     or MenuKey return zero the Menu Manager surfaces the
-            //     packed (menuID, itemNumber) last tracked into MenuDisable.
-            //     Systemless's HLE does not synthesize the MDEF cursor-tracking
-            //     writes, so tests seed MenuDisable directly to exercise
-            //     the lowmem read path explicitly.
+            //   * MenuChoice ($AA66) reads lowmem MenuDisable ($0B54), which
+            //     the shared standard-MDEF tracker updates while a menu is
+            //     down, and writes that LongInt to the result slot.
 
             // DelMCEntries ($AA60)
             // PROCEDURE DelMCEntries(menuID: INTEGER; menuItem: INTEGER);
@@ -4133,9 +4128,7 @@ impl super::TrapDispatcher {
             // high-order word is the menu ID and the low-order word is
             // the item number. The Menu Manager stores that packed result
             // in lowmem global MenuDisable ($0B54); the trap simply reads
-            // the current longword and returns it. Systemless's HLE does not
-            // synthesize the MDEF cursor-tracking writes, so tests seed the
-            // lowmem global directly to exercise the read path.
+            // the current longword and returns it.
             //
             // Tool-bit Pascal FUNCTION calling convention: A7 unchanged
             // across the C-level call sequence (caller pre-push of 4-byte
@@ -4147,7 +4140,7 @@ impl super::TrapDispatcher {
             //     across the C-level call (caller pre-push + trap
             //     result-slot write + caller post-pop balance), for
             //     both a single call and a repeated composition.
-            //   * MenuChoice returns the caller-seeded MenuDisable value.
+            //   * MenuChoice returns the live MenuDisable value unchanged.
             (true, 0x266) => {
                 let sp = cpu.read_reg(Register::A7);
                 let value = bus.read_long(addr::MENU_DISABLE);
@@ -4827,6 +4820,23 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn write_standard_menu_choice(
+        &self,
+        bus: &mut MacMemoryBus,
+        menu_idx: usize,
+        item_number: i16,
+    ) {
+        let Some(menu_handle) = self.menus.get(menu_idx).map(|menu| menu.handle) else {
+            return;
+        };
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 {
+            return;
+        }
+        let menu_id = bus.read_word(menu_ptr) as i16;
+        bus.write_long(addr::MENU_DISABLE, menu_choice_value(menu_id, item_number));
+    }
+
     fn update_menu_tracking_for_point(
         &mut self,
         bus: &mut MacMemoryBus,
@@ -4876,6 +4886,14 @@ impl super::TrapDispatcher {
             let Some(update) = update else {
                 return;
             };
+            if let Some(menu_idx) = self
+                .menu_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.submenus.get(depth))
+                .map(|submenu| submenu.menu_handle)
+            {
+                self.write_standard_menu_choice(bus, menu_idx, update.menu_choice_item);
+            }
             self.update_submenu_highlight(bus, depth, update.item);
             if update.scrolled {
                 if let Some((menu_idx, rect)) = self
@@ -4920,6 +4938,7 @@ impl super::TrapDispatcher {
         let Some(update) = update else {
             return;
         };
+        self.write_standard_menu_choice(bus, menu_idx, update.menu_choice_item);
         self.update_parent_menu_highlight(bus, update.item);
         if update.scrolled {
             self.draw_menu_dropdown(bus, menu_idx, rect);
@@ -6063,7 +6082,7 @@ mod tests {
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
-    use crate::menu_manager::{MenuDefinitionInvocation, TrackedMenuPaneView};
+    use crate::menu_manager::{menu_choice_value, MenuDefinitionInvocation, TrackedMenuPaneView};
     use crate::ui_theme::UiThemeId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -14113,8 +14132,8 @@ mod tests {
     // Exercises the MenuChoice lowmem read path by seeding lowmem
     // MenuDisable directly. Per IM:MTb 1992 p. 3-118..3-119,
     // MenuChoice returns the packed (menuID, itemNumber) stored in
-    // MenuDisable when MenuSelect / MenuKey have tracked a disabled
-    // item. This test seeds the lowmem word and checks that
+    // MenuDisable after MenuSelect tracks a disabled item. This test seeds
+    // the lowmem word and checks that
     // the trap writes the same LongInt into the result slot while
     // still preserving A7 across the Pascal FUNCTION call sequence.
     #[test]
@@ -14726,6 +14745,85 @@ mod tests {
         assert!(trace.contains("A93D action=finish"));
         assert!(trace.contains("tracking=menu:idle dialog:idle control:idle"));
         assert!(trace.contains("highlighted_item=2 result=$02080002 outcome=enabled_item_selected"));
+    }
+
+    // The standard MDEF continually records the raw row under the pointer in
+    // MenuDisable, including disabled rows that MenuSelect cannot return.
+    // MenuChoice exposes that packed menu ID and item number after the
+    // zero-result release. Inside Macintosh Volume V (1986), pp. V-235 and
+    // V-248--V-249; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
+    #[test]
+    fn menuselect_disabled_item_updates_live_menuchoice_result() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 520, 0x30B980, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x30B9C0,
+            "Open/O;Close/W",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+        bus.write_long(TEST_SP + 2, handle);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let (dropdown_top, dropdown_left, _, _) =
+            disp.menu_tracking.as_ref().unwrap().dropdown_rect();
+        disp.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let expected = menu_choice_value(520, 2);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+            "a disabled row must not become the MenuSelect highlight",
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xDEAD_BEEF);
+        disp.dispatch_menu(true, 0x266, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), expected);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
     }
 
     #[test]
