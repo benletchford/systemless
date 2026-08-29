@@ -3304,7 +3304,10 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Operating System Utilities 1994,
             // 1-31..1-35.
             //
-            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/kbd/qd/qdrw/ram/fpu/mmu/snd/ttsc/te/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
+            // Gestalt ($A1AD)
+            // Returns the response registered for an environment selector.
+            // FUNCTION Gestalt (selector: OSType; VAR response: LongInt): OSErr;
+            // Inside Macintosh: Operating System Utilities (1994), pp. 1-25--1-31.
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
@@ -3444,16 +3447,15 @@ impl super::TrapDispatcher {
                         }
                         return Some(Ok(()));
                     }
-                    // _Gestalt ($A0AD/$A1AD): fall through to the query
-                    // handler below.
+                    // `_Gestalt` ($A1AD) and structural flag variants fall
+                    // through to the query handler below.
                     _ => {}
                 }
                 match &sel {
                     // gestaltVersion ('vers') -> Gestalt Manager version.
                     // Inside Macintosh: Operating System Utilities 1994,
                     // p. 1-25: current version is 1, returned as $0001 in
-                    // the low-order word. Marathon 1 probes this before
-                    // drawing its first visible frame.
+                    // the low-order word.
                     b"vers" => {
                         cpu.write_reg(Register::A0, 0x0001);
                         cpu.write_reg(Register::D0, 0);
@@ -13876,7 +13878,7 @@ mod tests {
             (*b"tbtt", crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE),
         ] {
             cpu.write_reg(Register::D0, u32::from_be_bytes(selector));
-            call_trap_word(&mut disp, 0xA0AD, &mut cpu, &mut bus).unwrap();
+            call_trap_word(&mut disp, 0xA1AD, &mut cpu, &mut bus).unwrap();
             assert_eq!(cpu.read_reg(Register::A0), expected);
             assert_eq!(cpu.read_reg(Register::D0), 0);
         }

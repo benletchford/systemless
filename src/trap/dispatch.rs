@@ -345,7 +345,7 @@ fn trace_pc_target() -> Option<u32> {
 fn apply_os_trap_dispatcher_ccr<C: CpuOps>(cpu: &mut C) {
     // The Mac trap dispatcher updates CCR for Operating System traps by
     // testing the low-order word of D0 before returning to the caller.
-    // Macintosh Revealed Vol. 1, p. 136; Inside Macintosh Vol. II, II-14
+    // Inside Macintosh: Operating System Utilities (1994), p. 8-13.
     let mut ccr = cpu.get_ccr() & 0x10;
     let low_word = cpu.read_reg(Register::D0) as u16;
     if low_word == 0 {
@@ -354,6 +354,32 @@ fn apply_os_trap_dispatcher_ccr<C: CpuOps>(cpu: &mut C) {
         ccr |= 0x08;
     }
     cpu.set_ccr(ccr);
+}
+
+fn capture_os_trap_dispatch_frame<C: CpuOps>(cpu: &C, trap_word: u16) -> OsTrapDispatchFrame {
+    OsTrapDispatchFrame {
+        trap_word,
+        d1: cpu.read_reg(Register::D1),
+        d2: cpu.read_reg(Register::D2),
+        a0: cpu.read_reg(Register::A0),
+        a1: cpu.read_reg(Register::A1),
+        a2: cpu.read_reg(Register::A2),
+    }
+}
+
+fn deliver_os_trap_word<C: CpuOps>(cpu: &mut C, trap_word: u16) {
+    let d1 = cpu.read_reg(Register::D1);
+    cpu.write_reg(Register::D1, (d1 & 0xFFFF_0000) | u32::from(trap_word));
+}
+
+fn restore_os_trap_dispatch_frame<C: CpuOps>(cpu: &mut C, frame: OsTrapDispatchFrame) {
+    cpu.write_reg(Register::D1, frame.d1);
+    cpu.write_reg(Register::D2, frame.d2);
+    cpu.write_reg(Register::A1, frame.a1);
+    cpu.write_reg(Register::A2, frame.a2);
+    if !raw_trap_route(frame.trap_word).os_returns_a0 {
+        cpu.write_reg(Register::A0, frame.a0);
+    }
 }
 
 /// A parsed dialog item from a DITL resource.
@@ -814,18 +840,33 @@ pub(crate) struct LoadSegGetResourceState {
     pub a_regs: [u32; 8],
 }
 
-/// Original A-line call state retained while a handler installed through
-/// SetTrapAddress runs. A handler may call the old trap address later, after
+/// Trap Dispatcher state retained while a handler installed through
+/// `SetTrapAddress` runs. A handler may call the old trap address later, after
 /// changing its stack frame, so old-trap recovery cannot infer this state
-/// from A6 or from the handler's instruction shape. Toolbox routines may
-/// alter D0-D2, A0, and A1, but must preserve D3-D7 and A2-A6 (Inside
-/// Macintosh: Operating System Utilities, 1994, pp. 8-15 to 8-16).
+/// from A6 or from the handler's instruction shape.
 #[derive(Clone, Debug)]
 pub(crate) struct NativeTrapCallState {
     pub return_pc: u32,
     pub argument_sp: u32,
+    pub os_dispatch_frame: Option<OsTrapDispatchFrame>,
     pub preserved_d_regs: [u32; 5],
     pub preserved_a_regs: [u32; 5],
+}
+
+/// Registers saved by the OS Trap Dispatcher around one routine invocation.
+///
+/// The complete A-line word is delivered in the low word of D1. On return,
+/// D1, D2, A1, A2 and (when bit 8 is clear) A0 are restored; D0 and an A0
+/// result selected by bit 8 remain visible. Inside Macintosh: Operating
+/// System Utilities (1994), pp. 8-11--8-13.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OsTrapDispatchFrame {
+    trap_word: u16,
+    d1: u32,
+    d2: u32,
+    a0: u32,
+    a1: u32,
+    a2: u32,
 }
 
 /// Stack size handed to a cooperative thread when `NewThread` is passed 0
@@ -6824,18 +6865,28 @@ impl TrapDispatcher {
     /// Retire a native trap invocation that returned directly instead of
     /// following its saved daisy-chain link. Both the return PC and the
     /// post-RTS stack pointer must match the frame synthesized at dispatch.
-    pub(crate) fn retire_returned_native_trap_call<C: CpuOps>(&mut self, cpu: &C) {
+    pub(crate) fn retire_returned_native_trap_call<C: CpuOps>(&mut self, cpu: &mut C) {
         let pc = cpu.read_reg(Register::PC);
         let sp = cpu.read_reg(Register::A7);
-        self.pending_native_trap_calls.retain(|_, calls| {
-            if calls
-                .last()
-                .is_some_and(|call| call.return_pc == pc && call.argument_sp == sp)
-            {
-                calls.pop();
-            }
-            !calls.is_empty()
-        });
+        let returned_trap =
+            self.pending_native_trap_calls
+                .iter()
+                .find_map(|(&trap_word, calls)| {
+                    calls
+                        .last()
+                        .is_some_and(|call| call.return_pc == pc && call.argument_sp == sp)
+                        .then_some(trap_word)
+                });
+        let Some(returned_trap) = returned_trap else {
+            return;
+        };
+        let Some(call) = self.take_latest_native_trap_call(returned_trap) else {
+            return;
+        };
+        if let Some(frame) = call.os_dispatch_frame {
+            restore_os_trap_dispatch_frame(cpu, frame);
+            apply_os_trap_dispatcher_ccr(cpu);
+        }
     }
 
     pub(crate) fn find_named_resource_current(
@@ -7391,7 +7442,38 @@ impl TrapDispatcher {
         // is applied. Every later consumer uses this generated route, so OS
         // flag bits and Toolbox auto-pop cannot be reconstructed differently
         // by separate dispatch paths.
-        let route = raw_trap_route(trap);
+        let input_route = raw_trap_route(trap);
+        let input_base_trap = input_route.canonical_word;
+        let default_os_gateway_call = !input_route.is_toolbox
+            && self
+                .os_trap_trampolines
+                .get(&input_base_trap)
+                .is_some_and(|&addr| pc == addr + 2);
+        // A JMP to a saved OS gateway keeps the dispatcher's synthesized
+        // return long at the top of the original argument stack. A JSR to the
+        // same saved pointer has its own return frame and is an independent
+        // old-routine call, not the tail of the active daisy chain.
+        let saved_os_daisy_chain_call = default_os_gateway_call
+            && self
+                .pending_native_trap_calls
+                .get(&input_base_trap)
+                .and_then(|calls| calls.last())
+                .is_some_and(|call| {
+                    call.os_dispatch_frame.is_some()
+                        && cpu.read_reg(Register::A7) == call.argument_sp.wrapping_sub(4)
+                        && bus.read_long(cpu.read_reg(Register::A7)) == call.return_pc
+                });
+        let effective_trap = if saved_os_daisy_chain_call {
+            self.pending_native_trap_calls
+                .get(&input_base_trap)
+                .and_then(|calls| calls.last())
+                .and_then(|call| call.os_dispatch_frame)
+                .map_or(trap, |frame| frame.trap_word)
+        } else {
+            trap
+        };
+        self.current_trap_word = effective_trap;
+        let route = raw_trap_route(effective_trap);
         let is_tool = route.is_toolbox;
         // Count game traps: from game code (PC < 0x800000), NOT during
         // menu/dialog tracking loops (synthetic HLE re-dispatches), and
@@ -7475,11 +7557,6 @@ impl TrapDispatcher {
         // bypass the current table head. Toolbox gateways use auto-pop for the
         // same saved-old behavior. Inside Macintosh: Operating System
         // Utilities (1994), pp. 8-23--8-30.
-        let default_os_gateway_call = !is_tool
-            && self
-                .os_trap_trampolines
-                .get(&base_trap)
-                .is_some_and(|&addr| pc == addr + 2);
         // Some native patches embed the saved auto-pop A-line in their own
         // successor stub instead of calling the cached gateway. It is a daisy
         // chain handoff only when the removed return PC and post-pop argument
@@ -7503,15 +7580,23 @@ impl TrapDispatcher {
                 .get(&base_trap)
                 .is_some_and(|&addr| pc == addr + 2)
                 || saved_tool_daisy_chain_call);
+        let os_dispatch_frame = if is_tool {
+            None
+        } else if saved_os_daisy_chain_call {
+            self.pending_native_trap_calls
+                .get(&base_trap)
+                .and_then(|calls| calls.last())
+                .and_then(|call| call.os_dispatch_frame)
+        } else {
+            Some(capture_os_trap_dispatch_frame(cpu, effective_trap))
+        };
+        if !is_tool {
+            // The dispatcher writes only D1's low word. The high word remains
+            // caller state until D1 is restored after the routine returns.
+            deliver_os_trap_word(cpu, effective_trap);
+        }
         if !default_os_gateway_call && !default_tool_gateway_call {
             if let Some(handler_addr) = self.native_trap_handler(bus, base_trap) {
-                if !is_tool {
-                    // The OS Trap Dispatcher passes the actual A-line word in
-                    // D1 so a register-based native patch can distinguish trap
-                    // variants. Inside Macintosh: PowerPC System Software
-                    // (1994), pp. 1-67--1-68, Listing 1-14.
-                    cpu.write_reg(Register::D1, u32::from(trap));
-                }
                 // Simulate JSR to native handler: push return PC, jump to
                 // handler. For an auto-pop trap, the dispatcher's documented
                 // return target is the caller address removed from the glue
@@ -7524,6 +7609,7 @@ impl TrapDispatcher {
                     NativeTrapCallState {
                         return_pc,
                         argument_sp: sp,
+                        os_dispatch_frame,
                         preserved_d_regs: [
                             cpu.read_reg(Register::D3),
                             cpu.read_reg(Register::D4),
@@ -7572,12 +7658,17 @@ impl TrapDispatcher {
             .unwrap_or_else(|| {
                 eprintln!(
                     "[TRAP] UNIMPLEMENTED ${:04X} (is_tool={}, num=0x{:03X})",
-                    trap, is_tool, trap_num
+                    effective_trap, is_tool, trap_num
                 );
-                Err(Error::UnimplementedTrap(trap))
+                Err(Error::UnimplementedTrap(effective_trap))
             });
 
         if result.is_ok() && !is_tool {
+            restore_os_trap_dispatch_frame(
+                cpu,
+                os_dispatch_frame.expect("OS dispatch must retain its register frame"),
+            );
+            cpu.write_reg(Register::A7, sp_before);
             apply_os_trap_dispatcher_ccr(cpu);
         }
 
@@ -7615,7 +7706,7 @@ impl TrapDispatcher {
                 cpu.write_reg(Register::A7, sp.wrapping_sub(4));
             }
         }
-        if default_os_gateway_call || default_tool_gateway_call {
+        if saved_os_daisy_chain_call || default_tool_gateway_call {
             // Reaching a saved system gateway hands this invocation to the
             // next routine in the daisy chain. LoadSeg consumes its retained
             // state earlier because it needs the original jump-table frame;
@@ -7953,6 +8044,7 @@ mod tests {
             vec![NativeTrapCallState {
                 return_pc: 0x0023_0000,
                 argument_sp: 0x003F_FF00,
+                os_dispatch_frame: None,
                 preserved_d_regs: [1; 5],
                 preserved_a_regs: [2; 5],
             }],
@@ -7985,6 +8077,7 @@ mod tests {
             vec![NativeTrapCallState {
                 return_pc: 0x0024_0000,
                 argument_sp: 0x003F_FE00,
+                os_dispatch_frame: None,
                 preserved_d_regs: [3; 5],
                 preserved_a_regs: [4; 5],
             }],
@@ -8312,6 +8405,239 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::PC), handler_addr);
         assert_eq!(cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(bus.read_long(sp - 4), trap_pc + 2);
+    }
+
+    #[test]
+    fn os_hle_dispatch_enforces_every_structural_variant_frame() {
+        // The OS Trap Dispatcher places the actual word in D1, restores
+        // D1/D2/A1/A2 and conditionally A0, leaves the stack unchanged, and
+        // performs TST.W D0. Inside Macintosh: Operating System Utilities
+        // (1994), pp. 8-11--8-13.
+        for variant in 0u16..8 {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let trap_word = 0xA01E | (variant << 8); // NewPtr flag/A0 forms
+            let original_d1 = 0xD1D1_BEEF;
+            let original_d2 = 0xD2D2_BEEF;
+            let original_a0 = 0xA0A0_BEEF;
+            let original_a1 = 0xA1A1_BEEF;
+            let original_a2 = 0xA2A2_BEEF;
+            let original_sp = cpu.read_reg(Register::A7);
+            cpu.write_reg(Register::D0, 4);
+            cpu.write_reg(Register::D1, original_d1);
+            cpu.write_reg(Register::D2, original_d2);
+            cpu.write_reg(Register::A0, original_a0);
+            cpu.write_reg(Register::A1, original_a1);
+            cpu.write_reg(Register::A2, original_a2);
+            cpu.set_ccr(0x1F);
+
+            dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(dispatcher.current_trap_word, trap_word);
+            assert_eq!(cpu.read_reg(Register::D1), original_d1);
+            assert_eq!(cpu.read_reg(Register::D2), original_d2);
+            assert_eq!(cpu.read_reg(Register::A1), original_a1);
+            assert_eq!(cpu.read_reg(Register::A2), original_a2);
+            assert_eq!(cpu.read_reg(Register::A7), original_sp);
+            if (trap_word & 0x0100) == 0 {
+                assert_eq!(cpu.read_reg(Register::A0), original_a0);
+            } else {
+                assert_ne!(cpu.read_reg(Register::A0), original_a0);
+                assert_ne!(cpu.read_reg(Register::A0), 0);
+            }
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.get_ccr(), 0x14, "variant ${trap_word:04X}");
+        }
+    }
+
+    #[test]
+    fn native_os_patch_receives_and_retires_every_structural_variant_frame() {
+        let handler_addr = 0x0021_0000u32;
+        let return_pc = 0x0020_0002u32;
+        let sp = 0x003F_FF00u32;
+        for variant in 0u16..8 {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            let trap_word = 0xA039 | (variant << 8); // ReadDateTime variants
+            let original_d1 = 0xD1D1_BEEF;
+            let original_d2 = 0xD2D2_BEEF;
+            let original_a0 = 0xA0A0_BEEF;
+            let original_a1 = 0xA1A1_BEEF;
+            let original_a2 = 0xA2A2_BEEF;
+            dispatcher.native_trap_table.insert(0xA039, handler_addr);
+            cpu.write_reg(Register::PC, return_pc);
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D1, original_d1);
+            cpu.write_reg(Register::D2, original_d2);
+            cpu.write_reg(Register::A0, original_a0);
+            cpu.write_reg(Register::A1, original_a1);
+            cpu.write_reg(Register::A2, original_a2);
+
+            dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+
+            assert_eq!(cpu.read_reg(Register::PC), handler_addr);
+            assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+            assert_eq!(bus.read_long(sp - 4), return_pc);
+            assert_eq!(
+                cpu.read_reg(Register::D1),
+                0xD1D1_0000 | u32::from(trap_word)
+            );
+            assert_eq!(
+                dispatcher
+                    .pending_native_trap_calls
+                    .get(&0xA039)
+                    .and_then(|calls| calls.last())
+                    .and_then(|call| call.os_dispatch_frame)
+                    .map(|frame| frame.trap_word),
+                Some(trap_word)
+            );
+
+            cpu.write_reg(Register::D0, 0xCAFE_8000);
+            cpu.write_reg(Register::D1, 0x1111_1111);
+            cpu.write_reg(Register::D2, 0x2222_2222);
+            cpu.write_reg(Register::A0, 0xAAAA_AAAA);
+            cpu.write_reg(Register::A1, 0x1111_AAAA);
+            cpu.write_reg(Register::A2, 0x2222_AAAA);
+            cpu.write_reg(Register::PC, return_pc);
+            cpu.write_reg(Register::A7, sp);
+            cpu.set_ccr(0x1F);
+            dispatcher.retire_returned_native_trap_call(&mut cpu);
+
+            assert!(dispatcher.pending_native_trap_calls.is_empty());
+            assert_eq!(cpu.read_reg(Register::D0), 0xCAFE_8000);
+            assert_eq!(cpu.read_reg(Register::D1), original_d1);
+            assert_eq!(cpu.read_reg(Register::D2), original_d2);
+            assert_eq!(cpu.read_reg(Register::A1), original_a1);
+            assert_eq!(cpu.read_reg(Register::A2), original_a2);
+            assert_eq!(
+                cpu.read_reg(Register::A0),
+                if (trap_word & 0x0100) == 0 {
+                    original_a0
+                } else {
+                    0xAAAA_AAAA
+                }
+            );
+            assert_eq!(cpu.get_ccr(), 0x18, "variant ${trap_word:04X}");
+        }
+    }
+
+    #[test]
+    fn saved_os_gateway_tail_uses_the_original_variant_dispatch_frame() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA01E);
+        let handler = 0x0021_0000u32;
+        let return_pc = 0x0020_0002u32;
+        let sp = 0x003F_FF00u32;
+        let trap_word = 0xA71E; // NewPtrSysClear, returning A0
+        let original_d1 = 0xD1D1_BEEF;
+        let original_d2 = 0xD2D2_BEEF;
+        let original_a1 = 0xA1A1_BEEF;
+        let original_a2 = 0xA2A2_BEEF;
+        dispatcher.native_trap_table.insert(0xA01E, handler);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 4);
+        cpu.write_reg(Register::D1, original_d1);
+        cpu.write_reg(Register::D2, original_d2);
+        cpu.write_reg(Register::A0, 0xA0A0_BEEF);
+        cpu.write_reg(Register::A1, original_a1);
+        cpu.write_reg(Register::A2, original_a2);
+
+        dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+        cpu.write_reg(Register::D1, 0x1111_1111);
+        cpu.write_reg(Register::D2, 0x2222_2222);
+        cpu.write_reg(Register::A0, 0xAAAA_AAAA);
+        cpu.write_reg(Register::A1, 0x1111_AAAA);
+        cpu.write_reg(Register::A2, 0x2222_AAAA);
+        cpu.write_reg(Register::PC, gateway + 2);
+
+        dispatcher.dispatch(0xA01E, &mut cpu, &mut bus).unwrap();
+
+        let result_ptr = cpu.read_reg(Register::A0);
+        assert_eq!(dispatcher.current_trap_word, trap_word);
+        assert_ne!(result_ptr, 0);
+        assert_ne!(result_ptr, 0xAAAA_AAAA);
+        assert_eq!(bus.read_long(result_ptr), 0);
+        assert_eq!(cpu.read_reg(Register::D1), original_d1);
+        assert_eq!(cpu.read_reg(Register::D2), original_d2);
+        assert_eq!(cpu.read_reg(Register::A1), original_a1);
+        assert_eq!(cpu.read_reg(Register::A2), original_a2);
+        assert_eq!(cpu.read_reg(Register::A7), sp - 4);
+        assert_eq!(cpu.get_ccr(), 0x04);
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+    }
+
+    #[test]
+    fn saved_os_gateway_subroutine_keeps_the_outer_dispatch_frame() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let gateway = dispatcher.get_or_create_os_trap_trampoline(&mut bus, 0xA039);
+        let handler = 0x0021_0000u32;
+        let patch_continuation = 0x0021_0100u32;
+        let return_pc = 0x0020_0002u32;
+        let output = 0x0022_0000u32;
+        let sp = 0x003F_FF00u32;
+        let original_d1 = 0xD1D1_BEEF;
+        let original_d2 = 0xD2D2_BEEF;
+        let original_a0 = 0xA0A0_BEEF;
+        let original_a1 = 0xA1A1_BEEF;
+        let original_a2 = 0xA2A2_BEEF;
+        dispatcher.native_trap_table.insert(0xA039, handler);
+        bus.write_long(crate::memory::globals::addr::TIME, 0x1234_5678);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D1, original_d1);
+        cpu.write_reg(Register::D2, original_d2);
+        cpu.write_reg(Register::A0, original_a0);
+        cpu.write_reg(Register::A1, original_a1);
+        cpu.write_reg(Register::A2, original_a2);
+
+        dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
+        let nested_sp = sp - 8;
+        bus.write_long(nested_sp, patch_continuation);
+        cpu.write_reg(Register::D1, 0x1111_1111);
+        cpu.write_reg(Register::D2, 0x2222_2222);
+        cpu.write_reg(Register::A0, output);
+        cpu.write_reg(Register::A1, 0x1111_AAAA);
+        cpu.write_reg(Register::A2, 0x2222_AAAA);
+        cpu.write_reg(Register::A7, nested_sp);
+        cpu.write_reg(Register::PC, gateway + 2);
+
+        dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_long(output), 0x1234_5678);
+        assert_eq!(cpu.read_reg(Register::D1), 0x1111_1111);
+        assert_eq!(cpu.read_reg(Register::D2), 0x2222_2222);
+        assert_eq!(cpu.read_reg(Register::A0), output);
+        assert_eq!(cpu.read_reg(Register::A1), 0x1111_AAAA);
+        assert_eq!(cpu.read_reg(Register::A2), 0x2222_AAAA);
+        assert_eq!(cpu.read_reg(Register::A7), nested_sp);
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA039)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        // The saved routine's RTS would return to the patch, whose final RTS
+        // then closes the original dispatcher frame.
+        cpu.write_reg(Register::D0, 0xCAFE_8000);
+        cpu.write_reg(Register::D1, 0x3333_3333);
+        cpu.write_reg(Register::D2, 0x4444_4444);
+        cpu.write_reg(Register::A0, 0xBBBB_BBBB);
+        cpu.write_reg(Register::A1, 0x3333_AAAA);
+        cpu.write_reg(Register::A2, 0x4444_AAAA);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.set_ccr(0x1F);
+        dispatcher.retire_returned_native_trap_call(&mut cpu);
+
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
+        assert_eq!(cpu.read_reg(Register::D0), 0xCAFE_8000);
+        assert_eq!(cpu.read_reg(Register::D1), original_d1);
+        assert_eq!(cpu.read_reg(Register::D2), original_d2);
+        assert_eq!(cpu.read_reg(Register::A0), original_a0);
+        assert_eq!(cpu.read_reg(Register::A1), original_a1);
+        assert_eq!(cpu.read_reg(Register::A2), original_a2);
+        assert_eq!(cpu.get_ccr(), 0x18);
     }
 
     #[test]
