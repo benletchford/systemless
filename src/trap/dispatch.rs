@@ -2377,6 +2377,9 @@ pub struct TrapDispatcher {
     /// selected for the current default dispatch.
     pub(crate) current_trap_operation: u16,
     pub(crate) current_trap_adapter: TrapAdapterId,
+    /// Generated selector-operation row selected by a dispatcher, when that
+    /// selector family has been joined to the runtime registry.
+    pub(crate) current_selector_operation: Option<&'static str>,
     /// When an auto-pop trap fires (bit 10 set in toolbox trap word),
     /// dispatch.rs pops the JSR return address and stores it here BEFORE
     /// calling the sub-dispatcher. Sub-dispatchers (e.g. SANE handlers) can
@@ -3863,6 +3866,7 @@ impl TrapDispatcher {
             current_trap_word: 0,
             current_trap_operation: 0,
             current_trap_adapter: TrapAdapterId::Nonterminal,
+            current_selector_operation: None,
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
             pending_wait_next_event_return: None,
@@ -7654,6 +7658,7 @@ impl TrapDispatcher {
 
         self.trap_count += 1;
         self.current_trap_word = trap;
+        self.current_selector_operation = None;
         let pc = cpu.read_reg(Register::PC);
         // Append (trap-instruction PC, trap word) to the file named by
         // SYSTEMLESS_TRACE_TRAP_PCS, if any. PC is the post-trap PC; subtract

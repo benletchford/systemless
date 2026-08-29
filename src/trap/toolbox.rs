@@ -26,6 +26,34 @@ static TRACE_AE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETKEYS_NONZERO: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectorOperationRoute {
+    selector: u16,
+    operation_id: &'static str,
+    routine_name: &'static str,
+}
+
+impl SelectorOperationRoute {
+    const fn new(selector: u16, operation_id: &'static str, routine_name: &'static str) -> Self {
+        Self {
+            selector,
+            operation_id,
+            routine_name,
+        }
+    }
+}
+
+const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_slot_manager_operations.rs");
+
+fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
+    let selector = u16::try_from(selector).ok()?;
+    SLOT_MANAGER_OPERATION_ROUTES
+        .binary_search_by_key(&selector, |route| route.selector)
+        .ok()
+        .map(|index| &SLOT_MANAGER_OPERATION_ROUTES[index])
+}
+
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
 const AE_TYPE_AE_LIST: u32 = u32::from_be_bytes(*b"list");
 const AE_TYPE_AE_RECORD: u32 = u32::from_be_bytes(*b"reco");
@@ -6073,46 +6101,40 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SlotManager ($A06E) — NuBus Slot Manager dispatch
-            // A0 = SpBlockPtr, D0 = routine selector.
-            // Inside Macintosh: Devices (1994), pp. 2-61 to 2-62.
-            //
-            // _SlotManager routines are selector-based (D0 on entry)
-            // and return OSErr in D0. For SReadInfo selector $0010, the
-            // documented empty-slot result is smEmptySlot (-300).
-            // SpBlock.spResult is the first longword at offset 0.
-            // Devices 1994, pp. 2-23 to 2-24 and 2-61 to 2-62.
-            //
+            // SlotManager ($A06E)
+            // Dispatches Slot Manager routines selected in D0 with an SpBlockPtr in A0.
+            // Register ABI: A0 = SpBlockPtr, D0 = selector; returns OSErr in D0.
+            // Inside Macintosh: Devices (1994), pp. 2-29, 2-99.
             // Systemless models the ROM-based Slot Manager but no NuBus cards.
-            // SVersion therefore returns version 2 and clears its reserved
-            // additional-information pointer. Card-dependent selectors retain
-            // the empty-slot behavior below; SReadInfo also mirrors that result
-            // into SpBlock.spResult.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::slotmanager_sreadinfo_selector_uses_a0_spblock_d0_selector_and_returns_oserr_in_d0
-            //   src/trap/toolbox.rs::slotmanager_sreadinfo_empty_slot_returns_smemptyslot
-            //   src/trap/toolbox.rs::slotmanager_writes_result_to_spblock_spresult_offset_zero
             (false, 0x06E) => {
                 let sp_block_ptr = cpu.read_reg(Register::A0);
-                let selector = cpu.read_reg(Register::D0) as i32;
+                let selector = cpu.read_reg(Register::D0);
+                let operation = slot_manager_operation_route(selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let sm_empty_slot: i32 = -300;
                 if selector == 0x0008 && sp_block_ptr != 0 {
-                    // SVersion ($0008): Devices 1994, pp. 2-30 to 2-31.
-                    // Version 2 is the ROM-based Slot Manager; spsPointer is
-                    // reserved for future use.
+                    // SVersion ($A06E, selector $0008)
+                    // Returns version 2 for the ROM-based Slot Manager.
+                    // FUNCTION SVersion (spBlkPtr: SpBlockPtr): OSErr;
+                    // Inside Macintosh: Devices (1994), pp. 2-30 to 2-31.
                     bus.write_long(sp_block_ptr, 2);
+                    // spsPointer is reserved for future additional information.
                     bus.write_long(sp_block_ptr + 4, 0);
                     cpu.write_reg(Register::D0, 0);
                 } else {
                     if selector == 0x0010 && sp_block_ptr != 0 {
+                        // SReadInfo ($A06E, selector $0010)
+                        // Returns smEmptySlot when the requested slot contains no card.
+                        // FUNCTION SReadInfo (spBlkPtr: SpBlockPtr): OSErr;
+                        // Inside Macintosh: Devices (1994), pp. 2-61 to 2-62.
                         bus.write_long(sp_block_ptr, sm_empty_slot as u32);
                     }
                     cpu.write_reg(Register::D0, sm_empty_slot as u32);
                 }
                 eprintln!(
-                    "[TRAP] SlotManager selector={} -> {}",
+                    "[TRAP] SlotManager selector={} operation={} -> {}",
                     selector,
+                    operation.map_or("unregistered", |route| route.routine_name),
                     cpu.read_reg(Register::D0) as i32
                 );
                 Ok(())
@@ -16636,13 +16658,14 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        quicktime_movie_metadata, AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND,
-        AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER,
-        AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS,
-        AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA, AE_KEY_KEY_FORM,
-        AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION, AE_SEND_MODE_WAIT_REPLY,
-        AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER, AE_TYPE_TYPE,
-        AE_TYPE_WILDCARD, STANDARD_FILE_GET_DIALOG_HEIGHT, STANDARD_FILE_GET_DIALOG_WIDTH,
+        quicktime_movie_metadata, slot_manager_operation_route, AE_ERR_ACCESSOR_NOT_FOUND,
+        AE_ERR_DESC_NOT_FOUND, AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC,
+        AE_EVENT_ID_ANSWER, AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC,
+        AE_KEY_DESIRED_CLASS, AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA,
+        AE_KEY_KEY_FORM, AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION,
+        AE_SEND_MODE_WAIT_REPLY, AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER,
+        AE_TYPE_TYPE, AE_TYPE_WILDCARD, SLOT_MANAGER_OPERATION_ROUTES,
+        STANDARD_FILE_GET_DIALOG_HEIGHT, STANDARD_FILE_GET_DIALOG_WIDTH,
         STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT, STANDARD_FILE_GET_VOLUME_RECT,
     };
     use crate::cpu::{CpuOps, Register};
@@ -17499,6 +17522,39 @@ mod tests {
         );
         assert_eq!(cpu.read_reg(Register::A0), sp_block_ptr);
         assert_eq!(cpu.read_reg(Register::A7), stack_ptr);
+    }
+
+    #[test]
+    fn slotmanager_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(SLOT_MANAGER_OPERATION_ROUTES.len(), 41);
+        assert!(SLOT_MANAGER_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+        let version = slot_manager_operation_route(0x0008).expect("SVersion route");
+        assert_eq!(version.routine_name, "SVersion");
+        assert_eq!(
+            version.operation_id,
+            "selector-operation:_SlotManager:0x0008:d0-moveq-immediate:8"
+        );
+        assert!(slot_manager_operation_route(0x0004).is_none());
+        assert!(slot_manager_operation_route(0x0001_0008).is_none());
+    }
+
+    #[test]
+    fn slotmanager_dispatch_records_every_generated_operation_and_rejects_unknown_identity() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in SLOT_MANAGER_OPERATION_ROUTES {
+            cpu.write_reg(Register::A0, 0);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+            assert!(result.is_some_and(|result| result.is_ok()));
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::D0, 0x0004);
+        let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+        assert!(result.is_some_and(|result| result.is_ok()));
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     #[test]
