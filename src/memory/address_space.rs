@@ -16,6 +16,7 @@ use super::bus::SharedRamRegion;
 struct SharedRegionMapping {
     base: u32,
     region: SharedRamRegion,
+    writable: bool,
 }
 
 /// A sparse guest address space that can be executed by either CPU backend.
@@ -97,6 +98,7 @@ impl Clone for GuestAddressSpace {
                 .map(|mapping| SharedRegionMapping {
                     base: mapping.base,
                     region: mapping.region.detached_clone(),
+                    writable: mapping.writable,
                 })
                 .collect(),
         }
@@ -141,8 +143,46 @@ impl GuestAddressSpace {
     /// serializes all access. No source-bus slice or fast-memory window may be
     /// used while this address space mutates the shared allocation.
     pub(crate) unsafe fn add_shared_region(&mut self, base: u32, region: SharedRamRegion) {
-        self.shared_regions
-            .push(SharedRegionMapping { base, region });
+        self.shared_regions.push(SharedRegionMapping {
+            base,
+            region,
+            writable: true,
+        });
+    }
+
+    /// Overlay runner-owned system code without allowing ordinary guest
+    /// writes. Trap Manager uses the privileged writer below when it must
+    /// update the protected exit of a permanent come-from head.
+    ///
+    /// # Safety
+    ///
+    /// The ownership and serialization requirements are the same as for
+    /// [`Self::add_shared_region`].
+    pub(crate) unsafe fn add_shared_readonly_region(&mut self, base: u32, region: SharedRamRegion) {
+        self.shared_regions.push(SharedRegionMapping {
+            base,
+            region,
+            writable: false,
+        });
+    }
+
+    /// Write a big-endian long through a shared mapping regardless of its
+    /// guest write protection. This is intentionally restricted to runtime
+    /// services that own the mapped system bytes.
+    pub(crate) fn write_shared_system_u32_be(&mut self, address: u32, value: u32) -> Option<()> {
+        for (offset, byte) in value.to_be_bytes().into_iter().enumerate() {
+            let (mapping, relative) =
+                self.locate_shared_mapping(address.checked_add(offset as u32)?)?;
+            // SAFETY: shared mappings can only be installed by the serialized
+            // process runner, and this method does not retain a source view.
+            unsafe { mapping.region.write(relative, byte)? };
+        }
+        Some(())
+    }
+
+    pub(crate) fn is_shared_readonly_address(&self, address: u32) -> bool {
+        self.locate_shared_mapping(address)
+            .is_some_and(|(mapping, _)| !mapping.writable)
     }
 
     /// Return the number of mapped regions.
@@ -165,6 +205,12 @@ impl GuestAddressSpace {
     pub fn write_bytes(&mut self, addr: u32, src: &[u8]) -> Option<()> {
         if !self.shared_overlaps(addr, src.len()) {
             return self.regions.write_bytes(addr, src);
+        }
+        if (0..src.len()).any(|offset| {
+            self.locate_shared_mapping(addr.wrapping_add(offset as u32))
+                .is_some_and(|(mapping, _)| !mapping.writable)
+        }) {
+            return None;
         }
         if (0..src.len()).all(|offset| {
             self.locate_shared(addr.wrapping_add(offset as u32))
@@ -242,11 +288,16 @@ impl GuestAddressSpace {
     }
 
     #[inline]
-    fn locate_shared(&self, addr: u32) -> Option<(&SharedRamRegion, usize)> {
+    fn locate_shared_mapping(&self, addr: u32) -> Option<(&SharedRegionMapping, usize)> {
         self.shared_regions.iter().rev().find_map(|mapping| {
             let offset = usize::try_from(addr.checked_sub(mapping.base)?).ok()?;
-            (offset < mapping.region.len()).then_some((&mapping.region, offset))
+            (offset < mapping.region.len()).then_some((mapping, offset))
         })
+    }
+
+    fn locate_shared(&self, addr: u32) -> Option<(&SharedRamRegion, usize)> {
+        self.locate_shared_mapping(addr)
+            .map(|(mapping, offset)| (&mapping.region, offset))
     }
 
     fn shared_overlaps(&self, addr: u32, len: usize) -> bool {
@@ -334,10 +385,13 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn write_u8(&mut self, addr: u32, value: u8) -> Option<()> {
-        if let Some((region, offset)) = self.locate_shared(addr) {
+        if let Some((mapping, offset)) = self.locate_shared_mapping(addr) {
+            if !mapping.writable {
+                return None;
+            }
             // SAFETY: `add_shared_region` requires the enclosing runtime to
             // serialize both adapters for the mapping's complete lifetime.
-            unsafe { region.write(offset, value) }
+            unsafe { mapping.region.write(offset, value) }
         } else {
             self.regions.write_u8(addr, value)
         }

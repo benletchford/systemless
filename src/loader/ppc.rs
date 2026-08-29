@@ -1417,6 +1417,8 @@ pub enum PpcImportDispatcherTarget {
     DMBeginConfigureDisplays,
     DMEndConfigureDisplays,
     SetToolTrapAddress,
+    SetOSTrapAddress,
+    NSetTrapAddress,
     EqualString,
     NumToString,
     StringToNum,
@@ -1724,7 +1726,7 @@ pub enum PpcImportDispatcherTarget {
     DisposeRoutineDescriptor,
     CallUniversalProc,
     CallOSTrapUniversalProc,
-    GetTrapAddress,
+    NGetTrapAddress,
     GetToolTrapAddress,
     GetOSTrapAddress,
     LMGetCurrentA5,
@@ -2970,7 +2972,6 @@ pub struct PpcToolboxStartupState {
     pub quickdraw_pen_pattern: [u8; 8],
     pub quickdraw_op_color: PpcRgbColor,
     pub ae_interaction_allowed: u8,
-    pub toolbox_trap_patches: [u32; 1024],
     pub(crate) stdc_signal_state: PpcStdSignalState,
 }
 
@@ -3033,7 +3034,6 @@ impl Default for PpcToolboxStartupState {
             quickdraw_pen_pattern: [0xff; 8],
             quickdraw_op_color: PPC_RGB_BLACK,
             ae_interaction_allowed: 1,
-            toolbox_trap_patches: [0; 1024],
             stdc_signal_state: PpcStdSignalState::default(),
         }
     }
@@ -15322,16 +15322,16 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "CallOSTrapUniversalProc") => {
             PpcImportDispatcherTarget::CallOSTrapUniversalProc
         }
-        ("InterfaceLib", "GetTrapAddress") | ("InterfaceLib", "NGetTrapAddress") => {
-            PpcImportDispatcherTarget::GetTrapAddress
-        }
+        ("InterfaceLib", "NGetTrapAddress") => PpcImportDispatcherTarget::NGetTrapAddress,
         ("InterfaceLib", "GetToolTrapAddress") | ("InterfaceLib", "GetToolboxTrapAddress") => {
             PpcImportDispatcherTarget::GetToolTrapAddress
         }
         ("InterfaceLib", "GetOSTrapAddress") => PpcImportDispatcherTarget::GetOSTrapAddress,
-        ("InterfaceLib", "SetToolTrapAddress")
-        | ("InterfaceLib", "SetToolboxTrapAddress")
-        | ("InterfaceLib", "NSetTrapAddress") => PpcImportDispatcherTarget::SetToolTrapAddress,
+        ("InterfaceLib", "SetToolTrapAddress") | ("InterfaceLib", "SetToolboxTrapAddress") => {
+            PpcImportDispatcherTarget::SetToolTrapAddress
+        }
+        ("InterfaceLib", "SetOSTrapAddress") => PpcImportDispatcherTarget::SetOSTrapAddress,
+        ("InterfaceLib", "NSetTrapAddress") => PpcImportDispatcherTarget::NSetTrapAddress,
         ("InterfaceLib", "LMGetCurrentA5") => PpcImportDispatcherTarget::LMGetCurrentA5,
         ("InterfaceLib", "InsTime") | ("InterfaceLib", "InsXTime") => {
             PpcImportDispatcherTarget::InsTime
@@ -24868,7 +24868,7 @@ fn dispatch_supported_import(
             free_ptr_blocks,
             toolbox_startup,
         ),
-        PpcImportDispatcherTarget::GetTrapAddress
+        PpcImportDispatcherTarget::NGetTrapAddress
         | PpcImportDispatcherTarget::GetToolTrapAddress
         | PpcImportDispatcherTarget::GetOSTrapAddress => {
             let trap_word = cpu.gpr[3] as u16;
@@ -24877,23 +24877,29 @@ fn dispatch_supported_import(
                 PpcImportDispatcherTarget::GetToolTrapAddress
             ) || (matches!(
                 binding.dispatcher_target,
-                PpcImportDispatcherTarget::GetTrapAddress
+                PpcImportDispatcherTarget::NGetTrapAddress
             ) && cpu.gpr[4] != 0);
-            let patch = toolbox
-                .then(|| toolbox_startup.toolbox_trap_patches[usize::from(trap_word & 0x03ff)])
-                .unwrap_or(0);
-            Some(PpcImportAction::Return(if patch != 0 {
-                patch
-            } else {
-                ppc_fake_trap_address(trap_word)
-            }))
+            Some(PpcImportAction::Return(
+                ppc_logical_trap_address(memory, trap_word, toolbox).unwrap_or(0),
+            ))
         }
-        PpcImportDispatcherTarget::SetToolTrapAddress => {
-            // Inside Macintosh: Operating System Utilities (1994), 8-28:
-            // toolbox trap numbers select one of 1024 patch-table entries.
-            let index = usize::from(cpu.gpr[4] as u16 & 0x03ff);
-            toolbox_startup.toolbox_trap_patches[index] = cpu.gpr[3];
-            Some(PpcImportAction::ReturnPreserve)
+        PpcImportDispatcherTarget::SetToolTrapAddress
+        | PpcImportDispatcherTarget::SetOSTrapAddress
+        | PpcImportDispatcherTarget::NSetTrapAddress => {
+            let toolbox = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::SetToolTrapAddress
+            ) || (matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::NSetTrapAddress
+            ) && cpu.gpr[5] != 0);
+            Some(
+                if ppc_set_logical_trap_address(memory, cpu.gpr[4] as u16, toolbox, cpu.gpr[3]) {
+                    PpcImportAction::ReturnPreserve
+                } else {
+                    PpcImportAction::Halt
+                },
+            )
         }
         PpcImportDispatcherTarget::LMGetCurrentA5 => Some(PpcImportAction::Return(PPC_DATA_BASE)),
         PpcImportDispatcherTarget::InsTime => {
@@ -41147,6 +41153,14 @@ fn ppc_call_universal_proc(
         // changed an interrupt mask, so consuming the saved token is a no-op.
         return Some(PpcImportAction::ReturnPreserve);
     }
+    // InterfaceLib may return a direct 680x0 system gateway as a UniversalProcPtr.
+    // The runner maps that system-owned synthetic reservation read-only, which
+    // supplies the architecture information that a bare pointer does not carry.
+    let raw_isa = if memory.is_shared_readonly_address(proc_ptr) {
+        GuestIsa::M68k
+    } else {
+        raw_isa
+    };
     let target = resolve_guest_procedure(
         memory,
         proc_ptr,
@@ -71979,8 +71993,51 @@ fn ppc_flush_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
     PPC_NO_ERR
 }
 
-fn ppc_fake_trap_address(trap_word: u16) -> u32 {
-    0x00F0_0000 | u32::from(trap_word)
+fn ppc_raw_trap_table_entry(trap_word: u16, toolbox: bool) -> u32 {
+    if toolbox {
+        crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE + u32::from(trap_word & 0x03ff) * 4
+    } else {
+        crate::trap::dispatch::OS_TRAP_TABLE_BASE + u32::from(trap_word & 0x00ff) * 4
+    }
+}
+
+fn ppc_logical_trap_address(
+    memory: &mut PpcSectionMem,
+    trap_word: u16,
+    toolbox: bool,
+) -> Option<u32> {
+    let raw = memory.read_u32_be(ppc_raw_trap_table_entry(trap_word, toolbox))?;
+    if memory.read_u32_be(raw) == Some(0x6006_4ef9) {
+        memory.read_u32_be(raw.checked_add(4)?)
+    } else {
+        Some(raw)
+    }
+}
+
+fn ppc_set_logical_trap_address(
+    memory: &mut PpcSectionMem,
+    trap_word: u16,
+    toolbox: bool,
+    handler: u32,
+) -> bool {
+    // A permanent come-from head cannot itself be installed as a patch.
+    // NSetTrapAddress raises system error 12 for this malformed splice.
+    // Inside Macintosh: Operating System Utilities (1994), p. 8-30.
+    if memory.read_u32_be(handler) == Some(0x6006_4ef9) {
+        let _ = memory.write_u16_be(crate::memory::globals::addr::DS_ERR_CODE, 12);
+        return false;
+    }
+    let entry = ppc_raw_trap_table_entry(trap_word, toolbox);
+    let Some(raw) = memory.read_u32_be(entry) else {
+        return false;
+    };
+    if memory.read_u32_be(raw) == Some(0x6006_4ef9) {
+        memory
+            .write_shared_system_u32_be(raw.wrapping_add(4), handler)
+            .is_some()
+    } else {
+        memory.write_u32_be(entry, handler).is_some()
+    }
 }
 
 fn ppc_fake_trap_word(address: u32) -> Option<u16> {
@@ -89159,7 +89216,7 @@ mod tests {
                 "CallOSTrapUniversalProc",
                 PpcImportDispatcherTarget::CallOSTrapUniversalProc,
             ),
-            ("GetTrapAddress", PpcImportDispatcherTarget::GetTrapAddress),
+            ("NGetTrapAddress", PpcImportDispatcherTarget::NGetTrapAddress),
             (
                 "GetToolTrapAddress",
                 PpcImportDispatcherTarget::GetToolTrapAddress,
@@ -89168,6 +89225,15 @@ mod tests {
                 "GetOSTrapAddress",
                 PpcImportDispatcherTarget::GetOSTrapAddress,
             ),
+            (
+                "SetToolTrapAddress",
+                PpcImportDispatcherTarget::SetToolTrapAddress,
+            ),
+            (
+                "SetOSTrapAddress",
+                PpcImportDispatcherTarget::SetOSTrapAddress,
+            ),
+            ("NSetTrapAddress", PpcImportDispatcherTarget::NSetTrapAddress),
             ("LMGetCurrentA5", PpcImportDispatcherTarget::LMGetCurrentA5),
             ("VInstall", PpcImportDispatcherTarget::VInstall),
             ("VRemove", PpcImportDispatcherTarget::VRemove),
@@ -89178,6 +89244,14 @@ mod tests {
                 "{symbol}"
             );
         }
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "GetTrapAddress"),
+            PpcImportDispatcherTarget::Unsupported
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetTrapAddress"),
+            PpcImportDispatcherTarget::Unsupported
+        );
     }
 
     #[test]
@@ -90681,31 +90755,181 @@ mod tests {
 
     #[test]
     fn hle_import_runner_handles_trap_address_queries() {
-        for (symbol, target) in [
+        for (symbol, target, toolbox) in [
             (
-                b"GetTrapAddress".as_slice(),
-                PpcImportDispatcherTarget::GetTrapAddress,
+                b"NGetTrapAddress".as_slice(),
+                PpcImportDispatcherTarget::NGetTrapAddress,
+                true,
             ),
             (
                 b"GetToolTrapAddress".as_slice(),
                 PpcImportDispatcherTarget::GetToolTrapAddress,
+                true,
             ),
             (
                 b"GetOSTrapAddress".as_slice(),
                 PpcImportDispatcherTarget::GetOSTrapAddress,
+                false,
             ),
         ] {
             let pef = synthetic_pef_with_import(symbol);
             let mut loaded = load_pef_application(&pef).unwrap();
             loaded.imports[0].dispatcher_target = target;
             loaded.cpu.gpr[3] = 0xFFFF_A800;
+            loaded.cpu.gpr[4] = u32::from(toolbox);
+            let expected: u32 = if toolbox { 0x1234_5678 } else { 0x8765_4321 };
+            loaded.memory.add_region(
+                ppc_raw_trap_table_entry(0xA800, toolbox),
+                expected.to_be_bytes().to_vec(),
+            );
 
             let probe = loaded.run_with_hle_imports(64);
 
             assert_eq!(probe.handled_import_count, 1, "{symbol:?}");
             assert_eq!(probe.unsupported_import_index, None, "{symbol:?}");
-            assert_eq!(loaded.cpu.gpr[3], 0x00F0_A800, "{symbol:?}");
+            assert_eq!(loaded.cpu.gpr[3], expected, "{symbol:?}");
         }
+    }
+
+    #[test]
+    fn hle_import_runner_handles_supported_trap_address_setters() {
+        for (symbol, target, toolbox, general) in [
+            (
+                b"SetToolTrapAddress".as_slice(),
+                PpcImportDispatcherTarget::SetToolTrapAddress,
+                true,
+                false,
+            ),
+            (
+                b"SetOSTrapAddress".as_slice(),
+                PpcImportDispatcherTarget::SetOSTrapAddress,
+                false,
+                false,
+            ),
+            (
+                b"NSetTrapAddress".as_slice(),
+                PpcImportDispatcherTarget::NSetTrapAddress,
+                true,
+                true,
+            ),
+            (
+                b"NSetTrapAddress".as_slice(),
+                PpcImportDispatcherTarget::NSetTrapAddress,
+                false,
+                true,
+            ),
+        ] {
+            let pef = synthetic_pef_with_import(symbol);
+            let mut loaded = load_pef_application(&pef).unwrap();
+            loaded.imports[0].dispatcher_target = target;
+            let trap_word = 0xFFFF_A823u32;
+            let entry = ppc_raw_trap_table_entry(trap_word as u16, toolbox);
+            loaded.memory.add_region(entry, 0x1234_5678u32.to_be_bytes().to_vec());
+            loaded.cpu.gpr[3] = PPC_CODE_BASE;
+            loaded.cpu.gpr[4] = trap_word;
+            loaded.cpu.gpr[5] = u32::from(general && toolbox);
+
+            let probe = loaded.run_with_hle_imports(64);
+
+            assert_eq!(probe.handled_import_count, 1, "{symbol:?}");
+            assert_eq!(probe.unsupported_import_index, None, "{symbol:?}");
+            assert_eq!(loaded.memory.read_u32_be(entry), Some(PPC_CODE_BASE));
+        }
+    }
+
+    #[test]
+    fn native_trap_apis_share_permanent_come_from_topology() {
+        let pef = synthetic_pef_with_import(b"NGetTrapAddress");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let mut dispatcher = TrapDispatcher::new();
+        dispatcher.materialize_trap_tables(
+            &mut bus,
+            crate::trap::dispatch::TrapTableProfile::PowerPc604,
+        );
+        for (base, len) in [
+            (
+                crate::trap::dispatch::OS_TRAP_TABLE_BASE,
+                u32::from(crate::trap::dispatch::OS_TRAP_TABLE_SLOTS) * 4,
+            ),
+            (
+                crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
+                u32::from(crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS) * 4,
+            ),
+        ] {
+            let region = bus.shared_ram_region(base, len).unwrap();
+            // SAFETY: this focused fixture serializes the two adapters.
+            unsafe { loaded.memory.add_shared_region(base, region) };
+        }
+        let (synthetic_base, synthetic) = bus.shared_synthetic_reservation().unwrap();
+        // SAFETY: this focused fixture serializes the two adapters.
+        unsafe {
+            loaded
+                .memory
+                .add_shared_readonly_region(synthetic_base, synthetic)
+        };
+        let ds_err = bus
+            .shared_ram_region(crate::memory::globals::addr::DS_ERR_CODE, 2)
+            .unwrap();
+        // SAFETY: this focused fixture serializes the two adapters.
+        unsafe {
+            loaded
+                .memory
+                .add_shared_region(crate::memory::globals::addr::DS_ERR_CODE, ds_err)
+        };
+
+        let trap_word = 0xA823u16;
+        let table_entry = ppc_raw_trap_table_entry(trap_word, true);
+        let head = bus.read_long(table_entry);
+        let original = bus.read_long(head + 4);
+        assert_eq!(bus.read_long(head), 0x6006_4ef9);
+
+        loaded.cpu.gpr[3] = u32::from(trap_word);
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], original);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NSetTrapAddress;
+        loaded.cpu.gpr[3] = head;
+        loaded.cpu.gpr[4] = u32::from(trap_word);
+        loaded.cpu.gpr[5] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(bus.read_word(crate::memory::globals::addr::DS_ERR_CODE), 12);
+        assert_eq!(bus.read_long(table_entry), head);
+        assert_eq!(bus.read_long(head + 4), original);
+
+        let replacement = PPC_CODE_BASE;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = replacement;
+        loaded.cpu.gpr[4] = u32::from(trap_word);
+        loaded.cpu.gpr[5] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(bus.read_long(table_entry), head);
+        assert_eq!(bus.read_long(head + 4), replacement);
+        assert_eq!(loaded.memory.write_u32_be(head + 4, original), None);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NGetTrapAddress;
+        loaded.cpu.gpr[3] = u32::from(trap_word);
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], replacement);
+
+        loaded
+            .memory
+            .write_u32_be(table_entry, original)
+            .expect("raw trap table remains guest-writable");
+        assert_eq!(bus.read_long(table_entry), original);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = u32::from(trap_word);
+        loaded.cpu.gpr[4] = 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], original);
     }
 
     #[test]

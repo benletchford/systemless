@@ -1869,6 +1869,15 @@ impl MacMemoryBus {
         })
     }
 
+    /// Return the complete system-owned synthetic reservation. CPU adapters
+    /// may expose this as read-only code while retaining visibility of stubs
+    /// allocated later in the process lifetime.
+    pub(crate) fn shared_synthetic_reservation(&mut self) -> Option<(u32, SharedRamRegion)> {
+        let base = self.synthetic_floor;
+        self.shared_ram_region(base, SYNTHETIC_RESERVE_BYTES)
+            .map(|region| (base, region))
+    }
+
     /// Select the guest MMU address width. The default is 32-bit addressing.
     pub fn set_addressing_32_bit(&mut self, enabled: bool) {
         self.addressing_32_bit = enabled;

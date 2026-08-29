@@ -4052,6 +4052,7 @@ impl FixtureRunner {
             (addr::MB_STATE, 1),
             (addr::KEY_MAP_LM, 16),
             (addr::M_TEMP, 12),
+            (addr::DS_ERR_CODE, 2),
         ] {
             let region = self
                 .bus
@@ -4063,6 +4064,16 @@ impl FixtureRunner {
             unsafe {
                 ppc_app.memory.add_shared_region(address, region);
             }
+        }
+        let (base, region) = self
+            .bus
+            .shared_synthetic_reservation()
+            .expect("FixtureRunner owns stable synthetic RAM");
+        // SAFETY: the same serialized ownership contract applies, while the
+        // read-only mapping preserves the ROM-like protection enforced by the
+        // 68k bus for trap gateways and permanent come-from heads.
+        unsafe {
+            ppc_app.memory.add_shared_readonly_region(base, region);
         }
     }
 
