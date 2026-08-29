@@ -261,19 +261,6 @@ const PPC_PROCINFO_REGISTER_CCR_N: u32 = crate::mixed_mode::proc_info::REGISTER_
 const PPC_PROCINFO_REGISTER_CCR_X: u32 = crate::mixed_mode::proc_info::REGISTER_CCR_X;
 const PPC_CR0_LT_BIT: u8 = 0;
 const PPC_CR0_EQ_BIT: u8 = 2;
-const PPC_SPECIAL_CASE_CARET_HOOK: u32 = 0;
-const PPC_SPECIAL_CASE_EOL_HOOK: u32 = 1;
-const PPC_SPECIAL_CASE_WIDTH_HOOK: u32 = 2;
-const PPC_SPECIAL_CASE_NWIDTH_HOOK: u32 = 3;
-const PPC_SPECIAL_CASE_DRAW_HOOK: u32 = 4;
-const PPC_SPECIAL_CASE_HIT_TEST_HOOK: u32 = 5;
-const PPC_SPECIAL_CASE_TE_FIND_WORD: u32 = 6;
-const PPC_SPECIAL_CASE_PROTOCOL_HANDLER: u32 = 7;
-const PPC_SPECIAL_CASE_SOCKET_LISTENER: u32 = 8;
-const PPC_SPECIAL_CASE_TE_RECALC: u32 = 9;
-const PPC_SPECIAL_CASE_TE_DO_TEXT: u32 = 10;
-const PPC_SPECIAL_CASE_GNE_FILTER_PROC: u32 = 11;
-const PPC_SPECIAL_CASE_MBAR_HOOK: u32 = 12;
 const PPC_PROCINFO_SIZE_NONE: u32 = crate::mixed_mode::proc_info::SIZE_NONE;
 const PPC_PROCINFO_SIZE_ONE: u32 = crate::mixed_mode::proc_info::SIZE_ONE;
 const PPC_PROCINFO_SIZE_TWO: u32 = crate::mixed_mode::proc_info::SIZE_TWO;
@@ -40927,12 +40914,17 @@ fn ppc_call_universal_proc_return_gpr3(proc_info: u32) -> PpcNativeReturnGpr3 {
                 },
             }
         }
-        PPC_PROCINFO_SPECIAL_CASE => match (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x0fff {
-            PPC_SPECIAL_CASE_EOL_HOOK
-            | PPC_SPECIAL_CASE_PROTOCOL_HANDLER
-            | PPC_SPECIAL_CASE_SOCKET_LISTENER => PpcNativeReturnGpr3::CrBit(PPC_CR0_EQ_BIT),
-            _ => PpcNativeReturnGpr3::Preserve,
-        },
+        PPC_PROCINFO_SPECIAL_CASE => {
+            use crate::mixed_mode::NativeSpecialCaseResult;
+
+            match crate::mixed_mode::native_special_case_signature(proc_info)
+                .map(|signature| signature.result)
+            {
+                Some(NativeSpecialCaseResult::Boolean) => PpcNativeReturnGpr3::Mask(0x0000_00ff),
+                Some(NativeSpecialCaseResult::Word) => PpcNativeReturnGpr3::Mask(0x0000_ffff),
+                Some(NativeSpecialCaseResult::Void) | None => PpcNativeReturnGpr3::Preserve,
+            }
+        }
         _ => PpcNativeReturnGpr3::Preserve,
     }
 }
@@ -41011,23 +41003,9 @@ fn ppc_call_universal_proc_special_case_arguments(
     memory: &mut PpcSectionMem,
     proc_info: u32,
 ) -> Result<Option<Vec<u32>>, ()> {
-    let special_case = (proc_info >> PPC_PROCINFO_RESULT_SIZE_PHASE) & 0x0fff;
-    let arg_count = match special_case {
-        PPC_SPECIAL_CASE_CARET_HOOK => 2,
-        PPC_SPECIAL_CASE_EOL_HOOK => 3,
-        PPC_SPECIAL_CASE_WIDTH_HOOK => 5,
-        PPC_SPECIAL_CASE_NWIDTH_HOOK => 6,
-        PPC_SPECIAL_CASE_DRAW_HOOK => 5,
-        PPC_SPECIAL_CASE_HIT_TEST_HOOK => 6,
-        PPC_SPECIAL_CASE_TE_FIND_WORD => 4,
-        PPC_SPECIAL_CASE_PROTOCOL_HANDLER => 6,
-        PPC_SPECIAL_CASE_SOCKET_LISTENER => 7,
-        PPC_SPECIAL_CASE_TE_RECALC => 2,
-        PPC_SPECIAL_CASE_TE_DO_TEXT => 4,
-        PPC_SPECIAL_CASE_MBAR_HOOK => 1,
-        PPC_SPECIAL_CASE_GNE_FILTER_PROC => return Err(()),
-        _ => return Err(()),
-    };
+    let arg_count = crate::mixed_mode::native_special_case_signature(proc_info)
+        .ok_or(())?
+        .argument_count;
     let mut args = Vec::with_capacity(arg_count);
     for index in 0..arg_count {
         args.push(ppc_call_universal_proc_vararg(cpu, memory, index)?);
@@ -91765,7 +91743,7 @@ mod tests {
         let callback_rtoc = PPC_HEAP_BASE + 0x3000;
         let caller_rtoc = PPC_DATA_BASE;
         let proc_info = PPC_PROCINFO_SPECIAL_CASE
-            | (PPC_SPECIAL_CASE_EOL_HOOK << PPC_PROCINFO_RESULT_SIZE_PHASE);
+            | (crate::mixed_mode::special_case::EOL_HOOK << PPC_PROCINFO_RESULT_SIZE_PHASE);
         install_test_powerpc_callback(
             &mut loaded,
             descriptor,
@@ -91781,8 +91759,7 @@ mod tests {
                 d_form_u(32, 7, 1, (PPC_PARAMETER_AREA_OFFSET + 7 * 4) as u16),
                 d_form_u(36, 6, 2, 12),
                 d_form_u(36, 7, 2, 16),
-                d_form_u(14, 3, 0, 0),
-                d_form_compare(11, 0, false, 3, 0),
+                d_form_u(14, 3, 0, 0x0101),
                 BLR,
             ],
         );
@@ -91832,6 +91809,75 @@ mod tests {
     }
 
     #[test]
+    fn hle_import_runner_call_universal_proc_passes_all_hit_test_arguments() {
+        let pef = synthetic_pef_with_import(b"CallUniversalProc");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let descriptor = PPC_HEAP_BASE + 0x1000;
+        let tvector = descriptor + 0x80;
+        let callback_entry = PPC_HEAP_BASE + 0x2000;
+        let callback_rtoc = PPC_HEAP_BASE + 0x3000;
+        let caller_rtoc = PPC_DATA_BASE;
+        let proc_info = PPC_PROCINFO_SPECIAL_CASE
+            | (crate::mixed_mode::special_case::HIT_TEST_HOOK << PPC_PROCINFO_RESULT_SIZE_PHASE);
+        let mut callback = Vec::new();
+        for register in 3..=10 {
+            callback.push(d_form_u(36, register, 2, u16::from(register - 3) * 4));
+        }
+        callback.extend([
+            d_form_u(32, 11, 1, (PPC_PARAMETER_AREA_OFFSET + 8 * 4) as u16),
+            d_form_u(36, 11, 2, 32),
+            d_form_u(14, 3, 0, 0x0101),
+            BLR,
+        ]);
+        install_test_powerpc_callback(
+            &mut loaded,
+            descriptor,
+            tvector,
+            callback_entry,
+            callback_rtoc,
+            proc_info,
+            &callback,
+        );
+
+        let arguments: Vec<u32> = (0..9).map(|index| 0x1000 + index).collect();
+        loaded.cpu.gpr[2] = caller_rtoc;
+        loaded.cpu.gpr[3] = descriptor;
+        loaded.cpu.gpr[4] = proc_info;
+        loaded.cpu.gpr[5..=10].copy_from_slice(&arguments[..6]);
+        for (index, value) in arguments[6..].iter().copied().enumerate() {
+            loaded
+                .memory
+                .write_u32_be(
+                    ppc_parameter_area_slot_addr(loaded.cpu.gpr[1], 8 + index).unwrap(),
+                    value,
+                )
+                .unwrap();
+        }
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
+        assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
+        assert_eq!(loaded.cpu.gpr[3], 1);
+        for (index, expected) in arguments.into_iter().enumerate() {
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(callback_rtoc + u32::try_from(index).unwrap() * 4),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
     fn hle_import_runner_call_universal_proc_decodes_special_case_mbar_hook() {
         let pef = synthetic_pef_with_import(b"CallUniversalProc");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -91842,7 +91888,7 @@ mod tests {
         let caller_rtoc = PPC_DATA_BASE;
         let menu_rect_ptr = PPC_DATA_BASE + 0x4000;
         let proc_info = PPC_PROCINFO_SPECIAL_CASE
-            | (PPC_SPECIAL_CASE_MBAR_HOOK << PPC_PROCINFO_RESULT_SIZE_PHASE);
+            | (crate::mixed_mode::special_case::MBAR_HOOK << PPC_PROCINFO_RESULT_SIZE_PHASE);
         install_test_powerpc_callback(
             &mut loaded,
             descriptor,
@@ -91888,7 +91934,7 @@ mod tests {
     }
 
     #[test]
-    fn hle_import_runner_call_universal_proc_rejects_stack_returning_gne_filter_proc() {
+    fn hle_import_runner_call_universal_proc_passes_gne_filter_output_pointer() {
         let pef = synthetic_pef_with_import(b"CallUniversalProc");
         let mut loaded = load_pef_application(&pef).unwrap();
         let descriptor = PPC_HEAP_BASE + 0x1000;
@@ -91896,8 +91942,10 @@ mod tests {
         let callback_entry = PPC_HEAP_BASE + 0x2000;
         let callback_rtoc = PPC_HEAP_BASE + 0x3000;
         let caller_rtoc = PPC_DATA_BASE;
+        let event = PPC_DATA_BASE + 0x4000;
+        let result = callback_rtoc + 0x100;
         let proc_info = PPC_PROCINFO_SPECIAL_CASE
-            | (PPC_SPECIAL_CASE_GNE_FILTER_PROC << PPC_PROCINFO_RESULT_SIZE_PHASE);
+            | (crate::mixed_mode::special_case::GNE_FILTER_PROC << PPC_PROCINFO_RESULT_SIZE_PHASE);
         install_test_powerpc_callback(
             &mut loaded,
             descriptor,
@@ -91905,29 +91953,37 @@ mod tests {
             callback_entry,
             callback_rtoc,
             proc_info,
-            &[BLR],
+            &[
+                d_form_u(36, 3, 2, 0),
+                d_form_u(36, 4, 2, 4),
+                d_form_u(14, 5, 0, 1),
+                d_form_u(38, 5, 4, 0),
+                BLR,
+            ],
         );
 
+        loaded.memory.write_u8(result, 0).unwrap();
         loaded.cpu.gpr[2] = caller_rtoc;
         loaded.cpu.gpr[3] = descriptor;
         loaded.cpu.gpr[4] = proc_info;
-        loaded.cpu.gpr[5] = PPC_DATA_BASE + 0x4000;
-        loaded.cpu.gpr[6] = 0x1234_5678;
+        loaded.cpu.gpr[5] = event;
+        loaded.cpu.gpr[6] = result;
 
         let probe = loaded.run_with_hle_imports(64);
 
-        assert_eq!(probe.handled_import_count, 0);
-        assert_eq!(probe.unsupported_import_index, Some(0));
-        assert_eq!(
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert!(matches!(
             probe.result,
             PpcRunResult::Halted {
-                pc: PPC_IMPORT_TRAP_BASE,
-                cycles: 4,
+                pc: PPC_HALT_PC,
+                ..
             }
-        );
+        ));
         assert_eq!(loaded.cpu.gpr[2], caller_rtoc);
-        assert_eq!(loaded.cpu.gpr[3], descriptor);
-        assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(0));
+        assert_eq!(loaded.memory.read_u32_be(callback_rtoc), Some(event));
+        assert_eq!(loaded.memory.read_u32_be(callback_rtoc + 4), Some(result));
+        assert_eq!(loaded.memory.read_u8(result), Some(1));
     }
 
     #[test]
@@ -152821,14 +152877,6 @@ mod tests {
     fn d_form_u(opcd: u8, rt: u8, ra: u8, value: u16) -> u32 {
         ((opcd as u32) << 26)
             | ((rt as u32 & 0x1f) << 21)
-            | ((ra as u32 & 0x1f) << 16)
-            | u32::from(value)
-    }
-
-    fn d_form_compare(opcd: u8, bf: u8, l: bool, ra: u8, value: u16) -> u32 {
-        ((opcd as u32 & 0x3f) << 26)
-            | ((bf as u32 & 0x07) << 23)
-            | (u32::from(l) << 21)
             | ((ra as u32 & 0x1f) << 16)
             | u32::from(value)
     }

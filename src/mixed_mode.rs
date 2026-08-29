@@ -51,6 +51,75 @@ pub(crate) mod proc_info {
     pub(crate) const MAX_REGISTER_PARAMETERS: usize = 4;
 }
 
+pub(crate) mod special_case {
+    pub(crate) const HIGH_HOOK: u32 = 0;
+    pub(crate) const EOL_HOOK: u32 = 1;
+    pub(crate) const WIDTH_HOOK: u32 = 2;
+    pub(crate) const NWIDTH_HOOK: u32 = 3;
+    pub(crate) const DRAW_HOOK: u32 = 4;
+    pub(crate) const HIT_TEST_HOOK: u32 = 5;
+    pub(crate) const TE_FIND_WORD: u32 = 6;
+    pub(crate) const PROTOCOL_HANDLER: u32 = 7;
+    pub(crate) const SOCKET_LISTENER: u32 = 8;
+    pub(crate) const TE_RECALC: u32 = 9;
+    pub(crate) const TE_DO_TEXT: u32 = 10;
+    pub(crate) const GNE_FILTER_PROC: u32 = 11;
+    pub(crate) const MBAR_HOOK: u32 = 12;
+    pub(crate) const SELECTOR_PHASE: u32 = 4;
+    pub(crate) const SELECTOR_MASK: u32 = 0x3f;
+    pub(crate) const ENCODED_MASK: u32 = 0x03ff;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeSpecialCaseResult {
+    Void,
+    Boolean,
+    Word,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NativeSpecialCaseSignature {
+    pub(crate) argument_count: usize,
+    pub(crate) result: NativeSpecialCaseResult,
+}
+
+/// Decode the native signature associated with a special-case ProcInfo.
+///
+/// The 68k side uses bespoke register and stack layouts, while Universal
+/// Interfaces exposes ordinary native prototypes with output pointers where
+/// the classic convention returns more than one register. The complete table
+/// follows Inside Macintosh: PowerPC System Software (1994), pp. 2-30--2-32,
+/// and Universal Interfaces 3.4 MixedMode.h, TextEdit.h, Events.h, Menus.h,
+/// and AppleTalk.h.
+pub(crate) fn native_special_case_signature(proc_info: u32) -> Option<NativeSpecialCaseSignature> {
+    if convention(proc_info) != proc_info::SPECIAL_CASE
+        || (proc_info & !special_case::ENCODED_MASK) != 0
+    {
+        return None;
+    }
+    let selector = (proc_info >> special_case::SELECTOR_PHASE) & special_case::SELECTOR_MASK;
+    let (argument_count, result) = match selector {
+        special_case::HIGH_HOOK => (2, NativeSpecialCaseResult::Void),
+        special_case::EOL_HOOK => (3, NativeSpecialCaseResult::Boolean),
+        special_case::WIDTH_HOOK => (5, NativeSpecialCaseResult::Word),
+        special_case::NWIDTH_HOOK => (8, NativeSpecialCaseResult::Word),
+        special_case::DRAW_HOOK => (5, NativeSpecialCaseResult::Void),
+        special_case::HIT_TEST_HOOK => (9, NativeSpecialCaseResult::Boolean),
+        special_case::TE_FIND_WORD => (6, NativeSpecialCaseResult::Void),
+        special_case::PROTOCOL_HANDLER => (6, NativeSpecialCaseResult::Boolean),
+        special_case::SOCKET_LISTENER => (7, NativeSpecialCaseResult::Boolean),
+        special_case::TE_RECALC => (5, NativeSpecialCaseResult::Void),
+        special_case::TE_DO_TEXT => (6, NativeSpecialCaseResult::Void),
+        special_case::GNE_FILTER_PROC => (2, NativeSpecialCaseResult::Void),
+        special_case::MBAR_HOOK => (1, NativeSpecialCaseResult::Word),
+        _ => return None,
+    };
+    Some(NativeSpecialCaseSignature {
+        argument_count,
+        result,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ValueSize {
     One,
@@ -459,6 +528,52 @@ mod tests {
         bus.write_word(record + ROUTINE_RECORD_FLAGS_OFFSET, flags);
         bus.write_long(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, procedure);
         bus.write_long(record + ROUTINE_RECORD_SELECTOR_OFFSET, selector);
+    }
+
+    #[test]
+    fn special_case_procinfo_uses_native_interface_signatures() {
+        use NativeSpecialCaseResult::{Boolean, Void, Word};
+
+        let cases = [
+            (special_case::HIGH_HOOK, 2, Void),
+            (special_case::EOL_HOOK, 3, Boolean),
+            (special_case::WIDTH_HOOK, 5, Word),
+            (special_case::NWIDTH_HOOK, 8, Word),
+            (special_case::DRAW_HOOK, 5, Void),
+            (special_case::HIT_TEST_HOOK, 9, Boolean),
+            (special_case::TE_FIND_WORD, 6, Void),
+            (special_case::PROTOCOL_HANDLER, 6, Boolean),
+            (special_case::SOCKET_LISTENER, 7, Boolean),
+            (special_case::TE_RECALC, 5, Void),
+            (special_case::TE_DO_TEXT, 6, Void),
+            (special_case::GNE_FILTER_PROC, 2, Void),
+            (special_case::MBAR_HOOK, 1, Word),
+        ];
+        for (selector, argument_count, result) in cases {
+            let proc_info = proc_info::SPECIAL_CASE | (selector << special_case::SELECTOR_PHASE);
+            assert_eq!(
+                native_special_case_signature(proc_info),
+                Some(NativeSpecialCaseSignature {
+                    argument_count,
+                    result,
+                })
+            );
+        }
+
+        assert_eq!(
+            native_special_case_signature(
+                proc_info::SPECIAL_CASE | (13 << special_case::SELECTOR_PHASE)
+            ),
+            None
+        );
+        assert_eq!(
+            native_special_case_signature(proc_info::SPECIAL_CASE | (1 << 10)),
+            None
+        );
+        assert_eq!(
+            native_special_case_signature(proc_info::PASCAL_STACK_BASED),
+            None
+        );
     }
 
     fn install_powerpc_target(bus: &mut MacMemoryBus) {
