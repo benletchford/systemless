@@ -473,21 +473,24 @@ impl super::TrapDispatcher {
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
-        let typed_word = match self.current_trap_word & 0x0FFF {
+        let typed_word = match raw_trap_route(self.current_trap_word).os_routine_variant {
             // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
-            // Inside Macintosh: Operating System Utilities 1994, pp. 8-27
-            // and 8-30: trapNum may be an A-line instruction or trap number;
-            // irrelevant high bits are masked according to the trap type.
-            0x647 | 0x746 => 0xA800 | (trap_word & 0x03FF),
-            // `_GetTrapAddress newOS` / `_SetTrapAddress newOS` mask to
-            // the low 8-bit Operating System table.
-            0x247 | 0x346 => 0xA000 | (trap_word & 0x00FF),
+            // Inside Macintosh: Operating System Utilities (1994),
+            // pp. 8-27--8-31: trapNum may be an A-line instruction or trap
+            // number; irrelevant high bits are masked to the selected table.
+            OsRoutineVariant::TrapAddressNewTool => 0xA800 | (trap_word & 0x03FF),
+            // The newOS forms mask to the low 8-bit Operating System table.
+            OsRoutineVariant::TrapAddressNewOs => 0xA000 | (trap_word & 0x00FF),
             // Legacy GetTrapAddress ($A146) and SetTrapAddress ($A047)
             // ignore the high-order bits and infer the table from the trap
             // number: $00-$4F, $54, and $57 are OS traps; all others are
             // Toolbox traps. Inside Macintosh: Operating System Utilities
             // 1994, pp. 8-32 to 8-33.
-            _ => {
+            variant => {
+                debug_assert!(matches!(
+                    variant,
+                    OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified
+                ));
                 let trap_num = trap_word & 0x03FF;
                 if matches!(trap_num, 0x000..=0x04F | 0x054 | 0x057) {
                     0xA000 | (trap_num & 0x00FF)
@@ -954,7 +957,7 @@ impl super::TrapDispatcher {
             // two `get_or_create_*_trap_trampoline` helpers.
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
-                let trap_variant = self.current_trap_word & 0x0FFF;
+                let trap_variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 // Once initialized, return the logical view of the selected
                 // raw table entry, including an unchanged default. This keeps
                 // profile availability probes tied to the materialized table
@@ -964,7 +967,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::A0, addr);
                 } else if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
                     cpu.write_reg(Register::A0, addr);
-                } else if trap_variant == 0x746 {
+                } else if trap_variant == OsRoutineVariant::TrapAddressNewTool {
                     // Real GetToolTrapAddress/GetToolBoxTrapAddress
                     // (trap word $A746) passes a bare tool-trap number
                     // in D0. Return a callable tool-trap trampoline so
@@ -6806,6 +6809,57 @@ mod tests {
             0x0000_ADF2,
             "GetOSTrapAddress must mask the supplied trap word to the OS table"
         );
+    }
+
+    #[test]
+    fn trap_address_a0_variants_keep_new_os_and_new_tool_table_selection() {
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-27--8-31:
+        // bit 9 selects the new typed form, bit 10 then selects Toolbox, and
+        // bit 8 independently controls A0 return handling. UI 3.4 Patches.h
+        // lines 126--231 declares the new-OS and new-Tool entry points.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let supplied_trap = 0xA9A0;
+        let os_key = 0xA0A0;
+        let tool_key = 0xA9A0;
+        dispatcher.native_trap_table.insert(os_key, 0x0030_0000);
+        dispatcher.native_trap_table.insert(tool_key, 0x0031_0000);
+
+        // Clear bit 8 from the declared getter words. The central route must
+        // retain their table type even though the dispatcher later restores
+        // A0 for a real no-A0-return invocation.
+        for (trap_word, expected) in [(0xA246, 0x0030_0000), (0xA646, 0x0031_0000)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, supplied_trap);
+            dispatcher
+                .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+                .expect("typed trap getter should be handled")
+                .expect("typed trap getter should succeed");
+            assert_eq!(
+                cpu.read_reg(Register::A0),
+                expected,
+                "trap ${trap_word:04X}"
+            );
+        }
+
+        // Add bit 8 to the declared setter words. It remains structural and
+        // must not make either setter fall back to obsolete number inference.
+        for (trap_word, key, handler) in [
+            (0xA347, os_key, 0x0032_0000),
+            (0xA747, tool_key, 0x0033_0000),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, supplied_trap);
+            cpu.write_reg(Register::A0, handler);
+            dispatcher
+                .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+                .expect("typed trap setter should be handled")
+                .expect("typed trap setter should succeed");
+            assert_eq!(
+                dispatcher.native_trap_table.get(&key),
+                Some(&handler),
+                "trap ${trap_word:04X}"
+            );
+        }
     }
 
     #[test]

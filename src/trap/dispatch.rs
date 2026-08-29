@@ -1241,12 +1241,15 @@ pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
 /// *Inside Macintosh: Devices* (1994), p. 1-16.
 /// Original and extended Time Manager task installation comes from *Inside
 /// Macintosh: Processes* (1994), pp. 3-18--3-20.
+/// Trap Manager legacy, new-OS, and new-Tool forms come from *Inside Macintosh:
+/// Operating System Utilities* (1994), pp. 8-27--8-31 and 8-32--8-33.
 /// File Manager synchronous, asynchronous, and HFS forms come from *Inside
 /// Macintosh: Files* (1992), pp. 2-6, 2-238--2-239, and its assembly-language
 /// summary. Universal Interfaces 3.4 independently declares reviewed exact
 /// words in `MacMemory.h` (lines 436--1010, 1331--1362), `TextUtils.h` (lines
 /// 404--455), `Devices.h` (lines 905--1044, 1282--1415), and `Files.h` (lines
 /// 1315--3343); `Timer.h` lines 74--100 declares InsTime and InsXTime;
+/// `Patches.h` lines 80--231 declares the Trap Manager forms;
 /// `StringCompare.h` lines 567--596 retains the comparison APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OsRoutineVariant {
@@ -1270,6 +1273,9 @@ pub(crate) enum OsRoutineVariant {
     ParameterBlockAsynchronous,
     TimeTaskOriginal,
     TimeTaskExtended,
+    TrapAddressLegacy,
+    TrapAddressNewOs,
+    TrapAddressNewTool,
     FileSynchronous,
     FileAsynchronous,
     FileHfsSynchronous,
@@ -1343,6 +1349,14 @@ const fn classify_os_routine_variant(raw_word: u16) -> OsRoutineVariant {
         // Bit 9 has no documented meaning for this slot.
         (0x58, 0x0000) => OsRoutineVariant::TimeTaskOriginal,
         (0x58, 0x0400) => OsRoutineVariant::TimeTaskExtended,
+
+        // Operating System Utilities 1994, pp. 8-27--8-31: bit 9 selects
+        // the new typed form and bit 10 then selects the Toolbox table.
+        // UI 3.4 Patches.h lines 80--231 declares the exact legacy, new-OS,
+        // and new-Tool getter/setter words. Bit 10 alone is not declared.
+        (0x46 | 0x47, 0x0000) => OsRoutineVariant::TrapAddressLegacy,
+        (0x46 | 0x47, 0x0200) => OsRoutineVariant::TrapAddressNewOs,
+        (0x46 | 0x47, 0x0600) => OsRoutineVariant::TrapAddressNewTool,
 
         // Files 1992 identifies bit 10 as ASYNC and bit 9 as newHFS. These
         // reviewed slots have exact basic Sync/Async declarations in UI 3.4
@@ -8144,7 +8158,8 @@ mod tests {
             ParameterBlockImmediate, ParameterBlockSynchronous, StripText, StripUpperText,
             SystemHeap, SystemHeapClear, TextCompareExact, TextCompareFoldCase,
             TextCompareFoldCaseAndMarks, TextCompareStripMarks, TimeTaskExtended, TimeTaskOriginal,
-            Unclassified, UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
+            TrapAddressLegacy, TrapAddressNewOs, TrapAddressNewTool, Unclassified,
+            UpperStringPreserveMarks, UpperStringStripMarks, UpperText,
         };
 
         // Inside Macintosh: Memory (1992), pp. 2-31 and 2-35; Universal
@@ -8162,6 +8177,30 @@ mod tests {
                         expected
                     );
                 }
+            }
+        }
+
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-27--8-31
+        // and 8-32--8-33; UI 3.4 Patches.h lines 80--231.
+        for slot in [0x46u16, 0x47] {
+            for return_a0 in [0x0000u16, 0x0100] {
+                assert_eq!(
+                    raw_trap_route(0xA000 | slot | return_a0).os_routine_variant,
+                    TrapAddressLegacy
+                );
+                assert_eq!(
+                    raw_trap_route(0xA200 | slot | return_a0).os_routine_variant,
+                    TrapAddressNewOs
+                );
+                assert_eq!(
+                    raw_trap_route(0xA600 | slot | return_a0).os_routine_variant,
+                    TrapAddressNewTool
+                );
+                assert_eq!(
+                    raw_trap_route(0xA400 | slot | return_a0).os_routine_variant,
+                    Unclassified,
+                    "bit 10 without the new-system bit is undeclared"
+                );
             }
         }
 
@@ -8320,7 +8359,7 @@ mod tests {
         let classified = (0xA000u16..=0xAFFF)
             .filter(|&word| raw_trap_route(word).os_routine_variant != Unclassified)
             .count();
-        assert_eq!(classified, 244);
+        assert_eq!(classified, 256);
         assert_eq!(
             raw_trap_route(0xA271).os_routine_variant,
             Unclassified,
