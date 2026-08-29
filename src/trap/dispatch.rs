@@ -31,14 +31,14 @@ const VFS_HFS_LITERAL_SLASH: char = '\u{F02F}';
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SelectorOperationRoute {
-    pub(crate) selector: u16,
+    pub(crate) selector: u32,
     pub(crate) operation_id: &'static str,
     pub(crate) routine_name: &'static str,
 }
 
 impl SelectorOperationRoute {
     pub(crate) const fn new(
-        selector: u16,
+        selector: u32,
         operation_id: &'static str,
         routine_name: &'static str,
     ) -> Self {
@@ -54,7 +54,6 @@ pub(crate) fn selector_operation_route(
     routes: &'static [SelectorOperationRoute],
     selector: u32,
 ) -> Option<&'static SelectorOperationRoute> {
-    let selector = u16::try_from(selector).ok()?;
     routes
         .binary_search_by_key(&selector, |route| route.selector)
         .ok()

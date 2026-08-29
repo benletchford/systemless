@@ -21,6 +21,10 @@ const MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_memory_dispatch_a0_result_operations.rs");
 const HWPRIV_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_hwpriv_operations.rs");
+const IDLE_STATE_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_idle_state_operations.rs");
+const SERIAL_POWER_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_serial_power_operations.rs");
 
 fn memory_dispatch_operation_route(
     trap_word: u16,
@@ -42,6 +46,18 @@ fn hwpriv_operation_route(
         return None;
     }
     selector_operation_route(HWPRIV_OPERATION_ROUTES, selector)
+}
+
+fn power_control_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    let routes = match trap_word {
+        0xA485 => IDLE_STATE_OPERATION_ROUTES,
+        0xA685 => SERIAL_POWER_OPERATION_ROUTES,
+        _ => return None,
+    };
+    selector_operation_route(routes, selector)
 }
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
@@ -3164,8 +3180,7 @@ impl super::TrapDispatcher {
             (false, 0x7F) => Ok(()),
 
             // IdleUpdate ($A285), IdleState ($A485), SerialPower ($A685)
-            // Resets the activity timer, controls nested idle inhibition, or
-            // changes logical serial-port power according to D0.
+            // Resets the activity timer or controls idle and serial-port power through D0.
             // FUNCTION IdleUpdate: LongInt;
             // PROCEDURE EnableIdle; PROCEDURE DisableIdle;
             // FUNCTION GetCPUSpeed: LongInt;
@@ -3174,6 +3189,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Devices (1994), pp. 6-29--6-30, 6-33--6-35.
             // Universal Interfaces 3.4 Power.h lines 650--701 and 733--791.
             (false, 0x85) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = power_control_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 match raw_trap_route(self.current_trap_word).os_routine_variant {
                     OsRoutineVariant::PowerIdleUpdate => {
                         self.power_idle_last_update_tick = self.tick_count;
@@ -5399,6 +5417,76 @@ mod tests {
             assert_eq!(dispatcher.serial_port_b_powered, b_power);
         }
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn power_control_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::IDLE_STATE_OPERATION_ROUTES.len(), 1);
+        assert_eq!(super::SERIAL_POWER_OPERATION_ROUTES.len(), 5);
+        assert!(super::SERIAL_POWER_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let enable = super::power_control_operation_route(0xA485, 0).expect("EnableIdle route");
+        assert_eq!(enable.routine_name, "EnableIdle");
+        assert_eq!(
+            enable.operation_id,
+            "selector-operation:_IdleState:0x0000:d0-moveq-immediate:8"
+        );
+
+        let a_off = super::power_control_operation_route(0xA685, 0xFFFF_FF84).expect("AOff route");
+        assert_eq!(a_off.routine_name, "AOff");
+        assert_eq!(
+            a_off.operation_id,
+            "selector-operation:_SerialPower:0xFF84:d0-moveq-immediate:8"
+        );
+
+        assert!(super::power_control_operation_route(0xA585, 0).is_none());
+        assert!(super::power_control_operation_route(0xA485, 1).is_none());
+        assert!(super::power_control_operation_route(0xA485, u32::MAX).is_none());
+        assert!(super::power_control_operation_route(0xA785, 0xFFFF_FF84).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0000_FF84).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0000_7084).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0001_0004).is_none());
+    }
+
+    #[test]
+    fn power_control_dispatch_records_fixed_routes_and_leaves_ranges_unregistered() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 0);
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some(super::IDLE_STATE_OPERATION_ROUTES[0].operation_id)
+        );
+
+        for selector in [1, u32::MAX] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
+
+        for route in super::SERIAL_POWER_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA685, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA585, 0),
+            (0xA785, 0xFFFF_FF84),
+            (0xA685, 0x0000_FF84),
+            (0xA685, 0x0000_7084),
+            (0xA685, 0x0001_0004),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     fn assert_no_hardware_trap_returns_noerr_and_preserves_stack(trap_num: u16, trap_name: &str) {
