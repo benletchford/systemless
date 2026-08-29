@@ -1181,6 +1181,46 @@ pub(crate) const OS_TRAP_TABLE_BASE: u32 = 0x0400;
 pub(crate) const TOOLBOX_TRAP_TABLE_BASE: u32 = 0x0E00;
 pub(crate) const OS_TRAP_TABLE_SLOTS: u16 = 0x0100;
 pub(crate) const TOOLBOX_TRAP_TABLE_SLOTS: u16 = 0x0400;
+pub(crate) const COME_FROM_PATCH_SIGNATURE: u32 = 0x6006_4EF9;
+
+/// The observable target behind a raw trap-table long.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TrapTableTarget {
+    Direct(u32),
+    Protected {
+        last_head: u32,
+        logical_successor: u32,
+    },
+}
+
+/// Follow every protected come-from head and return the last mutable edge.
+/// Trap Manager getters hide all permanent heads, while setters replace the
+/// exit JMP target in the last head. Inside Macintosh: Operating System
+/// Utilities (1994), pp. 8-8--8-9 and 8-27--8-31.
+pub(crate) fn resolve_trap_table_target(
+    raw_target: u32,
+    mut read_long: impl FnMut(u32) -> Option<u32>,
+) -> Option<TrapTableTarget> {
+    let mut target = raw_target;
+    let mut last_head = None;
+    let mut visited = HashSet::new();
+    loop {
+        if read_long(target) != Some(COME_FROM_PATCH_SIGNATURE) {
+            return Some(match last_head {
+                Some(last_head) => TrapTableTarget::Protected {
+                    last_head,
+                    logical_successor: target,
+                },
+                None => TrapTableTarget::Direct(target),
+            });
+        }
+        if !visited.insert(target) {
+            return None;
+        }
+        last_head = Some(target);
+        target = read_long(target.checked_add(4)?)?;
+    }
+}
 
 /// Trap-table topology selected for the emulated Mac OS 8.1 machine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2067,10 +2107,6 @@ pub struct TrapDispatcher {
     /// handlers execute as simulated JSR targets, allowing CRT-installed
     /// LoadSeg, UnloadSeg, and ExitToShell patches to relocate code normally.
     pub(crate) native_trap_table: TrapWordMap,
-    /// Permanent raw-table come-from head for each profile-selected slot.
-    /// The protected absolute jump target at `head + 4` is the logical
-    /// successor returned and changed by Trap Manager APIs.
-    pub(crate) trap_come_from_heads: TrapWordMap,
     /// Whether the selected profile's two raw trap tables have been written
     /// into guest low memory. Before application initialization, focused trap
     /// unit tests retain the host-map fallback; afterwards the guest longs are
@@ -3404,7 +3440,6 @@ impl TrapDispatcher {
             recording_picture: None,
             recording_picture_bitmap: None,
             native_trap_table: TrapWordMap::default(),
-            trap_come_from_heads: TrapWordMap::default(),
             trap_tables_materialized: false,
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
@@ -6389,7 +6424,6 @@ impl TrapDispatcher {
         Self::write_readonly_code_long(bus, head + 4, successor);
         bus.write_readonly_code_word(head + 8, 0x60F8); // patch body: BRA.S exit JMP
         bus.protect_readonly_code(head, 10);
-        self.trap_come_from_heads.insert(canonical, head);
         head
     }
 
@@ -6402,7 +6436,6 @@ impl TrapDispatcher {
         bus: &mut MacMemoryBus,
         profile: TrapTableProfile,
     ) {
-        self.trap_come_from_heads = TrapWordMap::default();
         for slot in 0..OS_TRAP_TABLE_SLOTS {
             let trap_word = 0xA000 | slot;
             let default = self.get_or_create_os_trap_trampoline(bus, trap_word);
@@ -6437,10 +6470,14 @@ impl TrapDispatcher {
         let canonical = Self::canonical_trap_word(trap_word);
         if self.trap_tables_materialized {
             let installed = bus.read_long(Self::raw_trap_table_entry(canonical));
-            let logical = if self.trap_come_from_heads.get(&canonical) == Some(&installed) {
-                bus.read_long(installed + 4)
-            } else {
-                installed
+            let logical = match resolve_trap_table_target(installed, |address| {
+                Some(bus.read_long(address))
+            }) {
+                Some(TrapTableTarget::Direct(target)) => target,
+                Some(TrapTableTarget::Protected {
+                    logical_successor, ..
+                }) => logical_successor,
+                None => installed,
             };
             if self.default_trap_gateway(canonical) == Some(logical) {
                 None
@@ -6459,6 +6496,16 @@ impl TrapDispatcher {
         handler: u32,
     ) {
         let canonical = Self::canonical_trap_word(trap_word);
+        let protected_tail = if self.trap_tables_materialized {
+            let raw = bus.read_long(Self::raw_trap_table_entry(canonical));
+            match resolve_trap_table_target(raw, |address| Some(bus.read_long(address))) {
+                Some(TrapTableTarget::Direct(_)) => None,
+                Some(TrapTableTarget::Protected { last_head, .. }) => Some(last_head),
+                None => return,
+            }
+        } else {
+            None
+        };
         if self.default_trap_gateway(canonical) == Some(handler)
             || (handler & 0xFFFF_0000) == 0x00F0_0000
         {
@@ -6474,9 +6521,8 @@ impl TrapDispatcher {
                 .or_else(|| self.default_trap_gateway(canonical))
                 .unwrap_or(handler);
             let raw_entry = Self::raw_trap_table_entry(canonical);
-            let raw = bus.read_long(raw_entry);
-            if self.trap_come_from_heads.get(&canonical) == Some(&raw) {
-                Self::write_readonly_code_long(bus, raw + 4, entry);
+            if let Some(last_head) = protected_tail {
+                Self::write_readonly_code_long(bus, last_head + 4, entry);
             } else {
                 bus.write_long(raw_entry, entry);
             }
@@ -7458,6 +7504,42 @@ mod tests {
     }
 
     #[test]
+    fn come_from_chain_resolution_reaches_the_last_exit_and_rejects_cycles() {
+        let first = 0x0010_0000;
+        let second = 0x0010_0100;
+        let target = 0x0020_0000;
+        let read_chain = |address| match address {
+            address if address == first || address == second => Some(COME_FROM_PATCH_SIGNATURE),
+            address if address == first + 4 => Some(second),
+            address if address == second + 4 => Some(target),
+            _ => None,
+        };
+
+        assert_eq!(
+            resolve_trap_table_target(first, read_chain),
+            Some(TrapTableTarget::Protected {
+                last_head: second,
+                logical_successor: target,
+            })
+        );
+        assert_eq!(
+            resolve_trap_table_target(target, read_chain),
+            Some(TrapTableTarget::Direct(target))
+        );
+        assert_eq!(
+            resolve_trap_table_target(first, |address| match address {
+                address if address == first || address == second => {
+                    Some(COME_FROM_PATCH_SIGNATURE)
+                }
+                address if address == first + 4 => Some(second),
+                address if address == second + 4 => Some(first),
+                _ => None,
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn materialized_trap_tables_contain_all_callable_profile_entries() {
         let (mut dispatcher, _cpu, mut bus) = setup();
         dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
@@ -7542,6 +7624,40 @@ mod tests {
             assert_eq!(cpu.read_reg(Register::A0), handler);
         }
         assert!(!dispatcher.has_native_trap_patch(&bus, trap_word));
+    }
+
+    #[test]
+    fn trap_manager_mutates_the_last_exit_in_a_multi_head_chain() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.materialize_trap_tables(&mut bus, TrapTableProfile::M68k68040);
+        let trap_word = 0xA078;
+        let raw_entry = TrapDispatcher::raw_trap_table_entry(trap_word);
+        let first = bus.read_long(raw_entry);
+        let original = bus.read_long(first + 4);
+        let second = bus.alloc_synthetic(10);
+        bus.write_readonly_code_word(second, 0x6006);
+        bus.write_readonly_code_word(second + 2, 0x4EF9);
+        TrapDispatcher::write_readonly_code_long(&mut bus, second + 4, original);
+        bus.write_readonly_code_word(second + 8, 0x60F8);
+        bus.protect_readonly_code(second, 10);
+        TrapDispatcher::write_readonly_code_long(&mut bus, first + 4, second);
+
+        cpu.write_reg(Register::D0, u32::from(trap_word));
+        dispatcher.dispatch(0xA346, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::A0), original);
+
+        let replacement = 0x0021_0000;
+        cpu.write_reg(Register::D0, u32::from(trap_word));
+        cpu.write_reg(Register::A0, replacement);
+        dispatcher.dispatch(0xA247, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(bus.read_long(raw_entry), first);
+        assert_eq!(bus.read_long(first + 4), second);
+        assert_eq!(bus.read_long(second + 4), replacement);
+        assert_eq!(
+            dispatcher.native_trap_handler(&bus, trap_word),
+            Some(replacement)
+        );
     }
 
     #[test]

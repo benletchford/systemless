@@ -72007,10 +72007,13 @@ fn ppc_logical_trap_address(
     toolbox: bool,
 ) -> Option<u32> {
     let raw = memory.read_u32_be(ppc_raw_trap_table_entry(trap_word, toolbox))?;
-    if memory.read_u32_be(raw) == Some(0x6006_4ef9) {
-        memory.read_u32_be(raw.checked_add(4)?)
-    } else {
-        Some(raw)
+    match crate::trap::dispatch::resolve_trap_table_target(raw, |address| {
+        memory.read_u32_be(address)
+    })? {
+        crate::trap::dispatch::TrapTableTarget::Direct(target) => Some(target),
+        crate::trap::dispatch::TrapTableTarget::Protected {
+            logical_successor, ..
+        } => Some(logical_successor),
     }
 }
 
@@ -72023,7 +72026,7 @@ fn ppc_set_logical_trap_address(
     // A permanent come-from head cannot itself be installed as a patch.
     // NSetTrapAddress raises system error 12 for this malformed splice.
     // Inside Macintosh: Operating System Utilities (1994), p. 8-30.
-    if memory.read_u32_be(handler) == Some(0x6006_4ef9) {
+    if memory.read_u32_be(handler) == Some(crate::trap::dispatch::COME_FROM_PATCH_SIGNATURE) {
         let _ = memory.write_u16_be(crate::memory::globals::addr::DS_ERR_CODE, 12);
         return false;
     }
@@ -72031,12 +72034,16 @@ fn ppc_set_logical_trap_address(
     let Some(raw) = memory.read_u32_be(entry) else {
         return false;
     };
-    if memory.read_u32_be(raw) == Some(0x6006_4ef9) {
-        memory
-            .write_shared_system_u32_be(raw.wrapping_add(4), handler)
-            .is_some()
-    } else {
-        memory.write_u32_be(entry, handler).is_some()
+    match crate::trap::dispatch::resolve_trap_table_target(raw, |address| {
+        memory.read_u32_be(address)
+    }) {
+        Some(crate::trap::dispatch::TrapTableTarget::Protected { last_head, .. }) => memory
+            .write_shared_system_u32_be(last_head.wrapping_add(4), handler)
+            .is_some(),
+        Some(crate::trap::dispatch::TrapTableTarget::Direct(_)) => {
+            memory.write_u32_be(entry, handler).is_some()
+        }
+        None => false,
     }
 }
 
@@ -90847,6 +90854,19 @@ mod tests {
             &mut bus,
             crate::trap::dispatch::TrapTableProfile::PowerPc604,
         );
+        let trap_word = 0xA823u16;
+        let table_entry = ppc_raw_trap_table_entry(trap_word, true);
+        let head = bus.read_long(table_entry);
+        let original = bus.read_long(head + 4);
+        let second_head = bus.alloc_synthetic(10);
+        bus.write_readonly_code_word(second_head, 0x6006);
+        bus.write_readonly_code_word(second_head + 2, 0x4ef9);
+        bus.write_readonly_code_word(second_head + 4, (original >> 16) as u16);
+        bus.write_readonly_code_word(second_head + 6, original as u16);
+        bus.write_readonly_code_word(second_head + 8, 0x60f8);
+        bus.protect_readonly_code(second_head, 10);
+        bus.write_readonly_code_word(head + 4, (second_head >> 16) as u16);
+        bus.write_readonly_code_word(head + 6, second_head as u16);
         for (base, len) in [
             (
                 crate::trap::dispatch::OS_TRAP_TABLE_BASE,
@@ -90878,11 +90898,10 @@ mod tests {
                 .add_shared_region(crate::memory::globals::addr::DS_ERR_CODE, ds_err)
         };
 
-        let trap_word = 0xA823u16;
-        let table_entry = ppc_raw_trap_table_entry(trap_word, true);
-        let head = bus.read_long(table_entry);
-        let original = bus.read_long(head + 4);
         assert_eq!(bus.read_long(head), 0x6006_4ef9);
+        assert_eq!(bus.read_long(head + 4), second_head);
+        assert_eq!(bus.read_long(second_head), 0x6006_4ef9);
+        assert_eq!(bus.read_long(second_head + 4), original);
 
         loaded.cpu.gpr[3] = u32::from(trap_word);
         loaded.cpu.gpr[4] = 1;
@@ -90898,7 +90917,8 @@ mod tests {
         loaded.run_with_hle_imports(64);
         assert_eq!(bus.read_word(crate::memory::globals::addr::DS_ERR_CODE), 12);
         assert_eq!(bus.read_long(table_entry), head);
-        assert_eq!(bus.read_long(head + 4), original);
+        assert_eq!(bus.read_long(head + 4), second_head);
+        assert_eq!(bus.read_long(second_head + 4), original);
 
         let replacement = PPC_CODE_BASE;
         loaded.cpu.pc = loaded.entry_pc;
@@ -90908,8 +90928,9 @@ mod tests {
         loaded.cpu.gpr[5] = 1;
         loaded.run_with_hle_imports(64);
         assert_eq!(bus.read_long(table_entry), head);
-        assert_eq!(bus.read_long(head + 4), replacement);
-        assert_eq!(loaded.memory.write_u32_be(head + 4, original), None);
+        assert_eq!(bus.read_long(head + 4), second_head);
+        assert_eq!(bus.read_long(second_head + 4), replacement);
+        assert_eq!(loaded.memory.write_u32_be(second_head + 4, original), None);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;

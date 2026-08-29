@@ -11645,6 +11645,87 @@ mod tests {
     }
 
     #[test]
+    fn multiple_application_head_patches_execute_their_saved_old_chain() {
+        use crate::memory::globals::addr;
+
+        const TRAP_WORD: u16 = 0xA039; // ReadDateTime
+        const TRAP_PC: u32 = 0x0020_0000;
+        const FIRST_PATCH: u32 = 0x0020_0100;
+        const SECOND_PATCH: u32 = 0x0020_0200;
+        const OUTPUT: u32 = 0x0020_0300;
+        const SP: u32 = 0x007F_FF00;
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .materialize_trap_tables(&mut runner.bus, TrapTableProfile::M68k68040);
+        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner
+            .dispatcher
+            .dispatch(0xA346, &mut runner.cpu, &mut runner.bus)
+            .unwrap();
+        let original = runner.cpu.read_reg(Register::A0);
+
+        runner.bus.write_word(FIRST_PATCH, 0x5282); // ADDQ.L #1,D2
+        runner.bus.write_word(FIRST_PATCH + 2, 0x4EF9); // JMP absolute long
+        runner.bus.write_long(FIRST_PATCH + 4, original);
+        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner.cpu.write_reg(Register::A0, FIRST_PATCH);
+        runner
+            .dispatcher
+            .dispatch(0xA247, &mut runner.cpu, &mut runner.bus)
+            .unwrap();
+
+        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner
+            .dispatcher
+            .dispatch(0xA346, &mut runner.cpu, &mut runner.bus)
+            .unwrap();
+        let saved_first = runner.cpu.read_reg(Register::A0);
+        assert_eq!(saved_first, FIRST_PATCH);
+        runner.bus.write_word(SECOND_PATCH, 0x5482); // ADDQ.L #2,D2
+        runner.bus.write_word(SECOND_PATCH + 2, 0x4EF9); // JMP absolute long
+        runner.bus.write_long(SECOND_PATCH + 4, saved_first);
+        runner.cpu.write_reg(Register::D0, u32::from(TRAP_WORD));
+        runner.cpu.write_reg(Register::A0, SECOND_PATCH);
+        runner
+            .dispatcher
+            .dispatch(0xA247, &mut runner.cpu, &mut runner.bus)
+            .unwrap();
+
+        runner.bus.write_word(TRAP_PC, TRAP_WORD);
+        runner.bus.write_long(addr::TIME, 0x1234_5678);
+        runner.cpu.write_reg(Register::PC, TRAP_PC);
+        runner.cpu.write_reg(Register::A7, SP);
+        runner.cpu.write_reg(Register::A0, OUTPUT);
+        runner.cpu.write_reg(Register::D2, 0);
+
+        let (steps, running) = runner.run_steps(7, None);
+
+        assert_eq!(steps, 7);
+        assert!(running);
+        assert_eq!(runner.cpu.read_reg(Register::PC), TRAP_PC + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), SP);
+        assert_eq!(runner.cpu.read_reg(Register::D2), 3);
+        assert_eq!(runner.bus.read_long(OUTPUT), 0x1234_5678);
+        assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
+
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, TRAP_WORD, saved_first);
+        assert_eq!(
+            runner.dispatcher.native_trap_handler(&runner.bus, TRAP_WORD),
+            Some(FIRST_PATCH)
+        );
+        runner
+            .dispatcher
+            .install_trap_address(&mut runner.bus, TRAP_WORD, original);
+        assert!(!runner
+            .dispatcher
+            .has_native_trap_patch(&runner.bus, TRAP_WORD));
+    }
+
+    #[test]
     fn four_bit_runner_publishes_consistent_screen_metadata() {
         use crate::memory::globals::addr;
 
