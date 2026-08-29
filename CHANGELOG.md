@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.14](https://github.com/benletchford/systemless/compare/v0.23.13...v0.23.14) (2026-08-29)
+
+
+### Bug Fixes
+
+* enumerate mounted volumes in PowerPC File Manager ([#978](https://github.com/benletchford/systemless/issues/978)) ([cfcb1fc](https://github.com/benletchford/systemless/commit/cfcb1fcd83c42f6e9a6df5ea39b61692c4e7bed6))
+
 ## [0.23.13](https://github.com/benletchford/systemless/compare/v0.23.12...v0.23.13) (2026-08-29)
 
 
