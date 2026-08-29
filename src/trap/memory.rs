@@ -1106,16 +1106,12 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SlotVRemove ($A070) shares trap space with a compatibility
-            // register-based GetNextEvent shim in event.rs. Only claim it when
-            // A0 clearly points at a VBLTask record.
-            // Processes 1994, 4-23 to 4-24
-            // SlotVRemove ($A070): Removes slot-VBLTask via remove_vbl_task; gated to claim only when A0 points at VBLTask record (qType=1) — defers to event.rs GetNextEvent shim otherwise
+            // SlotVRemove ($A070)
+            // Removes a slot-based vertical retrace task from its queue.
+            // FUNCTION SlotVRemove (vblTaskPtr: QElemPtr; theSlot: Integer): OSErr;
+            // Inside Macintosh: Processes (1994), pp. 4-23--4-24
             (false, 0x70) => {
                 let task_ptr = cpu.read_reg(Register::A0);
-                if task_ptr == 0 || bus.read_word(task_ptr + 4) as i16 != 1 {
-                    return None;
-                }
                 let slot = cpu.read_reg(Register::D0) as u16 as i16;
                 cpu.write_reg(
                     Register::D0,
@@ -6281,6 +6277,27 @@ mod tests {
             cpu.read_reg(Register::D0) as i16,
             -1,
             "SlotVRemove should return qErr for non-queued task"
+        );
+    }
+
+    #[test]
+    fn slotvremove_invalid_task_returns_vtyperr_without_event_fallback() {
+        // Inside Macintosh: Processes (1994), p. 4-24: SlotVRemove returns
+        // vTypErr (-2) when qType is not ORD(vType). `$A070` is not an Event
+        // Manager alias; GetNextEvent is the Toolbox trap `$A970`.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = bus.alloc(14);
+        bus.write_word(task_ptr + 4, 0);
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 4);
+
+        let result = dispatcher.dispatch(0xA070, &mut cpu, &mut bus);
+
+        assert!(result.is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -2);
+        assert_eq!(
+            dispatcher.current_trap_adapter,
+            super::super::dispatch::TrapAdapterId::Memory
         );
     }
 

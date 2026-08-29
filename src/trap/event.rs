@@ -825,26 +825,6 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // OS trap 0x70 — officially SlotVRemove ($A070), but some apps/glue
-            // may emit this as a register-based GetNextEvent variant.
-            // The real Toolbox GetNextEvent is at (true, 0x170) in toolbox.rs.
-            // We handle it as register-based event dispatch for compatibility.
-            // Register-based: D0=event mask, A0=event record ptr; D0=result on exit.
-            // SlotVRemove ($A070): Officially SlotVRemove; also handles register-based event dispatch for compatibility
-            (false, 0x70) => {
-                let event_mask = cpu.read_reg(Register::D0) as u16;
-                let event_ptr = cpu.read_reg(Register::A0);
-                self.service_invalid_menu_bar(bus);
-                // tick_count is maintained by the runner via advance_guest_tick()
-
-                let (what, message, where_v, where_h, modifiers, has_event) =
-                    self.dequeue_toolbox_event(cpu, bus, event_mask);
-                self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
-                // Mac convention: OS trap boolean is $0000 (FALSE) or $FFFF (TRUE).
-                cpu.write_reg(Register::D0, if has_event { 0xFFFF } else { 0 });
-                Ok(())
-            }
-
             // AttachVBL ($A071)
             // Inside Macintosh: Processes 1994, p. 4-26.
             // FUNCTION AttachVBL (theSlot: Integer): OSErr;
@@ -1983,8 +1963,6 @@ mod tests {
         );
     }
 
-    // ---- GetNextEvent ($A070, OS) ----
-
     const EVENT_PTR: u32 = 0x300000;
     const QHDR_FLAGS_OFFSET: u32 = 0;
     const QHDR_HEAD_OFFSET: u32 = 2;
@@ -2261,132 +2239,10 @@ mod tests {
         assert_eq!(bus.read_word(q_header + QHDR_FLAGS_OFFSET), 0x5A5A);
     }
 
-    #[test]
-    fn get_next_event_empty_queue_returns_null_event() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
-
-        // D0 = event mask (all events), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0xFFFF);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be 0 (no event)
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-
-        // Event record should have what=0 (null event)
-        let (what, _message, _when, _where_v, _where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 0);
-    }
+    // ---- AttachVBL ($A071, OS) ----
 
     #[test]
-    fn get_next_event_matching_event_returns_it() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
-
-        // Push a mouseDown event (what=1)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 100,
-            where_h: 200,
-            modifiers: 0,
-        });
-
-        // D0 = 0xFFFF (all events), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0xFFFF);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be $FFFF (TRUE = event found, Mac OS convention)
-        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF);
-
-        let (what, _message, when, where_v, where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 1); // mouseDown
-        assert_eq!(where_v, 100);
-        assert_eq!(where_h, 200);
-        // when should be the tick count read from $016A (set to 100 by setup)
-        assert_eq!(when, 100);
-
-        // Queue should now be empty
-        assert!(disp.event_queue.is_empty());
-    }
-
-    #[test]
-    fn get_next_event_non_matching_mask_returns_no_event() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        // Push a mouseDown event (what=1, bit 1)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 50,
-            where_h: 60,
-            modifiers: 0,
-        });
-
-        // D0 = 0x0004 (only keyDown, bit 2), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0x0004);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be 0 (no matching event)
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-
-        // Event should still be in the queue (not consumed)
-        assert_eq!(disp.event_queue.len(), 1);
-    }
-
-    #[test]
-    fn get_next_event_mouse_up_clears_mouse_button() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        // Simulate that mouse button is currently held
-        disp.mouse_button = true;
-
-        // Push a mouseUp event (what=2)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 2,
-            message: 0,
-            where_v: 75,
-            where_h: 150,
-            modifiers: 0,
-        });
-
-        // D0 = mask with bit 2 set (mouseUp), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0x0004); // bit 2 = mouseUp
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        assert!(disp.mouse_button);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be $FFFF (TRUE = event found, Mac OS convention)
-        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF);
-
-        // mouse_button should now be false (dequeue_event clears it on mouseUp)
-        assert!(!disp.mouse_button);
-
-        let (what, _message, _when, where_v, where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 2);
-        assert_eq!(where_v, 75);
-        assert_eq!(where_h, 150);
-    }
-
-    // ---- EventAvail ($A071, OS) ----
-
-    #[test]
-    fn event_avail_returns_d0_zero() {
+    fn attach_vbl_returns_noerr_for_primary_slot() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let result = disp.dispatch_event(false, 0x71, &mut cpu, &mut bus);

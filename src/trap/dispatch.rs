@@ -1302,6 +1302,59 @@ pub(crate) fn raw_trap_route(trap_word: u16) -> &'static RawTrapRoute {
     &RAW_TRAP_ROUTES[usize::from(trap_word & 0x0FFF)]
 }
 
+/// Rust adapter identities allowed for one canonical A-line operation row.
+/// `Nonterminal` is a declared registry state, distinct from an accidental
+/// omission: its gateway remains callable and reports the exact raw word until
+/// source-backed semantics are implemented.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum TrapAdapterId {
+    Memory,
+    Event,
+    Resource,
+    QuickDraw,
+    Menu,
+    Window,
+    Control,
+    Dialog,
+    Sound,
+    Toolbox,
+    Sane,
+    Nonterminal,
+}
+
+impl TrapAdapterId {
+    const fn mask(self) -> u16 {
+        1 << self as u8
+    }
+}
+
+/// Generated canonical operation identity and its allowed dispatch adapters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DefaultTrapRoute {
+    pub(crate) operation_id: u16,
+    adapter_mask: u16,
+}
+
+impl DefaultTrapRoute {
+    const fn new(operation_id: u16, adapter_mask: u16) -> Self {
+        Self {
+            operation_id,
+            adapter_mask,
+        }
+    }
+
+    const fn allows(self, adapter: TrapAdapterId) -> bool {
+        self.adapter_mask & adapter.mask() != 0
+    }
+}
+
+const DEFAULT_TRAP_ROUTES: [DefaultTrapRoute; 1280] = include!("generated_default_routes.rs");
+
+pub(crate) fn default_trap_route(trap_word: u16) -> &'static DefaultTrapRoute {
+    &DEFAULT_TRAP_ROUTES[usize::from(raw_trap_route(trap_word).table_index)]
+}
+
 /// The observable target behind a raw trap-table long.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TrapTableTarget {
@@ -2062,6 +2115,10 @@ pub struct TrapDispatcher {
     /// Full trap word currently being dispatched. Some OS traps share the
     /// low 8-bit trap number and require bit 8 to distinguish variants.
     pub(crate) current_trap_word: u16,
+    /// Generated canonical operation row and the actual first-match adapter
+    /// selected for the current default dispatch.
+    pub(crate) current_trap_operation: u16,
+    pub(crate) current_trap_adapter: TrapAdapterId,
     /// When an auto-pop trap fires (bit 10 set in toolbox trap word),
     /// dispatch.rs pops the JSR return address and stores it here BEFORE
     /// calling the sub-dispatcher. Sub-dispatchers (e.g. SANE handlers) can
@@ -3533,6 +3590,8 @@ impl TrapDispatcher {
             sent_open_app_event: false,
             application_high_level_event_aware: false,
             current_trap_word: 0,
+            current_trap_operation: 0,
+            current_trap_adapter: TrapAdapterId::Nonterminal,
             current_trap_caller: None,
             pending_wait_sleep_ticks: 0,
             pending_wait_next_event_return: None,
@@ -7640,21 +7699,89 @@ impl TrapDispatcher {
             }
         }
 
-        // Track consecutive SANE and TickCount calls.
-        // Chain sub-dispatchers: first match wins
+        // Track consecutive SANE and TickCount calls. The generated registry
+        // names the canonical operation and expected first adapter; recording
+        // the actual first match makes a declared nonterminal row distinct
+        // from registry drift.
         let sp_before = cpu.read_reg(Register::A7);
+        let declared_route = *default_trap_route(effective_trap);
+        let mut selected_adapter = TrapAdapterId::Nonterminal;
         let result = self
             .dispatch_memory(is_tool, trap_num, cpu, bus)
-            .or_else(|| self.dispatch_event(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_resource(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_quickdraw(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_menu(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_window(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_control(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_dialog(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_sound(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_toolbox(is_tool, trap_num, cpu, bus))
-            .or_else(|| self.dispatch_sane(is_tool, trap_num, cpu, bus))
+            .map(|result| {
+                selected_adapter = TrapAdapterId::Memory;
+                result
+            })
+            .or_else(|| {
+                self.dispatch_event(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Event;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_resource(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Resource;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_quickdraw(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::QuickDraw;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_menu(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Menu;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_window(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Window;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_control(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Control;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_dialog(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Dialog;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_sound(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Sound;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_toolbox(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Toolbox;
+                        result
+                    })
+            })
+            .or_else(|| {
+                self.dispatch_sane(is_tool, trap_num, cpu, bus)
+                    .map(|result| {
+                        selected_adapter = TrapAdapterId::Sane;
+                        result
+                    })
+            })
             .unwrap_or_else(|| {
                 eprintln!(
                     "[TRAP] UNIMPLEMENTED ${:04X} (is_tool={}, num=0x{:03X})",
@@ -7662,6 +7789,12 @@ impl TrapDispatcher {
                 );
                 Err(Error::UnimplementedTrap(effective_trap))
             });
+        self.current_trap_operation = declared_route.operation_id;
+        self.current_trap_adapter = selected_adapter;
+        debug_assert!(
+            declared_route.allows(selected_adapter),
+            "generated adapter registry drift for ${effective_trap:04X}: {selected_adapter:?}"
+        );
 
         if result.is_ok() && !is_tool {
             restore_os_trap_dispatch_frame(
@@ -7822,6 +7955,104 @@ mod tests {
                         .trap_table_address(&bus, route.raw.canonical_word)
                         .unwrap(),
                     "variant ${word:04X} must select its canonical slot"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_default_routes_cover_every_canonical_operation_once() {
+        let mut seen = HashSet::new();
+        for table_index in 0..(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS) {
+            let canonical_word = if table_index < OS_TRAP_TABLE_SLOTS {
+                0xA000 | table_index
+            } else {
+                0xA800 | (table_index - OS_TRAP_TABLE_SLOTS)
+            };
+            let route = default_trap_route(canonical_word);
+            assert_eq!(route.operation_id, canonical_word);
+            assert!(seen.insert(route.operation_id));
+            assert_eq!(
+                route,
+                default_trap_route(
+                    canonical_word | if table_index < 0x100 { 0x0700 } else { 0x0400 }
+                )
+            );
+        }
+        assert_eq!(seen.len(), 1280);
+    }
+
+    #[test]
+    fn every_profile_saved_default_reaches_its_declared_adapter() {
+        // A saved Trap Manager pointer remains callable after replacement and
+        // reaches the original system routine. Inside Macintosh: Operating
+        // System Utilities (1994), pp. 8-23--8-30. Isolate every invocation
+        // because arbitrary default operations may legitimately mutate global
+        // manager state even when their poison arguments produce an error.
+        const CALLER_SP: u32 = 0x001F_FF00;
+        const RETURN_PC: u32 = 0x001F_0002;
+        const PATCH: u32 = 0x0028_0000;
+
+        for profile in [TrapTableProfile::M68k68040, TrapTableProfile::PowerPc604] {
+            for table_index in 0..(OS_TRAP_TABLE_SLOTS + TOOLBOX_TRAP_TABLE_SLOTS) {
+                let is_toolbox = table_index >= OS_TRAP_TABLE_SLOTS;
+                let slot = if is_toolbox {
+                    table_index - OS_TRAP_TABLE_SLOTS
+                } else {
+                    table_index
+                };
+                let canonical_word = if is_toolbox {
+                    0xA800 | slot
+                } else {
+                    0xA000 | slot
+                };
+                let invoked_word = canonical_word | if is_toolbox { 0x0400 } else { 0 };
+                let declared = *default_trap_route(canonical_word);
+                let (mut dispatcher, mut cpu, mut bus) = setup();
+                dispatcher.materialize_trap_tables(&mut bus, profile);
+                let saved_default = dispatcher.trap_table_address(&bus, canonical_word).unwrap();
+                dispatcher.install_trap_address(&mut bus, canonical_word, PATCH);
+                assert_eq!(
+                    dispatcher.native_trap_handler(&bus, canonical_word),
+                    Some(PATCH)
+                );
+
+                let entry_sp = CALLER_SP - 4;
+                bus.write_long(entry_sp, RETURN_PC);
+                cpu.write_reg(Register::D0, 0xD0D0_0000);
+                cpu.write_reg(Register::D1, 0xD1D1_0000);
+                cpu.write_reg(Register::D2, 0xD2D2_0000);
+                cpu.write_reg(Register::A0, 0);
+                cpu.write_reg(Register::A1, 0);
+                cpu.write_reg(Register::A2, 0);
+                cpu.write_reg(Register::A7, entry_sp);
+                cpu.write_reg(Register::PC, saved_default + 2);
+
+                let result = dispatcher.dispatch(invoked_word, &mut cpu, &mut bus);
+
+                assert_eq!(
+                    dispatcher.current_trap_operation, canonical_word,
+                    "{profile:?} operation ${canonical_word:04X}"
+                );
+                assert!(
+                    declared.allows(dispatcher.current_trap_adapter),
+                    "{profile:?} adapter ${canonical_word:04X}: {:?}",
+                    dispatcher.current_trap_adapter
+                );
+                if dispatcher.current_trap_adapter == TrapAdapterId::Nonterminal {
+                    assert!(
+                        matches!(result, Err(Error::UnimplementedTrap(word)) if word == invoked_word),
+                        "{profile:?} declared nonterminal ${canonical_word:04X}: {result:?}"
+                    );
+                } else {
+                    assert!(
+                        !matches!(result, Err(Error::UnimplementedTrap(_))),
+                        "{profile:?} declared adapter fell through ${canonical_word:04X}"
+                    );
+                }
+                assert!(
+                    dispatcher.pending_native_trap_calls.is_empty(),
+                    "saved default must bypass current patch ${canonical_word:04X}"
                 );
             }
         }
