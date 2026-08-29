@@ -2561,7 +2561,7 @@ impl super::TrapDispatcher {
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
                 let original_trap_return = self.current_trap_caller;
                 let native_call = (is_loadseg_trampoline && auto_pop_old_trap)
-                    .then(|| self.pending_native_trap_calls.remove(&0xA9F0))
+                    .then(|| self.take_latest_native_trap_call(0xA9F0))
                     .flatten();
 
                 // Detect format: in standard format, [A9F0-4] = 3F3C (MOVE.W).
@@ -12706,19 +12706,24 @@ mod tests {
         disp.native_trap_table.insert(0xA9A0, 0x300000);
 
         let return_pc = 0x12345678;
-        bus.write_long(TEST_SP, return_pc);
-        bus.write_word(TEST_SP + 4, 7);
-        bus.write_long(TEST_SP + 6, u32::from_be_bytes(*b"TEST"));
-        bus.write_long(TEST_SP + 10, 0);
+        bus.write_word(TEST_SP, 7);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(TEST_SP + 6, 0);
         cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, return_pc);
+        disp.dispatch(0xA9A0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), 0x300000);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 4);
+
         cpu.write_reg(Register::PC, 0x0029D256);
 
         call_trap_word(&mut disp, 0xADA0, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         assert_ne!(cpu.read_reg(Register::A0), 0);
-        assert_eq!(bus.read_long(TEST_SP + 10), cpu.read_reg(Register::A0));
+        assert_eq!(bus.read_long(TEST_SP + 6), cpu.read_reg(Register::A0));
+        assert!(!disp.pending_native_trap_calls.contains_key(&0xA9A0));
     }
 
     // ================================================================

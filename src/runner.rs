@@ -3212,7 +3212,9 @@ impl FixtureRunner {
     /// amortizes tick advancement, halt detection, and trace collection across
     /// the instruction budget.
     pub fn step(&mut self) -> StepResult {
-        self.cpu.step(&mut self.bus)
+        let result = self.cpu.step(&mut self.bus);
+        self.dispatcher.retire_returned_native_trap_call(&self.cpu);
+        result
     }
 
     /// Load a parsed Mac resource fork into guest memory: registers
@@ -5537,6 +5539,11 @@ impl FixtureRunner {
             }
             let batch_max = if per_instruction_diagnostics_active() {
                 1
+            } else if self.dispatcher.has_pending_native_trap_call() {
+                // A patched trap handler can return with an ordinary RTS.
+                // Keep execution on exact instruction boundaries until its
+                // synthesized PC/SP continuation is observed and retired.
+                1
             } else {
                 let mut n = (max_steps - count).min(BATCH_CHUNK);
                 if charging && self.active_interrupt_callback.is_none() {
@@ -5558,6 +5565,7 @@ impl FixtureRunner {
                 &watch_buf[..1]
             };
             let batch = self.cpu.run_batch(&mut self.bus, batch_max, watch);
+            self.dispatcher.retire_returned_native_trap_call(&self.cpu);
             // Trap exits consumed their opcode word too; count it like the
             // old per-step path did.
             let executed = batch.instructions as usize
@@ -5683,7 +5691,7 @@ impl FixtureRunner {
                     // 3-line body directly. Counters still update so
                     // logs and the trap histogram reflect real
                     // dispatch count.
-                    if opcode == 0xA975 {
+                    if opcode == 0xA975 && !self.dispatcher.has_native_trap_patch(opcode) {
                         let sp = self.cpu.core.a(7);
                         let tick = self.dispatcher.tick_count;
                         self.bus.write_long(sp, tick);
@@ -5733,7 +5741,7 @@ impl FixtureRunner {
                     // loop entirely. Rewind PC directly and continue.
                     // Counters still update so logs and the trap
                     // histogram reflect real dispatch count.
-                    if opcode == 0xA991 {
+                    if opcode == 0xA991 && !self.dispatcher.has_native_trap_patch(opcode) {
                         // Extracted into `modaldialog_refire_is_noop` so
                         // the gate logic is unit-tested. See its
                         // doc-comment for the full list of conditions.
@@ -5822,7 +5830,7 @@ impl FixtureRunner {
                     // controls. The handler is pure stack/Rect arithmetic, so
                     // inline the exact Pascal ABI and keep accounting aligned
                     // with TrapDispatcher::dispatch.
-                    if opcode == 0xA8AD {
+                    if opcode == 0xA8AD && !self.dispatcher.has_native_trap_patch(opcode) {
                         let sp = self.cpu.core.a(7);
                         let rect_ptr = self.bus.read_long(sp);
                         let pt_v = self.bus.read_word(sp + 4) as i16;
@@ -5866,7 +5874,7 @@ impl FixtureRunner {
                     // Marathon polls this heavily while waiting at terminal
                     // panels. Reuse the dispatcher helpers so event filtering
                     // and EventRecord layout stay centralized.
-                    if opcode == 0xA971 {
+                    if opcode == 0xA971 && !self.dispatcher.has_native_trap_patch(opcode) {
                         let sp = self.cpu.core.a(7);
                         let event_ptr = self.bus.read_long(sp);
                         let event_mask = self.bus.read_word(sp + 4);
@@ -6552,11 +6560,15 @@ impl FixtureRunner {
                 running = self.complete_pending_m68k_guest_call(ppc_app, pending);
                 break;
             }
-            let batch = self.cpu.run_batch(
-                &mut self.bus,
-                u32::try_from(max_steps - executed).unwrap_or(u32::MAX),
-                &[pending.return_pc],
-            );
+            let batch_max = if self.dispatcher.has_pending_native_trap_call() {
+                1
+            } else {
+                u32::try_from(max_steps - executed).unwrap_or(u32::MAX)
+            };
+            let batch = self
+                .cpu
+                .run_batch(&mut self.bus, batch_max, &[pending.return_pc]);
+            self.dispatcher.retire_returned_native_trap_call(&self.cpu);
             let retired = batch.instructions as usize
                 + usize::from(matches!(
                     batch.exit,
@@ -10812,7 +10824,9 @@ impl FixtureRunner {
                 self.trace_buffer.push_back((pc, opcode, a0, sp, a6, a5));
             }
 
-            match self.cpu.step(&mut self.bus) {
+            let step_result = self.cpu.step(&mut self.bus);
+            self.dispatcher.retire_returned_native_trap_call(&self.cpu);
+            match step_result {
                 StepResult::Ok => {}
                 StepResult::Stopped => {
                     if trace_load_enabled() {
@@ -11549,6 +11563,58 @@ mod tests {
         assert_eq!(runner.cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(runner.cpu.read_reg(Register::D0), 0);
         assert_eq!(runner.bus.read_long(output), 0x1234_5678);
+    }
+
+    #[test]
+    fn auto_pop_native_trap_patch_returns_through_the_68k_cpu_and_retires_its_frame() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let caller = 0x0020_0000u32;
+        let glue = 0x0020_0100u32;
+        let handler = 0x0020_0200u32;
+        let sp = 0x007F_FF00u32;
+        runner.bus.write_word(caller, 0x4EB9); // JSR absolute long
+        runner.bus.write_long(caller + 2, glue);
+        runner.bus.write_word(caller + 6, 0x4E71); // NOP after return
+        runner.bus.write_word(glue, 0xAD75); // auto-pop TickCount
+        runner.bus.write_word(handler, 0x4E75); // RTS
+        runner.dispatcher.native_trap_table.insert(0xA975, handler);
+        runner.cpu.write_reg(Register::PC, caller);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let (steps, running) = runner.run_steps(3, None);
+
+        assert_eq!(steps, 3);
+        assert!(running);
+        assert_eq!(runner.cpu.read_reg(Register::PC), caller + 6);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
+    }
+
+    #[test]
+    fn native_trap_patch_bypasses_the_tickcount_runner_inline_path() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let trap = 0x0020_0000u32;
+        let handler = 0x0020_0100u32;
+        let sp = 0x007F_FF00u32;
+        let result_sentinel = 0xCAFE_BABEu32;
+        runner.bus.write_word(trap, 0xA975);
+        runner.bus.write_word(trap + 2, 0x4E71);
+        runner.bus.write_word(handler, 0x4E75);
+        runner.bus.write_long(sp, result_sentinel);
+        runner.dispatcher.native_trap_table.insert(0xA975, handler);
+        let inline_before = runner.dispatcher.inline_skipped[0x175];
+        runner.cpu.write_reg(Register::PC, trap);
+        runner.cpu.write_reg(Register::A7, sp);
+
+        let (steps, running) = runner.run_steps(2, None);
+
+        assert_eq!(steps, 2);
+        assert!(running);
+        assert_eq!(runner.cpu.read_reg(Register::PC), trap + 2);
+        assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+        assert_eq!(runner.bus.read_long(sp), result_sentinel);
+        assert_eq!(runner.dispatcher.inline_skipped[0x175], inline_before);
+        assert!(runner.dispatcher.pending_native_trap_calls.is_empty());
     }
 
     #[test]

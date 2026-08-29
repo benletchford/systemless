@@ -2024,10 +2024,11 @@ pub struct TrapDispatcher {
     /// instead of running HLE code. This allows CRT-installed handlers (LoadSeg,
     /// UnloadSeg, ExitToShell) to run natively with proper code relocation.
     pub(crate) native_trap_table: TrapWordMap,
-    /// Most recent original call for each active native trap handler. Entries
-    /// are replaced by a newer call and consumed when a handler invokes its
-    /// saved old trap address.
-    pub(crate) pending_native_trap_calls: HashMap<u16, NativeTrapCallState>,
+    /// Original calls retained for each active native trap handler. The value
+    /// is a LIFO stack because a patch can re-enter the same A-line trap before
+    /// the outer invocation follows its saved daisy-chain link. Inside
+    /// Macintosh: Operating System Utilities (1994), pp. 8-8 and 8-23--8-24.
+    pub(crate) pending_native_trap_calls: HashMap<u16, Vec<NativeTrapCallState>>,
     /// Re-entrancy guard for the CopyBits `grafProcs.bitsProc` bottleneck:
     /// `(bitsProc address, stack pointer at the tail call)`. A custom bitsProc
     /// normally reaches the real transfer by calling CopyBits again; without
@@ -6286,6 +6287,64 @@ impl TrapDispatcher {
         addr
     }
 
+    fn retain_native_trap_call(&mut self, trap_word: u16, call: NativeTrapCallState) {
+        self.pending_native_trap_calls
+            .entry(trap_word)
+            .or_default()
+            .push(call);
+    }
+
+    pub(crate) fn take_latest_native_trap_call(
+        &mut self,
+        trap_word: u16,
+    ) -> Option<NativeTrapCallState> {
+        let (call, empty) = {
+            let calls = self.pending_native_trap_calls.get_mut(&trap_word)?;
+            let call = calls.pop();
+            (call, calls.is_empty())
+        };
+        if empty {
+            self.pending_native_trap_calls.remove(&trap_word);
+        }
+        call
+    }
+
+    /// Whether guest execution is currently inside any routine installed by
+    /// the Trap Manager. The runner keeps these uncommon calls on exact
+    /// instruction boundaries so an ordinary RTS can retire its continuation.
+    pub(crate) fn has_pending_native_trap_call(&self) -> bool {
+        !self.pending_native_trap_calls.is_empty()
+    }
+
+    /// Whether the canonical OS or Toolbox slot selected by an A-line word
+    /// currently has a guest patch. Runner fast paths must defer to normal
+    /// dispatch whenever this is true.
+    pub(crate) fn has_native_trap_patch(&self, trap_word: u16) -> bool {
+        let canonical = if (trap_word & 0x0800) != 0 {
+            0xA800 | (trap_word & 0x03FF)
+        } else {
+            0xA000 | (trap_word & 0x00FF)
+        };
+        self.native_trap_table.get(&canonical).is_some()
+    }
+
+    /// Retire a native trap invocation that returned directly instead of
+    /// following its saved daisy-chain link. Both the return PC and the
+    /// post-RTS stack pointer must match the frame synthesized at dispatch.
+    pub(crate) fn retire_returned_native_trap_call<C: CpuOps>(&mut self, cpu: &C) {
+        let pc = cpu.read_reg(Register::PC);
+        let sp = cpu.read_reg(Register::A7);
+        self.pending_native_trap_calls.retain(|_, calls| {
+            if calls
+                .last()
+                .is_some_and(|call| call.return_pc == pc && call.argument_sp == sp)
+            {
+                calls.pop();
+            }
+            !calls.is_empty()
+        });
+    }
+
     pub(crate) fn find_named_resource_current(
         &self,
         res_type: [u8; 4],
@@ -6960,14 +7019,39 @@ impl TrapDispatcher {
                 .os_trap_trampolines
                 .get(&base_trap)
                 .is_some_and(|&addr| pc == addr + 2);
-        if !auto_pop && !default_os_gateway_call {
+        // Some native patches embed the saved auto-pop A-line in their own
+        // successor stub instead of calling the cached gateway. It is a daisy
+        // chain handoff only when the removed return PC and post-pop argument
+        // SP exactly match the active invocation. A reentrant auto-pop glue
+        // call has its own return frame and must enter the current patch head.
+        let saved_tool_daisy_chain_call = is_tool
+            && auto_pop
+            && saved_return_addr.is_some_and(|return_pc| {
+                self.pending_native_trap_calls
+                    .get(&base_trap)
+                    .and_then(|calls| calls.last())
+                    .is_some_and(|call| {
+                        call.return_pc == return_pc
+                            && call.argument_sp == cpu.read_reg(Register::A7)
+                    })
+            });
+        let default_tool_gateway_call = is_tool
+            && auto_pop
+            && (self
+                .tool_trap_trampolines
+                .get(&base_trap)
+                .is_some_and(|&addr| pc == addr + 2)
+                || saved_tool_daisy_chain_call);
+        if !default_os_gateway_call && !default_tool_gateway_call {
             if let Some(&handler_addr) = self.native_trap_table.get(&base_trap) {
                 // Simulate JSR to native handler: push return PC, jump to
-                // handler. The CPU core has already advanced PC past the
-                // two-byte A-line opcode before dispatch reaches here.
-                let return_pc = cpu.read_reg(Register::PC);
+                // handler. For an auto-pop trap, the dispatcher's documented
+                // return target is the caller address removed from the glue
+                // frame, not the instruction after the glue's A-line. Inside
+                // Macintosh: Operating System Utilities (1994), p. 8-20.
+                let return_pc = saved_return_addr.unwrap_or_else(|| cpu.read_reg(Register::PC));
                 let sp = cpu.read_reg(Register::A7);
-                self.pending_native_trap_calls.insert(
+                self.retain_native_trap_call(
                     base_trap,
                     NativeTrapCallState {
                         return_pc,
@@ -7062,6 +7146,13 @@ impl TrapDispatcher {
                 bus.write_long(sp.wrapping_sub(4), ret_addr);
                 cpu.write_reg(Register::A7, sp.wrapping_sub(4));
             }
+        }
+        if default_os_gateway_call || default_tool_gateway_call {
+            // Reaching a saved system gateway hands this invocation to the
+            // next routine in the daisy chain. LoadSeg consumes its retained
+            // state earlier because it needs the original jump-table frame;
+            // ordinary traps simply retire it here.
+            self.take_latest_native_trap_call(base_trap);
         }
         if self.current_trap_caller.is_none() && matches!(&result, Err(Error::Halted)) {
             // Direct halt traps have no auto-pop caller to surface, so
@@ -7261,6 +7352,102 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::PC), handler_addr);
         assert_eq!(cpu.read_reg(Register::A7), sp - 4);
         assert_eq!(bus.read_long(sp - 4), trap_pc + 2);
+    }
+
+    #[test]
+    fn native_auto_pop_trap_enters_patch_with_the_glue_callers_return_frame() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let trap_pc = 0x0020_0000u32;
+        let handler_addr = 0x0021_0000u32;
+        let caller_pc = 0x0022_0000u32;
+        let sp = 0x003F_FF00u32;
+        dispatcher.native_trap_table.insert(0xA975, handler_addr);
+        bus.write_long(sp, caller_pc);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher.dispatch(0xAD75, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), handler_addr);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), caller_pc);
+        let calls = dispatcher.pending_native_trap_calls.get(&0xA975).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].return_pc, caller_pc);
+        assert_eq!(calls[0].argument_sp, sp + 4);
+    }
+
+    #[test]
+    fn nested_same_native_trap_calls_retain_lifo_call_state() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let handler_addr = 0x0021_0000u32;
+        let outer_return = 0x0020_0002u32;
+        let inner_return = 0x0021_0102u32;
+        let outer_sp = 0x003F_FF00u32;
+        let inner_sp = 0x003F_FE00u32;
+        dispatcher.native_trap_table.insert(0xA9F0, handler_addr);
+
+        cpu.write_reg(Register::PC, outer_return);
+        cpu.write_reg(Register::A7, outer_sp);
+        dispatcher.dispatch(0xA9F0, &mut cpu, &mut bus).unwrap();
+
+        cpu.write_reg(Register::PC, inner_return);
+        cpu.write_reg(Register::A7, inner_sp);
+        bus.write_long(inner_sp, inner_return);
+        dispatcher.dispatch(0xADF0, &mut cpu, &mut bus).unwrap();
+
+        let calls = dispatcher.pending_native_trap_calls.get(&0xA9F0).unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].return_pc, outer_return);
+        assert_eq!(calls[1].return_pc, inner_return);
+        assert_eq!(calls[1].argument_sp, inner_sp + 4);
+        assert_eq!(
+            dispatcher
+                .take_latest_native_trap_call(0xA9F0)
+                .unwrap()
+                .return_pc,
+            inner_return
+        );
+        assert_eq!(
+            dispatcher
+                .take_latest_native_trap_call(0xA9F0)
+                .unwrap()
+                .return_pc,
+            outer_return
+        );
+        assert!(!dispatcher.pending_native_trap_calls.contains_key(&0xA9F0));
+    }
+
+    #[test]
+    fn saved_tool_trap_gateway_bypasses_a_later_patch() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let gateway = dispatcher.get_or_create_tool_trap_trampoline(&mut bus, 0xA975);
+        let caller_pc = 0x0021_0000u32;
+        let sp = 0x003F_FF00u32;
+        dispatcher.tick_count = 0x1234_5678;
+        dispatcher.native_trap_table.insert(0xA975, 0x0030_0000);
+        bus.write_long(sp, caller_pc);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        cpu.write_reg(Register::A7, sp);
+
+        dispatcher.dispatch(0xAD75, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), 0x0030_0000);
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA975)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        cpu.write_reg(Register::PC, gateway + 2);
+        dispatcher.dispatch(0xAD75, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::PC), caller_pc);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_long(sp + 4), 0x1234_5678);
+        assert!(dispatcher.pending_native_trap_calls.is_empty());
     }
 
     #[test]

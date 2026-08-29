@@ -1092,7 +1092,6 @@ impl super::TrapDispatcher {
                     .values()
                     .chain(self.tool_trap_trampolines.values())
                     .any(|&addr| addr == handler_addr);
-                self.pending_native_trap_calls.remove(&trap_table_key);
                 if is_legacy_fakeptr || is_trampoline {
                     self.native_trap_table.remove(&trap_table_key);
                 } else {
@@ -6738,6 +6737,46 @@ mod tests {
             .expect("SetOSTrapAddress should be handled")
             .expect("SetOSTrapAddress should restore the original");
         assert!(dispatcher.native_trap_table.get(&0xA039).is_none());
+    }
+
+    #[test]
+    fn changing_a_trap_head_does_not_cancel_an_active_native_invocation() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let sp = 0x003F_FF00u32;
+        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        cpu.write_reg(Register::A7, sp);
+        dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA039)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        dispatcher.current_trap_word = 0xA247;
+        cpu.write_reg(Register::D0, 0x39);
+        cpu.write_reg(Register::A0, 0x0031_0000);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should replace the table head");
+
+        assert_eq!(
+            dispatcher.native_trap_table.get(&0xA039),
+            Some(&0x0031_0000)
+        );
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA039)
+                .unwrap()
+                .len(),
+            1,
+            "table mutation must not cancel an executing patch"
+        );
     }
 
     #[test]
