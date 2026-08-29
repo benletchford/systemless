@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.15](https://github.com/benletchford/systemless/compare/v0.23.14...v0.23.15) (2026-08-29)
+
+
+### Bug Fixes
+
+* support UpperText in PowerPC Text Utilities ([#981](https://github.com/benletchford/systemless/issues/981)) ([b5a07c5](https://github.com/benletchford/systemless/commit/b5a07c5de3600a646c74f512111488f20f083abb))
+
 ## [0.23.14](https://github.com/benletchford/systemless/compare/v0.23.13...v0.23.14) (2026-08-29)
 
 
