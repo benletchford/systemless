@@ -1,0 +1,43 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_Pack3:0x0001:stack-word-immediate:16",
+        "SFPutFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_Pack3:0x0002:stack-word-immediate:16",
+        "SFGetFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0003,
+        "selector-operation:_Pack3:0x0003:stack-word-immediate:16",
+        "SFPPutFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0004,
+        "selector-operation:_Pack3:0x0004:stack-word-immediate:16",
+        "SFPGetFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0005,
+        "selector-operation:_Pack3:0x0005:stack-word-immediate:16",
+        "StandardPutFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0006,
+        "selector-operation:_Pack3:0x0006:stack-word-immediate:16",
+        "StandardGetFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0007,
+        "selector-operation:_Pack3:0x0007:stack-word-immediate:16",
+        "CustomPutFile",
+    ),
+    SelectorOperationRoute::new(
+        0x0008,
+        "selector-operation:_Pack3:0x0008:stack-word-immediate:16",
+        "CustomGetFile",
+    ),
+]

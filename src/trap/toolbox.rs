@@ -35,6 +35,8 @@ const PACK9_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack9_operations.rs");
 const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
+const PACK3_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack3_operations.rs");
 const PACK6_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack6_operations.rs");
 const PACK13_OPERATION_ROUTES: &[SelectorOperationRoute] =
@@ -85,6 +87,13 @@ fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static Selec
         return None;
     }
     selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack3_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA9EA {
+        return None;
+    }
+    selector_operation_route(PACK3_OPERATION_ROUTES, u32::from(selector))
 }
 
 fn pack6_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
@@ -12201,45 +12210,15 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack3 ($A9EA) — Standard File Package
-            //
-            // Eight-routine selector dispatcher for the system Open /
-            // Save dialogs. The selector word sits at SP+0; ALL eight
-            // routines are PROCEDUREs (no FUNCTION result slot). Each
-            // writes a Pascal record (SFReply for $0001..$0004,
-            // StandardFileReply for $0005..$0008) into a VAR reply
-            // pointer that the caller pushed by reference.
-            //
-            // Get-file routines normally collapse to the documented "user
-            // canceled" path; headless harnesses can set
-            // SYSTEMLESS_STANDARD_GET_FILE to select a VFS file explicitly.
-            // In GUI mode, put-file routines retain a small Standard File
-            // save dialog until Save or Cancel. Direct/headless put-file
-            // calls accept the caller's default/original filename in the
-            // app's current directory so deterministic probes can continue
-            // through their normal File Manager create/open path.
-            //
-            // Selector encoding is pure low-byte routine number
-            // (high byte $00) per IM:Files 3-45..3-54 explicit
-            // "Selector: $0005" tables — this is NOT the Pack8/SANE
-            // param-size-in-high-byte convention.
-            //
-            // Stack frames assume Str255 args are pushed BY REFERENCE
-            // (4-byte pointer), the modern MPW Toolbox convention
-            // matching AppendMenu / InsertMenuItem / SetWTitle and
-            // the ConstStr255Param C binding type. Pack2 DIZero's
-            // Pascal-by-value 256-byte convention is a separate read
-            // of an isolated routine.
-            //
-            // Inside Macintosh: Files (1992), Chapter 3 "Standard
-            // File Package", pages 3-43..3-61.
-            // Inside Macintosh Volume I (1985), pages I-518..I-527.
-            // Inside Macintosh Volume VI (1991), pages 26-21..26-25
-            // (CustomGetFile / CustomPutFile additions).
-            // Pack3 / Standard File ($A9EA): Per-selector Pascal frames per IM:Files 3-45..3-54: $0001 SFPutFile pop 22 reply@SP+2, $0002 SFGetFile pop 28 reply@SP+2, $0003 SFPPutFile pop 28 reply@SP+8, $0004 SFPGetFile pop 34 reply@SP+8, $0005 StandardPutFile pop 14 reply@SP+2, $0006 StandardGetFile pop 16 reply@SP+2, $0007 CustomPutFile pop 40 reply@SP+28, $0008 CustomGetFile pop 42 reply@SP+28. Get-file selectors write cancel or an explicit selected file; put-file selectors return an accepted reply using the supplied default/original name in headless mode or after GUI Save.
+            // _Pack3 (0xA9EA)
+            // Dispatches Standard File Package operations selected by a word on top of the stack.
+            // Selector ABI: 16-bit word at SP; routine-specific Pascal parameters follow.
+            // Inside Macintosh: Files (1992), 3-45–3-54.
             (true, 0x1EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = pack3_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if let Some(tracking) = self.standard_file_put_tracking.take() {
                     self.service_standard_file_put_tracking(cpu, bus, tracking);
                     return Some(Ok(()));
@@ -12261,7 +12240,7 @@ impl super::TrapDispatcher {
                     //                     origName: Str255;
                     //                     dlgHook: ProcPtr;
                     //                     VAR reply: SFReply);
-                    // IM:Files 3-52 / IM:I I-519..I-522. Reply ptr is
+                    // IM:Files 3-48–3-49 / IM:I I-519–I-522. Reply ptr is
                     // last Pascal arg → at SP+2 above the selector.
                     0x0001 => (20u32, 2u32, Some(14u32), Some(10u32), false, true, None),
                     // PROCEDURE SFGetFile(where: Point; prompt: Str255;
@@ -12270,18 +12249,19 @@ impl super::TrapDispatcher {
                     //                     typeList: SFTypeList;
                     //                     dlgHook: ProcPtr;
                     //                     VAR reply: SFReply);
-                    // IM:Files 3-52..3-53 / IM:I I-523..I-526.
+                    // IM:Files 3-52–3-53 / IM:I I-523–I-526.
                     0x0002 => (26u32, 2u32, None, None, false, false, Some((14u32, 10u32))),
                     // PROCEDURE SFPPutFile(...; VAR reply: SFReply;
                     //                       dlgID: Integer;
                     //                       filterProc: ProcPtr);
-                    // IM:I I-522..I-523. filterProc(4) + dlgID(2) sit
-                    // ABOVE reply ptr on the stack → reply at SP+8.
+                    // IM:Files 3-49–3-50 / IM:I I-522–I-523.
+                    // filterProc(4) + dlgID(2) sit above the reply pointer
+                    // on the stack, so the reply is at SP+8.
                     0x0003 => (26u32, 8u32, Some(20u32), Some(16u32), false, true, None),
                     // PROCEDURE SFPGetFile(...; VAR reply: SFReply;
                     //                       dlgID: Integer;
                     //                       filterProc: ProcPtr);
-                    // IM:I I-526..I-527.
+                    // IM:Files 3-53–3-54 / IM:I I-526–I-527.
                     0x0004 => (32u32, 8u32, None, None, false, false, Some((20u32, 16u32))),
                     // PROCEDURE StandardPutFile(prompt: Str255;
                     //                           defaultName: Str255;
@@ -12328,7 +12308,7 @@ impl super::TrapDispatcher {
                     0x0008 => (40u32, 28u32, None, None, true, false, Some((36u32, 32u32))),
                     _ => {
                         // No other selectors documented in IM:Files
-                        // 3-45..3-54 or IM:I I-518..I-527. Pop just
+                        // 3-45–3-54 or IM:I I-518–I-527. Pop just
                         // the selector word defensively so a future
                         // System addition doesn't corrupt the caller
                         // stack.
@@ -27818,6 +27798,116 @@ mod tests {
         assert_eq!(bus.read_byte(actual_reply_ptr), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 42);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn pack3_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK3_OPERATION_ROUTES.len(), 8);
+        assert!(super::PACK3_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0001, "SFPutFile"),
+            (0x0002, "SFGetFile"),
+            (0x0003, "SFPPutFile"),
+            (0x0004, "SFPGetFile"),
+            (0x0005, "StandardPutFile"),
+            (0x0006, "StandardGetFile"),
+            (0x0007, "CustomPutFile"),
+            (0x0008, "CustomGetFile"),
+        ] {
+            let route =
+                super::pack3_operation_route(0xA9EA, selector).expect("Pack3 operation route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack3:0x{selector:04X}:stack-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA8EA, 0x0001),
+            (0xADEA, 0x0001), // same slot with a different raw trap form
+            (0xA9EB, 0x0001),
+            (0xA9E5, 0x0001), // InitPack is a distinct trap
+            (0xA9EA, 0x0000), // unassigned selector
+            (0xA9EA, 0x0009), // unassigned selector
+            (0xA9EA, 0x0010), // out-of-range selector
+            (0xA9EA, 0x000F), // odd adjacent value
+            (0xA9EA, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA9EA, 0x0100), // byte-swapped SFPutFile selector
+            (0xA9EA, 0x0600), // byte-swapped StandardGetFile selector
+        ] {
+            assert!(super::pack3_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack3_records_stack_word_identity_without_changing_standard_get_file_behavior() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for trap_word in [0xA9EA, 0xADEA] {
+            disp.current_trap_word = trap_word;
+            let reply_ptr = 0x320000u32;
+            bus.write_byte(reply_ptr, 0xFF);
+            bus.write_byte(reply_ptr + 1, 0xAB);
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::A0, 0x1234_0000);
+            cpu.write_reg(Register::A1, 0x1234_0001);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            cpu.write_reg(Register::D1, 0x1234_0002);
+            bus.write_word(sp, 0x0006); // StandardGetFile selector
+            bus.write_long(sp + 2, reply_ptr); // VAR reply
+            bus.write_long(sp + 16, 0xCAFE_BABE); // adjacent stack poison
+
+            let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+            assert!(result.expect("Pack3 arm").is_ok());
+            assert_eq!(bus.read_byte(reply_ptr), 0);
+            assert_eq!(bus.read_byte(reply_ptr + 1), 0xAB);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::A0), 0x1234_0000);
+            assert_eq!(cpu.read_reg(Register::A1), 0x1234_0001);
+            assert_eq!(cpu.read_reg(Register::D1), 0x1234_0002);
+            assert_eq!(bus.read_long(sp + 16), 0xCAFE_BABE);
+
+            let expected = (trap_word == 0xA9EA)
+                .then_some("selector-operation:_Pack3:0x0006:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+    }
+
+    #[test]
+    fn pack3_unknown_selector_clears_known_identity_without_touching_its_frame() {
+        let _env = clear_standard_file_env();
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9EA;
+
+        let reply_ptr = 0x320000u32;
+        bus.write_byte(reply_ptr, 0xFF);
+        bus.write_word(sp, 0x0006); // StandardGetFile
+        bus.write_long(sp + 2, reply_ptr);
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.expect("Pack3 StandardGetFile arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack3:0x0006:stack-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        bus.write_word(sp, 0x0009); // unassigned selector
+        bus.write_bytes(sp + 2, &[0xA5; 16]);
+        let result = disp.dispatch_toolbox(true, 0x1EA, &mut cpu, &mut bus);
+        assert!(result.expect("Pack3 unknown-selector fallback").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(sp + 2, 16), vec![0xA5; 16]);
     }
 
     #[test]
