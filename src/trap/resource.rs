@@ -4333,6 +4333,8 @@ impl super::TrapDispatcher {
                 let volume_index = bus.read_word(pb + 28) as i16;
                 let requested_vref = bus.read_word(pb + 22) as i16;
                 let requested_name = Self::read_pb_filename(bus, bus.read_long(pb + 18));
+                let relative_pathname = requested_name.starts_with(':');
+                let absolute_pathname = !relative_pathname && requested_name.contains(':');
                 if super::dispatch::trace_resfile_enabled() {
                     eprintln!(
                         "[TRAP] PBHGetVInfo index={} vref={} name={:?}",
@@ -4382,6 +4384,8 @@ impl super::TrapDispatcher {
                     // boot volume; callers use nsvErr to detect a bad volume.
                     if requested_vref != 0 {
                         volume_by_ref(requested_vref)
+                    } else if relative_pathname {
+                        volume_by_ref(self.app_wd_refnum)
                     } else if !requested_name.is_empty() {
                         volume_by_name(&requested_name)
                     } else {
@@ -4406,10 +4410,12 @@ impl super::TrapDispatcher {
                     // volume by ioNamePtr and ioVRefNum in the standard way.
                     // A full pathname's volume name takes precedence; otherwise
                     // a nonzero volume or working-directory reference is used.
-                    if requested_name.contains(':') {
+                    if absolute_pathname {
                         volume_by_name(&requested_name)
                     } else if requested_vref != 0 {
                         volume_by_ref(requested_vref)
+                    } else if relative_pathname {
+                        volume_by_ref(self.app_wd_refnum)
                     } else if !requested_name.is_empty() {
                         volume_by_name(&requested_name)
                     } else {
@@ -15508,6 +15514,30 @@ mod tests {
         cpu.write_reg(Register::A0, pb);
         bus.write_long(pb + 18, name_buf);
         bus.write_pstring(name_buf, b"MacintoshHD:Games:Demo");
+        bus.write_word(pb + 22, 0);
+        bus.write_word(pb + 28, (-1i16) as u16);
+
+        call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0, "ioResult");
+        assert_eq!(
+            bus.read_word(pb + 22),
+            super::super::dispatch::BOOT_VOLUME_REF_NUM as u16,
+            "ioVRefNum"
+        );
+        assert_eq!(bus.read_pstring(name_buf), b"MacintoshHD");
+    }
+
+    #[test]
+    fn pb_hget_vinfo_keeps_relative_paths_on_the_default_volume() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        let pb = 0x300000u32;
+        let name_buf = 0x300100u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 18, name_buf);
+        bus.write_pstring(name_buf, b":data:title.phd");
         bus.write_word(pb + 22, 0);
         bus.write_word(pb + 28, (-1i16) as u16);
 
