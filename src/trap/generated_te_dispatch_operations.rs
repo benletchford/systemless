@@ -1,0 +1,28 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_TEDispatch:0x0001:stack-word-immediate:16",
+        "TESetStyle",
+    ),
+    SelectorOperationRoute::new(
+        0x0008,
+        "selector-operation:_TEDispatch:0x0008:stack-word-immediate:16",
+        "TEGetPoint",
+    ),
+    SelectorOperationRoute::new(
+        0x000A,
+        "selector-operation:_TEDispatch:0x000A:stack-word-immediate:16",
+        "TEContinuousStyle",
+    ),
+    SelectorOperationRoute::new(
+        0x000C,
+        "selector-operation:_TEDispatch:0x000C:stack-word-immediate:16",
+        "TECustomHook",
+    ),
+    SelectorOperationRoute::new(
+        0x000E,
+        "selector-operation:_TEDispatch:0x000E:stack-word-immediate:16",
+        "TEFeatureFlag",
+    ),
+]
