@@ -1,0 +1,33 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_TranslationDispatch:0x0001:d0-moveq-immediate:8",
+        "UpdateTranslationProgress",
+    ),
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_TranslationDispatch:0x0002:d0-moveq-immediate:8",
+        "SetTranslationAdvertisement",
+    ),
+    SelectorOperationRoute::new(
+        0x0009,
+        "selector-operation:_TranslationDispatch:0x0009:d0-moveq-immediate:8",
+        "ExtendFileTypeList",
+    ),
+    SelectorOperationRoute::new(
+        0x000C,
+        "selector-operation:_TranslationDispatch:0x000C:d0-moveq-immediate:8",
+        "TranslateFile",
+    ),
+    SelectorOperationRoute::new(
+        0x001C,
+        "selector-operation:_TranslationDispatch:0x001C:d0-moveq-immediate:8",
+        "GetFileTypesThatAppCanNativelyOpen",
+    ),
+    SelectorOperationRoute::new(
+        0x001E,
+        "selector-operation:_TranslationDispatch:0x001E:d0-moveq-immediate:8",
+        "CanDocBeOpened",
+    ),
+]
