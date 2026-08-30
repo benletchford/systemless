@@ -284,6 +284,7 @@ name.
 | `SYSTEMLESS_TRACE_LOAD` | Logs archive, VFS, resource, and startup loading diagnostics. |
 | `SYSTEMLESS_TRACE_LOADSEG` | Logs Segment Loader jump-table patching. |
 | `SYSTEMLESS_TRACE_TRAP_COUNTS` | Prints trap dispatch frequency summaries. |
+| `SYSTEMLESS_SOFTWARE_CURSOR` | Restores the composited guest cursor overlay instead of the hardware pointer (macOS). |
 
 ## References & Documentation Conventions
 
