@@ -26,6 +26,8 @@ const RESOURCE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_resource_dispatch_operations.rs");
 const HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_high_level_fs_dispatch_operations.rs");
+const OS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_os_dispatch_operations.rs");
 
 fn resource_dispatch_operation_route(
     trap_word: u16,
@@ -45,6 +47,16 @@ fn high_level_fs_dispatch_operation_route(
         return None;
     }
     selector_operation_route(HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn os_dispatch_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA88F {
+        return None;
+    }
+    selector_operation_route(OS_DISPATCH_OPERATION_ROUTES, u32::from(selector))
 }
 
 const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
@@ -6011,48 +6023,15 @@ impl super::TrapDispatcher {
             }
 
             // OSDispatch (0xA88F)
-            // Dispatches Temporary Memory and Process Manager selectors.
+            // Dispatches Temporary Memory, High-Level Event, and Process Manager routines selected by a stack word.
             // FUNCTION TempMaxMem(VAR grow: Size): Size;
-            // FUNCTION TempTopMem: Ptr;
-            // FUNCTION TempFreeMem: LongInt;
-            // FUNCTION TempNewHandle(logicalSize: Size; VAR resultCode: OSErr): Handle;
-            // PROCEDURE TempHLock(h: Handle; VAR resultCode: OSErr);
-            // PROCEDURE TempHUnlock(h: Handle; VAR resultCode: OSErr);
-            // PROCEDURE TempDisposeHandle(h: Handle; VAR resultCode: OSErr);
-            // Inside Macintosh Volume VI, 28-38 and 28-45.
-            // FUNCTION AcceptHighLevelEvent(VAR sender: TargetID; VAR msgRefcon:
-            //   LongInt; msgBuff: Ptr; VAR msgLen: LongInt): OSErr;
-            // FUNCTION PostHighLevelEvent(theEvent: EventRecord; receiverID: Ptr;
-            //   msgRefcon: LongInt; msgBuff: Ptr; msgLen: LongInt;
-            //   postingOptions: LongInt): OSErr;
-            // FUNCTION GetProcessSerialNumberFromPortName(portName: PPCPortRec;
-            //   VAR PSN: ProcessSerialNumber): OSErr;
-            // Inside Macintosh Volume VI, 5-29..5-32.
-            // FUNCTION LaunchDeskAccessory(pFileSpec: FSSpecPtr;
-            //   pDAName: StringPtr): OSErr;
-            // Inside Macintosh Volume VI, 29-22..29-23.
-            // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
-            // Processes 1994, 2-21 to 2-24.
-            //
-            // MPW emits each ProcessMgr selector as
-            //   MOVE.W #<sel>, -(SP)     ; push selector word on stack
-            //   _OSDispatch
-            // So selector is the TOP-OF-STACK word at trap entry. A few
-            // pre-existing direct-asm callers instead pre-load D0 before
-            // the trap -- if the top-of-stack word isn't a recognised
-            // selector, fall back to D0 for compatibility.
-            // MPW Universal Interfaces 3.4 MacMemory.a emits the 68k
-            // temporary-memory macros as `move.w #selector,-(sp); _OSDispatch`.
-            // OSDispatch ($A88F): selectors $0015 TempMaxMem, $0016
-            // TempTopMem, $0018 TempFreeMem, $001D TempNewHandle,
-            // $001E TempHLock, $001F TempHUnlock, and $0020
-            // TempDisposeHandle (IM VI Temporary Memory table);
-            // selectors $0033..$0036 are high-level event / desk accessory
-            // routines (IM VI pp. 5-29..5-32 and 29-23); selectors
-            // $0037..$003D are Process Manager routines (Processes 1994 p. 2-31).
+            // Inside Macintosh: Memory (1992), pp. 2-79 to 2-80 and 2-104.
             (true, 0x08F) => {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
+                let operation =
+                    os_dispatch_operation_route(self.current_trap_word, stack_sel as u16);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp, selector_from_stack) = match stack_sel {
                     0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D | 0x0045 => {
@@ -18003,6 +17982,85 @@ mod tests {
     // OSDispatch ($A88F) selector contracts.
     // Temporary Memory: Inside Macintosh Volume VI, 28-38 and 28-45.
     // Process Manager: Processes (1994), pp. 2-21 to 2-28 and p. 2-31.
+    #[test]
+    fn os_dispatch_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::OS_DISPATCH_OPERATION_ROUTES.len(), 19);
+        assert!(super::OS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0015, "TempMaxMem"),
+            (0x0016, "TempTopMem"),
+            (0x0018, "TempFreeMem"),
+            (0x001D, "TempNewHandle"),
+            (0x001E, "TempHLock"),
+            (0x001F, "TempHUnlock"),
+            (0x0020, "TempDisposeHandle"),
+            (0x0033, "AcceptHighLevelEvent"),
+            (0x0034, "PostHighLevelEvent"),
+            (0x0035, "GetProcessSerialNumberFromPortName"),
+            (0x0036, "LaunchDeskAccessory"),
+            (0x0038, "GetNextProcess"),
+            (0x0039, "GetFrontProcess"),
+            (0x003A, "GetProcessInformation"),
+            (0x003B, "SetFrontProcess"),
+            (0x003C, "WakeUpProcess"),
+            (0x003D, "SameProcess"),
+            (0x0045, "GetSpecificHighLevelEvent"),
+            (0x0046, "GetPortNameFromProcessSerialNumber"),
+        ] {
+            let route = super::os_dispatch_operation_route(0xA88F, selector)
+                .expect("OSDispatch operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA98F, 0x0015),
+            (0xA88E, 0x0046),
+            (0xA88F, 0x0037), // non-intersection GetCurrentProcess compatibility path
+            (0xA88F, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA88F, 0x1500), // byte-swapped TempMaxMem selector
+            (0xA88F, 0x0001), // partial selector byte
+        ] {
+            assert!(super::os_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn os_dispatch_records_stack_word_identity_without_changing_temp_free_mem_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for trap_word in [0xA88F, 0xA98F] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0015); // conflicting D0 fallback selector
+            bus.write_word(TEST_SP, 0x0018); // TempFreeMem
+            bus.write_long(TEST_SP + 2, 0xDEAD_BEEF);
+
+            let result = disp
+                .dispatch_resource(true, 0x08F, &mut cpu, &mut bus)
+                .expect("OSDispatch arm");
+            assert!(result.is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+            assert_eq!(bus.read_long(TEST_SP + 2), cpu.read_reg(Register::D0));
+
+            let expected = (trap_word == 0xA88F)
+                .then_some("selector-operation:_OSDispatch:0x0018:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+
+        disp.current_trap_word = 0xA88F;
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0018);
+        bus.write_word(TEST_SP, 0xBEEF); // compatibility fallback is not source identity
+        let result = disp
+            .dispatch_resource(true, 0x08F, &mut cpu, &mut bus)
+            .expect("OSDispatch arm");
+        assert!(result.is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
     #[test]
     fn osdispatch_tempfreemem_selector_0018_uses_stack_selector_and_returns_free_bytes() {
         let (mut disp, mut cpu, mut bus) = setup();
