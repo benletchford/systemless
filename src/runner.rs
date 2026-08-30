@@ -1898,11 +1898,9 @@ impl FixtureRunner {
             matches!(config.screen_depth, 1 | 2 | 4 | 8),
             "screen_depth must be 1, 2, 4, or 8"
         );
-        let process_context = ProcessContext::default();
+        let mut process_context = ProcessContext::default();
         let mut dispatcher = TrapDispatcher::new();
-        // SAFETY: FixtureRunner owns the context and every attached adapter,
-        // and serializes their access through its mutable borrow.
-        unsafe { dispatcher.attach_process_context(&process_context) };
+        dispatcher.attach_process_context(&mut process_context);
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
@@ -2603,7 +2601,16 @@ impl FixtureRunner {
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
         self.sync_ppc_deferred_host_state();
-        self.dispatcher.redraw_chrome(&mut self.bus);
+        self.redraw_chrome();
+    }
+
+    fn redraw_chrome(&mut self) {
+        let (event_queue, menu_tracking) =
+            self.process_context.event_queue_and_menu_tracking_mut();
+        self.dispatcher
+            .with_process_state(event_queue, menu_tracking, |dispatcher| {
+                dispatcher.redraw_chrome(&mut self.bus);
+            });
     }
 
     /// Enable or disable arrow-key-to-numpad remapping.
@@ -2723,10 +2730,9 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_down(&mut self, v: i16, h: i16) {
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |d| {
-                d.push_mouse_down(v, h);
-            });
+            .with_process_state(event_queue, menu_tracking, |d| d.push_mouse_down(v, h));
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2766,10 +2772,9 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_up(&mut self, v: i16, h: i16) {
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |d| {
-                d.push_mouse_up(v, h);
-            });
+            .with_process_state(event_queue, menu_tracking, |d| d.push_mouse_up(v, h));
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2817,8 +2822,9 @@ impl FixtureRunner {
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+            .with_process_state(event_queue, menu_tracking, |d| {
                 d.push_key_down(key, char_code);
             });
         self.sync_key_map_lowmem();
@@ -2832,8 +2838,9 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+            .with_process_state(event_queue, menu_tracking, |d| {
                 d.push_key_up_with_system_event_mask(sys_evt_mask, key, char_code);
             });
         self.sync_key_map_lowmem();
@@ -2939,7 +2946,7 @@ impl FixtureRunner {
 
     pub fn is_ui_tracking_active(&self) -> bool {
         self.frozen_ticks.is_some()
-            || self.dispatcher.is_menu_tracking()
+            || self.process_context.menu_tracking().is_some()
             || self.dispatcher.is_dialog_tracking()
             || self.dispatcher.is_control_tracking()
             || self.dispatcher.is_window_tracking()
@@ -3950,9 +3957,7 @@ impl FixtureRunner {
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
         self.share_ppc_runtime_globals(&mut ppc_app);
-        // SAFETY: FixtureRunner owns the context and every attached adapter,
-        // and serializes their access through its mutable borrow.
-        unsafe { ppc_app.attach_process_context(&self.process_context) };
+        ppc_app.attach_process_context(&mut self.process_context);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }
@@ -4156,7 +4161,7 @@ impl FixtureRunner {
         // On a real Mac the Window Manager maintains these as
         // separate layers; here they are raw framebuffer pixels
         // that game drawing (explosions, etc.) can overwrite.
-        self.dispatcher.redraw_chrome(&mut self.bus);
+        self.redraw_chrome();
         self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
     }
 
@@ -5156,7 +5161,7 @@ impl FixtureRunner {
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
                 if self.halted_by_exit_to_shell() {
-                    self.dispatcher.redraw_chrome(&mut self.bus);
+                    self.redraw_chrome();
                 } else {
                     self.finish_host_frame(audio_samples, false);
                 }
@@ -5685,8 +5690,11 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let dispatch_result = self.dispatcher.with_event_queue(
-                        self.process_context.event_queue_mut(),
+                    let (event_queue, menu_tracking) =
+                        self.process_context.event_queue_and_menu_tracking_mut();
+                    let dispatch_result = self.dispatcher.with_process_state(
+                        event_queue,
+                        menu_tracking,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -5729,7 +5737,11 @@ impl FixtureRunner {
                             // they can never diverge. Strips auto-pop
                             // bit so `$AD3D` / `$AC0B` / `$AD91`
                             // match too.
-                            let is_tracking_refire = self.dispatcher.is_tracking_refire(opcode);
+                            let is_tracking_refire =
+                                self.dispatcher.is_tracking_refire_with_menu_tracking(
+                                    opcode,
+                                    self.process_context.menu_tracking().is_some(),
+                                );
                             if is_tracking_refire {
                                 // An asynchronous callback may have been
                                 // injected while this tracking trap was
@@ -5748,7 +5760,12 @@ impl FixtureRunner {
                                 if self.dispatcher.is_control_action_callback_pending() {
                                     continue;
                                 }
-                                if self.dispatcher.is_menu_definition_callback_pending() {
+                                if self
+                                    .dispatcher
+                                    .is_menu_definition_callback_pending_with_tracking(
+                                        self.process_context.menu_tracking(),
+                                    )
+                                {
                                     continue;
                                 }
                                 // In GUI mode, freeze ticks so the game clock doesn't
@@ -6026,7 +6043,8 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
+        let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
             match (trace_ppc_imports, trace_ppc_fetches) {
                 (true, true) => {
                     app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
@@ -6074,7 +6092,9 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            let probes = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+            let (event_queue, menu_tracking) =
+                self.process_context.event_queue_and_menu_tracking_mut();
+            let probes = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
                 Self::fire_ppc_tick_callbacks(
                     app,
                     ppc_start_tick,
@@ -6278,7 +6298,7 @@ impl FixtureRunner {
         self.ppc_app = Some(ppc_app);
         if exited_via_ppc_exit_to_shell {
             if finish_frame {
-                self.dispatcher.redraw_chrome(&mut self.bus);
+                self.redraw_chrome();
             }
         } else {
             self.queue_due_ppc_sound_completions();
@@ -6389,8 +6409,11 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let dispatch_err = self.dispatcher.with_event_queue(
-                        self.process_context.event_queue_mut(),
+                    let (event_queue, menu_tracking) =
+                        self.process_context.event_queue_and_menu_tracking_mut();
+                    let dispatch_err = self.dispatcher.with_process_state(
+                        event_queue,
+                        menu_tracking,
                         |dispatcher| {
                             dispatcher
                                 .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -7821,7 +7844,9 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+            let (event_queue, menu_tracking) =
+                self.process_context.event_queue_and_menu_tracking_mut();
+            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
                 app.run_sound_doubleback_callback(
                     doubleback,
                     PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
@@ -7927,7 +7952,9 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+            let (event_queue, menu_tracking) =
+                self.process_context.event_queue_and_menu_tracking_mut();
+            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
                 app.run_sound_completion_callback(
                     completion,
                     PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
@@ -8760,8 +8787,9 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+            .with_process_state(event_queue, menu_tracking, |d| {
                 d.post_auto_key_if_due(sys_evt_mask);
             });
 
@@ -8778,10 +8806,12 @@ impl FixtureRunner {
         // to 0x80 even when no GetNextEvent ever drains the queue —
         // critical for polling-only games (Bonkheads-Deluxe class titles)
         // that would otherwise see the button as "held forever".
-        let has_pending_unmatched_down = self.dispatcher.with_event_queue(
-            self.process_context.event_queue_mut(),
-            |d| d.has_unmatched_queued_mouse_down(),
-        );
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
+        let has_pending_unmatched_down =
+            self.dispatcher
+                .with_process_state(event_queue, menu_tracking, |d| {
+                    d.has_unmatched_queued_mouse_down()
+                });
         let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
@@ -8845,9 +8875,10 @@ impl FixtureRunner {
             }
         }
 
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) = self
             .dispatcher
-            .with_event_queue(self.process_context.event_queue_mut(), |dispatcher| {
+            .with_process_state(event_queue, menu_tracking, |dispatcher| {
                 dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
             });
         if !has_event {
@@ -10137,7 +10168,7 @@ impl FixtureRunner {
         if self.active_interrupt_callback.is_some() || (opcode & !0x0400) != 0xA93D {
             return false;
         }
-        if self.dispatcher.menu_tracking.is_none() || self.bus.read_byte(0x0172) != 0x00 {
+        if self.process_context.menu_tracking().is_none() || self.bus.read_byte(0x0172) != 0x00 {
             return false;
         }
 
@@ -10667,8 +10698,11 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let dispatch_result = self.dispatcher.with_event_queue(
-                        self.process_context.event_queue_mut(),
+                    let (event_queue, menu_tracking) =
+                        self.process_context.event_queue_and_menu_tracking_mut();
+                    let dispatch_result = self.dispatcher.with_process_state(
+                        event_queue,
+                        menu_tracking,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -13887,9 +13921,8 @@ mod tests {
                     "native MenuSelect halted before opening the root menu"
                 );
                 runner
-                    .dispatcher
-                    .menu_tracking
-                    .as_ref()
+                    .process_context
+                    .menu_tracking()
                     .filter(|tracking| tracking.menu_handle == root_menu)
                     .map(|tracking| tracking.dropdown_rect())
             })
@@ -13919,9 +13952,8 @@ mod tests {
             "the real 68k MDEF callback did not return"
         );
         let tracking = runner
-            .dispatcher
-            .menu_tracking
-            .as_ref()
+            .process_context
+            .menu_tracking()
             .expect("native interaction should remain retained");
         assert_eq!(tracking.menu_handle, root_menu);
         assert_eq!(
@@ -13957,9 +13989,8 @@ mod tests {
             assert!(running, "native MenuSelect halted before the mouse release");
             runner.bus.read_long(addr::MENU_DISABLE) == raw_choice
                 && runner
-                    .dispatcher
-                    .menu_tracking
-                    .as_ref()
+                    .process_context
+                    .menu_tracking()
                     .is_some_and(|tracking| {
                         tracking.menu_handle == root_menu && tracking.highlighted_item == 0
                     })
@@ -13977,7 +14008,7 @@ mod tests {
             }
         }
         assert!(runner.is_halted());
-        assert!(runner.dispatcher.menu_tracking.is_none());
+        assert!(runner.process_context.menu_tracking().is_none());
         assert!(runner.dispatcher.guest_calls.is_empty());
 
         let native = runner.ppc_app.as_mut().expect("native app retained");

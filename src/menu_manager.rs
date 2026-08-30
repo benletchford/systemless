@@ -3,8 +3,7 @@
 use crate::mac_roman::decode_mac_roman;
 use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
 use crate::quickdraw::text::{get_glyph, QuickDrawTextStyle};
-use std::cell::{RefCell, UnsafeCell};
-use std::ops::{Deref, DerefMut};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Largest entry count representable by a menu-list partition byte length.
@@ -743,103 +742,6 @@ pub(crate) fn test_process_menu_tracking(menu_handle: u32) -> ProcessMenuTrackin
         saved_pixels: Vec::new(),
         item_appearances: Vec::new(),
         submenus: Vec::new(),
-    }
-}
-
-/// One process-scoped retained Menu Manager owner.
-///
-/// `MenuSelect` manages the complete mouse-down-through-release interaction,
-/// including hierarchical menus, while the menu list stores MenuHandles to
-/// the live MenuRecords. Macintosh Toolbox Essentials (1992), pp. 3-95--3-97
-/// and 3-114--3-119. Both CPU gateways therefore attach to this same retained
-/// continuation instead of owning parallel interaction state.
-#[derive(Debug, Default)]
-pub(crate) struct SharedMenuTracking(Rc<UnsafeCell<Option<ProcessMenuTrackingState>>>);
-
-impl Clone for SharedMenuTracking {
-    fn clone(&self) -> Self {
-        // A cloned runtime is a snapshot, not another live CPU adapter.
-        Self(Rc::new(UnsafeCell::new(self.state().clone())))
-    }
-}
-
-impl PartialEq for SharedMenuTracking {
-    fn eq(&self, other: &Self) -> bool {
-        self.state() == other.state()
-    }
-}
-
-impl Eq for SharedMenuTracking {}
-
-impl PartialEq<Option<ProcessMenuTrackingState>> for SharedMenuTracking {
-    fn eq(&self, other: &Option<ProcessMenuTrackingState>) -> bool {
-        self.state() == other
-    }
-}
-
-impl SharedMenuTracking {
-    fn state(&self) -> &Option<ProcessMenuTrackingState> {
-        // SAFETY: shared handles can only be created under the serialized
-        // ownership contract documented by `shared_handle`.
-        unsafe { &*self.0.get() }
-    }
-
-    fn state_mut(&mut self) -> &mut Option<ProcessMenuTrackingState> {
-        // SAFETY: shared handles can only be created under the serialized
-        // ownership contract documented by `shared_handle`.
-        unsafe { &mut *self.0.get() }
-    }
-
-    /// Attach another CPU adapter without copying the retained continuation.
-    ///
-    /// # Safety
-    ///
-    /// Every handle sharing this allocation must remain under one owner that
-    /// serializes access. No continuation reference may remain live while
-    /// another handle reads or mutates the allocation.
-    pub(crate) unsafe fn shared_handle(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-
-    /// Attach adapter-local tracking to the process continuation.
-    ///
-    /// # Safety
-    ///
-    /// The process owner must serialize all access to every attached handle.
-    pub(crate) unsafe fn attach_to(&mut self, process_tracking: &Self) {
-        if Rc::ptr_eq(&self.0, &process_tracking.0) {
-            return;
-        }
-        assert!(
-            self.is_none() || process_tracking.is_none(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        let pending = self.take();
-        // SAFETY: ProcessContext is owned by FixtureRunner, which serializes
-        // access to every attached CPU adapter through its mutable borrow.
-        self.0 = unsafe { process_tracking.shared_handle() }.0;
-        if self.is_none() {
-            **self = pending;
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> Option<ProcessMenuTrackingState> {
-        self.state().clone()
-    }
-}
-
-impl Deref for SharedMenuTracking {
-    type Target = Option<ProcessMenuTrackingState>;
-
-    fn deref(&self) -> &Self::Target {
-        self.state()
-    }
-}
-
-impl DerefMut for SharedMenuTracking {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.state_mut()
     }
 }
 
@@ -3649,9 +3551,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloned_menu_tracking_owner_is_a_detached_runtime_snapshot() {
-        let mut live = SharedMenuTracking::default();
-        *live = Some(test_process_menu_tracking(0x0012_3456));
+    fn cloned_menu_tracking_state_is_a_detached_runtime_snapshot() {
+        let live = Some(test_process_menu_tracking(0x0012_3456));
 
         let mut snapshot = live.clone();
         snapshot.as_mut().unwrap().highlighted_item = 4;
@@ -4477,7 +4378,7 @@ mod tests {
             standard_menu_icon_kind(7, 0x1D, Some((24, 20))),
             StandardMenuIconKind::Color {
                 width: 24,
-                height: 20,
+                height: 20
             },
             "a valid cicn takes priority over monochrome selectors"
         );
@@ -4503,7 +4404,7 @@ mod tests {
         assert_eq!(
             StandardMenuIconKind::Color {
                 width: 12,
-                height: 24,
+                height: 24
             }
             .width(),
             16
@@ -4519,7 +4420,7 @@ mod tests {
         assert_eq!(
             StandardMenuIconKind::Color {
                 width: 16,
-                height: 24,
+                height: 24
             }
             .row_height(QuickDrawTextStyle::plain()),
             24
