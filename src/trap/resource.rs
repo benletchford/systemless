@@ -26,6 +26,8 @@ const RESOURCE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_resource_dispatch_operations.rs");
 const HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_high_level_fs_dispatch_operations.rs");
+const HFS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_hfs_dispatch_operations.rs");
 const OS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_os_dispatch_operations.rs");
 
@@ -47,6 +49,16 @@ fn high_level_fs_dispatch_operation_route(
         return None;
     }
     selector_operation_route(HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn hfs_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA260 {
+        return None;
+    }
+    selector_operation_route(HFS_DISPATCH_OPERATION_ROUTES, selector)
 }
 
 fn os_dispatch_operation_route(
@@ -7195,10 +7207,15 @@ impl super::TrapDispatcher {
                 }
             }
 
-            // FSDispatch ($A060) / HFSDispatch ($A260)
-            // HFSDispatch / FSDispatch ($A060): Selectors 1=PBOpenWD, 2=PBCloseWD, 6=PBDirCreate, 7=PBGetWDInfo, 8=PBGetFCBInfo, 9=PBGetCatInfo, 26=PBHOpenDF; by-name lookups retry via default/WD directory
+            // HFSDispatch ($A260) / FSDispatch ($A060)
+            // Dispatches hierarchical File Manager routines selected by D0.
+            // A0: parameter block; D0 and ioResult: OSErr.
+            // Inside Macintosh: Files (1992), pp. 2-183 to 2-238.
             (false, 0x60) => {
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = hfs_dispatch_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector & 0xFFFF;
                 let pb = cpu.read_reg(Register::A0);
                 if selector == 0x18 {
                     // PBCatSearch ($A260, selector $0018) searches one
@@ -16020,6 +16037,80 @@ mod tests {
             &vec![9, 9, 9, 9],
             "resource fork must be preserved across truncate"
         );
+    }
+
+    #[test]
+    fn hfs_dispatch_generated_routes_preserve_exact_d0_selectors() {
+        assert_eq!(super::HFS_DISPATCH_OPERATION_ROUTES.len(), 3);
+        assert!(super::HFS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x003F, "PBGetVolMountInfoSize"),
+            (0x0040, "PBGetVolMountInfo"),
+            (0x0041, "PBVolumeMount"),
+        ] {
+            let route =
+                super::hfs_dispatch_operation_route(0xA260, selector).expect("HFSDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_HFSDispatch:0x{selector:04X}:d0-moveq-immediate:8")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA060, 0x003F),
+            (0xA660, 0x003F),
+            (0xA360, 0x0040),
+            (0xA260, 0x003E),
+            (0xA260, 0x0042),
+            (0xA260, 0x0001_003F),
+            (0xA260, u32::MAX),
+        ] {
+            assert!(super::hfs_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn hfs_dispatch_records_known_then_clears_nonidentity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        cpu.write_reg(Register::A0, pb);
+        bus.write_word(pb + 16, 0x3FFF);
+        bus.write_long(pb + 32, 0xCAFE_BABE);
+        let sp = cpu.read_reg(Register::A7);
+
+        cpu.write_reg(Register::D0, 0x0040);
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_HFSDispatch:0x0040:d0-moveq-immediate:8")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A0), pb);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 32), 0xCAFE_BABE);
+
+        disp.current_selector_operation = Some("stale-identity");
+        bus.write_word(pb + 16, 0x3FFF);
+        cpu.write_reg(Register::D0, 0x0001_0040);
+        call_trap_word(&mut disp, 0xA260, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+
+        for trap_word in [0xA060, 0xA660] {
+            disp.current_selector_operation = Some("stale-identity");
+            bus.write_word(pb + 16, 0x3FFF);
+            cpu.write_reg(Register::D0, 0x0040);
+            call_trap_word(&mut disp, trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(disp.current_selector_operation, None);
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(bus.read_word(pb + 16), 0);
+        }
     }
 
     // ================================================================
