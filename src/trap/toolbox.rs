@@ -61,6 +61,8 @@ const PACK11_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack11_operations.rs");
 const TRANSLATION_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_translation_dispatch_operations.rs");
+const ICON_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_icon_dispatch_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -213,6 +215,16 @@ fn translation_dispatch_operation_route(
         return None;
     }
     selector_operation_route(TRANSLATION_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn icon_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xABC9 {
+        return None;
+    }
+    selector_operation_route(ICON_DISPATCH_OPERATION_ROUTES, selector & 0xFFFF)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -15895,31 +15907,14 @@ impl super::TrapDispatcher {
             (true, 0x25A) => return_noerr(cpu),
 
             // IconDispatch ($ABC9)
-            // Dispatches Icon Utilities routines selected in D0.
-            // Selector-specific Pascal frames; the low byte records argument words.
-            // More Macintosh Toolbox (1993), pp. 5-18 and 5-71.
-            // Icon Utilities availability is gated by `gestaltIconUtilitiesAttr`.
-            // Selector convention: D0 = routine number; routines
-            // include PlotIconID, NewIconSuite, AddIconToSuite,
-            // GetIconFromSuite, ForEachIconDo, GetIconCacheData,
-            // SetIconCacheData, IconIDToRgn, IconSuiteToRgn,
-            // IconMethodToRgn, etc. Note that GetIcon ($A9BB),
-            // PlotIcon ($A94B), GetCIcon ($AA1E), PlotCIcon ($AA1F),
-            // and DisposeCIcon ($AA25) are SEPARATE legacy traps
-            // available in System 6 and System 7 — those are NOT
-            // routed through IconDispatch.
-            // Gestalt: `gestaltIconUtilitiesAttr = 'icon'`.
-            //
-            // The selector's low byte is the Pascal argument count in words.
-            // Some 68K glue presents that public selector byte-swapped in D0;
-            // normalize only values from the published table, then derive the
-            // frame size instead of special-casing individual routines.
-            //
-            // Regression coverage: src/trap/toolbox.rs::tests::icondispatch_*
-            // Unsupported public selectors return paramErr (-50) after consuming
-            // the selector-derived frame; $0000 retains the noErr probe behavior.
+            // Dispatches Icon Utilities routines selected by the low word of D0.
+            // Selector-specific Pascal frames; the low selector byte gives argument words.
+            // More Macintosh Toolbox (1993), pp. 5-18 to 5-71.
             (true, 0x3C9) => {
-                let raw_selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let raw_d0 = cpu.read_reg(Register::D0);
+                let operation = icon_dispatch_operation_route(self.current_trap_word, raw_d0);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let raw_selector = (raw_d0 & 0xFFFF) as u16;
                 let is_public = |selector| {
                     matches!(
                         selector,
@@ -26417,6 +26412,83 @@ mod tests {
             0x1122_3344,
             "NewEmptyHandle should not write a Pascal result slot on the caller stack"
         );
+    }
+
+    #[test]
+    fn icon_dispatch_generated_routes_preserve_exact_d0_low_word_values() {
+        assert_eq!(super::ICON_DISPATCH_OPERATION_ROUTES.len(), 1);
+        let route =
+            super::icon_dispatch_operation_route(0xABC9, 0x0000_0606).expect("LoadIconCache route");
+        assert_eq!(route.selector, 0x0606);
+        assert_eq!(route.routine_name, "LoadIconCache");
+        assert_eq!(
+            route.operation_id,
+            "selector-operation:_IconDispatch:0x0606:d0-low-word-immediate:16"
+        );
+        assert_eq!(
+            super::icon_dispatch_operation_route(0xABC9, 0xCAFE_0606),
+            Some(route),
+            "MOVE.W glue leaves the high word of D0 irrelevant to identity"
+        );
+
+        for (trap_word, selector) in [
+            (0xABC8, 0x0606),
+            (0xAAC9, 0x0606),
+            (0xADC9, 0x0606),
+            (0xAFC9, 0x0606),
+            (0xABC9, 0x0604),
+            (0xABC9, 0x0607),
+            (0xABC9, u32::MAX),
+        ] {
+            assert!(super::icon_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn icondispatch_loadiconcache_records_then_clears_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xABC9;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xCAFE_0606);
+        cpu.write_reg(Register::D1, 0x1122_3344);
+        cpu.write_reg(Register::A0, 0x5566_7788);
+        bus.write_long(sp, 0x0102_0304);
+        bus.write_long(sp + 4, 0x0506_0708);
+        bus.write_long(sp + 8, 0x090A_0B0C);
+
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+        assert!(result.expect("IconDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_IconDispatch:0x0606:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(cpu.read_reg(Register::D1), 0x1122_3344);
+        assert_eq!(cpu.read_reg(Register::A0), 0x5566_7788);
+        assert_eq!(bus.read_long(sp), 0x0102_0304);
+        assert_eq!(bus.read_long(sp + 4), 0x0506_0708);
+        assert_eq!(bus.read_long(sp + 8), 0x090A_0B0C);
+
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0406);
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+        assert!(result.expect("IconDispatch unknown-selector arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xAAC9;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0606);
+        let result = disp.dispatch_toolbox(true, 0x3C9, &mut cpu, &mut bus);
+        assert!(result.expect("IconDispatch wrong-trap-form arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
     }
 
     #[test]
