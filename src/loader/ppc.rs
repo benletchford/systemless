@@ -73806,6 +73806,8 @@ fn ppc_pbh_get_v_info(
             .map(|name| decode_mac_roman(&name))
             .unwrap_or_default()
     };
+    let relative_pathname = requested_name.starts_with(':');
+    let absolute_pathname = !relative_pathname && requested_name.contains(':');
 
     // Inside Macintosh: Files (1992), pp. 2-144--2-146: a positive
     // ioVolIndex enumerates the VCB queue, zero selects by name or reference,
@@ -73851,6 +73853,8 @@ fn ppc_pbh_get_v_info(
     let selected = if volume_index == 0 {
         if vref_num != 0 {
             volume_by_ref(vref_num)
+        } else if relative_pathname {
+            Some(boot_volume())
         } else if !requested_name.is_empty() {
             volume_by_name(&requested_name)
         } else {
@@ -73862,10 +73866,12 @@ fn ppc_pbh_get_v_info(
         } else {
             vfs_volumes.get((volume_index - 2) as usize).cloned()
         }
-    } else if requested_name.contains(':') {
+    } else if absolute_pathname {
         volume_by_name(&requested_name)
     } else if vref_num != 0 {
         volume_by_ref(vref_num)
+    } else if relative_pathname {
+        Some(boot_volume())
     } else if !requested_name.is_empty() {
         volume_by_name(&requested_name)
     } else {
@@ -141029,6 +141035,40 @@ mod tests {
         let _ = loaded.run_with_hle_imports(64);
         assert_eq!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.memory.read_u16_be(pb + 22), Some((-2i16) as u16));
+    }
+
+    #[test]
+    fn pbh_get_v_info_keeps_relative_paths_on_the_default_volume() {
+        let pef = synthetic_pef_with_import(b"PBHGetVInfoSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let pb = PPC_DATA_BASE + 0x1000;
+        let name_ptr = pb + 0x100;
+        loaded.memory.add_region(pb, vec![0; 0x200]);
+        loaded.memory.write_u32_be(pb + 18, name_ptr).unwrap();
+        loaded.memory.write_u16_be(pb + 22, 0).unwrap();
+        loaded
+            .memory
+            .write_u16_be(pb + 28, (-1i16) as u16)
+            .unwrap();
+        assert!(ppc_write_pstring_bytes(
+            &mut loaded.memory,
+            name_ptr,
+            b":data:title.phd",
+        ));
+        loaded.cpu.gpr[3] = pb;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(pb + 22),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, name_ptr).as_deref(),
+            Some(crate::trap::TrapDispatcher::boot_volume_name().as_bytes())
+        );
     }
 
     #[test]
