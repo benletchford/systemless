@@ -45,6 +45,8 @@ const PR_GLUE_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pr_glue_operations.rs");
 const SCRIPT_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_script_util_operations.rs");
+const SCSI_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_scsi_dispatch_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -129,6 +131,16 @@ fn script_util_operation_route(
         return None;
     }
     selector_operation_route(SCRIPT_UTIL_OPERATION_ROUTES, selector)
+}
+
+fn scsi_dispatch_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA815 {
+        return None;
+    }
+    selector_operation_route(SCSI_DISPATCH_OPERATION_ROUTES, u32::from(selector))
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -4403,14 +4415,14 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn scsi_dispatch_arg_bytes(selector: i16) -> u32 {
+    fn scsi_dispatch_arg_bytes(selector: i16) -> Option<u32> {
         match selector {
-            0 | 1 | 10 => 0,             // SCSIReset, SCSIGet, SCSIStat
-            2 | 11 | 13 => 2,            // SCSISelect, SCSISelAtn, SCSIMsgOut
-            3 => 6,                      // SCSICmd(buffer, count)
-            4 => 12,                     // SCSIComplete(stat, message, wait)
-            5 | 6 | 7 | 8 | 9 | 12 => 4, // tibPtr/sihPtr/message ptr
-            _ => 0,
+            0 | 1 | 10 => Some(0),         // SCSIReset, SCSIGet, SCSIStat
+            2 | 11 | 13 => Some(2),        // SCSISelect, SCSISelAtn, SCSIMsgOut
+            3 => Some(6),                  // SCSICmd(buffer, count)
+            4 => Some(12),                 // SCSIComplete(stat, message, wait)
+            5 | 6 | 8 | 9 | 12 => Some(4), // tibPtr/message pointer
+            _ => None,
         }
     }
 
@@ -6114,24 +6126,21 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // _SCSIDispatch ($A815) — SCSI Manager dispatch
-            // Word selector on top of the stack; each selector pops its
-            // own argument set and leaves a 2-byte OSErr result above.
-            // Inside Macintosh Volume IV, IV-287 to IV-300
-            // Inside Macintosh Volume V, V-389 to V-394
-            //
-            // Systemless does not model SCSI hardware. Every selector
-            // returns noErr — apps typically check for a present device
-            // via SCSIGet/SCSISelect and bail before reaching data
-            // transfer when no device is installed.
-            //
-            // Regression coverage exercises selector pop discipline and noErr defaults.
-            // _SCSIDispatch ($A815): Word-selector dispatch per IM:IV IV-287; pops args per selector, returns noErr — no SCSI hardware
+            // SCSIDispatch (0xA815)
+            // Dispatches original SCSI Manager routines selected by a word on top of the stack.
+            // FUNCTION SCSIReset: OSErr;
+            // Inside Macintosh: Devices (1994), pp. 3-31 to 3-42 and 3-48.
             (true, 0x015) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp) as i16;
-                // Arg bytes (below selector) per IM:IV IV-287..IV-300 and IM:V V-389..V-394.
-                let arg_bytes = Self::scsi_dispatch_arg_bytes(selector);
+                let operation =
+                    scsi_dispatch_operation_route(self.current_trap_word, selector as u16);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let Some(arg_bytes) = Self::scsi_dispatch_arg_bytes(selector) else {
+                    // Undefined selectors invoke dsCoreErr (12); Inside Macintosh Volume V, V-574.
+                    bus.write_word(addr::DS_ERR_CODE, 12);
+                    return Some(Err(crate::Error::Halted));
+                };
                 let total = 2 + arg_bytes;
                 bus.write_word(sp + total, 0); // noErr
                 cpu.write_reg(Register::A7, sp + total);
@@ -20743,6 +20752,113 @@ mod tests {
 
     // _SCSIDispatch ($A815)
     #[test]
+    fn scsi_dispatch_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::SCSI_DISPATCH_OPERATION_ROUTES.len(), 13);
+        assert!(super::SCSI_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "SCSIReset"),
+            (0x0001, "SCSIGet"),
+            (0x0002, "SCSISelect"),
+            (0x0003, "SCSICmd"),
+            (0x0004, "SCSIComplete"),
+            (0x0005, "SCSIRead"),
+            (0x0006, "SCSIWrite"),
+            (0x0008, "SCSIRBlind"),
+            (0x0009, "SCSIWBlind"),
+            (0x000A, "SCSIStat"),
+            (0x000B, "SCSISelAtn"),
+            (0x000C, "SCSIMsgIn"),
+            (0x000D, "SCSIMsgOut"),
+        ] {
+            let route = super::scsi_dispatch_operation_route(0xA815, selector)
+                .expect("SCSIDispatch operation route");
+            assert_eq!(route.routine_name, routine_name);
+            let carrier = if selector == 0 {
+                "stack-word-zero"
+            } else {
+                "stack-word-immediate"
+            };
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_SCSIDispatch:0x{selector:04X}:{carrier}:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA915, 0x0000),
+            (0xA814, 0x000D),
+            (0xA815, 0x0007), // no source/interface operation identity
+            (0xA815, 0x000E), // adjacent unassigned selector
+            (0xA815, 0x4267), // CLR.W -(SP) opcode spelling
+            (0xA815, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA815, 0x0100), // byte-swapped SCSIGet selector
+        ] {
+            assert!(super::scsi_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn scsi_dispatch_records_stack_word_identity_without_changing_complete_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for trap_word in [0xA815, 0xA915] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            bus.write_word(sp, 0x0004); // SCSIComplete
+            bus.write_long(sp + 2, 0x1111_2222); // wait
+            bus.write_long(sp + 6, 0x3333_4444); // message pointer
+            bus.write_long(sp + 10, 0x5555_6666); // stat pointer
+            bus.write_word(sp + 14, 0xBEEF); // OSErr result
+
+            let result = disp.dispatch_toolbox(true, 0x015, &mut cpu, &mut bus);
+            assert!(result.expect("SCSIDispatch arm").is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+            assert_eq!(bus.read_word(sp + 14), 0);
+            assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+            assert_eq!(bus.read_long(sp + 2), 0x1111_2222);
+            assert_eq!(bus.read_long(sp + 6), 0x3333_4444);
+            assert_eq!(bus.read_long(sp + 10), 0x5555_6666);
+
+            let expected = (trap_word == 0xA815)
+                .then_some("selector-operation:_SCSIDispatch:0x0004:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+    }
+
+    #[test]
+    fn scsi_dispatch_undefined_selectors_raise_ds_core_err() {
+        // Inside Macintosh Volume V (1986), p. V-574, requires every
+        // undefined SCSIDispatch selector to invoke the System Error Handler
+        // with dsCoreErr (12).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for selector in [0x0007, 0x000E, 0xFFFF] {
+            disp.current_trap_word = 0xA815;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            bus.write_word(sp, selector);
+            bus.write_long(sp + 2, 0xDEAD_BEEF);
+            bus.write_word(addr::DS_ERR_CODE, 0xBEEF);
+
+            let result = disp
+                .dispatch_toolbox(true, 0x015, &mut cpu, &mut bus)
+                .expect("SCSIDispatch arm");
+            assert!(matches!(result, Err(crate::Error::Halted)));
+            assert_eq!(bus.read_word(addr::DS_ERR_CODE), 12);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+            assert_eq!(bus.read_long(sp + 2), 0xDEAD_BEEF);
+            assert_eq!(disp.current_selector_operation, None);
+        }
+    }
+
+    #[test]
     fn scsidispatch_selector_zero_returns_noerr_and_pops_selector_word() {
         // Inside Macintosh Volume IV (1986), pp. IV-287 to IV-300:
         // selector 0 (SCSIReset) is a word-selector dispatch entry.
@@ -20783,7 +20899,7 @@ mod tests {
     #[test]
     fn scsidispatch_selector_three_returns_noerr_and_pops_six_byte_argument_frame() {
         // Inside Macintosh Volume IV (1986), pp. IV-287 to IV-300:
-        // selector 3 (SCSICmd) consumes three 2-byte arguments.
+        // selector 3 (SCSICmd) consumes a 4-byte pointer and a 2-byte count.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         cpu.write_reg(Register::D0, 0x0BAD_F00D);
