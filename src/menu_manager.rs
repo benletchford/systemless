@@ -538,6 +538,91 @@ pub(crate) struct MenuPointerUpdate {
     pub(crate) scrolled: bool,
 }
 
+/// Retained pane selected by one standard-MDEF pointer update.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MenuTrackingPane {
+    Root,
+    Submenu(usize),
+}
+
+/// One highlighted standard-menu row that may own a hierarchical child.
+/// The adapter resolves the child handle from live guest records before the
+/// shared state reconciles the retained pane chain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SubmenuRequest<MenuRef> {
+    pub(crate) parent: MenuTrackingPane,
+    pub(crate) parent_handle: MenuRef,
+    pub(crate) parent_item: i16,
+    pub(crate) child_depth: usize,
+}
+
+/// Opaque authorization to install the child selected by one successful
+/// reconciliation. Adapters may inspect the staged identities but cannot
+/// manufacture a different request/child pair.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct SubmenuOpenToken<MenuRef> {
+    request: SubmenuRequest<MenuRef>,
+    child_handle: MenuRef,
+}
+
+impl<MenuRef: Copy> SubmenuOpenToken<MenuRef> {
+    pub(crate) fn request(&self) -> SubmenuRequest<MenuRef> {
+        self.request
+    }
+
+    pub(crate) fn child_handle(&self) -> MenuRef {
+        self.child_handle
+    }
+}
+
+/// Result of reconciling one live hierarchical-child lookup with the retained
+/// open-menu chain. Presentation adapters restore returned panes in the order
+/// supplied before constructing a replacement.
+pub(crate) enum SubmenuReconciliation<MenuRef, Pane> {
+    Stale,
+    Keep,
+    Closed {
+        panes_deepest_first: Vec<Pane>,
+    },
+    Open {
+        token: SubmenuOpenToken<MenuRef>,
+        panes_deepest_first: Vec<Pane>,
+    },
+}
+
+/// Architecture-neutral state change produced by one standard-menu pointer
+/// update. Guest-memory writes, saved-pixel restoration, and drawing remain
+/// adapter effects.
+pub(crate) struct StandardMenuTrackingUpdate<MenuRef, Pane> {
+    pub(crate) pane: MenuTrackingPane,
+    pub(crate) menu_handle: MenuRef,
+    pub(crate) previous_item: i16,
+    pub(crate) pointer: MenuPointerUpdate,
+    pub(crate) content_top: i16,
+    pub(crate) content_bottom: i16,
+    /// Removed descendants in the order their saved pixels must be restored.
+    pub(crate) closed_panes_deepest_first: Vec<Pane>,
+}
+
+impl<MenuRef: Copy, Pane> StandardMenuTrackingUpdate<MenuRef, Pane> {
+    /// Stage hierarchical-child resolution from the row selected by this
+    /// pointer update. A zero/disabled row cannot own a child.
+    pub(crate) fn submenu_request(&self) -> Option<SubmenuRequest<MenuRef>> {
+        (self.pointer.item > 0).then(|| {
+            let child_depth = match self.pane {
+                MenuTrackingPane::Root => 0,
+                MenuTrackingPane::Submenu(depth) => depth.saturating_add(1),
+            };
+            SubmenuRequest {
+                parent: self.pane,
+                parent_handle: self.menu_handle,
+                parent_item: self.pointer.item,
+                child_depth,
+            }
+        })
+    }
+}
+
 /// Pack the standard MDEF's live MenuDisable value.
 ///
 /// The high word is the menu ID and the low word is the raw item number under
@@ -797,15 +882,6 @@ impl SharedNativeMenuSelection {
     }
 }
 
-/// Result of reconciling one resolved hierarchical child with the retained
-/// open-menu chain. Presentation adapters restore any returned panes before
-/// drawing a replacement.
-pub(crate) enum SubmenuTransition<Pane> {
-    Keep,
-    Reject(Vec<Pane>),
-    Open(Vec<Pane>),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MenuDefinitionPane {
     Root,
@@ -959,6 +1035,15 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         }
     }
 
+    fn close_submenus_deepest_first(
+        &mut self,
+        depth: usize,
+    ) -> Vec<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>> {
+        let mut panes = self.close_submenus_from(depth);
+        panes.reverse();
+        panes
+    }
+
     /// Apply one root or submenu highlight transition and return panes that
     /// the presentation adapter must close. A nonzero item may subsequently
     /// open one child; zero always closes the existing child chain.
@@ -984,6 +1069,123 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
         Some(closed)
     }
 
+    /// Apply one standard-MDEF pointer slice to the retained hierarchy.
+    ///
+    /// The deepest open standard submenu under the pointer owns the update;
+    /// otherwise the root pane does. This reducer owns row hit-testing,
+    /// scrolling state, highlight replacement, and descendant closure. CPU
+    /// adapters supply rows decoded from live guest records and perform the
+    /// returned presentation effects. Macintosh Toolbox Essentials (1992),
+    /// pp. 3-90--3-92 and 3-114--3-119; Inside Macintosh Volume V (1986),
+    /// pp. V-250--V-254.
+    pub(crate) fn track_standard_pointer(
+        &mut self,
+        root_rows: &MenuRows,
+        submenu_rows: &[Option<MenuRows>],
+        point: (i16, i16),
+    ) -> Option<
+        StandardMenuTrackingUpdate<MenuRef, TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>,
+    > {
+        if self.definition.is_some() {
+            return None;
+        }
+        let pane = self
+            .submenus
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(depth, submenu)| {
+                if submenu.definition.is_some() {
+                    return None;
+                }
+                let rows = submenu_rows.get(depth)?.as_ref()?;
+                let rect = (
+                    submenu.popup_top,
+                    submenu.popup_left,
+                    submenu.popup_top.saturating_add(submenu.popup_height),
+                    submenu.popup_left.saturating_add(submenu.popup_width),
+                );
+                let (vertical, horizontal) = point;
+                let inside = vertical >= rect.0
+                    && vertical < rect.2
+                    && horizontal >= rect.1
+                    && horizontal < rect.3;
+                (inside
+                    || rows
+                        .pointer_scroll_direction(rect, submenu.content_top, point)
+                        .is_some())
+                .then_some(MenuTrackingPane::Submenu(depth))
+            })
+            .unwrap_or(MenuTrackingPane::Root);
+        let rows = match pane {
+            MenuTrackingPane::Root => root_rows,
+            MenuTrackingPane::Submenu(depth) => submenu_rows[depth]
+                .as_ref()
+                .expect("selected submenu rows must remain available"),
+        };
+        let (menu_handle, previous_item, pointer, content_top) = match pane {
+            MenuTrackingPane::Root => {
+                let rect = (
+                    self.popup_top,
+                    self.popup_left,
+                    self.popup_top.saturating_add(self.popup_height),
+                    self.popup_left.saturating_add(self.popup_width),
+                );
+                let pointer = rows.track_pointer(
+                    rect,
+                    &mut self.content_top,
+                    &mut self.scroll_direction,
+                    point,
+                );
+                (
+                    self.menu_handle,
+                    self.highlighted_item,
+                    pointer,
+                    self.content_top,
+                )
+            }
+            MenuTrackingPane::Submenu(depth) => {
+                let submenu = &mut self.submenus[depth];
+                let rect = (
+                    submenu.popup_top,
+                    submenu.popup_left,
+                    submenu.popup_top.saturating_add(submenu.popup_height),
+                    submenu.popup_left.saturating_add(submenu.popup_width),
+                );
+                let pointer = rows.track_pointer(
+                    rect,
+                    &mut submenu.content_top,
+                    &mut submenu.scroll_direction,
+                    point,
+                );
+                (
+                    submenu.menu_handle,
+                    submenu.highlighted_item,
+                    pointer,
+                    submenu.content_top,
+                )
+            }
+        };
+        let parent_depth = match pane {
+            MenuTrackingPane::Root => None,
+            MenuTrackingPane::Submenu(depth) => Some(depth),
+        };
+        let mut closed_panes_deepest_first = self
+            .update_highlight(parent_depth, pointer.item)
+            .expect("the selected retained pane must remain available");
+        closed_panes_deepest_first.reverse();
+
+        Some(StandardMenuTrackingUpdate {
+            pane,
+            menu_handle,
+            previous_item,
+            pointer,
+            content_top,
+            content_bottom: content_top.saturating_add(rows.total_height()),
+            closed_panes_deepest_first,
+        })
+    }
+
     /// Reject a submenu that would repeat the root or an already-open
     /// ancestor. Circular hierarchical menu definitions are invalid.
     /// Macintosh Toolbox Essentials (1992), p. 3-138.
@@ -999,26 +1201,99 @@ impl<MenuRef: Copy, Surface, Pixel, Appearance>
                 .any(|submenu| submenu.menu_handle == menu_handle)
     }
 
-    /// Decide whether a resolved hierarchical child remains open, is
-    /// rejected as circular, or replaces the existing child chain.
-    pub(crate) fn prepare_submenu(
-        &mut self,
-        child_depth: usize,
-        parent_item: i16,
-        menu_handle: MenuRef,
-    ) -> SubmenuTransition<TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>
+    fn submenu_request_is_current(&self, request: SubmenuRequest<MenuRef>) -> bool
     where
         MenuRef: PartialEq,
     {
-        if self.submenu_repeats_ancestor(child_depth, menu_handle) {
-            return SubmenuTransition::Reject(self.close_submenus_from(child_depth));
+        if request.parent_item <= 0 {
+            return false;
         }
-        if self.submenus.get(child_depth).is_some_and(|submenu| {
-            submenu.menu_handle == menu_handle && submenu.parent_item == parent_item
-        }) {
-            return SubmenuTransition::Keep;
+        match request.parent {
+            MenuTrackingPane::Root => {
+                request.child_depth == 0
+                    && request.parent_handle == self.menu_handle
+                    && request.parent_item == self.highlighted_item
+                    && self.definition.is_none()
+            }
+            MenuTrackingPane::Submenu(depth) => {
+                request.child_depth == depth.saturating_add(1)
+                    && self.submenus.get(depth).is_some_and(|submenu| {
+                        request.parent_handle == submenu.menu_handle
+                            && request.parent_item == submenu.highlighted_item
+                            && submenu.definition.is_none()
+                    })
+            }
         }
-        SubmenuTransition::Open(self.close_submenus_from(child_depth))
+    }
+
+    /// Reconcile one adapter-resolved live child with the retained hierarchy.
+    /// Missing and circular children close the old descendant chain; an exact
+    /// match stays open; a changed child closes the old chain before asking
+    /// the adapter to build a replacement. Macintosh Toolbox Essentials
+    /// (1992), pp. 3-137--3-141.
+    pub(crate) fn reconcile_submenu(
+        &mut self,
+        request: SubmenuRequest<MenuRef>,
+        resolved_child: Option<MenuRef>,
+    ) -> SubmenuReconciliation<MenuRef, TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>
+    where
+        MenuRef: PartialEq,
+    {
+        if !self.submenu_request_is_current(request) {
+            return SubmenuReconciliation::Stale;
+        }
+        let Some(child_handle) = resolved_child else {
+            return SubmenuReconciliation::Closed {
+                panes_deepest_first: self.close_submenus_deepest_first(request.child_depth),
+            };
+        };
+        if self.submenu_repeats_ancestor(request.child_depth, child_handle) {
+            return SubmenuReconciliation::Closed {
+                panes_deepest_first: self.close_submenus_deepest_first(request.child_depth),
+            };
+        }
+        if self
+            .submenus
+            .get(request.child_depth)
+            .is_some_and(|submenu| {
+                submenu.menu_handle == child_handle && submenu.parent_item == request.parent_item
+            })
+        {
+            return SubmenuReconciliation::Keep;
+        }
+        SubmenuReconciliation::Open {
+            token: SubmenuOpenToken {
+                request,
+                child_handle,
+            },
+            panes_deepest_first: self.close_submenus_deepest_first(request.child_depth),
+        }
+    }
+
+    /// Commit an adapter-built child only if its staged parent still owns the
+    /// same highlighted row and its identity matches the reconciliation.
+    /// Returning the pane on failure leaves restoration/disposal to the
+    /// adapter that created its presentation snapshot.
+    pub(crate) fn install_submenu(
+        &mut self,
+        token: SubmenuOpenToken<MenuRef>,
+        pane: TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>,
+    ) -> Result<usize, TrackedMenuPane<MenuRef, Surface, Pixel, Appearance>>
+    where
+        MenuRef: PartialEq,
+    {
+        let request = token.request;
+        let child_handle = token.child_handle;
+        if !self.submenu_request_is_current(request)
+            || self.submenus.len() != request.child_depth
+            || pane.parent_item != request.parent_item
+            || pane.menu_handle != child_handle
+            || self.submenu_repeats_ancestor(request.child_depth, child_handle)
+        {
+            return Err(pane);
+        }
+        self.submenus.push(pane);
+        Ok(request.child_depth)
     }
 
     /// Find the deepest open submenu pane hit by the adapter-supplied point
@@ -1762,6 +2037,19 @@ impl MenuRows {
         }
     }
 
+    /// Preserve row geometry while disabling every selection in a disabled
+    /// menu. A disabled title may still be pulled down for examination, but
+    /// none of its items can be chosen. Macintosh Toolbox Essentials (1992),
+    /// pp. 3-6--3-7.
+    pub(crate) fn with_menu_enabled(mut self, menu_enabled: bool) -> Self {
+        if !menu_enabled {
+            for row in &mut self.rows {
+                row.selectable = false;
+            }
+        }
+        self
+    }
+
     pub(crate) fn total_height(&self) -> i16 {
         self.rows
             .iter()
@@ -2349,6 +2637,17 @@ impl MenuItems {
 
     pub(crate) fn item_is_hierarchical(&self, item_number: i16) -> bool {
         self.hierarchical_id(item_number).is_some()
+    }
+
+    /// Return whether a live standard-menu row can become a MenuSelect
+    /// result. Disabling the title disables every row, and separators remain
+    /// unavailable regardless of their enable bit. Macintosh Toolbox
+    /// Essentials (1992), pp. 3-6--3-7 and 3-114--3-119.
+    pub(crate) fn item_is_selectable(&self, item_number: i16) -> bool {
+        self.enable_flags & 1 != 0
+            && menu_item_index(item_number)
+                .and_then(|index| self.items.get(index))
+                .is_some_and(|item| item.enabled && item.text.as_slice() != b"-")
     }
 
     /// Rebuild a guest record after changing its item sequence.
@@ -4674,6 +4973,27 @@ mod tests {
             },
         );
         assert_eq!(menu_choice_value(0x0208, 3), 0x0208_0003);
+
+        let disabled_menu_rows = MenuRows::new([MenuRow {
+            height: 16,
+            selectable: true,
+        }])
+        .with_menu_enabled(false);
+        content_top = rect.0;
+        assert_eq!(
+            disabled_menu_rows.track_pointer(
+                (20, 40, 36, 140),
+                &mut content_top,
+                &mut armed,
+                (28, 60),
+            ),
+            MenuPointerUpdate {
+                item: 0,
+                menu_choice_item: 1,
+                scrolled: false,
+            },
+            "a disabled menu stays laid out and observable without selecting its enabled row",
+        );
     }
 
     #[test]
@@ -4938,85 +5258,213 @@ mod tests {
     #[test]
     fn both_architecture_reference_types_share_hierarchy_transitions() {
         let mut classic = tracking_with_child(0usize, 1usize);
+        let classic_root = SubmenuRequest {
+            parent: MenuTrackingPane::Root,
+            parent_handle: 0,
+            parent_item: 1,
+            child_depth: 0,
+        };
         assert!(matches!(
-            classic.prepare_submenu(0, 1, 1),
-            SubmenuTransition::Keep
+            classic.reconcile_submenu(classic_root, Some(1)),
+            SubmenuReconciliation::Keep,
         ));
+        let classic_child = SubmenuRequest {
+            parent: MenuTrackingPane::Submenu(0),
+            parent_handle: 1,
+            parent_item: 2,
+            child_depth: 1,
+        };
         assert!(matches!(
-            classic.prepare_submenu(1, 1, 0),
-            SubmenuTransition::Reject(closed) if closed.is_empty()
+            classic.reconcile_submenu(classic_child, Some(0)),
+            SubmenuReconciliation::Closed { panes_deepest_first }
+                if panes_deepest_first.is_empty()
         ));
-        assert!(matches!(
-            classic.prepare_submenu(1, 2, 2),
-            SubmenuTransition::Open(closed) if closed.is_empty()
-        ));
-        classic.submenus.push(TrackedMenuPane {
+        let token = match classic.reconcile_submenu(classic_child, Some(2)) {
+            SubmenuReconciliation::Open {
+                token,
+                panes_deepest_first,
+            } => {
+                assert!(panes_deepest_first.is_empty());
+                token
+            }
+            _ => panic!("classic replacement child did not stage an open"),
+        };
+        let child = TrackedMenuPane {
             menu_handle: 2,
             parent_item: 2,
             ..classic.submenus[0].clone()
+        };
+        assert_eq!(classic.install_submenu(token, child), Ok(1));
+        classic.submenus.push(TrackedMenuPane {
+            menu_handle: 3,
+            parent_item: 2,
+            ..classic.submenus[1].clone()
         });
         assert_eq!(
             classic.deepest_submenu_hit(|depth, _| Some(depth as i16 + 1)),
-            Some((1, 2))
+            Some((2, 3))
         );
-        let closed = classic.update_highlight(Some(0), 0).unwrap();
-        assert_eq!(
-            closed
-                .iter()
-                .map(|pane| pane.menu_handle)
-                .collect::<Vec<_>>(),
-            vec![2]
-        );
-        assert_eq!(classic.submenus[0].highlighted_item, 0);
-        let closed = classic.update_highlight(None, 0).unwrap();
-        assert_eq!(
-            closed
-                .iter()
-                .map(|pane| pane.menu_handle)
-                .collect::<Vec<_>>(),
-            vec![1]
-        );
-        assert_eq!(classic.highlighted_item, 0);
+        match classic.reconcile_submenu(classic_root, None) {
+            SubmenuReconciliation::Closed {
+                panes_deepest_first,
+            } => assert_eq!(
+                panes_deepest_first
+                    .iter()
+                    .map(|pane| pane.menu_handle)
+                    .collect::<Vec<_>>(),
+                vec![3, 2, 1],
+            ),
+            _ => panic!("missing classic child did not close the hierarchy"),
+        }
+        assert!(classic.submenus.is_empty());
 
         let mut powerpc = tracking_with_child(0x1000u32, 0x2000u32);
+        let powerpc_root = SubmenuRequest {
+            parent: MenuTrackingPane::Root,
+            parent_handle: 0x1000,
+            parent_item: 1,
+            child_depth: 0,
+        };
         assert!(matches!(
-            powerpc.prepare_submenu(0, 1, 0x2000),
-            SubmenuTransition::Keep
+            powerpc.reconcile_submenu(powerpc_root, Some(0x2000)),
+            SubmenuReconciliation::Keep,
         ));
+        let powerpc_child = SubmenuRequest {
+            parent: MenuTrackingPane::Submenu(0),
+            parent_handle: 0x2000,
+            parent_item: 2,
+            child_depth: 1,
+        };
         assert!(matches!(
-            powerpc.prepare_submenu(1, 1, 0x1000),
-            SubmenuTransition::Reject(closed) if closed.is_empty()
+            powerpc.reconcile_submenu(powerpc_child, Some(0x1000)),
+            SubmenuReconciliation::Closed { panes_deepest_first }
+                if panes_deepest_first.is_empty()
         ));
-        assert!(matches!(
-            powerpc.prepare_submenu(1, 2, 0x3000),
-            SubmenuTransition::Open(closed) if closed.is_empty()
-        ));
-        powerpc.submenus.push(TrackedMenuPane {
+        let token = match powerpc.reconcile_submenu(powerpc_child, Some(0x3000)) {
+            SubmenuReconciliation::Open {
+                token,
+                panes_deepest_first,
+            } => {
+                assert!(panes_deepest_first.is_empty());
+                token
+            }
+            _ => panic!("PowerPC replacement child did not stage an open"),
+        };
+        let child = TrackedMenuPane {
             menu_handle: 0x3000,
             parent_item: 2,
             ..powerpc.submenus[0].clone()
+        };
+        powerpc.submenus[0].highlighted_item = 0;
+        assert!(
+            powerpc.install_submenu(token, child).is_err(),
+            "a stale PowerPC parent accepted a staged child",
+        );
+        assert_eq!(powerpc.submenus.len(), 1);
+    }
+
+    #[test]
+    fn both_architecture_reference_types_share_pointer_hierarchy_reduction() {
+        let root_rows = MenuRows::new((0..3).map(|_| MenuRow {
+            height: 16,
+            selectable: true,
+        }));
+        let child_rows = MenuRows::new((0..3).map(|_| MenuRow {
+            height: 16,
+            selectable: true,
+        }));
+        let submenu_rows = [
+            Some(child_rows),
+            Some(root_rows.clone()),
+            Some(root_rows.clone()),
+        ];
+
+        let mut classic = tracking_with_child(0usize, 1usize);
+        classic.submenus.push(TrackedMenuPane {
+            parent_item: 2,
+            menu_handle: 2,
+            popup_left: 198,
+            ..classic.submenus[0].clone()
         });
+        classic.submenus.push(TrackedMenuPane {
+            parent_item: 1,
+            menu_handle: 3,
+            popup_left: 297,
+            ..classic.submenus[0].clone()
+        });
+        let classic_update = classic
+            .track_standard_pointer(&root_rows, &submenu_rows, (30, 110))
+            .expect("classic standard pointer update");
+
+        let mut powerpc = tracking_with_child(0x1000u32, 0x2000u32);
+        powerpc.submenus.push(TrackedMenuPane {
+            parent_item: 2,
+            menu_handle: 0x3000,
+            popup_left: 198,
+            ..powerpc.submenus[0].clone()
+        });
+        powerpc.submenus.push(TrackedMenuPane {
+            parent_item: 1,
+            menu_handle: 0x4000,
+            popup_left: 297,
+            ..powerpc.submenus[0].clone()
+        });
+        let powerpc_update = powerpc
+            .track_standard_pointer(&root_rows, &submenu_rows, (30, 110))
+            .expect("PowerPC standard pointer update");
+
+        assert_eq!(classic_update.pane, MenuTrackingPane::Submenu(0));
+        assert_eq!(powerpc_update.pane, MenuTrackingPane::Submenu(0));
+        assert_eq!(classic_update.menu_handle, 1);
+        assert_eq!(powerpc_update.menu_handle, 0x2000);
+        assert_eq!(classic_update.previous_item, powerpc_update.previous_item);
+        assert_eq!(classic_update.pointer, powerpc_update.pointer);
+        assert_eq!(classic_update.content_top, powerpc_update.content_top);
+        assert_eq!(classic_update.content_bottom, powerpc_update.content_bottom);
+        assert_eq!(classic_update.pointer.item, 1);
+        assert_eq!(classic_update.closed_panes_deepest_first.len(), 2);
+        assert_eq!(powerpc_update.closed_panes_deepest_first.len(), 2);
         assert_eq!(
-            powerpc.deepest_submenu_hit(|depth, _| Some(depth as i16 + 1)),
-            Some((1, 2))
-        );
-        let closed = powerpc.update_highlight(Some(0), 0).unwrap();
-        assert_eq!(
-            closed
+            classic_update
+                .closed_panes_deepest_first
                 .iter()
                 .map(|pane| pane.menu_handle)
                 .collect::<Vec<_>>(),
-            vec![0x3000]
+            vec![3, 2],
         );
-        assert_eq!(powerpc.submenus[0].highlighted_item, 0);
-        let closed = powerpc.update_highlight(None, 0).unwrap();
         assert_eq!(
-            closed
+            powerpc_update
+                .closed_panes_deepest_first
                 .iter()
                 .map(|pane| pane.menu_handle)
                 .collect::<Vec<_>>(),
-            vec![0x2000]
+            vec![0x4000, 0x3000],
         );
-        assert_eq!(powerpc.highlighted_item, 0);
+        assert_eq!(classic.submenus.len(), 1);
+        assert_eq!(powerpc.submenus.len(), 1);
+        assert_eq!(classic.submenus[0].highlighted_item, 1);
+        assert_eq!(powerpc.submenus[0].highlighted_item, 1);
+    }
+
+    #[test]
+    fn standard_pointer_reducer_leaves_custom_root_definition_ownership_untouched() {
+        let rows = MenuRows::new([MenuRow {
+            height: 16,
+            selectable: true,
+        }]);
+        let mut tracking = tracking_with_child(0usize, 1usize);
+        tracking.definition = Some(MenuDefinitionTracking::begin_draw(
+            0x1234,
+            tracking.dropdown_rect(),
+        ));
+        let before = tracking.clone();
+
+        assert!(
+            tracking
+                .track_standard_pointer(&rows, &[Some(rows.clone())], (28, 40))
+                .is_none(),
+            "an application-defined root must retain pointer ownership",
+        );
+        assert_eq!(tracking, before);
     }
 }

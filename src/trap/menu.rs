@@ -23,12 +23,13 @@ use crate::menu_manager::{
     MenuDefinitionTracking as SharedMenuDefinitionTracking, MenuItems as SharedMenuItems,
     MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
     MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
-    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind,
+    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane,
     MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
     ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
-    StandardMenuPaneKind, SubmenuTransition, TrackedMenuPaneView, MAX_MENU_LIST_ENTRIES,
-    MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
-    STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
+    StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
+    MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM,
+    STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
 };
 #[cfg(test)]
 use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
@@ -4077,6 +4078,29 @@ impl super::TrapDispatcher {
         )
     }
 
+    /// Combine retained standard-MDEF row geometry with live MenuInfo
+    /// selectability for one tracking slice. Guest code can mutate enable
+    /// flags and item bytes while MenuSelect owns the interaction; missing or
+    /// malformed live rows therefore remain laid out but unavailable.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-90--3-92 and 3-114--3-119.
+    fn menu_tracking_rows(&self, bus: &MacMemoryBus, menu: &Menu) -> SharedMenuRows {
+        let geometry = self.menu_rows(bus, &menu.items);
+        let live = menu_items_from_memory(bus, menu.handle);
+        let menu_enabled = live
+            .as_ref()
+            .is_some_and(|items| items.enable_flags & 1 != 0);
+        SharedMenuRows::new((0..geometry.len()).map(|index| {
+            let item_number = i16::try_from(index + 1).unwrap_or(i16::MAX);
+            SharedMenuRow {
+                height: geometry.height(item_number, 0),
+                selectable: live
+                    .as_ref()
+                    .is_some_and(|items| items.item_is_selectable(item_number)),
+            }
+        }))
+        .with_menu_enabled(menu_enabled)
+    }
+
     /// The items a menu actually lays out.
     ///
     /// A divider only means anything between groups of items (HIG 1992
@@ -4458,8 +4482,10 @@ impl super::TrapDispatcher {
         };
         tracking
             .selection(|menu_handle, item_number| {
-                menu_items_from_memory(bus, menu_handle)
-                    .is_some_and(|items| !items.item_is_hierarchical(item_number))
+                menu_items_from_memory(bus, menu_handle).is_some_and(|items| {
+                    items.item_is_selectable(item_number)
+                        && !items.item_is_hierarchical(item_number)
+                })
             })
             .and_then(|(menu_handle, item_number)| {
                 let menu_ptr = bus.read_long(menu_handle);
@@ -4532,56 +4558,23 @@ impl super::TrapDispatcher {
         .map(|layout| layout.rect())
     }
 
-    fn close_submenus_from(&mut self, bus: &mut MacMemoryBus, depth: usize) {
-        let submenus = self
-            .menu_tracking
-            .as_mut()
-            .map(|tracking| tracking.close_submenus_from(depth))
-            .unwrap_or_default();
-        for submenu in submenus.into_iter().rev() {
-            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
-        }
-    }
-
-    fn ensure_submenu_for_parent_item(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        parent_depth: Option<usize>,
-        parent_item: i16,
-    ) {
-        let Some((parent_menu_handle, parent_rect, child_depth)) =
-            self.menu_tracking.as_ref().and_then(|tracking| {
-                parent_depth.map_or_else(
-                    || Some((tracking.menu_handle, tracking.dropdown_rect(), 0)),
-                    |depth| {
-                        tracking.submenus.get(depth).map(|submenu| {
-                            (submenu.menu_handle, submenu.dropdown_rect(), depth + 1)
-                        })
-                    },
-                )
+    fn ensure_submenu_for_request(&mut self, bus: &mut MacMemoryBus, request: SubmenuRequest<u32>) {
+        let resolved_child = self
+            .menu_index_for_handle(request.parent_handle)
+            .and_then(|parent_menu_idx| {
+                self.submenu_menu_index_for_parent_item(bus, parent_menu_idx, request.parent_item)
             })
-        else {
-            return;
-        };
-        let Some(parent_menu_idx) = self.menu_index_for_handle(parent_menu_handle) else {
-            self.close_submenus_from(bus, child_depth);
-            return;
-        };
-        let Some(submenu_idx) =
-            self.submenu_menu_index_for_parent_item(bus, parent_menu_idx, parent_item)
-        else {
-            self.close_submenus_from(bus, child_depth);
-            return;
-        };
-        let submenu_handle = self.menus[submenu_idx].handle;
-        let transition = self
+            .and_then(|submenu_idx| self.menus.get(submenu_idx).map(|menu| menu.handle));
+        let reconciliation = self
             .menu_tracking
             .as_mut()
-            .map(|tracking| tracking.prepare_submenu(child_depth, parent_item, submenu_handle));
-        let closed = match transition {
-            Some(SubmenuTransition::Keep) => return,
-            Some(SubmenuTransition::Reject(closed)) => {
-                for submenu in closed.into_iter().rev() {
+            .map(|tracking| tracking.reconcile_submenu(request, resolved_child));
+        let (token, closed) = match reconciliation {
+            Some(SubmenuReconciliation::Stale | SubmenuReconciliation::Keep) | None => return,
+            Some(SubmenuReconciliation::Closed {
+                panes_deepest_first,
+            }) => {
+                for submenu in panes_deepest_first {
                     self.restore_dropdown_pixels(
                         bus,
                         submenu.dropdown_rect(),
@@ -4590,108 +4583,68 @@ impl super::TrapDispatcher {
                 }
                 return;
             }
-            Some(SubmenuTransition::Open(closed)) => closed,
-            None => return,
+            Some(SubmenuReconciliation::Open {
+                token,
+                panes_deepest_first,
+            }) => (token, panes_deepest_first),
         };
-        for submenu in closed.into_iter().rev() {
+        for submenu in closed {
             self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
         }
+        let request = token.request();
+        let submenu_handle = token.child_handle();
 
+        let Some(parent_rect) =
+            self.menu_tracking
+                .as_ref()
+                .and_then(|tracking| match request.parent {
+                    MenuTrackingPane::Root => Some(tracking.dropdown_rect()),
+                    MenuTrackingPane::Submenu(depth) => tracking
+                        .submenus
+                        .get(depth)
+                        .map(|submenu| submenu.dropdown_rect()),
+                })
+        else {
+            return;
+        };
+        let Some(parent_menu_idx) = self.menu_index_for_handle(request.parent_handle) else {
+            return;
+        };
+        let Some(submenu_idx) = self.menu_index_for_handle(submenu_handle) else {
+            return;
+        };
         let Some(dropdown_rect) = self.submenu_rect_for_parent_item(
             bus,
             parent_menu_idx,
             parent_rect,
             submenu_idx,
-            parent_item,
+            request.parent_item,
         ) else {
-            self.close_submenus_from(bus, child_depth);
             return;
         };
         let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
         let submenu_ptr = bus.read_long(submenu_handle);
         let custom_definition =
             submenu_ptr != 0 && !self.menu_uses_standard_definition(bus, submenu_ptr);
+        let mut submenu = tracked_submenu_state(
+            submenu_handle,
+            request.parent_item,
+            dropdown_rect,
+            saved_pixels,
+        );
+        submenu.definition = custom_definition
+            .then(|| SharedMenuDefinitionTracking::begin_draw(submenu_handle, dropdown_rect));
+        let installed = self
+            .menu_tracking
+            .as_mut()
+            .is_some_and(|tracking| tracking.install_submenu(token, submenu).is_ok());
+        if !installed {
+            return;
+        }
         if custom_definition {
             self.draw_menu_dropdown_chrome(bus, submenu_idx, dropdown_rect);
         } else {
             self.draw_menu_dropdown(bus, submenu_idx, dropdown_rect);
-        }
-        if let Some(tracking) = self.menu_tracking.as_mut() {
-            let mut submenu =
-                tracked_submenu_state(submenu_handle, parent_item, dropdown_rect, saved_pixels);
-            submenu.definition = custom_definition
-                .then(|| SharedMenuDefinitionTracking::begin_draw(submenu_handle, dropdown_rect));
-            tracking.submenus.push(submenu);
-        }
-    }
-
-    fn update_submenu_highlight(&mut self, bus: &mut MacMemoryBus, depth: usize, new_item: i16) {
-        let Some((menu_handle, old_item, rect)) = self
-            .menu_tracking
-            .as_ref()
-            .and_then(|tracking| tracking.submenus.get(depth))
-            .map(|submenu| {
-                (
-                    submenu.menu_handle,
-                    submenu.highlighted_item,
-                    submenu.dropdown_rect(),
-                )
-            })
-        else {
-            return;
-        };
-        let Some(menu_idx) = self.menu_index_for_handle(menu_handle) else {
-            return;
-        };
-        let closed = self
-            .menu_tracking
-            .as_mut()
-            .and_then(|tracking| tracking.update_highlight(Some(depth), new_item))
-            .unwrap_or_default();
-        for submenu in closed.into_iter().rev() {
-            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
-        }
-        if old_item != new_item {
-            self.draw_menu_dropdown(bus, menu_idx, rect);
-        }
-        if new_item > 0 {
-            self.ensure_submenu_for_parent_item(bus, Some(depth), new_item);
-        }
-    }
-
-    fn update_parent_menu_highlight(&mut self, bus: &mut MacMemoryBus, new_item: i16) {
-        let Some(old_item) = self
-            .menu_tracking
-            .as_ref()
-            .map(|tracking| tracking.highlighted_item)
-        else {
-            return;
-        };
-
-        let closed = self
-            .menu_tracking
-            .as_mut()
-            .and_then(|tracking| tracking.update_highlight(None, new_item))
-            .unwrap_or_default();
-        for submenu in closed.into_iter().rev() {
-            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
-        }
-        if old_item != new_item {
-            let Some((active_menu_handle, dropdown_rect)) = self
-                .menu_tracking
-                .as_ref()
-                .map(|tracking| (tracking.menu_handle, tracking.dropdown_rect()))
-            else {
-                return;
-            };
-            let Some(active_menu) = self.menu_index_for_handle(active_menu_handle) else {
-                return;
-            };
-            self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
-        }
-
-        if new_item > 0 {
-            self.ensure_submenu_for_parent_item(bus, None, new_item);
         }
     }
 
@@ -4716,85 +4669,10 @@ impl super::TrapDispatcher {
         mouse_y: i16,
     ) {
         let point = (mouse_y, mouse_x);
-        let submenu_target = self.menu_tracking.as_ref().and_then(|tracking| {
-            tracking
-                .submenus
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(depth, submenu)| {
-                    if submenu.definition.is_some() {
-                        return None;
-                    }
-                    let menu_idx = self.menu_index_for_handle(submenu.menu_handle)?;
-                    let menu = self.menus.get(menu_idx)?;
-                    let rows = self.menu_rows(bus, &menu.items);
-                    let (top, left, bottom, right) = submenu.dropdown_rect();
-                    let inside =
-                        mouse_y >= top && mouse_y < bottom && mouse_x >= left && mouse_x < right;
-                    (inside
-                        || rows
-                            .pointer_scroll_direction(
-                                submenu.dropdown_rect(),
-                                submenu.content_top,
-                                point,
-                            )
-                            .is_some())
-                    .then_some((depth, rows))
-                })
-        });
-        if let Some((depth, rows)) = submenu_target {
-            let update = self
-                .menu_tracking
-                .as_mut()
-                .and_then(|tracking| tracking.submenus.get_mut(depth))
-                .map(|submenu| {
-                    rows.track_pointer(
-                        submenu.dropdown_rect(),
-                        &mut submenu.content_top,
-                        &mut submenu.scroll_direction,
-                        point,
-                    )
-                });
-            let Some(update) = update else {
-                return;
-            };
-            if let Some(menu_handle) = self
-                .menu_tracking
-                .as_ref()
-                .and_then(|tracking| tracking.submenus.get(depth))
-                .map(|submenu| submenu.menu_handle)
-            {
-                self.write_standard_menu_choice(bus, menu_handle, update.menu_choice_item);
-            }
-            self.update_submenu_highlight(bus, depth, update.item);
-            if update.scrolled {
-                if let Some((menu_handle, rect)) = self
-                    .menu_tracking
-                    .as_ref()
-                    .and_then(|tracking| tracking.submenus.get(depth))
-                    .map(|submenu| (submenu.menu_handle, submenu.dropdown_rect()))
-                {
-                    if let Some(menu_idx) = self.menu_index_for_handle(menu_handle) {
-                        self.draw_menu_dropdown(bus, menu_idx, rect);
-                    }
-                }
-            }
-            if let Some(content_top) = self
-                .menu_tracking
-                .as_ref()
-                .and_then(|tracking| tracking.submenus.get(depth))
-                .map(|submenu| submenu.content_top)
-            {
-                Self::write_menu_scrolling_globals(bus, &rows, content_top);
-            }
-            return;
-        }
-
-        let Some((menu_handle, rect)) = self
+        let Some(menu_handle) = self
             .menu_tracking
             .as_ref()
-            .map(|tracking| (tracking.menu_handle, tracking.dropdown_rect()))
+            .map(|tracking| tracking.menu_handle)
         else {
             return;
         };
@@ -4804,30 +4682,67 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(menu_idx) else {
             return;
         };
-        let rows = self.menu_rows(bus, &menu.items);
-        let update = self.menu_tracking.as_mut().map(|tracking| {
-            rows.track_pointer(
-                rect,
-                &mut tracking.content_top,
-                &mut tracking.scroll_direction,
-                point,
-            )
-        });
+        let root_rows = self.menu_tracking_rows(bus, menu);
+        let submenu_rows = self
+            .menu_tracking
+            .as_ref()
+            .map(|tracking| {
+                tracking
+                    .submenus
+                    .iter()
+                    .map(|submenu| {
+                        let menu_idx = self.menu_index_for_handle(submenu.menu_handle)?;
+                        let menu = self.menus.get(menu_idx)?;
+                        Some(self.menu_tracking_rows(bus, menu))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let update = self
+            .menu_tracking
+            .as_mut()
+            .and_then(|tracking| tracking.track_standard_pointer(&root_rows, &submenu_rows, point));
         let Some(update) = update else {
             return;
         };
-        self.write_standard_menu_choice(bus, menu_handle, update.menu_choice_item);
-        self.update_parent_menu_highlight(bus, update.item);
-        if update.scrolled {
-            self.draw_menu_dropdown(bus, menu_idx, rect);
+        let submenu_request = update.submenu_request();
+        self.write_standard_menu_choice(bus, update.menu_handle, update.pointer.menu_choice_item);
+        for submenu in update.closed_panes_deepest_first {
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
         }
-        if let Some(content_top) = self
-            .menu_tracking
-            .as_ref()
-            .map(|tracking| tracking.content_top)
-        {
-            Self::write_menu_scrolling_globals(bus, &rows, content_top);
+        let pane = match update.pane {
+            MenuTrackingPane::Root => self
+                .menu_tracking
+                .as_ref()
+                .map(|tracking| (menu_idx, tracking.dropdown_rect())),
+            MenuTrackingPane::Submenu(depth) => self
+                .menu_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.submenus.get(depth))
+                .and_then(|submenu| {
+                    self.menu_index_for_handle(submenu.menu_handle)
+                        .map(|menu_idx| (menu_idx, submenu.dropdown_rect()))
+                }),
+        };
+        if update.previous_item != update.pointer.item {
+            if let Some((menu_idx, rect)) = pane {
+                self.draw_menu_dropdown(bus, menu_idx, rect);
+            }
         }
+        if let Some(request) = submenu_request {
+            self.ensure_submenu_for_request(bus, request);
+        }
+        if update.pointer.scrolled {
+            if let Some((menu_idx, rect)) = pane {
+                self.draw_menu_dropdown(bus, menu_idx, rect);
+            }
+        }
+        Self::write_menu_scrolling_bounds(bus, update.content_top, update.content_bottom);
+    }
+
+    fn write_menu_scrolling_bounds(bus: &mut MacMemoryBus, content_top: i16, content_bottom: i16) {
+        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
+        bus.write_word(addr::AT_MENU_BOTTOM, content_bottom as u16);
     }
 
     fn write_menu_scrolling_globals(
@@ -4835,10 +4750,10 @@ impl super::TrapDispatcher {
         rows: &SharedMenuRows,
         content_top: i16,
     ) {
-        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
-        bus.write_word(
-            addr::AT_MENU_BOTTOM,
-            content_top.saturating_add(rows.total_height()) as u16,
+        Self::write_menu_scrolling_bounds(
+            bus,
+            content_top,
+            content_top.saturating_add(rows.total_height()),
         );
     }
 
@@ -5100,6 +5015,7 @@ impl super::TrapDispatcher {
                 continue;
             }
             let is_separator = item.text == "-";
+            let row_enabled = menu.enabled && item.enabled;
             let mark_pixel_index =
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 4);
             let name_pixel_index =
@@ -5108,7 +5024,7 @@ impl super::TrapDispatcher {
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 16);
             let classic_selected = self.ui_theme_id() == UiThemeId::ClassicSystem7
                 && highlighted_item == item_no
-                && item.enabled
+                && row_enabled
                 && !is_separator;
             let selected_mono = classic_selected && pixel_size == 1;
             let selected_colors =
@@ -5161,7 +5077,7 @@ impl super::TrapDispatcher {
                 left + 1,
                 item_bottom,
                 right - 1,
-                item.enabled,
+                row_enabled,
                 highlighted_item == i as i16 + 1,
                 is_separator,
                 item.icon != 0 && !has_app_icon_resource,
@@ -5177,15 +5093,15 @@ impl super::TrapDispatcher {
                 attached_pulldown,
             );
             let text_y = layout.text_baseline;
-            // IM:I I-358 / MTE 1992 p. 3-131: DisableItem dims an item and
-            // takes it out of MenuSelect and MenuKey, and HIG 1992 p. 54 says
-            // it stays visible while dimmed. Separator rows are dimmed the
-            // same way because IM:I I-353 keeps hyphen items disabled. On a
-            // colour screen the definition procedure resolves the dim shade
-            // through GetGray (IM:V 1986 p. V-142); where the device has no
-            // intermediate shade it knocks the drawn glyphs back with the 50%
-            // grey pattern instead.
-            let dim_row = !item.enabled || is_separator;
+            // MTE 1992 pp. 3-6--3-7 and p. 3-131: disabling a whole menu or
+            // one item dims its rows and removes them from MenuSelect and
+            // MenuKey. HIG 1992 p. 54 says unavailable items stay visible.
+            // Separator rows are dimmed the same way because IM:I I-353 keeps
+            // hyphen items disabled. On a colour screen the definition
+            // procedure resolves the dim shade through GetGray (IM:V 1986
+            // p. V-142); where the device has no intermediate shade it knocks
+            // the drawn glyphs back with the 50% grey pattern instead.
+            let dim_row = !row_enabled || is_separator;
             let dim_index = if dim_row {
                 Self::menu_dim_pixel_index(bus, pixel_size, name_pixel_index, dropdown_bg_index)
             } else {
@@ -12100,6 +12016,55 @@ mod tests {
         );
     }
 
+    // Disabling item zero dims the title and every item without preventing
+    // the menu from being displayed. Macintosh Toolbox Essentials (1992),
+    // pp. 3-6--3-7 and 3-58--3-59.
+    #[test]
+    fn draw_menu_dropdown_8bpp_dims_every_item_in_a_disabled_menu() {
+        let rect = (20, 20, 52, 140);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 645, 0x303680, "View");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x3036C0,
+            "Zoom;Actual Size",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, menu);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
+        let gray =
+            super::super::TrapDispatcher::fb_gray_pixel_index_between(&bus, [0xFFFF; 3], [0, 0, 0])
+                .expect("8bpp test screen should express an intermediate shade");
+        for row in 0..2 {
+            let pixels = ((rect.0 + row * MENU_ROW_HEIGHT + 1)
+                ..(rect.0 + (row + 1) * MENU_ROW_HEIGHT - 1))
+                .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
+                .map(|(x, y)| screen_pixel_index(&bus, base, row_bytes, x, y))
+                .collect::<Vec<_>>();
+            assert!(
+                pixels.iter().any(|pixel| *pixel == gray),
+                "disabled menu row {} did not retain dimmed ink",
+                row + 1,
+            );
+            assert!(
+                !pixels.iter().any(|pixel| *pixel == black),
+                "disabled menu row {} retained enabled black ink",
+                row + 1,
+            );
+        }
+    }
+
     // MTE 1992 p. 3-30: a black-and-white screen has no intermediate shade,
     // so the definition procedure dims with the 50% grey pattern and draws
     // dividers as dotted lines. Imaging With QuickDraw 1994 p. 3-9 fixes the
@@ -15028,6 +14993,151 @@ mod tests {
             .unwrap();
         assert_eq!(bus.read_long(TEST_SP), expected);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    // MenuSelect consults the live MenuInfo enable flags on every tracking
+    // slice instead of treating the presentation snapshot as authority.
+    // Macintosh Toolbox Essentials (1992), pp. 3-90--3-92 and 3-114--3-119.
+    #[test]
+    fn menuselect_observes_live_item_disable_during_tracking() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 523, 0x30BD00, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x30BD40, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let menu_ptr = bus.read_long(handle);
+        let enable_flags = bus.read_long(menu_ptr + 10);
+        assert_ne!(enable_flags & (1 << 1), 0, "item 1 should start enabled");
+        bus.write_long(menu_ptr + 10, enable_flags & !(1 << 1));
+
+        let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
+        disp.mouse_pos = (top + 8, left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            menu_choice_value(523, 1),
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+            "the live-disabled item became highlighted",
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+    }
+
+    // A disabled menu remains available for examination even though every
+    // row must behave as disabled. Macintosh Toolbox Essentials (1992),
+    // pp. 3-6--3-7 and 3-114--3-119.
+    #[test]
+    fn menuselect_disabled_menu_opens_without_selecting_an_item() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 522, 0x30BC00, "View");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x30BC40, "Zoom/Z");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, handle);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (screen_base, row_bytes, _, screen_height, _) = disp.get_screen_params();
+        let screen_len = usize::try_from(
+            row_bytes.saturating_mul(u32::try_from(screen_height.max(0)).unwrap_or(0)),
+        )
+        .unwrap();
+        let screen_before = bus.read_bytes(screen_base, screen_len);
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (top, left, _, _) = disp
+            .menu_tracking
+            .as_ref()
+            .expect("disabled title should still open")
+            .dropdown_rect();
+
+        disp.mouse_pos = (top + 8, left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let expected = menu_choice_value(522, 1);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            bus.read_bytes(screen_base, screen_len),
+            screen_before,
+            "disabled menu tracking did not restore the classic framebuffer",
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xDEAD_BEEF);
+        disp.dispatch_menu(true, 0x266, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), expected);
     }
 
     #[test]

@@ -55,10 +55,11 @@ use crate::menu_manager::{
     MenuColorTable, MenuDefinitionInvocation, MenuDefinitionMessage, MenuDefinitionPane,
     MenuDefinitionTracking, MenuItem as PpcMenuItemDefinition, MenuItems, MenuKeyItem, MenuKeyMenu,
     MenuKeySelection, MenuList as PpcMenuListDefinition, MenuListInstallRequest, MenuRow, MenuRows,
-    MenuSnapshotRecord, MenuTrackingKind, MenuTrackingSurface, MonochromeMenuIconLayout,
-    ProcessMenuTrackingState, ProcessTrackedMenuPane, SharedMenuTracking,
+    MenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane, MenuTrackingSurface,
+    MonochromeMenuIconLayout, ProcessMenuTrackingState, ProcessTrackedMenuPane, SharedMenuTracking,
     SharedNativeMenuSelection, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
-    StandardMenuPaneKind, SubmenuTransition, TrackedMenuIcon as PpcTrackedMenuIcon,
+    StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest,
+    TrackedMenuIcon as PpcTrackedMenuIcon,
     TrackedMenuItemAppearance as PpcTrackedMenuItemAppearance, TrackedMenuPaneView,
     MAX_MENU_LIST_ENTRIES, STANDARD_MENU_BAR_FIRST_TITLE_LEFT, STANDARD_MENU_BAR_TITLE_SPACING,
     STANDARD_MENU_DEFINITION_SHIM, STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
@@ -16965,9 +16966,7 @@ fn dispatch_supported_import(
                     }
                 }
                 if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
-                    if let Some((menu_handle, item)) =
-                        ppc_tracked_menu_selection(memory, state, input)
-                    {
+                    if let Some((menu_handle, item)) = ppc_tracked_menu_selection(memory, state) {
                         let menu_id = memory
                             .read_u32_be(menu_handle)
                             .filter(|ptr| *ptr != 0)
@@ -68055,9 +68054,10 @@ fn ppc_menu_handle_at_title_point(
     }
     let (menu_handle, title_left) = ppc_menu_list_definition(memory, menu_list_handle)?
         .regular_title_at_horizontal(initial_h)?;
-    let menu = memory.read_u32_be(menu_handle).filter(|ptr| *ptr != 0)?;
-    let menu_enabled = memory.read_u32_be(menu + 10).unwrap_or(0) & 1 != 0;
-    menu_enabled.then_some((menu_handle, title_left))
+    memory
+        .read_u32_be(menu_handle)
+        .filter(|menu| *menu != 0)
+        .map(|_| (menu_handle, title_left))
 }
 
 fn ppc_menu_tracking_hit(
@@ -68113,13 +68113,25 @@ fn ppc_menu_tracking_rows(
 }
 
 fn ppc_write_menu_scrolling_globals(memory: &mut PpcSectionMem, rows: &MenuRows, content_top: i16) {
+    ppc_write_menu_scrolling_bounds(
+        memory,
+        content_top,
+        content_top.saturating_add(rows.total_height()),
+    );
+}
+
+fn ppc_write_menu_scrolling_bounds(
+    memory: &mut PpcSectionMem,
+    content_top: i16,
+    content_bottom: i16,
+) {
     let _ = memory.write_u16_be(
         crate::memory::globals::addr::TOP_MENU_ITEM,
         content_top as u16,
     );
     let _ = memory.write_u16_be(
         crate::memory::globals::addr::AT_MENU_BOTTOM,
-        content_top.saturating_add(rows.total_height()) as u16,
+        content_bottom as u16,
     );
 }
 
@@ -68794,12 +68806,14 @@ fn ppc_begin_submenu_tracking(
     >,
     parent_item: i16,
 ) -> Option<PpcSubmenuTracking> {
+    let menu_handle =
+        ppc_submenu_handle_for_item(memory, menu_list_handle, parent.menu_handle(), parent_item)?;
     ppc_begin_submenu_tracking_with_resources(
         memory,
-        menu_list_handle,
         front,
         parent,
         parent_item,
+        menu_handle,
         &[],
         0,
     )
@@ -68807,7 +68821,6 @@ fn ppc_begin_submenu_tracking(
 
 fn ppc_begin_submenu_tracking_with_resources(
     memory: &mut PpcSectionMem,
-    menu_list_handle: u32,
     front: PpcFrontBuffer,
     parent: &impl TrackedMenuPaneView<
         MenuRef = u32,
@@ -68816,11 +68829,10 @@ fn ppc_begin_submenu_tracking_with_resources(
         Appearance = PpcTrackedMenuItemAppearance,
     >,
     parent_item: i16,
+    menu_handle: u32,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> Option<PpcSubmenuTracking> {
-    let menu_handle =
-        ppc_submenu_handle_for_item(memory, menu_list_handle, parent.menu_handle(), parent_item)?;
     let custom_definition = ppc_menu_uses_guest_definition(memory, resources, menu_handle);
     if !custom_definition {
         ppc_calc_menu_size_with_resources(memory, menu_handle, resources, current_resource_refnum);
@@ -68890,79 +68902,74 @@ fn ppc_begin_submenu_tracking_with_resources(
     })
 }
 
-fn ppc_close_tracked_submenus_from(
-    memory: &mut PpcSectionMem,
-    state: &mut PpcMenuTracking,
-    depth: usize,
-) {
-    for submenu in state.close_submenus_from(depth).into_iter().rev() {
-        ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
-    }
-}
-
 fn ppc_ensure_tracked_submenu(
     memory: &mut PpcSectionMem,
     menu_list_handle: u32,
     state: &mut PpcMenuTracking,
-    parent_depth: Option<usize>,
-    parent_item: i16,
+    request: SubmenuRequest<u32>,
     resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) {
-    let child_depth = parent_depth.map_or(0, |depth| depth.saturating_add(1));
-    let parent_menu_handle = parent_depth
-        .and_then(|depth| state.submenus.get(depth))
-        .map(|submenu| submenu.menu_handle)
-        .unwrap_or(state.menu_handle);
-    let Some(submenu_handle) =
-        ppc_submenu_handle_for_item(memory, menu_list_handle, parent_menu_handle, parent_item)
-    else {
-        ppc_close_tracked_submenus_from(memory, state, child_depth);
-        return;
-    };
-
-    let closed = match state.prepare_submenu(child_depth, parent_item, submenu_handle) {
-        SubmenuTransition::Keep => return,
-        SubmenuTransition::Reject(closed) => {
-            for submenu in closed.into_iter().rev() {
+    let resolved_child = ppc_submenu_handle_for_item(
+        memory,
+        menu_list_handle,
+        request.parent_handle,
+        request.parent_item,
+    );
+    let (token, closed) = match state.reconcile_submenu(request, resolved_child) {
+        SubmenuReconciliation::Stale | SubmenuReconciliation::Keep => return,
+        SubmenuReconciliation::Closed {
+            panes_deepest_first,
+        } => {
+            for submenu in panes_deepest_first {
                 ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
             }
             return;
         }
-        SubmenuTransition::Open(closed) => closed,
+        SubmenuReconciliation::Open {
+            token,
+            panes_deepest_first,
+        } => (token, panes_deepest_first),
     };
-    for submenu in closed.into_iter().rev() {
+    for submenu in closed {
         ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
     }
+    let request = token.request();
+    let submenu_handle = token.child_handle();
     let Some(front) = state.front_buffer.map(PpcFrontBuffer::from) else {
         return;
     };
-    let submenu = if let Some(depth) = parent_depth {
-        let Some(parent) = state.submenus.get(depth).cloned() else {
-            return;
-        };
-        ppc_begin_submenu_tracking_with_resources(
+    let submenu = match request.parent {
+        MenuTrackingPane::Submenu(depth) => {
+            let Some(parent) = state.submenus.get(depth).cloned() else {
+                return;
+            };
+            ppc_begin_submenu_tracking_with_resources(
+                memory,
+                front,
+                &parent,
+                request.parent_item,
+                submenu_handle,
+                resources,
+                current_resource_refnum,
+            )
+        }
+        MenuTrackingPane::Root => ppc_begin_submenu_tracking_with_resources(
             memory,
-            menu_list_handle,
-            front,
-            &parent,
-            parent_item,
-            resources,
-            current_resource_refnum,
-        )
-    } else {
-        ppc_begin_submenu_tracking_with_resources(
-            memory,
-            menu_list_handle,
             front,
             state,
-            parent_item,
+            request.parent_item,
+            submenu_handle,
             resources,
             current_resource_refnum,
-        )
+        ),
     };
     if let Some(submenu) = submenu {
-        state.submenus.push(submenu);
+        if let Err(submenu) = state.install_submenu(token, submenu) {
+            if !submenu.saved_pixels.is_empty() {
+                ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
+            }
+        }
     }
 }
 
@@ -69055,49 +69062,31 @@ fn ppc_update_menu_tracking(
     current_resource_refnum: i16,
 ) {
     let point = (input.mouse_v, input.mouse_h);
-    let submenu_target = state
+    let root_rows = ppc_menu_tracking_rows(memory, state);
+    let submenu_rows = state
         .submenus
         .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(depth, submenu)| {
-            if submenu.definition.is_some() {
-                return None;
-            }
-            let rows = ppc_menu_tracking_rows(memory, submenu);
-            let rect = submenu.dropdown_rect();
-            let inside = input.mouse_v >= rect.0
-                && input.mouse_v < rect.2
-                && input.mouse_h >= rect.1
-                && input.mouse_h < rect.3;
-            (inside
-                || rows
-                    .pointer_scroll_direction(rect, submenu.content_top, point)
-                    .is_some())
-            .then_some((depth, rows))
-        });
-    if let Some((depth, rows)) = submenu_target {
-        let update = {
-            let submenu = &mut state.submenus[depth];
-            rows.track_pointer(
-                submenu.dropdown_rect(),
-                &mut submenu.content_top,
-                &mut submenu.scroll_direction,
-                point,
-            )
-        };
-        ppc_write_standard_menu_choice(
+        .map(|submenu| Some(ppc_menu_tracking_rows(memory, submenu)))
+        .collect::<Vec<_>>();
+    let Some(update) = state.track_standard_pointer(&root_rows, &submenu_rows, point) else {
+        return;
+    };
+    let submenu_request = update.submenu_request();
+    ppc_write_standard_menu_choice(memory, update.menu_handle, update.pointer.menu_choice_item);
+    for submenu in update.closed_panes_deepest_first {
+        ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
+    }
+    match update.pane {
+        MenuTrackingPane::Root => ppc_draw_tracked_menu(
             memory,
-            state.submenus[depth].menu_handle,
-            update.menu_choice_item,
-        );
-        let closed = state
-            .update_highlight(Some(depth), update.item)
-            .unwrap_or_default();
-        for submenu in closed.into_iter().rev() {
-            ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
-        }
-        if update.scrolled {
+            gworlds,
+            screen_clut,
+            menu_colors,
+            state.kind.into(),
+            state,
+            update.pointer.item,
+        ),
+        MenuTrackingPane::Submenu(depth) if update.pointer.scrolled => {
             let submenu = &state.submenus[depth];
             ppc_draw_tracked_menu(
                 memory,
@@ -69109,79 +69098,30 @@ fn ppc_update_menu_tracking(
                 submenu.highlighted_item,
             );
         }
-        if update.item > 0 {
-            ppc_ensure_tracked_submenu(
-                memory,
-                menu_list_handle,
-                state,
-                Some(depth),
-                update.item,
-                resources,
-                current_resource_refnum,
-            );
-        }
-        ppc_write_menu_scrolling_globals(memory, &rows, state.submenus[depth].content_top);
-        ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, menu_colors, state);
-        return;
+        MenuTrackingPane::Submenu(_) => {}
     }
-
-    let rows = ppc_menu_tracking_rows(memory, state);
-    let update = rows.track_pointer(
-        state.dropdown_rect(),
-        &mut state.content_top,
-        &mut state.scroll_direction,
-        point,
-    );
-    ppc_write_standard_menu_choice(memory, state.menu_handle, update.menu_choice_item);
-    let closed = state
-        .update_highlight(None, update.item)
-        .unwrap_or_default();
-    for submenu in closed.into_iter().rev() {
-        ppc_restore_tracked_menu(memory, submenu.front_buffer, &submenu);
-    }
-    ppc_draw_tracked_menu(
-        memory,
-        gworlds,
-        screen_clut,
-        menu_colors,
-        state.kind.into(),
-        state,
-        update.item,
-    );
-    if update.item > 0 {
+    if let Some(request) = submenu_request {
         ppc_ensure_tracked_submenu(
             memory,
             menu_list_handle,
             state,
-            None,
-            update.item,
+            request,
             resources,
             current_resource_refnum,
         );
     }
-    ppc_write_menu_scrolling_globals(memory, &rows, state.content_top);
+    ppc_write_menu_scrolling_bounds(memory, update.content_top, update.content_bottom);
     ppc_draw_open_tracked_submenus(memory, gworlds, screen_clut, menu_colors, state);
 }
 
 fn ppc_tracked_menu_selection(
     memory: &mut PpcSectionMem,
     state: &PpcMenuTracking,
-    input: PpcInputSnapshot,
 ) -> Option<(u32, i16)> {
-    if let Some((submenu, item)) = state.submenus.iter().rev().find_map(|submenu| {
-        let item = ppc_menu_tracking_item(memory, submenu, input);
-        (item > 0).then_some((submenu, item))
-    }) {
-        return (!ppc_menu_item_is_hierarchical(memory, submenu.menu_handle, item))
-            .then_some((submenu.menu_handle, item));
-    }
-    let item = ppc_menu_tracking_item(memory, state, input);
-    (item > 0)
-        .then(|| {
-            (!ppc_menu_item_is_hierarchical(memory, state.menu_handle, item))
-                .then_some((state.menu_handle, item))
-        })
-        .flatten()
+    state.selection(|menu_handle, item| {
+        ppc_menu_item_is_selectable(memory, menu_handle, item)
+            && !ppc_menu_item_is_hierarchical(memory, menu_handle, item)
+    })
 }
 
 fn ppc_deepest_highlighted_menu_item(state: &PpcMenuTracking) -> Option<(u32, i16)> {
@@ -69704,9 +69644,10 @@ fn ppc_track_menu_while_held_with_resources(
             );
             return;
         }
-        // MenuSelect keeps tracking while the button is held. Crossing an
-        // enabled regular title closes the old dropdown and opens the new
-        // title's menu. Macintosh Toolbox Essentials (1992), p. 3-115.
+        // MenuSelect keeps tracking while the button is held. Crossing a
+        // regular title closes the old dropdown and opens the new title's
+        // menu, including a disabled menu whose items can only be examined.
+        // Macintosh Toolbox Essentials (1992), pp. 3-6--3-7 and 3-115.
         let live_point = (u32::from(input.mouse_v as u16) << 16) | u32::from(input.mouse_h as u16);
         let switched = ppc_menu_handle_at_title_point(memory, current_menu_list, live_point)
             .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle);
@@ -69788,7 +69729,7 @@ fn ppc_finish_menu_bar_tracking_with_colors(
     screen_clut: &[[u16; 3]; 256],
     menu_colors: MenuColorTable<'_>,
     startup: &mut PpcToolboxStartupState,
-    input: PpcInputSnapshot,
+    _input: PpcInputSnapshot,
 ) -> Option<u32> {
     if startup
         .menu_tracking
@@ -69799,7 +69740,7 @@ fn ppc_finish_menu_bar_tracking_with_colors(
     }
     let state = startup.menu_tracking.as_ref()?;
     let selection = (!startup.host_menu_bar_hidden)
-        .then(|| ppc_tracked_menu_selection(memory, state, input))
+        .then(|| ppc_tracked_menu_selection(memory, state))
         .flatten();
     let result = selection
         .and_then(|(menu_handle, item)| {
@@ -69870,6 +69811,21 @@ fn ppc_finish_menu_bar_tracking(
     startup: &mut PpcToolboxStartupState,
     input: PpcInputSnapshot,
 ) -> Option<u32> {
+    if let Some(mut state) = startup.menu_tracking.take() {
+        let menu_list = ppc_current_menu_list(memory);
+        ppc_update_menu_tracking(
+            memory,
+            gworlds,
+            screen_clut,
+            MenuColorTable::new(&[]),
+            menu_list,
+            &mut state,
+            input,
+            &[],
+            0,
+        );
+        *startup.menu_tracking = Some(state);
+    }
     ppc_finish_menu_bar_tracking_with_colors(
         memory,
         gworlds,
@@ -83577,15 +83533,7 @@ mod tests {
             assert_eq!(cycle.submenus.len(), 2, "circular submenu grew the chain");
             assert_eq!(cycle.submenus[1].highlighted_item, 1);
             assert_eq!(
-                ppc_tracked_menu_selection(
-                    &mut loaded.memory,
-                    &cycle,
-                    PpcInputSnapshot {
-                        mouse_v: speed_pane.popup_top + 8,
-                        mouse_h: speed_pane.popup_left + 20,
-                        ..PpcInputSnapshot::default()
-                    },
-                ),
+                ppc_tracked_menu_selection(&mut loaded.memory, &cycle),
                 None,
                 "hierarchical parent became selectable",
             );
@@ -139535,7 +139483,8 @@ mod tests {
                 menu_list,
                 point(10, disabled_left + 2),
             ),
-            None,
+            Some((disabled_menu, disabled_left)),
+            "a disabled title remains available for examination",
         );
 
         for depth in [1, 2, 4, 8, 16] {
@@ -139647,15 +139596,20 @@ mod tests {
                     .menu_tracking
                     .as_ref()
                     .map(|state| state.menu_handle),
-                Some(edit_menu),
-                "{depth}bpp disabled title became active",
+                Some(disabled_menu),
+                "{depth}bpp disabled title did not open",
             );
-            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(129));
+            assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(130));
+            let disabled_tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
+            assert_eq!(
+                disabled_tracking.highlighted_item, 0,
+                "{depth}bpp disabled menu item became highlighted",
+            );
 
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: false,
-                mouse_v: 100,
-                mouse_h: i16::try_from(front.width).unwrap_or(i16::MAX) - 1,
+                mouse_v: disabled_tracking.popup_top + 8,
+                mouse_h: disabled_tracking.popup_left + 4,
                 ..PpcInputSnapshot::default()
             });
             let probe = loaded.run_with_hle_imports(64);
@@ -139664,6 +139618,20 @@ mod tests {
             assert_eq!(loaded.cpu.gpr[1], original_sp);
             assert_eq!(loaded.toolbox_startup.menu_tracking, None);
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(0));
+            assert_eq!(
+                loaded
+                    .memory
+                    .read_u32_be(crate::memory::globals::addr::MENU_DISABLE),
+                Some(menu_choice_value(130, 1)),
+                "{depth}bpp disabled menu did not expose its raw hovered row",
+            );
+            loaded.cpu.gpr[3] = 0xDEAD_BEEF;
+            run_test_import(&mut loaded, PpcImportDispatcherTarget::MenuChoice);
+            assert_eq!(
+                loaded.cpu.gpr[3],
+                menu_choice_value(130, 1),
+                "{depth}bpp MenuChoice did not return the disabled menu row",
+            );
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(before),
