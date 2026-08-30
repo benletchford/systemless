@@ -59,6 +59,8 @@ const SCSI_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_scsi_dispatch_operations.rs");
 const PACK11_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack11_operations.rs");
+const TRANSLATION_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_translation_dispatch_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -201,6 +203,16 @@ fn pack11_operation_route(
         return None;
     }
     selector_operation_route(PACK11_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn translation_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xABFC {
+        return None;
+    }
+    selector_operation_route(TRANSLATION_DISPATCH_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -15980,7 +15992,7 @@ impl super::TrapDispatcher {
                     0 => return_noerr_and_pop(cpu, pop_bytes),
                     _ => return_error_and_pop(cpu, pop_bytes, -50),
                 }
-            }
+            },
 
             // ThreadDispatch ($ABF2) — cooperative Thread Manager
             // Inside Macintosh: Thread Manager (1999), pp. 1-56 to 1-58:
@@ -16362,34 +16374,19 @@ impl super::TrapDispatcher {
                 } else {
                     return_error_and_pop(cpu, argument_bytes, result)
                 }
-            }
+            },
 
-            // TranslationDispatch ($ABFC) — Translation Manager
-            // Inside Macintosh: More Macintosh Toolbox (1993),
-            // pp. 7-12 and 7-66:
-            // `Gestalt('xlat', ...)` with response bit
-            // `gestaltTranslationMgrExists` gates availability; the
-            // manager's routines are invoked through
-            // `_TranslationDispatch` routine selectors.
-            // The Translation Manager (Mac Easy Open / Macintosh
-            // Easy Open) routes file-format translation requests
-            // — e.g. MS Word .doc → Mac Word .mcw, JPEG → PICT.
-            // Selector convention: D0 = routine number per the
-            // selector summary table at MMTB 20828ff. Routines
-            // include GetTranslationExtensions, IdentifyFile,
-            // TranslateFile, TranslateContents, NewScriptingFile.
-            // Gestalt: `gestaltTranslationAttr` (response bit 0
-            // `gestaltTranslationMgrExists`).
-            //
-            // HLE behaviour: the dispatcher returns a non-zero error
-            // and advances A7 by 4 bytes. Apps that probe Gestalt
-            // see "absent" and either ask the user to convert the
-            // file manually or refuse to open foreign formats.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::translationdispatch_*
-            // TranslationDispatch ($ABFC): MMTB 1993 ch.21 20111+20828. D0 selector per MMTB 20828 selector summary. Gestalt → gestaltTranslationMgrExists=0. HLE: D0=0, registers + stack preserved (apps refuse foreign-format opens).
-            (true, 0x3FC) => return_error_and_pop(cpu, 4, -50),
+            // _TranslationDispatch (0xABFC)
+            // Dispatches Translation Manager routines selected by D0.
+            // FUNCTION GetFileTypesThatAppCanNativelyOpen (appVRefNumHint: Integer; appSignature: OSType; VAR nativeTypes: TypesBlock): OSErr;
+            // Inside Macintosh: More Macintosh Toolbox (1993), pp. 7-37–7-38 and 7-66.
+            (true, 0x3FC) => {
+                let selector = cpu.read_reg(Register::D0);
+                let operation =
+                    translation_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                return_error_and_pop(cpu, 4, -50)
+            },
 
             _ => return None,
         })
@@ -26528,7 +26525,7 @@ mod tests {
     }
 
     #[test]
-    fn translationdispatch_selector_zero_returns_param_err_and_pops_four_bytes() {
+    fn translationdispatch_known_selector_returns_param_err_and_pops_four_bytes() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
         cpu.write_reg(Register::A7, sp);
@@ -26554,7 +26551,7 @@ mod tests {
     }
 
     #[test]
-    fn translationdispatch_selector_zero_preserves_non_d0_registers_and_pops_four_bytes() {
+    fn translationdispatch_known_selector_preserves_non_d0_registers_and_pops_four_bytes() {
         let (mut disp, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::D0, 0x0000_0009);
         cpu.write_reg(Register::D1, 0x7777_8888);
@@ -33828,5 +33825,121 @@ mod tests {
             0x1122_3344,
             "guest stack memory must remain invariant on trap word mismatch"
         );
+    }
+
+    #[test]
+    fn translation_dispatch_generated_routes_preserve_exact_register_values() {
+        assert_eq!(super::TRANSLATION_DISPATCH_OPERATION_ROUTES.len(), 6);
+        assert!(super::TRANSLATION_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0001, "UpdateTranslationProgress"),
+            (0x0002, "SetTranslationAdvertisement"),
+            (0x0009, "ExtendFileTypeList"),
+            (0x000C, "TranslateFile"),
+            (0x001C, "GetFileTypesThatAppCanNativelyOpen"),
+            (0x001E, "CanDocBeOpened"),
+        ] {
+            let route = super::translation_dispatch_operation_route(0xABFC, selector)
+                .expect("TranslationDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_TranslationDispatch:0x{selector:04X}:d0-moveq-immediate:8")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA8FC, 0x0001),
+            (0xA9FC, 0x0009),
+            (0xAAFC, 0x001C),
+            (0xABFC, 0x0000),
+            (0xABFC, 0x0003),
+            (0xABFC, 0x0008),
+            (0xABFC, 0x0010),
+            (0xABFC, 0x0020),
+            (0xABFC, 0x7001),
+            (0xABFC, 0x701C),
+            (0xABFC, 0x0001_0001),
+            (0xABFC, 0xDEAD_001C),
+            (0xABFC, 0xFFFF_0009),
+            (0xABFC, 0x1C00),
+        ] {
+            assert!(super::translation_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn translation_dispatch_records_known_then_clears_unknown_and_preserves_invariants() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xABFC;
+
+        // Known selector: GetFileTypesThatAppCanNativelyOpen ($001C)
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_001C);
+        cpu.write_reg(Register::D1, 0x1122_3344);
+        cpu.write_reg(Register::D2, 0x5566_7788);
+        cpu.write_reg(Register::A0, 0x99AA_BBCC);
+        cpu.write_reg(Register::A1, 0xDDEE_FF00);
+        cpu.write_reg(Register::A2, 0x1357_2468);
+        bus.write_long(sp, 0xCAFE_BABE);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        bus.write_long(sp - 8, 0x0123_4567);
+
+        let result = disp.dispatch_toolbox(true, 0x3FC, &mut cpu, &mut bus);
+        assert!(result.is_some(), "TranslationDispatch should be handled");
+        assert!(result.unwrap().is_ok(), "TranslationDispatch should return");
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_TranslationDispatch:0x001C:d0-moveq-immediate:8")
+        );
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D1), 0x1122_3344);
+        assert_eq!(cpu.read_reg(Register::D2), 0x5566_7788);
+        assert_eq!(cpu.read_reg(Register::A0), 0x99AA_BBCC);
+        assert_eq!(cpu.read_reg(Register::A1), 0xDDEE_FF00);
+        assert_eq!(cpu.read_reg(Register::A2), 0x1357_2468);
+        assert_eq!(bus.read_long(sp), 0xCAFE_BABE);
+        assert_eq!(bus.read_long(sp + 4), 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(sp - 8), 0x0123_4567);
+
+        // Unknown selector ($0000): must clear operation identity and preserve invariants
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0000);
+        let result = disp.dispatch_toolbox(true, 0x3FC, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D1), 0x1122_3344);
+        assert_eq!(bus.read_long(sp), 0xCAFE_BABE);
+
+        // Stale high word ($DEAD_001C): must clear operation identity
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xDEAD_001C);
+        let result = disp.dispatch_toolbox(true, 0x3FC, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        // Trap word mismatch (0xA8FC): must clear operation identity
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xA8FC;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_001C);
+        let result = disp.dispatch_toolbox(true, 0x3FC, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -50);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 }
