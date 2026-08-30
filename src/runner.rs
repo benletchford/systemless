@@ -1345,7 +1345,7 @@ const DIALOG_FILTER_EVENT_OFFSET: u32 = 0x80;
 // 2-byte scratch where the filter trampoline writes its Boolean return value.
 const DIALOG_FILTER_RESULT_OFFSET: u32 = 0x96;
 const MENU_HOOK_TRAMPOLINE_OFFSET: u32 = 0xA0;
-const DIALOG_CALLBACK_SCRATCH_FALLBACK: u32 = 0x0000_1200;
+const DIALOG_CALLBACK_SCRATCH_SIZE: u32 = 0xC0;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
 pub const DEFAULT_VBL_HZ: f64 = 60.15;
 
@@ -1792,6 +1792,9 @@ pub struct FixtureRunner {
     /// Guest-memory trampoline used to invoke File Manager asynchronous
     /// completion procedures.
     file_completion_trampoline: u32,
+    /// Systemless-owned storage for dialog and MenuHook callback trampolines.
+    /// This must not overlap the architectural low-memory trap tables.
+    dialog_callback_scratch_base: u32,
     /// Guest-memory address of the dialog userItem draw proc trampoline (26 bytes).
     /// Allocated once on first use and reused for all subsequent draw proc calls.
     dialog_draw_trampoline: u32,
@@ -1928,6 +1931,7 @@ impl FixtureRunner {
         dispatcher
             .adb
             .install_standard_service_routine(standard_adb_service);
+        let dialog_callback_scratch_base = bus.alloc_synthetic(DIALOG_CALLBACK_SCRATCH_SIZE);
         Self {
             cpu: M68kCpu::new(),
             parked_m68k_cpus: Vec::new(),
@@ -1971,6 +1975,7 @@ impl FixtureRunner {
             sound_callback_trampoline: 0,
             sound_file_completion_trampoline: 0,
             file_completion_trampoline: 0,
+            dialog_callback_scratch_base,
             dialog_draw_trampoline: 0,
             dialog_filter_trampoline: 0,
             menu_hook_trampoline: 0,
@@ -9850,7 +9855,7 @@ impl FixtureRunner {
     }
 
     fn dialog_callback_scratch_base(&self) -> u32 {
-        DIALOG_CALLBACK_SCRATCH_FALLBACK
+        self.dialog_callback_scratch_base
     }
 
     fn looks_like_dialog_proc_entry(&self, addr: u32) -> bool {
@@ -23016,6 +23021,45 @@ mod tests {
         assert_eq!(runner.bus.read_long(0x016A), 3);
         assert_eq!(runner.dispatcher.pending_delay_ticks, 0);
         assert_eq!(runner.cpu.read_reg(Register::D0), 3);
+    }
+
+    #[test]
+    fn dialog_callback_scratch_preserves_materialized_toolbox_trap_table() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let table_start = crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE;
+        let table_end =
+            table_start + u32::from(crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS) * 4;
+        let scratch_start = runner.dialog_callback_scratch_base();
+        let scratch_end = scratch_start + DIALOG_CALLBACK_SCRATCH_SIZE;
+        assert!(scratch_end <= table_start || scratch_start >= table_end);
+
+        const SHOW_WINDOW: u16 = 0xA915;
+        let show_window_entry = table_start + u32::from(SHOW_WINDOW & 0x03FF) * 4;
+        let original_show_window = runner.bus.read_long(show_window_entry);
+        assert_eq!(
+            runner
+                .dispatcher
+                .native_trap_handler(&runner.bus, SHOW_WINDOW),
+            None
+        );
+        let filter_proc = 0x0004_2000u32;
+        runner.bus.write_word(filter_proc, 0x4E56);
+        runner.cpu.write_reg(Register::PC, 0x0001_0000);
+        runner.cpu.write_reg(Register::A7, 0x007F_FFC0);
+        runner.dispatcher.dialog_tracking =
+            Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
+
+        assert!(runner.fire_dialog_filter_proc());
+        assert_eq!(
+            runner.bus.read_long(show_window_entry),
+            original_show_window
+        );
+        assert_eq!(
+            runner
+                .dispatcher
+                .native_trap_handler(&runner.bus, SHOW_WINDOW),
+            None
+        );
     }
 
     #[test]
