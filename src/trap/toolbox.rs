@@ -33,6 +33,8 @@ const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
 const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
 const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
+const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack14_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -60,6 +62,16 @@ fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static Selec
         return None;
     }
     selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack14_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA830 {
+        return None;
+    }
+    selector_operation_route(PACK14_OPERATION_ROUTES, u32::from(selector))
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -14965,11 +14977,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack14 ($A830) — Help Manager
-            //
-            // Twenty-one-routine selector dispatcher providing balloon
-            // help: status query, balloon show/remove, font config,
-            // help-resource lookup, and help-message extraction.
+            // Pack14 ($A830)
+            // Dispatches Help Manager routines selected by D0.W.
+            // FUNCTION HMGetBalloons: Boolean;
+            // Inside Macintosh: More Macintosh Toolbox (1993), p. 3-98.
             //
             // Selector encoding is `(arg_words << 8) | routine`.
             // Public MPW glue emits `MOVE.W #selector,D0; _Pack14`;
@@ -15014,10 +15025,6 @@ impl super::TrapDispatcher {
             // popped 11 instead of 22, leaving 11 args bytes
             // stranded. Any real-game caller would crash on RTS.
             //
-            // Inside Macintosh: More Macintosh Toolbox 1993, ch. 3,
-            // Help Manager, pages 3-1..3-173 + selector summary at
-            // page 3-173 (MMTb 11320..11340).
-            // Pack14 / Help Manager ($A830): Per-selector Pascal frames per IM:MMTb 1993 ch.3 + selector table 3-173; selector is in D0, not on the stack. $0002 HMRemoveBalloon pop 0 D0=hmHelpDisabled, $0003 HMGetBalloons pop 0 D0=0 result=FALSE, $0007 HMIsBalloon pop 0 D0=0 result=FALSE, $0104 HMSetBalloons pop 2 D0=0, $0108 HMSetFont pop 2 D0=0, $0109 HMSetFontSize pop 2 D0=0, $010C HMSetDialogResID pop 2 D0=0, $0200 HMGetHelpMenuHandle pop 4 writes NIL to *mh D0=hmHelpManagerNotInited, $020A HMGetFont pop 4 writes 0 to *font D0=0, $020B HMGetFontSize pop 4 writes 0 to *fontSize D0=0, $020D HMSetMenuResID pop 4 D0=0, $0213 HMGetDialogResID pop 4 writes -1 to *resID D0=resNotFound, $0215 HMGetBalloonWindow pop 4 writes NIL to *window D0=0, $0314 HMGetMenuResID pop 6 writes -1 to *resID D0=resNotFound, $040E HMBalloonRect pop 8 writes Rect(0,0,0,0) D0=0, $040F HMBalloonPict pop 8 writes NIL to *coolPict D0=0, $0410 HMScanTemplateItems pop 8 D0=resNotFound, $0711 HMExtractHelpMsg pop 14 D0=resNotFound, $0B01 HMShowBalloon pop 22 D0=hmHelpDisabled, $0E05 HMShowMenuBalloon pop 28 D0=hmHelpDisabled, $1306 HMGetIndHelpMsg pop 38 D0=resNotFound.
             (true, 0x030) => {
                 const HM_HELP_DISABLED: i16 = -850;
                 const HM_HELP_MGR_NOT_INITED: i16 = -855;
@@ -15025,6 +15032,8 @@ impl super::TrapDispatcher {
 
                 let sp = cpu.read_reg(Register::A7);
                 let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let operation = pack14_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
 
                 // Helper: write OSErr/Integer result word to BOTH the
                 // stack slot at sp+pop_total AND D0, then advance A7.
@@ -27502,6 +27511,78 @@ mod tests {
     //   HMGetFont(VAR font: Integer): OSErr;
     // Inside Macintosh: More Macintosh Toolbox 1993, pp. 3-109 to 3-111;
     // selector table p. 3-173.
+    #[test]
+    fn pack14_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK14_OPERATION_ROUTES.len(), 21);
+        assert!(super::PACK14_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0002, "HMRemoveBalloon"),
+            (0x0003, "HMGetBalloons"),
+            (0x0007, "HMIsBalloon"),
+            (0x0104, "HMSetBalloons"),
+            (0x0108, "HMSetFont"),
+            (0x0109, "HMSetFontSize"),
+            (0x010C, "HMSetDialogResID"),
+            (0x0200, "HMGetHelpMenuHandle"),
+            (0x020A, "HMGetFont"),
+            (0x020B, "HMGetFontSize"),
+            (0x020D, "HMSetMenuResID"),
+            (0x0213, "HMGetDialogResID"),
+            (0x0215, "HMGetBalloonWindow"),
+            (0x0314, "HMGetMenuResID"),
+            (0x040E, "HMBalloonRect"),
+            (0x040F, "HMBalloonPict"),
+            (0x0410, "HMScanTemplateItems"),
+            (0x0711, "HMExtractHelpMsg"),
+            (0x0B01, "HMShowBalloon"),
+            (0x0E05, "HMShowMenuBalloon"),
+            (0x1306, "HMGetIndHelpMsg"),
+        ] {
+            let route = super::pack14_operation_route(0xA830, selector).expect("Pack14 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA930, 0x0104),
+            (0xA830, 0x0000),
+            (0xA830, 0x0105),
+            (0xA830, 0x303C),
+        ] {
+            assert!(super::pack14_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack14_records_low_word_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA830;
+        cpu.write_reg(Register::D0, 0xABCD_0104);
+        bus.write_word(sp, 1);
+        bus.write_word(sp + 2, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.expect("Pack14 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack14:0x0104:d0-low-word-immediate:16")
+        );
+        assert_eq!(bus.read_word(sp + 2), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+
+        disp.current_trap_word = 0xA930;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0104);
+        bus.write_word(sp, 1);
+        bus.write_word(sp + 2, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.expect("Pack14 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
     #[test]
     fn pack14_hmgethelpmenuhandle_writes_nil_and_returns_hmhelpmanagernotinited() {
         let (mut disp, mut cpu, mut bus) = setup();
