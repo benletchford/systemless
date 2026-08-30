@@ -13,6 +13,7 @@ use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{SharedMenuTracking, SharedNativeMenuSelection};
+use crate::process_context::ProcessContext;
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -2926,6 +2927,19 @@ pub(crate) struct LoadedResources {
 }
 
 impl TrapDispatcher {
+    /// # Safety
+    ///
+    /// The caller must keep this adapter and the context under one process
+    /// owner that serializes all access to their shared handles.
+    pub(crate) unsafe fn attach_process_context(&mut self, context: &ProcessContext) {
+        unsafe {
+            context.attach_event_queue(&mut self.event_queue);
+            context.attach_menu_tracking(&mut self.menu_tracking);
+        }
+        context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
+        context.attach_guest_calls(&mut self.guest_calls);
+    }
+
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
     pub(crate) const AUTO_KEY_RATE_TICKS: u32 = 4;
     const CAPS_LOCK_KEY_CODE: u8 = 0x39;

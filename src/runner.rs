@@ -18,6 +18,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
+use crate::process_context::ProcessContext;
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -1688,6 +1689,8 @@ pub struct FixtureRunner {
     ppc_sound_host_playbacks: Vec<PpcHostSoundPlayback>,
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
+    /// Canonical owner for state shared by this process's CPU ABI adapters.
+    process_context: ProcessContext,
     config: FixtureRunnerConfig,
     /// Explicit display depth carried into native PowerPC launches. `None`
     /// preserves the architecture defaults: 8bpp for 68K and 16bpp for PPC.
@@ -1895,7 +1898,11 @@ impl FixtureRunner {
             matches!(config.screen_depth, 1 | 2 | 4 | 8),
             "screen_depth must be 1, 2, 4, or 8"
         );
+        let process_context = ProcessContext::default();
         let mut dispatcher = TrapDispatcher::new();
+        // SAFETY: FixtureRunner owns the context and every attached adapter,
+        // and serializes their access through its mutable borrow.
+        unsafe { dispatcher.attach_process_context(&process_context) };
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
         dispatcher.mmu_mode = u8::from(config.addressing_32_bit);
         dispatcher.set_ui_theme_id(config.ui_theme);
@@ -1940,6 +1947,7 @@ impl FixtureRunner {
             ppc_sound_host_playbacks: Vec::new(),
             bus,
             dispatcher,
+            process_context,
             config,
             powerpc_screen_depth_override: None,
             ppc_host_indexed_ctab_handle: 0,
@@ -3932,10 +3940,9 @@ impl FixtureRunner {
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
         self.share_ppc_runtime_globals(&mut ppc_app);
-        ppc_app.share_event_queue(&self.dispatcher.event_queue);
-        ppc_app.share_menu_tracking(&self.dispatcher.menu_tracking);
-        ppc_app.share_native_menu_selection(&self.dispatcher.pending_native_menu_selection);
-        ppc_app.share_guest_calls(&self.dispatcher.guest_calls);
+        // SAFETY: FixtureRunner owns the context and every attached adapter,
+        // and serializes their access through its mutable borrow.
+        unsafe { ppc_app.attach_process_context(&self.process_context) };
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
         }
