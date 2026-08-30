@@ -14953,21 +14953,29 @@ impl super::TrapDispatcher {
             // FUNCTION InitEditionPack: OSErr;
             // Inside Macintosh: Interapplication Communication (1993), p. 2-74; Volume VI (1991), pp. C-9–C-10.
             (true, 0x02D) => {
-                let selector = cpu.read_reg(Register::D0) as u16;
+                const NO_ERR: i16 = 0;
+                const EDITION_MGR_INIT_ERR: i16 = -450;
+                const PARAM_ERR: i16 = -50;
+
+                let sp = cpu.read_reg(Register::A7);
+                let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
                 let operation = pack11_operation_route(self.current_trap_word, selector);
-                self.current_selector_operation = operation.map(|route| route.operation_id);
-                if selector == 0x0100 {
-                    cpu.write_reg(Register::D0, 0);
-                } else {
-                    let sp = cpu.read_reg(Register::A7);
-                    let param_size = ((selector >> 8) & 0xFF) as u32;
-                    let total = 2 + if (2..=48).contains(&param_size) {
-                        param_size
+
+                if let Some(route) = operation {
+                    self.current_selector_operation = Some(route.operation_id);
+                    let param_bytes = (((selector >> 8) & 0xFF) as u32) * 2;
+                    let result = if selector == 0x0100 {
+                        NO_ERR
                     } else {
-                        0
+                        EDITION_MGR_INIT_ERR
                     };
-                    cpu.write_reg(Register::A7, sp + total);
-                    cpu.write_reg(Register::D0, 0);
+                    let result_sp = sp + param_bytes;
+                    bus.write_word(result_sp, result as u16);
+                    cpu.write_reg(Register::A7, result_sp);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                } else {
+                    self.current_selector_operation = None;
+                    cpu.write_reg(Register::D0, PARAM_ERR as i32 as u32);
                 }
                 Ok(())
             }
@@ -32678,124 +32686,262 @@ mod tests {
     }
 
     #[test]
-    fn pack11_records_low_word_identity_and_preserves_behavior() {
+    fn pack11_all_30_routes_pop_exact_param_bytes_and_return_expected_oserr() {
+        for route in super::PACK11_OPERATION_ROUTES {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = TEST_SP;
+            let selector = route.selector as u16;
+            let expected_err: i16 = if selector == 0x0100 { 0 } else { -450 };
+            let param_bytes = (((selector >> 8) & 0xFF) as u32) * 2;
+            let result_sp = sp + param_bytes;
+
+            // Fill argument region with deterministic pattern
+            let original_args: Vec<u8> = (0..param_bytes)
+                .map(|i| (selector as u8).wrapping_add(i as u8).wrapping_add(0x33))
+                .collect();
+            for (offset, &byte) in original_args.iter().enumerate() {
+                bus.write_byte(sp + offset as u32, byte);
+            }
+
+            // Poison the result slot and guard regions
+            bus.write_word(result_sp, 0x55AA);
+            bus.write_long(sp - 8, 0x1234_5678);
+            bus.write_long(result_sp + 2, 0x8765_4321);
+
+            disp.current_trap_word = 0xA82D;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0xDEAD_0000 | u32::from(selector)); // stale high word
+
+            let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+            assert!(
+                result.is_some(),
+                "Pack11 should handle selector {selector:#06X}"
+            );
+            assert!(
+                result.unwrap().is_ok(),
+                "Pack11 selector {selector:#06X} should return Ok"
+            );
+
+            assert_eq!(
+                disp.current_selector_operation,
+                Some(route.operation_id),
+                "operation ID for {selector:#06X}"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::A7),
+                result_sp,
+                "A7 should advance exactly by param_bytes ({param_bytes}) for {selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_word(result_sp),
+                expected_err as u16,
+                "result slot at SP+{param_bytes} for {selector:#06X}"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected_err as i32 as u32,
+                "sign-extended D0 for {selector:#06X}"
+            );
+
+            // Verify arguments and guard memory are preserved
+            for (offset, &byte) in original_args.iter().enumerate() {
+                assert_eq!(
+                    bus.read_byte(sp + offset as u32),
+                    byte,
+                    "argument byte at offset {offset} must remain invariant for {selector:#06X}"
+                );
+            }
+            assert_eq!(
+                bus.read_long(sp - 8),
+                0x1234_5678,
+                "underflow guard preserved for {selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_long(result_sp + 2),
+                0x8765_4321,
+                "overflow guard preserved for {selector:#06X}"
+            );
+        }
+    }
+
+    #[test]
+    fn pack11_min_and_max_frames_preserve_arguments_and_hidden_version_word() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-        disp.current_trap_word = 0xA82D;
 
-        // 1. InitEditionPack ($0100) with stale high word in D0
-        disp.current_selector_operation = Some("stale-identity");
+        // 1. Min frame: InitEditionPack ($0100, 1 word / 2 bytes)
+        // Hidden version word $0011 pushed by Universal Interfaces inline macro
+        disp.current_trap_word = 0xA82D;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0xBEEF_0100);
-        bus.write_long(sp, 0x1122_3344);
+        cpu.write_reg(Register::D0, 0xCAFE_0100);
+        bus.write_word(sp, 0x0011); // curEditionMgrVers
+        bus.write_word(sp + 2, 0xBEEF); // OSErr result slot poison
 
         let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
-        assert!(result.is_some(), "Pack11 should be handled");
-        assert!(result.unwrap().is_ok(), "Pack11 should return");
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "selector 0x0100 should return noErr in D0"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp,
-            "InitEditionPack should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp),
-            0x1122_3344,
-            "InitEditionPack should preserve caller stack contents"
-        );
+        assert!(result.expect("Pack11 arm").is_ok());
         assert_eq!(
             disp.current_selector_operation,
             Some("selector-operation:_Pack11:0x0100:d0-low-word-immediate:16")
         );
+        assert_eq!(
+            bus.read_word(sp),
+            0x0011,
+            "InitEditionPack hidden version word at SP+0 must remain unchanged"
+        );
+        assert_eq!(
+            bus.read_word(sp + 2),
+            0,
+            "InitEditionPack result slot at SP+2 must receive noErr (0)"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 2,
+            "InitEditionPack A7 must advance to result slot SP+2"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "InitEditionPack D0 must return sign-extended noErr (0)"
+        );
 
-        // 2. Multi-word selector NewSection ($0A02): param_size = 10, total pop = 2 + 10 = 12
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0xCAFE_0A02);
+        // 2. Max frame: SectionOptionsExpDialog ($0B3C, 11 words / 22 bytes)
+        let max_sp = TEST_SP;
+        cpu.write_reg(Register::A7, max_sp);
+        cpu.write_reg(Register::D0, 0xBEEF_0B3C);
+        for i in 0..22 {
+            bus.write_byte(max_sp + i, (i as u8) + 1);
+        }
+        bus.write_word(max_sp + 22, 0xCAFE); // result slot poison
+
         let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
         assert!(result.expect("Pack11 arm").is_ok());
         assert_eq!(
             disp.current_selector_operation,
-            Some("selector-operation:_Pack11:0x0A02:d0-low-word-immediate:16")
+            Some("selector-operation:_Pack11:0x0B3C:d0-low-word-immediate:16")
         );
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        for i in 0..22 {
+            assert_eq!(
+                bus.read_byte(max_sp + i),
+                (i as u8) + 1,
+                "SectionOptionsExpDialog arg byte at offset {i} must remain unchanged"
+            );
+        }
+        assert_eq!(
+            bus.read_word(max_sp + 22),
+            (-450i16) as u16,
+            "SectionOptionsExpDialog result slot at SP+22 must receive editionMgrInitErr (-450)"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            max_sp + 22,
+            "SectionOptionsExpDialog A7 must advance to result slot SP+22"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            (-450i32) as u32,
+            "SectionOptionsExpDialog D0 must return sign-extended editionMgrInitErr (-450)"
+        );
+    }
 
-        // 3. RegisterSection ($0604): param_size = 6, total pop = 2 + 6 = 8
+    #[test]
+    fn pack11_fail_closed_result_preserves_output_buffers() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let out_section_handle = TEST_SP + 0x100;
+
+        disp.current_trap_word = 0xA82D;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_0604);
+        cpu.write_reg(Register::D0, 0xABCD_0A02); // NewSection ($0A02, 20 arg bytes)
+        // Pascal entry order: sectionH*, mode, ID, kind, document, container.
+        bus.write_long(sp, out_section_handle);
+        bus.write_word(sp + 4, 0);
+        bus.write_long(sp + 6, 42);
+        bus.write_word(sp + 10, 1);
+        bus.write_long(sp + 12, 0x2000);
+        bus.write_long(sp + 16, 0x1000);
+        bus.write_word(sp + 20, 0xBEEF); // result slot
+        bus.write_long(out_section_handle, 0x1122_3344);
+
         let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
         assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 20);
+        assert_eq!(cpu.read_reg(Register::D0), (-450i32) as u32);
+        assert_eq!(bus.read_word(sp + 20), (-450i16) as u16);
         assert_eq!(
-            disp.current_selector_operation,
-            Some("selector-operation:_Pack11:0x0604:d0-low-word-immediate:16")
+            bus.read_long(out_section_handle),
+            0x1122_3344,
+            "NewSection must not touch its output buffer on editionMgrInitErr"
         );
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+    }
 
-        // 4. NewSubscriberExpDialog ($0B34): param_size = 11, total pop = 2 + 11 = 13
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_0B34);
-        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
-        assert!(result.expect("Pack11 arm").is_ok());
-        assert_eq!(
-            disp.current_selector_operation,
-            Some("selector-operation:_Pack11:0x0B34:d0-low-word-immediate:16")
-        );
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 13);
+    #[test]
+    fn pack11_unknown_selector_and_trap_mismatch_preserve_memory_and_return_paramerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
 
-        // 5. UnRegisterSection ($0206): param_size = 2, total pop = 2 + 2 = 4
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_0206);
-        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
-        assert!(result.expect("Pack11 arm").is_ok());
-        assert_eq!(
-            disp.current_selector_operation,
-            Some("selector-operation:_Pack11:0x0206:d0-low-word-immediate:16")
-        );
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        for &unknown_selector in &[0x00FFu16, 0x303C, 0x0000, 0x0200, 0x0207, 0x020A, 0xFFFF] {
+            disp.current_selector_operation = Some("stale-identity");
+            disp.current_trap_word = 0xA82D;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0xFACE_0000 | u32::from(unknown_selector));
+            bus.write_long(sp, 0x1122_3344);
+            bus.write_long(sp + 4, 0x5566_7788);
 
-        // 6. Wrong trap word clears stale identity
+            let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+            assert!(result.expect("Pack11 arm").is_ok());
+            assert_eq!(
+                disp.current_selector_operation, None,
+                "unknown selector {unknown_selector:#06X} must clear stale operation identity"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::A7),
+                sp,
+                "unknown selector {unknown_selector:#06X} must preserve A7"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                (-50i32) as u32,
+                "unknown selector {unknown_selector:#06X} must return sign-extended paramErr (-50)"
+            );
+            assert_eq!(
+                bus.read_long(sp),
+                0x1122_3344,
+                "guest stack memory must remain invariant for unknown selector {unknown_selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_long(sp + 4),
+                0x5566_7788,
+                "guest stack memory must remain invariant for unknown selector {unknown_selector:#06X}"
+            );
+        }
+
+        // Trap word mismatch: trap word 0xA92D with Pack11 selector 0x0100
+        disp.current_selector_operation = Some("stale-identity");
         disp.current_trap_word = 0xA92D;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0100);
+        cpu.write_reg(Register::D0, 0x0000_0100);
+        bus.write_long(sp, 0x1122_3344);
+
         let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
         assert!(result.expect("Pack11 arm").is_ok());
         assert_eq!(
-            disp.current_selector_operation,
-            None,
-            "Wrong trap word must clear selector identity"
+            disp.current_selector_operation, None,
+            "trap word mismatch must clear stale operation identity"
         );
-        assert_eq!(cpu.read_reg(Register::A7), sp);
-
-        // 7. Unknown / unassigned selector clears stale identity and preserves fallback pop
-        disp.current_trap_word = 0xA82D;
-        disp.current_selector_operation = Some("stale-identity");
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x04FF); // param_size = 4 -> pop 2 + 4 = 6
-        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
-        assert!(result.expect("Pack11 arm").is_ok());
         assert_eq!(
-            disp.current_selector_operation,
-            None,
-            "Unknown selector must clear selector identity"
+            cpu.read_reg(Register::A7),
+            sp,
+            "trap word mismatch must preserve A7"
         );
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
-
-        // 8. Byte-swapped selector ($020A is unassigned in Pack11)
-        disp.current_selector_operation = Some("stale-identity");
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x020A); // param_size = 2 -> pop 2 + 2 = 4
-        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
-        assert!(result.expect("Pack11 arm").is_ok());
-        assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            (-50i32) as u32,
+            "trap word mismatch must return sign-extended paramErr (-50)"
+        );
+        assert_eq!(
+            bus.read_long(sp),
+            0x1122_3344,
+            "guest stack memory must remain invariant on trap word mismatch"
+        );
     }
 }
