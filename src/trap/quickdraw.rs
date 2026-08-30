@@ -134,6 +134,18 @@ fn qd_extensions_operation_route(
     }
     selector_operation_route(QD_EXTENSIONS_OPERATION_ROUTES, selector)
 }
+const FONT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_font_dispatch_operations.rs");
+
+fn font_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA854 {
+        return None;
+    }
+    selector_operation_route(FONT_DISPATCH_OPERATION_ROUTES, selector)
+}
 static PALETTE_AS_GAME_WROTE: OnceLock<bool> = OnceLock::new();
 static PICT_SEED_CLUT_DISABLED: OnceLock<bool> = OnceLock::new();
 static TRACE_QD_COLORS: OnceLock<bool> = OnceLock::new();
@@ -14782,64 +14794,15 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // FontDispatch ($A854)
-            // Per IM:VI Table C-1 line 57508 + Table C-3 lines
-            // 57686..57692 master dispatch tables: $A854 is
-            // _FontDispatch — a selector-based dispatcher for
-            // System 7+ TrueType / outline font Manager extensions
-            // with 7 documented selectors:
-            //   $0000 IsOutline           (numer + denom Point → Boolean)
-            //   $0001 SetOutlinePreferred (Boolean)
-            //   $0008 OutlineMetrics      (8 args → OSErr)
-            //   $0009 GetOutlinePreferred (→ Boolean)
-            //   $000A SetPreserveGlyph    (Boolean)
-            //   $000B GetPreserveGlyph    (→ Boolean)
-            //   $000C FlushFonts          (→ OSErr)
-            // Inside Macintosh Volume VI, 12-18..12-22
-            // Inside Macintosh Volume VI, Table C-3 lines 57686..57692
-            //
-            // Selector encoding (System 7+ register-based dispatch
-            // convention per IM:VI Pack8 / Pack14 / QDExtensions
-            // family): D0 holds `(arg_words << 8) | routine`. The
-            // selector lives in D0, NOT on the stack — so the
-            // trap pops only the documented per-selector args
-            // (no selector-word pop).
-            //
-            // ## HLE compromise
-            //
-            // Systemless's Font Manager state is statically baked
-            // into trap/font_table.rs Rust glyph tables (Chicago
-            // / Geneva / Monaco / system-font 9pt-12pt-9pt set
-            // baked at build time). No FOND / FONT / NFNT / sfnt
-            // resource loading; no TrueType outline font support.
-            // All selectors collapse to "no outline fonts" sentinels:
-            //   - IsOutline → FALSE (no outline fonts available)
-            //   - GetOutlinePreferred → current session preference
-            //     (default FALSE per IM:VI 12-18: "By default, the
-            //     Font Manager prefers to use bitmapped fonts, for
-            //     which the GetOutlinePreferred function returns
-            //     FALSE")
-            //   - GetPreserveGlyph → current session preference
-            //     (default FALSE per IM:VI 12-21)
-            //   - SetOutlinePreferred / SetPreserveGlyph → session
-            //     preference setters
-            //   - OutlineMetrics → resNotFound (-192) — no outline
-            //     fonts exist to measure; matches IM:VI 12-19
-            //     "OutlineMetrics works on TrueType fonts only"
-            //   - FlushFonts → noErr (no font cache to flush)
-            //
-            // Status promoted Stub (no-op) -> Partial during the
-            // stub-with-substantive-body audit.
-            // Each selector now writes the documented "no outline
-            // fonts" sentinel rather than collapsing all 7 to a
-            // single 2-byte-pop no-op. Selector enumeration mirrors
-            // the prior Pack14 ($A830 Help Manager) / Pack15 ($A831
-            // Picture Utilities) / QDExtensions ($AB1D) selector
-            // dispatcher patterns.
-            // FontDispatch ($A854): Selector-based dispatcher per IM:VI Table C-3 lines 57686..57692 with 7 selectors ($0000 IsOutline → FALSE, $0001 SetOutlinePreferred updates current preference, $0008 OutlineMetrics → resNotFound -192, $0009 GetOutlinePreferred → current preference, $000A SetPreserveGlyph updates current preference, $000B GetPreserveGlyph → current preference, $000C FlushFonts → noErr). Selector in D0 per System 7+ register-based dispatch convention. HLE has no TrueType / outline font support (statically-baked Rust glyph tables in trap/font_table.rs) so the outline-geometry selectors still return the documented "no outline fonts available" sentinels per IM:VI 12-18..12-22.
+            // _FontDispatch (0xA854)
+            // Dispatches outline and font-cache management routines.
+            // Selector ABI: signed 8-bit MOVEQ immediate in D0; routine-specific Pascal parameters remain on the stack.
+            // Inside Macintosh: Text (1993), 4-56, 4-60–4-66.
             (true, 0x054) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
+                let operation = font_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = selector & 0xFFFF;
                 match routine {
                     // $0000 IsOutline (numer Point + denom Point → Boolean)
@@ -30483,6 +30446,210 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
         assert_eq!(bus.read_byte(TEST_SP), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+    }
+
+    #[test]
+    fn font_dispatch_generated_routes_preserve_exact_register_selector_values() {
+        assert_eq!(super::FONT_DISPATCH_OPERATION_ROUTES.len(), 7);
+        assert!(super::FONT_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "IsOutline"),
+            (0x0001, "SetOutlinePreferred"),
+            (0x0008, "OutlineMetrics"),
+            (0x0009, "GetOutlinePreferred"),
+            (0x000A, "SetPreserveGlyph"),
+            (0x000B, "GetPreserveGlyph"),
+            (0x000C, "FlushFonts"),
+        ] {
+            let route =
+                super::font_dispatch_operation_route(0xA854, selector).expect("FontDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_FontDispatch:0x{selector:04X}:d0-moveq-immediate:8")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA954, 0x0000),
+            (0xAA54, 0x0001),
+            (0xA855, 0x0008),
+            (0xA854, 0x0002),
+            (0xA854, 0x0007),
+            (0xA854, 0x000D),
+            (0xA854, 0x0020),
+            (0xA854, 0x0001_0001),
+            (0xA854, 0x1234_0008),
+            (0xA854, 0x0100),
+            (0xA854, 0x0800),
+            (0xA854, 0x0C00),
+            (0xA854, 0x0011),
+            (0xA854, 0x0012),
+            (0xA854, 0x0013),
+            (0xA854, 0x0014),
+            (0xA854, 0x7000),
+            (0xA854, 0x7001),
+            (0xA854, 0x7008),
+            (0xA854, 0x700C),
+        ] {
+            assert!(super::font_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn font_dispatch_records_exact_identity_and_preserves_semantics() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.current_trap_word = 0xA854;
+
+        // $0000 IsOutline
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0000);
+        bus.write_long(TEST_SP, 0x0001_0001); // denom Point
+        bus.write_long(TEST_SP + 4, 0x0002_0002); // numer Point
+        bus.write_word(TEST_SP + 8, 0xCAFE); // Boolean return slot
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
+        assert_eq!(bus.read_word(TEST_SP + 8), 0); // FALSE
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x0000:d0-moveq-immediate:8")
+        );
+
+        // $0001 SetOutlinePreferred
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001);
+        bus.write_byte(TEST_SP, 1);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert!(d.outline_preferred);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x0001:d0-moveq-immediate:8")
+        );
+
+        // $0009 GetOutlinePreferred
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0009);
+        bus.write_byte(TEST_SP, 0xCA);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_byte(TEST_SP), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 1);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x0009:d0-moveq-immediate:8")
+        );
+
+        // $0008 OutlineMetrics
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0008);
+        bus.write_word(TEST_SP + 34, 0xCAFE); // OSErr return slot
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 34);
+        assert_eq!(bus.read_word(TEST_SP + 34), (-192i16) as u16);
+        assert_eq!(cpu.read_reg(Register::D0), (-192i32) as u32);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x0008:d0-moveq-immediate:8")
+        );
+
+        // $000A SetPreserveGlyph
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x000A);
+        bus.write_byte(TEST_SP, 1);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert!(d.preserve_glyph);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x000A:d0-moveq-immediate:8")
+        );
+
+        // $000B GetPreserveGlyph
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x000B);
+        bus.write_byte(TEST_SP, 0xCA);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_byte(TEST_SP), 1);
+        assert_eq!(cpu.read_reg(Register::D0), 1);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x000B:d0-moveq-immediate:8")
+        );
+
+        // $000C FlushFonts
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x000C);
+        bus.write_word(TEST_SP, 0xCAFE);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_word(TEST_SP), 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(
+            d.current_selector_operation,
+            Some("selector-operation:_FontDispatch:0x000C:d0-moveq-immediate:8")
+        );
+    }
+
+    #[test]
+    fn font_dispatch_unclassified_or_stale_selector_clears_identity_without_stack_corruption() {
+        let (mut d, mut cpu, mut bus) = setup();
+
+        for (trap_word, selector) in [
+            (0xA854, 0x0002), // unknown selector
+            (0xA854, 0x0007), // unknown selector
+            (0xA854, 0x000D), // unknown selector
+            (0xA854, 0x0011), // UI-only SetAntiAliasedTextEnabled
+            (0xA854, 0x0012), // UI-only IsAntiAliasedTextEnabled
+            (0xA854, 0x0013), // UI-only QDTextBounds
+            (0xA854, 0x0014), // UI-only FetchFontInfo
+            (0xA854, 0x0100), // byte-swapped selector
+        ] {
+            d.current_trap_word = trap_word;
+            d.current_selector_operation = Some("stale-identity");
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, selector);
+
+            let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(d.current_selector_operation, None);
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        }
+
+        // Wrong trap word with valid selector
+        d.current_trap_word = 0xA855;
+        d.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001);
+        bus.write_byte(TEST_SP, 1);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.current_selector_operation, None);
+
+        // High-word pollution with valid routine
+        d.current_trap_word = 0xA854;
+        d.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001_0001);
+        bus.write_byte(TEST_SP, 1);
+        let result = d.dispatch_quickdraw(true, 0x054, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(d.current_selector_operation, None);
     }
 
     #[test]
