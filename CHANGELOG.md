@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.24.0](https://github.com/benletchford/systemless/compare/v0.23.23...v0.24.0) (2026-08-30)
+
+
+### Features
+
+* **traps:** inventory FontDispatch selectors ([#1021](https://github.com/benletchford/systemless/issues/1021)) ([24fb483](https://github.com/benletchford/systemless/commit/24fb483e3ced433db8e83de85f77854785238c7f))
+* **traps:** inventory Pack11 selector operations ([#1031](https://github.com/benletchford/systemless/issues/1031)) ([585be8f](https://github.com/benletchford/systemless/commit/585be8f291f45a9bf2af4237728a1c87f7345332))
+* **traps:** inventory Pack15 selectors ([#1023](https://github.com/benletchford/systemless/issues/1023)) ([8d666b5](https://github.com/benletchford/systemless/commit/8d666b5943b07ad3d1c9d1ed82997a393fb7c504))
+* **traps:** inventory Pack2 selectors ([#1025](https://github.com/benletchford/systemless/issues/1025)) ([8ce18de](https://github.com/benletchford/systemless/commit/8ce18de4a922bd6400538a5d52e76b9c47203bec))
+* **traps:** inventory Pack3 selectors ([#1019](https://github.com/benletchford/systemless/issues/1019)) ([a1aa46d](https://github.com/benletchford/systemless/commit/a1aa46dd96fe1cdfd68c4ddfe3576e811ec6c0d8))
+* **traps:** inventory TEDispatch selectors ([#1037](https://github.com/benletchford/systemless/issues/1037)) ([5774fb2](https://github.com/benletchford/systemless/commit/5774fb28a7e674c4ee37ef5d1682c8292fee2f1a))
+* **traps:** inventory TranslationDispatch selectors ([#1035](https://github.com/benletchford/systemless/issues/1035)) ([b881b19](https://github.com/benletchford/systemless/commit/b881b199247a3820c68e8e9e5cd0e251aac0d1c2))
+
+
+### Bug Fixes
+
+* **menu:** preserve native handle growth across 68k callbacks ([#1017](https://github.com/benletchford/systemless/issues/1017)) ([e3786b1](https://github.com/benletchford/systemless/commit/e3786b1b1c15480d2104f6b91ac7d91bd9d19ad0))
+* **traps:** restore Pack11 Pascal stack discipline ([#1042](https://github.com/benletchford/systemless/issues/1042)) ([4062ef5](https://github.com/benletchford/systemless/commit/4062ef5e0c3d88b0ab09385ba1fea1c182748b7a))
+* **traps:** restore Pack13 Pascal stack discipline ([#1029](https://github.com/benletchford/systemless/issues/1029)) ([622dd85](https://github.com/benletchford/systemless/commit/622dd852a35ec18273ebdfe4a7397874e19735c6))
+* **traps:** route Pack9 to PPCBrowser ([#1027](https://github.com/benletchford/systemless/issues/1027)) ([f9cfba1](https://github.com/benletchford/systemless/commit/f9cfba1027835aa1233b4e208aeda9634366f13e))
+
+
+### Performance Improvements
+
+* **quickdraw:** copy CopyBits rows span by span instead of pixel by pixel ([#963](https://github.com/benletchford/systemless/issues/963)) ([73e7c7f](https://github.com/benletchford/systemless/commit/73e7c7f8bb5da787cc92b08eaf6a714719c61928))
+
 ## [0.23.23](https://github.com/benletchford/systemless/compare/v0.23.22...v0.23.23) (2026-08-30)
 
 

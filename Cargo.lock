@@ -2219,7 +2219,7 @@ dependencies = [
 
 [[package]]
 name = "systemless"
-version = "0.23.23"
+version = "0.24.0"
 dependencies = [
  "ab_glyph",
  "clap",
