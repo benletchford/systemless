@@ -1,8 +1,9 @@
 //! Dialog Manager, Cursor Manager, and misc stub trap handlers.
 
 use super::dispatch::{
-    DialogItem, DialogPopupDraw, DialogPopupTrackingState, DialogTrackingState,
-    PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent, RetainedModalDialogClickState,
+    selector_operation_route, DialogItem, DialogPopupDraw, DialogPopupTrackingState,
+    DialogTrackingState, PendingDialogPopupMenu, PersistentDialogSnapshot, QueuedEvent,
+    RetainedModalDialogClickState, SelectorOperationRoute,
 };
 use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
@@ -21,6 +22,19 @@ static TRACE_TEXTEDIT: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_ITEMS: OnceLock<bool> = OnceLock::new();
 static TRACE_DIALOG_TEXT_INLINE: OnceLock<bool> = OnceLock::new();
 const MANAGER_DIALOG_RECORD_ALIGNMENT: u32 = 256;
+
+const TE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_te_dispatch_operations.rs");
+
+fn te_dispatch_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA83D {
+        return None;
+    }
+    selector_operation_route(TE_DISPATCH_OPERATION_ROUTES, u32::from(selector))
+}
 
 struct DialogCIconLayout {
     width: i16,
@@ -14029,70 +14043,14 @@ impl super::TrapDispatcher {
             }
 
             // TEDispatch ($A83D)
-            // Selector-based dispatcher for styled TextEdit routines.
+            // Dispatches styled TextEdit routines selected by a word on the stack.
             // FUNCTION/PROCEDURE TEDispatch(...); selector is the first stack word.
-            // Inside Macintosh Volume VI, 15-22 (TEFeatureFlag),
-            //                              15-25..15-43 (selector mapping),
-            //                              15-34 (TEContinuousStyle).
-            // Inside Macintosh: Text (1993), p. 2-102 (TEContinuousStyle),
-            //                                p. 2-92 / 2-97 (autoscroll default).
-            //
-            // TEDispatch ($A83D) selectors: $0000 TEStylPaste,
-            //   $0001 TESetStyle, $0002 TEReplaceStyle, $0003 TEGetStyle,
-            //   $0004 GetStylHandle, $0005 SetStylHandle, $0006 GetStylScrap,
-            //   $0007 TEStylInsert, $0008 TEGetPoint, $0009 TEGetHeight,
-            //   $000A TEContinuousStyle, $000B TEUseStyleScrap,
-            //   $000C TECustomHook, $000D TENumStyles, $000E TEFeatureFlag.
-            //
-            // MPW Universal Headers TextEdit.h declares each entry point via
-            // THREEWORDINLINE(0x3F3C, <selector>, 0xA83D). The 0x3F3C is
-            // `MOVE.W #imm,-(A7)` which pre-pushes the selector word at the
-            // call site, immediately before the A-line trap. Pascal LR
-            // calling convention pushes args left-to-right (first arg
-            // deepest), so for any N-arg TEDispatch selector the stack
-            // layout at trap entry is:
-            //   sp+0           selector word (2 bytes, last pushed)
-            //   sp+2           arg[N-1] (last Pascal arg, shallowest)
-            //   ...
-            //   sp+(2 + S_0+..+S_{N-2})  arg[0] (first Pascal arg, deepest)
-            //   sp+(2 + Σ S_i) function result slot (for FUNCTION selectors)
-            //
-            // Selector $000A TEContinuousStyle is FUNCTION (Boolean result):
-            //   EXTERN_API(Boolean) TEContinuousStyle(short *mode,
-            //                                         TextStyle *aStyle,
-            //                                         TEHandle hTE)
-            //       THREEWORDINLINE(0x3F3C, 0x000A, 0xA83D);
-            //   Stack: sp+0 selector, sp+2 hTE (4), sp+6 aStyle* (4),
-            //          sp+10 mode* (4), sp+14 Boolean result slot.
-            //   Per IM:Text 1993 p. 2-102: returns TRUE for unstyled edit
-            //   records and reports the global style attributes for the
-            //   mode bits requested by *mode (font=1, face=2, size=4,
-            //   color=8).
-            //
-            // Selector $000E TEFeatureFlag is FUNCTION (short result):
-            //   EXTERN_API(short) TEFeatureFlag(short feature, short action,
-            //                                   TEHandle hTE)
-            //       THREEWORDINLINE(0x3F3C, 0x000E, 0xA83D);
-            //   Stack: sp+0 selector, sp+2 hTE (4), sp+6 action (2),
-            //          sp+8 feature (2), sp+10 short result slot.
-            //   Per IM:VI 15-22: turns features on/off or tests them;
-            //   returns the PRIOR setting of the bit (which, for
-            //   teBitTest=-1, coincides with the current setting since
-            //   the bit is not mutated). Action codes are teBitClear=0,
-            //   teBitSet=1, teBitTest=-1.
-            //
-            // Contract test coverage (this module):
-            //   te_dispatch_feature_flag_test_action_returns_current_state
-            //   te_dispatch_feature_flag_tracks_auto_scroll_state
-            //     (teBitSet on default-off feature returns prior 0 and mutates the bit)
-            //   tefeatureflag_clear_action_returns_prior_one_state_and_clears_bit
-            //     (teBitClear on previously-set feature returns prior 1 and clears the bit)
-            //   te_dispatch_continuous_style_returns_unstyled_record_style
-            //   tedispatch_function_protocol_consumes_threewordinline_stack_frame_for_tefeatureflag
-            //   teautoview_and_tefeatureflag_observe_shared_autoscroll_state
+            // Inside Macintosh Volume VI, 15-42 to 15-43.
             (true, 0x03D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = te_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if trace_textedit_enabled() {
                     eprintln!("[TE] TEDispatch selector=${:04X} sp=${:08X}", selector, sp);
                 }
@@ -34958,6 +34916,90 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(TEST_SP + 10), 0);
         assert!(disp.te_feature_bit(te_handle, TrapDispatcher::TE_FEATURE_AUTO_SCROLL));
+    }
+
+    #[test]
+    fn te_dispatch_generated_routes_preserve_exact_stack_selectors() {
+        assert_eq!(super::TE_DISPATCH_OPERATION_ROUTES.len(), 5);
+        assert!(super::TE_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0001, "TESetStyle"),
+            (0x0008, "TEGetPoint"),
+            (0x000A, "TEContinuousStyle"),
+            (0x000C, "TECustomHook"),
+            (0x000E, "TEFeatureFlag"),
+        ] {
+            let route =
+                super::te_dispatch_operation_route(0xA83D, selector).expect("TEDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_TEDispatch:0x{selector:04X}:stack-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA73D, 0x0001),
+            (0xA93D, 0x0008),
+            (0xAB3D, 0x000E),
+            (0xA83D, 0x0000),
+            (0xA83D, 0x0002),
+            (0xA83D, 0x0007),
+            (0xA83D, 0x0009),
+            (0xA83D, 0x000B),
+            (0xA83D, 0x000D),
+            (0xA83D, 0x000F),
+            (0xA83D, 0xFFFF),
+        ] {
+            assert!(super::te_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn te_dispatch_records_known_then_clears_unknown_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.current_trap_word = 0xA83D;
+        cpu.write_reg(Register::D0, 0x1122_3344);
+        cpu.write_reg(Register::D1, 0x5566_7788);
+        bus.write_word(TEST_SP, 0x000C);
+        bus.write_long(TEST_SP + 2, 0xCAFE_BABE);
+        bus.write_long(TEST_SP + 6, 0);
+        bus.write_word(TEST_SP + 10, 0xA55A);
+
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.expect("TEDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_TEDispatch:0x000C:stack-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(cpu.read_reg(Register::D0), 0x1122_3344);
+        assert_eq!(cpu.read_reg(Register::D1), 0x5566_7788);
+        assert_eq!(bus.read_long(TEST_SP + 2), 0xCAFE_BABE);
+        assert_eq!(bus.read_long(TEST_SP + 6), 0);
+        assert_eq!(bus.read_word(TEST_SP + 10), 0xA55A);
+
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x000F);
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.is_none());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(cpu.read_reg(Register::D0), 0x1122_3344);
+        assert_eq!(bus.read_word(TEST_SP), 0x000F);
+
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xA93D;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x000C);
+        let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
+        assert!(result.expect("TEDispatch arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
     }
 
     // Inside Macintosh Volume VI (1991), pp. 15-22 and 15-43: selector
