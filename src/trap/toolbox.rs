@@ -43,6 +43,8 @@ const PACK0_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack0_operations.rs");
 const PR_GLUE_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pr_glue_operations.rs");
+const SCRIPT_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_script_util_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -117,6 +119,16 @@ fn pr_glue_operation_route(
         return None;
     }
     selector_operation_route(PR_GLUE_OPERATION_ROUTES, selector)
+}
+
+fn script_util_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA8B5 {
+        return None;
+    }
+    selector_operation_route(SCRIPT_UTIL_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -14674,14 +14686,10 @@ impl super::TrapDispatcher {
 
             // ========== Script Manager ==========
 
-            // ScriptUtil ($A8B5)
-            // Script Manager dispatch. Selector is a LONGINT on top of the stack.
-            // Inside Macintosh Volume V, V-288
-            //
-            // In the emulator we always return Roman script (0) for script queries
-            // and noErr for set operations. This is sufficient for English-only games.
-            //
-            // ScriptUtil ($A8B5): Dispatches legacy selectors plus System 7 encoded text-utility selectors; returns Roman/noErr/0 fallbacks where Systemless has no script-system state.
+            // ScriptUtil (0xA8B5)
+            // Dispatches script utilities selected by a LONGINT on top of the stack.
+            // FUNCTION ParseTable (VAR table: CharByteTable): Boolean;
+            // Inside Macintosh Volume VI (1991), pp. 14-131 to 14-132; Inside Macintosh: Text (1993), p. A-39.
             (true, 0x0B5) => {
                 let sp = cpu.read_reg(Register::A7);
                 // MPW's inline wraps ScriptUtil selectors as
@@ -14691,6 +14699,8 @@ impl super::TrapDispatcher {
                 // metadata. Older Script Manager calls use the low byte as the
                 // routine number; System 7 text utilities use full selectors.
                 let raw_selector = bus.read_long(sp);
+                let operation = script_util_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let selector = (raw_selector & 0xFF) as i32;
 
                 match raw_selector {
@@ -30304,6 +30314,82 @@ mod tests {
         bus.write_long(sp + 24, text_len);
         bus.write_long(sp + 28, text_ptr);
         bus.write_word(sp + 32, 0xBEEF); // StyledLineBreakCode result
+    }
+
+    #[test]
+    fn script_util_generated_routes_preserve_exact_stack_long_values() {
+        assert_eq!(super::SCRIPT_UTIL_OPERATION_ROUTES.len(), 21);
+        assert!(super::SCRIPT_UTIL_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x800E_001C, "HiliteText"),
+            (0x8012_FFE2, "NFindWord"),
+            (0x8012_FFFC, "GetFormatOrder"),
+            (0x8204_0022, "ParseTable"),
+            (0x8204_FFF8, "InitDateCache"),
+            (0x8204_FFFA, "IntlTokenize"),
+            (0x8208_FFE0, "TruncString"),
+            (0x820C_0026, "FindScriptRun"),
+            (0x820C_FFDE, "TruncText"),
+            (0x820C_FFE4, "ValidDate"),
+            (0x820C_FFEC, "StringToFormatRec"),
+            (0x820E_FFEE, "ToggleDate"),
+            (0x8210_FFE6, "StringToExtended"),
+            (0x8210_FFE8, "ExtendedToString"),
+            (0x8210_FFEA, "FormatRecToString"),
+            (0x8214_FFF4, "StringToTime"),
+            (0x8214_FFF6, "StringToDate"),
+            (0x821C_FFFE, "StyledLineBreak"),
+            (0x8408_0024, "PortionText"),
+            (0x8408_0028, "VisibleLength"),
+            (0xC012_001A, "FindWordBreaks"),
+        ] {
+            let route = super::script_util_operation_route(0xA8B5, selector)
+                .expect("ScriptUtil operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9B5, 0x800E_001C),
+            (0xA8B4, 0xC012_001A),
+            (0xA8B5, 0x820C_FFDC), // manual-only ReplaceText identity
+            (0xA8B5, 0x8206_0010), // non-intersection CharacterByteType glue
+            (0xA8B5, 0x1C00_0E80), // byte-swapped HiliteText selector
+            (0xA8B5, 0x0000_001C), // legacy low-byte HiliteText selector
+            (0xA8B5, 0x0000_800E), // partial selector halfword
+        ] {
+            assert!(super::script_util_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn script_util_records_stack_long_identity_without_changing_hilite_text_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let offsets_ptr = 0x362000u32;
+
+        for trap_word in [0xA8B5, 0xA9B5] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0x800E_001C); // HiliteText
+            bus.write_long(sp + 4, offsets_ptr);
+            bus.write_word(sp + 8, 8); // secondOffset
+            bus.write_word(sp + 10, 2); // firstOffset
+            bus.write_word(sp + 12, 12); // textLength
+            bus.write_long(sp + 14, 0x363000); // textPtr
+            bus.write_bytes(offsets_ptr, &[0xA5; 12]);
+
+            let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+            assert!(result.expect("ScriptUtil arm").is_ok());
+            assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+
+            let expected = (trap_word == 0xA8B5)
+                .then_some("selector-operation:_ScriptUtil:0x800E001C:stack-long-immediate:32");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
     }
 
     // ScriptUtil ($A8B5) selector 0 FontScript
