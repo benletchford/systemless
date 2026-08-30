@@ -28,6 +28,7 @@ struct SharedRegionMapping {
 pub struct GuestAddressSpace {
     regions: PpcSectionMem,
     shared_regions: Vec<SharedRegionMapping>,
+    readonly_allocation_exclusions: Vec<(u32, u32)>,
 }
 
 /// A temporary, non-owning view of one process address space.
@@ -101,6 +102,7 @@ impl Clone for GuestAddressSpace {
                     writable: mapping.writable,
                 })
                 .collect(),
+            readonly_allocation_exclusions: self.readonly_allocation_exclusions.clone(),
         }
     }
 }
@@ -159,11 +161,50 @@ impl GuestAddressSpace {
     /// The ownership and serialization requirements are the same as for
     /// [`Self::add_shared_region`].
     pub(crate) unsafe fn add_shared_readonly_region(&mut self, base: u32, region: SharedRamRegion) {
+        if let Ok(len) = u32::try_from(region.len()) {
+            self.readonly_allocation_exclusions
+                .retain(|&(excluded_base, excluded_len)| {
+                    (excluded_base, excluded_len) != (base, len)
+                });
+        }
         self.shared_regions.push(SharedRegionMapping {
             base,
             region,
             writable: false,
         });
+    }
+
+    /// Reserve a range from native allocation before its runner-owned shared
+    /// mapping is attached. The exclusion survives detached launch-state
+    /// clones and is replaced by the real mapping at runner initialization.
+    pub(crate) fn add_readonly_allocation_exclusion(&mut self, base: u32, len: u32) -> Option<()> {
+        if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
+            return None;
+        }
+        if !self
+            .readonly_allocation_exclusions
+            .contains(&(base, len))
+        {
+            self.readonly_allocation_exclusions.push((base, len));
+        }
+        Some(())
+    }
+
+    pub(crate) fn has_readonly_allocation_exclusion(&self, base: u32, len: u32) -> bool {
+        self.readonly_allocation_exclusions.contains(&(base, len))
+    }
+
+    /// Whether an ordinary sparse mapping already occupies any byte in the
+    /// supplied non-wrapping range. Shared overlays are intentionally ignored.
+    pub(crate) fn ordinary_mapping_overlaps(&mut self, base: u32, len: u32) -> bool {
+        if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
+            return false;
+        }
+        (0..u64::from(len)).any(|offset| {
+            let address = u32::try_from(u64::from(base) + offset)
+                .expect("validated guest address remains in range");
+            self.regions.read_u8(address).is_some()
+        })
     }
 
     /// Write a big-endian long through a shared mapping regardless of its
@@ -183,6 +224,96 @@ impl GuestAddressSpace {
     pub(crate) fn is_shared_readonly_address(&self, address: u32) -> bool {
         self.locate_shared_mapping(address)
             .is_some_and(|(mapping, _)| !mapping.writable)
+    }
+
+    /// Return the highest end address among staged allocation exclusions or
+    /// live read-only shared mappings that overlap the supplied range.
+    pub(crate) fn readonly_allocation_overlap_end(&self, address: u32, len: u32) -> Option<u32> {
+        if len == 0 {
+            return None;
+        }
+        let start = u64::from(address);
+        let end = start.checked_add(u64::from(len))?;
+        let exclusion_ends = self
+            .readonly_allocation_exclusions
+            .iter()
+            .filter_map(|&(base, len)| {
+                let mapping_start = u64::from(base);
+                let mapping_end = mapping_start.checked_add(u64::from(len))?;
+                (start < mapping_end && mapping_start < end).then_some(mapping_end)
+            });
+        let shared_ends = self
+            .shared_regions
+            .iter()
+            .filter(|mapping| !mapping.writable)
+            .filter_map(|mapping| {
+                let mapping_start = u64::from(mapping.base);
+                let mapping_end = mapping_start.checked_add(mapping.region.len() as u64)?;
+                (start < mapping_end && mapping_start < end).then_some(mapping_end)
+            });
+        exclusion_ends
+            .chain(shared_ends)
+            .max()
+            .map(|mapping_end| u32::try_from(mapping_end).unwrap_or(u32::MAX))
+    }
+
+    /// Return the total and largest contiguous byte counts remaining in a
+    /// half-open range after clipping and unioning staged exclusions and live
+    /// read-only shared mappings.
+    pub(crate) fn readonly_allocation_available_bytes(
+        &self,
+        start: u32,
+        end: u32,
+    ) -> (u32, u32) {
+        if start >= end {
+            return (0, 0);
+        }
+        let range_start = u64::from(start);
+        let range_end = u64::from(end);
+        let excluded = self
+            .readonly_allocation_exclusions
+            .iter()
+            .filter_map(|&(base, len)| {
+                let mapping_start = u64::from(base).max(range_start);
+                let mapping_end = u64::from(base)
+                    .checked_add(u64::from(len))?
+                    .min(range_end);
+                (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
+            });
+        let shared = self
+            .shared_regions
+            .iter()
+            .filter(|mapping| !mapping.writable)
+            .filter_map(|mapping| {
+                let mapping_start = u64::from(mapping.base).max(range_start);
+                let mapping_end = u64::from(mapping.base)
+                    .checked_add(mapping.region.len() as u64)?
+                    .min(range_end);
+                (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
+            });
+        let mut reserved = excluded
+            .chain(shared)
+            .collect::<Vec<_>>();
+        reserved.sort_unstable_by_key(|&(mapping_start, _)| mapping_start);
+
+        let mut available_start = range_start;
+        let mut total = 0u64;
+        let mut largest = 0u64;
+        for (mapping_start, mapping_end) in reserved {
+            if mapping_start > available_start {
+                let available = mapping_start - available_start;
+                total += available;
+                largest = largest.max(available);
+            }
+            available_start = available_start.max(mapping_end);
+        }
+        if available_start < range_end {
+            let available = range_end - available_start;
+            total += available;
+            largest = largest.max(available);
+        }
+
+        (total as u32, largest as u32)
     }
 
     /// Return the number of mapped regions.

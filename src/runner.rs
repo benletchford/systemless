@@ -2641,6 +2641,13 @@ impl FixtureRunner {
         )
     }
 
+    /// Return the system-owned synthetic code range that a native loader must
+    /// exclude from startup allocations. The live shared mapping is attached
+    /// only after the loaded state has crossed its detached snapshot boundary.
+    pub(crate) fn powerpc_system_reservation_range(&self) -> Option<(u32, u32)> {
+        self.bus.synthetic_reservation_range()
+    }
+
     /// Move the mouse without changing the button state. Coordinates are in
     /// the runner's presented framebuffer; a centered native framebuffer is
     /// translated to Macintosh global coordinates at this host-input boundary.
@@ -4024,10 +4031,17 @@ impl FixtureRunner {
                 ppc_app.memory.add_shared_region(address, region);
             }
         }
-        let (base, region) = self
-            .bus
-            .shared_synthetic_reservation()
-            .expect("FixtureRunner owns stable synthetic RAM");
+        let Some((base, region)) = self.bus.shared_synthetic_reservation() else {
+            return;
+        };
+        let len = u32::try_from(region.len()).expect("synthetic reservation fits guest address");
+        if !ppc_app.prepare_shared_system_reservation(base, len) {
+            // Low-level public PEF loading does not know which runner will
+            // eventually own the app. If that late pairing would overlay
+            // already-mapped native state, preserve the native layout rather
+            // than silently replacing it with system bytes.
+            return;
+        }
         // SAFETY: the same serialized ownership contract applies, while the
         // read-only mapping preserves the ROM-like protection enforced by the
         // 68k bus for trap gateways and permanent come-from heads.

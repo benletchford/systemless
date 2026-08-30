@@ -5003,6 +5003,52 @@ fn push_ppc_hle_import_trace_entry(
 }
 
 impl PpcLoadedApp {
+    pub(crate) fn prepare_shared_system_reservation(&mut self, base: u32, len: u32) -> bool {
+        if self
+            .memory
+            .has_readonly_allocation_exclusion(base, len)
+        {
+            return true;
+        }
+        let start = u64::from(base);
+        let Some(end) = start.checked_add(u64::from(len)) else {
+            return false;
+        };
+        if len == 0 || end > (1u64 << 32) {
+            return false;
+        }
+
+        fn ordinary_overlaps(
+            memory: &mut PpcSectionMem,
+            start: u64,
+            end: u64,
+        ) -> bool {
+            if start >= end {
+                return false;
+            }
+            memory.ordinary_mapping_overlaps(
+                u32::try_from(start).expect("nonempty guest range starts below 2^32"),
+                u32::try_from(end - start).expect("subrange fits reservation length"),
+            )
+        }
+
+        // The public low-level loader has no runner reservation to exclude.
+        // Preserve that source-compatible path by attaching late only when
+        // every byte outside the future bump-heap tail is genuinely unmapped.
+        let future_start = u64::from(self.heap_cursor);
+        let future_end = u64::from(self.heap_limit);
+        let before_end = end.min(future_start);
+        let after_start = start.max(future_end);
+        if ordinary_overlaps(&mut self.memory, start, before_end)
+            || ordinary_overlaps(&mut self.memory, after_start, end)
+        {
+            return false;
+        }
+        self.memory
+            .add_readonly_allocation_exclusion(base, len)
+            .is_some()
+    }
+
     pub fn run_import_trace(&mut self, max_cycles: u64) -> (PpcRunResult, Vec<u32>) {
         let mut trace = Vec::new();
         let result = self.cpu.run_with_import_trace(
@@ -13070,6 +13116,26 @@ pub fn load_pef_application_with_config(
     data: &[u8],
     config: PpcLoadConfig,
 ) -> Result<PpcLoadedApp, PpcLoadError> {
+    load_pef_application_with_config_and_optional_system_reservation(data, config, None)
+}
+
+pub(crate) fn load_pef_application_with_config_and_system_reservation(
+    data: &[u8],
+    config: PpcLoadConfig,
+    system_reservation: (u32, u32),
+) -> Result<PpcLoadedApp, PpcLoadError> {
+    load_pef_application_with_config_and_optional_system_reservation(
+        data,
+        config,
+        Some(system_reservation),
+    )
+}
+
+fn load_pef_application_with_config_and_optional_system_reservation(
+    data: &[u8],
+    config: PpcLoadConfig,
+    system_reservation: Option<(u32, u32)>,
+) -> Result<PpcLoadedApp, PpcLoadError> {
     if !matches!(config.screen_depth, 1 | 2 | 4 | 8 | 16) {
         return Err(PpcLoadError::ScreenDepthOutOfRange {
             requested: config.screen_depth,
@@ -13216,6 +13282,11 @@ pub fn load_pef_application_with_config(
     }
 
     let mut memory = PpcSectionMem::new();
+    if let Some((base, len)) = system_reservation {
+        memory
+            .add_readonly_allocation_exclusion(base, len)
+            .ok_or(PpcLoadError::AddressOverflow)?;
+    }
     memory.add_region(PPC_HALT_PC, vec![0u8; PPC_LOW_MEMORY_SIZE]);
     let _ = memory.write_u16_be(
         crate::memory::globals::addr::SYS_EVT_MASK,
@@ -13338,10 +13409,25 @@ pub fn load_pef_application_with_config(
     );
     memory.add_region(PPC_DSP_CONTEXT, vec![0u8; PPC_QA_OBJECTS_SIZE]);
     ppc_seed_qa_rave_objects(&mut memory);
+    if init_tvector.is_some() {
+        memory.add_readonly_region(
+            PPC_APPLICATION_INIT_RETURN_PC,
+            ppc_application_init_return_trampoline(entry_pc, rtoc),
+        );
+    }
     let mut gworlds = vec![
         ppc_seed_main_gworld(&mut memory),
         ppc_seed_dsp_back_gworld(&mut memory),
     ];
+    if let Some((base, len)) = system_reservation {
+        let reservation_start = u64::from(base);
+        let reservation_end = reservation_start + u64::from(len);
+        let overlaps_stack = reservation_start < u64::from(PPC_STACK_TOP)
+            && u64::from(stack_base) < reservation_end;
+        if overlaps_stack || memory.ordinary_mapping_overlaps(base, len) {
+            return Err(PpcLoadError::AddressOverflow);
+        }
+    }
     memory.add_region(
         PPC_HEAP_BASE,
         vec![0u8; usize::try_from(stack_base - PPC_HEAP_BASE).unwrap()],
@@ -13376,8 +13462,6 @@ pub fn load_pef_application_with_config(
             "application",
         )
         .map_err(|_| PpcLoadError::AddressOverflow)?;
-        let trampoline = ppc_application_init_return_trampoline(entry_pc, rtoc);
-        memory.add_readonly_region(PPC_APPLICATION_INIT_RETURN_PC, trampoline);
         cfm_connections.push(PpcCfmConnection {
             id: PPC_FIRST_CFM_CONNECTION_ID,
             library_name: "application".to_string(),
@@ -15902,10 +15986,11 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HeapFreeBytes => Some(PpcImportAction::Return(
-            ppc_heap_free_bytes(*heap_cursor, heap_limit),
+            ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
         )),
         PpcImportDispatcherTarget::MaxMem => {
-            let free = ppc_heap_free_bytes(*heap_cursor, heap_limit);
+            let free =
+                ppc_largest_free_ptr_block(memory, *heap_cursor, heap_limit, free_ptr_blocks);
             let grow_ptr = cpu.gpr[3];
             if grow_ptr != 0 {
                 let _ = memory.write_u32_be(grow_ptr, 0);
@@ -15913,7 +15998,8 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(free))
         }
         PpcImportDispatcherTarget::PurgeMem | PpcImportDispatcherTarget::PurgeMemSys => {
-            let free = ppc_heap_free_bytes(*heap_cursor, heap_limit);
+            let free =
+                ppc_largest_free_ptr_block(memory, *heap_cursor, heap_limit, free_ptr_blocks);
             *last_mem_error = if cpu.gpr[3] <= free {
                 PPC_NO_ERR
             } else {
@@ -19157,7 +19243,7 @@ fn dispatch_supported_import(
                         free_handle_blocks.retain(|record| record.handle != ctable_handle);
                     }
                     *heap_cursor = reclaim_base;
-                    ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(reclaim_base));
+                    ppc_update_zone_free_bytes(memory, reclaim_base, heap_limit);
                 } else if let Some(allocation) = allocation {
                     if let Some(index) = ptrs
                         .iter()
@@ -34937,7 +35023,7 @@ fn ppc_q3_file_decode_trimesh_3dmf_body(
             allocation_sizes.push(u32::try_from(attribute.use_array.len()).ok()?);
         }
     }
-    if !ppc_heap_can_alloc_sequence(*heap_cursor, heap_limit, &allocation_sizes) {
+    if !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &allocation_sizes) {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return None;
     }
@@ -35340,7 +35426,7 @@ fn ppc_q3_file_attach_trimesh_attribute_array(
     if !attribute.use_array.is_empty() {
         allocation_sizes.push(u32::try_from(attribute.use_array.len()).unwrap_or(u32::MAX));
     }
-    if !ppc_heap_can_alloc_sequence(*heap_cursor, heap_limit, &allocation_sizes) {
+    if !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &allocation_sizes) {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return false;
     }
@@ -47456,12 +47542,15 @@ fn ppc_prepare_mem_fragment(
     for section in instantiated {
         let alignment =
             alignment_bytes(section.header.alignment).map_err(|_| PPC_FRAG_CORRUPT_ERR)?;
-        let base = align_up(next_heap_cursor, alignment).map_err(|_| PPC_FRAG_NO_ADDR_SPACE)?;
         let size = u32::try_from(section.bytes.len()).map_err(|_| PPC_FRAG_NO_ADDR_SPACE)?;
-        let next = base.checked_add(size).ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
-        if next >= heap_limit {
-            return Err(PPC_FRAG_NO_ADDR_SPACE);
-        }
+        let (base, next) = ppc_aligned_heap_allocation_bounds(
+            memory,
+            next_heap_cursor,
+            heap_limit,
+            size,
+            alignment,
+        )
+        .ok_or(PPC_FRAG_NO_ADDR_SPACE)?;
         mapped_sections.push(MappedSection {
             index: section.index,
             section_kind: section.header.section_kind,
@@ -48048,7 +48137,7 @@ fn ppc_open_cport(
         *last_mem_error = PPC_PARAM_ERR;
         return false;
     }
-    if !ppc_heap_can_alloc_sequence(*heap_cursor, heap_limit, &[PPC_PIXMAP_SIZE, 4]) {
+    if !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &[PPC_PIXMAP_SIZE, 4]) {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return false;
     }
@@ -48320,12 +48409,14 @@ fn ppc_new_cwindow(
 
     let has_heap = if storage_ptr != 0 {
         ppc_heap_can_alloc_sequence(
+            memory,
             *heap_cursor,
             heap_limit,
             &[PPC_PIXMAP_SIZE, 4, 4, 10, 4, 10, 4, 10, 4, 10, 4, 10, 4, 4],
         )
     } else {
         ppc_heap_can_alloc_sequence(
+            memory,
             *heap_cursor,
             heap_limit,
             &[
@@ -49930,9 +50021,13 @@ fn ppc_update_gworld(
         .unwrap_or(0);
     let stable_ctable_resize_allocation = if replaces_ctable {
         if let Some(record) = stable_ctable_record {
-            let Some(size) =
-                ppc_handle_resize_allocation_size(record, *heap_cursor, desired_ctable_size)
-            else {
+            let Some(size) = ppc_handle_resize_allocation_size(
+                memory,
+                record,
+                *heap_cursor,
+                heap_limit,
+                desired_ctable_size,
+            ) else {
                 *last_mem_error = PPC_MEM_FULL_ERR;
                 return GW_FLAG_ERR;
             };
@@ -49948,6 +50043,8 @@ fn ppc_update_gworld(
         && old.base_addr != 0
         && required_pixel_capacity > old_pixel_capacity
         && old.base_addr.checked_add(old_pixel_capacity) == Some(*heap_cursor)
+        && ppc_heap_allocation_bounds(memory, old.base_addr, heap_limit, required_pixel_capacity)
+            .is_some_and(|(base, _)| base == old.base_addr)
         && stable_ctable_resize_allocation == 0
         && !allocates_ctable_handle;
     let reuses_pixel_storage = replaces_pixels
@@ -49968,7 +50065,7 @@ fn ppc_update_gworld(
         allocation_sizes.push(pixel_allocation_size);
     }
     if !allocation_sizes.is_empty()
-        && !ppc_heap_can_alloc_sequence(*heap_cursor, heap_limit, &allocation_sizes)
+        && !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &allocation_sizes)
     {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return GW_FLAG_ERR;
@@ -50188,7 +50285,7 @@ fn ppc_update_gworld(
         }
         *heap_cursor = heap_cursor_before;
         *handles = handles_before;
-        ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(heap_cursor_before));
+        ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = allocation_error;
         return GW_FLAG_ERR;
     }
@@ -50265,7 +50362,7 @@ fn ppc_update_gworld(
         }
         *heap_cursor = heap_cursor_before;
         *handles = handles_before;
-        ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(heap_cursor_before));
+        ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = PPC_PARAM_ERR;
         return GW_FLAG_ERR;
     }
@@ -53517,22 +53614,19 @@ fn ppc_preflight_ctable_growth(
             .ptr
             .checked_add(old_aligned)
             .ok_or(PPC_MEM_FULL_ERR)?;
-        if old_end == simulated_cursor {
-            let new_end = record
-                .ptr
-                .checked_add(new_aligned)
-                .ok_or(PPC_MEM_FULL_ERR)?;
-            if new_end >= heap_limit {
-                return Err(PPC_MEM_FULL_ERR);
-            }
+        let in_place_end = (old_end == simulated_cursor)
+            .then(|| {
+                ppc_heap_allocation_bounds(memory, record.ptr, heap_limit, new_aligned)
+                    .filter(|(new_ptr, _)| *new_ptr == record.ptr)
+                    .map(|(_, new_end)| new_end)
+            })
+            .flatten();
+        if let Some(new_end) = in_place_end {
             simulated_cursor = new_end;
         } else {
-            let new_ptr =
-                align_up(simulated_cursor, PPC_HEAP_ALIGNMENT).map_err(|_| PPC_MEM_FULL_ERR)?;
-            let new_end = new_ptr.checked_add(new_aligned).ok_or(PPC_MEM_FULL_ERR)?;
-            if new_end >= heap_limit {
-                return Err(PPC_MEM_FULL_ERR);
-            }
+            let (new_ptr, new_end) =
+                ppc_heap_allocation_bounds(memory, simulated_cursor, heap_limit, new_aligned)
+                    .ok_or(PPC_MEM_FULL_ERR)?;
             record.ptr = new_ptr;
             simulated_cursor = new_end;
         }
@@ -55084,6 +55178,7 @@ fn ppc_isp_element_new_virtual_from_needs(
         });
     }
     if !ppc_heap_can_alloc_repeated(
+        memory,
         *heap_cursor,
         heap_limit,
         PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE,
@@ -56732,19 +56827,7 @@ fn ppc_alloc_handle(
     size: u32,
     clear: bool,
 ) -> u32 {
-    let Some(data_size) = ppc_allocation_size(size) else {
-        return 0;
-    };
-    let Some(handle_size) = ppc_allocation_size(4) else {
-        return 0;
-    };
-    let Some(total_size) = data_size.checked_add(handle_size) else {
-        return 0;
-    };
-    let Some(next) = heap_cursor.checked_add(total_size) else {
-        return 0;
-    };
-    if next >= heap_limit {
+    if !ppc_heap_can_alloc_sequence(memory, *heap_cursor, heap_limit, &[4, size]) {
         return 0;
     }
     let handle = ppc_heap_alloc(memory, heap_cursor, heap_limit, 4, true);
@@ -56788,27 +56871,27 @@ fn ppc_set_handle_size(
     };
     if let Some(old_end) = record.ptr.checked_add(old_aligned) {
         if old_end == *heap_cursor {
-            let Some(new_end) = record.ptr.checked_add(new_aligned) else {
-                return PPC_MEM_FULL_ERR;
-            };
-            if new_end >= heap_limit {
-                return PPC_MEM_FULL_ERR;
-            }
-            if new_end > old_end && memory.read_u8(old_end).is_none() {
-                let Ok(growth) = usize::try_from(new_end - old_end) else {
-                    return PPC_MEM_FULL_ERR;
-                };
-                memory.add_region(old_end, vec![0; growth]);
-            }
-            for addr in old_end..new_end {
-                if memory.write_u8(addr, 0).is_none() {
-                    return PPC_PARAM_ERR;
+            if let Some((resize_ptr, new_end)) =
+                ppc_heap_allocation_bounds(memory, record.ptr, heap_limit, new_aligned)
+            {
+                if resize_ptr == record.ptr {
+                    if new_end > old_end && memory.read_u8(old_end).is_none() {
+                        let Ok(growth) = usize::try_from(new_end - old_end) else {
+                            return PPC_MEM_FULL_ERR;
+                        };
+                        memory.add_region(old_end, vec![0; growth]);
+                    }
+                    for addr in old_end..new_end {
+                        if memory.write_u8(addr, 0).is_none() {
+                            return PPC_PARAM_ERR;
+                        }
+                    }
+                    *heap_cursor = new_end;
+                    record.size = size;
+                    record.capacity = size;
+                    return PPC_NO_ERR;
                 }
             }
-            *heap_cursor = new_end;
-            record.size = size;
-            record.capacity = size;
-            return PPC_NO_ERR;
         }
     }
 
@@ -56835,8 +56918,10 @@ fn ppc_set_handle_size(
 }
 
 fn ppc_handle_resize_allocation_size(
+    memory: &PpcSectionMem,
     record: PpcHandleRecord,
     heap_cursor: u32,
+    heap_limit: u32,
     size: u32,
 ) -> Option<u32> {
     if size <= record.capacity {
@@ -56844,7 +56929,10 @@ fn ppc_handle_resize_allocation_size(
     }
     let old_aligned = ppc_allocation_size(record.size)?;
     let new_aligned = ppc_allocation_size(size)?;
-    if record.ptr.checked_add(old_aligned) == Some(heap_cursor) {
+    if record.ptr.checked_add(old_aligned) == Some(heap_cursor)
+        && ppc_heap_allocation_bounds(memory, record.ptr, heap_limit, new_aligned)
+            .is_some_and(|(new_ptr, _)| new_ptr == record.ptr)
+    {
         new_aligned.checked_sub(old_aligned)
     } else {
         Some(new_aligned)
@@ -61513,6 +61601,7 @@ fn ppc_new_pixmap(
     let ctable_bytes = [0; 8];
     let ctable_size = u32::try_from(ctable_bytes.len()).unwrap_or(u32::MAX);
     if !ppc_heap_can_alloc_sequence(
+        memory,
         *heap_cursor,
         heap_limit,
         &[4, ctable_size, 4, PPC_PIXMAP_SIZE],
@@ -78436,15 +78525,10 @@ fn ppc_heap_alloc(
     let Some(aligned) = ppc_allocation_size(size) else {
         return 0;
     };
-    let Ok(ptr) = align_up(*heap_cursor, PPC_HEAP_ALIGNMENT) else {
+    let Some((ptr, next)) = ppc_heap_allocation_bounds(memory, *heap_cursor, heap_limit, aligned)
+    else {
         return 0;
     };
-    let Some(next) = ptr.checked_add(aligned) else {
-        return 0;
-    };
-    if next >= heap_limit {
-        return 0;
-    }
     if ppc_memory_can_read_bytes(memory, ptr, aligned) {
         if clear {
             for offset in 0..aligned {
@@ -78455,8 +78539,47 @@ fn ppc_heap_alloc(
         memory.add_region(ptr, vec![0u8; aligned as usize]);
     }
     *heap_cursor = next;
-    ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(next));
+    ppc_update_zone_free_bytes(memory, next, heap_limit);
     ptr
+}
+
+fn ppc_heap_allocation_bounds(
+    memory: &PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+    aligned_size: u32,
+) -> Option<(u32, u32)> {
+    // The native bump heap shares one guest address space with runner-owned
+    // system code. Treat both its staged exclusion and live read-only mapping
+    // as a reserved hole so a successful Memory Manager call never returns
+    // storage whose writes the Trap Manager topology must reject.
+    ppc_aligned_heap_allocation_bounds(
+        memory,
+        heap_cursor,
+        heap_limit,
+        aligned_size,
+        PPC_HEAP_ALIGNMENT,
+    )
+}
+
+fn ppc_aligned_heap_allocation_bounds(
+    memory: &PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+    size: u32,
+    alignment: u32,
+) -> Option<(u32, u32)> {
+    let mut ptr = align_up(heap_cursor, alignment).ok()?;
+    loop {
+        let next = ptr.checked_add(size)?;
+        if next >= heap_limit {
+            return None;
+        }
+        let Some(reserved_end) = memory.readonly_allocation_overlap_end(ptr, size) else {
+            return Some((ptr, next));
+        };
+        ptr = align_up(reserved_end, alignment).ok()?;
+    }
 }
 
 fn ppc_seed_zone_header(
@@ -78470,7 +78593,7 @@ fn ppc_seed_zone_header(
     // Zone record through heapData. Universal Interfaces MacMemory.h refines
     // the former maxNRel field at byte 30 into heapType: k32BitHeap is bit 0
     // and kNewStyleHeap (the PowerPC Modern Memory Manager) is bit 1.
-    let free_bytes = heap_limit.saturating_sub(heap_base);
+    let free_bytes = ppc_heap_free_capacity(memory, heap_base, heap_limit).0;
     let _ = memory.write_u32_be(zone, heap_limit); // bkLim
     let _ = memory.write_u32_be(zone + 4, 0); // purgePtr
     let _ = memory.write_u32_be(zone + 8, 0); // hFstFree
@@ -78495,7 +78618,12 @@ fn ppc_seed_zone_header(
     let _ = memory.write_u16_be(zone + 52, 0); // heapData
 }
 
-fn ppc_update_zone_free_bytes(memory: &mut PpcSectionMem, free_bytes: u32) {
+fn ppc_update_zone_free_bytes(
+    memory: &mut PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+) {
+    let free_bytes = ppc_heap_free_capacity(memory, heap_cursor, heap_limit).0;
     let _ = memory.write_u32_be(PPC_APPLICATION_ZONE + 12, free_bytes);
     let _ = memory.write_u32_be(PPC_SYSTEM_ZONE + 12, free_bytes);
 }
@@ -78668,17 +78796,21 @@ fn ppc_dispatch_legacy_memory_utility(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         "MaxBlock" => Some(PpcImportAction::Return(ppc_largest_free_ptr_block(
+            memory,
             *heap_cursor,
             heap_limit,
             free_ptr_blocks,
         ))),
         "PurgeSpace" => {
-            let total = heap_limit.saturating_sub(*heap_cursor).saturating_add(
-                free_ptr_blocks
-                    .iter()
-                    .fold(0u32, |sum, block| sum.saturating_add(block.size)),
-            );
-            let contiguous = ppc_largest_free_ptr_block(*heap_cursor, heap_limit, free_ptr_blocks);
+            let total = ppc_heap_free_capacity(memory, *heap_cursor, heap_limit)
+                .0
+                .saturating_add(
+                    free_ptr_blocks
+                        .iter()
+                        .fold(0u32, |sum, block| sum.saturating_add(block.size)),
+                );
+            let contiguous =
+                ppc_largest_free_ptr_block(memory, *heap_cursor, heap_limit, free_ptr_blocks);
             if cpu.gpr[3] != 0 {
                 memory.write_u32_be(cpu.gpr[3], total)?;
             }
@@ -78712,13 +78844,14 @@ fn ppc_dispatch_legacy_memory_utility(
             cpu.gpr[1].saturating_sub(application_heap_limit),
         )),
         "TempFreeMem" => Some(PpcImportAction::Return(
-            heap_limit.saturating_sub(*heap_cursor),
+            ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
         )),
         _ => None,
     }
 }
 
 fn ppc_largest_free_ptr_block(
+    memory: &PpcSectionMem,
     heap_cursor: u32,
     heap_limit: u32,
     free_ptr_blocks: &[PpcPtrRecord],
@@ -78728,7 +78861,7 @@ fn ppc_largest_free_ptr_block(
         .map(|record| record.size)
         .max()
         .unwrap_or(0)
-        .max(heap_limit.saturating_sub(heap_cursor))
+        .max(ppc_heap_free_capacity(memory, heap_cursor, heap_limit).1)
 }
 
 fn ppc_set_ptr_size(
@@ -78761,10 +78894,12 @@ fn ppc_set_ptr_size(
         // representation, only the last heap allocation can grow in place.
         return PPC_MEM_FULL_ERR;
     }
-    let Some(new_end) = record.ptr.checked_add(new_capacity) else {
+    let Some((resize_ptr, new_end)) =
+        ppc_heap_allocation_bounds(memory, record.ptr, heap_limit, new_capacity)
+    else {
         return PPC_MEM_FULL_ERR;
     };
-    if new_end >= heap_limit {
+    if resize_ptr != record.ptr {
         return PPC_MEM_FULL_ERR;
     }
     if new_end > old_end && memory.read_u8(old_end).is_none() {
@@ -78779,7 +78914,7 @@ fn ppc_set_ptr_size(
         }
     }
     *heap_cursor = new_end;
-    ppc_update_zone_free_bytes(memory, heap_limit.saturating_sub(new_end));
+    ppc_update_zone_free_bytes(memory, new_end, heap_limit);
     record.size = size;
     PPC_NO_ERR
 }
@@ -78981,35 +79116,50 @@ fn ppc_optional_pstring_output_can_write(
     addr == 0 || ppc_memory_can_write_bytes(memory, addr, len + 1)
 }
 
-fn ppc_heap_can_alloc_sequence(heap_cursor: u32, heap_limit: u32, sizes: &[u32]) -> bool {
-    let Some(total_size) = ppc_heap_allocation_sequence_size(sizes) else {
-        return false;
-    };
-    let Ok(heap_cursor) = align_up(heap_cursor, PPC_HEAP_ALIGNMENT) else {
-        return false;
-    };
-    let Some(next) = heap_cursor.checked_add(total_size) else {
-        return false;
-    };
-    next < heap_limit
+fn ppc_heap_can_alloc_sequence(
+    memory: &PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+    sizes: &[u32],
+) -> bool {
+    let mut simulated_cursor = heap_cursor;
+    for size in sizes {
+        let Some(aligned_size) = ppc_allocation_size(*size) else {
+            return false;
+        };
+        let Some((_, next)) =
+            ppc_heap_allocation_bounds(memory, simulated_cursor, heap_limit, aligned_size)
+        else {
+            return false;
+        };
+        simulated_cursor = next;
+    }
+    true
 }
 
-fn ppc_heap_can_alloc_repeated(heap_cursor: u32, heap_limit: u32, size: u32, count: u32) -> bool {
+fn ppc_heap_can_alloc_repeated(
+    memory: &PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+    size: u32,
+    count: u32,
+) -> bool {
     let Some(aligned_size) = ppc_allocation_size(size) else {
         return false;
     };
-    let Some(total_size) = aligned_size.checked_mul(count) else {
-        return false;
-    };
-    let Ok(heap_cursor) = align_up(heap_cursor, PPC_HEAP_ALIGNMENT) else {
-        return false;
-    };
-    let Some(next) = heap_cursor.checked_add(total_size) else {
-        return false;
-    };
-    next < heap_limit
+    let mut simulated_cursor = heap_cursor;
+    for _ in 0..count {
+        let Some((_, next)) =
+            ppc_heap_allocation_bounds(memory, simulated_cursor, heap_limit, aligned_size)
+        else {
+            return false;
+        };
+        simulated_cursor = next;
+    }
+    true
 }
 
+#[cfg(test)]
 fn ppc_heap_allocation_sequence_size(sizes: &[u32]) -> Option<u32> {
     sizes.iter().try_fold(0u32, |total_size, size| {
         total_size.checked_add(ppc_allocation_size(*size)?)
@@ -79025,8 +79175,12 @@ fn ppc_allocation_size(size: u32) -> Option<u32> {
         .map(|size| size.max(PPC_HEAP_ALIGNMENT))
 }
 
-fn ppc_heap_free_bytes(heap_cursor: u32, heap_limit: u32) -> u32 {
-    heap_limit.saturating_sub(heap_cursor)
+fn ppc_heap_free_capacity(
+    memory: &PpcSectionMem,
+    heap_cursor: u32,
+    heap_limit: u32,
+) -> (u32, u32) {
+    memory.readonly_allocation_available_bytes(heap_cursor, heap_limit)
 }
 
 fn ppc_i16_result(value: i16) -> u32 {
@@ -90806,6 +90960,247 @@ mod tests {
         loaded.cpu.gpr[4] = 1;
         loaded.run_with_hle_imports(64);
         assert_eq!(loaded.cpu.gpr[3], original);
+    }
+
+    #[test]
+    fn ppc_heap_allocation_skips_shared_system_reservation() {
+        let mut memory = PpcSectionMem::new();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        let (reservation_base, reservation) = bus.shared_synthetic_reservation().unwrap();
+        let reservation_len = u32::try_from(reservation.len()).unwrap();
+        let local_base = reservation_base - PPC_HEAP_ALIGNMENT;
+        memory.add_region(
+            local_base,
+            vec![0xff; usize::try_from(reservation_len + 3 * PPC_HEAP_ALIGNMENT).unwrap()],
+        );
+        bus.write_byte(reservation_base, 0x5a);
+        // SAFETY: this focused fixture serializes the two adapters.
+        unsafe {
+            memory.add_shared_readonly_region(reservation_base, reservation);
+        }
+
+        let mut heap_cursor = local_base;
+        let reservation_end = reservation_base + reservation_len;
+        let tight_limit = reservation_end + PPC_HEAP_ALIGNMENT;
+        let heap_limit = reservation_base + reservation_len + 3 * PPC_HEAP_ALIGNMENT;
+        assert_eq!(
+            ppc_heap_free_capacity(&memory, heap_cursor, heap_limit),
+            (4 * PPC_HEAP_ALIGNMENT, 3 * PPC_HEAP_ALIGNMENT)
+        );
+        assert!(!ppc_heap_can_alloc_sequence(
+            &memory,
+            heap_cursor,
+            tight_limit,
+            &[PPC_HEAP_ALIGNMENT, PPC_HEAP_ALIGNMENT],
+        ));
+        assert!(!ppc_heap_can_alloc_repeated(
+            &memory,
+            heap_cursor,
+            tight_limit,
+            PPC_HEAP_ALIGNMENT,
+            2,
+        ));
+        assert!(ppc_heap_can_alloc_sequence(
+            &memory,
+            heap_cursor,
+            heap_limit,
+            &[PPC_HEAP_ALIGNMENT, PPC_HEAP_ALIGNMENT],
+        ));
+        assert!(ppc_heap_can_alloc_repeated(
+            &memory,
+            heap_cursor,
+            heap_limit,
+            PPC_HEAP_ALIGNMENT,
+            2,
+        ));
+        let allocation = ppc_heap_alloc(
+            &mut memory,
+            &mut heap_cursor,
+            heap_limit,
+            2 * PPC_HEAP_ALIGNMENT,
+            true,
+        );
+
+        assert_eq!(allocation, reservation_end);
+        assert_eq!(heap_cursor, allocation + 2 * PPC_HEAP_ALIGNMENT);
+        assert_eq!(
+            ppc_heap_free_capacity(&memory, heap_cursor, heap_limit),
+            (PPC_HEAP_ALIGNMENT, PPC_HEAP_ALIGNMENT)
+        );
+        assert_eq!(bus.read_byte(reservation_base), 0x5a);
+        assert_eq!(memory.read_u8(allocation), Some(0));
+    }
+
+    #[test]
+    fn ppc_loader_excludes_system_reservation_before_initializer_allocations() {
+        let reservation_base = PPC_HEAP_BASE + PPC_HEAP_ALIGNMENT;
+        let mut bus = MacMemoryBus::new((reservation_base + 0x0009_0000) as usize);
+        let reservation = bus.synthetic_reservation_range().unwrap();
+        assert_eq!(reservation.0, reservation_base);
+        bus.write_byte(reservation_base, 0x5a);
+
+        let mut loaded = load_pef_application_with_config_and_system_reservation(
+            &synthetic_pef_with_initializer(),
+            PpcLoadConfig::default(),
+            reservation,
+        )
+        .unwrap();
+        let reservation_end = reservation.0 + reservation.1;
+
+        assert!(loaded.heap_cursor > reservation_end);
+        assert!(loaded
+            .memory
+            .has_readonly_allocation_exclusion(reservation.0, reservation.1));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(ppc_heap_free_capacity(
+                &loaded.memory,
+                loaded.heap_cursor,
+                loaded.heap_limit
+            )
+            .0)
+        );
+        assert_eq!(bus.read_byte(reservation_base), 0x5a);
+
+        let mut installed = loaded.clone();
+        assert!(installed.prepare_shared_system_reservation(reservation.0, reservation.1));
+        let (shared_base, shared) = bus.shared_synthetic_reservation().unwrap();
+        // SAFETY: this focused fixture serializes both adapters.
+        unsafe { installed.memory.add_shared_readonly_region(shared_base, shared) };
+        assert!(!installed
+            .memory
+            .has_readonly_allocation_exclusion(reservation.0, reservation.1));
+        assert!(installed.memory.is_shared_readonly_address(reservation.0));
+        assert_eq!(installed.memory.write_u8(reservation.0, 0xff), None);
+        assert_eq!(bus.read_byte(reservation_base), 0x5a);
+    }
+
+    #[test]
+    fn ppc_memory_reporting_excludes_system_reservation() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"FreeMem")).unwrap();
+        let reservation_base = PPC_HEAP_BASE + 0x1000;
+        let reservation_len = 0x1_0000;
+        loaded
+            .memory
+            .add_readonly_allocation_exclusion(reservation_base, reservation_len)
+            .unwrap();
+        loaded.heap_limit = reservation_base + reservation_len + 0x2000;
+        let expected = (0x3000, 0x2000);
+        assert_eq!(
+            ppc_heap_free_capacity(&loaded.memory, loaded.heap_cursor, loaded.heap_limit),
+            expected
+        );
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], expected.0, "FreeMem total");
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::MaxMem;
+        loaded.cpu.gpr[3] = 0;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.cpu.gpr[3], expected.1, "MaxMem largest block");
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::PurgeMem;
+        loaded.cpu.gpr[3] = expected.1 + 1;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(loaded.last_mem_error, PPC_MEM_FULL_ERR);
+
+        let allocation = ppc_heap_alloc(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            PPC_HEAP_ALIGNMENT,
+            true,
+        );
+        assert_eq!(allocation, PPC_HEAP_BASE);
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(expected.0 - PPC_HEAP_ALIGNMENT),
+            "zcbFree total"
+        );
+    }
+
+    #[test]
+    fn ppc_loader_rejects_system_reservation_layout_collisions() {
+        fn reservation_at(base: u32) -> (MacMemoryBus, (u32, u32)) {
+            let bus = MacMemoryBus::new((base + 0x0009_0000) as usize);
+            let reservation = bus.synthetic_reservation_range().unwrap();
+            assert_eq!(reservation.0, base);
+            (bus, reservation)
+        }
+
+        let safe_gap_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        load_pef_application_with_config_and_system_reservation(
+            &synthetic_pef(),
+            PpcLoadConfig::default(),
+            safe_gap_bus.synthetic_reservation_range().unwrap(),
+        )
+        .expect("the 8 MiB runner reservation occupies a native-layout gap");
+
+        for base in [PPC_CODE_BASE, PPC_MAIN_GWORLD] {
+            let (_bus, reservation) = reservation_at(base);
+            assert_eq!(
+                load_pef_application_with_config_and_system_reservation(
+                    &synthetic_pef(),
+                    PpcLoadConfig::default(),
+                    reservation,
+                )
+                .unwrap_err(),
+                PpcLoadError::AddressOverflow,
+                "reservation at {base:#010x}"
+            );
+        }
+
+        let trampoline_reservation_base =
+            PPC_APPLICATION_INIT_RETURN_PC + 44 - 64 * 1024;
+        let (_bus, trampoline_reservation) = reservation_at(trampoline_reservation_base);
+        load_pef_application_with_config_and_system_reservation(
+            &synthetic_pef(),
+            PpcLoadConfig::default(),
+            trampoline_reservation,
+        )
+        .expect("the sparse non-initializer layout remains valid");
+        assert_eq!(
+            load_pef_application_with_config_and_system_reservation(
+                &synthetic_pef_with_initializer(),
+                PpcLoadConfig::default(),
+                trampoline_reservation,
+            )
+            .unwrap_err(),
+            PpcLoadError::AddressOverflow
+        );
+
+        let stack_base = PPC_HEAP_BASE + 0x1000;
+        let (_bus, stack_reservation) = reservation_at(stack_base);
+        assert_eq!(
+            load_pef_application_with_config_and_system_reservation(
+                &synthetic_pef(),
+                PpcLoadConfig {
+                    stack_size: PPC_STACK_TOP - stack_base,
+                    ..PpcLoadConfig::default()
+                },
+                stack_reservation,
+            )
+            .unwrap_err(),
+            PpcLoadError::AddressOverflow
+        );
+    }
+
+    #[test]
+    fn public_ppc_loader_late_reservation_guard_preserves_mapped_state() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let original_code = loaded.memory.read_u32_be(PPC_CODE_BASE);
+
+        assert!(!loaded.prepare_shared_system_reservation(PPC_CODE_BASE, 64 * 1024));
+        assert_eq!(loaded.memory.read_u32_be(PPC_CODE_BASE), original_code);
+        assert!(loaded.prepare_shared_system_reservation(
+            PPC_HEAP_BASE + 0x1000,
+            64 * 1024
+        ));
     }
 
     #[test]
@@ -151902,6 +152297,16 @@ mod tests {
 
     fn synthetic_pef() -> Vec<u8> {
         synthetic_pef_with_import(b"TestImport")
+    }
+
+    fn synthetic_pef_with_initializer() -> Vec<u8> {
+        let mut pef = synthetic_pef();
+        // The synthetic loader section begins at $80. Reuse its main TVector
+        // as a valid initializer TVector so loading exercises CFM's startup
+        // fragment and InitBlock allocations without executing the code.
+        write_i32(&mut pef, 0x80 + 8, 1);
+        write_u32(&mut pef, 0x80 + 12, 0);
+        pef
     }
 
     fn assert_ppc_bytes_equal(memory: &mut PpcSectionMem, start: u32, len: u32, expected: u8) {

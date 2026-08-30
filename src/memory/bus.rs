@@ -1873,9 +1873,19 @@ impl MacMemoryBus {
     /// may expose this as read-only code while retaining visibility of stubs
     /// allocated later in the process lifetime.
     pub(crate) fn shared_synthetic_reservation(&mut self) -> Option<(u32, SharedRamRegion)> {
-        let base = self.synthetic_floor;
-        self.shared_ram_region(base, SYNTHETIC_RESERVE_BYTES)
+        let (base, len) = self.synthetic_reservation_range()?;
+        self.shared_ram_region(base, len)
             .map(|region| (base, region))
+    }
+
+    /// Return the runner-owned synthetic reservation without creating a
+    /// shared-memory view. Native loaders use this range as an allocation
+    /// exclusion before the runner attaches the live mapping at initialization.
+    pub(crate) fn synthetic_reservation_range(&self) -> Option<(u32, u32)> {
+        self.synthetic_floor
+            .checked_add(SYNTHETIC_RESERVE_BYTES)
+            .filter(|end| *end <= self.ram_size)
+            .map(|_| (self.synthetic_floor, SYNTHETIC_RESERVE_BYTES))
     }
 
     /// Select the guest MMU address width. The default is 32-bit addressing.
@@ -2914,6 +2924,10 @@ mod tests {
     fn synthetic_reservation_has_a_stable_guest_memory_boundary() {
         let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
         let application_limit = bus.application_memory_limit();
+        assert_eq!(
+            bus.synthetic_reservation_range(),
+            Some((application_limit, SYNTHETIC_RESERVE_BYTES))
+        );
 
         bus.reserve_heap_until(application_limit - 4);
         assert_eq!(
@@ -2929,6 +2943,9 @@ mod tests {
             0,
             "synthetic allocations must not escape their reservation"
         );
+
+        let tiny_bus = MacMemoryBus::new((SYNTHETIC_RESERVE_BYTES / 2) as usize);
+        assert_eq!(tiny_bus.synthetic_reservation_range(), None);
     }
 
     #[test]
