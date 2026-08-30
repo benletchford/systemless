@@ -39,6 +39,8 @@ const PACK13_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack13_operations.rs");
 const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack14_operations.rs");
+const PACK15_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack15_operations.rs");
 const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_component_dispatch_operations.rs");
 const PACK0_OPERATION_ROUTES: &[SelectorOperationRoute] =
@@ -103,6 +105,16 @@ fn pack14_operation_route(
         return None;
     }
     selector_operation_route(PACK14_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack15_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA831 {
+        return None;
+    }
+    selector_operation_route(PACK15_OPERATION_ROUTES, u32::from(selector))
 }
 
 fn component_dispatch_operation_route(
@@ -15251,62 +15263,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack15 ($A831) — Picture Utilities Package
-            //
-            // Seven-routine selector dispatcher providing image-
-            // metadata extraction (color counts, palettes, font
-            // names, comment IDs, source rectangles) from PICT and
-            // PixMap structures.
-            //
-            // Selector encoding is `(arg_words << 8) | routine` per
-            // IM:VI 18-18 selector summary — same Apple-Events Pack8
-            // / Pack14 convention. arg_bytes = high_byte * 2; total
-            // pop = 2 (selector) + arg_bytes.
-            //
-            // Pascal calling convention: caller pre-pushes a 2-byte
-            // OSErr result in D0, then args left-to-right (first
-            // source-listed arg deepest, last shallowest at SP+2).
-            // Pack15's public MPW glue loads the selector into D0
-            // (`MOVE.W #selector, D0`) and leaves only the Pascal
-            // arguments on the stack. The trap pops args only and
-            // returns the OSErr in D0; unlike Pack6 / Pack14, the
-            // caller-visible stack does not carry a separate result
-            // slot.
-            //
-            // HLE compromise: Systemless does not parse PICT opcodes
-            // for metadata extraction (no quantization, no font-
-            // name discovery, no comment-ID enumeration). The
-            // routines still return the documented OSErr surface and
-            // write defensive defaults to VAR-out parameters:
-            // NewPictInfo writes a unique, nonzero PictInfoID to
-            // *PictInfoID and registers it as live; RetrievePictInfo /
-            // GetPictInfo / GetPixMapInfo zero-fill the 104-byte
-            // PictInfo record (uniqueColors=0, depth=0, all
-            // counts=0, NIL palette/colorTable/font/comment
-            // handles, sourceRect=(0,0,0,0)) when the ID is live;
-            // RecordPictInfo / RecordPixMapInfo reject stale IDs
-            // with pictInfoIDErr (-11001); DisposPictInfo is
-            // idempotent and returns noErr on repeated calls. Apps
-            // that walk PictInfo for thumbnail / font discovery see
-            // "this picture has no metadata" — which is technically
-            // correct for our HLE since we don't model picture
-            // introspection. Apps that defensively check OSErr
-            // proceed cleanly.
-            //
-            // The previous heuristic at toolbox.rs:5957..5962
-            // interpreted the high byte as BYTE count not WORD
-            // count and clamped to (2..=48): RecordPictInfo $0403
-            // (high $04 = 4 words = 8 byte args) popped 6 instead
-            // of 10; GetPictInfo $0800 (high $08 = 8 words = 16
-            // byte args) popped 10 instead of 18. Every selector
-            // had wrong pop discipline. A real-game caller would
-            // have left 4..8 garbage arg bytes on the stack and
-            // crashed on the next RTS.
-            //
-            // Inside Macintosh Volume VI (1991), ch. 18, Picture
-            // Utilities Package, pages 18-1..18-18 + selector
-            // summary table at 18-18 (IM:VI 37669..37685).
-            // Pack15 / Picture Utilities ($A831): Per-selector Pascal frames per IM:VI 18-18 and Imaging With QuickDraw 1994 pp. 7-53..7-59: selector in D0, no selector word on stack. $0206 DisposPictInfo pop 4 D0=0, $0403 RecordPictInfo pop 8 D0=0, $0404 RecordPixMapInfo pop 8 D0=0, $0505 RetrievePictInfo pop 10 *PictInfo zeroed (104 bytes) D0=0, $0602 NewPictInfo pop 12 *PictInfoID=unique nonzero ID D0=0, $0800 GetPictInfo pop 16 *PictInfo zeroed (104 bytes) D0=0, $0801 GetPixMapInfo pop 16 *PictInfo zeroed (104 bytes) D0=0.
+            // _Pack15 (0xA831)
+            // Dispatches Picture Utilities Package routines selected by D0.W.
+            // Selector ABI: 16-bit low word in D0; routine-specific Pascal parameters remain on the stack.
+            // Inside Macintosh: Imaging with QuickDraw (1994), 7-47–7-60, 8-3.
             (true, 0x031) => {
                 // Size of PictInfo record per IM:VI 18-5:
                 // version(2) + uniqueColors(4) + thePalette(4) +
@@ -15317,6 +15277,8 @@ impl super::TrapDispatcher {
 
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0) as u16;
+                let operation = pack15_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let pop_total = ((selector >> 8) as u32) * 2;
 
                 // Helper: advance A7 by the packed-argument bytes and
@@ -17191,6 +17153,297 @@ mod tests {
             dispospictinfo_double_noerr_ok,
             "A831:dispospictinfo_returns_noerr_on_double_dispose"
         );
+    }
+
+    #[test]
+    fn pack15_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK15_OPERATION_ROUTES.len(), 7);
+        assert!(super::PACK15_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0206, "DisposePictInfo"),
+            (0x0403, "RecordPictInfo"),
+            (0x0404, "RecordPixMapInfo"),
+            (0x0505, "RetrievePictInfo"),
+            (0x0602, "NewPictInfo"),
+            (0x0800, "GetPictInfo"),
+            (0x0801, "GetPixMapInfo"),
+        ] {
+            let route = super::pack15_operation_route(0xA831, selector).expect("Pack15 route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack15:0x{selector:04X}:d0-low-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA931, 0x0800),
+            (0xAC31, 0x0800),
+            (0xA830, 0x0800),
+            (0xA831, 0x0000),
+            (0xA831, 0x0802),
+            (0xA831, 0x0008),
+            (0xA831, 0x303C),
+            (0xA831, 0x0600),
+            (0xA831, 0xFFFF),
+        ] {
+            assert!(super::pack15_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack15_records_d0_low_word_identity_and_clears_stale_identity() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA831;
+
+        // Low-word carrier accepts stale high D0 word (0xDEAD_0800 -> GetPictInfo)
+        let info_buf = bus.alloc(104);
+        bus.write_bytes(info_buf, &[0xAA; 104]);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xDEAD_0800);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 0);
+        bus.write_word(sp + 6, 0);
+        bus.write_long(sp + 8, info_buf);
+        bus.write_long(sp + 12, 0x1234_5678);
+        bus.write_word(sp + 16, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("Pack15 GetPictInfo arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0800:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_word(sp + 16), 0xBEEF);
+        assert_eq!(bus.read_bytes(info_buf, 104), vec![0; 104]);
+
+        // Unknown selector clears stale identity
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0399);
+        bus.write_bytes(sp, &[0x55; 6]);
+        bus.write_word(sp + 6, 0xCAFE);
+
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("Pack15 fallback arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(bus.read_word(sp + 6), 0xCAFE);
+
+        // Wrong trap form clears stale identity
+        disp.current_selector_operation = Some(
+            "selector-operation:_Pack15:0x0800:d0-low-word-immediate:16",
+        );
+        disp.current_trap_word = 0xA931;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0800);
+        bus.write_long(sp + 8, info_buf);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("Pack15 GetPictInfo arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
+    #[test]
+    fn pack15_preserves_behavior_across_all_seven_operations_and_lifecycle() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA831;
+
+        // 1. NewPictInfo (0x0602)
+        let id_slot1 = bus.alloc(4);
+        let id_slot2 = bus.alloc(4);
+        bus.write_long(id_slot1, 0);
+        bus.write_long(id_slot2, 0);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0602);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 16);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, id_slot1);
+        bus.write_word(sp + 12, 0x1111);
+
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("NewPictInfo 1").is_ok());
+        let id1 = bus.read_long(id_slot1);
+        assert_ne!(id1, 0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        assert_eq!(bus.read_word(sp + 12), 0x1111);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0602:d0-low-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0602);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 16);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, id_slot2);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("NewPictInfo 2").is_ok());
+        let id2 = bus.read_long(id_slot2);
+        assert_ne!(id2, 0);
+        assert_ne!(id2, id1);
+
+        // 2. RecordPictInfo (0x0403)
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0403);
+        bus.write_long(sp, 0x2222_3333);
+        bus.write_long(sp + 4, id1);
+        bus.write_word(sp + 8, 0x2222);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RecordPictInfo valid").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 0x2222);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0403:d0-low-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0403);
+        bus.write_long(sp, 0x2222_3333);
+        bus.write_long(sp + 4, 0x9999_9999);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RecordPictInfo invalid").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -11001);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        // 3. RecordPixMapInfo (0x0404)
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0404);
+        bus.write_long(sp, 0x4444_5555);
+        bus.write_long(sp + 4, id2);
+        bus.write_word(sp + 8, 0x3333);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RecordPixMapInfo valid").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        assert_eq!(bus.read_word(sp + 8), 0x3333);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0404:d0-low-word-immediate:16")
+        );
+
+        // 4. RetrievePictInfo (0x0505)
+        let retrieve_buf = bus.alloc(104);
+        bus.write_bytes(retrieve_buf, &[0xCC; 104]);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0505);
+        bus.write_word(sp, 16);
+        bus.write_long(sp + 2, retrieve_buf);
+        bus.write_long(sp + 6, id1);
+        bus.write_word(sp + 10, 0x4444);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RetrievePictInfo valid").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_word(sp + 10), 0x4444);
+        assert_eq!(bus.read_bytes(retrieve_buf, 104), vec![0; 104]);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0505:d0-low-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0505);
+        bus.write_word(sp, 16);
+        bus.write_long(sp + 2, retrieve_buf);
+        bus.write_long(sp + 6, 0x9999_9999);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RetrievePictInfo invalid").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -11001);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+
+        // 5. GetPictInfo (0x0800)
+        let get_pict_buf = bus.alloc(104);
+        bus.write_bytes(get_pict_buf, &[0xDD; 104]);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0800);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 16);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, get_pict_buf);
+        bus.write_long(sp + 12, 0x1111_2222);
+        bus.write_word(sp + 16, 0x5555);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("GetPictInfo").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_word(sp + 16), 0x5555);
+        assert_eq!(bus.read_bytes(get_pict_buf, 104), vec![0; 104]);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0800:d0-low-word-immediate:16")
+        );
+
+        // 6. GetPixMapInfo (0x0801)
+        let get_pixmap_buf = bus.alloc(104);
+        bus.write_bytes(get_pixmap_buf, &[0xEE; 104]);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0801);
+        bus.write_word(sp, 0);
+        bus.write_word(sp + 2, 0);
+        bus.write_word(sp + 4, 16);
+        bus.write_word(sp + 6, 1);
+        bus.write_long(sp + 8, get_pixmap_buf);
+        bus.write_long(sp + 12, 0x3333_4444);
+        bus.write_word(sp + 16, 0x6666);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("GetPixMapInfo").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
+        assert_eq!(bus.read_word(sp + 16), 0x6666);
+        assert_eq!(bus.read_bytes(get_pixmap_buf, 104), vec![0; 104]);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0801:d0-low-word-immediate:16")
+        );
+
+        // 7. DisposePictInfo (0x0206)
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0206);
+        bus.write_long(sp, id1);
+        bus.write_word(sp + 4, 0x7777);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("DisposePictInfo 1").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(bus.read_word(sp + 4), 0x7777);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack15:0x0206:d0-low-word-immediate:16")
+        );
+
+        // Subsequent RecordPictInfo with id1 fails with -11001
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0403);
+        bus.write_long(sp, 0x2222_3333);
+        bus.write_long(sp + 4, id1);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("RecordPictInfo post-dispose").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -11001);
+
+        // Double dispose returns noErr (0)
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0206);
+        bus.write_long(sp, id1);
+        let result = disp.dispatch_toolbox(true, 0x031, &mut cpu, &mut bus);
+        assert!(result.expect("DisposePictInfo double").is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
     // ColorBit ($A864) — IM:I I-174 says the trap writes `whichBit` to the

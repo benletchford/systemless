@@ -1,0 +1,38 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0206,
+        "selector-operation:_Pack15:0x0206:d0-low-word-immediate:16",
+        "DisposePictInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0403,
+        "selector-operation:_Pack15:0x0403:d0-low-word-immediate:16",
+        "RecordPictInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0404,
+        "selector-operation:_Pack15:0x0404:d0-low-word-immediate:16",
+        "RecordPixMapInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0505,
+        "selector-operation:_Pack15:0x0505:d0-low-word-immediate:16",
+        "RetrievePictInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0602,
+        "selector-operation:_Pack15:0x0602:d0-low-word-immediate:16",
+        "NewPictInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0800,
+        "selector-operation:_Pack15:0x0800:d0-low-word-immediate:16",
+        "GetPictInfo",
+    ),
+    SelectorOperationRoute::new(
+        0x0801,
+        "selector-operation:_Pack15:0x0801:d0-low-word-immediate:16",
+        "GetPixMapInfo",
+    ),
+]
