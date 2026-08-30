@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/benletchford/systemless/compare/v0.24.0...v0.25.0) (2026-08-30)
+
+
+### Features
+
+* **traps:** inventory HFSDispatch selectors ([#1044](https://github.com/benletchford/systemless/issues/1044)) ([3afb76a](https://github.com/benletchford/systemless/commit/3afb76a11fd8c905eeb3f17fb8404d1698fcf626))
+* **traps:** inventory LoadIconCache selector ([#1047](https://github.com/benletchford/systemless/issues/1047)) ([e0d3b9f](https://github.com/benletchford/systemless/commit/e0d3b9ff7c2789184afed9389a99eb11906e76a5))
+
 ## [0.24.0](https://github.com/benletchford/systemless/compare/v0.23.23...v0.24.0) (2026-08-30)
 
 
