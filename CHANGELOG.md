@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.20](https://github.com/benletchford/systemless/compare/v0.23.19...v0.23.20) (2026-08-30)
+
+
+### Bug Fixes
+
+* **menu:** preserve native mutations across 68k callbacks ([e0983bb](https://github.com/benletchford/systemless/commit/e0983bbebb5859e51235db8bf8801650861eec77))
+
 ## [0.23.19](https://github.com/benletchford/systemless/compare/v0.23.18...v0.23.19) (2026-08-30)
 
 
