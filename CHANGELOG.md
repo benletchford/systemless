@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.22](https://github.com/benletchford/systemless/compare/v0.23.21...v0.23.22) (2026-08-30)
+
+
+### Code Refactoring
+
+* **event:** make process context own queue ([#1011](https://github.com/benletchford/systemless/issues/1011)) ([20432d3](https://github.com/benletchford/systemless/commit/20432d328436bbbc8d5475b5e09fa44cc89b869e))
+
 ## [0.23.21](https://github.com/benletchford/systemless/compare/v0.23.20...v0.23.21) (2026-08-30)
 
 
