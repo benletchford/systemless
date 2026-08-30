@@ -5132,7 +5132,7 @@ mod redraw_chrome_tests {
         tracking.submenus.push(child);
         tracking.flash_remaining = 5;
         tracking.flash_result = (701u32 << 16) | 1;
-        *disp.menu_tracking = Some(tracking);
+        disp.menu_tracking = Some(tracking);
 
         disp.redraw_chrome(&mut bus);
 

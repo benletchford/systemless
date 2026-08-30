@@ -2,7 +2,7 @@
 
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
-use crate::menu_manager::{SharedMenuTracking, SharedNativeMenuSelection};
+use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 
 /// Canonical owner for state that belongs to one emulated process rather than
 /// to either of its CPU ABI adapters.
@@ -12,7 +12,7 @@ use crate::menu_manager::{SharedMenuTracking, SharedNativeMenuSelection};
 #[derive(Debug, Default)]
 pub(crate) struct ProcessContext {
     event_queue: EventQueue,
-    menu_tracking: SharedMenuTracking,
+    menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
 }
@@ -26,18 +26,49 @@ impl ProcessContext {
         &mut self.event_queue
     }
 
-    /// # Safety
-    ///
-    /// The caller must keep the context and adapter under one owner that
-    /// serializes all access to the attached handles.
-    pub(crate) unsafe fn attach_menu_tracking(&self, adapter: &mut SharedMenuTracking) {
-        unsafe { adapter.attach_to(&self.menu_tracking) };
+    pub(crate) fn menu_tracking(&self) -> Option<&ProcessMenuTrackingState> {
+        self.menu_tracking.as_ref()
     }
 
-    pub(crate) fn attach_native_menu_selection(
-        &self,
-        adapter: &mut SharedNativeMenuSelection,
-    ) {
+    #[cfg(test)]
+    pub(crate) fn menu_tracking_mut(&mut self) -> Option<&mut ProcessMenuTrackingState> {
+        self.menu_tracking.as_mut()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_menu_tracking(&mut self) -> Option<ProcessMenuTrackingState> {
+        self.menu_tracking.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_menu_tracking(&mut self, state: Option<ProcessMenuTrackingState>) {
+        self.menu_tracking = state;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_tracking_slot_mut(&mut self) -> &mut Option<ProcessMenuTrackingState> {
+        &mut self.menu_tracking
+    }
+
+    /// Transfer detached adapter state into the canonical process owner.
+    pub(crate) fn adopt_menu_tracking(&mut self, adapter: &mut Option<ProcessMenuTrackingState>) {
+        assert!(
+            adapter.is_none() || self.menu_tracking.is_none(),
+            "cannot attach two active Menu Manager continuations"
+        );
+        if self.menu_tracking.is_none() {
+            self.menu_tracking = adapter.take();
+        }
+    }
+
+    /// Borrow the process state temporarily installed in an active CPU adapter.
+    pub(crate) fn event_queue_and_menu_tracking_mut(
+        &mut self,
+    ) -> (&mut EventQueue, &mut Option<ProcessMenuTrackingState>) {
+        (&mut self.event_queue, &mut self.menu_tracking)
+    }
+
+    pub(crate) fn attach_native_menu_selection(&self, adapter: &mut SharedNativeMenuSelection) {
         adapter.attach_to(&self.pending_native_menu_selection);
     }
 
@@ -69,24 +100,50 @@ mod tests {
     }
 
     #[test]
+    fn process_context_owns_canonical_menu_tracking() {
+        let mut context = ProcessContext::default();
+        assert!(context.menu_tracking().is_none());
+
+        let tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
+        context.set_menu_tracking(Some(tracking));
+        assert_eq!(
+            context.menu_tracking().map(|t| t.menu_handle),
+            Some(0x0012_3456)
+        );
+
+        if let Some(t) = context.menu_tracking_mut() {
+            t.highlighted_item = 3;
+        }
+        assert_eq!(
+            context
+                .menu_tracking()
+                .map(|t| (t.menu_handle, t.highlighted_item)),
+            Some((0x0012_3456, 3))
+        );
+
+        let taken = context.take_menu_tracking();
+        assert_eq!(taken.map(|t| t.menu_handle), Some(0x0012_3456));
+        assert!(context.menu_tracking().is_none());
+
+        let (queue, menu) = context.event_queue_and_menu_tracking_mut();
+        queue.push_back(QueuedEvent {
+            what: 2,
+            message: 0x5678,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        *menu = Some(crate::menu_manager::test_process_menu_tracking(0x0065_4321));
+        assert_eq!(context.event_queue().len(), 1);
+        assert_eq!(
+            context.menu_tracking().map(|t| t.menu_handle),
+            Some(0x0065_4321)
+        );
+    }
+
+    #[test]
     fn adapters_transfer_pending_state_and_share_one_process_owner() {
         let context = ProcessContext::default();
-
-        let mut classic_tracking = SharedMenuTracking::default();
-        *classic_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x0012_3456));
-        let mut native_tracking = SharedMenuTracking::default();
-        // SAFETY: the test accesses both adapters strictly in sequence.
-        unsafe {
-            context.attach_menu_tracking(&mut classic_tracking);
-            context.attach_menu_tracking(&mut native_tracking);
-        }
-        native_tracking.as_mut().unwrap().highlighted_item = 4;
-        assert_eq!(
-            classic_tracking
-                .as_ref()
-                .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
-            Some((0x0012_3456, 4))
-        );
 
         let mut classic_selection = SharedNativeMenuSelection::default();
         assert!(classic_selection.stage((128, 2)));
@@ -116,17 +173,13 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "cannot attach two active Menu Manager continuations")]
-    fn attaching_two_active_menu_continuations_is_always_rejected() {
-        let context = ProcessContext::default();
-        let mut first = SharedMenuTracking::default();
-        *first = Some(crate::menu_manager::test_process_menu_tracking(0x1000));
-        let mut second = SharedMenuTracking::default();
-        *second = Some(crate::menu_manager::test_process_menu_tracking(0x2000));
-        // SAFETY: the test accesses attached handles strictly in sequence.
-        unsafe {
-            context.attach_menu_tracking(&mut first);
-            context.attach_menu_tracking(&mut second);
-        }
+    fn adopting_two_active_menu_continuations_is_always_rejected() {
+        let mut context = ProcessContext::default();
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x1000,
+        )));
+        let mut second = Some(crate::menu_manager::test_process_menu_tracking(0x2000));
+        context.adopt_menu_tracking(&mut second);
     }
 
     #[test]

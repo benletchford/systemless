@@ -12,7 +12,7 @@ use crate::guest_call::SharedGuestCallStack;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
-use crate::menu_manager::{SharedMenuTracking, SharedNativeMenuSelection};
+use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::ProcessContext;
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2290,7 +2290,7 @@ pub struct TrapDispatcher {
     /// Menus loaded from MENU resources, in order of insertion
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
-    pub(crate) menu_tracking: SharedMenuTracking,
+    pub(crate) menu_tracking: Option<ProcessMenuTrackingState>,
     /// Process-owned nested guest-procedure continuations shared by both CPUs.
     pub(crate) guest_calls: SharedGuestCallStack,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
@@ -2927,14 +2927,9 @@ pub(crate) struct LoadedResources {
 }
 
 impl TrapDispatcher {
-    /// # Safety
-    ///
-    /// The caller must keep this adapter and the context under one process
-    /// owner that serializes all access to their shared handles.
-    pub(crate) unsafe fn attach_process_context(&mut self, context: &ProcessContext) {
-        unsafe {
-            context.attach_menu_tracking(&mut self.menu_tracking);
-        }
+    /// Attach shared process resources to this dispatcher.
+    pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        context.adopt_menu_tracking(&mut self.menu_tracking);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
     }
@@ -2954,6 +2949,36 @@ impl TrapDispatcher {
             Ok(result) => result,
             Err(payload) => std::panic::resume_unwind(payload),
         }
+    }
+
+    /// Temporarily borrow the canonical menu tracking state from [`ProcessContext`]
+    /// into this adapter's local tracking for the duration of `f`, and guarantee
+    /// it is swapped back on normal exit, early return, or unwind.
+    pub(crate) fn with_menu_tracking<R>(
+        &mut self,
+        menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        std::mem::swap(&mut self.menu_tracking, menu_tracking);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        std::mem::swap(&mut self.menu_tracking, menu_tracking);
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    /// Install all directly owned process state needed by one 68k execution
+    /// slice, returning it to [`ProcessContext`] before another CPU can run.
+    pub(crate) fn with_process_state<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_event_queue(event_queue, |dispatcher| {
+            dispatcher.with_menu_tracking(menu_tracking, f)
+        })
     }
 
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
@@ -3877,7 +3902,7 @@ impl TrapDispatcher {
             menu_bar_hidden: false,
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
-            menu_tracking: SharedMenuTracking::default(),
+            menu_tracking: None,
             guest_calls: SharedGuestCallStack::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
@@ -4138,11 +4163,20 @@ impl TrapDispatcher {
 
     /// Whether retained menu tracking has entered an application MDEF and
     /// must let that guest callback return to the original menu trap.
+    #[cfg(test)]
     pub(crate) fn is_menu_definition_callback_pending(&self) -> bool {
+        self.is_menu_definition_callback_pending_with_tracking(self.menu_tracking.as_ref())
+    }
+
+    pub(crate) fn is_menu_definition_callback_pending_with_tracking(
+        &self,
+        menu_tracking: Option<&ProcessMenuTrackingState>,
+    ) -> bool {
         self.pending_menu_bar_build.is_some()
             || self
                 .menu_tracking
                 .as_ref()
+                .or(menu_tracking)
                 .and_then(crate::menu_manager::MenuTrackingState::active_definition)
                 .or(self.menu_definition_tracking.as_ref())
                 .is_some_and(|tracking| tracking.pending_invocation().is_some())
@@ -4154,6 +4188,14 @@ impl TrapDispatcher {
     /// tracking loops is active and the trap is the matching routine. Strips
     /// the auto-pop bit (0x0400) so auto-pop variants match too.
     pub fn is_tracking_refire(&self, opcode: u16) -> bool {
+        self.is_tracking_refire_with_menu_tracking(opcode, self.is_menu_tracking())
+    }
+
+    pub(crate) fn is_tracking_refire_with_menu_tracking(
+        &self,
+        opcode: u16,
+        is_menu_tracking: bool,
+    ) -> bool {
         let trap_no_autopop = opcode & !0x0400;
         let is_menu_refire = trap_no_autopop == 0xA93D || trap_no_autopop == 0xA80B;
         let is_menu_bar_build_refire = trap_no_autopop == 0xA9C0;
@@ -4165,7 +4207,7 @@ impl TrapDispatcher {
         let is_go_away_refire = trap_no_autopop == 0xA91E;
         let is_grow_window_refire = trap_no_autopop == 0xA92B;
         let is_region_refire = matches!(trap_no_autopop, 0xA905 | 0xA926);
-        (is_menu_refire && self.is_menu_tracking())
+        (is_menu_refire && is_menu_tracking)
             || (is_menu_bar_build_refire && self.pending_menu_bar_build.is_some())
             || (is_dialog_refire && self.is_dialog_tracking())
             || (is_standard_file_refire
@@ -10299,7 +10341,7 @@ mod tests {
     }
 
     fn install_menu_tracking(disp: &mut TrapDispatcher) {
-        *disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
+        disp.menu_tracking = Some(test_tracked_menu_state(0, (0, 0, 0, 0), 0));
     }
 
     fn install_dialog_tracking(disp: &mut TrapDispatcher) {
@@ -11075,5 +11117,87 @@ mod tests {
         assert!(context_queue.menu_bar_is_invalid());
         assert!(dispatcher.event_queue.is_empty());
         assert!(!dispatcher.event_queue.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn with_menu_tracking_restores_context_and_adapter_state_on_normal_exit() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+
+        let ran = dispatcher.with_menu_tracking(&mut context_tracking, |disp| {
+            assert_eq!(
+                disp.menu_tracking.as_ref().map(|t| t.menu_handle),
+                Some(0x1234)
+            );
+            disp.menu_tracking.as_mut().unwrap().highlighted_item = 5;
+            true
+        });
+
+        assert!(ran);
+        assert!(dispatcher.menu_tracking.is_none());
+        assert_eq!(
+            context_tracking
+                .as_ref()
+                .map(|t| (t.menu_handle, t.highlighted_item)),
+            Some((0x1234, 5))
+        );
+    }
+
+    #[test]
+    fn with_menu_tracking_restores_context_and_adapter_state_on_panic() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x5678));
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatcher.with_menu_tracking(&mut context_tracking, |disp| {
+                disp.menu_tracking.as_mut().unwrap().highlighted_item = 9;
+                panic!("simulated panic inside menu trap execution");
+            })
+        }));
+
+        assert!(panic_result.is_err());
+        assert!(dispatcher.menu_tracking.is_none());
+        assert_eq!(
+            context_tracking
+                .as_ref()
+                .map(|t| (t.menu_handle, t.highlighted_item)),
+            Some((0x5678, 9))
+        );
+    }
+
+    #[test]
+    fn with_process_state_restores_both_canonical_slots_on_panic() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut context_queue = EventQueue::default();
+        let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x9abc));
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatcher.with_process_state(
+                &mut context_queue,
+                &mut context_tracking,
+                |disp| {
+                    disp.event_queue.push_back(QueuedEvent {
+                        what: 1,
+                        message: 0x3333,
+                        where_v: 1,
+                        where_h: 2,
+                        modifiers: 0,
+                    });
+                    disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
+                    panic!("simulated panic inside a complete guest execution slice");
+                },
+            );
+        }));
+
+        assert!(panic_result.is_err());
+        assert_eq!(context_queue.front().map(|event| event.message), Some(0x3333));
+        assert_eq!(
+            context_tracking
+                .as_ref()
+                .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
+            Some((0x9abc, 7))
+        );
+        assert!(dispatcher.event_queue.is_empty());
+        assert!(dispatcher.menu_tracking.is_none());
     }
 }

@@ -2583,7 +2583,7 @@ impl super::TrapDispatcher {
                                 saved,
                             );
                             tracking.definition = self.menu_definition_tracking.take();
-                            *self.menu_tracking = Some(tracking);
+                            self.menu_tracking = Some(tracking);
                             self.draw_menu_dropdown_chrome(bus, menu_idx, rect);
                             self.active_menu_definition_mut().unwrap().draw();
                             if !self.arm_pending_menu_definition(
@@ -2745,7 +2745,7 @@ impl super::TrapDispatcher {
                         .position(|m| m.handle == menu_handle || m.id == menu_id)
                     {
                         if !self.menu_uses_standard_definition(bus, menu_ptr) {
-                            *self.menu_tracking = Some(tracked_menu_state(
+                            self.menu_tracking = Some(tracked_menu_state(
                                 MenuTrackingKind::PopUp,
                                 menu_handle,
                                 (0, 0, 0, 0),
@@ -2785,7 +2785,7 @@ impl super::TrapDispatcher {
 
                         self.restore_visible_dialog_snapshots(bus);
                         let saved = self.save_dropdown_pixels(bus, dd_rect);
-                        *self.menu_tracking = Some(tracked_menu_state_with_content_top(
+                        self.menu_tracking = Some(tracked_menu_state_with_content_top(
                             MenuTrackingKind::PopUp,
                             menu_handle,
                             dd_rect,
@@ -4449,7 +4449,7 @@ impl super::TrapDispatcher {
             tracked_menu_state(MenuTrackingKind::MenuBar, menu.handle, dropdown_rect, saved);
         tracking.definition = custom_definition
             .then(|| SharedMenuDefinitionTracking::begin_draw(menu.handle, dropdown_rect));
-        *self.menu_tracking = Some(tracking);
+        self.menu_tracking = Some(tracking);
         if !custom_definition {
             let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
             Self::write_menu_scrolling_globals(bus, &rows, dropdown_rect.0);
@@ -4830,7 +4830,7 @@ impl super::TrapDispatcher {
     /// Determine which item (1-based) is at the given screen point, or 0.
     #[cfg(test)]
     fn dropdown_item_at_point(&self, bus: &MacMemoryBus, mouse_x: i16, mouse_y: i16) -> i16 {
-        if let Some(ref tracking) = *self.menu_tracking {
+        if let Some(ref tracking) = self.menu_tracking {
             let Some(menu_idx) = self.menu_index_for_handle(tracking.menu_handle) else {
                 return 0;
             };
@@ -11508,7 +11508,7 @@ mod tests {
         );
         classic.menus[0].items[0].mark = 0x12;
         classic.menus[0].items[1].icon = 7;
-        *classic.menu_tracking = Some(test_tracked_menu_state(classic_menu, rect, 1));
+        classic.menu_tracking = Some(test_tracked_menu_state(classic_menu, rect, 1));
         classic.draw_menu_dropdown(&mut classic_bus, 0, rect);
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
@@ -11535,7 +11535,7 @@ mod tests {
         );
         themed.menus[0].items[0].mark = 0x12;
         themed.menus[0].items[1].icon = 7;
-        *themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
+        themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
@@ -11707,7 +11707,7 @@ mod tests {
         );
 
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
-        *themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
+        themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
@@ -11756,7 +11756,7 @@ mod tests {
         }
 
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
-        *themed.menu_tracking = None;
+        themed.menu_tracking = None;
         themed.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
             active_popup: Some(super::super::dispatch::DialogPopupTrackingState {
                 item_no: 1,
@@ -12317,7 +12317,7 @@ mod tests {
             "4bpp cicn color should map through MainDevice instead of the foreign 8bpp TheGDevice"
         );
 
-        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
+        disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
         assert_eq!(
             packed_4bpp_screen_pixel_index(&bus, base, row_bytes, icon_pixel.0, icon_pixel.1,),
@@ -12587,7 +12587,7 @@ mod tests {
             screen_pixel_is_set(&bus, base, row_bytes, outside_edge.0, outside_edge.1);
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
+        disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         for (component, pixel) in [
@@ -12698,7 +12698,7 @@ mod tests {
             .expect("precondition: item RGB3 black command key should draw");
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
+        disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         assert_eq!(
@@ -12797,7 +12797,7 @@ mod tests {
             .expect("precondition: item RGB3 black command key should draw");
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
+        disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         assert_eq!(
@@ -13483,7 +13483,7 @@ mod tests {
             new_menu_with_title(&mut disp, &mut cpu, &mut bus, 702, 0x302700, "Retained");
         append_menu_data(&mut disp, &mut cpu, &mut bus, retained, 0x302740, "Right");
 
-        *disp.menu_tracking = Some(test_tracked_menu_state(retained, (20, 10, 38, 100), 1));
+        disp.menu_tracking = Some(test_tracked_menu_state(retained, (20, 10, 38, 100), 1));
         disp.menus.swap(0, 1);
 
         assert_eq!(
