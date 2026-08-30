@@ -1,0 +1,38 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0000,
+        "selector-operation:_FontDispatch:0x0000:d0-moveq-immediate:8",
+        "IsOutline",
+    ),
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_FontDispatch:0x0001:d0-moveq-immediate:8",
+        "SetOutlinePreferred",
+    ),
+    SelectorOperationRoute::new(
+        0x0008,
+        "selector-operation:_FontDispatch:0x0008:d0-moveq-immediate:8",
+        "OutlineMetrics",
+    ),
+    SelectorOperationRoute::new(
+        0x0009,
+        "selector-operation:_FontDispatch:0x0009:d0-moveq-immediate:8",
+        "GetOutlinePreferred",
+    ),
+    SelectorOperationRoute::new(
+        0x000A,
+        "selector-operation:_FontDispatch:0x000A:d0-moveq-immediate:8",
+        "SetPreserveGlyph",
+    ),
+    SelectorOperationRoute::new(
+        0x000B,
+        "selector-operation:_FontDispatch:0x000B:d0-moveq-immediate:8",
+        "GetPreserveGlyph",
+    ),
+    SelectorOperationRoute::new(
+        0x000C,
+        "selector-operation:_FontDispatch:0x000C:d0-moveq-immediate:8",
+        "FlushFonts",
+    ),
+]
