@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.18](https://github.com/benletchford/systemless/compare/v0.23.17...v0.23.18) (2026-08-30)
+
+
+### Bug Fixes
+
+* **release:** include refactors in release notes ([#996](https://github.com/benletchford/systemless/issues/996)) ([e01c73a](https://github.com/benletchford/systemless/commit/e01c73a8c826098b4c46b18cd8f54ba7530f2232))
+
+
+### Code Refactoring
+
+* **menu:** use one Menu Manager for 68k and PowerPC ([#947](https://github.com/benletchford/systemless/issues/947)) ([69d911e](https://github.com/benletchford/systemless/commit/69d911eb62ec4fd8fb32d2cdefeb4f60f9fbfbc0))
+
 ## [0.23.17](https://github.com/benletchford/systemless/compare/v0.23.16...v0.23.17) (2026-08-29)
 
 
