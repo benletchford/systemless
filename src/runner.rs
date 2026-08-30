@@ -6409,17 +6409,21 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let (event_queue, menu_tracking) =
-                        self.process_context.event_queue_and_menu_tracking_mut();
-                    let dispatch_err = self.dispatcher.with_process_state(
+                    let (event_queue, menu_tracking, memory_effects) =
+                        self.process_context.event_queue_menu_tracking_and_memory_effects_mut();
+                    let dispatch_err = self.dispatcher.with_process_state_and_memory_effects(
                         event_queue,
                         menu_tracking,
+                        memory_effects,
                         |dispatcher| {
                             dispatcher
                                 .dispatch(opcode, &mut self.cpu, &mut self.bus)
                                 .is_err()
                         },
                     );
+                    if self.process_context.has_pending_memory_effects() {
+                        self.apply_pending_process_memory_effects(ppc_app);
+                    }
                     if dispatch_err {
                         running = false;
                         break;
@@ -6445,6 +6449,46 @@ impl FixtureRunner {
         }
         self.bus.detach_guest_address_space();
         Some((executed, running))
+    }
+
+    fn apply_pending_process_memory_effects(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let effects = self.process_context.take_pending_memory_effects();
+        if effects.is_empty() {
+            return;
+        }
+        self.bus.detach_guest_address_space();
+        let mut successful_menus = Vec::new();
+        for effect in effects {
+            let success = ppc_app.replace_handle_bytes(
+                effect.handle,
+                effect.expected_ptr,
+                &effect.replacement,
+            );
+            if success {
+                self.bus
+                    .write_word(crate::memory::globals::addr::MEM_ERR, 0);
+                successful_menus.push((effect.handle, effect.expected_ptr));
+            } else {
+                let err = if ppc_app.last_mem_error != 0 {
+                    ppc_app.last_mem_error as u16
+                } else {
+                    (-108i16) as u16 // memFullErr
+                };
+                self.bus
+                    .write_word(crate::memory::globals::addr::MEM_ERR, err);
+            }
+        }
+        // SAFETY: `ppc_app` is parked for this whole interval. The address
+        // space remains in place, and all reads and writes are serialized
+        // through this runner until the bus is detached.
+        let shared_memory = unsafe { ppc_app.memory.shared_view() };
+        unsafe {
+            self.bus.attach_guest_address_space(shared_memory);
+        }
+        for (menu_handle, old_ptr) in successful_menus {
+            self.dispatcher
+                .complete_deferred_menu_replacement(&self.bus, menu_handle, old_ptr);
+        }
     }
 
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
@@ -14037,6 +14081,153 @@ mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(native.cpu.gpr[3], raw_choice);
+    }
+
+    #[test]
+    fn native_menu_select_observes_growing_68k_append_menu_after_mdef_returns() {
+        use crate::loader::ppc::tests::cross_abi_menu_select_fixture;
+
+        const APPEND_STRING: u32 = crate::loader::ppc::PPC_DATA_BASE + 0x7300;
+        const CALLBACK_VALUE: u32 = 0x68c0_ab1e;
+        const ROOT_MENU_ID: i16 = 140;
+        const TARGET_ITEM: i16 = 2;
+        const APPENDED_TEXT: &[u8] =
+            b"Cross-ABI growth must remain visible through the original native MenuHandle";
+
+        let mut fixture = cross_abi_menu_select_fixture();
+        let root_menu = fixture.root_menu;
+        let original_record = fixture.root_record;
+        let original_handle_record = fixture
+            .app
+            .handles
+            .iter()
+            .copied()
+            .find(|record| record.handle == root_menu)
+            .expect("native root-menu allocation");
+        let callback_marker = fixture.callback_marker;
+        let title_h = fixture.title_h;
+
+        let mut append_string = Vec::with_capacity(APPENDED_TEXT.len() + 1);
+        append_string.push(APPENDED_TEXT.len() as u8);
+        append_string.extend_from_slice(APPENDED_TEXT);
+        fixture.app.memory.add_region(APPEND_STRING, append_string);
+
+        // The real 68k MDEF grows the native MenuInfo with AppendMenu. A
+        // relocatable block can move during SetHandleSize, but its master
+        // pointer and Handle identity remain authoritative. Inside Macintosh:
+        // Memory (1992), pp. 1-16--1-17 and 2-40--2-41.
+        let mut mdef = Vec::new();
+        mdef.extend_from_slice(&0x4ab9u16.to_be_bytes()); // TST.L marker
+        mdef.extend_from_slice(&callback_marker.to_be_bytes());
+        mdef.extend_from_slice(&0x660eu16.to_be_bytes()); // BNE.S after AppendMenu
+        mdef.extend_from_slice(&0x2f3cu16.to_be_bytes()); // MOVE.L #rootMenu,-(SP)
+        mdef.extend_from_slice(&root_menu.to_be_bytes());
+        mdef.extend_from_slice(&0x2f3cu16.to_be_bytes()); // MOVE.L #appendString,-(SP)
+        mdef.extend_from_slice(&APPEND_STRING.to_be_bytes());
+        mdef.extend_from_slice(&0xa933u16.to_be_bytes()); // AppendMenu
+        mdef.extend_from_slice(&0x23fcu16.to_be_bytes()); // MOVE.L #value,marker
+        mdef.extend_from_slice(&CALLBACK_VALUE.to_be_bytes());
+        mdef.extend_from_slice(&callback_marker.to_be_bytes());
+        mdef.extend_from_slice(&0x4e74u16.to_be_bytes()); // RTD #18
+        mdef.extend_from_slice(&0x0012u16.to_be_bytes());
+        fixture.app.memory.add_region(fixture.mdef_entry, mdef);
+
+        let app = LoadedApp::from_ppc(fixture.app);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        runner.push_canonical_mouse_down(10, title_h);
+        let root_rect = (0..16)
+            .find_map(|_| {
+                let (_, running) = runner.run_steps(512, None);
+                assert!(running, "native MenuSelect halted before opening the root menu");
+                runner
+                    .process_context
+                    .menu_tracking()
+                    .filter(|tracking| tracking.menu_handle == root_menu)
+                    .map(|tracking| tracking.dropdown_rect())
+            })
+            .expect("native MenuSelect should retain the canonical root handle");
+
+        runner
+            .dispatcher
+            .set_mouse_position(root_rect.0 + 8, root_rect.1 + 16);
+        runner.sync_mouse_position_lowmem();
+        let callback_completed = (0..32).any(|_| {
+            let (_, running) = runner.run_steps(512, None);
+            assert!(running, "native MenuSelect halted during the growing 68k callback");
+            runner
+                .ppc_app
+                .as_mut()
+                .unwrap()
+                .memory
+                .read_u32_be(callback_marker)
+                == Some(CALLBACK_VALUE)
+                && runner.dispatcher.guest_calls.is_empty()
+        });
+        assert!(callback_completed, "the growing real 68k MDEF callback did not return");
+
+        let native = runner.ppc_app.as_mut().expect("native app retained");
+        let relocated_record = native
+            .memory
+            .read_u32_be(root_menu)
+            .expect("live native root-menu master pointer");
+        let handle_record = native
+            .handles
+            .iter()
+            .copied()
+            .find(|record| record.handle == root_menu)
+            .expect("updated native root-menu allocation");
+        assert_eq!(handle_record.ptr, relocated_record);
+        assert_eq!(handle_record.handle, root_menu);
+        assert_eq!(handle_record.size, handle_record.capacity);
+        assert!(handle_record.size > original_handle_record.size);
+        assert_ne!(relocated_record, original_record, "the fixture must force relocation");
+        let mut menu_bytes = vec![0; handle_record.size as usize];
+        native
+            .memory
+            .read_bytes_into(relocated_record, &mut menu_bytes)
+            .expect("complete relocated MenuInfo bytes");
+        let items = crate::menu_manager::MenuItems::decode(&menu_bytes)
+            .expect("relocated native MenuInfo remains decodable");
+        assert!(
+            items.items.iter().any(|item| item.text == APPENDED_TEXT),
+            "native decoding must observe the item appended by the 68k callback"
+        );
+        assert_eq!(native.last_mem_error, 0);
+        assert!(!runner.process_context.has_pending_memory_effects());
+        assert_eq!(runner.bus.read_word(crate::memory::globals::addr::MEM_ERR), 0);
+
+        let target_v = root_rect.0 + 24;
+        let target_h = root_rect.1 + 16;
+        runner.dispatcher.set_mouse_position(target_v, target_h);
+        runner.sync_mouse_position_lowmem();
+        let target_observed = (0..16).any(|_| {
+            let (_, running) = runner.run_steps(512, None);
+            assert!(running, "native MenuSelect halted before the mouse release");
+            runner
+                .process_context
+                .menu_tracking()
+                .is_some_and(|tracking| {
+                    tracking.menu_handle == root_menu && tracking.highlighted_item == TARGET_ITEM
+                })
+        });
+        assert!(target_observed, "native tracking did not reach the live regular row");
+        runner.push_canonical_mouse_up(target_v, target_h);
+        for _ in 0..128 {
+            let (_, running) = runner.run_steps(512, None);
+            if !running {
+                break;
+            }
+        }
+        assert!(runner.is_halted());
+        assert!(runner.process_context.menu_tracking().is_none());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert_eq!(
+            runner.ppc_app.as_ref().unwrap().cpu.gpr[3],
+            (u32::from(ROOT_MENU_ID as u16) << 16) | u32::from(TARGET_ITEM as u16),
+            "native MenuSelect must continue and return the live regular row"
+        );
     }
 
     #[test]

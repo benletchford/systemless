@@ -2291,6 +2291,8 @@ pub struct TrapDispatcher {
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
     pub(crate) menu_tracking: Option<ProcessMenuTrackingState>,
+    /// Process-owned pending handle memory replacements staged during cross-ISA dispatch.
+    pub(crate) pending_memory_effects: Vec<crate::process_context::PendingHandleByteReplacement>,
     /// Process-owned nested guest-procedure continuations shared by both CPUs.
     pub(crate) guest_calls: SharedGuestCallStack,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
@@ -2968,6 +2970,27 @@ impl TrapDispatcher {
         }
     }
 
+    /// Temporarily borrow the canonical pending memory effects from [`ProcessContext`]
+    /// into this adapter's local queue for the duration of `f`, and guarantee
+    /// it is swapped back on normal exit, early return, or unwind.
+    pub(crate) fn with_memory_effects<R>(
+        &mut self,
+        memory_effects: &mut Vec<crate::process_context::PendingHandleByteReplacement>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        assert!(
+            self.pending_memory_effects.is_empty(),
+            "cannot install process memory effects over detached adapter effects"
+        );
+        std::mem::swap(&mut self.pending_memory_effects, memory_effects);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        std::mem::swap(&mut self.pending_memory_effects, memory_effects);
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
     /// Install all directly owned process state needed by one 68k execution
     /// slice, returning it to [`ProcessContext`] before another CPU can run.
     pub(crate) fn with_process_state<R>(
@@ -2978,6 +3001,20 @@ impl TrapDispatcher {
     ) -> R {
         self.with_event_queue(event_queue, |dispatcher| {
             dispatcher.with_menu_tracking(menu_tracking, f)
+        })
+    }
+
+    /// Install the process-owned state and effect channel needed by a
+    /// serialized native-to-68k execution slice.
+    pub(crate) fn with_process_state_and_memory_effects<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        memory_effects: &mut Vec<crate::process_context::PendingHandleByteReplacement>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_process_state(event_queue, menu_tracking, |dispatcher| {
+            dispatcher.with_memory_effects(memory_effects, f)
         })
     }
 
@@ -3903,6 +3940,7 @@ impl TrapDispatcher {
             sound_manager: crate::sound::SoundManager::new(),
             menus: Vec::new(),
             menu_tracking: None,
+            pending_memory_effects: Vec::new(),
             guest_calls: SharedGuestCallStack::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
@@ -11166,15 +11204,45 @@ mod tests {
     }
 
     #[test]
-    fn with_process_state_restores_both_canonical_slots_on_panic() {
+    fn with_memory_effects_borrows_and_restores_pending_replacements() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut context_effects = vec![crate::process_context::PendingHandleByteReplacement {
+            handle: 0x1111,
+            expected_ptr: 0x2222,
+            replacement: vec![1, 2, 3],
+        }];
+
+        let ran = dispatcher.with_memory_effects(&mut context_effects, |disp| {
+            assert_eq!(disp.pending_memory_effects.len(), 1);
+            assert_eq!(disp.pending_memory_effects[0].handle, 0x1111);
+            disp.pending_memory_effects.push(
+                crate::process_context::PendingHandleByteReplacement {
+                    handle: 0x3333,
+                    expected_ptr: 0x4444,
+                    replacement: vec![4, 5, 6],
+                },
+            );
+            true
+        });
+
+        assert!(ran);
+        assert!(dispatcher.pending_memory_effects.is_empty());
+        assert_eq!(context_effects.len(), 2);
+        assert_eq!(context_effects[1].handle, 0x3333);
+    }
+
+    #[test]
+    fn with_process_state_restores_all_canonical_slots_on_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context_queue = EventQueue::default();
         let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x9abc));
+        let mut context_effects = Vec::new();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dispatcher.with_process_state(
+            dispatcher.with_process_state_and_memory_effects(
                 &mut context_queue,
                 &mut context_tracking,
+                &mut context_effects,
                 |disp| {
                     disp.event_queue.push_back(QueuedEvent {
                         what: 1,
@@ -11184,6 +11252,13 @@ mod tests {
                         modifiers: 0,
                     });
                     disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
+                    disp.pending_memory_effects.push(
+                        crate::process_context::PendingHandleByteReplacement {
+                            handle: 0x5555,
+                            expected_ptr: 0x6666,
+                            replacement: vec![7, 8, 9],
+                        },
+                    );
                     panic!("simulated panic inside a complete guest execution slice");
                 },
             );
@@ -11197,7 +11272,10 @@ mod tests {
                 .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
             Some((0x9abc, 7))
         );
+        assert_eq!(context_effects.len(), 1);
+        assert_eq!(context_effects[0].handle, 0x5555);
         assert!(dispatcher.event_queue.is_empty());
         assert!(dispatcher.menu_tracking.is_none());
+        assert!(dispatcher.pending_memory_effects.is_empty());
     }
 }

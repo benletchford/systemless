@@ -452,6 +452,25 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
+    pub(crate) fn complete_deferred_menu_replacement(
+        &mut self,
+        bus: &MacMemoryBus,
+        menu_handle: u32,
+        old_ptr: u32,
+    ) {
+        let menu_ptr = bus.read_long(menu_handle);
+        self.ptr_to_handle.remove(&old_ptr);
+        if menu_ptr != 0 {
+            self.ptr_to_handle.insert(menu_ptr, menu_handle);
+        }
+        if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
+            refresh_menu_from_memory(bus, menu);
+        } else if menu_ptr != 0 {
+            self.menus
+                .push(parse_menu_resource(bus, menu_ptr, menu_handle));
+        }
+    }
+
     fn menu_uses_standard_definition(&self, bus: &MacMemoryBus, menu_ptr: u32) -> bool {
         let handle = bus.read_long(menu_ptr + 6);
         self.loaded_handles
@@ -1553,6 +1572,22 @@ impl super::TrapDispatcher {
         // rebuilds still fit the decoded record and must preserve its handle.
         if record_size as usize >= bytes.len() {
             bus.write_bytes(menu_ptr, &bytes);
+        } else if bus.is_foreign_ordinary_sparse_address(menu_handle)
+            && bus.is_foreign_ordinary_sparse_address(menu_ptr)
+        {
+            // Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+            // When a relocatable block allocated in the native process heap grows,
+            // the replacement cannot be allocated from the 68k flat-RAM heap.
+            // Stage the handle replacement on the process context so the native
+            // memory owner can reallocate within its own address space.
+            self.pending_memory_effects.push(
+                crate::process_context::PendingHandleByteReplacement {
+                    handle: menu_handle,
+                    expected_ptr: menu_ptr,
+                    replacement: bytes,
+                },
+            );
+            return true;
         } else {
             let mut allocation = bytes;
             allocation.resize(allocation.len().max(256), 0);
