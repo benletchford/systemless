@@ -37,6 +37,8 @@ const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack14_operations.rs");
 const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_component_dispatch_operations.rs");
+const PACK0_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack0_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -84,6 +86,13 @@ fn component_dispatch_operation_route(
         return None;
     }
     selector_operation_route(COMPONENT_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn pack0_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA9E7 {
+        return None;
+    }
+    selector_operation_route(PACK0_OPERATION_ROUTES, u32::from(selector))
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -10684,20 +10693,18 @@ impl super::TrapDispatcher {
             }
 
             // ========== Package Dispatchers ==========
-            // Pack0-Pack7 ($A9E7-$A9EF-0x1EF) are selector-based dispatchers.
-            // The selector word at SP encodes the sub-routine. The high byte often
-            // gives the parameter size (excluding the selector itself).
+            // Pack0-Pack7 (0xA9E7-0xA9EF) are selector-based dispatchers.
+            // Their package-specific selector is at the top of the Pascal stack.
 
-            // Pack0 ($A9E7) — List Manager
-            // Pack0 / List Manager ($A9E7): Selector-based: $44 LNew,
-            // $18 LClick, $20 LDispose, $24 LAddRow, $30 LAddToCell,
-            // $34 LDelRow, $3C LGetSelect, $40 LLastClick, $5C
-            // LSetSelect, $54 LDoDraw, plus a small set of list-state
-            // mutators/query helpers. List backing store maintained per
-            // Inside Macintosh Volume IV.
+            // Pack0 (0xA9E7)
+            // Dispatches List Manager package routines selected by a word on the stack.
+            // PROCEDURE LActivate (act: BOOLEAN; lHandle: ListHandle);
+            // Inside Macintosh Volume IV (1986), IV-276.
             (true, 0x1E7) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = pack0_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if trace_list_manager_enabled() {
                     eprintln!(
                         "[LIST] selector=${:04X} pc=${:08X} sp=${:08X}",
@@ -23307,6 +23314,92 @@ mod tests {
             "Re-opening must not clobber the in-progress rsrc-fork \
              writes with the on-disk snapshot"
         );
+    }
+
+    #[test]
+    fn pack0_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK0_OPERATION_ROUTES.len(), 26);
+        assert!(super::PACK0_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "LActivate"),
+            (0x0004, "LAddColumn"),
+            (0x0008, "LAddRow"),
+            (0x000C, "LAddToCell"),
+            (0x0010, "LAutoScroll"),
+            (0x0014, "LCellSize"),
+            (0x0018, "LClick"),
+            (0x001C, "LClrCell"),
+            (0x0020, "LDelColumn"),
+            (0x0024, "LDelRow"),
+            (0x0028, "LDispose"),
+            (0x002C, "LSetDrawingMode"),
+            (0x0030, "LDraw"),
+            (0x0034, "LGetCellDataLocation"),
+            (0x0038, "LGetCell"),
+            (0x003C, "LGetSelect"),
+            (0x0040, "LLastClick"),
+            (0x0044, "LNew"),
+            (0x0048, "LNextCell"),
+            (0x004C, "LRect"),
+            (0x0050, "LScroll"),
+            (0x0054, "LSearch"),
+            (0x0058, "LSetCell"),
+            (0x005C, "LSetSelect"),
+            (0x0060, "LSize"),
+            (0x0064, "LUpdate"),
+        ] {
+            let route = super::pack0_operation_route(0xA9E7, selector).expect("Pack0 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9E8, 0x0000),
+            (0xA8E7, 0x0044),
+            (0xA9E7, 0x0002),
+            (0xA9E7, 0x3F3C),
+            (0xA9E7, 0x4400),
+        ] {
+            assert!(super::pack0_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack0_records_stack_carrier_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9E7;
+        bus.write_word(sp, 0x0000);
+        bus.write_long(sp + 2, 0);
+        bus.write_word(sp + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack0:0x0000:stack-word-zero:16")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0010);
+        bus.write_long(sp + 2, 0);
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack0:0x0010:stack-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        disp.current_trap_word = 0xA9E8;
+        cpu.write_reg(Register::A7, sp);
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
     }
 
     // Pack0 / List Manager ($A9E7) — LNew selector $0044
