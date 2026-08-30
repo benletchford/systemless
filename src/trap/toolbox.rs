@@ -31,6 +31,8 @@ const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
 const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_alias_dispatch_operations.rs");
 const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
+const PACK9_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack9_operations.rs");
 const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
 const PACK6_OPERATION_ROUTES: &[SelectorOperationRoute] =
@@ -69,6 +71,13 @@ fn ppc_operation_route(trap_word: u16, selector: u32) -> Option<&'static Selecto
         return None;
     }
     selector_operation_route(PPC_OPERATION_ROUTES, selector)
+}
+
+fn pack9_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82B {
+        return None;
+    }
+    selector_operation_route(PACK9_OPERATION_ROUTES, u32::from(selector))
 }
 
 fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
@@ -14921,12 +14930,32 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack9 ($A82B) — StackSpace alias
-            // Inside Macintosh Volume IV (1986), pp. IV-78 and IV-81;
-            // Inside Macintosh: Memory 1992, pp. 2-69 to 2-70.
-            // Pack9 maps directly to _StackSpace ($A065), which returns
-            // its LongInt result in D0 and consumes no Pascal arguments.
-            (true, 0x02B) => return self.dispatch_memory(false, 0x65, cpu, bus),
+            // PPCBrowser (0xA82B)
+            // Displays the program linking dialog and returns the selected PPC port.
+            // FUNCTION PPCBrowser (prompt: Str255; applListLabel: Str255; defaultSpecified: Boolean; VAR theLocation: LocationNameRec; VAR thePortInfo: PortInfoRec; portFilter: PPCFilterProcPtr; theLocNBPType: Str32): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), pp. 11-52 to 11-54.
+            //
+            // Selector $0D00 is passed in D0.W. The 68k Pascal calling convention
+            // passes 26 argument bytes on the stack above a 2-byte OSErr result slot.
+            // In headless execution without interactive linking UI, return userCanceledErr (-128).
+            (true, 0x02B) => {
+                let d0 = cpu.read_reg(Register::D0);
+                let selector = (d0 & 0xFFFF) as u16;
+                let operation = pack9_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+
+                if operation.is_some() {
+                    let sp = cpu.read_reg(Register::A7);
+                    let result_sp = sp + 26;
+                    cpu.write_reg(Register::A7, result_sp);
+                    bus.write_word(result_sp, (-128i16) as u16);
+                    cpu.write_reg(Register::D0, (-128i32) as u32);
+                } else {
+                    self.current_selector_operation = None;
+                    cpu.write_reg(Register::D0, (-50i32) as u32);
+                }
+                Ok(())
+            }
 
             // Pack10 ($A82C) — NewEmptyHandle alias
             // Inside Macintosh Volume IV (1986), pp. IV-78 and IV-81;
@@ -25632,40 +25661,204 @@ mod tests {
     }
 
     #[test]
-    fn pack9_aliases_stackspace_and_preserves_stack_slot() {
-        let (mut toolbox_disp, mut toolbox_cpu, mut toolbox_bus) = setup();
+    fn pack9_generated_routes_preserve_exact_d0_low_word_values() {
+        assert_eq!(super::PACK9_OPERATION_ROUTES.len(), 1);
+        assert_eq!(super::PACK9_OPERATION_ROUTES[0].selector, 0x0D00);
+        assert_eq!(super::PACK9_OPERATION_ROUTES[0].routine_name, "PPCBrowser");
+        assert_eq!(
+            super::PACK9_OPERATION_ROUTES[0].operation_id,
+            "selector-operation:_Pack9:0x0D00:d0-low-word-immediate:16"
+        );
+
+        let route = super::pack9_operation_route(0xA82B, 0x0D00).expect("Pack9 operation route");
+        assert_eq!(route.routine_name, "PPCBrowser");
+        assert_eq!(
+            route.operation_id,
+            "selector-operation:_Pack9:0x0D00:d0-low-word-immediate:16"
+        );
+
+        for (trap_word, selector) in [
+            (0xA82C, 0x0D00),
+            (0xA72B, 0x0D00),
+            (0xA92B, 0x0D00),
+            (0xAA2B, 0x0D00),
+            (0xA02B, 0x0D00),
+            (0xA82B, 0x0000),
+            (0xA82B, 0x000D),
+            (0xA82B, 0x303C),
+            (0xA82B, 0x0100),
+            (0xA82B, 0xFFFF),
+        ] {
+            assert!(super::pack9_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack9_ppcbrowser_dispatches_with_pascal_abi_and_returns_user_canceled_err() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let location_ptr = 0x0030_1000;
+        let port_info_ptr = 0x0030_1100;
+        let prompt_ptr = 0x0030_1200;
+        let label_ptr = 0x0030_1300;
+        let nbp_type_ptr = 0x0030_1400;
+        disp.current_trap_word = 0xA82B;
+
+        for offset in 0..0x100 {
+            bus.write_byte(location_ptr + offset, 0xA1);
+            bus.write_byte(port_info_ptr + offset, 0xB2);
+            bus.write_byte(prompt_ptr + offset, 0xC3);
+            bus.write_byte(label_ptr + offset, 0xD4);
+            bus.write_byte(nbp_type_ptr + offset, 0xE5);
+        }
+
+        // Setup stack:
+        // Result slot at sp + 26: 2-byte placeholder
+        // Arguments from sp to sp + 26: 26 bytes total
+        // SP + 0:  theLocNBPType (4 bytes)
+        // SP + 4:  portFilter (4 bytes)
+        // SP + 8:  thePortInfo (4 bytes)
+        // SP + 12: theLocation (4 bytes)
+        // SP + 16: defaultSpecified (2 bytes)
+        // SP + 18: applListLabel (4 bytes)
+        // SP + 22: prompt (4 bytes)
+        // SP + 26: result slot (2 bytes)
+        // SP + 28: trailing memory canary (4 bytes)
+        bus.write_long(sp, nbp_type_ptr);
+        bus.write_long(sp + 4, 0x2222_2222);
+        bus.write_long(sp + 8, port_info_ptr);
+        bus.write_long(sp + 12, location_ptr);
+        bus.write_word(sp + 16, 0x0001);
+        bus.write_long(sp + 18, label_ptr);
+        bus.write_long(sp + 22, prompt_ptr);
+        bus.write_word(sp + 26, 0x55AA);
+        bus.write_long(sp + 28, 0xDEAD_BEEF);
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xCAFE_0D00); // stale high word + selector $0D00
+
+        let result = disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus);
+        assert!(result.is_some(), "Pack9 should be handled");
+        assert!(result.unwrap().is_ok(), "Pack9 should return");
+
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack9:0x0D00:d0-low-word-immediate:16")
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 26,
+            "Pack9 PPCBrowser should pop 26 argument bytes, leaving A7 at result slot"
+        );
+        assert_eq!(
+            bus.read_word(sp + 26),
+            0xFF80,
+            "Pack9 PPCBrowser result slot must receive userCanceledErr (-128 / 0xFF80)"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0xFFFF_FF80,
+            "Pack9 PPCBrowser D0 must mirror sign-extended userCanceledErr (-128)"
+        );
+
+        // Caller arguments and surrounding memory must remain unmutated (invariance)
+        assert_eq!(bus.read_long(sp), nbp_type_ptr);
+        assert_eq!(bus.read_long(sp + 4), 0x2222_2222);
+        assert_eq!(bus.read_long(sp + 8), port_info_ptr);
+        assert_eq!(bus.read_long(sp + 12), location_ptr);
+        assert_eq!(bus.read_word(sp + 16), 0x0001);
+        assert_eq!(bus.read_long(sp + 18), label_ptr);
+        assert_eq!(bus.read_long(sp + 22), prompt_ptr);
+        assert_eq!(bus.read_long(sp + 28), 0xDEAD_BEEF);
+        assert!(!disp.ppc_initialized);
+
+        for offset in 0..0x100 {
+            assert_eq!(bus.read_byte(location_ptr + offset), 0xA1);
+            assert_eq!(bus.read_byte(port_info_ptr + offset), 0xB2);
+            assert_eq!(bus.read_byte(prompt_ptr + offset), 0xC3);
+            assert_eq!(bus.read_byte(label_ptr + offset), 0xD4);
+            assert_eq!(bus.read_byte(nbp_type_ptr + offset), 0xE5);
+        }
+
+        disp.ppc_initialized = true;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xBEEF_0D00);
+        bus.write_word(sp + 26, 0x55AA);
+        let result = disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus);
+        assert!(result.expect("Pack9 arm").is_ok());
+        assert!(disp.ppc_initialized);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 26);
+        assert_eq!(bus.read_word(sp + 26), 0xFF80);
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_FF80);
+
+        for offset in 0..0x100 {
+            assert_eq!(bus.read_byte(location_ptr + offset), 0xA1);
+            assert_eq!(bus.read_byte(port_info_ptr + offset), 0xB2);
+            assert_eq!(bus.read_byte(prompt_ptr + offset), 0xC3);
+            assert_eq!(bus.read_byte(label_ptr + offset), 0xD4);
+            assert_eq!(bus.read_byte(nbp_type_ptr + offset), 0xE5);
+        }
+    }
+
+    #[test]
+    fn pack9_unknown_selector_fails_closed_and_preserves_stack() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA82B;
+        disp.current_selector_operation = Some("stale-identity");
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678); // unknown selector
+        bus.write_long(sp, 0xCAFE_BABE);
+
+        let result = disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus);
+        assert!(result.expect("Pack9 arm").is_ok());
+
+        assert_eq!(
+            disp.current_selector_operation, None,
+            "Unknown selector identity must be cleared"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp,
+            "Unknown selector must preserve A7"
+        );
+        assert_eq!(
+            bus.read_long(sp),
+            0xCAFE_BABE,
+            "Unknown selector must preserve caller memory"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0xFFFF_FFCE,
+            "Unknown selector must return paramErr (-50) in D0"
+        );
+
+        // Wrong trap form test
+        disp.current_trap_word = 0xA82C;
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::D0, 0x0000_0D00);
+        let result = disp.dispatch_toolbox(true, 0x02B, &mut cpu, &mut bus);
+        assert!(result.expect("Pack9 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), 0xCAFE_BABE);
+        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF_FFCE);
+    }
+
+    #[test]
+    fn stackspace_os_trap_returns_free_space_and_preserves_stack_slot() {
         let (mut memory_disp, mut memory_cpu, mut memory_bus) = setup();
         let sp = TEST_SP;
 
-        toolbox_cpu.write_reg(Register::A7, sp);
         memory_cpu.write_reg(Register::A7, sp);
-        toolbox_bus.write_long(sp, 0x1122_3344);
         memory_bus.write_long(sp, 0x1122_3344);
 
-        let toolbox_result =
-            toolbox_disp.dispatch_toolbox(true, 0x02B, &mut toolbox_cpu, &mut toolbox_bus);
         let memory_result =
             memory_disp.dispatch_memory(false, 0x65, &mut memory_cpu, &mut memory_bus);
 
-        assert!(toolbox_result.is_some(), "Pack9 should be handled");
-        assert!(toolbox_result.unwrap().is_ok(), "Pack9 should return");
         assert!(memory_result.is_some(), "StackSpace should be handled");
         assert!(memory_result.unwrap().is_ok(), "StackSpace should return");
-        assert_eq!(
-            toolbox_cpu.read_reg(Register::D0),
-            memory_cpu.read_reg(Register::D0),
-            "Pack9 should return the same D0 value as StackSpace"
-        );
-        assert_eq!(
-            toolbox_cpu.read_reg(Register::A7),
-            sp,
-            "Pack9 should preserve the caller's stack pointer"
-        );
-        assert_eq!(
-            toolbox_bus.read_long(sp),
-            0x1122_3344,
-            "Pack9 should not write a Pascal result slot on the caller stack"
-        );
         assert_eq!(
             memory_cpu.read_reg(Register::A7),
             sp,
@@ -25675,6 +25868,10 @@ mod tests {
             memory_bus.read_long(sp),
             0x1122_3344,
             "StackSpace should not write a Pascal result slot on the caller stack"
+        );
+        assert!(
+            memory_cpu.read_reg(Register::D0) > 0,
+            "StackSpace should return a positive free stack space in D0"
         );
     }
 
