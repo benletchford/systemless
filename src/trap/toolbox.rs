@@ -57,6 +57,8 @@ const SCRIPT_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_script_util_operations.rs");
 const SCSI_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_scsi_dispatch_operations.rs");
+const PACK11_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack11_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -189,6 +191,16 @@ fn scsi_dispatch_operation_route(
         return None;
     }
     selector_operation_route(SCSI_DISPATCH_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack11_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82D {
+        return None;
+    }
+    selector_operation_route(PACK11_OPERATION_ROUTES, u32::from(selector))
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -14954,21 +14966,14 @@ impl super::TrapDispatcher {
             // arguments.
             (true, 0x02C) => return self.dispatch_memory(false, 0x66, cpu, bus),
 
-            // Pack11 ($A82D) — Edition Manager
-            // Inside Macintosh: Interapplication Communication 1993,
-            // pp. 12-60 and 12-103. `_Pack11` is the package trap for
-            // the Edition Manager; `InitEditionPack` is selector $0100
-            // and takes no Pascal arguments. The public MPW glue passes
-            // the selector in D0, matching the Pack13-style package trap
-            // convention.
-            //
-            // Keep the explicit `InitEditionPack` path separate from the
-            // generic selector-byte heuristic so the documented bootstrap
-            // routine remains obvious to future readers.
-            //
-            // Pack11 ($A82D): `_Pack11` Edition Manager. `InitEditionPack` selector $0100 returns noErr and takes no Pascal args; other selectors still use the generic pop fallback.
+            // Pack11 ($A82D)
+            // Dispatches Edition Manager routines selected by D0.W.
+            // FUNCTION InitEditionPack: OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), p. 2-74; Volume VI (1991), pp. C-9–C-10.
             (true, 0x02D) => {
                 let selector = cpu.read_reg(Register::D0) as u16;
+                let operation = pack11_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if selector == 0x0100 {
                     cpu.write_reg(Register::D0, 0);
                 } else {
@@ -33497,5 +33502,185 @@ mod tests {
             "RsrcZoneInit should return normally"
         );
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn pack11_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK11_OPERATION_ROUTES.len(), 30);
+        assert!(super::PACK11_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0100, "InitEditionPack"),
+            (0x0206, "UnRegisterSection"),
+            (0x0208, "IsRegisteredSection"),
+            (0x0210, "DeleteEditionContainerFile"),
+            (0x0224, "GoToPublisherSection"),
+            (0x0226, "GetLastEditionContainerUsed"),
+            (0x022A, "GetEditionOpenerProc"),
+            (0x022C, "SetEditionOpenerProc"),
+            (0x0232, "NewSubscriberDialog"),
+            (0x0236, "NewPublisherDialog"),
+            (0x023A, "SectionOptionsDialog"),
+            (0x0316, "CloseEdition"),
+            (0x040C, "AssociateSection"),
+            (0x0412, "OpenEdition"),
+            (0x0422, "GetEditionInfo"),
+            (0x050E, "CreateEditionContainerFile"),
+            (0x052E, "CallEditionOpenerProc"),
+            (0x0530, "CallFormatIOProc"),
+            (0x0604, "RegisterSection"),
+            (0x0618, "EditionHasFormat"),
+            (0x061E, "GetEditionFormatMark"),
+            (0x0620, "SetEditionFormatMark"),
+            (0x0814, "OpenNewEdition"),
+            (0x081A, "ReadEdition"),
+            (0x081C, "WriteEdition"),
+            (0x0A02, "NewSection"),
+            (0x0A28, "GetStandardFormats"),
+            (0x0B34, "NewSubscriberExpDialog"),
+            (0x0B38, "NewPublisherExpDialog"),
+            (0x0B3C, "SectionOptionsExpDialog"),
+        ] {
+            let route = super::pack11_operation_route(0xA82D, selector).expect("Pack11 route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack11:0x{selector:04X}:d0-low-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA92D, 0x0100),
+            (0xA82D, 0x0000),
+            (0xA82D, 0x0101),
+            (0xA82D, 0x0207),
+            (0xA82D, 0x303C),
+        ] {
+            assert!(super::pack11_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack11_records_low_word_identity_and_preserves_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA82D;
+
+        // 1. InitEditionPack ($0100) with stale high word in D0
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xBEEF_0100);
+        bus.write_long(sp, 0x1122_3344);
+
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.is_some(), "Pack11 should be handled");
+        assert!(result.unwrap().is_ok(), "Pack11 should return");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "selector 0x0100 should return noErr in D0"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp,
+            "InitEditionPack should preserve A7"
+        );
+        assert_eq!(
+            bus.read_long(sp),
+            0x1122_3344,
+            "InitEditionPack should preserve caller stack contents"
+        );
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack11:0x0100:d0-low-word-immediate:16")
+        );
+
+        // 2. Multi-word selector NewSection ($0A02): param_size = 10, total pop = 2 + 10 = 12
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xCAFE_0A02);
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack11:0x0A02:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+
+        // 3. RegisterSection ($0604): param_size = 6, total pop = 2 + 6 = 8
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0604);
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack11:0x0604:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        // 4. NewSubscriberExpDialog ($0B34): param_size = 11, total pop = 2 + 11 = 13
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0B34);
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack11:0x0B34:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 13);
+
+        // 5. UnRegisterSection ($0206): param_size = 2, total pop = 2 + 2 = 4
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0206);
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack11:0x0206:d0-low-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        // 6. Wrong trap word clears stale identity
+        disp.current_trap_word = 0xA92D;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0100);
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            None,
+            "Wrong trap word must clear selector identity"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+
+        // 7. Unknown / unassigned selector clears stale identity and preserves fallback pop
+        disp.current_trap_word = 0xA82D;
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x04FF); // param_size = 4 -> pop 2 + 4 = 6
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            None,
+            "Unknown selector must clear selector identity"
+        );
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        // 8. Byte-swapped selector ($020A is unassigned in Pack11)
+        disp.current_selector_operation = Some("stale-identity");
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x020A); // param_size = 2 -> pop 2 + 2 = 4
+        let result = disp.dispatch_toolbox(true, 0x02D, &mut cpu, &mut bus);
+        assert!(result.expect("Pack11 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 }
