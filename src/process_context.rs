@@ -4,6 +4,19 @@ use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 
+/// A deferred byte replacement for a relocatable guest handle.
+///
+/// This channel lets a serialized 68k execution context request a handle resize
+/// and byte update within the native process address space without giving the
+/// 68k dispatcher direct allocator ownership over the parked PowerPC heap.
+/// Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingHandleByteReplacement {
+    pub(crate) handle: u32,
+    pub(crate) expected_ptr: u32,
+    pub(crate) replacement: Vec<u8>,
+}
+
 /// Canonical owner for state that belongs to one emulated process rather than
 /// to either of its CPU ABI adapters.
 ///
@@ -15,6 +28,7 @@ pub(crate) struct ProcessContext {
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
+    pending_memory_effects: Vec<PendingHandleByteReplacement>,
 }
 
 impl ProcessContext {
@@ -50,6 +64,24 @@ impl ProcessContext {
         &mut self.menu_tracking
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_memory_effects(&self) -> &[PendingHandleByteReplacement] {
+        &self.pending_memory_effects
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_memory_effects_mut(&mut self) -> &mut Vec<PendingHandleByteReplacement> {
+        &mut self.pending_memory_effects
+    }
+
+    pub(crate) fn take_pending_memory_effects(&mut self) -> Vec<PendingHandleByteReplacement> {
+        std::mem::take(&mut self.pending_memory_effects)
+    }
+
+    pub(crate) fn has_pending_memory_effects(&self) -> bool {
+        !self.pending_memory_effects.is_empty()
+    }
+
     /// Transfer detached adapter state into the canonical process owner.
     pub(crate) fn adopt_menu_tracking(&mut self, adapter: &mut Option<ProcessMenuTrackingState>) {
         assert!(
@@ -66,6 +98,20 @@ impl ProcessContext {
         &mut self,
     ) -> (&mut EventQueue, &mut Option<ProcessMenuTrackingState>) {
         (&mut self.event_queue, &mut self.menu_tracking)
+    }
+
+    pub(crate) fn event_queue_menu_tracking_and_memory_effects_mut(
+        &mut self,
+    ) -> (
+        &mut EventQueue,
+        &mut Option<ProcessMenuTrackingState>,
+        &mut Vec<PendingHandleByteReplacement>,
+    ) {
+        (
+            &mut self.event_queue,
+            &mut self.menu_tracking,
+            &mut self.pending_memory_effects,
+        )
     }
 
     pub(crate) fn attach_native_menu_selection(&self, adapter: &mut SharedNativeMenuSelection) {
@@ -216,5 +262,46 @@ mod tests {
         begin_call(&second, 0x2000);
         context.attach_guest_calls(&mut first);
         context.attach_guest_calls(&mut second);
+    }
+
+    #[test]
+    fn process_context_owns_canonical_pending_memory_effects() {
+        let mut context = ProcessContext::default();
+        assert!(!context.has_pending_memory_effects());
+        assert!(context.pending_memory_effects().is_empty());
+
+        context.pending_memory_effects_mut().push(PendingHandleByteReplacement {
+            handle: 0x1000,
+            expected_ptr: 0x2000,
+            replacement: vec![1, 2, 3, 4],
+        });
+        assert!(context.has_pending_memory_effects());
+        assert_eq!(context.pending_memory_effects().len(), 1);
+        assert_eq!(context.pending_memory_effects()[0].handle, 0x1000);
+
+        let taken = context.take_pending_memory_effects();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].handle, 0x1000);
+        assert_eq!(taken[0].expected_ptr, 0x2000);
+        assert_eq!(taken[0].replacement, vec![1, 2, 3, 4]);
+        assert!(!context.has_pending_memory_effects());
+
+        let (queue, menu, effects) = context.event_queue_menu_tracking_and_memory_effects_mut();
+        queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0x1234,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        });
+        *menu = Some(crate::menu_manager::test_process_menu_tracking(0x3000));
+        effects.push(PendingHandleByteReplacement {
+            handle: 0x4000,
+            expected_ptr: 0x5000,
+            replacement: vec![9, 8, 7],
+        });
+        assert_eq!(context.event_queue().len(), 1);
+        assert!(context.menu_tracking().is_some());
+        assert_eq!(context.pending_memory_effects().len(), 1);
     }
 }

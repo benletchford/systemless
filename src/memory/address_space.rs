@@ -87,6 +87,20 @@ impl SharedGuestAddressSpace {
         // SAFETY: upheld by `new` and the caller's serialized interval.
         unsafe { PpcMemory::write_u32_be(self.0.as_ptr().as_mut()?, address, value) }
     }
+
+    /// Whether an address belongs to an ordinary sparse native mapping rather
+    /// than a runner-owned shared flat-RAM overlay.
+    #[inline]
+    pub(crate) unsafe fn is_ordinary_sparse_mapped(self, address: u32) -> bool {
+        // SAFETY: upheld by `new` and caller's serialized interval.
+        let Some(space) = (unsafe { self.0.as_ptr().as_mut() }) else {
+            return false;
+        };
+        if space.locate_shared_mapping(address).is_some() {
+            return false;
+        }
+        space.regions.read_u8(address).is_some()
+    }
 }
 
 impl Clone for GuestAddressSpace {
@@ -839,5 +853,27 @@ mod tests {
             .unwrap();
         assert_eq!(sparse_tail, [1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44]);
         assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0);
+    }
+
+    #[test]
+    fn shared_view_distinguishes_ordinary_sparse_mappings_from_overlays() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x2000, vec![0; 0x100]);
+
+        let mut shared_bus_ram = MacMemoryBus::new(64 * 1024);
+        let shared_region = shared_bus_ram.shared_ram_region(0, 0x1000).unwrap();
+        unsafe {
+            memory.add_shared_region(0x0000, shared_region);
+        }
+
+        let shared = unsafe { memory.shared_view() };
+        unsafe {
+            // Shared overlays are not ordinary sparse mappings.
+            assert!(!shared.is_ordinary_sparse_mapped(0x0500));
+            // Native heap regions are ordinary sparse mappings.
+            assert!(shared.is_ordinary_sparse_mapped(0x2050));
+            // Unmapped addresses belong to neither domain.
+            assert!(!shared.is_ordinary_sparse_mapped(0x9000));
+        }
     }
 }

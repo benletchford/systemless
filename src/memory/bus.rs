@@ -1248,6 +1248,17 @@ impl MacMemoryBus {
         self.foreign_address_space = None;
     }
 
+    /// Whether an address is mapped into a foreign guest address space's
+    /// ordinary sparse regions (and not in a shared flat-RAM overlay).
+    #[inline]
+    pub(crate) fn is_foreign_ordinary_sparse_address(&self, address: u32) -> bool {
+        let Some(foreign) = self.foreign_address_space else {
+            return false;
+        };
+        // SAFETY: see `foreign_read_u8`.
+        unsafe { foreign.is_ordinary_sparse_mapped(address) }
+    }
+
     #[inline]
     fn foreign_read_u8(&self, address: u32) -> Option<u8> {
         let memory = self.foreign_address_space?;
@@ -3328,5 +3339,33 @@ mod tests {
                 "in-RAM tail of straddling fill_zeros"
             );
         }
+    }
+
+    #[test]
+    fn bus_detects_foreign_ordinary_sparse_addresses_only_when_attached() {
+        use crate::memory::GuestAddressSpace;
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        assert!(!bus.is_foreign_ordinary_sparse_address(0x2000));
+
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x2000, vec![0; 0x100]);
+
+        let shared_region = bus.shared_ram_region(0, 0x1000).unwrap();
+        unsafe {
+            memory.add_shared_region(0x0000, shared_region);
+        }
+
+        let shared = unsafe { memory.shared_view() };
+        unsafe {
+            bus.attach_guest_address_space(shared);
+        }
+
+        assert!(!bus.is_foreign_ordinary_sparse_address(0x0500));
+        assert!(bus.is_foreign_ordinary_sparse_address(0x2050));
+        assert!(!bus.is_foreign_ordinary_sparse_address(0x9000));
+
+        bus.detach_guest_address_space();
+        assert!(!bus.is_foreign_ordinary_sparse_address(0x2050));
     }
 }

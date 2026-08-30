@@ -5004,6 +5004,58 @@ fn push_ppc_hle_import_trace_entry(
 }
 
 impl PpcLoadedApp {
+    /// Replace bytes of a relocatable handle within the native process heap.
+    ///
+    /// If `expected_ptr` is nonzero, verifies that the master pointer currently
+    /// points to `expected_ptr`. Resizes the handle via [`ppc_set_handle_size`],
+    /// writes the replacement bytes, and updates [`Self::last_mem_error`].
+    /// On failure, leaves the existing pointer, bytes, and handle metadata intact.
+    /// Inside Macintosh: Memory (1992), pp. 2-40--2-41.
+    pub(crate) fn replace_handle_bytes(
+        &mut self,
+        handle: u32,
+        expected_ptr: u32,
+        bytes: &[u8],
+    ) -> bool {
+        let Some(current_ptr) = self.memory.read_u32_be(handle) else {
+            self.last_mem_error = PPC_NIL_HANDLE_ERR;
+            return false;
+        };
+        let record_matches = self
+            .handles
+            .iter()
+            .any(|record| record.handle == handle && record.ptr == current_ptr);
+        if current_ptr == 0 || current_ptr != expected_ptr || !record_matches {
+            self.last_mem_error = PPC_NIL_HANDLE_ERR;
+            return false;
+        }
+        let Ok(size) = u32::try_from(bytes.len()) else {
+            self.last_mem_error = PPC_MEM_FULL_ERR;
+            return false;
+        };
+        let result = ppc_set_handle_size(
+            &mut self.memory,
+            &mut self.heap_cursor,
+            self.heap_limit,
+            &mut self.handles,
+            handle,
+            size,
+        );
+        self.last_mem_error = result;
+        if result != PPC_NO_ERR {
+            return false;
+        }
+        let Some(ptr) = self.memory.read_u32_be(handle).filter(|ptr| *ptr != 0) else {
+            self.last_mem_error = PPC_NIL_HANDLE_ERR;
+            return false;
+        };
+        if self.memory.write_bytes(ptr, bytes).is_none() {
+            self.last_mem_error = PPC_PARAM_ERR;
+            return false;
+        }
+        true
+    }
+
     pub(crate) fn prepare_shared_system_reservation(&mut self, base: u32, len: u32) -> bool {
         if self
             .memory
@@ -79899,6 +79951,7 @@ pub(crate) mod tests {
         pub(crate) app: PpcLoadedApp,
         pub(crate) root_menu: u32,
         pub(crate) root_record: u32,
+        pub(crate) mdef_entry: u32,
         pub(crate) callback_marker: u32,
         pub(crate) title_h: i16,
     }
@@ -79985,6 +80038,7 @@ pub(crate) mod tests {
             app: loaded,
             root_menu,
             root_record,
+            mdef_entry: MDEF_ENTRY,
             callback_marker: CALLBACK_MARKER,
             title_h,
         }
@@ -94260,6 +94314,48 @@ pub(crate) mod tests {
         assert!(handle < new_ptr || handle >= new_ptr + 48);
         for (offset, byte) in b"abcdefghijkl".iter().copied().enumerate() {
             assert_eq!(loaded.memory.read_u8(new_ptr + offset as u32), Some(byte));
+        }
+    }
+
+    #[test]
+    fn native_owner_handle_replacement_is_atomic_when_growth_exhausts_the_heap() {
+        let pef = synthetic_pef_with_import(b"MemError");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = ppc_alloc_handle_with_bytes(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            b"original",
+        );
+        assert_ne!(handle, 0);
+        let original_record = *loaded
+            .handles
+            .iter()
+            .find(|record| record.handle == handle)
+            .unwrap();
+        let original_ptr = loaded.memory.read_u32_be(handle).unwrap();
+        loaded.heap_limit = loaded.heap_cursor;
+
+        assert!(!loaded.replace_handle_bytes(
+            handle,
+            original_ptr,
+            &[0x5a; 128],
+        ));
+        assert_eq!(loaded.last_mem_error, PPC_MEM_FULL_ERR);
+        assert_eq!(loaded.memory.read_u32_be(handle), Some(original_ptr));
+        assert_eq!(
+            loaded
+                .handles
+                .iter()
+                .find(|record| record.handle == handle),
+            Some(&original_record)
+        );
+        for (offset, byte) in b"original".iter().copied().enumerate() {
+            assert_eq!(
+                loaded.memory.read_u8(original_ptr + offset as u32),
+                Some(byte)
+            );
         }
     }
 
