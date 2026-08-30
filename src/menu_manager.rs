@@ -801,6 +801,28 @@ impl SharedMenuTracking {
         Self(Rc::clone(&self.0))
     }
 
+    /// Attach adapter-local tracking to the process continuation.
+    ///
+    /// # Safety
+    ///
+    /// The process owner must serialize all access to every attached handle.
+    pub(crate) unsafe fn attach_to(&mut self, process_tracking: &Self) {
+        if Rc::ptr_eq(&self.0, &process_tracking.0) {
+            return;
+        }
+        assert!(
+            self.is_none() || process_tracking.is_none(),
+            "cannot attach two active Menu Manager continuations"
+        );
+        let pending = self.take();
+        // SAFETY: ProcessContext is owned by FixtureRunner, which serializes
+        // access to every attached CPU adapter through its mutable borrow.
+        self.0 = unsafe { process_tracking.shared_handle() }.0;
+        if self.is_none() {
+            **self = pending;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Option<ProcessMenuTrackingState> {
         self.state().clone()
@@ -852,8 +874,25 @@ impl PartialEq<Option<(i16, i16)>> for SharedNativeMenuSelection {
 
 impl SharedNativeMenuSelection {
     /// Attach another CPU adapter without copying the pending selection.
+    #[cfg(test)]
     pub(crate) fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
+    }
+
+    /// Attach adapter-local input to the process selection slot.
+    pub(crate) fn attach_to(&mut self, process_selection: &Self) {
+        if Rc::ptr_eq(&self.0, &process_selection.0) {
+            return;
+        }
+        assert!(
+            self.is_none() || process_selection.is_none(),
+            "cannot attach two pending native menu selections"
+        );
+        let pending = self.take();
+        self.0 = Rc::clone(&process_selection.0);
+        if let Some(pending) = pending {
+            self.stage(pending);
+        }
     }
 
     pub(crate) fn is_some(&self) -> bool {

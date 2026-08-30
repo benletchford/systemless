@@ -175,9 +175,9 @@ impl Eq for GuestCallFrame {}
 
 /// One process's nested guest-procedure continuation stack.
 ///
-/// Ordinary `Clone` creates an independent process snapshot. The runner uses
-/// [`Self::shared_handle`] explicitly when it attaches two CPU adapters to the
-/// same live process.
+/// Ordinary `Clone` creates an independent process snapshot. The runner's
+/// process context explicitly attaches both CPU adapters to the same live
+/// allocation.
 #[derive(Debug, Default)]
 pub(crate) struct SharedGuestCallStack(Rc<RefCell<Vec<GuestCallFrame>>>);
 
@@ -204,11 +204,11 @@ impl SharedGuestCallStack {
         if Rc::ptr_eq(&self.0, &process_calls.0) {
             return;
         }
-        let pending = std::mem::take(&mut *self.0.borrow_mut());
-        debug_assert!(
-            pending.is_empty() || process_calls.is_empty(),
+        assert!(
+            self.is_empty() || process_calls.is_empty(),
             "cannot attach two active guest-procedure continuation stacks"
         );
+        let pending = std::mem::take(&mut *self.0.borrow_mut());
         self.0 = Rc::clone(&process_calls.0);
         self.0.borrow_mut().extend(pending);
     }

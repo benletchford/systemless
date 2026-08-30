@@ -70,6 +70,25 @@ impl SharedEventQueue {
         Self(Rc::clone(&self.0))
     }
 
+    /// Attach an adapter-local queue to the process queue, preserving work
+    /// that the adapter staged before it joined the process.
+    ///
+    /// # Safety
+    ///
+    /// The process owner must serialize all access to every attached handle.
+    pub(crate) unsafe fn attach_to(&mut self, process_queue: &Self) {
+        if Rc::ptr_eq(&self.0, &process_queue.0) {
+            return;
+        }
+        let pending = std::mem::take(self.state_mut());
+        // SAFETY: ProcessContext is owned by FixtureRunner, which serializes
+        // access to every attached CPU adapter through its mutable borrow.
+        self.0 = unsafe { process_queue.shared_handle() }.0;
+        let state = self.state_mut();
+        state.events.extend(pending.events);
+        state.menu_bar_invalid |= pending.menu_bar_invalid;
+    }
+
     /// Mark the menu bar for one deferred redraw by the Toolbox Event
     /// Manager. Repeated invalidations coalesce until the next event scan.
     /// Macintosh Toolbox Essentials (1992), pp. 3-93 and 3-114.

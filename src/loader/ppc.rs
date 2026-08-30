@@ -69,6 +69,7 @@ use crate::menu_manager::{
     MenuListEntry as PpcMenuListEntry, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
 };
 use crate::menu_model::GuestMenuSnapshot;
+use crate::process_context::ProcessContext;
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
@@ -5118,46 +5119,20 @@ impl PpcLoadedApp {
         &self.event_queue
     }
 
-    pub(crate) fn share_event_queue(&mut self, event_queue: &SharedEventQueue) {
-        let pending = std::mem::take(&mut *self.event_queue);
-        // SAFETY: the runner owns both adapters and serializes all queue access
-        // through its mutable borrow, including native callback execution.
-        self.event_queue = unsafe { event_queue.shared_handle() };
-        self.event_queue.extend(pending);
-    }
-
-    pub(crate) fn share_menu_tracking(&mut self, menu_tracking: &SharedMenuTracking) {
-        let pending = self.toolbox_startup.menu_tracking.take();
-        debug_assert!(
-            pending.is_none() || menu_tracking.is_none(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        // SAFETY: the runner owns both adapters and serializes all retained
-        // Menu Manager access through its mutable borrow, including native
-        // callback execution.
-        self.toolbox_startup.menu_tracking = unsafe { menu_tracking.shared_handle() };
-        if self.toolbox_startup.menu_tracking.is_none() {
-            *self.toolbox_startup.menu_tracking = pending;
+    /// # Safety
+    ///
+    /// The caller must keep this adapter and the context under one process
+    /// owner that serializes all access to their shared handles.
+    pub(crate) unsafe fn attach_process_context(&mut self, context: &ProcessContext) {
+        unsafe {
+            context.attach_event_queue(&mut self.event_queue);
+            context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         }
-    }
-
-    pub(crate) fn share_native_menu_selection(&mut self, selection: &SharedNativeMenuSelection) {
-        let pending = self.toolbox_startup.pending_native_menu_selection.take();
-        debug_assert!(
-            pending.is_none() || selection.is_none(),
-            "cannot attach two pending native menu selections"
+        context.attach_native_menu_selection(
+            &mut self.toolbox_startup.pending_native_menu_selection,
         );
-        self.toolbox_startup.pending_native_menu_selection = selection.shared_handle();
-        if let Some(pending) = pending {
-            self.toolbox_startup
-                .pending_native_menu_selection
-                .stage(pending);
-        }
-    }
-
-    pub(crate) fn share_guest_calls(&mut self, guest_calls: &SharedGuestCallStack) {
-        self.guest_calls.attach_to(guest_calls);
-        self.toolbox_startup.guest_calls.attach_to(guest_calls);
+        context.attach_guest_calls(&mut self.guest_calls);
+        context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
     }
 
     /// Park the current native context and enter a PowerPC routine selected by
@@ -84601,7 +84576,12 @@ pub(crate) mod tests {
         classic.sent_open_app_event = true;
         let pef = synthetic_pef_with_import(b"InvalMenuBar");
         let mut native = load_pef_application(&pef).unwrap();
-        native.share_event_queue(&classic.event_queue);
+        let context = ProcessContext::default();
+        // SAFETY: the test owns both adapters and accesses them sequentially.
+        unsafe {
+            classic.attach_process_context(&context);
+            native.attach_process_context(&context);
+        }
 
         assert!(classic
             .dispatch_menu(true, 0x01D, &mut classic_cpu, &mut classic_bus)
@@ -84634,7 +84614,12 @@ pub(crate) mod tests {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
-        native.share_menu_tracking(&classic.menu_tracking);
+        let context = ProcessContext::default();
+        // SAFETY: the test owns both adapters and accesses them sequentially.
+        unsafe {
+            classic.attach_process_context(&context);
+            native.attach_process_context(&context);
+        }
 
         let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
         tracking.highlighted_item = 2;
