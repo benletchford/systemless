@@ -50,6 +50,10 @@ pub(super) struct RawPixPat {
     pub(super) clut: [[u16; 3]; 256],
 }
 
+/// Smallest clip area (in pixels) for which the whole-row CopyBits path is
+/// taken: below it the 256-entry table costs more than the pixels it saves.
+const COPY_BITS_ROW_PATH_MIN_PIXELS: i32 = 64;
+
 pub(super) struct RegionMembershipCache {
     pub(super) top: i16,
     pub(super) rows: Vec<Vec<i16>>,
@@ -3772,7 +3776,64 @@ impl super::TrapDispatcher {
                     bus.read_byte(addr)
                 };
 
-                for dy in clip_t..clip_b {
+                // Whole-row path for the commonest shape (see
+                // copy_bits_src_copy_rows_8bpp): the loop's own preconditions
+                // for that shape plus identity_blit's diagnostics gates, with
+                // the table from the function the (8, 8) arm below calls per
+                // pixel, given the arguments it passes. A region needs its
+                // spans only if it can still exclude a pixel of the clip.
+                let vis_test = !no_clipping && Self::region_needs_pixel_test(bus, vis_rgn_handle);
+                let clip_test = !no_clipping && Self::region_needs_pixel_test(bus, clip_rgn_handle);
+                let mask_test = !no_clipping && Self::region_needs_pixel_test(bus, mask_rgn);
+                let rows_copied = mode_base == 0
+                    && no_scaling
+                    && src_info.pixel_size == 8
+                    && dst_info.pixel_size == 8
+                    && source_snapshot.is_none()
+                    && trace_probes.is_empty()
+                    && copybits_hud_probe_points.is_none()
+                    && dump_copybits_src_path().is_none()
+                    && !trace_copybits_all_enabled()
+                    && !trace_menu_redraw_enabled()
+                    && (i32::from(clip_b) - i32::from(clip_t))
+                        * (i32::from(clip_r) - i32::from(clip_l))
+                        >= COPY_BITS_ROW_PATH_MIN_PIXELS
+                    && self
+                        .copy_bits_src_copy_table(
+                            bus,
+                            dst_ctab_handle,
+                            src_clut,
+                            dst_clut,
+                            palette_translation,
+                            shared_indexed_pixel_mask,
+                            copy_fg_rgb,
+                            copy_bg_rgb,
+                        )
+                        .is_some_and(|table| {
+                            Self::copy_bits_src_copy_rows_8bpp(
+                                bus,
+                                &src_info,
+                                &dst_info,
+                                (src_top, src_left),
+                                (dst_top, dst_left, dst_w, dst_h),
+                                (clip_t, clip_l, clip_b, clip_r),
+                                [
+                                    (vis_test, vis_membership.as_ref()),
+                                    (clip_test, clip_membership.as_ref()),
+                                    (mask_test, mask_membership.as_ref()),
+                                ],
+                                &table,
+                            )
+                        });
+                // With the rows already written the loop has nothing left to
+                // do; the screen bookkeeping after it still runs.
+                let pixel_rows = if rows_copied {
+                    clip_t..clip_t
+                } else {
+                    clip_t..clip_b
+                };
+
+                for dy in pixel_rows {
                     // Skip mul/div in scale_coord when not scaling.
                     let src_y = if no_scaling {
                         let rel = i32::from(dy) - i32::from(dst_top);
@@ -19708,6 +19769,204 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// The `srcCopy` byte table for an 8-bit indexed transfer: entry `s` is
+    /// what `copy_bits_color_source_mode_pixel` yields for source pixel `s`
+    /// under mode 0, evaluated with a destination byte of 0 -- for `srcCopy`
+    /// the result does not depend on the destination (covered by
+    /// `copy_bits_src_copy_table_is_destination_independent`). `None` if any
+    /// source value would be skipped, in which case the pixel loop must run.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_bits_src_copy_table(
+        &self,
+        bus: &MacMemoryBus,
+        dst_ctab_handle: u32,
+        src_clut: Option<&[[u16; 3]; 256]>,
+        dst_clut: Option<&[[u16; 3]; 256]>,
+        palette_translation: Option<&[u8; 256]>,
+        shared_indexed_pixel_mask: Option<u8>,
+        fg_rgb: [u16; 3],
+        bg_rgb: [u16; 3],
+    ) -> Option<[u8; 256]> {
+        let mut table = [0u8; 256];
+        for (source, entry) in (0..=u8::MAX).zip(table.iter_mut()) {
+            *entry = self.copy_bits_color_source_mode_pixel(
+                bus,
+                dst_ctab_handle,
+                src_clut,
+                dst_clut,
+                256,
+                palette_translation,
+                shared_indexed_pixel_mask,
+                0,
+                source,
+                0,
+                fg_rgb,
+                bg_rgb,
+            )?;
+        }
+        Some(table)
+    }
+
+    /// Intersect `spans` (sorted, disjoint, half-open destination x ranges)
+    /// with one decoded region row, into `out` (sorted, disjoint). `edges`
+    /// are the sorted x positions where membership toggles, read the way
+    /// `endpoints_contain_point` reads them: consecutive pairs bound covered
+    /// spans, and an odd trailing edge means the row stays inside to the
+    /// right. A single merge walk over the two sorted sequences.
+    fn intersect_spans_with_region_row(
+        spans: &[(i32, i32)],
+        edges: &[i16],
+        out: &mut Vec<(i32, i32)>,
+    ) {
+        out.clear();
+        let mut pairs = edges.chunks(2).map(|pair| {
+            let start = i32::from(pair[0]);
+            let end = pair
+                .get(1)
+                .map_or(i32::from(i16::MAX) + 1, |&edge| i32::from(edge));
+            (start, end)
+        });
+        let mut spans = spans.iter().copied();
+        let (mut pair, mut span) = (pairs.next(), spans.next());
+        while let (Some((pair_start, pair_end)), Some((span_start, span_end))) = (pair, span) {
+            let lo = pair_start.max(span_start);
+            let hi = pair_end.min(span_end);
+            if lo < hi {
+                out.push((lo, hi));
+            }
+            if pair_end < span_end {
+                pair = pairs.next();
+            } else {
+                span = spans.next();
+            }
+        }
+    }
+
+    /// Whole-row transfer for the commonest CopyBits shape: 8-bit source to
+    /// 8-bit destination, `srcCopy`, unscaled, non-overlapping bitmaps.
+    ///
+    /// For that shape every written destination pixel is `table[source
+    /// pixel]` (`copy_bits_src_copy_table`, derived from the same per-pixel
+    /// mode function the pixel loop calls), so a row moves as one bus read,
+    /// one table pass and one bus write per covered span instead of a region
+    /// test, a read, a mode evaluation and a write per pixel. The bus's slice
+    /// primitives keep `write_byte`'s guards (read-only code, tracing, the
+    /// idle-proof write journal). A region that needs a per-pixel test is
+    /// honoured through its decoded row spans -- the same
+    /// `RegionMembershipCache` rows `region_contains_point_cached` consults.
+    ///
+    /// Row and column selection reproduce the pixel loop's: a destination row
+    /// is skipped when its source row lies outside the source bounds, and the
+    /// column extent is the clip extent cut to the destination rect and to
+    /// the source bounds.
+    ///
+    /// Returns `true` once every pixel the pixel loop would have written has
+    /// been written. Returns `false` *without writing anything* when the
+    /// transfer is not eligible -- a tested region whose rows are not all
+    /// decoded, or a clip extent outside the destination bounds -- so the
+    /// caller can fall back to the loop with no half-copied destination.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_bits_src_copy_rows_8bpp(
+        bus: &mut MacMemoryBus,
+        src_info: &CopyBitmapInfo,
+        dst_info: &CopyBitmapInfo,
+        (src_top, src_left): (i16, i16),
+        (dst_top, dst_left, dst_w, dst_h): (i16, i16, i32, i32),
+        (clip_t, clip_l, clip_b, clip_r): (i16, i16, i16, i16),
+        regions: [(bool, Option<&RegionMembershipCache>); 3],
+        table: &[u8; 256],
+    ) -> bool {
+        // The pixel loop indexes destination rows and columns relative to
+        // the destination bounds without checking them; only take that on
+        // when the clip band provably lies inside.
+        if clip_t < dst_info.bounds_top
+            || clip_b > dst_info.bounds_bottom
+            || clip_l < dst_info.bounds_left
+            || clip_r > dst_info.bounds_right
+        {
+            return false;
+        }
+        // Every region that needs a per-pixel test must have the whole clip
+        // band decoded; a missing row would send the loop to its uncached
+        // `region_contains_point` scan, which this path does not replicate.
+        let mut tested: [Option<&RegionMembershipCache>; 3] = [None; 3];
+        for ((needed, cache), slot) in regions.into_iter().zip(tested.iter_mut()) {
+            if !needed {
+                continue;
+            }
+            let Some(cache) = cache else {
+                return false;
+            };
+            let first = i32::from(clip_t) - i32::from(cache.top);
+            let last = i32::from(clip_b) - i32::from(cache.top);
+            if first < 0 || last > cache.rows.len() as i32 {
+                return false;
+            }
+            *slot = Some(cache);
+        }
+
+        // Column extent in destination coordinates: the clip cut to the
+        // destination rect, then to the source bounds through the fixed
+        // destination-to-source shift of an unscaled copy.
+        let shift = i32::from(src_left) - i32::from(dst_left);
+        let x_lo = i32::from(clip_l)
+            .max(i32::from(dst_left))
+            .max(i32::from(src_info.bounds_left) - shift);
+        let x_hi = i32::from(clip_r)
+            .min(i32::from(dst_left) + dst_w)
+            .min(i32::from(src_info.bounds_right) - shift);
+        if x_hi <= x_lo {
+            // The loop would write no pixel either.
+            return true;
+        }
+        let identity = table
+            .iter()
+            .enumerate()
+            .all(|(index, &value)| index == usize::from(value));
+        let mut row = vec![0u8; (x_hi - x_lo) as usize];
+        let mut spans: Vec<(i32, i32)> = Vec::with_capacity(4);
+        let mut next: Vec<(i32, i32)> = Vec::with_capacity(4);
+
+        for dy in clip_t..clip_b {
+            let rel = i32::from(dy) - i32::from(dst_top);
+            if rel < 0 || rel >= dst_h {
+                continue;
+            }
+            let src_y = i32::from(src_top) + rel;
+            if src_y < i32::from(src_info.bounds_top) || src_y >= i32::from(src_info.bounds_bottom)
+            {
+                continue;
+            }
+            spans.clear();
+            spans.push((x_lo, x_hi));
+            for cache in tested.iter().flatten() {
+                let edges = &cache.rows[(i32::from(dy) - i32::from(cache.top)) as usize];
+                Self::intersect_spans_with_region_row(&spans, edges, &mut next);
+                std::mem::swap(&mut spans, &mut next);
+                if spans.is_empty() {
+                    break;
+                }
+            }
+            let src_row = src_info.base
+                + (src_y - i32::from(src_info.bounds_top)) as u32 * src_info.row_bytes;
+            let dst_row = dst_info.base
+                + (i32::from(dy) - i32::from(dst_info.bounds_top)) as u32 * dst_info.row_bytes;
+            for &(start, end) in &spans {
+                let bytes = &mut row[..(end - start) as usize];
+                let src_addr = src_row + (start + shift - i32::from(src_info.bounds_left)) as u32;
+                let dst_addr = dst_row + (start - i32::from(dst_info.bounds_left)) as u32;
+                bus.read_bytes_into(src_addr, bytes);
+                if !identity {
+                    for byte in bytes.iter_mut() {
+                        *byte = table[usize::from(*byte)];
+                    }
+                }
+                bus.write_bytes(dst_addr, bytes);
+            }
+        }
+        true
+    }
+
     fn copy_bits_common<C: CpuOps>(
         &mut self,
         cpu: &mut C,
@@ -20103,7 +20362,55 @@ impl super::TrapDispatcher {
             bus.read_byte(addr)
         };
 
-        for dy in clip_t..clip_b {
+        // Whole-row path for the commonest shape (see
+        // copy_bits_src_copy_rows_8bpp). The gates mirror the loop's own
+        // preconditions for that shape; the table comes from the function the
+        // (8, 8) arm below calls per pixel, with the arguments it passes. The
+        // area floor keeps blits smaller than the table from paying for it.
+        let rows_copied = mode_base == 0
+            && no_scaling
+            && src_info.pixel_size == 8
+            && dst_info.pixel_size == 8
+            && source_snapshot.is_none()
+            && trace_probes.is_empty()
+            && (i32::from(clip_b) - i32::from(clip_t)) * (i32::from(clip_r) - i32::from(clip_l))
+                >= COPY_BITS_ROW_PATH_MIN_PIXELS
+            && self
+                .copy_bits_src_copy_table(
+                    bus,
+                    dst_ctab_handle,
+                    src_clut,
+                    dst_clut,
+                    palette_translation,
+                    None,
+                    copy_fg_rgb,
+                    copy_bg_rgb,
+                )
+                .is_some_and(|table| {
+                    Self::copy_bits_src_copy_rows_8bpp(
+                        bus,
+                        &src_info,
+                        &dst_info,
+                        (src_top, src_left),
+                        (dst_top, dst_left, dst_w, dst_h),
+                        (clip_t, clip_l, clip_b, clip_r),
+                        [
+                            (vis_test, vis_membership.as_ref()),
+                            (clip_test, clip_membership.as_ref()),
+                            (mask_test, mask_membership.as_ref()),
+                        ],
+                        &table,
+                    )
+                });
+        // With the rows already written the loop has nothing left to do; the
+        // screen bookkeeping after it still runs.
+        let pixel_rows = if rows_copied {
+            clip_t..clip_t
+        } else {
+            clip_t..clip_b
+        };
+
+        for dy in pixel_rows {
             let src_y = if no_scaling {
                 let rel = i32::from(dy) - i32::from(dst_top);
                 if rel < 0 || rel >= dst_h {
@@ -30596,6 +30903,428 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(dst_base), 0x80);
+    }
+
+    /// The complex region the row-path tests share: rows 0-3 full, rows 4-7
+    /// only the outer quarters, rows 8-11 full, rows 12-15 empty.
+    fn make_row_path_test_rgn(bus: &mut MacMemoryBus) -> u32 {
+        make_complex_rgn(
+            bus,
+            (0, 0, 16, 16),
+            &[
+                0,
+                0,
+                16,
+                super::REGION_STOP,
+                4,
+                4,
+                12,
+                super::REGION_STOP,
+                8,
+                4,
+                12,
+                super::REGION_STOP,
+                12,
+                0,
+                16,
+                super::REGION_STOP,
+                super::REGION_STOP,
+            ],
+        )
+    }
+
+    /// A 16x16 8bpp source numbered by offset and a 16x16 8bpp destination
+    /// filled with 0xEE; returns their base addresses.
+    fn alloc_row_path_test_bitmaps(bus: &mut MacMemoryBus) -> (u32, u32) {
+        let src_base = bus.alloc(256);
+        let dst_base = bus.alloc(256);
+        for i in 0..256u32 {
+            bus.write_byte(src_base + i, i as u8);
+            bus.write_byte(dst_base + i, 0xEE);
+        }
+        (src_base, dst_base)
+    }
+
+    /// Points the CGrafPort at `port` to a 16x16 8bpp pixmap on `dst_base`
+    /// with the given visRgn/clipRgn handles, and makes it current.
+    #[allow(clippy::too_many_arguments)]
+    fn install_row_path_test_port(
+        d: &mut TrapDispatcher,
+        cpu: &mut impl CpuOps,
+        bus: &mut MacMemoryBus,
+        port: u32,
+        dst_base: u32,
+        vis_rgn_handle: u32,
+        clip_rgn_handle: u32,
+    ) -> u32 {
+        let dst_pixmap = bus.alloc(50);
+        let dst_handle = bus.alloc(4);
+        write_pixmap_8(bus, dst_pixmap, dst_base, 16, 16, 0);
+        bus.write_long(dst_handle, dst_pixmap);
+        bus.write_long(port + 2, dst_handle);
+        bus.write_word(port + 6, 0xC000);
+        write_rect(bus, port + 16, 0, 0, 16, 16);
+        bus.write_long(port + 24, vis_rgn_handle);
+        bus.write_long(port + 28, clip_rgn_handle);
+        let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(global_ptr, port);
+        d.current_port = port;
+        dst_pixmap
+    }
+
+    fn rect_rgn_handle(bus: &mut MacMemoryBus) -> u32 {
+        let rgn = bus.alloc(10);
+        let handle = bus.alloc(4);
+        make_rgn(bus, rgn, handle, 0, 0, 16, 16);
+        handle
+    }
+
+    #[test]
+    fn copy_bits_src_copy_table_is_destination_independent() {
+        // srcCopy through copy_bits_color_source_mode_pixel ignores the
+        // destination byte in every colour-space case, which is what lets
+        // copy_bits_src_copy_rows_8bpp evaluate it once per source value.
+        let (d, _cpu, bus) = setup_with_port();
+        let mut src_clut = [[0u16; 3]; 256];
+        let mut dst_clut = [[0u16; 3]; 256];
+        let mut translation = [0u8; 256];
+        for i in 0..256usize {
+            src_clut[i] = [(i as u16) * 257, 0, 0];
+            dst_clut[255 - i] = [(i as u16) * 257, 0, 0];
+            translation[i] = (255 - i) as u8;
+        }
+        type Cluts<'a> = (
+            Option<&'a [[u16; 3]; 256]>,
+            Option<&'a [[u16; 3]; 256]>,
+            Option<&'a [u8; 256]>,
+            Option<u8>,
+        );
+        let cases: [Cluts<'_>; 3] = [
+            (None, None, None, None),
+            (Some(&src_clut), Some(&dst_clut), Some(&translation), None),
+            (Some(&src_clut), Some(&src_clut), None, Some(0xFF)),
+        ];
+        for (src, dst, xlate, mask) in cases {
+            let table = d
+                .copy_bits_src_copy_table(&bus, 0, src, dst, xlate, mask, [0; 3], [0xFFFF; 3])
+                .expect("srcCopy never skips a source value");
+            for source in 0..=u8::MAX {
+                let expected = xlate.map_or(source, |t| t[usize::from(source)]);
+                assert_eq!(table[usize::from(source)], expected);
+                for dst_pixel in [0x00u8, 0x5A, 0xFF] {
+                    assert_eq!(
+                        d.copy_bits_color_source_mode_pixel(
+                            &bus,
+                            0,
+                            src,
+                            dst,
+                            256,
+                            xlate,
+                            mask,
+                            0,
+                            source,
+                            dst_pixel,
+                            [0; 3],
+                            [0xFFFF; 3],
+                        ),
+                        Some(table[usize::from(source)]),
+                        "source={source} dst={dst_pixel}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn intersect_spans_with_region_row_follows_endpoint_semantics() {
+        let mut out = Vec::new();
+        // Pairs bound covered spans; a trailing odd edge stays inside.
+        TrapDispatcher::intersect_spans_with_region_row(
+            &[(0, 100)],
+            &[10, 20, 30, 40, 90],
+            &mut out,
+        );
+        assert_eq!(out, vec![(10, 20), (30, 40), (90, 100)]);
+        // Several spans against several pairs: order kept, no overlap.
+        TrapDispatcher::intersect_spans_with_region_row(
+            &[(0, 15), (18, 35), (95, 200)],
+            &[10, 20, 30, 40, 90],
+            &mut out,
+        );
+        assert_eq!(out, vec![(10, 15), (18, 20), (30, 35), (95, 200)]);
+        // No edges means nothing inside; no spans means nothing to cover.
+        TrapDispatcher::intersect_spans_with_region_row(&[(0, 100)], &[], &mut out);
+        assert!(out.is_empty());
+        TrapDispatcher::intersect_spans_with_region_row(&[], &[10, 20], &mut out);
+        assert!(out.is_empty());
+        // Agreement with endpoints_contain_point over a dense sweep,
+        // including a doubled edge.
+        let edges = [3i16, 7, 7, 9, 12];
+        TrapDispatcher::intersect_spans_with_region_row(&[(0, 20)], &edges, &mut out);
+        for x in 0..20i16 {
+            let inside = out
+                .iter()
+                .any(|&(lo, hi)| lo <= i32::from(x) && i32::from(x) < hi);
+            assert_eq!(
+                inside,
+                TrapDispatcher::endpoints_contain_point(&edges, x),
+                "x={x}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_bits_src_copy_rows_follow_region_spans_and_decline_without_writing() {
+        let (_d, _cpu, mut bus) = setup_with_port();
+        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+        let info = |base| CopyBitmapInfo {
+            base,
+            row_bytes: 16,
+            bounds_top: 0,
+            bounds_left: 0,
+            bounds_bottom: 16,
+            bounds_right: 16,
+            pixel_size: 8,
+            ctab_handle: 0,
+        };
+        let (src_info, dst_info) = (info(src_base), info(dst_base));
+        let vis = make_row_path_test_rgn(&mut bus);
+        let cache = TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 16)
+            .expect("complex region decodes");
+        let mut table = [0u8; 256];
+        for (i, entry) in table.iter_mut().enumerate() {
+            *entry = (255 - i) as u8;
+        }
+        // Destination (2,3)-(14,15) from source origin (1,1), clip = the rect.
+        let geometry = (
+            (1i16, 1i16),
+            (3i16, 2i16, 12i32, 12i32),
+            (3i16, 2i16, 15i16, 14i16),
+        );
+        let copied = TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+            &mut bus,
+            &src_info,
+            &dst_info,
+            geometry.0,
+            geometry.1,
+            geometry.2,
+            [(true, Some(&cache)), (false, None), (false, None)],
+            &table,
+        );
+        assert!(copied);
+        for y in 0..16i16 {
+            for x in 0..16i16 {
+                let in_rect = (2..14).contains(&x) && (3..15).contains(&y);
+                let expected = if in_rect && TrapDispatcher::region_contains_point(&bus, vis, y, x)
+                {
+                    table[usize::from(((y - 2) * 16 + (x - 1)) as u8)]
+                } else {
+                    0xEE
+                };
+                assert_eq!(
+                    bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
+                    expected,
+                    "({x}, {y})"
+                );
+            }
+        }
+
+        // Not eligible: a tested region whose decoded band stops short of
+        // the clip, a tested region with no cache at all, and a clip band
+        // outside the destination bounds. Nothing may be written.
+        for i in 0..256u32 {
+            bus.write_byte(dst_base + i, 0xEE);
+        }
+        let short =
+            TrapDispatcher::build_region_membership_cache(&bus, vis, 0, 8).expect("band decodes");
+        assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+            &mut bus,
+            &src_info,
+            &dst_info,
+            geometry.0,
+            geometry.1,
+            geometry.2,
+            [(true, Some(&short)), (false, None), (false, None)],
+            &table,
+        ));
+        assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+            &mut bus,
+            &src_info,
+            &dst_info,
+            geometry.0,
+            geometry.1,
+            geometry.2,
+            [(false, None), (true, None), (false, None)],
+            &table,
+        ));
+        assert!(!TrapDispatcher::copy_bits_src_copy_rows_8bpp(
+            &mut bus,
+            &src_info,
+            &dst_info,
+            geometry.0,
+            geometry.1,
+            (-1, 2, 15, 14),
+            [(false, None), (false, None), (false, None)],
+            &table,
+        ));
+        for i in 0..256u32 {
+            assert_eq!(bus.read_byte(dst_base + i), 0xEE, "offset {i}");
+        }
+    }
+
+    #[test]
+    fn stdbits_row_path_matches_region_membership_for_complex_vis_region() {
+        // Inside Macintosh Volume I (1985), p. I-199: StdBits clips to the
+        // current port's visRgn and clipRgn. A 16x16 srcCopy takes the
+        // whole-row path; every pixel must agree with region membership.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+        let vis = make_row_path_test_rgn(&mut bus);
+        let clip = rect_rgn_handle(&mut bus);
+        install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
+        let src_pixmap = bus.alloc(50);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 16, 16);
+        write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
+        bus.write_long(TEST_SP, 0); // maskRgn
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        for y in 0..16i16 {
+            for x in 0..16i16 {
+                let expected = if TrapDispatcher::region_contains_point(&bus, vis, y, x) {
+                    (y * 16 + x) as u8
+                } else {
+                    0xEE
+                };
+                assert_eq!(
+                    bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
+                    expected,
+                    "({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_bits_row_path_matches_region_membership_for_complex_clip_region() {
+        // The same transfer through _CopyBits itself, clipped by a complex
+        // clipRgn instead of the visRgn.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        let (src_base, dst_base) = alloc_row_path_test_bitmaps(&mut bus);
+        let vis = rect_rgn_handle(&mut bus);
+        let clip = make_row_path_test_rgn(&mut bus);
+        let dst_pixmap =
+            install_row_path_test_port(&mut d, &mut cpu, &mut bus, port, dst_base, vis, clip);
+        let src_pixmap = bus.alloc(50);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+        write_rect(&mut bus, src_rect, 0, 0, 16, 16);
+        write_rect(&mut bus, dst_rect, 0, 0, 16, 16);
+        bus.write_long(TEST_SP, 0); // maskRgn
+        bus.write_word(TEST_SP + 4, 0); // srcCopy
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, dst_pixmap);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        for y in 0..16i16 {
+            for x in 0..16i16 {
+                let expected = if TrapDispatcher::region_contains_point(&bus, clip, y, x) {
+                    (y * 16 + x) as u8
+                } else {
+                    0xEE
+                };
+                assert_eq!(
+                    bus.read_byte(dst_base + (y as u32) * 16 + x as u32),
+                    expected,
+                    "({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stdbits_row_path_screen_blit_refreshes_visible_dialog_snapshot() {
+        // As copy_bits_identity_screen_blit_refreshes_visible_dialog_snapshot,
+        // but through StdBits with an 8x8 transfer -- exactly the row path's
+        // area floor -- so the whole-row path is what must leave the
+        // retained dialog snapshot updated.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let dialog_ptr = 0x181000u32;
+        let screen_base = bus.alloc(16 * 16);
+        let src_base = bus.alloc(16 * 16);
+        let dst_pixmap = bus.alloc(50);
+        let dst_pixmap_handle = bus.alloc(4);
+        let src_pixmap = bus.alloc(50);
+        let src_rect = bus.alloc(8);
+        let dst_rect = bus.alloc(8);
+
+        d.screen_mode = (screen_base, 16, 16, 16, 8);
+        bus.write_long(0x0824, screen_base);
+        write_pixmap_8(&mut bus, dst_pixmap, screen_base, 16, 16, 0);
+        bus.write_long(dst_pixmap_handle, dst_pixmap);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 16, 16, 0);
+        bus.write_long(dialog_ptr + 2, dst_pixmap_handle);
+        bus.write_word(dialog_ptr + 6, 0xC000);
+        write_rect(&mut bus, dialog_ptr + 16, 0, 0, 16, 16);
+        bus.write_byte(dialog_ptr + 110, 0xFF);
+        let vis_rgn_handle = rect_rgn_handle(&mut bus);
+        let clip_rgn_handle = rect_rgn_handle(&mut bus);
+        bus.write_long(dialog_ptr + 24, vis_rgn_handle);
+        bus.write_long(dialog_ptr + 28, clip_rgn_handle);
+
+        let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
+        bus.write_long(global_ptr, dialog_ptr);
+        d.current_port = dialog_ptr;
+        d.front_window = dialog_ptr;
+        d.dialog_items.insert(
+            dialog_ptr,
+            vec![DialogItem {
+                item_type: 0x80,
+                rect: (2, 2, 6, 6),
+                text: String::new(),
+                resource_id: 0,
+                proc_ptr: 0,
+                sel_start: 0,
+                sel_end: 0,
+            }],
+        );
+
+        for offset in 0..16u32 * 16 {
+            bus.write_byte(screen_base + offset, 0);
+            bus.write_byte(src_base + offset, 0x7A);
+        }
+        write_rect(&mut bus, src_rect, 0, 0, 8, 8);
+        write_rect(&mut bus, dst_rect, 2, 2, 10, 10);
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EB, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base + 2 * 16 + 2), 0x7A);
+
+        bus.write_byte(screen_base + 2 * 16 + 2, 0);
+        d.restore_visible_dialog_snapshots(&mut bus);
+        assert_eq!(
+            bus.read_byte(screen_base + 2 * 16 + 2),
+            0x7A,
+            "row-path StdBits screen writes into a visible dialog must update the retained snapshot"
+        );
     }
 
     /// Lays out a one-pixel CopyBits call whose destination is the current
