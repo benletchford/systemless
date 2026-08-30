@@ -352,7 +352,11 @@ impl super::TrapDispatcher {
     ) -> Option<u32> {
         let resource_ptr = self
             .find_or_load_resource_any(bus, resource_type, table_id)
-            .map(|(_, ptr)| ptr)?;
+            .map(|(_, ptr)| ptr)
+            .or_else(|| match (&resource_type, table_id) {
+                (b"wctb", 0) => self.synthesize_system_wctb(bus, 0),
+                _ => None,
+            })?;
 
         if bus.get_alloc_size(resource_ptr).unwrap_or(0) < 8 {
             return None;
@@ -405,7 +409,15 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        let entry_count = u32::from(bus.read_word(ctab_ptr + 6)) + 1;
+        // WCTab/DCTab resources contain the semantic Window Manager
+        // roles. A device ColorTable instead contains indexed palette entries
+        // and must not be interpreted as window-part identifiers.
+        let table_size = bus.read_word(ctab_ptr + 6);
+        if table_size == 0xFFFF || table_size > 12 {
+            return None;
+        }
+
+        let entry_count = u32::from(table_size) + 1;
         for index in 0..entry_count {
             let entry = ctab_ptr + 8 + index * 8;
             if bus.read_word(entry) == 0 {
@@ -491,11 +503,10 @@ impl super::TrapDispatcher {
     }
 
     fn default_window_color_table_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        let gd_handle = self.ensure_main_gdevice(bus);
-        let gd_ptr = bus.read_long(gd_handle);
-        let gd_pmap_handle = bus.read_long(gd_ptr + 22);
-        let gd_pmap = bus.read_long(gd_pmap_handle);
-        bus.read_long(gd_pmap + 42)
+        if let Some(ptr) = self.synthesize_system_wctb(bus, 0) {
+            return self.get_or_create_resource_handle(bus, *b"wctb", 0, ptr);
+        }
+        0
     }
 
     pub(crate) fn ensure_window_aux_record(
@@ -14544,5 +14555,37 @@ mod tests {
         // updateRgn stays empty — shrinking uncovers nothing.
         assert_eq!(bus.read_word(update_rgn + 6) as i16, 0);
         assert_eq!(bus.read_word(update_rgn + 8) as i16, 0);
+    }
+
+    #[test]
+    fn default_window_color_table_uses_synthetic_wctb_0_with_white_content() {
+        let (mut disp, _cpu, mut bus) = setup();
+        let handle = disp.default_window_color_table_handle(&mut bus);
+        assert_ne!(handle, 0);
+        let ptr = bus.read_long(handle);
+        assert_ne!(ptr, 0);
+        let color = super::super::TrapDispatcher::window_content_color(&bus, handle);
+        assert_eq!(color, Some((0xFFFF, 0xFFFF, 0xFFFF)));
+    }
+
+    #[test]
+    fn window_content_color_ignores_indexed_device_color_tables() {
+        let (_disp, _cpu, mut bus) = setup();
+        // Allocate a 256-entry device ColorTable (table_size = 255)
+        let ctab_ptr = bus.alloc(8 + 256 * 8);
+        bus.write_word(ctab_ptr + 6, 255);
+        // Write arbitrary color at entry 0
+        bus.write_word(ctab_ptr + 8, 0);
+        bus.write_word(ctab_ptr + 10, 0x1234);
+        bus.write_word(ctab_ptr + 12, 0x5678);
+        bus.write_word(ctab_ptr + 14, 0x9ABC);
+        let ctab_handle = bus.alloc(4);
+        bus.write_long(ctab_handle, ctab_ptr);
+
+        // A device CLUT is not a semantic window-part table.
+        assert_eq!(
+            super::super::TrapDispatcher::window_content_color(&bus, ctab_handle),
+            None
+        );
     }
 }
