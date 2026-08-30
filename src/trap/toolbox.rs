@@ -39,6 +39,8 @@ const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_component_dispatch_operations.rs");
 const PACK0_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack0_operations.rs");
+const PR_GLUE_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pr_glue_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -93,6 +95,16 @@ fn pack0_operation_route(trap_word: u16, selector: u16) -> Option<&'static Selec
         return None;
     }
     selector_operation_route(PACK0_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pr_glue_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA8FD {
+        return None;
+    }
+    selector_operation_route(PR_GLUE_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -14505,40 +14517,15 @@ impl super::TrapDispatcher {
 
             // ========== Printing Manager ==========
 
-            // PrGlue ($A8FD)
-            // Printing Manager dispatch. 32-bit selector on top of the stack.
-            // Inside Macintosh Volume V (1986), p. V-408.
-            //
-            // Selector format (assembly-language note, IM:V V-408):
-            //   bits 31-24 = routine selector
-            //   bits 15-8  = parameter byte count (bytes to pop after selector)
-            //
-            // The second selector byte is not a generic stack-result byte
-            // count. For example PrintDefault is selector $20040480 and is a
-            // PROCEDURE, while PrOpenDoc is selector $04000C00 and returns a
-            // TPPrPort. Results are therefore routine-specific.
-            //
-            // In emulation, printing is not supported. All routines are no-ops
-            // that pop their parameters and write default return values.
-            // PrSetError / PrError still model the shared PrintErr state so
-            // callers can observe the last Printing Manager result code.
-            //
-            // Regression coverage:
-            //   tests::prglue_selector_param_byte_count_controls_stack_pop
-            //   tests::prglue_propendoc_returns_nil_and_consumes_three_pointer_arguments
-            //   tests::prglue_prvalidate_returns_false_boolean_result
-            //   tests::prglue_prstldialog_returns_true_boolean_result
-            //   tests::prglue_prjobdialog_returns_true_boolean_result
-            //   tests::prglue_prclosedoc_consumes_tpprport_argument_without_function_result_slot
-            //   tests::prglue_prerror_returns_noerr_word_with_zero_result_bits_selector
-            //   tests::prglue_prseterror_consumes_ierr_word_argument_without_function_result_slot
-            //   tests::prglue_prseterror_updates_prerror_state_roundtrip
-            // PrGlue ($A8FD): Selector-based Printing Manager dispatcher per
-            // IM:V V-408, with no-op HLE implementations for printing-disabled
-            // runtime paths.
+            // PrGlue (0xA8FD)
+            // Dispatches Printing Manager routines selected by a LONGINT on the stack.
+            // PROCEDURE PrOpen;
+            // Inside Macintosh Volume V (1986), V-408.
             (true, 0x0FD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_long(sp);
+                let operation = pr_glue_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = (selector >> 24) & 0xFF;
 
                 // Extract the parameter size encoded in bits 15-8.
@@ -19142,6 +19129,85 @@ mod tests {
     }
 
     // ========== Printing Manager ==========
+
+    #[test]
+    fn prglue_generated_routes_preserve_exact_stack_long_values() {
+        assert_eq!(super::PR_GLUE_OPERATION_ROUTES.len(), 23);
+        assert!(super::PR_GLUE_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0400_0C00, "PrOpenDoc"),
+            (0x0800_0484, "PrCloseDoc"),
+            (0x1000_0808, "PrOpenPage"),
+            (0x1800_040C, "PrClosePage"),
+            (0x2004_0480, "PrintDefault"),
+            (0x2A04_0484, "PrStlDialog"),
+            (0x3204_0488, "PrJobDialog"),
+            (0x3C04_040C, "PrStlInit"),
+            (0x4404_0410, "PrJobInit"),
+            (0x4A04_0894, "PrDlgMain"),
+            (0x5204_0498, "PrValidate"),
+            (0x5804_089C, "PrJobMerge"),
+            (0x6005_1480, "PrPicFile"),
+            (0x7007_0480, "PrGeneral"),
+            (0x8000_0000, "PrDrvrOpen"),
+            (0x8800_0000, "PrDrvrClose"),
+            (0x9400_0000, "PrDrvrDCE"),
+            (0x9A00_0000, "PrDrvrVers"),
+            (0xA000_0E00, "PrCtlCall"),
+            (0xBA00_0000, "PrError"),
+            (0xC000_0200, "PrSetError"),
+            (0xC800_0000, "PrOpen"),
+            (0xD000_0000, "PrClose"),
+        ] {
+            let route =
+                super::pr_glue_operation_route(0xA8FD, selector).expect("PrGlue operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9FD, 0xC800_0000),
+            (0xA8FD, 0xF100_0600),
+            (0xA8FD, 0x0000_2F3C),
+            (0xA8FD, 0x0000_00C8),
+            (0xA8FD, 0x0000_00BA),
+        ] {
+            assert!(super::pr_glue_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn prglue_records_stack_long_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA8FD;
+        bus.write_long(sp, 0xC800_0000);
+
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_PrGlue:0xC8000000:stack-long-immediate:32")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA9FD;
+        cpu.write_reg(Register::A7, sp);
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA8FD;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0xC800_0001);
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
 
     #[test]
     fn prglue_selector_param_byte_count_controls_stack_pop() {
