@@ -14972,10 +14972,30 @@ impl super::TrapDispatcher {
             // FUNCTION InitDBPack: OSErr;
             // Inside Macintosh: Interapplication Communication (1993), pp. 12-60 and 12-103.
             (true, 0x02F) => {
-                let selector = cpu.read_reg(Register::D0) as u16;
+                const RC_DB_WRONG_VERSION: i16 = -812;
+                const RC_DB_PACK_NOT_INITED: i16 = -813;
+                const PARAM_ERR: i16 = -50;
+
+                let sp = cpu.read_reg(Register::A7);
+                let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
                 let operation = pack13_operation_route(self.current_trap_word, selector);
-                self.current_selector_operation = operation.map(|route| route.operation_id);
-                cpu.write_reg(Register::D0, 0);
+
+                if let Some(route) = operation {
+                    self.current_selector_operation = Some(route.operation_id);
+                    let param_bytes = (((selector >> 8) & 0xFF) as u32) * 2;
+                    let result = if selector == 0x0100 {
+                        RC_DB_WRONG_VERSION
+                    } else {
+                        RC_DB_PACK_NOT_INITED
+                    };
+                    let result_sp = sp + param_bytes;
+                    bus.write_word(result_sp, result as u16);
+                    cpu.write_reg(Register::A7, result_sp);
+                    cpu.write_reg(Register::D0, result as i32 as u32);
+                } else {
+                    self.current_selector_operation = None;
+                    cpu.write_reg(Register::D0, PARAM_ERR as i32 as u32);
+                }
                 Ok(())
             }
 
@@ -25591,44 +25611,258 @@ mod tests {
     }
 
     #[test]
-    fn pack13_records_d0_low_word_identity_without_changing_behavior() {
+    fn pack13_all_22_routes_pop_exact_param_bytes_and_return_expected_oserr() {
+        for route in super::PACK13_OPERATION_ROUTES {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let sp = TEST_SP;
+            let selector = route.selector as u16;
+            let expected_err: i16 = if selector == 0x0100 { -812 } else { -813 };
+            let param_bytes = (((selector >> 8) & 0xFF) as u32) * 2;
+            let result_sp = sp + param_bytes;
+
+            // Fill argument region with deterministic pattern
+            let original_args: Vec<u8> = (0..param_bytes)
+                .map(|i| (selector as u8).wrapping_add(i as u8).wrapping_add(0x11))
+                .collect();
+            for (offset, &byte) in original_args.iter().enumerate() {
+                bus.write_byte(sp + offset as u32, byte);
+            }
+
+            // Poison the result slot and guard regions
+            bus.write_word(result_sp, 0x55AA);
+            bus.write_long(sp - 8, 0x1234_5678);
+            bus.write_long(result_sp + 2, 0x8765_4321);
+
+            disp.current_trap_word = 0xA82F;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0xDEAD_0000 | u32::from(selector)); // stale high word
+
+            let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+            assert!(
+                result.is_some(),
+                "Pack13 should handle selector {selector:#06X}"
+            );
+            assert!(
+                result.unwrap().is_ok(),
+                "Pack13 selector {selector:#06X} should return Ok"
+            );
+
+            assert_eq!(
+                disp.current_selector_operation,
+                Some(route.operation_id),
+                "operation ID for {selector:#06X}"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::A7),
+                result_sp,
+                "A7 should advance exactly by param_bytes ({param_bytes}) for {selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_word(result_sp),
+                expected_err as u16,
+                "result slot at SP+{param_bytes} for {selector:#06X}"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected_err as i32 as u32,
+                "sign-extended D0 for {selector:#06X}"
+            );
+
+            // Verify arguments and guard memory are preserved
+            for (offset, &byte) in original_args.iter().enumerate() {
+                assert_eq!(
+                    bus.read_byte(sp + offset as u32),
+                    byte,
+                    "argument byte at offset {offset} must remain invariant for {selector:#06X}"
+                );
+            }
+            assert_eq!(
+                bus.read_long(sp - 8),
+                0x1234_5678,
+                "underflow guard preserved for {selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_long(result_sp + 2),
+                0x8765_4321,
+                "overflow guard preserved for {selector:#06X}"
+            );
+        }
+    }
+
+    #[test]
+    fn pack13_min_and_max_frames_preserve_arguments_and_hidden_version_word() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+
+        // 1. Min frame: InitDBPack ($0100, 1 word / 2 bytes)
+        // Hidden version word $0004 pushed by Universal Interfaces inline macro
         disp.current_trap_word = 0xA82F;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0xBEEF_0100); // stale high word + InitDBPack
-        bus.write_long(sp, 0x1122_3344); // sentinel stack word
+        cpu.write_reg(Register::D0, 0xCAFE_0100);
+        bus.write_word(sp, 0x0004); // DAM version 4 word
+        bus.write_word(sp + 2, 0xBEEF); // OSErr result slot poison
 
         let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
-        assert!(result.is_some(), "Pack13 should be handled");
-        assert!(result.unwrap().is_ok(), "Pack13 should return");
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "selector 0x0100 should return noErr"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp,
-            "Pack13 selector-only call should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp),
-            0x1122_3344,
-            "Pack13 selector-only call should not touch the stack frame"
-        );
+        assert!(result.expect("Pack13 arm").is_ok());
         assert_eq!(
             disp.current_selector_operation,
             Some("selector-operation:_Pack13:0x0100:d0-low-word-immediate:16")
         );
+        assert_eq!(
+            bus.read_word(sp),
+            0x0004,
+            "InitDBPack hidden version word at SP+0 must remain unchanged"
+        );
+        assert_eq!(
+            bus.read_word(sp + 2),
+            (-812i16) as u16,
+            "InitDBPack result slot at SP+2 must receive rcDBWrongVersion (-812)"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp + 2,
+            "InitDBPack A7 must advance to result slot SP+2"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            (-812i32) as u32,
+            "InitDBPack D0 must return sign-extended rcDBWrongVersion (-812)"
+        );
 
-        disp.current_trap_word = 0xA830;
-        cpu.write_reg(Register::D0, 0x0000_0100);
+        // 2. Max frame: DBGetConnInfo ($1704, 23 words / 46 bytes)
+        let max_sp = TEST_SP;
+        cpu.write_reg(Register::A7, max_sp);
+        cpu.write_reg(Register::D0, 0xBEEF_1704);
+        for i in 0..46 {
+            bus.write_byte(max_sp + i, (i as u8) + 1);
+        }
+        bus.write_word(max_sp + 46, 0xCAFE); // result slot poison
+
         let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
         assert!(result.expect("Pack13 arm").is_ok());
-        assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(cpu.read_reg(Register::A7), sp);
-        assert_eq!(bus.read_long(sp), 0x1122_3344);
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack13:0x1704:d0-low-word-immediate:16")
+        );
+        for i in 0..46 {
+            assert_eq!(
+                bus.read_byte(max_sp + i),
+                (i as u8) + 1,
+                "DBGetConnInfo arg byte at offset {i} must remain unchanged"
+            );
+        }
+        assert_eq!(
+            bus.read_word(max_sp + 46),
+            (-813i16) as u16,
+            "DBGetConnInfo result slot at SP+46 must receive rcDBPackNotInited (-813)"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            max_sp + 46,
+            "DBGetConnInfo A7 must advance to result slot SP+46"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            (-813i32) as u32,
+            "DBGetConnInfo D0 must return sign-extended rcDBPackNotInited (-813)"
+        );
+    }
+
+    #[test]
+    fn pack13_fail_closed_result_preserves_output_buffers() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let query_out = TEST_SP + 0x100;
+
+        disp.current_trap_word = 0xA82F;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0xABCD_030F);
+        bus.write_long(sp, query_out);
+        bus.write_word(sp + 4, 128);
+        bus.write_word(sp + 6, 0xBEEF);
+        bus.write_long(query_out, 0x1122_3344);
+
+        let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+        assert!(result.expect("Pack13 arm").is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+        assert_eq!(cpu.read_reg(Register::D0), (-813i32) as u32);
+        assert_eq!(bus.read_word(sp + 6), (-813i16) as u16);
+        assert_eq!(
+            bus.read_long(query_out),
+            0x1122_3344,
+            "DBGetNewQuery must not touch its output buffer on rcDBPackNotInited"
+        );
+    }
+
+    #[test]
+    fn pack13_unknown_selector_and_trap_mismatch_preserve_memory_and_return_paramerr() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for &unknown_selector in &[0x00FFu16, 0x303C, 0x0000, 0x0200, 0xFFFF] {
+            disp.current_selector_operation = Some("stale-identity");
+            disp.current_trap_word = 0xA82F;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0xFACE_0000 | u32::from(unknown_selector));
+            bus.write_long(sp, 0x1122_3344);
+            bus.write_long(sp + 4, 0x5566_7788);
+
+            let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+            assert!(result.expect("Pack13 arm").is_ok());
+            assert_eq!(
+                disp.current_selector_operation, None,
+                "unknown selector {unknown_selector:#06X} must clear stale operation identity"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::A7),
+                sp,
+                "unknown selector {unknown_selector:#06X} must preserve A7"
+            );
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                (-50i32) as u32,
+                "unknown selector {unknown_selector:#06X} must return sign-extended paramErr (-50)"
+            );
+            assert_eq!(
+                bus.read_long(sp),
+                0x1122_3344,
+                "guest stack memory must remain invariant for unknown selector {unknown_selector:#06X}"
+            );
+            assert_eq!(
+                bus.read_long(sp + 4),
+                0x5566_7788,
+                "guest stack memory must remain invariant for unknown selector {unknown_selector:#06X}"
+            );
+        }
+
+        // Trap word mismatch: trap word 0xA830 with DAM selector 0x0100
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xA830;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0000_0100);
+        bus.write_long(sp, 0x1122_3344);
+
+        let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+        assert!(result.expect("Pack13 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation, None,
+            "trap word mismatch must clear stale operation identity"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::A7),
+            sp,
+            "trap word mismatch must preserve A7"
+        );
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            (-50i32) as u32,
+            "trap word mismatch must return sign-extended paramErr (-50)"
+        );
+        assert_eq!(
+            bus.read_long(sp),
+            0x1122_3344,
+            "guest stack memory must remain invariant on trap word mismatch"
+        );
     }
 
     #[test]
