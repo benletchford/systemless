@@ -2280,7 +2280,18 @@ fn load_selected_executable(
             let mut ppc_config =
                 crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
             ppc_config.screen_depth = runner.configured_powerpc_screen_depth();
-            let mut loaded = crate::loader::ppc::load_pef_application_with_config(pef, ppc_config)
+            let system_reservation = runner.powerpc_system_reservation_range().ok_or_else(|| {
+                format!(
+                    "PowerPC PEF executable \"{}\" selected, but runner RAM cannot hold its system reservation",
+                    executable.name
+                )
+            })?;
+            let mut loaded =
+                crate::loader::ppc::load_pef_application_with_config_and_system_reservation(
+                    pef,
+                    ppc_config,
+                    system_reservation,
+                )
                 .map_err(|error| {
                     format!(
                         "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",

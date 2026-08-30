@@ -1,0 +1,28 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0000,
+        "selector-operation:_SerialPower:0x0000:d0-moveq-immediate:8",
+        "BOn",
+    ),
+    SelectorOperationRoute::new(
+        0x0004,
+        "selector-operation:_SerialPower:0x0004:d0-moveq-immediate:8",
+        "AOn",
+    ),
+    SelectorOperationRoute::new(
+        0x0005,
+        "selector-operation:_SerialPower:0x0005:d0-moveq-immediate:8",
+        "AOnIgnoreModem",
+    ),
+    SelectorOperationRoute::new(
+        0xFFFFFF80,
+        "selector-operation:_SerialPower:0xFF80:d0-moveq-immediate:8",
+        "BOff",
+    ),
+    SelectorOperationRoute::new(
+        0xFFFFFF84,
+        "selector-operation:_SerialPower:0xFF84:d0-moveq-immediate:8",
+        "AOff",
+    ),
+]

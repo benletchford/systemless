@@ -44,6 +44,9 @@ pub enum StepResult {
     /// The instruction was an A-line trap; the carried value is the trap word
     /// for the dispatcher.
     Aline(u16),
+    /// The instruction was an unhandled F-line opcode. The runner decides
+    /// whether the active profile handles it or delegates through vector 11.
+    Fline(u16),
 }
 
 /// Register interface used by the trap dispatcher.
@@ -167,15 +170,14 @@ impl M68kCpu {
     /// Execute one instruction through m68k's precise stepping path.
     ///
     /// Systemless surfaces completed instructions, A-line traps, and STOP
-    /// directly. F-line exits retain the legacy no-op behavior and return
-    /// [`StepResult::Ok`]; illegal instructions, `TRAP`, and `BKPT` exits are
-    /// reported and converted to [`StepResult::Stopped`].
+    /// directly. Illegal instructions, `TRAP`, and `BKPT` exits are reported
+    /// and converted to [`StepResult::Stopped`].
     #[inline]
     pub fn step(&mut self, bus: &mut MacMemoryBus) -> StepResult {
         match self.core.step(bus) {
             m68k::StepResult::Ok { .. } => StepResult::Ok,
             m68k::StepResult::AlineTrap { opcode } => StepResult::Aline(opcode),
-            m68k::StepResult::FlineTrap { .. } => StepResult::Ok,
+            m68k::StepResult::FlineTrap { opcode } => StepResult::Fline(opcode),
             m68k::StepResult::Stopped => {
                 eprintln!("[CPU] StepResult::Stopped");
                 StepResult::Stopped
@@ -300,6 +302,17 @@ mod tests {
             0x001006,
             "BLT should branch when D1 is less than the word at (A2)"
         );
+    }
+
+    #[test]
+    fn precise_step_preserves_the_complete_fline_word_for_vector_routing() {
+        let mut cpu = M68kCpu::new();
+        let mut bus = MacMemoryBus::new(0x400000);
+        cpu.write_reg(Register::PC, 0x001000);
+        bus.write_word(0x001000, 0xF000);
+
+        assert!(matches!(cpu.step(&mut bus), StepResult::Fline(0xF000)));
+        assert_eq!(cpu.core.ppc, 0x001000);
     }
 
     #[test]

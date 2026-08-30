@@ -10,9 +10,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::dispatch::{
-    AeCoercionHandler, AeDescriptor, AeObjectAccessor, AePrivateHashTable, AeResolveLevel,
-    AeResolveState, CooperativeThread, DialogItem, MovieState, StandardFileGetEntry,
-    StandardFileGetTrackingState, StandardFilePutTrackingState, SyntheticAppleEvent,
+    raw_trap_route, selector_operation_route, AeCoercionHandler, AeDescriptor, AeObjectAccessor,
+    AePrivateHashTable, AeResolveLevel, AeResolveState, CooperativeThread, DialogItem, MovieState,
+    OsRoutineVariant, SelectorOperationRoute, StandardFileGetEntry, StandardFileGetTrackingState,
+    StandardFilePutTrackingState, SyntheticAppleEvent,
 };
 use super::types::{decode_mac_roman, encode_mac_roman_lossy, Rect, ShapeOp};
 
@@ -24,6 +25,132 @@ static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
 static TRACE_AE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETKEYS_NONZERO: OnceLock<bool> = OnceLock::new();
 static FORCE_BUTTON_TRUE_AT_PC: OnceLock<Option<u32>> = OnceLock::new();
+
+const SLOT_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_slot_manager_operations.rs");
+const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_alias_dispatch_operations.rs");
+const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
+const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack8_operations.rs");
+const PACK6_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack6_operations.rs");
+const PACK13_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack13_operations.rs");
+const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack14_operations.rs");
+const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_component_dispatch_operations.rs");
+const PACK0_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack0_operations.rs");
+const PR_GLUE_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pr_glue_operations.rs");
+const SCRIPT_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_script_util_operations.rs");
+const SCSI_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_scsi_dispatch_operations.rs");
+
+fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
+    selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
+}
+
+fn alias_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA823 {
+        return None;
+    }
+    selector_operation_route(ALIAS_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn ppc_operation_route(trap_word: u16, selector: u32) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA0DD {
+        return None;
+    }
+    selector_operation_route(PPC_OPERATION_ROUTES, selector)
+}
+
+fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA816 {
+        return None;
+    }
+    selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack6_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA9ED {
+        return None;
+    }
+    selector_operation_route(PACK6_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack13_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82F {
+        return None;
+    }
+    selector_operation_route(PACK13_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack14_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA830 {
+        return None;
+    }
+    selector_operation_route(PACK14_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn component_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82A {
+        return None;
+    }
+    selector_operation_route(COMPONENT_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn pack0_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA9E7 {
+        return None;
+    }
+    selector_operation_route(PACK0_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pr_glue_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA8FD {
+        return None;
+    }
+    selector_operation_route(PR_GLUE_OPERATION_ROUTES, selector)
+}
+
+fn script_util_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA8B5 {
+        return None;
+    }
+    selector_operation_route(SCRIPT_UTIL_OPERATION_ROUTES, selector)
+}
+
+fn scsi_dispatch_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA815 {
+        return None;
+    }
+    selector_operation_route(SCSI_DISPATCH_OPERATION_ROUTES, u32::from(selector))
+}
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
 const AE_TYPE_AE_LIST: u32 = u32::from_be_bytes(*b"list");
@@ -4297,14 +4424,14 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn scsi_dispatch_arg_bytes(selector: i16) -> u32 {
+    fn scsi_dispatch_arg_bytes(selector: i16) -> Option<u32> {
         match selector {
-            0 | 1 | 10 => 0,             // SCSIReset, SCSIGet, SCSIStat
-            2 | 11 | 13 => 2,            // SCSISelect, SCSISelAtn, SCSIMsgOut
-            3 => 6,                      // SCSICmd(buffer, count)
-            4 => 12,                     // SCSIComplete(stat, message, wait)
-            5 | 6 | 7 | 8 | 9 | 12 => 4, // tibPtr/sihPtr/message ptr
-            _ => 0,
+            0 | 1 | 10 => Some(0),         // SCSIReset, SCSIGet, SCSIStat
+            2 | 11 | 13 => Some(2),        // SCSISelect, SCSISelAtn, SCSIMsgOut
+            3 => Some(6),                  // SCSICmd(buffer, count)
+            4 => Some(12),                 // SCSIComplete(stat, message, wait)
+            5 | 6 | 8 | 9 | 12 => Some(4), // tibPtr/message pointer
+            _ => None,
         }
     }
 
@@ -4880,6 +5007,8 @@ impl super::TrapDispatcher {
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
 
+                self.service_invalid_menu_bar(bus);
+
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
                 self.debug_get_next_event_count = self.debug_get_next_event_count.saturating_add(1);
@@ -4914,6 +5043,8 @@ impl super::TrapDispatcher {
                 let sleep = (bus.read_long(sp + 4) as i32).max(0) as u32;
                 let event_ptr = bus.read_long(sp + 8);
                 let event_mask = bus.read_word(sp + 12);
+
+                self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
                 self.event_counter = self.event_counter.wrapping_add(1);
@@ -5012,6 +5143,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let event_ptr = bus.read_long(sp);
                 let event_mask = bus.read_word(sp + 4);
+
+                self.service_invalid_menu_bar(bus);
 
                 // tick_count is maintained by the runner via advance_guest_tick()
 
@@ -6002,34 +6135,31 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // _SCSIDispatch ($A815) — SCSI Manager dispatch
-            // Word selector on top of the stack; each selector pops its
-            // own argument set and leaves a 2-byte OSErr result above.
-            // Inside Macintosh Volume IV, IV-287 to IV-300
-            // Inside Macintosh Volume V, V-389 to V-394
-            //
-            // Systemless does not model SCSI hardware. Every selector
-            // returns noErr — apps typically check for a present device
-            // via SCSIGet/SCSISelect and bail before reaching data
-            // transfer when no device is installed.
-            //
-            // Regression coverage exercises selector pop discipline and noErr defaults.
-            // _SCSIDispatch ($A815): Word-selector dispatch per IM:IV IV-287; pops args per selector, returns noErr — no SCSI hardware
+            // SCSIDispatch (0xA815)
+            // Dispatches original SCSI Manager routines selected by a word on top of the stack.
+            // FUNCTION SCSIReset: OSErr;
+            // Inside Macintosh: Devices (1994), pp. 3-31 to 3-42 and 3-48.
             (true, 0x015) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp) as i16;
-                // Arg bytes (below selector) per IM:IV IV-287..IV-300 and IM:V V-389..V-394.
-                let arg_bytes = Self::scsi_dispatch_arg_bytes(selector);
+                let operation =
+                    scsi_dispatch_operation_route(self.current_trap_word, selector as u16);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let Some(arg_bytes) = Self::scsi_dispatch_arg_bytes(selector) else {
+                    // Undefined selectors invoke dsCoreErr (12); Inside Macintosh Volume V, V-574.
+                    bus.write_word(addr::DS_ERR_CODE, 12);
+                    return Some(Err(crate::Error::Halted));
+                };
                 let total = 2 + arg_bytes;
                 bus.write_word(sp + total, 0); // noErr
                 cpu.write_reg(Register::A7, sp + total);
                 Ok(())
             }
 
-            // PPC ($A0DD) — PPC Toolbox dispatch (inter-app communication)
-            // D0 = selector, A0 = parameter block.
-            // Inside Macintosh: Interapplication Communication (1993),
-            // pp. 7-39, 7-41 to 7-42, 7-57.
+            // PPC ($A0DD)
+            // Dispatches PPC Toolbox operations selected in D0.
+            // Register ABI: D0 = selector/result; parameter-block routines use A0.
+            // Inside Macintosh: Interapplication Communication (1993), p. 11-51.
             //
             // Systemless models the observable PPC Toolbox state:
             // selector $0000 (`PPCInit`) flips the init bit for
@@ -6038,7 +6168,10 @@ impl super::TrapDispatcher {
             // Selector $0000 and selector $000A are handled on both the
             // pre-init and post-init local paths.
             (false, 0x0DD) => {
-                let selector = cpu.read_reg(Register::D0) as u16;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = ppc_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector as u16;
                 let pb = cpu.read_reg(Register::A0);
                 let not_init_err = (-900i32) as u32;
 
@@ -6066,36 +6199,41 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SlotManager ($A06E) — NuBus Slot Manager dispatch
-            // A0 = SpBlockPtr, D0 = routine selector.
-            // Inside Macintosh: Devices (1994), pp. 2-61 to 2-62.
-            //
-            // _SlotManager routines are selector-based (D0 on entry)
-            // and return OSErr in D0. For SReadInfo selector $0010, the
-            // documented empty-slot result is smEmptySlot (-300).
-            // SpBlock.spResult is the first longword at offset 0.
-            // Devices 1994, pp. 2-23 to 2-24 and 2-61 to 2-62.
-            //
-            // Systemless models no NuBus cards, so every selector returns
-            // smEmptySlot. For the documented SReadInfo selector, we
-            // also mirror that result into SpBlock.spResult when
-            // SpBlockPtr is non-NIL.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::slotmanager_sreadinfo_selector_uses_a0_spblock_d0_selector_and_returns_oserr_in_d0
-            //   src/trap/toolbox.rs::slotmanager_sreadinfo_empty_slot_returns_smemptyslot
-            //   src/trap/toolbox.rs::slotmanager_writes_result_to_spblock_spresult_offset_zero
+            // SlotManager ($A06E)
+            // Dispatches Slot Manager routines selected in D0 with an SpBlockPtr in A0.
+            // Register ABI: A0 = SpBlockPtr, D0 = selector; returns OSErr in D0.
+            // Inside Macintosh: Devices (1994), pp. 2-29, 2-99.
+            // Systemless models the ROM-based Slot Manager but no NuBus cards.
             (false, 0x06E) => {
                 let sp_block_ptr = cpu.read_reg(Register::A0);
-                let selector = cpu.read_reg(Register::D0) as i32;
+                let selector = cpu.read_reg(Register::D0);
+                let operation = slot_manager_operation_route(selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let sm_empty_slot: i32 = -300;
-                if selector == 0x0010 && sp_block_ptr != 0 {
-                    bus.write_long(sp_block_ptr, sm_empty_slot as u32);
+                if selector == 0x0008 && sp_block_ptr != 0 {
+                    // SVersion ($A06E, selector $0008)
+                    // Returns version 2 for the ROM-based Slot Manager.
+                    // FUNCTION SVersion (spBlkPtr: SpBlockPtr): OSErr;
+                    // Inside Macintosh: Devices (1994), pp. 2-30 to 2-31.
+                    bus.write_long(sp_block_ptr, 2);
+                    // spsPointer is reserved for future additional information.
+                    bus.write_long(sp_block_ptr + 4, 0);
+                    cpu.write_reg(Register::D0, 0);
+                } else {
+                    if selector == 0x0010 && sp_block_ptr != 0 {
+                        // SReadInfo ($A06E, selector $0010)
+                        // Returns smEmptySlot when the requested slot contains no card.
+                        // FUNCTION SReadInfo (spBlkPtr: SpBlockPtr): OSErr;
+                        // Inside Macintosh: Devices (1994), pp. 2-61 to 2-62.
+                        bus.write_long(sp_block_ptr, sm_empty_slot as u32);
+                    }
+                    cpu.write_reg(Register::D0, sm_empty_slot as u32);
                 }
-                cpu.write_reg(Register::D0, sm_empty_slot as u32);
                 eprintln!(
-                    "[TRAP] SlotManager selector={} -> smEmptySlot (no NuBus cards modeled)",
-                    selector
+                    "[TRAP] SlotManager selector={} operation={} -> {}",
+                    selector,
+                    operation.map_or("unregistered", |route| route.routine_name),
+                    cpu.read_reg(Register::D0) as i32
                 );
                 Ok(())
             }
@@ -6405,7 +6543,10 @@ impl super::TrapDispatcher {
                 let wants_write = matches!(permission, 2 | 3 | 4);
                 eprintln!("[TRAP] PBOpenRF(\"{}\")", filename);
 
-                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_variant = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 if is_hfs_variant && vref != 0 && self.working_directory_info(vref).is_none() {
                     bus.write_word(pb + 16, (-35i16) as u16); // nsvErr
                     cpu.write_reg(Register::D0, (-35i32) as u32);
@@ -6466,35 +6607,16 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== Pack8 / Apple Events Manager ($A816) ==========
-            //
-            // Selector-based dispatch. Per Apple's SuperMario ROM source
-            // (Toolbox/AppleEventMgr/AEDFGlue.a), the AE Manager package
-            // expects:
-            //   D0.W high byte = number of WORDS of parameters
-            //   D0.W low byte  = routine number (index into dispatch table)
-            //
-            // Stack layout on entry:
-            //   SP+0 .. SP+(params*2-1) = parameters (last pushed first)
-            //   SP+(params*2)           = result OSErr (2 bytes, pre-pushed by caller)
-            //
-            // After dispatch the convention from AEDFGlue's ExtensionProc
-            // fallback is: pop the parameters, leave a 2-byte result at the
-            // new SP. We mirror that here as a no-op stub, returning noErr.
-            //
-            // The dispatch table (AEDFGlue.a) starts:
-            //   0: AE_InstallSpecialHandler   1: AE_RemoveSpecialHandler
-            //   2: AE_CoercePtr               3: AE_CoerceDesc
-            //   4: AE_DisposeDesc             5: AE_DuplicateDesc
-            //   6: AE_CreateList              7: AE_CountItems
-            //   ...
-            //  25: AE_ResetTimer             27: AE_ProcessAppleEvent
-            //   ... (52 routines total + 10 extension slots)
-            // Pack8 / Apple Events ($A816): Selector-based; routine 31 (AEInstallEventHandler) records handlers and routine 27 (AEProcessAppleEvent) dispatches into them via a trampoline; other selectors are stubbed to pop their encoded args and return noErr in D0
+            // Pack8 ($A816)
+            // Dispatches Apple Event Manager routines selected by D0.W.
+            // FUNCTION AEManagerInfo (keyword: AEKeyword; VAR result: LongInt): OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), p. 4-104.
             (true, 0x016) => {
                 let sp = cpu.read_reg(Register::A7);
                 let d0 = cpu.read_reg(Register::D0);
                 let selector = (d0 & 0xFFFF) as u16;
+                let operation = pack8_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
 
                 if selector == super::dispatch::LOADSEG_GETRESOURCE_SENTINEL {
                     return Some(self.resume_loadseg_after_getresource(bus, cpu));
@@ -10625,20 +10747,18 @@ impl super::TrapDispatcher {
             }
 
             // ========== Package Dispatchers ==========
-            // Pack0-Pack7 ($A9E7-$A9EF-0x1EF) are selector-based dispatchers.
-            // The selector word at SP encodes the sub-routine. The high byte often
-            // gives the parameter size (excluding the selector itself).
+            // Pack0-Pack7 (0xA9E7-0xA9EF) are selector-based dispatchers.
+            // Their package-specific selector is at the top of the Pascal stack.
 
-            // Pack0 ($A9E7) — List Manager
-            // Pack0 / List Manager ($A9E7): Selector-based: $44 LNew,
-            // $18 LClick, $20 LDispose, $24 LAddRow, $30 LAddToCell,
-            // $34 LDelRow, $3C LGetSelect, $40 LLastClick, $5C
-            // LSetSelect, $54 LDoDraw, plus a small set of list-state
-            // mutators/query helpers. List backing store maintained per
-            // Inside Macintosh Volume IV.
+            // Pack0 (0xA9E7)
+            // Dispatches List Manager package routines selected by a word on the stack.
+            // PROCEDURE LActivate (act: BOOLEAN; lHandle: ListHandle);
+            // Inside Macintosh Volume IV (1986), IV-276.
             (true, 0x1E7) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = pack0_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if trace_list_manager_enabled() {
                     eprintln!(
                         "[LIST] selector=${:04X} pc=${:08X} sp=${:08X}",
@@ -12337,54 +12457,15 @@ impl super::TrapDispatcher {
 
             // Pack4 ($A9EB) and Pack5 ($A9EC) are handled by dispatch_sane
 
-            // Pack6 ($A9ED) — International Utilities Package
-            //
-            // Eighteen-routine selector dispatcher providing date/time
-            // formatting, international string comparison, and (System
-            // 7+) interscript ordering / itl2/itl4 cache management.
-            //
-            // Selector encoding is pure low-byte routine number (high
-            // byte $00) per IM:I I-487 + IM:VI 14-135 explicit
-            // "Selector: $XXXX" tables — same convention as Pack2 /
-            // Pack3, NOT the Pack8 / SANE param-size-in-high-byte
-            // convention.
-            //
-            // HLE compromise: Systemless runs a single-script (Roman /
-            // Latin-1) US-default environment. It synthesizes classic
-            // U.S. 'INTL' IDs 0 and 1, but no localised 'itl2' / 'itl4'
-            // resources. Date strings
-            // collapse to a "1/1/04" placeholder; time strings to
-            // "12:00 AM" / "12:00:00 AM"; metric query returns FALSE;
-            // comparators do byte-
-            // level compare returning -1/0/+1 (Mag/Comp variants;
-            // case-sensitive) or 0/1 (MagID/Equal variants; case-
-            // insensitive ASCII fold); script/lang ordering does
-            // numeric compare. IUClearCache / IUSetIntl /
-            // IUGetIntlTable are no-ops with documented VAR-out NIL
-            // writes. Apps that need locale-specific formatting see
-            // Mac-default English output.
-            //
-            // Stack frames assume Pascal arg conventions: LongInt =
-            // 4, Integer/Boolean/DateForm = 2 (DateForm = 1 byte at
-            // the source level but stack-aligned to 2 bytes), Handle
-            // / Ptr = 4, Str255 by REFERENCE (4-byte VAR ptr,
-            // matching the Toolbox-wide convention reaffirmed by
-            // Pack3, AppendMenu, SetWTitle, and
-            // ParamText). VAR LongDateTime is also a 4-byte ptr.
-            //
-            // IUCompString / IUEqualString / IUCompPString /
-            // IUEqualPString are pure Pascal-glue convenience wrappers
-            // (per IM:I I-498 "there's no trap for it; it eventually
-            // calls IUMagString" / IM:I I-501 same for IUEqualString)
-            // — they have NO selector and reach this dispatcher via
-            // their Mag / MagID counterparts.
-            //
-            // Inside Macintosh Volume I (1985), pages I-485..I-510.
-            // Inside Macintosh Volume VI (1991), pages 14-1..14-135.
-            // Pack6 / Intl Utilities ($A9ED): Per-selector Pascal frames per IM:I I-487 + IM:VI 14-135: $0000 IUDateString pop 12 result@SP+2, $0002 IUTimeString pop 12 result@SP+2, $0004 IUMetric pop 2 result@SP+2 (FALSE), $0006 IUGetIntl pop 4 result@SP+4 (INTL handle), $0008 IUSetIntl pop 10 (no-op), $000A IUMagString pop 14 result@SP+14 (-1/0/+1 byte cmp), $000C IUMagIDString pop 14 result@SP+14 (0/1 case-insens), $000E IUDatePString pop 16 result@SP+6, $0010 IUTimePString pop 16 result@SP+6, $0014 IULDateString pop 16 result@SP+6, $0016 IULTimeString pop 16 result@SP+6, $0018 IUClearCache pop 2 (no-op), $001A IUMagPString pop 18 result@SP+18 (-1/0/+1), $001C IUMagIDPString pop 18 result@SP+18 (0/1), $001E IUScriptOrder pop 6 result@SP+6 (-1/0/+1), $0020 IULangOrder pop 6 result@SP+6 (-1/0/+1), $0022 IUTextOrder pop 22 result@SP+22 (-1/0/+1), $0024 IUGetIntlTable pop 18 (writes NIL/0/0 to 3 VAR ptrs).
+            // _Pack6 (0xA9ED)
+            // Dispatches International and Text Utilities operations selected by a word on top of the stack.
+            // Selector ABI: 16-bit word at SP; routine-specific Pascal parameters follow.
+            // Inside Macintosh Volume I (1985), I-483; Inside Macintosh Volume VI (1991), 14-135; Inside Macintosh: Text (1993), 5-113.
             (true, 0x1ED) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = pack6_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 match selector {
                     // PROCEDURE IUDateString(dateTime: LongInt;
                     //                        form: DateForm;
@@ -13080,15 +13161,16 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== AliasDispatch ($A823) ==========
-
             // AliasDispatch ($A823)
-            // Selector-based dispatcher for Alias Manager routines.
-            // Selector in D0.
-            // Inside Macintosh Volume VI, 9-17; Files 1992, 4-15
+            // Dispatches Alias Manager routines selected in D0.
+            // Register ABI: D0 = selector; each routine uses its documented Pascal stack frame.
+            // Inside Macintosh: Files (1992), pp. 4-15 to 4-33.
             (true, 0x023) => {
                 let sp = cpu.read_reg(Register::A7);
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = alias_dispatch_operation_route(0xA823, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector & 0xFFFF;
                 match selector {
                     // FindFolder (selector $0000)
                     // FUNCTION FindFolder(vRefNum: INTEGER; folderType: OSType;
@@ -14438,40 +14520,15 @@ impl super::TrapDispatcher {
 
             // ========== Printing Manager ==========
 
-            // PrGlue ($A8FD)
-            // Printing Manager dispatch. 32-bit selector on top of the stack.
-            // Inside Macintosh Volume V (1986), p. V-408.
-            //
-            // Selector format (assembly-language note, IM:V V-408):
-            //   bits 31-24 = routine selector
-            //   bits 15-8  = parameter byte count (bytes to pop after selector)
-            //
-            // The second selector byte is not a generic stack-result byte
-            // count. For example PrintDefault is selector $20040480 and is a
-            // PROCEDURE, while PrOpenDoc is selector $04000C00 and returns a
-            // TPPrPort. Results are therefore routine-specific.
-            //
-            // In emulation, printing is not supported. All routines are no-ops
-            // that pop their parameters and write default return values.
-            // PrSetError / PrError still model the shared PrintErr state so
-            // callers can observe the last Printing Manager result code.
-            //
-            // Regression coverage:
-            //   tests::prglue_selector_param_byte_count_controls_stack_pop
-            //   tests::prglue_propendoc_returns_nil_and_consumes_three_pointer_arguments
-            //   tests::prglue_prvalidate_returns_false_boolean_result
-            //   tests::prglue_prstldialog_returns_true_boolean_result
-            //   tests::prglue_prjobdialog_returns_true_boolean_result
-            //   tests::prglue_prclosedoc_consumes_tpprport_argument_without_function_result_slot
-            //   tests::prglue_prerror_returns_noerr_word_with_zero_result_bits_selector
-            //   tests::prglue_prseterror_consumes_ierr_word_argument_without_function_result_slot
-            //   tests::prglue_prseterror_updates_prerror_state_roundtrip
-            // PrGlue ($A8FD): Selector-based Printing Manager dispatcher per
-            // IM:V V-408, with no-op HLE implementations for printing-disabled
-            // runtime paths.
+            // PrGlue (0xA8FD)
+            // Dispatches Printing Manager routines selected by a LONGINT on the stack.
+            // PROCEDURE PrOpen;
+            // Inside Macintosh Volume V (1986), V-408.
             (true, 0x0FD) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_long(sp);
+                let operation = pr_glue_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = (selector >> 24) & 0xFF;
 
                 // Extract the parameter size encoded in bits 15-8.
@@ -14608,14 +14665,10 @@ impl super::TrapDispatcher {
 
             // ========== Script Manager ==========
 
-            // ScriptUtil ($A8B5)
-            // Script Manager dispatch. Selector is a LONGINT on top of the stack.
-            // Inside Macintosh Volume V, V-288
-            //
-            // In the emulator we always return Roman script (0) for script queries
-            // and noErr for set operations. This is sufficient for English-only games.
-            //
-            // ScriptUtil ($A8B5): Dispatches legacy selectors plus System 7 encoded text-utility selectors; returns Roman/noErr/0 fallbacks where Systemless has no script-system state.
+            // ScriptUtil (0xA8B5)
+            // Dispatches script utilities selected by a LONGINT on top of the stack.
+            // FUNCTION ParseTable (VAR table: CharByteTable): Boolean;
+            // Inside Macintosh Volume VI (1991), pp. 14-131 to 14-132; Inside Macintosh: Text (1993), p. A-39.
             (true, 0x0B5) => {
                 let sp = cpu.read_reg(Register::A7);
                 // MPW's inline wraps ScriptUtil selectors as
@@ -14625,6 +14678,8 @@ impl super::TrapDispatcher {
                 // metadata. Older Script Manager calls use the low byte as the
                 // routine number; System 7 text utilities use full selectors.
                 let raw_selector = bus.read_long(sp);
+                let operation = script_util_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let selector = (raw_selector & 0xFF) as i32;
 
                 match raw_selector {
@@ -14912,28 +14967,22 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack13 ($A82F) — Data Access Manager
-            // Inside Macintosh: Interapplication Communication 1993,
-            // pp. 12-60 and 12-103.
-            //
-            // The Data Access Manager macros place the routine selector
-            // in D0 and call _Pack13. Systemless HLE currently only needs
-            // the InitDBPack selector ($0100), so this arm is a D0-driven
-            // no-op: return noErr and preserve the caller's Pascal stack.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::pack13_initdbpack_selector_returns_noerr_and_preserves_stack
+            // Pack13 (0xA82F)
+            // Dispatches Data Access Manager routines selected by D0.W.
+            // FUNCTION InitDBPack: OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), pp. 12-60 and 12-103.
             (true, 0x02F) => {
-                let _selector = cpu.read_reg(Register::D0) as u16;
+                let selector = cpu.read_reg(Register::D0) as u16;
+                let operation = pack13_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
 
-            // Pack14 ($A830) — Help Manager
-            //
-            // Twenty-one-routine selector dispatcher providing balloon
-            // help: status query, balloon show/remove, font config,
-            // help-resource lookup, and help-message extraction.
+            // Pack14 ($A830)
+            // Dispatches Help Manager routines selected by D0.W.
+            // FUNCTION HMGetBalloons: Boolean;
+            // Inside Macintosh: More Macintosh Toolbox (1993), p. 3-98.
             //
             // Selector encoding is `(arg_words << 8) | routine`.
             // Public MPW glue emits `MOVE.W #selector,D0; _Pack14`;
@@ -14978,10 +15027,6 @@ impl super::TrapDispatcher {
             // popped 11 instead of 22, leaving 11 args bytes
             // stranded. Any real-game caller would crash on RTS.
             //
-            // Inside Macintosh: More Macintosh Toolbox 1993, ch. 3,
-            // Help Manager, pages 3-1..3-173 + selector summary at
-            // page 3-173 (MMTb 11320..11340).
-            // Pack14 / Help Manager ($A830): Per-selector Pascal frames per IM:MMTb 1993 ch.3 + selector table 3-173; selector is in D0, not on the stack. $0002 HMRemoveBalloon pop 0 D0=hmHelpDisabled, $0003 HMGetBalloons pop 0 D0=0 result=FALSE, $0007 HMIsBalloon pop 0 D0=0 result=FALSE, $0104 HMSetBalloons pop 2 D0=0, $0108 HMSetFont pop 2 D0=0, $0109 HMSetFontSize pop 2 D0=0, $010C HMSetDialogResID pop 2 D0=0, $0200 HMGetHelpMenuHandle pop 4 writes NIL to *mh D0=hmHelpManagerNotInited, $020A HMGetFont pop 4 writes 0 to *font D0=0, $020B HMGetFontSize pop 4 writes 0 to *fontSize D0=0, $020D HMSetMenuResID pop 4 D0=0, $0213 HMGetDialogResID pop 4 writes -1 to *resID D0=resNotFound, $0215 HMGetBalloonWindow pop 4 writes NIL to *window D0=0, $0314 HMGetMenuResID pop 6 writes -1 to *resID D0=resNotFound, $040E HMBalloonRect pop 8 writes Rect(0,0,0,0) D0=0, $040F HMBalloonPict pop 8 writes NIL to *coolPict D0=0, $0410 HMScanTemplateItems pop 8 D0=resNotFound, $0711 HMExtractHelpMsg pop 14 D0=resNotFound, $0B01 HMShowBalloon pop 22 D0=hmHelpDisabled, $0E05 HMShowMenuBalloon pop 28 D0=hmHelpDisabled, $1306 HMGetIndHelpMsg pop 38 D0=resNotFound.
             (true, 0x030) => {
                 const HM_HELP_DISABLED: i16 = -850;
                 const HM_HELP_MGR_NOT_INITED: i16 = -855;
@@ -14989,6 +15034,8 @@ impl super::TrapDispatcher {
 
                 let sp = cpu.read_reg(Register::A7);
                 let selector = (cpu.read_reg(Register::D0) & 0xFFFF) as u16;
+                let operation = pack14_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
 
                 // Helper: write OSErr/Integer result word to BOTH the
                 // stack slot at sp+pop_total AND D0, then advance A7.
@@ -15431,9 +15478,9 @@ impl super::TrapDispatcher {
             // Manager, Mixed Mode Manager (PowerPC), Code Fragment
             // Manager (PowerPC), Icon Utilities, Thread Manager, and
             // Translation Manager. Each one routes a sub-routine call
-            // selected by either a stack-pushed selector word
-            // (Component Manager) or a routine number in D0
-            // (everything else, Pack8/Pack14 convention).
+            // selected by D0. Component Manager additionally uses D0=0
+            // for component calls whose parameter size and request code
+            // are pushed together as a long word on the stack.
             //
             // HLE compromise — load-bearing rationale:
             //   1. Apps written for System 7+ uniformly probe presence
@@ -15482,10 +15529,13 @@ impl super::TrapDispatcher {
             // remaining stubbed dispatchers keep the register-
             // preservation + stack-untouched contract.
 
-            // ComponentDispatch ($A82A) — Component Manager
-            // Inside Macintosh: More Macintosh Toolbox (1993),
-            // pp. 6-6, 6-29, and 6-98:
-            // `Gestalt('cpnt', ...)` gates availability; component
+            // ComponentDispatch (0xA82A)
+            // Dispatches Component Manager internal requests selected by MOVEQ in D0.
+            // FUNCTION CountComponents (looking: ComponentDescription): LongInt;
+            // Inside Macintosh: More Macintosh Toolbox (1993), pp. 6-43 to 6-44.
+            //
+            // The manager also handles component calls through D0=0.
+            // `Gestalt('cpnt', ...)` gates manager availability; component
             // call glue uses `INLINE $2F3C, paramSize, callNum,
             // $7000, $A82A`, which pushes a 4-byte selector word
             // [paramSize:callNum] then traps.
@@ -15503,17 +15553,13 @@ impl super::TrapDispatcher {
             // calls consume selector + instance + arguments and return a
             // zero ComponentResult in the caller's four-byte result slot.
             //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::componentdispatch_*
-            // ComponentDispatch ($A82A): MMTB 1993 ch.6 17215. Stack-pushed
-            // [paramSize:callNum] selector at SP+0; D0=0 = call component,
-            // D0!=0 = CM internal. Gestalt 'cpnt'. HLE supplies the movie
-            // controller component and stateful open/close calls described above.
             (true, 0x02A) => {
                 const MOVIE_CONTROLLER_COMPONENT: u32 = u32::from_be_bytes(*b"play");
                 const SYNTHETIC_MOVIE_CONTROLLER: u32 = 0x00C0_0001;
 
                 let d0 = cpu.read_reg(Register::D0);
+                let operation = component_dispatch_operation_route(self.current_trap_word, d0);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if d0 == 0 {
                     let sp = cpu.read_reg(Register::A7);
                     let param_size = u32::from(bus.read_word(sp));
@@ -15774,13 +15820,12 @@ impl super::TrapDispatcher {
             // (Duo 2x0 series); routes dock/undock notifications and
             // power-state events. Selector convention: D0 = routine
             // number per the standard System 7 dispatcher pattern.
-            // No documented Gestalt selector — apps probe via
-            // NGetTrapAddress($AA57) returning _Unimplemented when
-            // running on non-PowerBook hardware.
+            // No documented Gestalt selector. The selected Mac OS 8.1
+            // profiles expose a callable table entry distinct from the
+            // modern $AA6E Unimplemented identity.
             //
             // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. No current corpus title
-            // is PowerBook-specific.
+            // preserved, stack untouched.
             //
             // Regression coverage:
             //   dockingdispatch_*
@@ -15790,27 +15835,22 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // MixedModeDispatch ($AA59) — Mixed Mode Manager
-            // Inside Macintosh: PowerPC System Software 1994
-            // (PPC SS 1994 line 2774: `_MixedModeMagic` is the
-            // mixed-mode A-trap that bridges 68K → PowerPC and
-            // PowerPC → 68K calls through Universal Procedure
-            // Pointers). Selector convention: A0 = UniversalProcPtr
-            // record; D0 = routine number for some MMM-internal
-            // services (CallUniversalProc / NewRoutineDescriptor /
-            // DisposeRoutineDescriptor).
-            // No documented Gestalt selector — MMM presence is
-            // implied by gestaltCFMAttr (CFM and MMM ship together).
-            //
-            // HLE behaviour: D0=0 (noErr), all other registers
-            // preserved, stack untouched. Systemless is a 68K-only HLE,
-            // so any MMM call (a PPC-side caller transitioning back
-            // to 68K) is unreachable in practice.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::mixedmodedispatch_returns_noerr_and_preserves_stack_pointer
-            // MixedModeDispatch ($AA59): PPC SS 1994 ch.7 2774 (`_MixedModeMagic`). A0=UPP record, D0 selector. No Gestalt — implied by 'cfrg'. HLE: D0=0, registers + stack preserved (68K-only HLE, MMM unreachable).
+            // MixedModeDispatch ($AA59)
+            // Dispatches private Mixed Mode Manager services; this is distinct
+            // from the executable `$AAFE` word in a RoutineDescriptor.
+            // (private dispatcher; selector ABI remains unclassified)
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-4--2-8.
             (true, 0x259) => return_noerr(cpu),
+
+            // goMixedModeTrap ($AAFE)
+            // Enters the Mixed Mode Manager through the executable first word
+            // of a RoutineDescriptor and selects its architecture record.
+            // (private executable RoutineDescriptor entry; no Pascal signature)
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-8--2-12
+            // and 2-37--2-38.
+            (true, 0x2FE) => {
+                crate::mixed_mode::enter_m68k_routine_descriptor(cpu, bus, &self.guest_calls)
+            }
 
             // CodeFragmentDispatch ($AA5A) — Code Fragment Manager
             // Inside Macintosh: PowerPC System Software 1994
@@ -16621,14 +16661,17 @@ mod tests {
     use super::super::dispatch::QueuedEvent;
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
     use super::{
-        quicktime_movie_metadata, AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND,
+        alias_dispatch_operation_route, ppc_operation_route, quicktime_movie_metadata,
+        slot_manager_operation_route, AE_ERR_ACCESSOR_NOT_FOUND, AE_ERR_DESC_NOT_FOUND,
         AE_ERR_HANDLER_NOT_FOUND, AE_ERR_NOT_AN_OBJECT_SPEC, AE_EVENT_ID_ANSWER,
         AE_KEY_COMPARE_PROC, AE_KEY_CONTAINER, AE_KEY_COUNT_PROC, AE_KEY_DESIRED_CLASS,
         AE_KEY_EVENT_CLASS_ATTR, AE_KEY_EVENT_ID_ATTR, AE_KEY_KEY_DATA, AE_KEY_KEY_FORM,
         AE_MANAGER_KEY_RECORDER_COUNT, AE_MANAGER_KEY_VERSION, AE_SEND_MODE_WAIT_REPLY,
         AE_TYPE_APPLE_EVENT, AE_TYPE_NULL, AE_TYPE_OBJECT_SPECIFIER, AE_TYPE_TYPE,
-        AE_TYPE_WILDCARD, STANDARD_FILE_GET_DIALOG_HEIGHT, STANDARD_FILE_GET_DIALOG_WIDTH,
-        STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT, STANDARD_FILE_GET_VOLUME_RECT,
+        AE_TYPE_WILDCARD, ALIAS_DISPATCH_OPERATION_ROUTES, PPC_OPERATION_ROUTES,
+        SLOT_MANAGER_OPERATION_ROUTES, STANDARD_FILE_GET_DIALOG_HEIGHT,
+        STANDARD_FILE_GET_DIALOG_WIDTH, STANDARD_FILE_GET_LIST_RECT, STANDARD_FILE_GET_SCROLL_RECT,
+        STANDARD_FILE_GET_VOLUME_RECT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
@@ -17009,6 +17052,43 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(post_pb + IO_RESULT), 0);
         assert_eq!(bus.read_word(post_pb + ACTUAL_COUNT), 0);
+    }
+
+    #[test]
+    fn ppc_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(PPC_OPERATION_ROUTES.len(), 1);
+        assert!(PPC_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let init = ppc_operation_route(0xA0DD, 0x0000).expect("PPCInit route");
+        assert_eq!(init.routine_name, "PPCInit");
+        assert_eq!(
+            init.operation_id,
+            "selector-operation:_PPC:0x0000:d0-moveq-immediate:8"
+        );
+
+        assert!(ppc_operation_route(0xA1DD, 0x0000).is_none());
+        assert!(ppc_operation_route(0xA0DD, 0x7000).is_none());
+        assert!(ppc_operation_route(0xA0DD, 0x0001_0000).is_none());
+    }
+
+    #[test]
+    fn ppc_dispatch_records_ppcinit_and_rejects_unregistered_identity_forms() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 0x0000);
+        disp.dispatch(0xA0DD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(PPC_OPERATION_ROUTES[0].operation_id)
+        );
+
+        for (trap_word, selector) in [(0xA1DD, 0x0000), (0xA0DD, 0x7000), (0xA0DD, 0x0001_0000)] {
+            cpu.write_reg(Register::D0, selector);
+            disp.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(disp.current_selector_operation, None);
+        }
     }
 
     // Pack15 ($A831) — Picture Utilities
@@ -17441,6 +17521,82 @@ mod tests {
             stack_ptr,
             "SlotManager register calling convention should preserve A7"
         );
+    }
+
+    #[test]
+    fn slotmanager_sversion_returns_rom_manager_version_and_reserved_pointer() {
+        // Inside Macintosh: Devices (1994), pp. 2-30 to 2-31:
+        // SVersion selector $0008 returns version 2 for the ROM-based Slot
+        // Manager in spResult and reserves spsPointer for future information.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp_block_ptr = 0x0031_0080u32;
+        let stack_ptr = 0x00F0_6080u32;
+
+        bus.write_long(sp_block_ptr, 0xDEAD_BEEF);
+        bus.write_long(sp_block_ptr + 4, 0xCAFE_BABE);
+        bus.write_long(sp_block_ptr + 8, 0x1122_3344);
+        cpu.write_reg(Register::A0, sp_block_ptr);
+        cpu.write_reg(Register::D0, 0x0008);
+        cpu.write_reg(Register::A7, stack_ptr);
+
+        let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+        assert!(result.is_some(), "SlotManager should be handled");
+        assert!(result.unwrap().is_ok(), "SVersion should return normally");
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "SVersion should return noErr"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr),
+            2,
+            "spResult should be version 2"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr + 4),
+            0,
+            "reserved spsPointer should be NIL"
+        );
+        assert_eq!(
+            bus.read_long(sp_block_ptr + 8),
+            0x1122_3344,
+            "SVersion should not overwrite the rest of SpBlock"
+        );
+        assert_eq!(cpu.read_reg(Register::A0), sp_block_ptr);
+        assert_eq!(cpu.read_reg(Register::A7), stack_ptr);
+    }
+
+    #[test]
+    fn slotmanager_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(SLOT_MANAGER_OPERATION_ROUTES.len(), 41);
+        assert!(SLOT_MANAGER_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+        let version = slot_manager_operation_route(0x0008).expect("SVersion route");
+        assert_eq!(version.routine_name, "SVersion");
+        assert_eq!(
+            version.operation_id,
+            "selector-operation:_SlotManager:0x0008:d0-moveq-immediate:8"
+        );
+        assert!(slot_manager_operation_route(0x0004).is_none());
+        assert!(slot_manager_operation_route(0x0001_0008).is_none());
+    }
+
+    #[test]
+    fn slotmanager_dispatch_records_every_generated_operation_and_rejects_unknown_identity() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in SLOT_MANAGER_OPERATION_ROUTES {
+            cpu.write_reg(Register::A0, 0);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+            assert!(result.is_some_and(|result| result.is_ok()));
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::D0, 0x0004);
+        let result = disp.dispatch_toolbox(false, 0x06E, &mut cpu, &mut bus);
+        assert!(result.is_some_and(|result| result.is_ok()));
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     #[test]
@@ -18971,6 +19127,85 @@ mod tests {
     // ========== Printing Manager ==========
 
     #[test]
+    fn prglue_generated_routes_preserve_exact_stack_long_values() {
+        assert_eq!(super::PR_GLUE_OPERATION_ROUTES.len(), 23);
+        assert!(super::PR_GLUE_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0400_0C00, "PrOpenDoc"),
+            (0x0800_0484, "PrCloseDoc"),
+            (0x1000_0808, "PrOpenPage"),
+            (0x1800_040C, "PrClosePage"),
+            (0x2004_0480, "PrintDefault"),
+            (0x2A04_0484, "PrStlDialog"),
+            (0x3204_0488, "PrJobDialog"),
+            (0x3C04_040C, "PrStlInit"),
+            (0x4404_0410, "PrJobInit"),
+            (0x4A04_0894, "PrDlgMain"),
+            (0x5204_0498, "PrValidate"),
+            (0x5804_089C, "PrJobMerge"),
+            (0x6005_1480, "PrPicFile"),
+            (0x7007_0480, "PrGeneral"),
+            (0x8000_0000, "PrDrvrOpen"),
+            (0x8800_0000, "PrDrvrClose"),
+            (0x9400_0000, "PrDrvrDCE"),
+            (0x9A00_0000, "PrDrvrVers"),
+            (0xA000_0E00, "PrCtlCall"),
+            (0xBA00_0000, "PrError"),
+            (0xC000_0200, "PrSetError"),
+            (0xC800_0000, "PrOpen"),
+            (0xD000_0000, "PrClose"),
+        ] {
+            let route =
+                super::pr_glue_operation_route(0xA8FD, selector).expect("PrGlue operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9FD, 0xC800_0000),
+            (0xA8FD, 0xF100_0600),
+            (0xA8FD, 0x0000_2F3C),
+            (0xA8FD, 0x0000_00C8),
+            (0xA8FD, 0x0000_00BA),
+        ] {
+            assert!(super::pr_glue_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn prglue_records_stack_long_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA8FD;
+        bus.write_long(sp, 0xC800_0000);
+
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_PrGlue:0xC8000000:stack-long-immediate:32")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA9FD;
+        cpu.write_reg(Register::A7, sp);
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA8FD;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_long(sp, 0xC800_0001);
+        let result = disp.dispatch_toolbox(true, 0x0FD, &mut cpu, &mut bus);
+        assert!(result.expect("PrGlue arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+    }
+
+    #[test]
     fn prglue_selector_param_byte_count_controls_stack_pop() {
         // Inside Macintosh Volume V (1986), p. V-408:
         // _PrGlue selectors encode parameter-byte count in bits 15-8.
@@ -20487,6 +20722,113 @@ mod tests {
 
     // _SCSIDispatch ($A815)
     #[test]
+    fn scsi_dispatch_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::SCSI_DISPATCH_OPERATION_ROUTES.len(), 13);
+        assert!(super::SCSI_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "SCSIReset"),
+            (0x0001, "SCSIGet"),
+            (0x0002, "SCSISelect"),
+            (0x0003, "SCSICmd"),
+            (0x0004, "SCSIComplete"),
+            (0x0005, "SCSIRead"),
+            (0x0006, "SCSIWrite"),
+            (0x0008, "SCSIRBlind"),
+            (0x0009, "SCSIWBlind"),
+            (0x000A, "SCSIStat"),
+            (0x000B, "SCSISelAtn"),
+            (0x000C, "SCSIMsgIn"),
+            (0x000D, "SCSIMsgOut"),
+        ] {
+            let route = super::scsi_dispatch_operation_route(0xA815, selector)
+                .expect("SCSIDispatch operation route");
+            assert_eq!(route.routine_name, routine_name);
+            let carrier = if selector == 0 {
+                "stack-word-zero"
+            } else {
+                "stack-word-immediate"
+            };
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_SCSIDispatch:0x{selector:04X}:{carrier}:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA915, 0x0000),
+            (0xA814, 0x000D),
+            (0xA815, 0x0007), // no source/interface operation identity
+            (0xA815, 0x000E), // adjacent unassigned selector
+            (0xA815, 0x4267), // CLR.W -(SP) opcode spelling
+            (0xA815, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA815, 0x0100), // byte-swapped SCSIGet selector
+        ] {
+            assert!(super::scsi_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn scsi_dispatch_records_stack_word_identity_without_changing_complete_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for trap_word in [0xA815, 0xA915] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            bus.write_word(sp, 0x0004); // SCSIComplete
+            bus.write_long(sp + 2, 0x1111_2222); // wait
+            bus.write_long(sp + 6, 0x3333_4444); // message pointer
+            bus.write_long(sp + 10, 0x5555_6666); // stat pointer
+            bus.write_word(sp + 14, 0xBEEF); // OSErr result
+
+            let result = disp.dispatch_toolbox(true, 0x015, &mut cpu, &mut bus);
+            assert!(result.expect("SCSIDispatch arm").is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + 14);
+            assert_eq!(bus.read_word(sp + 14), 0);
+            assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+            assert_eq!(bus.read_long(sp + 2), 0x1111_2222);
+            assert_eq!(bus.read_long(sp + 6), 0x3333_4444);
+            assert_eq!(bus.read_long(sp + 10), 0x5555_6666);
+
+            let expected = (trap_word == 0xA815)
+                .then_some("selector-operation:_SCSIDispatch:0x0004:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+    }
+
+    #[test]
+    fn scsi_dispatch_undefined_selectors_raise_ds_core_err() {
+        // Inside Macintosh Volume V (1986), p. V-574, requires every
+        // undefined SCSIDispatch selector to invoke the System Error Handler
+        // with dsCoreErr (12).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for selector in [0x0007, 0x000E, 0xFFFF] {
+            disp.current_trap_word = 0xA815;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            bus.write_word(sp, selector);
+            bus.write_long(sp + 2, 0xDEAD_BEEF);
+            bus.write_word(addr::DS_ERR_CODE, 0xBEEF);
+
+            let result = disp
+                .dispatch_toolbox(true, 0x015, &mut cpu, &mut bus)
+                .expect("SCSIDispatch arm");
+            assert!(matches!(result, Err(crate::Error::Halted)));
+            assert_eq!(bus.read_word(addr::DS_ERR_CODE), 12);
+            assert_eq!(cpu.read_reg(Register::A7), sp);
+            assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+            assert_eq!(bus.read_long(sp + 2), 0xDEAD_BEEF);
+            assert_eq!(disp.current_selector_operation, None);
+        }
+    }
+
+    #[test]
     fn scsidispatch_selector_zero_returns_noerr_and_pops_selector_word() {
         // Inside Macintosh Volume IV (1986), pp. IV-287 to IV-300:
         // selector 0 (SCSIReset) is a word-selector dispatch entry.
@@ -20527,7 +20869,7 @@ mod tests {
     #[test]
     fn scsidispatch_selector_three_returns_noerr_and_pops_six_byte_argument_frame() {
         // Inside Macintosh Volume IV (1986), pp. IV-287 to IV-300:
-        // selector 3 (SCSICmd) consumes three 2-byte arguments.
+        // selector 3 (SCSICmd) consumes a 4-byte pointer and a 2-byte count.
         let (mut disp, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         cpu.write_reg(Register::D0, 0x0BAD_F00D);
@@ -23047,7 +23389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pbh_open_rf_prefers_io_dir_id_resource_fork() {
+    fn test_pbh_open_rf_async_prefers_io_dir_id_resource_fork() {
         let (mut disp, mut cpu, mut bus) = setup();
         let target_dir_id = disp.ensure_vfs_directory("Game/Target Data");
         disp.ensure_vfs_directory("Game/Other Data");
@@ -23064,7 +23406,7 @@ mod tests {
         bus.write_word(pb + 22, TrapDispatcher::boot_volume_ref_num_u16());
         bus.write_byte(pb + 27, 1); // fsRdPerm
         bus.write_long(pb + 48, target_dir_id);
-        disp.current_trap_word = 0xA20A; // PBHOpenRF
+        disp.current_trap_word = 0xA60A; // PBHOpenRFAsync
 
         let result = disp.dispatch_toolbox(false, 0x0A, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -23141,6 +23483,92 @@ mod tests {
             "Re-opening must not clobber the in-progress rsrc-fork \
              writes with the on-disk snapshot"
         );
+    }
+
+    #[test]
+    fn pack0_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK0_OPERATION_ROUTES.len(), 26);
+        assert!(super::PACK0_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "LActivate"),
+            (0x0004, "LAddColumn"),
+            (0x0008, "LAddRow"),
+            (0x000C, "LAddToCell"),
+            (0x0010, "LAutoScroll"),
+            (0x0014, "LCellSize"),
+            (0x0018, "LClick"),
+            (0x001C, "LClrCell"),
+            (0x0020, "LDelColumn"),
+            (0x0024, "LDelRow"),
+            (0x0028, "LDispose"),
+            (0x002C, "LSetDrawingMode"),
+            (0x0030, "LDraw"),
+            (0x0034, "LGetCellDataLocation"),
+            (0x0038, "LGetCell"),
+            (0x003C, "LGetSelect"),
+            (0x0040, "LLastClick"),
+            (0x0044, "LNew"),
+            (0x0048, "LNextCell"),
+            (0x004C, "LRect"),
+            (0x0050, "LScroll"),
+            (0x0054, "LSearch"),
+            (0x0058, "LSetCell"),
+            (0x005C, "LSetSelect"),
+            (0x0060, "LSize"),
+            (0x0064, "LUpdate"),
+        ] {
+            let route = super::pack0_operation_route(0xA9E7, selector).expect("Pack0 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9E8, 0x0000),
+            (0xA8E7, 0x0044),
+            (0xA9E7, 0x0002),
+            (0xA9E7, 0x3F3C),
+            (0xA9E7, 0x4400),
+        ] {
+            assert!(super::pack0_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack0_records_stack_carrier_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9E7;
+        bus.write_word(sp, 0x0000);
+        bus.write_long(sp + 2, 0);
+        bus.write_word(sp + 6, 0);
+
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack0:0x0000:stack-word-zero:16")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 0x0010);
+        bus.write_long(sp + 2, 0);
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack0:0x0010:stack-word-immediate:16")
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+
+        disp.current_trap_word = 0xA9E8;
+        cpu.write_reg(Register::A7, sp);
+        let result = disp.dispatch_toolbox(true, 0x1E7, &mut cpu, &mut bus);
+        assert!(result.expect("Pack0 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 6);
     }
 
     // Pack0 / List Manager ($A9E7) — LNew selector $0044
@@ -24882,6 +25310,89 @@ mod tests {
     // pp. 6-6/6-29/6-98, 5-18/5-71, and 7-12/7-66.
 
     #[test]
+    fn componentdispatch_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::COMPONENT_DISPATCH_OPERATION_ROUTES.len(), 26);
+        assert!(super::COMPONENT_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0001, "RegisterComponent"),
+            (0x0002, "UnregisterComponent"),
+            (0x0003, "CountComponents"),
+            (0x0004, "FindNextComponent"),
+            (0x0005, "GetComponentInfo"),
+            (0x0006, "GetComponentListModSeed"),
+            (0x0007, "OpenComponent"),
+            (0x0008, "CloseComponent"),
+            (0x000A, "GetComponentInstanceError"),
+            (0x000B, "SetComponentInstanceError"),
+            (0x000C, "GetComponentInstanceStorage"),
+            (0x000D, "SetComponentInstanceStorage"),
+            (0x000E, "GetComponentInstanceA5"),
+            (0x000F, "SetComponentInstanceA5"),
+            (0x0010, "GetComponentRefcon"),
+            (0x0011, "SetComponentRefcon"),
+            (0x0012, "RegisterComponentResource"),
+            (0x0013, "CountComponentInstances"),
+            (0x0014, "RegisterComponentResourceFile"),
+            (0x0015, "OpenComponentResFile"),
+            (0x0018, "CloseComponentResFile"),
+            (0x001C, "CaptureComponent"),
+            (0x001D, "UncaptureComponent"),
+            (0x001E, "SetDefaultComponent"),
+            (0x0021, "OpenDefaultComponent"),
+            (0x0024, "DelegateComponentCall"),
+        ] {
+            let route = super::component_dispatch_operation_route(0xA82A, selector)
+                .expect("ComponentDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA92A, 0x0003),
+            (0xA82A, 0x0000),
+            (0xA82A, 0x0009),
+            (0xA82A, 0x002C),
+            (0xA82A, 0x7003),
+            (0xA82A, 0x1234_0003),
+            (0xA82A, 0x0000_FFFF),
+            (0xA82A, 0xFFFF_FFFF),
+        ] {
+            assert!(super::component_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn componentdispatch_records_exact_internal_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA82A;
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
+        assert!(result.expect("ComponentDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_ComponentDispatch:0x0003:d0-moveq-immediate:8")
+        );
+        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA92A;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
+        assert!(result.expect("ComponentDispatch arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(bus.read_long(sp + 4), 1);
+    }
+
+    #[test]
     fn componentdispatch_call_path_pops_selector_instance_and_args_and_returns_noerr() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
@@ -25032,11 +25543,60 @@ mod tests {
     }
 
     #[test]
-    fn pack13_initdbpack_selector_returns_noerr_and_preserves_stack() {
+    fn pack13_generated_routes_preserve_exact_d0_low_word_values() {
+        assert_eq!(super::PACK13_OPERATION_ROUTES.len(), 22);
+        assert!(super::PACK13_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0100, "InitDBPack"),
+            (0x020E, "DBKill"),
+            (0x0210, "DBDisposeQuery"),
+            (0x0215, "DBRemoveResultHandler"),
+            (0x030F, "DBGetNewQuery"),
+            (0x0403, "DBEnd"),
+            (0x0408, "DBExec"),
+            (0x0409, "DBState"),
+            (0x040D, "DBUnGetItem"),
+            (0x0413, "DBResultsToText"),
+            (0x050B, "DBBreak"),
+            (0x0514, "DBInstallResultHandler"),
+            (0x0516, "DBGetResultHandler"),
+            (0x0605, "DBGetSessionNum"),
+            (0x0706, "DBSend"),
+            (0x0811, "DBStartQuery"),
+            (0x0A12, "DBGetQueryResults"),
+            (0x0B07, "DBSendItem"),
+            (0x0E02, "DBInit"),
+            (0x0E0A, "DBGetErr"),
+            (0x100C, "DBGetItem"),
+            (0x1704, "DBGetConnInfo"),
+        ] {
+            let route =
+                super::pack13_operation_route(0xA82F, selector).expect("Pack13 operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA830, 0x0100),
+            (0xA72F, 0x1704),
+            (0xA82F, 0x00FF),
+            (0xA82F, 0x303C),
+            (0xA82F, 0x0001),
+            (0xA82F, 0x000E),
+        ] {
+            assert!(super::pack13_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack13_records_d0_low_word_identity_without_changing_behavior() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        disp.current_trap_word = 0xA82F;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_0100); // InitDBPack selector
+        cpu.write_reg(Register::D0, 0xBEEF_0100); // stale high word + InitDBPack
         bus.write_long(sp, 0x1122_3344); // sentinel stack word
 
         let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
@@ -25057,6 +25617,18 @@ mod tests {
             0x1122_3344,
             "Pack13 selector-only call should not touch the stack frame"
         );
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack13:0x0100:d0-low-word-immediate:16")
+        );
+
+        disp.current_trap_word = 0xA830;
+        cpu.write_reg(Register::D0, 0x0000_0100);
+        let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+        assert!(result.expect("Pack13 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), 0x1122_3344);
     }
 
     #[test]
@@ -26817,12 +27389,129 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    #[test]
+    fn pack6_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK6_OPERATION_ROUTES.len(), 9);
+        assert!(super::PACK6_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x000E, "DateString"),
+            (0x0010, "TimeString"),
+            (0x0014, "LongDateString"),
+            (0x0016, "LongTimeString"),
+            (0x001A, "CompareText"),
+            (0x001C, "IdenticalText"),
+            (0x001E, "ScriptOrder"),
+            (0x0020, "LanguageOrder"),
+            (0x0022, "TextOrder"),
+        ] {
+            let route =
+                super::pack6_operation_route(0xA9ED, selector).expect("Pack6 operation route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack6:0x{selector:04X}:stack-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA8ED, 0x000E),
+            (0xADED, 0x000E), // same slot with a different raw trap form
+            (0xA9EC, 0x0022),
+            (0xA9E5, 0x000E), // InitPack is a distinct trap
+            (0xA9ED, 0x0000), // outside generated slice: IUDateString
+            (0xA9ED, 0x0002), // outside generated slice: IUTimeString
+            (0xA9ED, 0x0004), // outside generated slice: IUMetric / IsMetric
+            (0xA9ED, 0x0006), // outside generated slice: IUGetIntl / GetIntlResource
+            (0xA9ED, 0x0008), // outside generated slice: IUSetIntl / SetIntlResource
+            (0xA9ED, 0x000A), // outside generated slice: IUMagString
+            (0xA9ED, 0x000C), // outside generated slice: IUMagIDString
+            (0xA9ED, 0x0012), // unassigned gap
+            (0xA9ED, 0x0018), // outside generated slice: IUClearCache
+            (0xA9ED, 0x0024), // outside generated slice: IUGetItlTable
+            (0xA9ED, 0x0028), // TypeSelect glue is outside the manual intersection
+            (0xA9ED, 0x000F), // odd adjacent value
+            (0xA9ED, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA9ED, 0x0E00), // byte-swapped DateString selector
+        ] {
+            assert!(super::pack6_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack6_records_stack_word_identity_without_changing_script_order_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for trap_word in [0xA9ED, 0xADED] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::A0, 0x1234_0000);
+            cpu.write_reg(Register::A1, 0x1234_0001);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            cpu.write_reg(Register::D1, 0x1234_0002);
+            bus.write_word(sp, 0x001E); // ScriptOrder
+            bus.write_word(sp + 2, 5); // script2
+            bus.write_word(sp + 4, 2); // script1
+            bus.write_word(sp + 6, 0xBEEF); // Integer result
+            bus.write_long(sp + 8, 0xCAFE_BABE); // adjacent stack poison
+
+            let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+            assert!(result.expect("Pack6 arm").is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+            assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+            assert_eq!(cpu.read_reg(Register::D0), 0x0000_FFFF);
+            assert_eq!(cpu.read_reg(Register::A0), 0x1234_0000);
+            assert_eq!(cpu.read_reg(Register::A1), 0x1234_0001);
+            assert_eq!(cpu.read_reg(Register::D1), 0x1234_0002);
+            assert_eq!(bus.read_word(sp + 2), 5);
+            assert_eq!(bus.read_word(sp + 4), 2);
+            assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+
+            let expected = (trap_word == 0xA9ED)
+                .then_some("selector-operation:_Pack6:0x001E:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+    }
+
+    #[test]
+    fn pack6_unknown_selector_clears_known_identity_without_touching_its_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9ED;
+
+        bus.write_word(sp, 0x001E); // ScriptOrder
+        bus.write_word(sp + 2, 5);
+        bus.write_word(sp + 4, 2);
+        bus.write_word(sp + 6, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+        assert!(result.expect("Pack6 ScriptOrder arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack6:0x001E:stack-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        bus.write_word(sp, 0x0012); // unassigned gap
+        bus.write_bytes(sp + 2, &[0xA5; 16]);
+        let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+        assert!(result.expect("Pack6 unknown-selector fallback").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(sp + 2, 16), vec![0xA5; 16]);
+    }
+
     // Pack6 / Intl Utilities ($A9ED) — IUMetric selector $0004
     // IM:I I-505: returns TRUE when metric, otherwise FALSE.
     #[test]
     fn iumetric_returns_false_in_result_slot_and_pops_selector_only() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        disp.current_trap_word = 0xA9ED;
         bus.write_word(sp, 0x0004); // IUMetric selector
         bus.write_word(sp + 2, 0xFFFF); // Boolean result slot
 
@@ -26833,6 +27522,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 2), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     // Pack6 / Intl Utilities ($A9ED) — IUGetIntl selector $0006.
@@ -27357,6 +28047,78 @@ mod tests {
     // Inside Macintosh: More Macintosh Toolbox 1993, pp. 3-109 to 3-111;
     // selector table p. 3-173.
     #[test]
+    fn pack14_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK14_OPERATION_ROUTES.len(), 21);
+        assert!(super::PACK14_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0002, "HMRemoveBalloon"),
+            (0x0003, "HMGetBalloons"),
+            (0x0007, "HMIsBalloon"),
+            (0x0104, "HMSetBalloons"),
+            (0x0108, "HMSetFont"),
+            (0x0109, "HMSetFontSize"),
+            (0x010C, "HMSetDialogResID"),
+            (0x0200, "HMGetHelpMenuHandle"),
+            (0x020A, "HMGetFont"),
+            (0x020B, "HMGetFontSize"),
+            (0x020D, "HMSetMenuResID"),
+            (0x0213, "HMGetDialogResID"),
+            (0x0215, "HMGetBalloonWindow"),
+            (0x0314, "HMGetMenuResID"),
+            (0x040E, "HMBalloonRect"),
+            (0x040F, "HMBalloonPict"),
+            (0x0410, "HMScanTemplateItems"),
+            (0x0711, "HMExtractHelpMsg"),
+            (0x0B01, "HMShowBalloon"),
+            (0x0E05, "HMShowMenuBalloon"),
+            (0x1306, "HMGetIndHelpMsg"),
+        ] {
+            let route = super::pack14_operation_route(0xA830, selector).expect("Pack14 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA930, 0x0104),
+            (0xA830, 0x0000),
+            (0xA830, 0x0105),
+            (0xA830, 0x303C),
+        ] {
+            assert!(super::pack14_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack14_records_low_word_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA830;
+        cpu.write_reg(Register::D0, 0xABCD_0104);
+        bus.write_word(sp, 1);
+        bus.write_word(sp + 2, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.expect("Pack14 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack14:0x0104:d0-low-word-immediate:16")
+        );
+        assert_eq!(bus.read_word(sp + 2), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+
+        disp.current_trap_word = 0xA930;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0104);
+        bus.write_word(sp, 1);
+        bus.write_word(sp + 2, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x030, &mut cpu, &mut bus);
+        assert!(result.expect("Pack14 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
+    #[test]
     fn pack14_hmgethelpmenuhandle_writes_nil_and_returns_hmhelpmanagernotinited() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
@@ -27487,6 +28249,52 @@ mod tests {
         assert_eq!(bus.read_word(dst_ptr + 2), 0x2468);
         assert_eq!(bus.read_word(dst_ptr + 4), 0x2468);
         assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+    }
+
+    #[test]
+    fn aliasdispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(ALIAS_DISPATCH_OPERATION_ROUTES.len(), 7);
+        assert!(ALIAS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let new_alias = alias_dispatch_operation_route(0xA823, 0x0002).expect("NewAlias route");
+        assert_eq!(new_alias.routine_name, "NewAlias");
+        assert_eq!(
+            new_alias.operation_id,
+            "selector-operation:_AliasDispatch:0x0002:d0-moveq-immediate:8"
+        );
+
+        assert!(alias_dispatch_operation_route(0xA823, 0x7002).is_none());
+        assert!(alias_dispatch_operation_route(0xA823, 0x0001_0002).is_none());
+        assert!(alias_dispatch_operation_route(0xAA23, 0x0002).is_none());
+    }
+
+    #[test]
+    fn aliasdispatch_records_every_generated_operation_and_rejects_opcode_spelling() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in ALIAS_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            bus.write_bytes(TEST_SP, &[0; 32]);
+            let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+            assert!(result.is_some());
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x7002);
+        bus.write_bytes(TEST_SP, &[0; 32]);
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert_eq!(disp.current_selector_operation, None);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001_0002);
+        bus.write_bytes(TEST_SP, &[0; 32]);
+        let result = disp.dispatch_toolbox(true, 0x023, &mut cpu, &mut bus);
+        assert!(result.is_some());
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     // AliasDispatch ($A823) / selector $0000 FindFolder
@@ -27781,6 +28589,111 @@ mod tests {
     // Pack8 / Apple Events ($A816)
     // Inside Macintosh: Interapplication Communication 1993:
     // AEInstallEventHandler pp.4-62..4-64, AEProcessAppleEvent pp.4-66..4-67.
+
+    #[test]
+    fn pack8_generated_routes_preserve_exact_word_values() {
+        assert_eq!(super::PACK8_OPERATION_ROUTES.len(), 54);
+        assert!(super::PACK8_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x011E, "AESetInteractionAllowed"),
+            (0x0204, "AEDisposeDesc"),
+            (0x0219, "AEResetTimer"),
+            (0x021A, "AEGetTheCurrentEvent"),
+            (0x021B, "AEProcessAppleEvent"),
+            (0x021D, "AEGetInteractionAllowed"),
+            (0x022B, "AESuspendTheCurrentEvent"),
+            (0x022C, "AESetTheCurrentEvent"),
+            (0x023A, "AEDisposeToken"),
+            (0x0405, "AEDuplicateDesc"),
+            (0x0407, "AECountItems"),
+            (0x040E, "AEDeleteItem"),
+            (0x0413, "AEDeleteParam"),
+            (0x0441, "AEManagerInfo"),
+            (0x0500, "AEInstallSpecialHandler"),
+            (0x0501, "AERemoveSpecialHandler"),
+            (0x052D, "AEGetSpecialHandler"),
+            (0x0536, "AEResolve"),
+            (0x0603, "AECoerceDesc"),
+            (0x0609, "AEPutDesc"),
+            (0x0610, "AEPutParamDesc"),
+            (0x061C, "AEInteractWithUser"),
+            (0x0627, "AEPutAttributeDesc"),
+            (0x0706, "AECreateList"),
+            (0x0720, "AERemoveEventHandler"),
+            (0x0723, "AERemoveCoercionHandler"),
+            (0x0738, "AERemoveObjectAccessor"),
+            (0x0812, "AEGetParamDesc"),
+            (0x0818, "AEResumeTheCurrentEvent"),
+            (0x0825, "AECreateDesc"),
+            (0x0826, "AEGetAttributeDesc"),
+            (0x0828, "AESizeOfAttribute"),
+            (0x0829, "AESizeOfParam"),
+            (0x082A, "AESizeOfNthItem"),
+            (0x091F, "AEInstallEventHandler"),
+            (0x0921, "AEGetEventHandler"),
+            (0x0937, "AEInstallObjectAccessor"),
+            (0x0939, "AEGetObjectAccessor"),
+            (0x0A02, "AECoercePtr"),
+            (0x0A08, "AEPutPtr"),
+            (0x0A0B, "AEGetNthDesc"),
+            (0x0A0F, "AEPutParamPtr"),
+            (0x0A16, "AEPutAttributePtr"),
+            (0x0A22, "AEInstallCoercionHandler"),
+            (0x0B0D, "AEPutArray"),
+            (0x0B14, "AECreateAppleEvent"),
+            (0x0B24, "AEGetCoercionHandler"),
+            (0x0C3B, "AECallObjectAccessor"),
+            (0x0D0C, "AEGetArray"),
+            (0x0D17, "AESend"),
+            (0x0E11, "AEGetParamPtr"),
+            (0x0E15, "AEGetAttributePtr"),
+            (0x0E35, "AESetObjectCallbacks"),
+            (0x100A, "AEGetNthPtr"),
+        ] {
+            let route = super::pack8_operation_route(0xA816, selector).expect("Pack8 route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA916, 0x091F),
+            (0xA816, 0x081F),
+            (0xA816, 0x0920),
+            (0xA816, 0x303C),
+            (0xA816, crate::trap::dispatch::LOADSEG_GETRESOURCE_SENTINEL),
+            (0xA816, 0xFEFE),
+        ] {
+            assert!(super::pack8_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack8_records_low_word_identity_and_rejects_wrong_trap() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA816;
+        cpu.write_reg(Register::D0, 0xABCD_0720);
+        for offset in 0..14 {
+            bus.write_byte(sp + offset, 0);
+        }
+        bus.write_word(sp + 14, 0xBEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.expect("Pack8 arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack8:0x0720:d0-low-word-immediate:16")
+        );
+
+        disp.current_trap_word = 0xA916;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0720);
+        let result = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(result.expect("Pack8 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
 
     #[test]
     fn pack8_unhandled_selector_pops_param_words_and_returns_noerr() {
@@ -29605,6 +30518,82 @@ mod tests {
         bus.write_long(sp + 24, text_len);
         bus.write_long(sp + 28, text_ptr);
         bus.write_word(sp + 32, 0xBEEF); // StyledLineBreakCode result
+    }
+
+    #[test]
+    fn script_util_generated_routes_preserve_exact_stack_long_values() {
+        assert_eq!(super::SCRIPT_UTIL_OPERATION_ROUTES.len(), 21);
+        assert!(super::SCRIPT_UTIL_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x800E_001C, "HiliteText"),
+            (0x8012_FFE2, "NFindWord"),
+            (0x8012_FFFC, "GetFormatOrder"),
+            (0x8204_0022, "ParseTable"),
+            (0x8204_FFF8, "InitDateCache"),
+            (0x8204_FFFA, "IntlTokenize"),
+            (0x8208_FFE0, "TruncString"),
+            (0x820C_0026, "FindScriptRun"),
+            (0x820C_FFDE, "TruncText"),
+            (0x820C_FFE4, "ValidDate"),
+            (0x820C_FFEC, "StringToFormatRec"),
+            (0x820E_FFEE, "ToggleDate"),
+            (0x8210_FFE6, "StringToExtended"),
+            (0x8210_FFE8, "ExtendedToString"),
+            (0x8210_FFEA, "FormatRecToString"),
+            (0x8214_FFF4, "StringToTime"),
+            (0x8214_FFF6, "StringToDate"),
+            (0x821C_FFFE, "StyledLineBreak"),
+            (0x8408_0024, "PortionText"),
+            (0x8408_0028, "VisibleLength"),
+            (0xC012_001A, "FindWordBreaks"),
+        ] {
+            let route = super::script_util_operation_route(0xA8B5, selector)
+                .expect("ScriptUtil operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA9B5, 0x800E_001C),
+            (0xA8B4, 0xC012_001A),
+            (0xA8B5, 0x820C_FFDC), // manual-only ReplaceText identity
+            (0xA8B5, 0x8206_0010), // non-intersection CharacterByteType glue
+            (0xA8B5, 0x1C00_0E80), // byte-swapped HiliteText selector
+            (0xA8B5, 0x0000_001C), // legacy low-byte HiliteText selector
+            (0xA8B5, 0x0000_800E), // partial selector halfword
+        ] {
+            assert!(super::script_util_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn script_util_records_stack_long_identity_without_changing_hilite_text_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let offsets_ptr = 0x362000u32;
+
+        for trap_word in [0xA8B5, 0xA9B5] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(sp, 0x800E_001C); // HiliteText
+            bus.write_long(sp + 4, offsets_ptr);
+            bus.write_word(sp + 8, 8); // secondOffset
+            bus.write_word(sp + 10, 2); // firstOffset
+            bus.write_word(sp + 12, 12); // textLength
+            bus.write_long(sp + 14, 0x363000); // textPtr
+            bus.write_bytes(offsets_ptr, &[0xA5; 12]);
+
+            let result = disp.dispatch_toolbox(true, 0x0B5, &mut cpu, &mut bus);
+            assert!(result.expect("ScriptUtil arm").is_ok());
+            assert_eq!(bus.read_bytes(offsets_ptr, 12), vec![0; 12]);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 18);
+
+            let expected = (trap_word == 0xA8B5)
+                .then_some("selector-operation:_ScriptUtil:0x800E001C:stack-long-immediate:32");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
     }
 
     // ScriptUtil ($A8B5) selector 0 FontScript

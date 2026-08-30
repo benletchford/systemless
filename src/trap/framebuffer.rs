@@ -3,9 +3,14 @@
 use std::{collections::HashSet, sync::OnceLock};
 
 use crate::memory::{MacMemoryBus, MemoryBus};
+use crate::menu_manager::{
+    for_each_standard_menu_bar_corner_pixel, is_standard_system_menu_title,
+    standard_menu_bar_system_mark_top, standard_menu_bar_title_baseline,
+    standard_menu_title_advance, TrackedMenuPaneView,
+};
 use crate::quickdraw::fonts::{heuristics::get_italic_slant, Glyph};
 use crate::quickdraw::text::{
-    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness,
+    get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
 use crate::ui_theme::{
     CaretState, ControlKind, ControlState, DialogFrameKind, DialogFrameState, MenuBarState,
@@ -24,21 +29,7 @@ fn no_visrgn_auto_expand_enabled() -> bool {
         .get_or_init(|| std::env::var_os("SYSTEMLESS_NO_VISRGN_AUTO_EXPAND").is_some())
 }
 
-// MTE 1992 p. 3-60 defines the low-order `Style` byte bit assignments:
-// bold, italic, underline, outline, shadow, condensed, and extended.
-const TEXT_STYLE_BOLD: u8 = 0x01;
-const TEXT_STYLE_ITALIC: u8 = 0x02;
-const TEXT_STYLE_UNDERLINE: u8 = 0x04;
-const TEXT_STYLE_OUTLINE: u8 = 0x08;
-const TEXT_STYLE_SHADOW: u8 = 0x10;
-const TEXT_STYLE_CONDENSE: u8 = 0x20;
-const TEXT_STYLE_EXTEND: u8 = 0x40;
 const STANDARD_GRAY_PATTERN: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
-/// Menu bar cell width for the system menu's mark title, matching the
-/// Chicago 12 mark advance System 7.5.3 lays the bar out with. See
-/// `TrapDispatcher::menu_title_advance`.
-const SYSTEM_MENU_MARK_TITLE_ADVANCE: i16 = 11;
-
 impl super::TrapDispatcher {
     /// Read screen parameters from the dispatcher's screen_mode.
     /// Returns (screen_base, row_bytes, width, height, pixel_size).
@@ -850,6 +841,7 @@ impl super::TrapDispatcher {
     /// express an intermediate shade. Callers treat `None` the same way
     /// the standard definition procedures treat that FALSE: fall back to
     /// the 50% grey pattern.
+    #[cfg(test)]
     fn fb_gray_pixel_index_between_in_ctab(
         bus: &MacMemoryBus,
         ctab: u32,
@@ -877,15 +869,6 @@ impl super::TrapDispatcher {
         foreground: [u16; 3],
     ) -> Option<u8> {
         let ctab = Self::active_gdevice_ctab(bus)?;
-        Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
-    }
-
-    pub(crate) fn fb_main_screen_gray_pixel_index_between(
-        bus: &MacMemoryBus,
-        background: [u16; 3],
-        foreground: [u16; 3],
-    ) -> Option<u8> {
-        let ctab = Self::main_gdevice_ctab(bus)?;
         Self::fb_gray_pixel_index_between_in_ctab(bus, ctab, background, foreground)
     }
 
@@ -1722,7 +1705,7 @@ impl super::TrapDispatcher {
             glyph,
             data,
             None,
-            0,
+            QuickDrawTextStyle::plain(),
             None,
             true,
         );
@@ -1796,7 +1779,7 @@ impl super::TrapDispatcher {
         glyph: &Glyph,
         data: &[u8],
         synthetic_italic: Option<(i16, i16)>,
-        style: u8,
+        style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
     ) {
@@ -1805,9 +1788,7 @@ impl super::TrapDispatcher {
         let gw = glyph.width as usize;
         let gh = glyph.height as usize;
         // Unslanted, unstretched glyphs on an 8-bit screen go row by row.
-        if pixel_size == 8
-            && synthetic_italic.is_none()
-            && (style & (TEXT_STYLE_EXTEND | TEXT_STYLE_CONDENSE)) == 0
+        if pixel_size == 8 && synthetic_italic.is_none() && !style.extended() && !style.condensed()
         {
             let index = pixel_index_override.unwrap_or_else(|| {
                 if black {
@@ -1855,11 +1836,11 @@ impl super::TrapDispatcher {
                             get_italic_slant(*font_id, *font_size, metrics, y, py)
                         })
                         .unwrap_or(0);
-                    let (dst_start, dst_end) = if (style & TEXT_STYLE_EXTEND) != 0 {
+                    let (dst_start, dst_end) = if style.extended() {
                         let start = (col as i16 * 4) / 3;
                         let end = (((col as i16 + 1) * 4) / 3).max(start + 1);
                         (start, end)
-                    } else if (style & TEXT_STYLE_CONDENSE) != 0 {
+                    } else if style.condensed() {
                         let start = (col as i16 * 3) / 4;
                         (start, start + 1)
                     } else {
@@ -1944,7 +1925,7 @@ impl super::TrapDispatcher {
         glyph: &Glyph,
         data: &[u8],
         synthetic_italic: Option<(i16, i16)>,
-        style: u8,
+        style: QuickDrawTextStyle,
     ) -> HashSet<(i16, i16)> {
         let gx = x + glyph.origin_x as i16;
         let gy = y + glyph.origin_y as i16;
@@ -1974,7 +1955,7 @@ impl super::TrapDispatcher {
                 for dst_col in dst_start..dst_end {
                     let px = gx + dst_col + slant;
                     pixels.insert((px, py));
-                    if (style & TEXT_STYLE_BOLD) != 0 {
+                    if style.bold() {
                         pixels.insert((px + 1, py));
                     }
                 }
@@ -1982,31 +1963,6 @@ impl super::TrapDispatcher {
         }
 
         pixels
-    }
-
-    fn fb_styled_glyph_advance(glyph: &Glyph, style: u8) -> i16 {
-        let mut advance = glyph.advance as i16;
-        if (style & TEXT_STYLE_BOLD) != 0 {
-            // Menu item styles follow the classic Style bitset; the
-            // System 7 MDEF renders bold item names with the synthetic
-            // one-pixel strike and matching one-pixel pen advance while
-            // CalcMenuSize keeps plain guest metrics. MTE 1992 pp. 3-133
-            // to 3-134.
-            advance += 1;
-        }
-        if (style & TEXT_STYLE_OUTLINE) != 0 {
-            advance += 1;
-        }
-        if (style & TEXT_STYLE_SHADOW) != 0 {
-            advance += 2;
-        }
-        if (style & TEXT_STYLE_CONDENSE) != 0 && advance >= 6 {
-            advance -= 1;
-        }
-        if (style & TEXT_STYLE_EXTEND) != 0 {
-            advance += 1;
-        }
-        advance.max(1)
     }
 
     fn fb_draw_char_styled(
@@ -2021,12 +1977,11 @@ impl super::TrapDispatcher {
         ch: char,
         font_id: i16,
         font_size: i16,
-        style: u8,
+        style: QuickDrawTextStyle,
         pixel_index_override: Option<u8>,
         black: bool,
     ) -> i16 {
-        let italic = (style & TEXT_STYLE_ITALIC) != 0;
-        let (glyph_hit, synthetic_italic) = if italic {
+        let (glyph_hit, synthetic_italic) = if style.italic() {
             if let Some(hit) = get_glyph_italic(font_id, font_size, ch) {
                 (Some(hit), None)
             } else {
@@ -2046,13 +2001,7 @@ impl super::TrapDispatcher {
         // Without a per-glyph style bit the styled painter's pixel set is
         // exactly the glyph bitmap; on an 8-bit screen let the row painter
         // write it instead of building the set.
-        const PER_GLYPH_STYLE: u8 = TEXT_STYLE_BOLD
-            | TEXT_STYLE_ITALIC
-            | TEXT_STYLE_OUTLINE
-            | TEXT_STYLE_SHADOW
-            | TEXT_STYLE_CONDENSE
-            | TEXT_STYLE_EXTEND;
-        if pixel_size == 8 && (style & PER_GLYPH_STYLE) == 0 {
+        if pixel_size == 8 && !style.has_per_glyph_effect() {
             Self::fb_draw_glyph_bitmap_with_slant(
                 bus,
                 screen_base,
@@ -2065,22 +2014,19 @@ impl super::TrapDispatcher {
                 glyph,
                 data,
                 None,
-                0,
+                QuickDrawTextStyle::plain(),
                 pixel_index_override,
                 black,
             );
-            return Self::fb_styled_glyph_advance(glyph, style);
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or(i16::MAX);
         }
 
-        let glyph_y = if (style & TEXT_STYLE_SHADOW) != 0 {
-            y - 1
-        } else {
-            y
-        };
+        let glyph_y = y.saturating_add(style.glyph_y_offset() as i16);
         let base_pixels =
             Self::fb_styled_glyph_base_pixels(x, glyph_y, glyph, data, synthetic_italic, style);
 
-        if (style & (TEXT_STYLE_OUTLINE | TEXT_STYLE_SHADOW)) == 0 {
+        let Some(smear_max) = style.smear_max() else {
             for (px, py) in base_pixels.iter().copied() {
                 Self::fb_set_styled_text_pixel(
                     bus,
@@ -2095,20 +2041,15 @@ impl super::TrapDispatcher {
                     black,
                 );
             }
-            return Self::fb_styled_glyph_advance(glyph, style);
-        }
+            return i16::try_from(style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or(i16::MAX);
+        };
 
         // QuickDraw outlines/shadows text by smearing a 1-bit glyph mask,
         // then XORing the original glyph out of the result. That produces
         // hollow outline and shadow faces instead of drawing offset filled
         // glyph copies.
-        let smear_max = if (style & TEXT_STYLE_SHADOW) != 0 && (style & TEXT_STYLE_OUTLINE) != 0 {
-            3
-        } else if (style & TEXT_STYLE_SHADOW) != 0 {
-            2
-        } else {
-            1
-        };
+        let smear_max = i16::try_from(smear_max).unwrap_or(1);
         let min_x = base_pixels.iter().map(|(px, _)| *px).min().unwrap_or(x) - 1;
         let max_x = base_pixels.iter().map(|(px, _)| *px).max().unwrap_or(x) + smear_max;
         let min_y = base_pixels.iter().map(|(_, py)| *py).min().unwrap_or(y) - 1;
@@ -2145,7 +2086,7 @@ impl super::TrapDispatcher {
             }
         }
 
-        Self::fb_styled_glyph_advance(glyph, style)
+        i16::try_from(style.glyph_advance(i32::from(glyph.advance))).unwrap_or(i16::MAX)
     }
 
     /// Draw a string to the framebuffer, return total width
@@ -2404,6 +2345,7 @@ impl super::TrapDispatcher {
         pixel_index_override: Option<u8>,
         black: bool,
     ) -> i16 {
+        let style = QuickDrawTextStyle::from_bits(style);
         let mut cx = x;
         for ch in s.chars() {
             cx += Self::fb_draw_char_styled(
@@ -2424,7 +2366,7 @@ impl super::TrapDispatcher {
             );
         }
 
-        if (style & TEXT_STYLE_UNDERLINE) != 0 && cx > x {
+        if style.underline() && cx > x {
             let thickness = get_underline_thickness(font_id, font_size).max(1);
             for dy in 1..=thickness {
                 if let Some(pixel_index) = pixel_index_override {
@@ -2567,19 +2509,21 @@ impl super::TrapDispatcher {
         // Draw visible menu titles from the current menu list. InsertMenu
         // with beforeID=-1 installs a submenu/popup in the current menu
         // list without adding a menu-bar title. MTE 1992, p. 3-121.
-        let mut x: i16 = 18;
-        for menu in &self.menus {
-            if !menu.visible_in_menu_bar {
+        for (menu_idx, region) in self.current_menu_title_regions_with_indices(bus) {
+            let Some(menu) = self.menus.get(menu_idx) else {
                 continue;
-            }
+            };
             let title = &menu.title;
             let title_width = Self::menu_title_advance(title);
+            let x = region.title_origin();
             let title_bg_index = self.menu_title_background_pixel_index(bus, menu.id, pixel_size);
             if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
                 // StandardMBDF establishes each title's RGB1/RGB2 pair and
                 // erases the complete title cell to RGB2 before drawing its
                 // text. This cell is also the rectangle later reversed by
                 // HiliteMenu. IM:V 1986 pp. V-232 and V-252 to V-253.
+                let (cell_top, cell_left, cell_bottom, cell_right) =
+                    region.highlighted_rect(menu_bar_height);
                 if let Some(bg_index) = title_bg_index {
                     Self::fb_fill_rect_index(
                         bus,
@@ -2588,10 +2532,10 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        1,
-                        x - 9,
-                        menu_bar_height - 1,
-                        x + title_width + 9,
+                        cell_top,
+                        cell_left,
+                        cell_bottom,
+                        cell_right,
                         bg_index,
                     );
                 } else {
@@ -2602,10 +2546,10 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        1,
-                        x - 9,
-                        menu_bar_height - 1,
-                        x + title_width + 9,
+                        cell_top,
+                        cell_left,
+                        cell_bottom,
+                        cell_right,
                         false,
                     );
                 }
@@ -2617,9 +2561,9 @@ impl super::TrapDispatcher {
             self.draw_theme_menu_title_chrome(
                 bus,
                 1,
-                x - 7,
+                region.left,
                 menu_bar_height - 1,
-                x + title_width + 6,
+                region.right,
                 menu.enabled,
                 false,
             );
@@ -2700,13 +2644,15 @@ impl super::TrapDispatcher {
                     false,
                 );
             }
-            x += width + 13;
+        }
+
+        if let Some(menu_idx) = self.current_menu_bar_highlight_index(bus) {
+            self.highlight_menu_title(bus, menu_idx);
         }
     }
 
     pub(super) fn is_system_menu_mark_title(title: &str) -> bool {
-        let mut chars = title.chars();
-        matches!(chars.next(), Some('\u{14}' | '\u{F8FF}')) && chars.next().is_none()
+        is_standard_system_menu_title(&super::menu::internal_menu_string_bytes(title))
     }
 
     /// Width the menu bar reserves for one menu title.
@@ -2721,18 +2667,12 @@ impl super::TrapDispatcher {
     /// font catalogue changed, and would crowd the artwork against the next
     /// title's highlight rectangle.
     pub(crate) fn menu_title_advance(title: &str) -> i16 {
-        if Self::is_system_menu_mark_title(title) {
-            SYSTEM_MENU_MARK_TITLE_ADVANCE
-        } else {
-            Self::fb_measure_string(title, 0, 12)
-        }
+        standard_menu_title_advance(&super::menu::internal_menu_string_bytes(title))
     }
 
     fn menu_bar_title_baseline(menu_bar_height: i16) -> i16 {
         let metrics = get_font_metrics(0, 12);
-        // Vertically center text: baseline = top margin + ascent.
-        let text_height = metrics.ascent + metrics.descent;
-        (menu_bar_height - text_height) / 2 + metrics.ascent
+        standard_menu_bar_title_baseline(menu_bar_height, metrics.ascent, metrics.descent)
     }
 
     pub(super) fn fb_draw_retro_computer_menu_mark(
@@ -2761,9 +2701,8 @@ impl super::TrapDispatcher {
         // 20-pixel bar while following a live MBarHeight. Clip to the menu
         // bar interior so a short bar cannot paint the window/desktop below.
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let top = Self::menu_bar_title_baseline(menu_bar_height)
-            .saturating_sub(metrics.ascent)
-            .saturating_add(1);
+        let top =
+            standard_menu_bar_system_mark_top(menu_bar_height, metrics.ascent, metrics.descent);
         let menu_bar_bottom = menu_bar_height.saturating_sub(1).max(0);
         for (dy, row) in crate::ui_art::RETRO_COMPUTER_MENU_MARK_PIXELS
             .into_iter()
@@ -2879,53 +2818,34 @@ impl super::TrapDispatcher {
         screen_width: i16,
         screen_height: i16,
     ) {
-        // The standard menu bar stamps the classic rounded screen-corner
-        // mask when drawn at the top edge. IM:I I-354 defines DrawMenuBar
-        // as the routine that redraws the current menu bar.
-        const LEFT: &[(i16, i16)] = &[
-            (0, 0),
-            (1, 0),
-            (2, 0),
-            (3, 0),
-            (4, 0),
-            (0, 1),
-            (1, 1),
-            (2, 1),
-            (0, 2),
-            (1, 2),
-            (0, 3),
-            (0, 4),
-        ];
         let black_index = Self::menu_standard_pixel_index(bus, pixel_size, true);
-        for &(x, y) in LEFT {
-            for dst_x in [x, screen_width - 1 - x] {
-                if let Some(pixel_index) = black_index {
-                    Self::fb_set_pixel_index(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        dst_x,
-                        y,
-                        pixel_index,
-                    );
-                } else {
-                    Self::fb_set_pixel(
-                        bus,
-                        screen_base,
-                        row_bytes,
-                        pixel_size,
-                        screen_width,
-                        screen_height,
-                        dst_x,
-                        y,
-                        true,
-                    );
-                }
+        for_each_standard_menu_bar_corner_pixel(screen_width, |x, y| {
+            if let Some(pixel_index) = black_index {
+                Self::fb_set_pixel_index(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    pixel_index,
+                );
+            } else {
+                Self::fb_set_pixel(
+                    bus,
+                    screen_base,
+                    row_bytes,
+                    pixel_size,
+                    screen_width,
+                    screen_height,
+                    x,
+                    y,
+                    true,
+                );
             }
-        }
+        });
     }
 
     /// Blit the front window's port pixels to the screen framebuffer.
@@ -5027,12 +4947,12 @@ impl super::TrapDispatcher {
         // pixels are drawn; the logical tracking state must remain intact.
         if let Some((active_menu, dropdowns, hidden_depth)) =
             self.menu_tracking.as_ref().map(|tracking| {
-                let dropdowns = std::iter::once((tracking.active_menu, tracking.dropdown_rect))
+                let dropdowns = std::iter::once((tracking.menu_handle, tracking.dropdown_rect()))
                     .chain(
                         tracking
                             .submenus
                             .iter()
-                            .map(|submenu| (submenu.menu, submenu.dropdown_rect)),
+                            .map(|submenu| (submenu.menu_handle, submenu.dropdown_rect())),
                     )
                     .collect::<Vec<_>>();
                 let hide_classic_highlight = self.ui_theme_id() == UiThemeId::ClassicSystem7
@@ -5048,10 +4968,12 @@ impl super::TrapDispatcher {
                         .map(|(depth, _)| depth + 1)
                         .unwrap_or(0)
                 });
-                (tracking.active_menu, dropdowns, hidden_depth)
+                (tracking.menu_handle, dropdowns, hidden_depth)
             })
         {
-            self.highlight_menu_title(bus, active_menu);
+            if let Some(active_menu) = self.menu_index_for_handle(active_menu) {
+                self.highlight_menu_title(bus, active_menu);
+            }
             let hidden_item = hidden_depth.and_then(|depth| {
                 self.menu_tracking.as_mut().and_then(|tracking| {
                     if depth == 0 {
@@ -5067,8 +4989,10 @@ impl super::TrapDispatcher {
                     }
                 })
             });
-            for (menu, rect) in dropdowns {
-                self.draw_menu_dropdown(bus, menu, rect);
+            for (menu_handle, rect) in dropdowns {
+                if let Some(menu) = self.menu_index_for_handle(menu_handle) {
+                    self.draw_menu_dropdown(bus, menu, rect);
+                }
             }
             if let Some((depth, item)) = hidden_item {
                 if let Some(tracking) = self.menu_tracking.as_mut() {
@@ -5104,7 +5028,7 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod redraw_chrome_tests {
     use super::super::dispatch::{ControlTrackingState, DialogItem, ScreenCopyBitsRect};
-    use super::super::menu::{Menu, MenuItem, MenuTrackingState, SubmenuTrackingState};
+    use super::super::menu::{test_tracked_menu_state, tracked_submenu_state, Menu, MenuItem};
     use super::super::test_helpers::setup_with_port;
     use super::super::TrapDispatcher;
     use crate::memory::MemoryBus;
@@ -5182,7 +5106,7 @@ mod redraw_chrome_tests {
                 enabled: true,
             }],
             enabled: true,
-            handle: 0,
+            handle: id as u32,
             in_menu_bar: true,
             hierarchical: !visible_in_menu_bar,
             visible_in_menu_bar,
@@ -5202,23 +5126,13 @@ mod redraw_chrome_tests {
         ];
         let root_rect = (20, 10, 38, 100);
         let child_rect = (24, 140, 42, 230);
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: root_rect,
-            submenus: vec![SubmenuTrackingState {
-                menu: 1,
-                parent_item: 1,
-                highlighted_item: 1,
-                saved_pixels: Vec::new(),
-                dropdown_rect: child_rect,
-            }],
-            stack_ptr: 0,
-            flash_remaining: 5,
-            flash_delay: 0,
-            flash_result: (701u32 << 16) | 1,
-        });
+        let mut child = tracked_submenu_state(701, 1, child_rect, Vec::new());
+        child.highlighted_item = 1;
+        let mut tracking = test_tracked_menu_state(700, root_rect, 1);
+        tracking.submenus.push(child);
+        tracking.flash_remaining = 5;
+        tracking.flash_result = (701u32 << 16) | 1;
+        *disp.menu_tracking = Some(tracking);
 
         disp.redraw_chrome(&mut bus);
 
@@ -5481,7 +5395,7 @@ mod redraw_chrome_tests {
             &glyph,
             &[0xff, 0xff],
             None,
-            0,
+            super::QuickDrawTextStyle::plain(),
             Some(3),
             true,
         );

@@ -57,12 +57,16 @@ pub mod display;
 mod error;
 mod event_queue;
 pub mod game;
+mod guest_call;
+mod guest_procedure;
 pub mod loader;
 mod mac_roman;
 pub mod machine_profile;
 pub mod managers;
 pub mod memory;
+mod menu_manager;
 pub mod menu_model;
+mod mixed_mode;
 pub mod quickdraw;
 pub mod runner;
 /// Deterministic trap-interaction replays. This is internal test

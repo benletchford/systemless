@@ -2,11 +2,12 @@
 //!
 //! Handles SndPlay, SndNewChannel, SndDisposeChannel, SndDoCommand,
 //! SndDoImmediate, SoundDispatch, and SysBeep.
-//! Reference: Inside Macintosh: Sound 1994; references/executor/src/sound/sound.cpp
+//! Reference: Inside Macintosh: Sound (1994).
 
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::sound::{self, SndChannel, SndCommand, StereoSample};
+use crate::trap::dispatch::{selector_operation_route, SelectorOperationRoute};
 use crate::Result;
 
 /// Size of the guest SndChannel record we allocate.
@@ -34,6 +35,18 @@ const BAD_UNIT_ERR: i16 = -21;
 const WRITE_ERR: i16 = -20;
 const PARAM_ERR: i16 = -50;
 const MEM_FULL_ERR: i16 = -108;
+const SOUND_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_sound_dispatch_operations.rs");
+
+fn sound_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA800 {
+        return None;
+    }
+    selector_operation_route(SOUND_DISPATCH_OPERATION_ROUTES, selector)
+}
 
 use std::sync::OnceLock;
 static TRACE_SOUND: OnceLock<bool> = OnceLock::new();
@@ -538,21 +551,15 @@ impl super::TrapDispatcher {
             }
 
             // SoundDispatch ($A800)
-            // Multi-purpose Sound Manager dispatcher. Selector in D0.
-            // Bits 31-24: parameter bytes / 2
-            // Bits 23-16: routine selector
-            // Sound 1994, 2-256
-            //
-            // Caveat on the paramSize byte: Inside Macintosh Volume VI's
-            // trap selector table lists several SoundDispatch routines with
-            // a zero param-size byte even though their Pascal signatures have
-            // stack arguments. `sound_dispatch_param_bytes` maps those
-            // documented literals back to their real frame sizes so clients
-            // that pass table values directly do not return through args.
-            // SoundDispatch ($A800): Routes by full selector; SndPlayDoubleBuffer ($20) with doubleback callbacks, SndStartFilePlay ($00) plays 'snd ' resources by ID or AIFF file by refnum with async completion callbacks, SndStopFilePlay ($08) stops channel, SndPauseFilePlay ($04) toggles file pause, SndSoundManagerVersion ($000C0008) returns a Sound Manager 3.x NumVersion, UnsignedFixedMulDiv ($060C0018) computes its 16.16 result and pops its 12-byte frame; SndChannelStatus ($10) zero-fills 24-byte SCStatus per IM:Sound 2-101 (no async playback so all fields are documented-correct at zero); SndManagerStatus ($14) fills 6-byte SMStatus with smNumChannels = active channel count, default smMaxCPULoad = 100, and zero current load per IM:Sound 2-101 + 2-201; volume selectors ($24/$28/$2C/$30) persist Sound Manager 3.x packed L/R levels
+            // Dispatches sound, input, compression and speech routines selected by the complete D0 value.
+            // FUNCTION SndSoundManagerVersion: NumVersion;
+            // Inside Macintosh: Sound (1994), pp. 2-138 to 2-188, 3-27 to 3-66,
+            //     and 4-54 to 4-108.
             (true, 0x000) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
+                let operation = sound_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let param_bytes = sound_dispatch_param_bytes(selector);
                 let routine = (selector >> 16) & 0xFF;
                 if trace_sound_enabled() {
@@ -3008,6 +3015,106 @@ mod tests {
         StereoSample,
     };
     use crate::trap::test_helpers::{setup, TEST_SP};
+
+    #[test]
+    fn sound_dispatch_generated_routes_preserve_exact_long_values() {
+        assert_eq!(super::SOUND_DISPATCH_OPERATION_ROUTES.len(), 54);
+        assert!(super::SOUND_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000_000C, "SpeechManagerVersion"),
+            (0x0000_0010, "MACEVersion"),
+            (0x0000_0014, "SPBVersion"),
+            (0x0004_0010, "Comp3to1"),
+            (0x0008_0010, "Exp1to3"),
+            (0x000C_0008, "SndSoundManagerVersion"),
+            (0x000C_0010, "Comp6to1"),
+            (0x0010_0010, "Exp1to6"),
+            (0x003C_000C, "SpeechBusy"),
+            (0x0040_000C, "SpeechBusySystemWide"),
+            (0x0108_000C, "CountVoices"),
+            (0x0110_0014, "SPBSignOutDevice"),
+            (0x0204_0008, "SndPauseFilePlay"),
+            (0x021C_000C, "DisposeSpeechChannel"),
+            (0x021C_0014, "SPBCloseDevice"),
+            (0x0220_000C, "SpeakString"),
+            (0x0228_0014, "SPBPauseRecording"),
+            (0x022C_000C, "StopSpeech"),
+            (0x022C_0014, "SPBResumeRecording"),
+            (0x0230_0014, "SPBStopRecording"),
+            (0x0238_000C, "ContinueSpeech"),
+            (0x0308_0008, "SndStopFilePlay"),
+            (0x030C_000C, "GetIndVoice"),
+            (0x030C_0014, "SPBSignInDevice"),
+            (0x0320_0014, "SPBRecord"),
+            (0x0418_000C, "NewSpeechChannel"),
+            (0x0424_0014, "SPBRecordToFile"),
+            (0x0430_000C, "StopSpeechAt"),
+            (0x0434_000C, "PauseSpeechAt"),
+            (0x0440_0014, "SPBMillisecondsToBytes"),
+            (0x0444_000C, "SetSpeechRate"),
+            (0x0444_0014, "SPBBytesToMilliseconds"),
+            (0x0448_000C, "GetSpeechRate"),
+            (0x044C_000C, "SetSpeechPitch"),
+            (0x0450_000C, "GetSpeechPitch"),
+            (0x0460_000C, "UseDictionary"),
+            (0x0514_0014, "SPBGetIndexedDevice"),
+            (0x0518_0014, "SPBOpenDevice"),
+            (0x0604_000C, "MakeVoiceSpec"),
+            (0x0610_000C, "GetVoiceDescription"),
+            (0x0614_000C, "GetVoiceInfo"),
+            (0x0624_000C, "SpeakText"),
+            (0x0638_0014, "SPBGetDeviceInfo"),
+            (0x063C_0014, "SPBSetDeviceInfo"),
+            (0x0654_000C, "SetSpeechInfo"),
+            (0x0658_000C, "GetSpeechInfo"),
+            (0x0708_0014, "SndRecordToFile"),
+            (0x0804_0014, "SndRecord"),
+            (0x0828_000C, "SpeakBuffer"),
+            (0x0A5C_000C, "TextToPhonemes"),
+            (0x0B4C_0014, "SetupAIFFHeader"),
+            (0x0D00_0008, "SndStartFilePlay"),
+            (0x0D48_0014, "SetupSndHeader"),
+            (0x0E34_0014, "SPBGetRecordingStatus"),
+        ] {
+            let route = super::sound_dispatch_operation_route(0xA800, selector)
+                .expect("SoundDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA900, 0x003C_000C),
+            (0xA800, 0x003D_000C),
+            (0xA800, 0x0010_0008),
+            (0xA800, 0x0064_0004),
+            (0xA800, 0x060C_0018),
+            (0xA800, 0x0000_203C),
+        ] {
+            assert!(super::sound_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn sound_dispatch_records_exact_identity_and_rejects_wrong_routine_value() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.current_trap_word = 0xA800;
+
+        cpu.write_reg(Register::D0, 0x003C_000C);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.expect("SoundDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(super::SOUND_DISPATCH_OPERATION_ROUTES[8].operation_id)
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x003D_000C);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.expect("SoundDispatch arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
 
     /// Assemble a minimal AIFF/AIFC file in memory.
     fn build_aiff(

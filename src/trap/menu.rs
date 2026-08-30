@@ -1,9 +1,41 @@
 //! Menu Manager trap handlers.
 
 use crate::cpu::{CpuOps, Register};
+use crate::guest_call::GuestCallTarget;
+use crate::guest_procedure::{resolve_guest_procedure, GuestIsa};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
-use crate::menu_model::{GuestMenu, GuestMenuItem, GuestMenuSnapshot};
-use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
+use crate::menu_manager::{
+    compiled_menu_color_entries, filter_menu_color_entries,
+    for_each_standard_hierarchy_indicator_pixel, for_each_standard_scroll_down_indicator_pixel,
+    for_each_standard_scroll_up_indicator_pixel, hierarchical_menu_id, install_menu_list_copy,
+    laid_out_menu_item_count, menu_choice_value,
+    merge_menu_color_entries as shared_merge_menu_color_entries, new_standard_menu_record,
+    standard_menu_gray_pattern_is_ink, standard_menu_height as shared_standard_menu_height,
+    standard_menu_highlighted_value, standard_menu_icon_kind, standard_menu_icon_resource_id,
+    standard_menu_item_layout, standard_menu_text_advance as shared_standard_menu_text_advance,
+    standard_menu_width as shared_standard_menu_width, standard_popup_menu_layout,
+    standard_pull_down_menu_layout, standard_submenu_layout,
+    ColorIconLayout as SharedColorIconLayout, MenuBarBuild as SharedMenuBarBuild,
+    MenuBarBuildStep as SharedMenuBarBuildStep, MenuBarResource as SharedMenuBarResource,
+    MenuBarTitleRegion as SharedMenuBarTitleRegion, MenuColorTable,
+    MenuDefinitionInvocation as SharedMenuDefinitionInvocation,
+    MenuDefinitionPane as SharedMenuDefinitionPane,
+    MenuDefinitionTracking as SharedMenuDefinitionTracking, MenuItems as SharedMenuItems,
+    MenuKeyItem as SharedMenuKeyItem, MenuKeyMenu as SharedMenuKeyMenu, MenuList as SharedMenuList,
+    MenuListInstallRequest, MenuRow as SharedMenuRow, MenuRows as SharedMenuRows,
+    MenuSnapshotRecord as SharedMenuSnapshotRecord, MenuTrackingKind, MenuTrackingPane,
+    MonochromeMenuIconLayout as SharedMonochromeMenuIconLayout, ProcessMenuTrackingState,
+    ProcessTrackedMenuPane, StandardMenuChrome, StandardMenuIconKind, StandardMenuItemWidth,
+    StandardMenuPaneKind, SubmenuReconciliation, SubmenuRequest, TrackedMenuPaneView,
+    MAX_MENU_LIST_ENTRIES, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+    STANDARD_MENU_BAR_TITLE_SPACING, STANDARD_MENU_DEFINITION_SHIM,
+    STANDARD_MENU_FLASH_PHASE_DELAY, STANDARD_MENU_SEPARATOR_HEIGHT,
+};
+#[cfg(test)]
+use crate::menu_manager::{parse_menu_item_specs, standard_menu_row_height};
+use crate::menu_model::GuestMenuSnapshot;
+use crate::quickdraw::text::QuickDrawTextStyle;
+use crate::trap::types::encode_mac_roman_lossy;
 use crate::ui_theme::UiThemeId;
 use crate::Result;
 
@@ -26,74 +58,111 @@ pub struct Menu {
     pub items: Vec<MenuItem>,
     pub enabled: bool,
     pub handle: u32,
-    /// True after InsertMenu; false after NewMenu/DeleteMenu/ClearMenuBar.
-    /// GetMHandle only returns menus in the current menu list (per IM:I I-361).
+    /// Presentation-cache membership derived from the guest MenuList.
     pub in_menu_bar: bool,
-    /// True when InsertMenu was called with beforeID = -1, placing this menu
-    /// in the hierarchical/pop-up portion of the current menu list.
+    /// Derived membership in the guest list's hierarchical/pop-up partition.
     pub hierarchical: bool,
-    /// True when this current-menu-list entry contributes a visible menu-bar
-    /// title. InsertMenu(menu, -1) installs a submenu/popup without a title.
+    /// Derived regular-partition membership that contributes a visible title.
     /// Macintosh Toolbox Essentials 1992, p. 3-121.
     pub visible_in_menu_bar: bool,
 }
 
-/// State for one visible hierarchical submenu while MenuSelect is tracking.
-pub struct SubmenuTrackingState {
-    pub menu: usize,
-    pub parent_item: i16,
-    pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
-    pub dropdown_rect: (i16, i16, i16, i16),
+pub(crate) type MenuTrackingState = ProcessMenuTrackingState;
+pub(crate) type SubmenuTrackingState = ProcessTrackedMenuPane;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingMenuBarBuild {
+    pub(crate) stack_ptr: u32,
+    pub(crate) build: SharedMenuBarBuild<u32>,
 }
 
-/// State for MenuSelect mouse tracking across frames.
-pub struct MenuTrackingState {
-    pub active_menu: usize,
-    pub highlighted_item: i16,
-    pub saved_pixels: Vec<u8>,
-    pub dropdown_rect: (i16, i16, i16, i16),
-    /// Open hierarchical menus ordered from the root menu's child to the
-    /// deepest descendant. Menu Manager hierarchies may contain more than
-    /// one level (Macintosh Toolbox Essentials 1992, pp. 3-137 to 3-141).
-    pub submenus: Vec<SubmenuTrackingState>,
-    pub stack_ptr: u32,
-    /// Remaining flash toggles (6 = 3 flashes: off, on, off, on, off, on).
-    /// 0 means not flashing.
-    pub flash_remaining: u8,
-    /// Frames left in the current toggle phase before switching.
-    /// Real Mac held each phase ~3 ticks (50ms) ≈ 3 frames at 60fps.
-    pub flash_delay: u8,
-    /// The result to return after flashing completes.
-    pub flash_result: u32,
+pub(crate) fn tracked_menu_state(
+    kind: MenuTrackingKind,
+    menu_handle: u32,
+    rect: (i16, i16, i16, i16),
+    saved_pixels: Vec<u8>,
+) -> MenuTrackingState {
+    tracked_menu_state_with_content_top(kind, menu_handle, rect, rect.0, saved_pixels)
+}
+
+fn tracked_menu_state_with_content_top(
+    kind: MenuTrackingKind,
+    menu_handle: u32,
+    rect: (i16, i16, i16, i16),
+    content_top: i16,
+    saved_pixels: Vec<u8>,
+) -> MenuTrackingState {
+    let (popup_top, popup_left, popup_bottom, popup_right) = rect;
+    MenuTrackingState {
+        kind,
+        menu_handle,
+        popup_left,
+        popup_top,
+        content_top,
+        scroll_direction: None,
+        popup_width: popup_right.saturating_sub(popup_left),
+        popup_height: popup_bottom.saturating_sub(popup_top),
+        highlighted_item: 0,
+        definition: None,
+        flash_remaining: 0,
+        flash_delay: 0,
+        flash_result: 0,
+        saved_width: popup_right.saturating_sub(popup_left),
+        saved_height: popup_bottom.saturating_sub(popup_top),
+        front_buffer: None,
+        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        item_appearances: Vec::new(),
+        submenus: Vec::new(),
+    }
+}
+
+pub(crate) fn tracked_submenu_state(
+    menu_handle: u32,
+    parent_item: i16,
+    rect: (i16, i16, i16, i16),
+    saved_pixels: Vec<u8>,
+) -> SubmenuTrackingState {
+    let (popup_top, popup_left, popup_bottom, popup_right) = rect;
+    SubmenuTrackingState {
+        parent_item,
+        menu_handle,
+        popup_left,
+        popup_top,
+        content_top: popup_top,
+        scroll_direction: None,
+        popup_width: popup_right.saturating_sub(popup_left),
+        popup_height: popup_bottom.saturating_sub(popup_top),
+        highlighted_item: 0,
+        definition: None,
+        saved_width: popup_right.saturating_sub(popup_left),
+        saved_height: popup_bottom.saturating_sub(popup_top),
+        front_buffer: None,
+        saved_pixels: saved_pixels.into_iter().map(u16::from).collect(),
+        item_appearances: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_tracked_menu_state(
+    menu_handle: u32,
+    rect: (i16, i16, i16, i16),
+    highlighted_item: i16,
+) -> MenuTrackingState {
+    let mut state = tracked_menu_state(MenuTrackingKind::MenuBar, menu_handle, rect, Vec::new());
+    state.highlighted_item = highlighted_item;
+    state
 }
 
 // Macintosh Toolbox Essentials 1992, pp. 3-137 to 3-138: an icon number
 // maps to resource ID icon+256; key-equivalent bytes $1D and $1E select
 // reduced ICON and SICN menu icons instead of command-key shortcuts.
+#[cfg(test)]
 const MENU_KEY_REDUCED_ICON: u8 = 0x1D;
+#[cfg(test)]
 const MENU_KEY_SMALL_ICON: u8 = 0x1E;
 const MENU_ROW_HEIGHT: i16 = 16;
-const MENU_TEXT_STYLE_SHADOW: u8 = 0x10;
-const MENU_SHADOW_STYLE_ROW_HEIGHT: i16 = MENU_ROW_HEIGHT + 5;
-const MENU_NORMAL_ICON_SIZE: i16 = 32;
-const MENU_NORMAL_ICON_ROW_HEIGHT: i16 = 34;
-const MENU_NORMAL_ICON_TEXT_LEFT_OFFSET: i16 = 51;
 
-#[derive(Clone, Copy, Debug)]
-struct MenuCIconLayout {
-    width: i16,
-    height: i16,
-    pm_row_bytes: u32,
-    mask_row_bytes: u32,
-    bmap_row_bytes: u32,
-    pixel_size: u16,
-    mask_data_ptr: u32,
-    bmap_data_ptr: u32,
-    ctab_ptr: u32,
-    ctab_entries: u16,
-    pixel_data_ptr: u32,
-}
+const MDEF_TRAMPOLINE_SIZE: u32 = 60;
 
 /// Compute the size of a MENU resource in guest memory by scanning through it.
 /// MENU format: menuID(2), menuWidth(2), menuHeight(2), menuProc(4), enableFlags(4),
@@ -146,30 +215,12 @@ fn get_menu_item_field(bus: &MacMemoryBus, menu_ptr: u32, item: i16, field_offse
     0
 }
 
-/// Count menu items by parsing the MENU data structure in guest memory.
-/// The handle is dereferenced to get the pointer to the menu record.
-/// Inside Macintosh Volume I, I-345
+/// Count the complete items in the live MENU record through the shared
+/// MenuInfo decoder. Inside Macintosh Volume I (1985), pp. I-345 and I-361.
 fn count_menu_items_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> u16 {
-    if menu_handle == 0 {
-        return 0;
-    }
-    let menu_ptr = bus.read_long(menu_handle);
-    if menu_ptr == 0 {
-        return 0;
-    }
-    // Skip fixed header (14 bytes) + title Pascal string
-    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-    let mut offset = 15 + title_len;
-    let mut count: u16 = 0;
-    loop {
-        let item_len = bus.read_byte(menu_ptr + offset) as u32;
-        if item_len == 0 {
-            break;
-        }
-        count += 1;
-        offset += 1 + item_len + 4; // pstring + icon + key + mark + style
-    }
-    count
+    menu_items_from_memory(bus, menu_handle)
+        .map(|items| items.item_count())
+        .unwrap_or(0)
 }
 
 /// Decode a guest menu string payload as Mac Roman text.
@@ -185,7 +236,7 @@ fn macroman_to_string(bytes: &[u8]) -> String {
 
 /// Recover the guest Mac Roman bytes stored in the Menu Manager's internal
 /// byte-preserving string representation.
-fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
+pub(super) fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(value.len());
     for ch in value.chars() {
         if (ch as u32) <= u8::MAX as u32 {
@@ -195,10 +246,6 @@ fn internal_menu_string_bytes(value: &str) -> Vec<u8> {
         }
     }
     bytes
-}
-
-fn internal_menu_string_to_unicode(value: &str) -> String {
-    decode_mac_roman(&internal_menu_string_bytes(value))
 }
 
 /// Parse a MENU resource from guest memory into a Menu struct.
@@ -264,104 +311,54 @@ fn parse_menu_resource(bus: &MacMemoryBus, res_ptr: u32, handle: u32) -> Menu {
     }
 }
 
-/// Parse AppendMenu's data Pascal string into a `Vec<MenuItem>`.
-/// Per Inside Macintosh Volume I, I-358:
-///
-/// - Items are separated by `;`.
-/// - Within an item, meta-characters modify the item:
-///   - `/<char>`  command-key equivalent
-///   - `(`        item is disabled (the `(` is consumed, not stored)
-///   - `<B/I/U/O/S`  style: Bold/Italic/Underline/Outline/Shadow
-///   - `!<char>`  item mark (e.g. checkmark `\u{12}`)
-///   - `^<char>`  icon (icon number = char value − 1)
-/// - The leftover characters form the item's display text.
-fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
-    let mut items: Vec<MenuItem> = Vec::new();
-    if bytes.is_empty() {
-        return items;
+fn menu_key_menu_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> Option<SharedMenuKeyMenu> {
+    let menu_ptr = bus.read_long(menu_handle);
+    if menu_ptr == 0 {
+        return None;
     }
-    for raw_item in bytes.split(|&b| b == b';') {
-        let mut text = Vec::with_capacity(raw_item.len());
-        let mut item = MenuItem {
-            text: String::new(),
-            icon: 0,
-            key_equiv: 0,
-            mark: 0,
-            style: 0,
-            enabled: true,
-        };
-        let mut i = 0;
-        while i < raw_item.len() {
-            let c = raw_item[i];
-            match c {
-                b'(' => {
-                    item.enabled = false;
-                    i += 1;
-                }
-                b'/' if i + 1 < raw_item.len() => {
-                    item.key_equiv = raw_item[i + 1];
-                    i += 2;
-                }
-                b'!' if i + 1 < raw_item.len() => {
-                    item.mark = raw_item[i + 1];
-                    i += 2;
-                }
-                b'^' if i + 1 < raw_item.len() => {
-                    item.icon = raw_item[i + 1].saturating_sub(1);
-                    i += 2;
-                }
-                b'<' if i + 1 < raw_item.len() => {
-                    item.style |= match raw_item[i + 1] {
-                        b'B' => 0x01, // bold
-                        b'I' => 0x02, // italic
-                        b'U' => 0x04, // underline
-                        b'O' => 0x08, // outline
-                        b'S' => 0x10, // shadow
-                        _ => 0,
-                    };
-                    i += 2;
-                }
-                _ => {
-                    text.push(c);
-                    i += 1;
-                }
-            }
-        }
-        item.text = macroman_to_string(&text);
-        items.push(item);
-    }
-    items
+    let record_size = bus
+        .get_alloc_size(menu_ptr)
+        .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
+    let menu = SharedMenuItems::decode(&bus.read_bytes(menu_ptr, record_size as usize))?;
+    Some(SharedMenuKeyMenu {
+        id: bus.read_word(menu_ptr) as i16,
+        enabled: menu.enable_flags & 1 != 0,
+        items: menu
+            .items
+            .into_iter()
+            .map(|item| SharedMenuKeyItem {
+                command: item.command,
+                mark: item.mark,
+                enabled: item.enabled,
+            })
+            .collect(),
+    })
 }
 
-/// Rebuild the enableFlags longword from a Menu's enabled state and write it
-/// back to the guest-memory MENU record at offset 10.
-/// Inside Macintosh Volume I, I-345: bit 0 = menu enabled; bits 1–31 = items.
-///
-/// Start from $FFFFFFFF (all bits set, matching NewMenu's seed) and CLEAR
-/// bits for disabled items. Real Mac ROM preserves the high bits for
-/// non-existent items rather than rebuilding from scratch, so a disable
-/// of item 2 yields $FFFFFFFB (not $0000001B).
-fn sync_enable_flags(bus: &mut MacMemoryBus, menu: &Menu) {
-    if menu.handle == 0 {
-        return;
-    }
-    let menu_ptr = bus.read_long(menu.handle);
+fn menu_items_from_memory(bus: &MacMemoryBus, menu_handle: u32) -> Option<SharedMenuItems> {
+    let menu_ptr = bus.read_long(menu_handle);
     if menu_ptr == 0 {
-        return;
+        return None;
     }
-    let mut flags: u32 = 0xFFFFFFFF;
-    if !menu.enabled {
-        flags &= !1u32;
-    }
-    for (i, item) in menu.items.iter().enumerate() {
-        if i >= 31 {
-            break;
-        }
-        if !item.enabled {
-            flags &= !(1u32 << (i + 1));
-        }
-    }
-    bus.write_long(menu_ptr + 10, flags);
+    let record_size = bus
+        .get_alloc_size(menu_ptr)
+        .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
+    SharedMenuItems::decode(&bus.read_bytes(menu_ptr, record_size as usize))
+}
+
+#[cfg(test)]
+fn parse_appendmenu_items(bytes: &[u8]) -> Vec<MenuItem> {
+    parse_menu_item_specs(bytes)
+        .into_iter()
+        .map(|item| MenuItem {
+            text: macroman_to_string(&item.text),
+            icon: item.icon,
+            key_equiv: item.command,
+            mark: item.mark,
+            style: item.style,
+            enabled: item.enabled,
+        })
+        .collect()
 }
 
 /// Refresh cached menu contents from the guest-owned MenuInfo record.
@@ -394,58 +391,6 @@ fn refresh_menu_from_memory(bus: &MacMemoryBus, menu: &mut Menu) {
     menu.enabled = parsed.enabled;
 }
 
-/// Serialise a Menu's items into the guest-memory MENU record.
-/// Per IM:I I-355: menuData starts at `menu_ptr + 14` and contains the
-/// title (Pascal string) followed by items. Each item is a Pascal
-/// string for the item text followed by 4 attribute bytes:
-/// icon (1), keyEquiv (1), mark (1), style (1). The items list is
-/// terminated by a length-0 byte.
-///
-/// Without this sync, the `count_menu_items_from_memory` path (used by
-/// CountMItems and CalcMenuSize to stay compatible with GetMenu-loaded
-/// menus) finds only the NewMenu-seeded terminator and reports 0 items
-/// even though AppendMenu populated `self.menus`.
-///
-fn serialized_menu_record_size(bus: &MacMemoryBus, menu: &Menu) -> u32 {
-    let menu_ptr = bus.read_long(menu.handle);
-    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-    menu.items.iter().fold(16 + title_len, |size, item| {
-        size.saturating_add(5 + internal_menu_string_bytes(&item.text).len().min(255) as u32)
-    })
-}
-
-fn write_menu_items_to_memory(
-    bus: &mut MacMemoryBus,
-    menu: &Menu,
-    menu_ptr: u32,
-    menu_record_size: u32,
-) {
-    let title_len = bus.read_byte(menu_ptr + 14) as u32;
-    let mut offset = 15 + title_len;
-    for item in &menu.items {
-        let encoded = internal_menu_string_bytes(&item.text);
-        let bytes = encoded.as_slice();
-        let text_len = bytes.len().min(255) as u32;
-        let item_size = 1 + text_len + 4;
-        if offset + item_size + 1 > menu_record_size {
-            break;
-        }
-        bus.write_byte(menu_ptr + offset, text_len as u8);
-        for (i, b) in bytes.iter().take(text_len as usize).enumerate() {
-            bus.write_byte(menu_ptr + offset + 1 + i as u32, *b);
-        }
-        let attr_base = menu_ptr + offset + 1 + text_len;
-        bus.write_byte(attr_base, item.icon);
-        bus.write_byte(attr_base + 1, item.key_equiv);
-        bus.write_byte(attr_base + 2, item.mark);
-        bus.write_byte(attr_base + 3, item.style);
-        offset += item_size;
-    }
-    if offset < menu_record_size {
-        bus.write_byte(menu_ptr + offset, 0);
-    }
-}
-
 fn looks_like_menu_ptr(bus: &MacMemoryBus, menu_ptr: u32) -> bool {
     if menu_ptr == 0 || menu_ptr + 15 >= bus.ram_size() {
         return false;
@@ -465,13 +410,32 @@ fn looks_like_menu_handle(bus: &MacMemoryBus, handle: u32) -> bool {
     looks_like_menu_ptr(bus, bus.read_long(handle))
 }
 
+fn menu_list_from_memory(bus: &MacMemoryBus, menu_list_handle: u32) -> Option<SharedMenuList> {
+    let list = bus.read_long(menu_list_handle);
+    if list == 0 {
+        return None;
+    }
+    let regular_bytes = usize::from(bus.read_word(list));
+    if regular_bytes % 6 != 0 || regular_bytes / 6 > MAX_MENU_LIST_ENTRIES {
+        return None;
+    }
+    let hierarchical_header = list.checked_add(6 + u32::try_from(regular_bytes).ok()?)?;
+    let hierarchical_bytes = usize::from(bus.read_word(hierarchical_header));
+    if hierarchical_bytes % 6 != 0 || hierarchical_bytes / 6 > MAX_MENU_LIST_ENTRIES {
+        return None;
+    }
+    let byte_count = 12usize
+        .checked_add(regular_bytes)?
+        .checked_add(hierarchical_bytes)?;
+    SharedMenuList::decode(&bus.read_bytes(list, byte_count))
+}
+
 /// Menu-color table entry size in compiled resources and guest memory.
 ///
 /// Apple's `MenuCRsrc` stores an array of complete `MCEntry` records, including
 /// the trailing reserved word.
-const MC_ENTRY_SIZE: usize = 30;
+const MC_ENTRY_SIZE: usize = MENU_COLOR_ENTRY_SIZE;
 const MC_ALL_ITEMS: i16 = -98;
-const MC_LAST_ID_INDIC: i16 = -99;
 
 fn mc_entry_key(bytes: &[u8]) -> Option<(i16, i16)> {
     if bytes.len() < 4 {
@@ -488,49 +452,256 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
-    /// Copy the live, inserted Menu Manager state into a frontend-neutral
-    /// representation.  Refresh enable flags first because classic
-    /// applications and custom menu procedures are allowed to mutate the
-    /// guest-owned MenuInfo records directly.
-    pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
-        for menu in &mut self.menus {
-            refresh_menu_from_memory(bus, menu);
+    fn menu_uses_standard_definition(&self, bus: &MacMemoryBus, menu_ptr: u32) -> bool {
+        let handle = bus.read_long(menu_ptr + 6);
+        self.loaded_handles
+            .get(&handle)
+            .is_some_and(|(_, resource_type, resource_id)| {
+                *resource_type == *b"MDEF" && *resource_id == 0
+            })
+            || bus.read_bytes(bus.read_long(handle), STANDARD_MENU_DEFINITION_SHIM.len())
+                == STANDARD_MENU_DEFINITION_SHIM
+    }
+
+    fn arm_menu_definition<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        invocation: SharedMenuDefinitionInvocation,
+    ) -> bool {
+        self.arm_menu_definition_to(cpu, bus, invocation, cpu.read_reg(Register::PC))
+    }
+
+    fn arm_menu_definition_to<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        invocation: SharedMenuDefinitionInvocation,
+        return_pc: u32,
+    ) -> bool {
+        let menu_handle = invocation.menu_handle;
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 || self.menu_uses_standard_definition(bus, menu_ptr) {
+            return false;
+        }
+        let proc_ptr = bus.read_long(bus.read_long(menu_ptr + 6));
+        let Some(procedure) =
+            resolve_guest_procedure(bus, proc_ptr, 0, None, GuestIsa::M68k, GuestIsa::M68k)
+        else {
+            return false;
+        };
+        if procedure.isa != GuestIsa::M68k || procedure.entry >= bus.ram_size() {
+            return false;
+        }
+        let proc_addr = procedure.entry;
+
+        // MDEFs are Pascal procedures with five arguments. The definition
+        // procedure owns menuWidth/menuHeight for mSizeMsg, so the HLE only
+        // marshals the documented call and resumes the application afterward.
+        // Macintosh Toolbox Essentials (1992), pp. 3-148--3-151.
+        let trampoline = if self.menu_def_trampoline == 0 {
+            self.menu_def_trampoline = bus.alloc(MDEF_TRAMPOLINE_SIZE);
+            self.menu_def_trampoline
+        } else {
+            self.menu_def_trampoline
+        };
+        let call = invocation.call(trampoline + 50);
+        let final_sp = cpu.read_reg(Register::A7);
+        let return_slot = final_sp.wrapping_sub(4);
+
+        bus.write_word(trampoline, 0x48E7); // MOVEM.L D0-D3/A0-A3,-(SP)
+        bus.write_word(trampoline + 2, 0xF0F0);
+        bus.write_word(trampoline + 4, 0x3F3C); // MOVE.W #message,-(SP)
+        bus.write_word(trampoline + 6, call.message as i16 as u16);
+        for (offset, value) in [
+            (8, call.menu_handle),
+            (14, call.menu_rect),
+            (20, call.hit_point),
+            (26, call.which_item),
+        ] {
+            bus.write_word(trampoline + offset, 0x2F3C); // MOVE.L #value,-(SP)
+            bus.write_long(trampoline + offset + 2, value);
+        }
+        bus.write_word(trampoline + 32, 0x4EB9); // JSR abs.L
+        bus.write_long(trampoline + 34, proc_addr);
+        bus.write_word(trampoline + 38, 0x2E7C); // MOVEA.L #savedRegsSP,A7
+        bus.write_long(trampoline + 40, return_slot.wrapping_sub(32));
+        bus.write_word(trampoline + 44, 0x4CDF); // MOVEM.L (SP)+,D0-D3/A0-A3
+        bus.write_word(trampoline + 46, 0x0F0F);
+        bus.write_word(trampoline + 48, 0x4E75); // RTS
+        for (offset, byte) in invocation.scratch_bytes().into_iter().enumerate() {
+            bus.write_byte(trampoline + 50 + offset as u32, byte);
         }
 
-        GuestMenuSnapshot {
-            menus: self
-                .menus
-                .iter()
-                .filter(|menu| menu.in_menu_bar)
-                .map(|menu| GuestMenu {
-                    id: menu.id,
-                    title: internal_menu_string_to_unicode(&menu.title),
-                    enabled: menu.enabled,
-                    hierarchical: menu.hierarchical,
-                    visible_in_menu_bar: menu.visible_in_menu_bar,
-                    items: menu
-                        .items
-                        .iter()
-                        .enumerate()
-                        .map(|(index, item)| {
-                            let submenu_id =
-                                Self::is_hierarchical_item(item).then_some(item.mark as i16);
-                            let key_equivalent = Self::menu_item_has_command_key(item)
-                                .then(|| char::from(item.key_equiv).to_ascii_lowercase());
-                            GuestMenuItem {
-                                number: index as i16 + 1,
-                                text: internal_menu_string_to_unicode(&item.text),
-                                enabled: item.enabled,
-                                checked: item.mark != 0 && submenu_id.is_none(),
-                                key_equivalent,
-                                submenu_id,
-                                separator: item.text == "-",
-                            }
-                        })
-                        .collect(),
-                })
-                .collect(),
+        bus.write_long(return_slot, return_pc);
+        if return_pc != cpu.read_reg(Register::PC) {
+            self.guest_calls.begin_m68k(
+                GuestCallTarget {
+                    isa: procedure.isa,
+                    entry: procedure.entry,
+                    rtoc: procedure.rtoc,
+                },
+                return_pc,
+                final_sp,
+            );
         }
+        cpu.write_reg(Register::A7, return_slot);
+        cpu.write_reg(Register::PC, trampoline);
+        true
+    }
+
+    fn complete_pending_menu_definition<C: CpuOps>(
+        &mut self,
+        cpu: &C,
+        bus: &MacMemoryBus,
+    ) -> Option<crate::menu_manager::MenuDefinitionMessage> {
+        let trampoline = self.menu_def_trampoline;
+        if self
+            .active_menu_definition()
+            .copied()
+            .and_then(SharedMenuDefinitionTracking::pending_invocation)
+            .is_none()
+            || trampoline == 0
+        {
+            return None;
+        }
+        if !self
+            .guest_calls
+            .complete_m68k(cpu.read_reg(Register::PC), cpu.read_reg(Register::A7))
+        {
+            return None;
+        }
+        let bytes = bus.read_bytes(trampoline + 50, 10);
+        let Ok(bytes) = <[u8; 10]>::try_from(bytes) else {
+            return None;
+        };
+        self.active_menu_definition_mut()?
+            .complete_pending(SharedMenuDefinitionInvocation::decode_result(bytes))
+    }
+
+    fn arm_pending_menu_definition<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        return_pc: u32,
+    ) -> bool {
+        let invocation = self
+            .active_menu_definition()
+            .copied()
+            .and_then(SharedMenuDefinitionTracking::pending_invocation);
+        invocation
+            .is_some_and(|invocation| self.arm_menu_definition_to(cpu, bus, invocation, return_pc))
+    }
+
+    fn active_menu_definition(&self) -> Option<&SharedMenuDefinitionTracking> {
+        self.menu_tracking
+            .as_ref()
+            .and_then(MenuTrackingState::active_definition)
+            .or(self.menu_definition_tracking.as_ref())
+    }
+
+    fn active_menu_definition_mut(&mut self) -> Option<&mut SharedMenuDefinitionTracking> {
+        if self
+            .menu_tracking
+            .as_ref()
+            .and_then(MenuTrackingState::active_definition)
+            .is_some()
+        {
+            return self
+                .menu_tracking
+                .as_mut()
+                .and_then(MenuTrackingState::active_definition_mut);
+        }
+        self.menu_definition_tracking.as_mut()
+    }
+
+    fn clear_active_menu_definition(&mut self) {
+        if let Some(tracking) = self.menu_tracking.as_mut() {
+            if tracking.take_active_definition().is_some() {
+                return;
+            }
+        }
+        self.menu_definition_tracking = None;
+    }
+
+    fn prepare_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        if self.menu_definition_port_state.is_none() {
+            self.menu_definition_port_state = Some(self.capture_current_port_state(bus));
+        }
+        let port = self.ensure_color_window_manager_port(bus);
+        self.set_current_port_state(bus, cpu, port, None);
+    }
+
+    fn restore_menu_definition_port<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        if let Some(snapshot) = self.menu_definition_port_state.take() {
+            self.restore_current_port_state(bus, cpu, &snapshot);
+        }
+    }
+
+    fn abort_custom_menu_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        result_offset: u32,
+    ) {
+        self.clear_active_menu_definition();
+        let kind = self.menu_tracking.as_ref().map(|tracking| tracking.kind);
+        if let Some(saved) = self.menu_tracking.take() {
+            self.restore_menu_tracking_pixels(bus, saved);
+        }
+        if kind == Some(MenuTrackingKind::MenuBar) {
+            bus.write_word(addr::THE_MENU, 0);
+            self.draw_menu_bar_to_fb(bus);
+        } else {
+            self.restore_visible_dialog_snapshots(bus);
+        }
+        self.restore_menu_definition_port(cpu, bus);
+        self.finish_menu_no_hit(bus, cpu, self.menu_tracking_stack_ptr, result_offset);
+    }
+
+    fn finish_custom_menu_tracking<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        result_offset: u32,
+        result: u32,
+    ) {
+        self.clear_active_menu_definition();
+        let kind = self.menu_tracking.as_ref().map(|tracking| tracking.kind);
+        if let Some(saved) = self.menu_tracking.take() {
+            self.restore_menu_tracking_pixels(bus, saved);
+        }
+        if kind == Some(MenuTrackingKind::MenuBar) {
+            bus.write_word(addr::THE_MENU, (result >> 16) as u16);
+            self.draw_menu_bar_to_fb(bus);
+        } else {
+            self.restore_visible_dialog_snapshots(bus);
+        }
+        self.restore_menu_definition_port(cpu, bus);
+        let sp = self.menu_tracking_stack_ptr;
+        bus.write_long(sp + result_offset, result);
+        cpu.write_reg(Register::A7, sp + result_offset);
+    }
+
+    /// Copy the live, inserted Menu Manager state into the shared
+    /// frontend-neutral representation. Classic applications and custom menu
+    /// procedures can mutate guest-owned MenuInfo records directly, so this
+    /// reads those records instead of the adapter's presentation cache.
+    pub(crate) fn guest_menu_snapshot(&mut self, bus: &MacMemoryBus) -> GuestMenuSnapshot {
+        self.current_menu_list(bus)
+            .unwrap_or_default()
+            .guest_snapshot(|menu_handle| {
+                let menu = bus.read_long(menu_handle);
+                if menu == 0 {
+                    return None;
+                }
+                let title_len = usize::from(bus.read_byte(menu + 14));
+                Some(SharedMenuSnapshotRecord {
+                    id: bus.read_word(menu) as i16,
+                    title: bus.read_bytes(menu + 15, title_len),
+                    items: menu_items_from_memory(bus, menu_handle)?,
+                })
+            })
     }
 
     /// Validate and stage a host-native selection, returning a point inside
@@ -542,31 +713,25 @@ impl super::TrapDispatcher {
         menu_id: i16,
         item_number: i16,
     ) -> Option<(i16, i16)> {
-        for menu in &mut self.menus {
-            refresh_menu_from_memory(bus, menu);
-        }
-        let menu = self
-            .menus
-            .iter()
-            .find(|menu| menu.in_menu_bar && menu.id == menu_id)?;
-        let item = menu.items.get(item_number.checked_sub(1)? as usize)?;
-        if !menu.enabled || !item.enabled || item.text == "-" || Self::is_hierarchical_item(item) {
-            return None;
-        }
-        let (_, left, right) = self.menu_title_regions_with_indices().into_iter().next()?;
+        self.guest_menu_snapshot(bus)
+            .selectable_result(menu_id, item_number)?;
+        let region = self
+            .current_menu_list(bus)?
+            .regular_title_regions()
+            .into_iter()
+            .next()?;
         let selection = (menu_id, item_number);
-        if self.pending_native_menu_selection != Some(selection) {
-            self.pending_native_menu_selection = Some(selection);
+        if self.pending_native_menu_selection.stage(selection) {
             self.pending_native_menu_event = Some(super::dispatch::QueuedEvent {
                 what: 1,
                 message: 0,
                 where_v: 10,
-                where_h: left + (right - left) / 2,
+                where_h: region.left + (region.right - region.left) / 2,
                 modifiers: self.current_event_modifiers(),
             });
             self.pending_native_menu_event_tick = None;
         }
-        Some((10, left + (right - left) / 2))
+        Some((10, region.left + (region.right - region.left) / 2))
     }
 
     /// Consume a staged selection only if it is still valid in the current
@@ -576,16 +741,8 @@ impl super::TrapDispatcher {
         let (menu_id, item_number) = self.pending_native_menu_selection.take()?;
         self.pending_native_menu_event = None;
         self.pending_native_menu_event_tick = None;
-        let menu = self
-            .menus
-            .iter_mut()
-            .find(|menu| menu.in_menu_bar && menu.id == menu_id)?;
-        refresh_menu_from_memory(bus, menu);
-        let item = menu.items.get(item_number.checked_sub(1)? as usize)?;
-        if !menu.enabled || !item.enabled || item.text == "-" || Self::is_hierarchical_item(item) {
-            return None;
-        }
-        Some(((menu_id as u16 as u32) << 16) | item_number as u16 as u32)
+        self.guest_menu_snapshot(bus)
+            .selectable_result(menu_id, item_number)
     }
 
     fn menu_tracking_button_down(&self, bus: &MacMemoryBus) -> bool {
@@ -694,6 +851,111 @@ impl super::TrapDispatcher {
             .unwrap_or(0)
     }
 
+    /// Materialize one resource-backed menu exactly as `GetMenu` does.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-106--3-107, 3-111--3-112.
+    fn load_menu_resource(&mut self, bus: &mut MacMemoryBus, menu_id: i16) -> u32 {
+        let Some((refnum, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) else {
+            bus.write_word(0x0A60, (-192i16) as u16);
+            return 0;
+        };
+
+        let handle =
+            self.get_or_create_resource_handle_in_file(bus, *b"MENU", menu_id, res_ptr, refnum);
+        if handle == 0 {
+            bus.write_word(0x0A60, (-192i16) as u16);
+            return 0;
+        }
+
+        let mut menu_ptr = bus.read_long(handle);
+        if menu_ptr == 0 {
+            menu_ptr = res_ptr;
+            bus.write_long(handle, menu_ptr);
+            self.ptr_to_handle.insert(menu_ptr, handle);
+        }
+        if menu_ptr != 0 {
+            if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
+                let resized = self.resize_resource_allocation(bus, handle, menu_ptr, 256);
+                if resized != 0 {
+                    menu_ptr = resized;
+                }
+            }
+            let menu_proc_placeholder = bus.read_long(menu_ptr + 6);
+            if !self.loaded_handles.contains_key(&menu_proc_placeholder) {
+                let mdef_id = (menu_proc_placeholder >> 16) as u16 as i16;
+                let menu_proc = self.menu_def_proc_handle(bus, mdef_id);
+                if menu_proc == 0 {
+                    bus.write_word(0x0A60, (-192i16) as u16);
+                    return 0;
+                }
+                bus.write_long(menu_ptr + 6, menu_proc);
+            }
+            let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
+            if let Some(existing) = self.menus.iter_mut().find(|menu| menu.handle == handle) {
+                parsed.in_menu_bar = existing.in_menu_bar;
+                parsed.hierarchical = existing.hierarchical;
+                parsed.visible_in_menu_bar = existing.visible_in_menu_bar;
+                *existing = parsed;
+            } else {
+                self.menus.push(parsed);
+            }
+        }
+
+        self.load_menu_color_resource(bus, menu_id);
+        bus.write_word(0x0A60, 0);
+        handle
+    }
+
+    fn calculate_standard_menu_size(&self, bus: &mut MacMemoryBus, menu_handle: u32) {
+        let Some(menu) = self.menus.iter().find(|menu| menu.handle == menu_handle) else {
+            return;
+        };
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 {
+            return;
+        }
+        let (_base, _row_bytes, _screen_width, screen_height, _depth) = self.get_screen_params();
+        let menu_height = shared_standard_menu_height(
+            &self.menu_rows(bus, &menu.items),
+            screen_height.saturating_sub(bus.read_word(addr::MBAR_HEIGHT) as i16),
+        );
+        let menu_width = self.standard_menu_width(bus, &menu.items);
+        bus.write_word(menu_ptr + 2, menu_width as u16);
+        bus.write_word(menu_ptr + 4, menu_height as u16);
+    }
+
+    fn continue_menu_bar_build<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+        loop {
+            let Some(step) = self
+                .pending_menu_bar_build
+                .as_mut()
+                .and_then(|pending| pending.build.next_step())
+            else {
+                return;
+            };
+            let menu_handle = match step {
+                SharedMenuBarBuildStep::Size(menu_handle) => menu_handle,
+                SharedMenuBarBuildStep::Complete(result_handle) => {
+                    let Some(pending) = self.pending_menu_bar_build.take() else {
+                        return;
+                    };
+                    let stack_ptr = pending.stack_ptr;
+                    bus.write_long(stack_ptr + 2, result_handle);
+                    cpu.write_reg(Register::A7, stack_ptr + 2);
+                    return;
+                }
+            };
+            if self.arm_menu_definition_to(
+                cpu,
+                bus,
+                SharedMenuDefinitionInvocation::size(menu_handle),
+                cpu.read_reg(Register::PC).wrapping_sub(2),
+            ) {
+                return;
+            }
+            self.calculate_standard_menu_size(bus, menu_handle);
+        }
+    }
+
     pub(crate) fn popup_menu_item_title(
         &self,
         bus: &MacMemoryBus,
@@ -770,44 +1032,8 @@ impl super::TrapDispatcher {
         }
     }
 
-    pub(super) fn menu_color_entry_ptr(
-        bus: &MacMemoryBus,
-        menu_id: i16,
-        menu_item: i16,
-    ) -> Option<u32> {
-        let handle = bus.read_long(addr::MENU_C_INFO);
-        if handle == 0 {
-            return None;
-        }
-        let data_ptr = bus.read_long(handle);
-        if data_ptr == 0 {
-            return None;
-        }
-
-        let size = bus.get_alloc_size(data_ptr).unwrap_or(0) as usize;
-        let mut offset = 0usize;
-        while offset + MC_ENTRY_SIZE <= size {
-            let entry_ptr = data_ptr + offset as u32;
-            if bus.read_word(entry_ptr) as i16 == menu_id
-                && bus.read_word(entry_ptr + 2) as i16 == menu_item
-            {
-                return Some(entry_ptr);
-            }
-            offset += MC_ENTRY_SIZE;
-        }
-        None
-    }
-
-    pub(super) fn menu_color_entry_rgb(
-        bus: &MacMemoryBus,
-        entry_ptr: u32,
-        rgb_offset: u32,
-    ) -> [u16; 3] {
-        [
-            bus.read_word(entry_ptr + rgb_offset),
-            bus.read_word(entry_ptr + rgb_offset + 2),
-            bus.read_word(entry_ptr + rgb_offset + 4),
-        ]
+    fn live_menu_color_table_bytes(bus: &MacMemoryBus) -> Vec<u8> {
+        Self::menu_color_table_bytes(bus, bus.read_long(addr::MENU_C_INFO))
     }
 
     fn menu_color_rgb_pixel_index(bus: &MacMemoryBus, rgb: [u16; 3]) -> Option<u8> {
@@ -862,44 +1088,6 @@ impl super::TrapDispatcher {
         }
     }
 
-    fn menu_draw_standard_hline(
-        bus: &mut MacMemoryBus,
-        screen: (u32, u32, u16, i16, i16),
-        y: i16,
-        left: i16,
-        right: i16,
-        black: bool,
-    ) {
-        let (screen_base, row_bytes, pixel_size, screen_width, screen_height) = screen;
-        if let Some(pixel_index) = Self::menu_standard_pixel_index(bus, pixel_size, black) {
-            Self::fb_hline_index(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                y,
-                left,
-                right,
-                pixel_index,
-            );
-        } else {
-            Self::fb_hline(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                y,
-                left,
-                right,
-                black,
-            );
-        }
-    }
-
     pub(super) fn menu_bar_background_pixel_index(
         &self,
         bus: &MacMemoryBus,
@@ -909,16 +1097,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233 / MTE 1992 table 3-7:
-        // a menu bar entry uses RGB4 for the menu bar color. StandardMBDF
-        // looks up only MCEntry(0, 0) for DrawBar/FlipBar and otherwise uses
-        // standard white; per-title RGB2 values do not recolor the full bar.
-        let rgb = if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 22)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, false);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).menu_bar_background())
     }
 
     pub(super) fn menu_title_pixel_index(
@@ -930,17 +1110,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-232: title entries use RGB1 for the title.
-        // If absent, the menu bar entry's RGB1 supplies the default title
-        // color; without either entry, the standard color is black.
-        let rgb = if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 4)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 4)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, true);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).title_foreground(menu_id))
     }
 
     pub(super) fn menu_title_background_pixel_index(
@@ -953,15 +1124,8 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233: a title entry duplicates the
-        // menu-bar color in RGB2 for title drawing/highlighting.
-        if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            return Self::menu_color_rgb_pixel_index(
-                bus,
-                Self::menu_color_entry_rgb(bus, title, 10),
-            );
-        }
-        self.menu_bar_background_pixel_index(bus, pixel_size)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(bus, MenuColorTable::new(&bytes).title_background(menu_id))
     }
 
     fn menu_dropdown_background_pixel_index(
@@ -973,17 +1137,11 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 pp. V-232 to V-233 / MTE 1992 table 3-7:
-        // a menu title entry uses RGB4 for the pulled-down menu
-        // background; if absent, the menu bar entry uses RGB2.
-        let rgb = if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 22)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 10)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, false);
-        };
-        Self::menu_color_rgb_pixel_index(bus, rgb)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        Self::menu_color_rgb_pixel_index(
+            bus,
+            MenuColorTable::new(&bytes).dropdown_background(menu_id),
+        )
     }
 
     fn menu_item_component_pixel_index(
@@ -997,18 +1155,13 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-233: item entries supply mark/name/command
-        // colors in RGB1/RGB2/RGB3. Missing item entries fall back to
-        // the menu title's default item color (RGB3), then the menu bar
-        // default item color (RGB3), then standard black.
-        let rgb = if let Some(item) = Self::menu_color_entry_ptr(bus, menu_id, menu_item) {
-            Self::menu_color_entry_rgb(bus, item, item_rgb_offset)
-        } else if let Some(title) = Self::menu_color_entry_ptr(bus, menu_id, 0) {
-            Self::menu_color_entry_rgb(bus, title, 16)
-        } else if let Some(menu_bar) = Self::menu_color_entry_ptr(bus, 0, 0) {
-            Self::menu_color_entry_rgb(bus, menu_bar, 16)
-        } else {
-            return Self::menu_standard_pixel_index(bus, pixel_size, true);
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        let colors = MenuColorTable::new(&bytes).item_colors(menu_id, menu_item);
+        let rgb = match item_rgb_offset {
+            4 => colors.mark,
+            10 => colors.name,
+            16 => colors.command,
+            _ => return None,
         };
         Self::menu_color_rgb_pixel_index(bus, rgb)
     }
@@ -1023,16 +1176,11 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        // IM:V 1986 p. V-233: an item entry duplicates its menu background
-        // in RGB4 so the standard MDEF can resolve selected-item colors
-        // directly; otherwise the title/menu-bar background applies.
-        if let Some(item) = Self::menu_color_entry_ptr(bus, menu_id, menu_item) {
-            return Self::menu_color_rgb_pixel_index(
-                bus,
-                Self::menu_color_entry_rgb(bus, item, 22),
-            );
-        }
-        Self::menu_dropdown_background_pixel_index(bus, menu_id, pixel_size)
+        let bytes = Self::live_menu_color_table_bytes(bus);
+        let rgb = MenuColorTable::new(&bytes)
+            .item_colors(menu_id, menu_item)
+            .background;
+        Self::menu_color_rgb_pixel_index(bus, rgb)
     }
 
     /// Pixel value the standard definition procedures use to dim
@@ -1061,7 +1209,14 @@ impl super::TrapDispatcher {
         };
         let background = resolve(background_index, [0xFFFF; 3]);
         let content = resolve(content_index, [0; 3]);
-        Self::fb_main_screen_gray_pixel_index_between(bus, background, content)
+        let midpoint = MenuColorTable::dimmed(content, background);
+        let gray = Self::fb_main_screen_pixel_index_for_rgb(bus, midpoint)?;
+        let content_pixel = Self::fb_main_screen_pixel_index_for_rgb(bus, content);
+        let background_pixel = Self::fb_main_screen_pixel_index_for_rgb(bus, background);
+        if Some(gray) == content_pixel || Some(gray) == background_pixel {
+            return None;
+        }
+        Some(gray)
     }
 
     fn menu_hilite_pixel_indexes(
@@ -1086,13 +1241,7 @@ impl super::TrapDispatcher {
     }
 
     fn menu_hilited_pixel_index(pixel: u8, background: u8, foreground: u8) -> u8 {
-        if pixel == background {
-            foreground
-        } else if pixel == foreground {
-            background
-        } else {
-            pixel
-        }
+        standard_menu_highlighted_value(pixel, background, foreground)
     }
 
     fn hilite_packed_menu_pixel(
@@ -1231,24 +1380,7 @@ impl super::TrapDispatcher {
         }
 
         let current_bytes = Self::menu_color_table_bytes(bus, current_handle);
-        let mut new_bytes = current_bytes.clone();
-        for entry in entries.chunks_exact(MC_ENTRY_SIZE) {
-            let Some((menu_id, menu_item)) = mc_entry_key(entry) else {
-                continue;
-            };
-            let mut found_offset = None;
-            for (entry_index, existing) in new_bytes.chunks_exact(MC_ENTRY_SIZE).enumerate() {
-                if mc_entry_matches(existing, menu_id, menu_item) {
-                    found_offset = Some(entry_index * MC_ENTRY_SIZE);
-                    break;
-                }
-            }
-            if let Some(offset) = found_offset {
-                new_bytes[offset..offset + MC_ENTRY_SIZE].copy_from_slice(entry);
-            } else {
-                new_bytes.extend_from_slice(entry);
-            }
-        }
+        let new_bytes = shared_merge_menu_color_entries(&current_bytes, entries);
         let _ = self.replace_handle_bytes(bus, current_handle, &new_bytes);
     }
 
@@ -1258,30 +1390,7 @@ impl super::TrapDispatcher {
             return;
         };
         let resource_size = bus.get_alloc_size(resource_ptr).unwrap_or(0) as usize;
-        if resource_size < 2 {
-            return;
-        }
-
-        let declared_count = bus.read_word(resource_ptr) as i16;
-        if declared_count <= 0 {
-            return;
-        }
-
-        let available_entries = (resource_size - 2) / MC_ENTRY_SIZE;
-        let entry_count = (declared_count as usize).min(available_entries);
-        let mut entries = Vec::with_capacity(entry_count * MC_ENTRY_SIZE);
-        for index in 0..entry_count {
-            let entry_ptr = resource_ptr + 2 + (index * MC_ENTRY_SIZE) as u32;
-            let menu_id = bus.read_word(entry_ptr) as i16;
-            if menu_id == MC_LAST_ID_INDIC {
-                continue;
-            }
-            entries.extend_from_slice(&bus.read_bytes(entry_ptr, MC_ENTRY_SIZE));
-        }
-
-        // IM:V 1986 p. V-234 and MTE 1992 p. 3-156 define compiled
-        // 'mctb' resources as a count-prefixed array of complete MCEntry
-        // records, including mctReserved.
+        let entries = compiled_menu_color_entries(&bus.read_bytes(resource_ptr, resource_size));
         self.merge_menu_color_entries(bus, &entries);
     }
 
@@ -1299,14 +1408,9 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let mut filtered = Vec::with_capacity(current_bytes.len());
-        for entry in current_bytes.chunks_exact(MC_ENTRY_SIZE) {
-            if let Some((menu_id, menu_item)) = mc_entry_key(entry) {
-                if keep(menu_id, menu_item) {
-                    filtered.extend_from_slice(entry);
-                }
-            }
-        }
+        let filtered = filter_menu_color_entries(&current_bytes, |menu_id, menu_item| {
+            keep(menu_id, menu_item)
+        });
         let _ = self.replace_handle_bytes(bus, current_handle, &filtered);
     }
 
@@ -1345,102 +1449,231 @@ impl super::TrapDispatcher {
         true
     }
 
-    fn sync_guest_menu_list(&mut self, bus: &mut MacMemoryBus) {
-        let regular = self
-            .menus
-            .iter()
-            .filter(|menu| menu.in_menu_bar && !menu.hierarchical)
-            .collect::<Vec<_>>();
-        let hierarchical = self
-            .menus
-            .iter()
-            .filter(|menu| menu.in_menu_bar && menu.hierarchical)
-            .collect::<Vec<_>>();
-
-        let title_lefts = self
-            .menu_title_regions_with_indices()
-            .into_iter()
-            .filter_map(|(index, left, _)| self.menus.get(index).map(|menu| (menu.handle, left)))
-            .collect::<std::collections::HashMap<_, _>>();
-        let last_right = self
-            .menu_title_regions_with_indices()
-            .into_iter()
-            .last()
-            .map(|(_, _, right)| right)
-            .unwrap_or(0);
-
-        // System 7's DynamicMenuList contains a six-byte header, one
-        // six-byte MenuRec per regular menu, lastHMenu + menuTitleSave,
-        // then one six-byte HMenuRec per hierarchical/pop-up menu.
-        // Inside Macintosh Volume V (1986), pp. V-228–V-230.
-        let mut bytes = Vec::with_capacity(12 + 6 * (regular.len() + hierarchical.len()));
-        bytes.extend_from_slice(&((regular.len() * 6) as i16).to_be_bytes());
-        bytes.extend_from_slice(&last_right.to_be_bytes());
-        bytes.extend_from_slice(&0i16.to_be_bytes());
-        for menu in regular {
-            bytes.extend_from_slice(&menu.handle.to_be_bytes());
-            bytes.extend_from_slice(
-                &title_lefts
-                    .get(&menu.handle)
-                    .copied()
-                    .unwrap_or(0)
-                    .to_be_bytes(),
-            );
-        }
-        bytes.extend_from_slice(&((hierarchical.len() * 6) as i16).to_be_bytes());
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        for menu in hierarchical {
-            bytes.extend_from_slice(&menu.handle.to_be_bytes());
-            bytes.extend_from_slice(&0i16.to_be_bytes());
-        }
-
-        let mut handle = bus.read_long(addr::MENU_LIST);
-        if handle == 0 {
-            handle = bus.alloc(4);
-            bus.write_long(addr::MENU_LIST, handle);
-        }
-        let _ = self.replace_handle_bytes(bus, handle, &bytes);
+    fn current_menu_list(&self, bus: &MacMemoryBus) -> Option<SharedMenuList> {
+        menu_list_from_memory(bus, bus.read_long(addr::MENU_LIST))
     }
 
-    fn ensure_menu_record_capacity(
+    /// Resolve a canonical guest MenuHandle into this gateway's derived
+    /// presentation cache. Retained Menu Manager state uses handles, as the
+    /// current menu list does; cache positions are never stable menu
+    /// identities. Macintosh Toolbox Essentials (1992), pp. 3-95--3-97.
+    pub(super) fn menu_index_for_handle(&self, menu_handle: u32) -> Option<usize> {
+        self.menus
+            .iter()
+            .position(|menu| menu.handle == menu_handle)
+    }
+
+    fn menu_handle_for_index(&self, menu_index: usize) -> Option<u32> {
+        self.menus.get(menu_index).map(|menu| menu.handle)
+    }
+
+    pub(super) fn current_menu_bar_highlight_index(&self, bus: &MacMemoryBus) -> Option<usize> {
+        let selected_menu_id = bus.read_word(addr::THE_MENU) as i16;
+        if selected_menu_id == 0 {
+            return None;
+        }
+        let (owner_handle, _owner_id) = self
+            .current_menu_list(bus)?
+            .owning_regular_menu(selected_menu_id, |handle| {
+                menu_key_menu_from_memory(bus, handle)
+            })?;
+        self.menus
+            .iter()
+            .position(|menu| menu.handle == owner_handle)
+    }
+
+    fn replace_current_menu_list(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        menu_list: &SharedMenuList,
+    ) -> bool {
+        let current_handle = bus.read_long(addr::MENU_LIST);
+        let installation =
+            install_menu_list_copy(current_handle, menu_list, |request| match request {
+                MenuListInstallRequest::Allocate { bytes } => {
+                    let handle = self.alloc_handle_with_bytes(bus, bytes);
+                    (handle != 0).then_some(handle).ok_or(())
+                }
+                MenuListInstallRequest::Replace { handle, bytes } => self
+                    .replace_handle_bytes(bus, handle, bytes)
+                    .then_some(handle)
+                    .ok_or(()),
+            });
+        let Ok(installation) = installation else {
+            return false;
+        };
+        if installation.allocated {
+            bus.write_long(addr::MENU_LIST, installation.handle);
+        }
+        true
+    }
+
+    fn relayout_menu_list(&self, bus: &MacMemoryBus, menu_list: &mut SharedMenuList) {
+        menu_list.relayout_regular_titles(
+            STANDARD_MENU_BAR_FIRST_TITLE_LEFT,
+            STANDARD_MENU_BAR_TITLE_SPACING,
+            |handle| {
+                let menu_ptr = bus.read_long(handle);
+                (menu_ptr != 0)
+                    .then(|| {
+                        let title_len = bus.read_byte(menu_ptr + 14) as usize;
+                        macroman_to_string(&bus.read_bytes(menu_ptr + 15, title_len))
+                    })
+                    .map(|title| Self::menu_title_advance(&title))
+                    .unwrap_or(0)
+            },
+        );
+    }
+
+    fn mutate_menu_items(
         &mut self,
         bus: &mut MacMemoryBus,
         menu_handle: u32,
-        min_size: u32,
-    ) -> u32 {
-        if menu_handle == 0 {
-            return 0;
-        }
+        mutation: impl FnOnce(&mut crate::menu_manager::MenuItems) -> bool,
+    ) -> bool {
         let menu_ptr = bus.read_long(menu_handle);
         if menu_ptr == 0 {
-            return 0;
-        }
-        let current_size = bus
-            .get_alloc_size(menu_ptr)
-            .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
-        if current_size >= min_size {
-            return menu_ptr;
-        }
-
-        self.resize_resource_allocation(bus, menu_handle, menu_ptr, min_size)
-    }
-
-    fn serialise_menu_items_to_memory(&mut self, bus: &mut MacMemoryBus, menu: &Menu) {
-        if menu.handle == 0 || bus.read_long(menu.handle) == 0 {
-            return;
-        }
-        let required_size = serialized_menu_record_size(bus, menu).max(256);
-        let menu_ptr = self.ensure_menu_record_capacity(bus, menu.handle, required_size);
-        if menu_ptr == 0 {
-            return;
+            return false;
         }
         let record_size = bus
             .get_alloc_size(menu_ptr)
             .unwrap_or_else(|| menu_resource_size(bus, menu_ptr) as u32);
-        write_menu_items_to_memory(bus, menu, menu_ptr, record_size);
+        let original = bus.read_bytes(menu_ptr, record_size as usize);
+        let Some(mut items) = crate::menu_manager::MenuItems::decode(&original) else {
+            return false;
+        };
+        if !mutation(&mut items) {
+            return false;
+        }
+        let Some(bytes) = items.rebuild(&original) else {
+            return false;
+        };
+        let required_size = bytes.len().max(256);
+        if record_size as usize >= required_size {
+            bus.write_bytes(menu_ptr, &bytes);
+        } else {
+            let mut allocation = bytes;
+            allocation.resize(required_size, 0);
+            if !self.replace_handle_bytes(bus, menu_handle, &allocation) {
+                return false;
+            }
+        }
+        if let Some(menu) = self
+            .menus
+            .iter_mut()
+            .find(|menu| menu.handle == menu_handle)
+        {
+            refresh_menu_from_memory(bus, menu);
+        } else {
+            let menu_ptr = bus.read_long(menu_handle);
+            if menu_ptr != 0 {
+                self.menus
+                    .push(parse_menu_resource(bus, menu_ptr, menu_handle));
+            }
+        }
+        true
+    }
+
+    /// Collect and materialize the resource names consumed by AppendResMenu
+    /// and InsertResMenu.
+    ///
+    /// A `FONT` request gives `FOND` names precedence before legacy `FONT`
+    /// names. Both routines restore automatic resource loading before they
+    /// return; filtering, sorting, duplicate suppression, insertion, and item
+    /// defaults remain shared `MenuItems` policy. Macintosh Toolbox
+    /// Essentials (1992), pp. 3-101--3-104.
+    fn resource_menu_names(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        requested_type: [u8; 4],
+    ) -> Vec<Vec<u8>> {
+        self.res_load = true;
+        let resource_types = if requested_type == *b"FONT" {
+            [Some(*b"FOND"), Some(*b"FONT")]
+        } else {
+            [Some(requested_type), None]
+        };
+        let mut names = Vec::new();
+        for resource_type in resource_types.into_iter().flatten() {
+            for (refnum, id, name, ptr) in self.named_resource_records_of_type(resource_type) {
+                let _ =
+                    self.get_or_create_resource_handle_in_file(bus, resource_type, id, ptr, refnum);
+                names.push(encode_mac_roman_lossy(&name));
+            }
+        }
+        if requested_type == *b"FONT" {
+            for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
+                if id != crate::quickdraw::fonts::FONT_APPLICATION {
+                    names.push(encode_mac_roman_lossy(name));
+                }
+            }
+        }
+        names
     }
 
     fn refresh_menus_from_memory(&mut self, bus: &MacMemoryBus) {
+        let menu_list = self.current_menu_list(bus).unwrap_or_default();
+        self.apply_menu_list_membership(bus, &menu_list);
+        for menu in &mut self.menus {
+            refresh_menu_from_memory(bus, menu);
+        }
+    }
+
+    /// Perform the one deferred DrawMenuBar requested through InvalMenuBar.
+    /// The Toolbox Event Manager calls this while scanning for update work;
+    /// repeated invalidations coalesce in the shared event state. Macintosh
+    /// Toolbox Essentials (1992), pp. 3-93 and 3-114.
+    pub(crate) fn service_invalid_menu_bar(&mut self, bus: &mut MacMemoryBus) -> bool {
+        if !self.event_queue.take_menu_bar_invalidation() {
+            return false;
+        }
+        self.release_initial_menu_bar_kiosk();
+        self.refresh_menus_from_memory(bus);
+        self.draw_menu_bar_to_fb(bus);
+        true
+    }
+
+    /// Reconcile the 68k presentation cache with the authoritative guest
+    /// MenuList without replacing cached item presentation state for handles
+    /// already known to the adapter.
+    fn apply_menu_list_membership(&mut self, bus: &MacMemoryBus, menu_list: &SharedMenuList) {
+        let mut previous = std::mem::take(&mut self.menus);
+        let mut current = Vec::with_capacity(previous.len());
+        for (handle, hierarchical) in menu_list
+            .regular_handles()
+            .map(|handle| (handle, false))
+            .chain(
+                menu_list
+                    .hierarchical_handles()
+                    .map(|handle| (handle, true)),
+            )
+        {
+            let mut menu =
+                if let Some(index) = previous.iter().position(|menu| menu.handle == handle) {
+                    previous.remove(index)
+                } else {
+                    let menu_ptr = bus.read_long(handle);
+                    if menu_ptr == 0 {
+                        continue;
+                    }
+                    parse_menu_resource(bus, menu_ptr, handle)
+                };
+            menu.in_menu_bar = true;
+            menu.hierarchical = hierarchical;
+            menu.visible_in_menu_bar = !hierarchical;
+            current.push(menu);
+        }
+        for mut menu in previous {
+            menu.in_menu_bar = false;
+            menu.hierarchical = false;
+            menu.visible_in_menu_bar = false;
+            current.push(menu);
+        }
+        self.menus = current;
+    }
+
+    fn refresh_menu_cache_from_list(&mut self, bus: &MacMemoryBus, menu_list: &SharedMenuList) {
+        self.apply_menu_list_membership(bus, menu_list);
         for menu in &mut self.menus {
             refresh_menu_from_memory(bus, menu);
         }
@@ -1455,38 +1688,16 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         Some(match (is_tool, trap_num) {
             // InitMenus ($A930)
-            // Per IM:I I-351: "InitMenus initializes the Menu
-            // Manager. It allocates space for the menu list (a
-            // relocatable block in the heap large enough for the
-            // maximum-size menu list), and draws the (empty) menu
-            // bar. Call InitMenus once before all other Menu
-            // Manager routines. An application should never have
-            // to call this procedure more than once; to start
-            // afresh with all new menus, use ClearMenuBar."
+            // Initializes an empty current menu list and menu color table.
             // PROCEDURE InitMenus;
-            // Inside Macintosh Volume I, I-351
-            //
-            // No args, no result. Pop 0 bytes.
-            //
-            // HLE compromise: Systemless's Menu Manager state lives in
-            // `self.menus: Vec<Menu>` (initialised empty at
-            // TrapDispatcher::new() time) and in the live MenuCInfo
-            // table stored at lowmem $0D50. Per IM:V 1986 p. V-234,
-            // InitMenus attempts to load 'mctb' resource 0 into that
-            // table; repeated calls merge/update entries, matching the
-            // SetMCEntries behavior used by the real Menu Manager. Empty
-            // menu bar paint is still a no-op for the same reason
-            // InitWindows's is: chrome runs once per frame at
-            // end-of-tick AND is hidden by default per menu_bar_hidden
-            // default-on (dispatch.rs:1580). Per IM:I I-351 the
-            // explicit call-once contract is enforceable but not
-            // enforced in HLE — repeated calls are idempotent no-ops,
-            // which matches the IM-documented "use ClearMenuBar to
-            // start afresh" recovery path semantically.
+            // Macintosh Toolbox Essentials (1992), pp. 3-103--3-104
             (true, 0x130) => {
                 let _ = self.ensure_menu_color_table_handle(bus);
                 self.load_menu_color_resource(bus, 0);
-                self.sync_guest_menu_list(bus);
+                let menu_list = SharedMenuList::default();
+                if self.replace_current_menu_list(bus, &menu_list) {
+                    self.apply_menu_list_membership(bus, &menu_list);
+                }
                 Ok(())
             }
 
@@ -1500,38 +1711,20 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let title_ptr = bus.read_long(sp);
                 let menu_id = bus.read_word(sp + 4) as i16;
-                let menu_ptr = bus.alloc(256);
+                let menu_proc = self.menu_def_proc_handle(bus, 0);
+                let title_bytes = if title_ptr == 0 {
+                    Vec::new()
+                } else {
+                    let title_len = usize::from(bus.read_byte(title_ptr));
+                    bus.read_bytes(title_ptr + 1, title_len)
+                };
+                let menu_record = new_standard_menu_record(menu_id, menu_proc, &title_bytes);
+                let menu_ptr = bus.alloc(menu_record.len().max(256) as u32);
                 let handle = bus.alloc(4);
                 bus.write_long(handle, menu_ptr);
                 self.ptr_to_handle.insert(menu_ptr, handle);
-                // MenuInfo layout per IM:I I-355:
-                //   +0  menuID
-                //   +2  menuWidth
-                //   +4  menuHeight
-                //   +6  menuProc (handle)
-                //   +10 enableFlags
-                //   +14 menuData (pstring title followed by items)
-                bus.write_word(menu_ptr, menu_id as u16);
-                bus.write_word(menu_ptr + 2, 0);
-                bus.write_word(menu_ptr + 4, 0);
-                let menu_proc = self.menu_def_proc_handle(bus, 0);
-                bus.write_long(menu_ptr + 6, menu_proc);
-                bus.write_long(menu_ptr + 10, 0xFFFFFFFF); // enable all items
-                let mut title = String::new();
-                if title_ptr != 0 {
-                    let title_len = bus.read_byte(title_ptr) as u32;
-                    bus.write_byte(menu_ptr + 14, title_len as u8);
-                    let mut title_bytes = Vec::with_capacity(title_len as usize);
-                    for i in 0..title_len {
-                        let b = bus.read_byte(title_ptr + 1 + i);
-                        bus.write_byte(menu_ptr + 15 + i, b);
-                        title_bytes.push(b);
-                    }
-                    // Terminate the menuData area with an empty item string
-                    // so AppendMenu's scan knows where to append.
-                    bus.write_byte(menu_ptr + 15 + title_len, 0);
-                    title = macroman_to_string(&title_bytes);
-                }
+                bus.write_bytes(menu_ptr, &menu_record);
+                let title = macroman_to_string(&title_bytes);
                 // Track the menu in self.menus immediately so AppendMenu
                 // (which often runs BEFORE InsertMenu in typical Mac app
                 // boot code) can find the menu by handle.
@@ -1563,81 +1756,30 @@ impl super::TrapDispatcher {
             (true, 0x1BF) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
-                let handle = match self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
-                    Some((refnum, res_ptr)) => {
-                        let handle = self.get_or_create_resource_handle_in_file(
-                            bus, *b"MENU", menu_id, res_ptr, refnum,
-                        );
-                        if handle != 0 {
-                            let mut menu_ptr = bus.read_long(handle);
-                            if menu_ptr == 0 {
-                                menu_ptr = res_ptr;
-                                bus.write_long(handle, menu_ptr);
-                                self.ptr_to_handle.insert(menu_ptr, handle);
-                            }
-                            if menu_ptr != 0 {
-                                if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
-                                    let resized =
-                                        self.resize_resource_allocation(bus, handle, menu_ptr, 256);
-                                    if resized != 0 {
-                                        menu_ptr = resized;
-                                    }
-                                }
-                                let menu_proc_placeholder = bus.read_long(menu_ptr + 6);
-                                if !self.loaded_handles.contains_key(&menu_proc_placeholder) {
-                                    let mdef_id = (menu_proc_placeholder >> 16) as u16 as i16;
-                                    let menu_proc = self.menu_def_proc_handle(bus, mdef_id);
-                                    if menu_proc == 0 {
-                                        bus.write_word(0x0A60, (-192i16) as u16);
-                                        cpu.write_reg(Register::D0, -192i32 as u32);
-                                        bus.write_long(sp + 2, 0);
-                                        cpu.write_reg(Register::A7, sp + 2);
-                                        return Some(Ok(()));
-                                    }
-                                    bus.write_long(menu_ptr + 6, menu_proc);
-                                }
-                                let mut parsed = parse_menu_resource(bus, menu_ptr, handle);
-                                if let Some(existing) =
-                                    self.menus.iter_mut().find(|m| m.handle == handle)
-                                {
-                                    parsed.in_menu_bar = existing.in_menu_bar;
-                                    parsed.hierarchical = existing.hierarchical;
-                                    parsed.visible_in_menu_bar = existing.visible_in_menu_bar;
-                                    *existing = parsed;
-                                } else {
-                                    self.menus.push(parsed);
-                                }
-                            }
-                        }
-                        self.load_menu_color_resource(bus, menu_id);
-                        bus.write_word(0x0A60, 0);
-                        cpu.write_reg(Register::D0, 0);
-                        handle
-                    }
-                    None => {
-                        bus.write_word(0x0A60, (-192i16) as u16);
-                        cpu.write_reg(Register::D0, -192i32 as u32);
-                        0
-                    }
-                };
+                let handle = self.load_menu_resource(bus, menu_id);
+                cpu.write_reg(Register::D0, bus.read_word(0x0A60) as i16 as i32 as u32);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
+                if handle != 0 {
+                    // A custom definition owns the initial dimensions of a
+                    // newly created MenuRecord. Macintosh Toolbox Essentials
+                    // (1992), pp. 3-148--3-151.
+                    if self.arm_menu_definition(
+                        cpu,
+                        bus,
+                        SharedMenuDefinitionInvocation::size(handle),
+                    ) {
+                        return Some(Ok(()));
+                    }
+                    self.calculate_standard_menu_size(bus, handle);
+                }
                 Ok(())
             }
 
             // AppendMenu ($A933)
             // Adds one or more menu items to the end of a menu.
             // PROCEDURE AppendMenu(theMenu: MenuHandle; data: Str255);
-            // Inside Macintosh Volume I, I-358:
-            //   The data string is a series of items separated by
-            //   semicolons. Within each item the following meta-
-            //   characters modify the item:
-            //     /<char>   command-key equivalent
-            //     (         disable item
-            //     <B/I/U/O/S  style modifier
-            //     !<char>   item mark
-            //     ^<char>   icon (icon number = char - 1)
-            // AppendMenu ($A933): Parses item text and appends to internal menu
+            // Inside Macintosh Volume I, I-358
             (true, 0x133) => {
                 let sp = cpu.read_reg(Register::A7);
                 let text_ptr = bus.read_long(sp);
@@ -1658,46 +1800,18 @@ impl super::TrapDispatcher {
                 for i in 0..len {
                     bytes.push(bus.read_byte(text_ptr + 1 + i as u32));
                 }
-                let parsed = parse_appendmenu_items(&bytes);
-
-                if !self.menus.iter().any(|m| m.handle == menu_handle) {
-                    let menu_ptr = bus.read_long(menu_handle);
-                    if menu_ptr != 0 {
-                        self.menus
-                            .push(parse_menu_resource(bus, menu_ptr, menu_handle));
-                    }
-                }
-                let menu_copy =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        for item in parsed {
-                            menu.items.push(item);
-                        }
-                        sync_enable_flags(bus, menu);
-                        Some(menu.clone())
-                    } else {
-                        None
-                    };
-                // Also serialise items into the guest-memory MENU record so
-                // CountMItems / CalcMenuSize (which parse guest memory to stay
-                // compatible with GetMenu-loaded menus) see the AppendMenu'd
-                // items. Per IM:I I-355 menuData layout.
-                if let Some(menu_copy) = menu_copy {
-                    self.serialise_menu_items_to_memory(bus, &menu_copy);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| items.append_specs(&bytes));
                 Ok(())
             }
 
             // InsertMenu ($A935)
-            // Inserts a menu into the menu bar.
+            // Inserts an existing menu into the current menu list.
             // PROCEDURE InsertMenu(theMenu: MenuHandle; beforeID: INTEGER);
-            // Inside Macintosh Volume I, I-352
-            // InsertMenu ($A935): Parses MENU resource, adds to internal menu list
+            // Macintosh Toolbox Essentials (1992), p. 3-108
             (true, 0x135) => {
                 let sp = cpu.read_reg(Register::A7);
                 let before_id = bus.read_word(sp) as i16;
                 let menu_handle = bus.read_long(sp + 2);
-                let visible_in_menu_bar = before_id != -1;
 
                 if menu_handle != 0 {
                     let menu_ptr = bus.read_long(menu_handle);
@@ -1706,9 +1820,6 @@ impl super::TrapDispatcher {
                         // current menu list; it does not create/duplicate one.
                         if let Some(idx) = self.menus.iter().position(|m| m.handle == menu_handle) {
                             self.last_inserted_menu_id = Some(self.menus[idx].id);
-                            self.menus[idx].in_menu_bar = true;
-                            self.menus[idx].hierarchical = before_id == -1;
-                            self.menus[idx].visible_in_menu_bar = visible_in_menu_bar;
                         } else {
                             // Handle wasn't previously tracked (for example a
                             // raw guest MENU handle). Parse any MENU resource
@@ -1724,9 +1835,9 @@ impl super::TrapDispatcher {
                                     menu.title,
                                     menu.items.len()
                                 );
-                                menu.in_menu_bar = true;
-                                menu.hierarchical = before_id == -1;
-                                menu.visible_in_menu_bar = visible_in_menu_bar;
+                                menu.in_menu_bar = false;
+                                menu.hierarchical = false;
+                                menu.visible_in_menu_bar = false;
                                 self.last_inserted_menu_id = Some(menu.id);
                                 self.menus.push(menu);
                             } else {
@@ -1750,9 +1861,9 @@ impl super::TrapDispatcher {
                                             items: Vec::new(),
                                             enabled: true,
                                             handle: menu_handle,
-                                            in_menu_bar: true,
-                                            hierarchical: before_id == -1,
-                                            visible_in_menu_bar,
+                                            in_menu_bar: false,
+                                            hierarchical: false,
+                                            visible_in_menu_bar: false,
                                         });
                                     }
                                 }
@@ -1761,7 +1872,18 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                self.sync_guest_menu_list(bus);
+                let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
+                if self.menus.iter().any(|menu| menu.handle == menu_handle)
+                    && menu_list.insert(menu_handle, before_id, |candidate| {
+                        let menu_ptr = bus.read_long(candidate);
+                        (menu_ptr != 0).then(|| bus.read_word(menu_ptr) as i16)
+                    })
+                {
+                    self.relayout_menu_list(bus, &mut menu_list);
+                    if self.replace_current_menu_list(bus, &menu_list) {
+                        self.apply_menu_list_membership(bus, &menu_list);
+                    }
+                }
 
                 cpu.write_reg(Register::A7, sp + 6);
                 Ok(())
@@ -1774,6 +1896,8 @@ impl super::TrapDispatcher {
             // DrawMenuBar ($A937): Renders menu-bar titles for menus currently
             // in the menu list (InsertMenu-installed) per IM:I I-352/I-354.
             (true, 0x137) => {
+                // An explicit draw satisfies any earlier deferred request.
+                self.event_queue.take_menu_bar_invalidation();
                 // Initial kiosk mode is only a frontend launch policy. A
                 // guest DrawMenuBar call is an explicit request to present its
                 // menus, so ownership returns to the guest before rendering.
@@ -1784,37 +1908,36 @@ impl super::TrapDispatcher {
             }
 
             // ClearMenuBar ($A934)
-            // Removes all menus from the menu bar.
+            // Removes every menu from the current menu list.
             // PROCEDURE ClearMenuBar;
-            // Inside Macintosh Volume I, I-354
-            //
-            // Regression coverage:
-            //   clearmenubar_empties_current_menu_list
-            //   clearmenubar_has_no_parameters_and_preserves_stack_pointer
-            // ClearMenuBar ($A934): Clears all menus from self.menus per IM:I I-354
+            // Macintosh Toolbox Essentials (1992), p. 3-110
             (true, 0x134) => {
                 // IM:V 1986 p. V-244: ClearMenuBar clears both the
                 // current menu list and the application's menu color
                 // information table.
-                self.menus.clear();
+                let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
+                menu_list.clear_entries();
+                if self.replace_current_menu_list(bus, &menu_list) {
+                    self.apply_menu_list_membership(bus, &menu_list);
+                }
                 self.clear_menu_color_table_entries(bus);
-                self.sync_guest_menu_list(bus);
                 Ok(())
             }
 
             // GetMHandle ($A949)
-            // Returns a handle to the menu with the given ID.
+            // Returns a current-list menu handle, checking submenus first.
             // FUNCTION GetMHandle(menuID: INTEGER): MenuHandle;
-            // Inside Macintosh Volume I, I-361
-            // GetMHandle ($A949): Returns handle for menus in the current menu list (inserted via InsertMenu); NIL if not found per IM:I I-361
+            // Inside Macintosh Volume V (1986), p. V-246
             (true, 0x149) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
-                let handle = self
-                    .menus
-                    .iter()
-                    .find(|m| m.id == menu_id && m.in_menu_bar)
-                    .map(|m| m.handle)
+                let handle = menu_list_from_memory(bus, bus.read_long(addr::MENU_LIST))
+                    .and_then(|menu_list| {
+                        menu_list.find_handle_by_id(menu_id, |handle| {
+                            let menu_ptr = bus.read_long(handle);
+                            (menu_ptr != 0).then(|| bus.read_word(menu_ptr) as i16)
+                        })
+                    })
                     .unwrap_or(0);
                 bus.write_long(sp + 2, handle);
                 cpu.write_reg(Register::A7, sp + 2);
@@ -1822,26 +1945,18 @@ impl super::TrapDispatcher {
             }
 
             // SetMenuBar ($A93C)
-            // Replaces the current menu bar with a copy of the saved
-            // menu list previously vended by GetMenuBar ($A93B).
+            // Replaces the current menu list with a copy of the supplied list.
             // PROCEDURE SetMenuBar(menuList: Handle);
             // Inside Macintosh Volume I, I-354
-            //
-            // Per IM:I I-354 SetMenuBar makes a copy of the input list;
-            // it does NOT call DrawMenuBar — callers must do that
-            // themselves. Per IM:V V-243 / Macintosh Toolbox Essentials
-            // 1992 8502..8511 the input is treated as opaque: we restore
-            // the snapshot we saved at GetMenuBar time keyed by the
-            // returned handle. Unrecognised handles are no-ops (no
-            // DRVR-driven runtime synthesis is in scope here).
-            // SetMenuBar ($A93C): Restores `self.menus` from the snapshot saved by GetMenuBar; unrecognised handles are no-ops per IM:I I-354
             (true, 0x13C) => {
                 let sp = cpu.read_reg(Register::A7);
-                let menu_list = bus.read_long(sp);
+                let source_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                if let Some(saved) = self.saved_menu_bars.get(&menu_list).cloned() {
-                    self.menus = saved;
-                    self.sync_guest_menu_list(bus);
+                let Some(menu_list) = menu_list_from_memory(bus, source_handle) else {
+                    return Some(Ok(()));
+                };
+                if self.replace_current_menu_list(bus, &menu_list) {
+                    self.refresh_menu_cache_from_list(bus, &menu_list);
                 }
                 Ok(())
             }
@@ -1850,67 +1965,52 @@ impl super::TrapDispatcher {
             // Reads an MBAR resource and builds a menu bar from it.
             // FUNCTION GetNewMBar(menuBarID: INTEGER): Handle;
             // Inside Macintosh Volume I, I-354
-            // GetNewMBar ($A9C0): Returns NIL when MBAR can't be read;
-            // otherwise returns a Handle to a newly built menu list that
-            // callers install with SetMenuBar.
-            // IM:V 1986 p. V-244: GetNewMBar builds a new menu color
-            // information table while restoring the previous MenuList.
             (true, 0x1C0) => {
+                if self.pending_menu_bar_build.is_some() {
+                    self.continue_menu_bar_build(cpu, bus);
+                    return Some(Ok(()));
+                }
                 let sp = cpu.read_reg(Register::A7);
                 let mbar_id = bus.read_word(sp) as i16;
                 let handle = if let Some((_, mbar_ptr)) =
                     self.find_or_load_resource_any(bus, *b"MBAR", mbar_id)
                 {
-                    let menu_count = bus.read_word(mbar_ptr) as usize;
-                    let mut snapshot = Vec::new();
+                    let mbar_size = bus.get_alloc_size(mbar_ptr).unwrap_or(0) as usize;
+                    let Some(mbar) =
+                        SharedMenuBarResource::decode(&bus.read_bytes(mbar_ptr, mbar_size))
+                    else {
+                        bus.write_long(sp + 2, 0);
+                        cpu.write_reg(Register::A7, sp + 2);
+                        return Some(Ok(()));
+                    };
                     self.clear_menu_color_table_entries(bus);
-
-                    for i in 0..menu_count {
-                        let menu_id = bus.read_word(mbar_ptr + 2 + (i as u32) * 2) as i16;
-                        let Some((_, menu_res_ptr)) =
-                            self.find_or_load_resource_any(bus, *b"MENU", menu_id)
-                        else {
-                            continue;
-                        };
-
-                        let menu_ptr = bus.alloc(256);
-                        let menu_handle = bus.alloc(4);
-                        bus.write_long(menu_handle, menu_ptr);
-                        let res_size = menu_resource_size(bus, menu_res_ptr);
-                        for j in 0..res_size.min(256) {
-                            bus.write_byte(
-                                menu_ptr + j as u32,
-                                bus.read_byte(menu_res_ptr + j as u32),
-                            );
-                        }
-
-                        let mut parsed = parse_menu_resource(bus, menu_ptr, menu_handle);
-                        // This list is not installed until SetMenuBar is called,
-                        // but once installed it represents the current menu list.
-                        parsed.in_menu_bar = true;
-                        parsed.hierarchical = false;
-                        parsed.visible_in_menu_bar = true;
-                        snapshot.push(parsed);
-                        self.load_menu_color_resource(bus, menu_id);
-                    }
-
-                    // Match GetMenuBar's handle shape: count word + menu handles.
-                    let count = snapshot.len() as u32;
-                    let list_block = bus.alloc(2 + 4 * count.max(1));
-                    bus.write_word(list_block, count as u16);
-                    for (idx, menu) in snapshot.iter().enumerate() {
-                        bus.write_long(list_block + 2 + (idx as u32) * 4, menu.handle);
-                    }
+                    let menu_handles = mbar.load_regular_handles(|menu_id| {
+                        let handle = self.load_menu_resource(bus, menu_id);
+                        (handle != 0).then_some(handle)
+                    });
+                    let mut menu_list =
+                        SharedMenuList::from_regular_handles(mbar_id, menu_handles.iter().copied());
+                    self.relayout_menu_list(bus, &mut menu_list);
+                    let list_bytes = menu_list.encode();
+                    let list_block = bus.alloc(list_bytes.len() as u32);
+                    bus.write_bytes(list_block, &list_bytes);
                     let list_handle = bus.alloc(4);
                     bus.write_long(list_handle, list_block);
-                    self.saved_menu_bars.insert(list_handle, snapshot);
+                    self.pending_menu_bar_build = Some(PendingMenuBarBuild {
+                        stack_ptr: sp,
+                        build: SharedMenuBarBuild::new(list_handle, menu_handles),
+                    });
                     list_handle
                 } else {
                     0
                 };
 
-                bus.write_long(sp + 2, handle);
-                cpu.write_reg(Register::A7, sp + 2);
+                if handle != 0 && self.pending_menu_bar_build.is_some() {
+                    self.continue_menu_bar_build(cpu, bus);
+                } else {
+                    bus.write_long(sp + 2, handle);
+                    cpu.write_reg(Register::A7, sp + 2);
+                }
                 Ok(())
             }
 
@@ -1921,16 +2021,7 @@ impl super::TrapDispatcher {
             // Essentials 1992, 3-101..3-102 (AppendResMenu — System 7
             // alias for AddResMenu).
             //
-            // Per IM:I I-353 / IM:V V-242: walks the resource fork in
-            // search order, appending each named resource of `theType`
-            // as a menu item. Resources whose name starts with `.` or
-            // `%` are skipped (Apple's convention for hidden DA names
-            // and font-family marker entries). Items are appended in
-            // resource-map order — sorted by ID ascending in our HLE,
-            // matching the on-disk map-table layout per IM:I I-118.
-            //
             // Stack: SP+0 theType (4), SP+4 theMenu handle (4). Pop 8.
-            // AddResMenu ($A94D): Walks the current resource search order, appends named resources of theType (skip names starting with '.' or '%') per IM:I I-353
             (true, 0x14D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let res_type_word = bus.read_long(sp);
@@ -1938,53 +2029,10 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 8);
 
                 let res_type = res_type_word.to_be_bytes();
-                let mut entries = self.named_resources_of_type(res_type);
-                if res_type == *b"FONT" {
-                    // Systemless's built-in bitmap families are HLE data, not
-                    // guest FONT resources. AddResMenu must nevertheless make
-                    // those installed families visible to applications that
-                    // build a Font menu from the Font Manager resource type.
-                    // Inside Macintosh Volume I (1985), pp. I-217, I-353.
-                    for &(id, name) in crate::quickdraw::fonts::FONT_NAMES {
-                        if id == crate::quickdraw::fonts::FONT_APPLICATION
-                            || entries.iter().any(|(_, entry)| entry == name)
-                        {
-                            continue;
-                        }
-                        entries.push((id, name.to_string()));
-                    }
-                    entries.sort_by_key(|(id, _)| *id);
-                }
-
-                let mut touched: Option<Menu> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    for (_id, name) in entries {
-                        if name.is_empty() || name.starts_with('.') || name.starts_with('%') {
-                            continue;
-                        }
-                        // Per IM:I I-358 AddResMenu's "no duplicates"
-                        // contract: if an item with this exact text
-                        // already exists, skip it. Real Mac does this
-                        // case-sensitively.
-                        if menu.items.iter().any(|it| it.text == name) {
-                            continue;
-                        }
-                        menu.items.push(MenuItem {
-                            text: name,
-                            icon: 0,
-                            key_equiv: 0,
-                            mark: 0,
-                            style: 0,
-                            enabled: true,
-                        });
-                    }
-                    sync_enable_flags(bus, menu);
-                    touched = Some(menu.clone());
-                }
-                if let Some(m) = touched {
-                    self.serialise_menu_items_to_memory(bus, &m);
-                }
+                let names = self.resource_menu_names(bus, res_type);
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.insert_resource_names(names, i16::MAX)
+                });
                 Ok(())
             }
 
@@ -1992,31 +2040,20 @@ impl super::TrapDispatcher {
             // Disables a menu item so it cannot be chosen.
             // PROCEDURE DisableItem(theMenu: MenuHandle; item: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-131
-            //
-            // DisableItem ($A93A): item=0 disables whole menu; item>31
-            // is a no-op for individual items per IM:TB 1992 p.3-131.
             (true, 0x13A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let item = bus.read_word(sp) as i16;
                 let menu_handle = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
 
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    if item == 0 {
-                        menu.enabled = false;
-                    } else if (1..=31).contains(&item) {
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.enabled = false;
-                        }
-                    }
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_enabled(item, false));
+                if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
                     if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
                         eprintln!(
                             "[MENUKEY] DisableItem menu={} title=\"{}\" item={} enabled={}",
                             menu.id, menu.title, item, menu.enabled
                         );
                     }
-                    sync_enable_flags(bus, menu);
                 }
                 Ok(())
             }
@@ -2025,31 +2062,20 @@ impl super::TrapDispatcher {
             // Enables a menu item so it can be chosen.
             // PROCEDURE EnableItem(theMenu: MenuHandle; item: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-131
-            //
-            // EnableItem ($A939): item=0 reenables menu title while preserving
-            // individually disabled items; item>31 is no-op per IM:TB 1992 p.3-131.
             (true, 0x139) => {
                 let sp = cpu.read_reg(Register::A7);
                 let item = bus.read_word(sp) as i16;
                 let menu_handle = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
 
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    if item == 0 {
-                        menu.enabled = true;
-                    } else if (1..=31).contains(&item) {
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.enabled = true;
-                        }
-                    }
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_enabled(item, true));
+                if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
                     if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
                         eprintln!(
                             "[MENUKEY] EnableItem menu={} title=\"{}\" item={} enabled={}",
                             menu.id, menu.title, item, menu.enabled
                         );
                     }
-                    sync_enable_flags(bus, menu);
                 }
                 Ok(())
             }
@@ -2060,6 +2086,18 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // MenuSelect ($A93D): Full mouse tracking with dropdown, highlighting, flashing
             (true, 0x13D) => {
+                if self
+                    .menu_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                {
+                    // A native MenuSelect owns this process continuation. A
+                    // nested 68k call must not consume its presentation state
+                    // or origin ABI frame.
+                    let sp = cpu.read_reg(Register::A7);
+                    self.finish_menu_no_hit(bus, cpu, sp, 4);
+                    return Some(Ok(()));
+                }
                 if self.menu_tracking.is_none() && self.pending_native_menu_selection.is_some() {
                     let sp = cpu.read_reg(Register::A7);
                     let result = self.take_native_menu_selection(bus).unwrap_or(0);
@@ -2085,6 +2123,142 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 if self.menu_tracking.is_some() {
+                    if self.active_menu_definition().is_some() {
+                        let completed = self.complete_pending_menu_definition(cpu, bus);
+                        if completed == Some(crate::menu_manager::MenuDefinitionMessage::Choose) {
+                            let active_submenu = self.menu_tracking.as_ref().and_then(|tracking| {
+                                match tracking.active_definition_pane() {
+                                    Some(SharedMenuDefinitionPane::Submenu(depth)) => tracking
+                                        .submenus
+                                        .get(depth)
+                                        .map(|submenu| submenu.dropdown_rect()),
+                                    _ => None,
+                                }
+                            });
+                            if let Some((top, left, bottom, right)) = active_submenu {
+                                let (mv, mh) = self.menu_tracking_mouse_pos(bus);
+                                if mv < top || mv >= bottom || mh < left || mh >= right {
+                                    self.update_menu_tracking_for_point(bus, mh, mv);
+                                    if self.active_menu_definition().is_none() {
+                                        self.restore_menu_definition_port(cpu, bus);
+                                        return Some(Ok(()));
+                                    }
+                                    if self.active_menu_definition().is_some_and(|definition| {
+                                        definition.pending_invocation().is_some()
+                                    }) {
+                                        if !self.arm_pending_menu_definition(
+                                            cpu,
+                                            bus,
+                                            cpu.read_reg(Register::PC).wrapping_sub(2),
+                                        ) {
+                                            self.abort_custom_menu_tracking(cpu, bus, 4);
+                                        }
+                                        return Some(Ok(()));
+                                    }
+                                }
+                            }
+                        }
+                        if self
+                            .menu_tracking
+                            .as_ref()
+                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                        {
+                            let tracking = self.menu_tracking.as_mut().unwrap();
+                            if tracking.flash_delay > 0 {
+                                tracking.flash_delay -= 1;
+                                return Some(Ok(()));
+                            }
+                            tracking.flash_remaining -= 1;
+                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
+                            let remaining = tracking.flash_remaining;
+                            let result = tracking.flash_result;
+                            if remaining == 0 {
+                                self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                                return Some(Ok(()));
+                            }
+                            self.active_menu_definition_mut()
+                                .unwrap()
+                                .flash(remaining & 1 == 0);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 4);
+                            }
+                            return Some(Ok(()));
+                        }
+                        let (mv, mh) = self.menu_tracking_mouse_pos(bus);
+                        if self.menu_tracking_button_down(bus) {
+                            let new_menu = self.current_menu_title_hit_test(bus, mh);
+                            let active_menu = self.menu_tracking.as_ref().unwrap().menu_handle;
+                            let mbar_h = bus.read_word(addr::MBAR_HEIGHT) as i16;
+                            if let Some(new_idx) = new_menu {
+                                if self.menu_handle_for_index(new_idx) != Some(active_menu)
+                                    && mv < mbar_h
+                                {
+                                    let old_saved = self.menu_tracking.take().unwrap();
+                                    let sp = self.menu_tracking_stack_ptr;
+                                    self.clear_active_menu_definition();
+                                    self.restore_menu_tracking_pixels(bus, old_saved);
+                                    if self.open_menu_dropdown(bus, new_idx, sp) {
+                                        self.prepare_menu_definition_port(cpu, bus);
+                                        if !self.arm_pending_menu_definition(
+                                            cpu,
+                                            bus,
+                                            cpu.read_reg(Register::PC).wrapping_sub(2),
+                                        ) {
+                                            self.abort_custom_menu_tracking(cpu, bus, 4);
+                                        }
+                                    } else {
+                                        self.restore_menu_definition_port(cpu, bus);
+                                    }
+                                    return Some(Ok(()));
+                                }
+                            }
+                        }
+
+                        let hit_point = (u32::from(mv as u16) << 16) | u32::from(mh as u16);
+                        let choose_armed = self
+                            .active_menu_definition_mut()
+                            .and_then(|tracking| tracking.choose(hit_point))
+                            .is_some();
+                        if choose_armed {
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 4);
+                            }
+                            return Some(Ok(()));
+                        }
+
+                        if !self.menu_tracking_button_down(bus) {
+                            let definition = *self.active_menu_definition().unwrap();
+                            let item = definition.which_item();
+                            let menu_handle = definition.menu_handle();
+                            let menu_id = bus.read_long(menu_handle);
+                            let result = if item > 0 && menu_id != 0 {
+                                (u32::from(bus.read_word(menu_id)) << 16) | u32::from(item as u16)
+                            } else {
+                                0
+                            };
+                            if result == 0 {
+                                self.finish_custom_menu_tracking(cpu, bus, 4, 0);
+                            } else {
+                                let tracking = self.menu_tracking.as_mut().unwrap();
+                                let flash_enabled = tracking.begin_flash(
+                                    bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                    result,
+                                );
+                                if !flash_enabled {
+                                    self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                                }
+                            }
+                        }
+                        return Some(Ok(()));
+                    }
                     // Re-fire: we're in tracking mode
                     if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
                         // Flashing phase: hold each toggle for 3 frames (~50ms),
@@ -2099,31 +2273,32 @@ impl super::TrapDispatcher {
                         }
                         // Advance to next toggle
                         t.flash_remaining -= 1;
-                        t.flash_delay = 3; // frames to hold next phase
+                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                         let new_remaining = t.flash_remaining;
 
                         if new_remaining == 0 {
                             // Flash complete — finish up
-                            let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
+                            let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
                             let active_menu = saved
                                 .submenus
                                 .last()
-                                .map(|submenu| submenu.menu)
-                                .unwrap_or(saved.active_menu);
+                                .map(|submenu| submenu.menu_handle)
+                                .unwrap_or(saved.menu_handle);
                             let highlighted_item = saved
                                 .submenus
                                 .last()
                                 .map(|submenu| submenu.highlighted_item)
                                 .unwrap_or(saved.highlighted_item);
                             self.restore_menu_tracking_pixels(bus, saved);
+                            bus.write_word(addr::THE_MENU, (result >> 16) as u16);
                             self.draw_menu_bar_to_fb(bus);
                             bus.write_long(sp + 4, result);
                             cpu.write_reg(Register::A7, sp + 4);
                             self.record_menuselect_input_trace(
                                 "finish",
                                 None,
-                                Some(active_menu),
+                                self.menu_index_for_handle(active_menu),
                                 Some(highlighted_item),
                                 Some(result),
                                 "enabled_item_selected",
@@ -2139,7 +2314,21 @@ impl super::TrapDispatcher {
                         // the pointer until mouse-up and returns that item.
                         let (mv, mh) = self.menu_tracking_mouse_pos(bus);
                         self.update_menu_tracking_for_point(bus, mh, mv);
-                        let result = self.menu_tracking_selection_result();
+                        if self
+                            .active_menu_definition()
+                            .is_some_and(|definition| definition.pending_invocation().is_some())
+                        {
+                            self.prepare_menu_definition_port(cpu, bus);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 4);
+                            }
+                            return Some(Ok(()));
+                        }
+                        let result = self.menu_tracking_selection_result(bus);
                         if result != 0 {
                             let (active_menu, item_idx) = self
                                 .menu_tracking
@@ -2149,43 +2338,57 @@ impl super::TrapDispatcher {
                                         .submenus
                                         .last()
                                         .filter(|submenu| submenu.highlighted_item > 0)
-                                        .map(|submenu| (submenu.menu, submenu.highlighted_item))
+                                        .map(|submenu| {
+                                            (submenu.menu_handle, submenu.highlighted_item)
+                                        })
                                         .or_else(|| {
                                             (tracking.highlighted_item > 0).then_some((
-                                                tracking.active_menu,
+                                                tracking.menu_handle,
                                                 tracking.highlighted_item,
                                             ))
                                         })
                                 })
                                 .unwrap_or((0, 0));
-                            // Start flashing: 6 toggles = 3 flashes
+                            // MenuFlash stores the caller-selected blink count;
+                            // each blink has one hidden and one visible phase.
                             let tracking = self.menu_tracking.as_mut().unwrap();
-                            tracking.flash_remaining = 6;
-                            tracking.flash_delay = 3;
-                            tracking.flash_result = result;
+                            let flash_enabled = tracking.begin_flash(
+                                bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                result,
+                            );
                             self.record_menuselect_input_trace(
                                 "release",
                                 None,
-                                Some(active_menu),
+                                self.menu_index_for_handle(active_menu),
                                 Some(item_idx),
                                 Some(result),
-                                "start_flash",
+                                if !flash_enabled {
+                                    "blink_disabled"
+                                } else {
+                                    "start_flash"
+                                },
                             );
+                            if !flash_enabled {
+                                self.finish_custom_menu_tracking(cpu, bus, 4, result);
+                            }
                         } else {
                             // No item selected — return 0 immediately
                             let (sp, active_menu) = self
                                 .menu_tracking
                                 .as_ref()
-                                .map(|tracking| (tracking.stack_ptr, tracking.active_menu))
+                                .map(|tracking| {
+                                    (self.menu_tracking_stack_ptr, tracking.menu_handle)
+                                })
                                 .unwrap();
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
+                            bus.write_word(addr::THE_MENU, 0);
                             self.draw_menu_bar_to_fb(bus);
                             self.finish_menu_no_hit(bus, cpu, sp, 4);
                             self.record_menuselect_input_trace(
                                 "release",
                                 None,
-                                Some(active_menu),
+                                self.menu_index_for_handle(active_menu),
                                 Some(0),
                                 Some(0),
                                 "no_selection",
@@ -2196,17 +2399,30 @@ impl super::TrapDispatcher {
                         let (mv, mh) = self.menu_tracking_mouse_pos(bus);
 
                         // Check if mouse moved to a different menu title
-                        let new_menu = self.menu_title_hit_test(mh);
+                        let new_menu = self.current_menu_title_hit_test(bus, mh);
                         let tracking = self.menu_tracking.as_ref().unwrap();
                         let mbar_h =
                             bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
                         if let Some(new_idx) = new_menu {
-                            if new_idx != tracking.active_menu && mv < mbar_h {
+                            if self.menu_handle_for_index(new_idx) != Some(tracking.menu_handle)
+                                && mv < mbar_h
+                            {
                                 // Switch to different menu
                                 let old_saved = self.menu_tracking.take().unwrap();
-                                let sp = old_saved.stack_ptr;
+                                let sp = self.menu_tracking_stack_ptr;
                                 self.restore_menu_tracking_pixels(bus, old_saved);
-                                self.open_menu_dropdown(bus, new_idx, sp);
+                                if self.open_menu_dropdown(bus, new_idx, sp) {
+                                    self.prepare_menu_definition_port(cpu, bus);
+                                    if !self.arm_pending_menu_definition(
+                                        cpu,
+                                        bus,
+                                        cpu.read_reg(Register::PC).wrapping_sub(2),
+                                    ) {
+                                        self.abort_custom_menu_tracking(cpu, bus, 4);
+                                    }
+                                } else {
+                                    self.restore_menu_definition_port(cpu, bus);
+                                }
                                 self.record_menuselect_input_trace(
                                     "tracking_switch",
                                     None,
@@ -2224,23 +2440,37 @@ impl super::TrapDispatcher {
                             tracking
                                 .submenus
                                 .last()
-                                .map(|submenu| (submenu.menu, submenu.highlighted_item))
-                                .unwrap_or((tracking.active_menu, tracking.highlighted_item))
+                                .map(|submenu| (submenu.menu_handle, submenu.highlighted_item))
+                                .unwrap_or((tracking.menu_handle, tracking.highlighted_item))
                         });
                         self.update_menu_tracking_for_point(bus, mh, mv);
+                        if self
+                            .active_menu_definition()
+                            .is_some_and(|definition| definition.pending_invocation().is_some())
+                        {
+                            self.prepare_menu_definition_port(cpu, bus);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 4);
+                            }
+                            return Some(Ok(()));
+                        }
                         let new_trace = self.menu_tracking.as_ref().map(|tracking| {
                             tracking
                                 .submenus
                                 .last()
-                                .map(|submenu| (submenu.menu, submenu.highlighted_item))
-                                .unwrap_or((tracking.active_menu, tracking.highlighted_item))
+                                .map(|submenu| (submenu.menu_handle, submenu.highlighted_item))
+                                .unwrap_or((tracking.menu_handle, tracking.highlighted_item))
                         });
                         if new_trace != old_trace {
                             let (active_menu, highlighted_item) = new_trace.unwrap_or((0, 0));
                             self.record_menuselect_input_trace(
                                 "tracking_update",
                                 None,
-                                Some(active_menu),
+                                self.menu_index_for_handle(active_menu),
                                 Some(highlighted_item),
                                 None,
                                 if highlighted_item > 0 {
@@ -2264,7 +2494,7 @@ impl super::TrapDispatcher {
                     // supplied by the application; the Menu Manager uses it
                     // to choose the initial menu before it owns the tracking
                     // loop. Inside Macintosh Volume I, I-355.
-                    if let Some(menu_idx) = self.menu_title_hit_test(pt_h) {
+                    if let Some(menu_idx) = self.current_menu_title_hit_test(bus, pt_h) {
                         self.record_menuselect_input_trace(
                             "start",
                             Some((pt_v, pt_h)),
@@ -2276,7 +2506,16 @@ impl super::TrapDispatcher {
                         // Pop the Point parameter (4 bytes) but keep result space
                         // Stack on entry: SP+0: pt(4), SP+4: result(4)
                         // We store SP so we can write result later
-                        self.open_menu_dropdown(bus, menu_idx, sp);
+                        if self.open_menu_dropdown(bus, menu_idx, sp) {
+                            self.prepare_menu_definition_port(cpu, bus);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 4);
+                            }
+                        }
                         self.record_menuselect_input_trace(
                             "tracking_entered",
                             Some((pt_v, pt_h)),
@@ -2308,7 +2547,124 @@ impl super::TrapDispatcher {
             // Macintosh Toolbox Essentials 1992, 3-120
             // PopUpMenuSelect ($A80B): Full re-fire tracking with dropdown display, item highlighting, flash animation; uses MenuTrackingState
             (true, 0x00B) => {
+                if self
+                    .menu_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| tracking.front_buffer.is_some())
+                {
+                    // Preserve an outer native retained call and return from
+                    // this nested Pascal call through its own result slot.
+                    let sp = cpu.read_reg(Register::A7);
+                    self.finish_menu_no_hit(bus, cpu, sp, 10);
+                    return Some(Ok(()));
+                }
                 if self.menu_tracking.is_some() {
+                    if self.active_menu_definition().is_some() {
+                        let completed = self.complete_pending_menu_definition(cpu, bus);
+                        if completed == Some(crate::menu_manager::MenuDefinitionMessage::PopUp) {
+                            let rect = self.active_menu_definition().unwrap().menu_rect();
+                            if rect.2 <= rect.0 || rect.3 <= rect.1 {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                                return Some(Ok(()));
+                            }
+                            let menu_handle = self.menu_tracking.as_ref().unwrap().menu_handle;
+                            let Some(menu_idx) = self.menu_index_for_handle(menu_handle) else {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                                return Some(Ok(()));
+                            };
+                            self.restore_visible_dialog_snapshots(bus);
+                            let saved = self.save_dropdown_pixels(bus, rect);
+                            let mut tracking = tracked_menu_state(
+                                MenuTrackingKind::PopUp,
+                                menu_handle,
+                                rect,
+                                saved,
+                            );
+                            tracking.definition = self.menu_definition_tracking.take();
+                            *self.menu_tracking = Some(tracking);
+                            self.draw_menu_dropdown_chrome(bus, menu_idx, rect);
+                            self.active_menu_definition_mut().unwrap().draw();
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                            }
+                            return Some(Ok(()));
+                        }
+
+                        if self
+                            .menu_tracking
+                            .as_ref()
+                            .is_some_and(|tracking| tracking.flash_remaining > 0)
+                        {
+                            let tracking = self.menu_tracking.as_mut().unwrap();
+                            if tracking.flash_delay > 0 {
+                                tracking.flash_delay -= 1;
+                                return Some(Ok(()));
+                            }
+                            tracking.flash_remaining -= 1;
+                            tracking.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
+                            let remaining = tracking.flash_remaining;
+                            let result = tracking.flash_result;
+                            if remaining == 0 {
+                                self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                                return Some(Ok(()));
+                            }
+                            self.active_menu_definition_mut()
+                                .unwrap()
+                                .flash(remaining & 1 == 0);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                            }
+                            return Some(Ok(()));
+                        }
+
+                        let (mv, mh) = self.menu_tracking_mouse_pos(bus);
+                        let hit_point = (u32::from(mv as u16) << 16) | u32::from(mh as u16);
+                        let choose_armed = self
+                            .active_menu_definition_mut()
+                            .and_then(|tracking| tracking.choose(hit_point))
+                            .is_some();
+                        if choose_armed {
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                            }
+                            return Some(Ok(()));
+                        }
+                        if !self.menu_tracking_button_down(bus) {
+                            let definition = *self.active_menu_definition().unwrap();
+                            let item = definition.which_item();
+                            let menu_ptr = bus.read_long(definition.menu_handle());
+                            let result = if item > 0 && menu_ptr != 0 {
+                                (u32::from(bus.read_word(menu_ptr)) << 16) | u32::from(item as u16)
+                            } else {
+                                0
+                            };
+                            if result == 0 {
+                                self.finish_custom_menu_tracking(cpu, bus, 10, 0);
+                            } else {
+                                let tracking = self.menu_tracking.as_mut().unwrap();
+                                let flash_enabled = tracking.begin_flash(
+                                    bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                    result,
+                                );
+                                if !flash_enabled {
+                                    self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                                }
+                            }
+                        }
+                        return Some(Ok(()));
+                    }
                     // Re-fire: popup tracking is active
                     if self.menu_tracking.as_ref().unwrap().flash_remaining > 0 {
                         let result = self.menu_tracking.as_ref().unwrap().flash_result;
@@ -2318,11 +2674,11 @@ impl super::TrapDispatcher {
                             return Some(Ok(()));
                         }
                         t.flash_remaining -= 1;
-                        t.flash_delay = 3;
+                        t.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                         let new_remaining = t.flash_remaining;
 
                         if new_remaining == 0 {
-                            let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
+                            let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2336,14 +2692,18 @@ impl super::TrapDispatcher {
                         // held-button tracking refire. IM:I I-355.
                         let (mv, mh) = self.menu_tracking_mouse_pos(bus);
                         self.update_menu_tracking_for_point(bus, mh, mv);
-                        let result = self.menu_tracking_selection_result();
+                        let result = self.menu_tracking_selection_result(bus);
                         if result != 0 {
                             let tracking = self.menu_tracking.as_mut().unwrap();
-                            tracking.flash_remaining = 6;
-                            tracking.flash_delay = 3;
-                            tracking.flash_result = result;
+                            let flash_enabled = tracking.begin_flash(
+                                bus.read_word(crate::memory::globals::addr::MENU_FLASH),
+                                result,
+                            );
+                            if !flash_enabled {
+                                self.finish_custom_menu_tracking(cpu, bus, 10, result);
+                            }
                         } else {
-                            let sp = self.menu_tracking.as_ref().unwrap().stack_ptr;
+                            let sp = self.menu_tracking_stack_ptr;
                             let saved = self.menu_tracking.take().unwrap();
                             self.restore_menu_tracking_pixels(bus, saved);
                             self.restore_visible_dialog_snapshots(bus);
@@ -2382,6 +2742,31 @@ impl super::TrapDispatcher {
                         .iter()
                         .position(|m| m.handle == menu_handle || m.id == menu_id)
                     {
+                        if !self.menu_uses_standard_definition(bus, menu_ptr) {
+                            *self.menu_tracking = Some(tracked_menu_state(
+                                MenuTrackingKind::PopUp,
+                                menu_handle,
+                                (0, 0, 0, 0),
+                                Vec::new(),
+                            ));
+                            self.menu_tracking_stack_ptr = sp;
+                            let hit_point = (u32::from(top as u16) << 16) | u32::from(left as u16);
+                            self.menu_definition_tracking =
+                                Some(SharedMenuDefinitionTracking::begin_popup(
+                                    menu_handle,
+                                    hit_point,
+                                    popup_item,
+                                ));
+                            self.prepare_menu_definition_port(cpu, bus);
+                            if !self.arm_pending_menu_definition(
+                                cpu,
+                                bus,
+                                cpu.read_reg(Register::PC).wrapping_sub(2),
+                            ) {
+                                self.abort_custom_menu_tracking(cpu, bus, 10);
+                            }
+                            return Some(Ok(()));
+                        }
                         // Popup menus bypass `open_menu_dropdown`, so fault
                         // their item-icon resources in here before sizing and
                         // drawing. Macintosh Toolbox Essentials (1992),
@@ -2389,22 +2774,25 @@ impl super::TrapDispatcher {
                         // resolves item icon number + 256, with `cicn`
                         // taking precedence over the monochrome families.
                         self.preload_menu_item_icon_resources(bus, menu_idx);
-                        let (dd_rect, highlighted_item) =
-                            self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item);
+                        let Some((dd_rect, highlighted_item, content_top)) =
+                            self.popup_menu_dropdown_rect(bus, menu_idx, top, left, popup_item)
+                        else {
+                            self.finish_menu_no_hit(bus, cpu, sp, 10);
+                            return Some(Ok(()));
+                        };
 
                         self.restore_visible_dialog_snapshots(bus);
                         let saved = self.save_dropdown_pixels(bus, dd_rect);
-                        self.menu_tracking = Some(MenuTrackingState {
-                            active_menu: menu_idx,
-                            highlighted_item: 0,
-                            saved_pixels: saved,
-                            dropdown_rect: dd_rect,
-                            submenus: Vec::new(),
-                            stack_ptr: sp,
-                            flash_remaining: 0,
-                            flash_delay: 0,
-                            flash_result: 0,
-                        });
+                        *self.menu_tracking = Some(tracked_menu_state_with_content_top(
+                            MenuTrackingKind::PopUp,
+                            menu_handle,
+                            dd_rect,
+                            content_top,
+                            saved,
+                        ));
+                        let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+                        Self::write_menu_scrolling_globals(bus, &rows, content_top);
+                        self.menu_tracking_stack_ptr = sp;
                         self.draw_menu_dropdown(bus, menu_idx, dd_rect);
                         if highlighted_item > 0 {
                             self.set_menu_tracking_highlight(bus, highlighted_item);
@@ -2420,63 +2808,29 @@ impl super::TrapDispatcher {
             // HiliteMenu ($A938)
             // Highlights or unhighlights a menu title in the menu bar.
             // PROCEDURE HiliteMenu(menuID: INTEGER);
-            // Inside Macintosh Volume I (1985), pp. I-355..I-356
-            //
-            // Per IM:I I-356: "HiliteMenu highlights the title of the
-            // given menu, or does nothing if the title is already
-            // highlighted. Since only one menu title can be highlighted
-            // at a time, it unhighlights any previously highlighted
-            // menu title. If menuID is 0 (or isn't the ID of any menu
-            // in the menu list), HiliteMenu simply unhighlights
-            // whichever menu title is highlighted (if any)."
-            //
-            // Tool-bit Pascal PROCEDURE calling convention: the caller
-            // pushes the 2-byte menuID INTEGER, the trap pops it, no
-            // FUNCTION result slot is written. MPW Universal Headers
-            // Menus.h declares
-            //     EXTERN_API(void) HiliteMenu(MenuID menuID)
-            //                                ONEWORDINLINE(0xA938);
-            //
-            // Stack discipline:
-            //   - A7 unchanged across the call after the 2-byte menuID
-            //     argument is consumed (no FUNCTION result slot, no
-            //     other stack frame).
-            //
-            // Behaviors intentionally not modeled here:
-            //   - The visible menu bar redraw. BasiliskII System 7.5.3
-            //     ROM unconditionally stamps a menu bar strip with the
-            //     named menu's title highlighted (or unhighlighted when
-            //     menuID=0). Systemless's HLE skips the
-            //     `draw_menu_bar_to_fb` call when `self.menus.is_empty()`
-            //     because the host runtime draws the menu bar directly
-            //     from the Rust menu list and would otherwise produce a
-            //     spare bottom-border line in the no-menu case (a
-            //     visible divergence from BII observed in earlier
-            //     iterations).
-            //   - The active dropdown / menu-tracking state. Systemless
-            //     tracks open dropdowns in `self.menu_tracking` and
-            //     restores saved pixels via `restore_dropdown_pixels`
-            //     when HiliteMenu is called; BII's TheMenu lowmem
-            //     global is structurally different.
+            // Macintosh Toolbox Essentials (1992), pp. 3-119 and 3-153.
             (true, 0x138) => {
                 let sp = cpu.read_reg(Register::A7);
-                let _menu_id = bus.read_word(sp) as i16;
+                let requested_menu_id = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
 
                 // If there's still a dropdown open, close it
                 if let Some(tracking) = self.menu_tracking.take() {
-                    self.restore_dropdown_pixels(
-                        bus,
-                        tracking.dropdown_rect,
-                        &tracking.saved_pixels,
-                    );
+                    self.restore_menu_tracking_pixels(bus, tracking);
                 }
-                // Redraw menu bar without any highlight. Skip when the
-                // app has no menus installed -- real ROM doesn't stamp
-                // a menu-bar strip in that case, so Systemless shouldn't
-                // either (the spare bottom-border line was a visible
-                // divergence from BasiliskII for HiliteMenu-without-
-                // InsertMenu callers).
+                let target_menu_id = self
+                    .current_menu_list(bus)
+                    .and_then(|menu_list| {
+                        menu_list.find_regular_handle_by_id(requested_menu_id, |handle| {
+                            let menu = bus.read_long(handle);
+                            (menu != 0).then(|| bus.read_word(menu) as i16)
+                        })
+                    })
+                    .map_or(0, |_| requested_menu_id);
+                bus.write_word(addr::THE_MENU, target_menu_id as u16);
+                // Skip drawing when the app has no installed menus; the low
+                // memory state is still cleared above, but no spare menu-bar
+                // border is stamped into the framebuffer.
                 if !self.menus.is_empty() {
                     self.draw_menu_bar_to_fb(bus);
                 }
@@ -2489,45 +2843,25 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume I, I-355
             // Stack: SP+0: ch (2 bytes), SP+2: result (4 bytes).
             // Callee pops 2 bytes (ch), leaves LONGINT at SP.
-            // MenuKey ($A93E): Searches enabled menus in the current menu list
-            // for a matching key equivalent; scan order is right-to-left per
-            // IM:I I-355.
+            // MenuKey ($A93E): Searches regular menus right-to-left, then the
+            // hierarchical portion. IM:I I-356; IM:V V-245.
             (true, 0x13E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let ch = (bus.read_word(sp) & 0xFF) as u8;
 
-                // Search enabled items in enabled menus currently in the menu
-                // list. IM:I I-355 documents right-to-left menu scan order.
-                let mut result: u32 = 0;
-                let mut matched_menu_idx: Option<usize> = None;
-                let ch_upper = (ch as char).to_ascii_uppercase() as u8;
-                self.refresh_menus_from_memory(bus);
-                for (menu_idx, menu) in self.menus.iter().enumerate().rev() {
-                    if !menu.in_menu_bar || !menu.enabled {
-                        continue;
-                    }
-                    for (i, item) in menu.items.iter().enumerate() {
-                        if item.enabled
-                            && Self::menu_item_has_command_key(item)
-                            && (item.key_equiv as char).to_ascii_uppercase() as u8 == ch_upper
-                        {
-                            result = ((menu.id as u32) << 16) | ((i + 1) as u32);
-                            matched_menu_idx = Some(menu_idx);
-                            break;
-                        }
-                    }
-                    if result != 0 {
-                        break;
-                    }
-                }
-                // IM:I I-356 says MenuKey highlights the matching menu title
-                // and the app later calls HiliteMenu(0) to clear it. The
-                // packed LongInt result remains the guest-visible behavior;
-                // title pixels are renderer/theme-owned chrome.
-                if let Some(menu_idx) = matched_menu_idx {
-                    if self.menus[menu_idx].visible_in_menu_bar {
-                        self.highlight_menu_title(bus, menu_idx);
-                    }
+                let selection = self.current_menu_list(bus).and_then(|menu_list| {
+                    menu_list.menu_key_selection(ch, |menu_handle| {
+                        menu_key_menu_from_memory(bus, menu_handle)
+                    })
+                });
+                let result = selection.map_or(0, |selection| selection.packed_result());
+                // The selected submenu ID remains in TheMenu while the
+                // shared hierarchy resolver redraws its owning regular title.
+                // A miss clears any prior command-key highlight, matching the
+                // native PowerPC gateway.
+                bus.write_word(addr::THE_MENU, (result >> 16) as u16);
+                if !self.menus.is_empty() {
+                    self.draw_menu_bar_to_fb(bus);
                 }
 
                 if std::env::var_os("SYSTEMLESS_TRACE_MENUKEY").is_some() {
@@ -2567,7 +2901,6 @@ impl super::TrapDispatcher {
             // Pascal BOOLEAN: TRUE = $0100 (byte 1 in high byte of word).
             // The low byte (SP+1) holds stale stack bytes so only SP+0
             // carries the value.
-            // CheckItem ($A945): Sets/clears checkmark on internal menu item
             (true, 0x145) => {
                 let sp = cpu.read_reg(Register::A7);
                 let checked = bus.read_byte(sp) != 0;
@@ -2575,24 +2908,9 @@ impl super::TrapDispatcher {
                 let menu_handle = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
 
-                let touched =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.mark = if checked { 0x12 } else { 0 }; // 0x12 = checkmark char
-                            Some(menu.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                // The Menu Manager record is public guest state. Preserve the
-                // mark in its item record so a later mutation that refreshes
-                // the cached menu cannot resurrect the previous value.
-                // Inside Macintosh Volume I, I-355 and I-358.
-                if let Some(menu) = touched {
-                    self.serialise_menu_items_to_memory(bus, &menu);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.set_mark(item, if checked { 0x12 } else { 0 })
+                });
                 Ok(())
             }
 
@@ -2600,7 +2918,6 @@ impl super::TrapDispatcher {
             // Changes the text of a menu item; does not affect other attributes.
             // PROCEDURE SetItem(theMenu: MenuHandle; item: INTEGER; itemString: Str255);
             // Inside Macintosh Volume I, I-357
-            // SetItem ($A947): Updates item text in internal menu cache
             (true, 0x147) => {
                 let sp = cpu.read_reg(Register::A7);
                 let text_ptr = bus.read_long(sp);
@@ -2619,29 +2936,9 @@ impl super::TrapDispatcher {
                     for i in 0..text_len {
                         text_bytes.push(bus.read_byte(text_ptr + 1 + i as u32));
                     }
-                    let text = macroman_to_string(&text_bytes);
-                    if !self.menus.iter().any(|m| m.handle == menu_handle) {
-                        let menu_ptr = bus.read_long(menu_handle);
-                        if menu_ptr != 0 {
-                            self.menus
-                                .push(parse_menu_resource(bus, menu_ptr, menu_handle));
-                        }
-                    }
-                    let mut touched: Option<Menu> = None;
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        let idx = (item - 1) as usize;
-                        if idx < menu.items.len() {
-                            menu.items[idx].text = text;
-                            touched = Some(menu.clone());
-                        }
-                    }
-                    // Keep guest-memory MENU record in sync. CountMItems /
-                    // CalcMenuSize read guest memory via
-                    // count_menu_items_from_memory.
-                    if let Some(m) = touched {
-                        self.serialise_menu_items_to_memory(bus, &m);
-                    }
+                    self.mutate_menu_items(bus, menu_handle, |items| {
+                        items.set_text(item, &text_bytes)
+                    });
                 }
                 Ok(())
             }
@@ -2657,7 +2954,6 @@ impl super::TrapDispatcher {
                 let menu_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 self.menus.retain(|m| m.handle != menu_handle);
-                self.sync_guest_menu_list(bus);
                 if menu_handle != 0 {
                     let menu_ptr = bus.read_long(menu_handle);
                     if menu_ptr != 0 {
@@ -2676,16 +2972,26 @@ impl super::TrapDispatcher {
             }
 
             // DeleteMenu ($A936)
-            // Removes a menu from the menu bar.
+            // Removes the menu with the given ID from the current menu list.
             // PROCEDURE DeleteMenu(menuID: INTEGER);
-            // Inside Macintosh Volume I, I-353
-            // DeleteMenu ($A936): Removes menu by ID from internal list
+            // Macintosh Toolbox Essentials (1992), p. 3-109
             (true, 0x136) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_id = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
-                self.menus.retain(|m| m.id != menu_id);
-                self.sync_guest_menu_list(bus);
+                let mut menu_list = self.current_menu_list(bus).unwrap_or_default();
+                if menu_list
+                    .remove_by_id(menu_id, |candidate| {
+                        let menu_ptr = bus.read_long(candidate);
+                        (menu_ptr != 0).then(|| bus.read_word(menu_ptr) as i16)
+                    })
+                    .is_some()
+                {
+                    self.relayout_menu_list(bus, &mut menu_list);
+                    if self.replace_current_menu_list(bus, &menu_list) {
+                        self.apply_menu_list_membership(bus, &menu_list);
+                    }
+                }
                 // IM:V 1986 p. V-244: DeleteMenu removes all color
                 // entries for the deleted menu ID from MenuCInfo.
                 self.filter_menu_color_table_entries(bus, |id, _item| id != menu_id);
@@ -2695,8 +3001,7 @@ impl super::TrapDispatcher {
             // CountMItems ($A950)
             // Returns the number of items in the specified menu.
             // FUNCTION CountMItems(theMenu: MenuHandle): INTEGER;
-            // Inside Macintosh Volume IV, IV-56
-            // CountMItems ($A950): Counts items from MENU data in guest memory
+            // Macintosh Toolbox Essentials (1992), p. 3-141
             (true, 0x150) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_handle = bus.read_long(sp);
@@ -2769,27 +3074,12 @@ impl super::TrapDispatcher {
             // Sets the icon number of a menu item.
             // PROCEDURE SetItemIcon(theMenu: MenuHandle; item: INTEGER; icon: Byte);
             // Inside Macintosh Volume I, I-359
-            // SetItemIcon ($A940): Stores icon byte in menu item per IM:I I-359
             (true, 0x140) => {
                 let sp = cpu.read_reg(Register::A7);
                 let icon = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.icon = icon;
-                            Some(menu.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                if let Some(menu) = touched {
-                    self.serialise_menu_items_to_memory(bus, &menu);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_icon(item, icon));
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
@@ -2825,27 +3115,12 @@ impl super::TrapDispatcher {
             // Sets the character style of a menu item.
             // PROCEDURE SetItemStyle(theMenu: MenuHandle; item: INTEGER; chStyle: Style);
             // Inside Macintosh Volume I, I-359
-            // SetItemStyle ($A942): Stores style byte in menu item per IM:I I-359
             (true, 0x142) => {
                 let sp = cpu.read_reg(Register::A7);
                 let style = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.style = style;
-                            Some(menu.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                if let Some(menu) = touched {
-                    self.serialise_menu_items_to_memory(bus, &menu);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_style(item, style));
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
@@ -2878,27 +3153,12 @@ impl super::TrapDispatcher {
             // Sets the mark character of a menu item.
             // PROCEDURE SetItemMark(theMenu: MenuHandle; item: INTEGER; markChar: CHAR);
             // Inside Macintosh Volume I, I-358
-            // SetItemMark ($A944): Sets mark on internal menu item
             (true, 0x144) => {
                 let sp = cpu.read_reg(Register::A7);
                 let mark_char = (bus.read_word(sp) & 0xFF) as u8;
                 let item = bus.read_word(sp + 2) as i16;
                 let menu_handle = bus.read_long(sp + 4);
-                let touched =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.mark = mark_char;
-                            Some(menu.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                if let Some(menu) = touched {
-                    self.serialise_menu_items_to_memory(bus, &menu);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_mark(item, mark_char));
                 cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
@@ -2935,34 +3195,23 @@ impl super::TrapDispatcher {
             // and stores them in the menuWidth and menuHeight fields.
             // PROCEDURE CalcMenuSize(theMenu: MenuHandle);
             // Inside Macintosh Volume I, I-361
-            //
-            // CalcMenuSize ($A948): Computes menuWidth/menuHeight and writes to MENU record per IM:I I-361
             (true, 0x148) => {
                 let sp = cpu.read_reg(Register::A7);
                 let menu_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
 
-                if let Some(menu) = self.menus.iter().find(|m| m.handle == menu_handle) {
-                    let menu_height = self.menu_items_height(bus, &menu.items) + 2;
-
-                    let mut max_width: i16 = 0;
-                    for item in &menu.items {
-                        let w = Self::fb_measure_string(&item.text, 0, 12);
-                        let total = w + self.menu_item_width_extra(bus, item) + 24;
-                        if total > max_width {
-                            max_width = total;
-                        }
-                    }
-                    max_width = max_width.max(100);
-
-                    if menu_handle != 0 {
-                        let menu_ptr = bus.read_long(menu_handle);
-                        if menu_ptr != 0 {
-                            bus.write_word(menu_ptr + 2, max_width as u16);
-                            bus.write_word(menu_ptr + 4, menu_height as u16);
-                        }
-                    }
+                let menu_ptr = bus.read_long(menu_handle);
+                if menu_ptr != 0
+                    && self.arm_menu_definition(
+                        cpu,
+                        bus,
+                        SharedMenuDefinitionInvocation::size(menu_handle),
+                    )
+                {
+                    return Some(Ok(()));
                 }
+
+                self.calculate_standard_menu_size(bus, menu_handle);
                 Ok(())
             }
 
@@ -2970,8 +3219,6 @@ impl super::TrapDispatcher {
             // Sets the number of times a selected menu item blinks.
             // PROCEDURE SetMenuFlash(count: INTEGER);
             // Inside Macintosh Volume I, I-361
-            //
-            // SetMenuFlash ($A94A): Writes count to MenuFlash global ($0A24) per IM:I I-361
             (true, 0x14A) => {
                 let sp = cpu.read_reg(Register::A7);
                 let count = bus.read_word(sp);
@@ -3254,12 +3501,7 @@ impl super::TrapDispatcher {
             //   N (>= 1)   — insert after item N
             //   >= count   — append (degrades to AddResMenu)
             //
-            // Items are sorted alphabetically by name (IM:IV IV-56) via
-            // named_resources_of_type; same `.`/`%` skip rules and
-            // no-duplicate contract as AddResMenu.
-            //
             // Stack: SP+0 afterItem (2), SP+2 theType (4), SP+6 theMenu handle (4). Pop 10.
-            // InsertResMenu ($A951): Walks the current resource search order, inserts named resources of theType after `afterItem` (skip names starting with '.' or '%'), sorted alphabetically per IM:IV IV-56
             (true, 0x151) => {
                 let sp = cpu.read_reg(Register::A7);
                 let after_item = bus.read_word(sp) as i16;
@@ -3268,74 +3510,28 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 10);
 
                 let res_type = res_type_word.to_be_bytes();
-                let entries = self.named_resources_of_type(res_type);
-
-                let mut touched: Option<Menu> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    let base = (after_item.max(0) as usize).min(menu.items.len());
-                    let mut offset = 0usize;
-                    for (_id, name) in entries {
-                        if name.is_empty() || name.starts_with('.') || name.starts_with('%') {
-                            continue;
-                        }
-                        if menu.items.iter().any(|it| it.text == name) {
-                            continue;
-                        }
-                        menu.items.insert(
-                            base + offset,
-                            MenuItem {
-                                text: name,
-                                icon: 0,
-                                key_equiv: 0,
-                                mark: 0,
-                                style: 0,
-                                enabled: true,
-                            },
-                        );
-                        offset += 1;
-                    }
-                    sync_enable_flags(bus, menu);
-                    touched = Some(menu.clone());
-                }
-                if let Some(m) = touched {
-                    self.serialise_menu_items_to_memory(bus, &m);
-                }
+                let names = self.resource_menu_names(bus, res_type);
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.insert_resource_names(names, after_item)
+                });
                 Ok(())
             }
 
             // DeleteMenuItem ($A952)
+            // Deletes the specified item from a menu.
             // PROCEDURE DeleteMenuItem(theMenu: MenuHandle; item: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-127
-            // Stack: SP+0: item(2), SP+2: theMenu(4). Pop 6.
-            // DeleteMenuItem ($A952): item=0 or item>last is no-op per IM:TB 1992 p.3-127.
             (true, 0x152) => {
                 let sp = cpu.read_reg(Register::A7);
                 let item = bus.read_word(sp) as i16;
                 let menu_handle = bus.read_long(sp + 2);
                 cpu.write_reg(Register::A7, sp + 6);
-                let mut touched: Option<Menu> = None;
-                let mut deleted_color_key: Option<(i16, i16)> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    let idx = (item - 1) as usize;
-                    if idx < menu.items.len() {
-                        menu.items.remove(idx);
-                        deleted_color_key = Some((menu.id, item));
-                        touched = Some(menu.clone());
-                    }
-                }
-                // Keep guest-memory MENU record in sync with the deletion
-                // so CountMItems / CalcMenuSize don't still see the item.
-                if let Some(m) = touched {
-                    self.serialise_menu_items_to_memory(bus, &m);
-                    sync_enable_flags(bus, &m);
-                }
-                if let Some((menu_id, menu_item)) = deleted_color_key {
+                let menu_id = bus.read_word(bus.read_long(menu_handle)) as i16;
+                if self.mutate_menu_items(bus, menu_handle, |items| items.delete(item)) {
                     // IM:V 1986 p. V-244: DelMenuItem removes the
                     // deleted item's color entry from MenuCInfo.
                     self.filter_menu_color_table_entries(bus, |id, item_no| {
-                        !(id == menu_id && item_no == menu_item)
+                        !(id == menu_id && item_no == item)
                     });
                 }
                 Ok(())
@@ -3345,10 +3541,6 @@ impl super::TrapDispatcher {
             // Inserts one or more menu items after the specified item position.
             // PROCEDURE InsertMenuItem(theMenu: MenuHandle; itemString: Str255; afterItem: INTEGER);
             // Inside Macintosh: Macintosh Toolbox Essentials (1992), p. 3-126
-            // Stack: SP+0: afterItem(2), SP+2: itemString(4), SP+6: theMenu(4). Pop 10.
-            // InsertMenuItem accepts the same metacharacter format as AppendMenu.
-            // For multiple `itemString` entries, inserted items appear in reverse
-            // order relative to the string (MTE 1992, p. 3-126).
             (true, 0x026) => {
                 let sp = cpu.read_reg(Register::A7);
                 let after_item = bus.read_word(sp) as i16;
@@ -3364,31 +3556,9 @@ impl super::TrapDispatcher {
                 for i in 0..len {
                     bytes.push(bus.read_byte(text_ptr + 1 + i as u32));
                 }
-                let parsed = parse_appendmenu_items(&bytes);
-
-                let mut touched: Option<Menu> = None;
-                if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                    refresh_menu_from_memory(bus, menu);
-                    if !parsed.is_empty() {
-                        let insert_idx = if after_item <= 0 {
-                            0usize
-                        } else {
-                            (after_item as usize).min(menu.items.len())
-                        };
-                        // Re-inserting each parsed item at the same insertion
-                        // index produces the documented reverse-order result.
-                        for item in parsed {
-                            menu.items.insert(insert_idx, item);
-                        }
-                        touched = Some(menu.clone());
-                    }
-                }
-                // Keep guest-memory MENU record in sync so CountMItems
-                // reflects the insertion.
-                if let Some(m) = touched {
-                    sync_enable_flags(bus, &m);
-                    self.serialise_menu_items_to_memory(bus, &m);
-                }
+                self.mutate_menu_items(bus, menu_handle, |items| {
+                    items.insert_specs(&bytes, after_item)
+                });
                 Ok(())
             }
 
@@ -3454,57 +3624,17 @@ impl super::TrapDispatcher {
             // Calling-convention behavior (Apple headers and BasiliskII
             // agree): both preserve A7 across the call.
             //
-            // Apple-vs-BasiliskII divergence on the side effect:
-            // BasiliskII System 7.5.3 ROM Menu Manager sets the
-            // documented menu-bar-invalid flag honored by GetNextEvent.
-            // Systemless HLE is a true no-op (`Ok(())`) because the host
-            // runtime redraws the entire chrome per frame from the
-            // current menu list, so there is no separate "dirty" flag
-            // to honor. The visible-side-effect "menu bar gets
-            // redrawn" path is intentionally not modeled and reserved
-            // for in-Rust state inspection.
-            //
             // Regression coverage:
             //   src/trap/menu.rs::invalmenubar_procedure_call_preserves_stack_pointer
-            (true, 0x01D) => Ok(()),
+            (true, 0x01D) => {
+                self.event_queue.invalidate_menu_bar();
+                Ok(())
+            }
 
             // SetItemCmd ($A84F)
-            // Sets the keyboard command equivalent of a menu item, or
-            // attaches a hierarchical submenu by passing CHR(27) = $1B
-            // per IM:V V-244 ("SetItemCmd allows the application to
-            // attach a submenu to a menu by passing the character
-            // $1B"). The submenu's resID lives in markChar (set via
-            // SetItemMark $A944 separately).
-            // PROCEDURE SetItemCmd(theMenu: MenuHandle; item: INTEGER;
-            //                      cmdChar: CHAR);
-            // Inside Macintosh Volume V, V-244
-            //
-            // Stack: SP+0 cmdChar (2 — Pascal CHAR pushes value in low
-            // byte of the word, mirrors SetItemMark $A944 + SetItemIcon
-            // $A940 conventions), SP+2 item (2 — 1-based per IM:I I-356),
-            // SP+4 theMenu (4). Pop 8 bytes.
-            //
-            // Mutates `menu.items[item-1].key_equiv` for the matching
-            // MenuHandle AND re-serialises the entire MENU data block
-            // back to guest memory at offset attr_base+1 of each item
-            // per IM:I I-345 menuData layout — so GetItemCmd ($A84E),
-            // CountMItems ($A938), CalcMenuSize ($A948), and any other
-            // trap that walks the on-disk MENU record sees the updated
-            // key_equiv byte. NIL theMenu, item < 1, or item > items.len
-            // is a defensive no-op (matches SetItemIcon / SetItemMark /
-            // SetItemStyle behaviour for OOB indices). Until this
-            // iteration the impl was a 2-line pop-only stub with the
-            // trap-doc Notes reading "cmdChar not stored" — apps using
-            // SetItemCmd to install ⌘ shortcuts on dynamically-built
-            // menus (typical "Customize..." dialog or runtime-localised
-            // command keys) saw their installs silently discarded; apps
-            // attaching submenus via the IM:V V-244 $1B convention
-            // (hierarchical Apple menu / Window menu trees) saw the
-            // submenu link silently lost. The previous test
-            // `setitemcmd_sets_command_key` was an anti-test asserting
-            // only pop=8 (passing against the buggy stub by design).
-            //
-            // SetItemCmd ($A84F): Stores cmdChar in menu.items[item-1].key_equiv + re-serialises to guest MENU data per IM:I I-345 so GetItemCmd ($A84E) and any guest-memory walker reads back the value; NIL handle / OOB item is defensive no-op; cmdChar=$1B per IM:V V-244 signals submenu attach (submenu ID lives in markChar via SetItemMark)
+            // Sets the command-key byte for a menu item.
+            // PROCEDURE SetItemCmd(theMenu: MenuHandle; item: INTEGER; cmdChar: CHAR);
+            // Inside Macintosh Volume V (1986), p. V-244
             (true, 0x04F) => {
                 let sp = cpu.read_reg(Register::A7);
                 let cmd_char = (bus.read_word(sp) & 0xFF) as u8;
@@ -3514,19 +3644,7 @@ impl super::TrapDispatcher {
                 if menu_handle == 0 || item < 1 {
                     return Some(Ok(()));
                 }
-                let menu_clone =
-                    if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-                        refresh_menu_from_memory(bus, menu);
-                        if let Some(mi) = menu.items.get_mut((item - 1) as usize) {
-                            mi.key_equiv = cmd_char;
-                        } else {
-                            return Some(Ok(()));
-                        }
-                        menu.clone()
-                    } else {
-                        return Some(Ok(()));
-                    };
-                self.serialise_menu_items_to_memory(bus, &menu_clone);
+                self.mutate_menu_items(bus, menu_handle, |items| items.set_command(item, cmd_char));
                 Ok(())
             }
 
@@ -3536,35 +3654,21 @@ impl super::TrapDispatcher {
             // FUNCTION GetMenuBar: Handle;
             // Inside Macintosh Volume I, I-354
             //
-            // Per IM:I I-354 the returned handle holds a copy of the
-            // current menu list — a length-prefixed sequence of menu
-            // handles, NOT the menu records themselves. We mirror that
-            // shape in guest memory (count word + N×4-byte menu handle)
-            // so an introspecting caller sees a sensible block, AND we
-            // also store a Rust-side `Vec<Menu>` snapshot keyed by the
-            // returned handle so SetMenuBar can faithfully restore the
-            // parsed item state even if the menu was DeleteMenu'd in
-            // the meantime (the typical modal-dialog disable+restore
-            // pattern).
+            // The returned handle owns a byte-for-byte `DynamicMenuList`
+            // copy. Menu records remain referenced by their existing handles.
+            // Inside Macintosh Volume V (1986), pp. V-228--V-230.
             //
             // No parameters. Returns Handle in the pre-pushed result
             // slot at SP+0; A7 is unchanged.
-            // GetMenuBar ($A93B): Snapshots `self.menus` into `saved_menu_bars` and writes a count+handles block keyed by the returned handle per IM:I I-354
             (true, 0x13B) => {
                 let sp = cpu.read_reg(Register::A7);
-                self.refresh_menus_from_memory(bus);
-                let count = self.menus.len() as u32;
-                // Allocate at least 2 bytes even when the menu bar is empty
-                // so the handle's master pointer is non-NIL (matches real
-                // Mac, where GetMenuBar always returns a valid handle).
-                let block = bus.alloc(2 + 4 * count.max(1));
-                bus.write_word(block, count as u16);
-                for (i, menu) in self.menus.iter().enumerate() {
-                    bus.write_long(block + 2 + (i as u32) * 4, menu.handle);
-                }
+                let menu_list =
+                    menu_list_from_memory(bus, bus.read_long(addr::MENU_LIST)).unwrap_or_default();
+                let bytes = menu_list.encode();
+                let block = bus.alloc(bytes.len() as u32);
+                bus.write_bytes(block, &bytes);
                 let handle = bus.alloc(4);
                 bus.write_long(handle, block);
-                self.saved_menu_bars.insert(handle, self.menus.clone());
                 bus.write_long(sp, handle);
                 Ok(())
             }
@@ -3601,14 +3705,9 @@ impl super::TrapDispatcher {
             //     Pascal stack discipline.
             //   * GetMCInfo / GetMCEntry return deep copies / live pointers
             //     into that table when one exists, and NIL when it does not.
-            //   * MenuChoice ($AA66) — reads lowmem MenuDisable ($0B54)
-            //     and writes that LongInt to the result slot.
-            //     Per MTb 1992 3-118..3-119 + IM:V V-248, when MenuSelect
-            //     or MenuKey return zero the Menu Manager surfaces the
-            //     packed (menuID, itemNumber) last tracked into MenuDisable.
-            //     Systemless's HLE does not synthesize the MDEF cursor-tracking
-            //     writes, so tests seed MenuDisable directly to exercise
-            //     the lowmem read path explicitly.
+            //   * MenuChoice ($AA66) reads lowmem MenuDisable ($0B54), which
+            //     the shared standard-MDEF tracker updates while a menu is
+            //     down, and writes that LongInt to the result slot.
 
             // DelMCEntries ($AA60)
             // PROCEDURE DelMCEntries(menuID: INTEGER; menuItem: INTEGER);
@@ -3895,9 +3994,7 @@ impl super::TrapDispatcher {
             // high-order word is the menu ID and the low-order word is
             // the item number. The Menu Manager stores that packed result
             // in lowmem global MenuDisable ($0B54); the trap simply reads
-            // the current longword and returns it. Systemless's HLE does not
-            // synthesize the MDEF cursor-tracking writes, so tests seed the
-            // lowmem global directly to exercise the read path.
+            // the current longword and returns it.
             //
             // Tool-bit Pascal FUNCTION calling convention: A7 unchanged
             // across the C-level call sequence (caller pre-push of 4-byte
@@ -3909,7 +4006,7 @@ impl super::TrapDispatcher {
             //     across the C-level call (caller pre-push + trap
             //     result-slot write + caller post-pop balance), for
             //     both a single call and a repeated composition.
-            //   * MenuChoice returns the caller-seeded MenuDisable value.
+            //   * MenuChoice returns the live MenuDisable value unchanged.
             (true, 0x266) => {
                 let sp = cpu.read_reg(Register::A7);
                 let value = bus.read_long(addr::MENU_DISABLE);
@@ -3922,147 +4019,21 @@ impl super::TrapDispatcher {
     }
 
     fn is_hierarchical_item(item: &MenuItem) -> bool {
-        item.key_equiv == 0x1B && item.mark != 0
+        hierarchical_menu_id(item.key_equiv, item.mark).is_some()
     }
 
     fn menu_item_has_command_key(item: &MenuItem) -> bool {
         item.key_equiv > 0x20
     }
 
-    fn menu_item_uses_reduced_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && item.key_equiv == MENU_KEY_REDUCED_ICON
-    }
-
-    fn menu_item_uses_small_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && item.key_equiv == MENU_KEY_SMALL_ICON
-    }
-
-    fn menu_item_uses_normal_icon(item: &MenuItem) -> bool {
-        item.icon != 0 && (item.key_equiv == 0 || item.key_equiv > 0x20)
-    }
-
-    fn menu_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<MenuCIconLayout> {
-        if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 82) {
-            return None;
-        }
-
-        // Imaging With QuickDraw 1994 p. 4-106: a compiled 'cicn'
-        // resource starts with a 50-byte PixMap, 14-byte mask BitMap,
-        // 14-byte 1-bit fallback BitMap, 4-byte iconData handle, then
-        // mask bits, fallback bitmap bits, ColorTable, and PixMap data.
-        let pm_row_bytes = (bus.read_word(icon_ptr + 4) & 0x3FFF) as u32;
-        let pm_top = bus.read_word(icon_ptr + 6) as i16;
-        let pm_left = bus.read_word(icon_ptr + 8) as i16;
-        let pm_bottom = bus.read_word(icon_ptr + 10) as i16;
-        let pm_right = bus.read_word(icon_ptr + 12) as i16;
-        let pixel_size = bus.read_word(icon_ptr + 32);
-        let mask_row_bytes = (bus.read_word(icon_ptr + 54) & 0x3FFF) as u32;
-        let bmap_row_bytes = (bus.read_word(icon_ptr + 68) & 0x3FFF) as u32;
-
-        let width = pm_right - pm_left;
-        let height = pm_bottom - pm_top;
-        if width <= 0 || height <= 0 || pm_row_bytes == 0 || mask_row_bytes == 0 {
-            return None;
-        }
-
-        let height_u32 = height as u32;
-        let mask_data_size = mask_row_bytes.checked_mul(height_u32)?;
-        let bmap_data_size = bmap_row_bytes.checked_mul(height_u32)?;
-        let mask_data_ptr = icon_ptr + 82;
-        let bmap_data_ptr = mask_data_ptr.checked_add(mask_data_size)?;
-        let ctab_ptr = bmap_data_ptr.checked_add(bmap_data_size)?;
-
-        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
-            let resource_end = icon_ptr.checked_add(resource_size)?;
-            if ctab_ptr.checked_add(8)? > resource_end {
-                return None;
-            }
-        }
-
-        let ct_size = bus.read_word(ctab_ptr + 6) as u32;
-        let ctab_total_bytes = 8u32.checked_add((ct_size + 1).checked_mul(8)?)?;
-        let pixel_data_ptr = ctab_ptr.checked_add(ctab_total_bytes)?;
-
-        if let Some(resource_size) = bus.get_alloc_size(icon_ptr) {
-            let resource_end = icon_ptr.checked_add(resource_size)?;
-            let pixel_data_size = pm_row_bytes.checked_mul(height_u32)?;
-            if pixel_data_ptr.checked_add(pixel_data_size)? > resource_end {
-                return None;
-            }
-        }
-
-        Some(MenuCIconLayout {
-            width,
-            height,
-            pm_row_bytes,
-            mask_row_bytes,
-            bmap_row_bytes,
-            pixel_size,
-            mask_data_ptr,
-            bmap_data_ptr,
-            ctab_ptr,
-            ctab_entries: (ct_size + 1) as u16,
-            pixel_data_ptr,
-        })
-    }
-
-    fn menu_cicn_rgb_for_index(
-        bus: &MacMemoryBus,
-        layout: MenuCIconLayout,
-        pixel_index: u8,
-    ) -> Option<[u16; 3]> {
-        let device_table = (bus.read_word(layout.ctab_ptr + 4) & 0x8000) != 0;
-        for ordinal in 0..u32::from(layout.ctab_entries) {
-            let entry = layout.ctab_ptr + 8 + ordinal * 8;
-            let value = if device_table {
-                ordinal as u16
-            } else {
-                bus.read_word(entry)
-            };
-            if value == u16::from(pixel_index) {
-                return Some([
-                    bus.read_word(entry + 2),
-                    bus.read_word(entry + 4),
-                    bus.read_word(entry + 6),
-                ]);
-            }
-        }
-        None
-    }
-
-    fn menu_cicn_pixel_index(
-        bus: &MacMemoryBus,
-        data_ptr: u32,
-        row_bytes: u32,
-        pixel_size: u16,
-        x: u32,
-        y: u32,
-    ) -> Option<u8> {
-        let row_ptr = data_ptr.checked_add(y.checked_mul(row_bytes)?)?;
-        match pixel_size {
-            1 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 8)?);
-                Some(((byte >> (7 - (x % 8))) & 1) as u8)
-            }
-            2 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 4)?);
-                Some((byte >> (6 - 2 * (x % 4))) & 0x03)
-            }
-            4 => {
-                let byte = bus.read_byte(row_ptr.checked_add(x / 2)?);
-                Some(if x % 2 == 0 {
-                    (byte >> 4) & 0x0F
-                } else {
-                    byte & 0x0F
-                })
-            }
-            8 => Some(bus.read_byte(row_ptr.checked_add(x)?)),
-            size if size > 8 && size % 8 == 0 => {
-                let bytes_per_pixel = u32::from(size / 8);
-                Some(bus.read_byte(row_ptr.checked_add(x.checked_mul(bytes_per_pixel)?)?))
-            }
-            _ => None,
-        }
+    fn menu_cicn_layout(bus: &MacMemoryBus, icon_ptr: u32) -> Option<SharedColorIconLayout> {
+        SharedColorIconLayout::decode_with(
+            |offset| {
+                let offset = u32::try_from(offset).ok()?;
+                Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+            },
+            bus.get_alloc_size(icon_ptr).map(|size| size as usize),
+        )
     }
 
     fn menu_item_cicn_size(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<(i16, i16)> {
@@ -4071,31 +4042,63 @@ impl super::TrapDispatcher {
         Some((layout.width, layout.height))
     }
 
+    fn menu_item_icon_kind(&self, bus: &MacMemoryBus, item: &MenuItem) -> StandardMenuIconKind {
+        standard_menu_icon_kind(
+            item.icon,
+            item.key_equiv,
+            self.menu_item_cicn_size(bus, item),
+        )
+    }
+
     pub(super) fn menu_item_height(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
+        if item.text == "-" {
+            return STANDARD_MENU_SEPARATOR_HEIGHT;
+        }
         // MTE 1992 p. 3-46: 'cicn' has priority over ICON/SICN and
         // enlarges the menu item according to the icon's resource rect.
         // Normal ICON items reserve a 32-by-32 slot; System 7.5.3's
         // standard MDEF uses a 34-pixel row around that slot. Reduced ICON
         // and SICN slots fit the standard 16-by-16 item height.
-        let base_height = if let Some((_width, height)) = self.menu_item_cicn_size(bus, item) {
-            height.max(MENU_ROW_HEIGHT)
-        } else if Self::menu_item_uses_normal_icon(item) {
-            MENU_NORMAL_ICON_ROW_HEIGHT
-        } else {
-            MENU_ROW_HEIGHT
-        };
-        if (item.style & MENU_TEXT_STYLE_SHADOW) != 0 {
-            base_height.max(MENU_SHADOW_STYLE_ROW_HEIGHT)
-        } else {
-            base_height
-        }
+        self.menu_item_icon_kind(bus, item)
+            .row_height(QuickDrawTextStyle::from_bits(item.style))
     }
 
     pub(super) fn menu_items_height(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
-        Self::laid_out_items(items)
-            .iter()
-            .map(|item| self.menu_item_height(bus, item))
-            .sum()
+        self.menu_rows(bus, items).total_height()
+    }
+
+    pub(super) fn menu_rows(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> SharedMenuRows {
+        SharedMenuRows::new(
+            Self::laid_out_items(items)
+                .iter()
+                .map(|item| SharedMenuRow {
+                    height: self.menu_item_height(bus, item),
+                    selectable: item.enabled && item.text != "-",
+                }),
+        )
+    }
+
+    /// Combine retained standard-MDEF row geometry with live MenuInfo
+    /// selectability for one tracking slice. Guest code can mutate enable
+    /// flags and item bytes while MenuSelect owns the interaction; missing or
+    /// malformed live rows therefore remain laid out but unavailable.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-90--3-92 and 3-114--3-119.
+    fn menu_tracking_rows(&self, bus: &MacMemoryBus, menu: &Menu) -> SharedMenuRows {
+        let geometry = self.menu_rows(bus, &menu.items);
+        let live = menu_items_from_memory(bus, menu.handle);
+        let menu_enabled = live
+            .as_ref()
+            .is_some_and(|items| items.enable_flags & 1 != 0);
+        SharedMenuRows::new((0..geometry.len()).map(|index| {
+            let item_number = i16::try_from(index + 1).unwrap_or(i16::MAX);
+            SharedMenuRow {
+                height: geometry.height(item_number, 0),
+                selectable: live
+                    .as_ref()
+                    .is_some_and(|items| items.item_is_selectable(item_number)),
+            }
+        }))
+        .with_menu_enabled(menu_enabled)
     }
 
     /// The items a menu actually lays out.
@@ -4109,71 +4112,26 @@ impl super::TrapDispatcher {
     /// BasiliskII draws that menu exactly one item tall rather than
     /// leaving a dangling line.
     fn laid_out_items(items: &[MenuItem]) -> &[MenuItem] {
-        let mut end = items.len();
-        while end > 0 && items[end - 1].text == "-" {
-            end -= 1;
-        }
+        let end = laid_out_menu_item_count(items, |item| item.text == "-");
         &items[..end]
     }
 
-    pub(super) fn menu_item_width_extra(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
-        let key_extra = if Self::menu_item_has_command_key(item) {
-            30
-        } else {
-            0
-        };
-        let is_hierarchical = Self::is_hierarchical_item(item);
-        let mark_extra = if item.mark != 0 && !is_hierarchical {
-            14
-        } else {
-            0
-        };
-        let hierarchy_extra = if is_hierarchical { 20 } else { 0 };
-        let icon_extra = if let Some((width, _height)) = self.menu_item_cicn_size(bus, item) {
-            width.max(MENU_ROW_HEIGHT)
-        } else if Self::menu_item_uses_reduced_icon(item) || Self::menu_item_uses_small_icon(item) {
-            MENU_ROW_HEIGHT
-        } else if Self::menu_item_uses_normal_icon(item) {
-            MENU_NORMAL_ICON_SIZE
-        } else {
-            0
-        };
-        key_extra + mark_extra + hierarchy_extra + icon_extra
+    fn menu_item_icon_width(&self, bus: &MacMemoryBus, item: &MenuItem) -> i16 {
+        self.menu_item_icon_kind(bus, item).width()
     }
 
-    fn menu_item_pulldown_padding(item: &MenuItem) -> i16 {
-        let has_key = Self::menu_item_has_command_key(item);
-        let has_icon = item.icon != 0;
-        // IM:I I-358 and MTE 1992 pp. 3-115 to 3-117: the mark sits in the
-        // fixed inset left of the item text that every item already
-        // reserves, so a marked item is exactly as wide as the same item
-        // unmarked — System 7.5.3 sizes Absolute Solitaire's Game menu from
-        // "Beleaguered Castle", not from the checked "Klondike (Common)"
-        // beside it. `menu_item_width_extra` still reports the mark column
-        // for CalcMenuSize's menuWidth, so cancel that allowance here.
-        let is_hierarchical = Self::is_hierarchical_item(item);
-        let mark_allowance = if item.mark != 0 && !is_hierarchical {
-            14
-        } else {
-            0
-        };
-        if Self::menu_item_uses_normal_icon(item) {
-            6
-        } else if has_icon || is_hierarchical {
-            14
-        } else if has_key {
-            20 - mark_allowance
-        } else {
-            26 - mark_allowance
-        }
+    pub(super) fn standard_menu_width(&self, bus: &MacMemoryBus, items: &[MenuItem]) -> i16 {
+        shared_standard_menu_width(Self::laid_out_items(items).iter().map(|item| {
+            StandardMenuItemWidth {
+                text: shared_standard_menu_text_advance(&internal_menu_string_bytes(&item.text)),
+                icon: self.menu_item_icon_width(bus, item),
+                command: item.key_equiv,
+            }
+        }))
     }
 
     fn menu_item_icon_resource_id(item: &MenuItem) -> Option<i16> {
-        (item.icon != 0).then_some(i16::from(item.icon) + 256)
-    }
-
-    fn menu_item_has_cicn_resource(&self, item: &MenuItem) -> bool {
-        self.cicn_menu_icon_resource_ptr(item).is_some()
+        standard_menu_icon_resource_id(item.icon, item.key_equiv)
     }
 
     /// Materialize a menu's item-icon resources (cicn/ICON/SICN at
@@ -4203,15 +4161,13 @@ impl super::TrapDispatcher {
     }
 
     fn cicn_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        let Some(icon_resource_id) = Self::menu_item_icon_resource_id(item) else {
-            return None;
-        };
+        let icon_resource_id = Self::menu_item_icon_resource_id(item)?;
         self.find_loaded_resource_any(*b"cicn", icon_resource_id)
             .map(|(_, ptr)| ptr)
     }
 
-    fn reduced_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_reduced_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn reduced_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Reduced {
             return None;
         }
 
@@ -4223,8 +4179,8 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn small_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_small_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn small_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Small {
             return None;
         }
 
@@ -4236,8 +4192,8 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn normal_menu_icon_resource_ptr(&self, item: &MenuItem) -> Option<u32> {
-        if !Self::menu_item_uses_normal_icon(item) || self.menu_item_has_cicn_resource(item) {
+    fn normal_menu_icon_resource_ptr(&self, bus: &MacMemoryBus, item: &MenuItem) -> Option<u32> {
+        if self.menu_item_icon_kind(bus, item) != StandardMenuIconKind::Normal {
             return None;
         }
 
@@ -4249,42 +4205,43 @@ impl super::TrapDispatcher {
             .map(|(_, ptr)| ptr)
     }
 
-    fn draw_menu_icon_bitmap(
+    fn draw_monochrome_menu_icon(
         &self,
         bus: &mut MacMemoryBus,
         icon_ptr: u32,
         top: i16,
         left: i16,
-        dst_size: i16,
+        kind: StandardMenuIconKind,
         pixel_index_override: Option<u8>,
     ) {
+        let Some(layout) = SharedMonochromeMenuIconLayout::for_kind(
+            kind,
+            bus.get_alloc_size(icon_ptr).map(|size| size as usize),
+        ) else {
+            return;
+        };
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let dst_size = i32::from(dst_size);
 
         // IM:V 1986 p. V-233 and MTE 1992 p. 3-99: black-and-white
         // menu icons are drawn in the item name color. The caller passes
         // the resolved MenuCInfo name color when an 8bpp table entry exists.
-        // Reduced ICONs use a 16x16 slot; normal menu ICONs use 32x32.
-        // Shrinks OR-compress source pixels, matching PlotIcon and IM:V
-        // V-65 CopyBits scaling behavior. The 32x32 case is a direct copy.
-        for dy in 0..dst_size {
-            let sy_start = (dy * 32 / dst_size) as u32;
-            let sy_end = (((dy + 1) * 32 / dst_size).min(32) as u32).max(sy_start + 1);
-            for dx in 0..dst_size {
-                let sx_start = (dx * 32 / dst_size) as u32;
-                let sx_end = (((dx + 1) * 32 / dst_size).min(32) as u32).max(sx_start + 1);
-                let mut any_set = false;
-                'or_scan: for sy in sy_start..sy_end {
-                    let row_data = bus.read_long(icon_ptr + sy * 4);
-                    for sx in sx_start..sx_end {
-                        if (row_data >> (31 - sx)) & 1 != 0 {
-                            any_set = true;
-                            break 'or_scan;
-                        }
-                    }
-                }
-                if any_set {
+        // The architecture-neutral sampler owns ICON reduction and SICN
+        // first-image selection; this adapter owns only guest reads and
+        // framebuffer writes.
+        for dy in 0..layout.height {
+            for dx in 0..layout.width {
+                let set = layout
+                    .sample_with(
+                        |offset| {
+                            let offset = u32::try_from(offset).ok()?;
+                            Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                        },
+                        dx,
+                        dy,
+                    )
+                    .unwrap_or(false);
+                if set {
                     if let Some(pixel_index) = pixel_index_override {
                         Self::fb_set_pixel_index(
                             bus,
@@ -4293,8 +4250,8 @@ impl super::TrapDispatcher {
                             pixel_size,
                             screen_width,
                             screen_height,
-                            left + dx as i16,
-                            top + dy as i16,
+                            left + i16::try_from(dx).unwrap_or(i16::MAX),
+                            top + i16::try_from(dy).unwrap_or(i16::MAX),
                             pixel_index,
                         );
                     } else {
@@ -4305,62 +4262,8 @@ impl super::TrapDispatcher {
                             pixel_size,
                             screen_width,
                             screen_height,
-                            left + dx as i16,
-                            top + dy as i16,
-                            true,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn draw_sicn_menu_icon(
-        &self,
-        bus: &mut MacMemoryBus,
-        icon_ptr: u32,
-        top: i16,
-        left: i16,
-        pixel_index_override: Option<u8>,
-    ) {
-        if bus.get_alloc_size(icon_ptr).is_some_and(|size| size < 32) {
-            return;
-        }
-
-        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
-            self.get_screen_params();
-
-        // More Macintosh Toolbox 1993 glossary, "small icon resource":
-        // an SICN resource is a list of 16-by-16 black-and-white bitmaps;
-        // by convention the first bitmap is image data and the second is
-        // a mask. Menu Manager $1E items plot the small icon in a 16x16
-        // menu slot per MTE 1992 p. 3-46.
-        for dy in 0..MENU_ROW_HEIGHT {
-            let row_data = bus.read_word(icon_ptr + u32::from(dy as u16) * 2);
-            for dx in 0..MENU_ROW_HEIGHT {
-                if (row_data >> (15 - dx)) & 1 != 0 {
-                    if let Some(pixel_index) = pixel_index_override {
-                        Self::fb_set_pixel_index(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            left + dx,
-                            top + dy,
-                            pixel_index,
-                        );
-                    } else {
-                        Self::fb_set_pixel(
-                            bus,
-                            screen_base,
-                            row_bytes,
-                            pixel_size,
-                            screen_width,
-                            screen_height,
-                            left + dx,
-                            top + dy,
+                            left + i16::try_from(dx).unwrap_or(i16::MAX),
+                            top + i16::try_from(dy).unwrap_or(i16::MAX),
                             true,
                         );
                     }
@@ -4385,44 +4288,37 @@ impl super::TrapDispatcher {
 
         for dy in 0..layout.height {
             for dx in 0..layout.width {
-                let sx = dx as u32;
-                let sy = dy as u32;
-                let mask_byte =
-                    bus.read_byte(layout.mask_data_ptr + sy * layout.mask_row_bytes + sx / 8);
-                if (mask_byte & (0x80 >> (sx % 8))) == 0 {
+                let (Ok(sx), Ok(sy)) = (usize::try_from(dx), usize::try_from(dy)) else {
+                    continue;
+                };
+                let read = |offset: usize| {
+                    let offset = u32::try_from(offset).ok()?;
+                    Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                };
+                if !layout.mask_bit_with(read, sx, sy).unwrap_or(false) {
                     continue;
                 }
 
-                if matches!(screen_pixel_size, 2 | 4 | 8) && layout.pixel_size >= 2 {
-                    let Some(pixel_index) = Self::menu_cicn_pixel_index(
-                        bus,
-                        layout.pixel_data_ptr,
-                        layout.pm_row_bytes,
-                        layout.pixel_size,
-                        sx,
-                        sy,
-                    ) else {
+                if matches!(screen_pixel_size, 2 | 4 | 8) {
+                    let read = |offset: usize| {
+                        let offset = u32::try_from(offset).ok()?;
+                        Some(bus.read_byte(icon_ptr.checked_add(offset)?))
+                    };
+                    let Some(rgb) = layout.rgb_with(read, sx, sy) else {
                         continue;
                     };
-                    // A `cicn` pixel is an index into the icon's own
-                    // ColorTable, not a destination-device pixel value.
-                    // PlotCIcon remaps those colors to the current depth and
-                    // color table. More Macintosh Toolbox (1993), pp. 5-25
+                    // PlotCIcon remaps the source RGB color to the active
+                    // screen device. More Macintosh Toolbox (1993), pp. 5-25
                     // to 5-26; Imaging With QuickDraw (1994), p. 4-106.
-                    let destination_index = Self::menu_cicn_rgb_for_index(bus, layout, pixel_index)
-                        .map(|rgb| {
-                            Self::fb_main_screen_pixel_index_for_rgb(bus, rgb).unwrap_or_else(
-                                || {
-                                    super::pict::closest_clut_index(
-                                        rgb[0],
-                                        rgb[1],
-                                        rgb[2],
-                                        &self.device_clut,
-                                    )
-                                },
+                    let destination_index = Self::fb_main_screen_pixel_index_for_rgb(bus, rgb)
+                        .unwrap_or_else(|| {
+                            super::pict::closest_clut_index(
+                                rgb[0],
+                                rgb[1],
+                                rgb[2],
+                                &self.device_clut,
                             )
-                        })
-                        .unwrap_or(pixel_index);
+                        });
                     let dst_x = left + dx;
                     let dst_y = top + dy;
                     Self::fb_set_pixel_index(
@@ -4439,32 +4335,14 @@ impl super::TrapDispatcher {
                     continue;
                 }
 
-                let source_data_ptr = if layout.bmap_row_bytes != 0 {
-                    layout.bmap_data_ptr
-                } else {
-                    layout.pixel_data_ptr
+                let read = |offset: usize| {
+                    let offset = u32::try_from(offset).ok()?;
+                    Some(bus.read_byte(icon_ptr.checked_add(offset)?))
                 };
-                let source_row_bytes = if layout.bmap_row_bytes != 0 {
-                    layout.bmap_row_bytes
-                } else {
-                    layout.pm_row_bytes
-                };
-                let source_pixel_size = if layout.bmap_row_bytes != 0 {
-                    1
-                } else {
-                    layout.pixel_size
-                };
-                let Some(pixel_index) = Self::menu_cicn_pixel_index(
-                    bus,
-                    source_data_ptr,
-                    source_row_bytes,
-                    source_pixel_size,
-                    sx,
-                    sy,
-                ) else {
+                let Some(set) = layout.monochrome_bit_with(read, sx, sy) else {
                     continue;
                 };
-                Self::menu_set_standard_pixel(bus, screen, left + dx, top + dy, pixel_index != 0);
+                Self::menu_set_standard_pixel(bus, screen, left + dx, top + dy, set);
             }
         }
     }
@@ -4476,93 +4354,37 @@ impl super::TrapDispatcher {
         top: i16,
         left: i16,
         popup_item: i16,
-    ) -> ((i16, i16, i16, i16), i16) {
+    ) -> Option<((i16, i16, i16, i16), i16, i16)> {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
         let menu = &self.menus[menu_idx];
 
-        let mut width: i16 = 0;
-        for item in &menu.items {
-            let w = Self::fb_measure_string(&item.text, 0, 12)
-                + self.menu_item_width_extra(bus, item)
-                + 26;
-            width = width.max(w);
-        }
-        width = width.max(1);
-        let height = (self.menu_items_height(bus, &menu.items) + 2).max(1);
-
-        let highlighted_item = if popup_item >= 1 && (popup_item as usize) <= menu.items.len() {
-            popup_item
-        } else {
-            0
-        };
-        let item_offset = if highlighted_item > 0 {
-            menu.items
-                .iter()
-                .take((highlighted_item - 1) as usize)
-                .map(|item| self.menu_item_height(bus, item))
-                .sum::<i16>()
-        } else {
-            0
-        };
-
-        // MTE 1992 p. 3-120 and IM:V V-241 define Top/Left as global
-        // coordinates used to display the requested PopUpItem at the
-        // pop-up box location; the app owns title/mark/control state.
-        let desired_top = if highlighted_item > 0 {
-            top - 1 - item_offset
-        } else {
-            top
-        };
-        // System 7.5.3's standard popup MDEF extends the live popup menu one
-        // pixel left of the caller's pop-up box Left coordinate while still
-        // aligning the requested item at Top. MTE 1992, p. 3-120.
-        let desired_left = left - 1;
-
-        let clamped_left = if screen_width <= 0 {
-            desired_left
-        } else if width >= screen_width {
-            0
-        } else {
-            desired_left.clamp(0, screen_width - width)
-        };
-        let clamped_top = if screen_height <= 0 {
-            desired_top
-        } else if height >= screen_height {
-            0
-        } else {
-            desired_top.clamp(0, screen_height - height)
-        };
-        let right = if screen_width > 0 {
-            (clamped_left + width).min(screen_width)
-        } else {
-            clamped_left + width
-        };
-        let bottom = if screen_height > 0 {
-            (clamped_top + height).min(screen_height)
-        } else {
-            clamped_top + height
-        };
-
-        ((clamped_top, clamped_left, bottom, right), highlighted_item)
+        let width = self.standard_menu_width(bus, &menu.items);
+        let rows = self.menu_rows(bus, &menu.items);
+        let layout = standard_popup_menu_layout(
+            &rows,
+            width,
+            (screen_width, screen_height),
+            (top, left),
+            popup_item,
+        )?;
+        Some((layout.rect(), layout.highlighted_item, layout.content_top))
     }
 
     fn dropdown_width_for_menu(&self, bus: &MacMemoryBus, menu_idx: usize, min_width: i16) -> i16 {
         let Some(menu) = self.menus.get(menu_idx) else {
             return min_width;
         };
-        let mut max_width = min_width;
-        for item in &menu.items {
-            let w = Self::fb_measure_string(&item.text, 0, 12);
-            let total =
-                w + self.menu_item_width_extra(bus, item) + Self::menu_item_pulldown_padding(item);
-            max_width = max_width.max(total);
-        }
-        max_width
+        min_width.max(self.standard_menu_width(bus, &menu.items))
     }
 
     /// Open a menu dropdown and start tracking.
-    fn open_menu_dropdown(&mut self, bus: &mut MacMemoryBus, menu_idx: usize, stack_ptr: u32) {
+    fn open_menu_dropdown(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        menu_idx: usize,
+        stack_ptr: u32,
+    ) -> bool {
         // Fault in this menu's icon resources while `self` is still
         // mutable; the draw path below reads them through `&self` only.
         self.preload_menu_item_icon_resources(bus, menu_idx);
@@ -4571,53 +4393,67 @@ impl super::TrapDispatcher {
 
         // Compute dropdown rect
         let region = self
-            .menu_title_regions_with_indices()
+            .current_menu_title_regions_with_indices(bus)
             .into_iter()
-            .find(|(idx, _, _)| *idx == menu_idx);
+            .find(|(idx, _region)| *idx == menu_idx);
         if menu_idx >= self.menus.len() {
-            return;
+            return false;
         }
-        let Some((_idx, title_left, title_right)) = region else {
-            return;
+        let Some((_idx, title_region)) = region else {
+            return false;
         };
         let menu = &self.menus[menu_idx];
+        let menu_id = menu.id;
+        let menu_ptr = bus.read_long(menu.handle);
+        let custom_definition = menu_ptr != 0 && !self.menu_uses_standard_definition(bus, menu_ptr);
 
-        let dropdown_top: i16 = 20; // Below menu bar
-                                    // The standard pull-down menu extends slightly to the left of the
-                                    // highlighted title frame. This is visible in the System 7.5.3
-                                    // MenuSelect reference and follows the Menu Manager's MDEF-owned menu
-                                    // rectangle rather than the app-visible title hit region.
-                                    // Inside Macintosh Volume I, I-356; Macintosh Toolbox Essentials
-                                    // 1992, pp. 3-115 to 3-117.
-        let dropdown_left: i16 = title_left - 2;
+        let max_width = if custom_definition {
+            bus.read_word(menu_ptr + 2) as i16
+        } else {
+            self.dropdown_width_for_menu(bus, menu_idx, title_region.right - title_region.left + 20)
+        };
+        let content_height = if custom_definition {
+            bus.read_word(menu_ptr + 4) as i16
+        } else {
+            self.menu_items_height(bus, &menu.items)
+        };
+        let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+        let Some(layout) = standard_pull_down_menu_layout(
+            max_width,
+            content_height,
+            (screen_width, screen_height),
+            title_region.left,
+            menu_bar_height,
+        ) else {
+            return false;
+        };
+        let dropdown_rect = layout.rect();
 
-        let max_width = self.dropdown_width_for_menu(bus, menu_idx, title_right - title_left + 20);
-
-        let dropdown_bottom =
-            (dropdown_top + self.menu_items_height(bus, &menu.items) + 1).min(screen_height);
-        let dropdown_right = (dropdown_left + max_width).min(screen_width);
-        let dropdown_rect = (dropdown_top, dropdown_left, dropdown_bottom, dropdown_right);
+        // TheMenu owns the retained title identity. Redrawing before the
+        // pane opens restores any prior title and highlights this one.
+        bus.write_word(addr::THE_MENU, menu_id as u16);
+        self.draw_menu_bar_to_fb(bus);
 
         // Save pixels under dropdown
         let saved = self.save_dropdown_pixels(bus, dropdown_rect);
 
-        // Draw dropdown
-        self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+        if custom_definition {
+            self.draw_menu_dropdown_chrome(bus, menu_idx, dropdown_rect);
+        } else {
+            self.draw_menu_dropdown(bus, menu_idx, dropdown_rect);
+        }
 
-        // Highlight the menu title in the menu bar
-        self.highlight_menu_title(bus, menu_idx);
-
-        self.menu_tracking = Some(MenuTrackingState {
-            active_menu: menu_idx,
-            highlighted_item: 0,
-            saved_pixels: saved,
-            dropdown_rect,
-            submenus: Vec::new(),
-            stack_ptr,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        let mut tracking =
+            tracked_menu_state(MenuTrackingKind::MenuBar, menu.handle, dropdown_rect, saved);
+        tracking.definition = custom_definition
+            .then(|| SharedMenuDefinitionTracking::begin_draw(menu.handle, dropdown_rect));
+        *self.menu_tracking = Some(tracking);
+        if !custom_definition {
+            let rows = self.menu_rows(bus, &self.menus[menu_idx].items);
+            Self::write_menu_scrolling_globals(bus, &rows, dropdown_rect.0);
+        }
+        self.menu_tracking_stack_ptr = stack_ptr;
+        custom_definition
     }
 
     /// Finish a Pascal LONGINT menu call on the immediate no-hit path.
@@ -4633,56 +4469,55 @@ impl super::TrapDispatcher {
     }
 
     fn restore_menu_tracking_pixels(&self, bus: &mut MacMemoryBus, saved: MenuTrackingState) {
+        let root_rect = saved.dropdown_rect();
         for submenu in saved.submenus.into_iter().rev() {
-            self.restore_dropdown_pixels(bus, submenu.dropdown_rect, &submenu.saved_pixels);
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
         }
-        self.restore_dropdown_pixels(bus, saved.dropdown_rect, &saved.saved_pixels);
+        self.restore_dropdown_pixels(bus, root_rect, &saved.saved_pixels);
     }
 
-    fn menu_tracking_selection_result(&self) -> u32 {
+    fn menu_tracking_selection_result(&self, bus: &MacMemoryBus) -> u32 {
         let Some(tracking) = self.menu_tracking.as_ref() else {
             return 0;
         };
-        if let Some(submenu) = tracking.submenus.last() {
-            if submenu.highlighted_item > 0 {
-                let menu = &self.menus[submenu.menu];
-                let item = &menu.items[submenu.highlighted_item as usize - 1];
-                if Self::is_hierarchical_item(item) {
-                    return 0;
-                }
-                return ((menu.id as u32) << 16) | (submenu.highlighted_item as u32 & 0xFFFF);
-            }
-        }
-        if tracking.highlighted_item <= 0 {
-            return 0;
-        }
-
-        let menu = &self.menus[tracking.active_menu];
-        let item_idx = tracking.highlighted_item as usize - 1;
-        let Some(item) = menu.items.get(item_idx) else {
-            return 0;
-        };
-        if Self::is_hierarchical_item(item) {
-            return 0;
-        }
-        ((menu.id as u32) << 16) | (tracking.highlighted_item as u32 & 0xFFFF)
+        tracking
+            .selection(|menu_handle, item_number| {
+                menu_items_from_memory(bus, menu_handle).is_some_and(|items| {
+                    items.item_is_selectable(item_number)
+                        && !items.item_is_hierarchical(item_number)
+                })
+            })
+            .and_then(|(menu_handle, item_number)| {
+                let menu_ptr = bus.read_long(menu_handle);
+                (menu_ptr != 0).then(|| {
+                    (u32::from(bus.read_word(menu_ptr)) << 16) | (u32::from(item_number as u16))
+                })
+            })
+            .unwrap_or(0)
     }
 
     fn submenu_menu_index_for_parent_item(
         &self,
+        bus: &MacMemoryBus,
         parent_menu_idx: usize,
         parent_item: i16,
     ) -> Option<usize> {
         if parent_item <= 0 {
             return None;
         }
-        let parent_menu = self.menus.get(parent_menu_idx)?;
-        let item = parent_menu.items.get(parent_item as usize - 1)?;
-        if !Self::is_hierarchical_item(item) {
-            return None;
-        }
-        let submenu_id = item.mark as i16;
-        self.menus.iter().position(|m| m.id == submenu_id)
+        let parent_menu_handle = self.menus.get(parent_menu_idx)?.handle;
+        let parent_items = menu_items_from_memory(bus, parent_menu_handle)?;
+        let submenu_handle = self.current_menu_list(bus)?.submenu_handle_for_item(
+            &parent_items,
+            parent_item,
+            |handle| {
+                let menu_ptr = bus.read_long(handle);
+                (menu_ptr != 0).then(|| bus.read_word(menu_ptr) as i16)
+            },
+        )?;
+        self.menus
+            .iter()
+            .position(|menu| menu.handle == submenu_handle)
     }
 
     fn submenu_rect_for_parent_item(
@@ -4695,194 +4530,136 @@ impl super::TrapDispatcher {
     ) -> Option<(i16, i16, i16, i16)> {
         let (_screen_base, _row_bytes, screen_width, screen_height, _pixel_size) =
             self.get_screen_params();
-        let (parent_top, parent_left, _parent_bottom, parent_right) = parent_rect;
         let parent_menu = self.menus.get(parent_menu_idx)?;
-        let parent_offset = parent_menu
-            .items
-            .iter()
-            .take((parent_item - 1).max(0) as usize)
-            .map(|item| self.menu_item_height(bus, item))
-            .sum::<i16>();
-        let submenu_top = parent_top + 1 + parent_offset;
-        let submenu_height = self.menu_items_height(bus, &self.menus.get(submenu_idx)?.items) + 2;
-        let submenu_width = self.dropdown_width_for_menu(bus, submenu_idx, 100);
-
-        let mut submenu_left = parent_right - 1;
-        let mut submenu_right = submenu_left + submenu_width;
-        if submenu_right > screen_width {
-            submenu_right = parent_left + 1;
-            submenu_left = (submenu_right - submenu_width).max(0);
-        }
-
-        let submenu_bottom = (submenu_top + submenu_height).min(screen_height);
-        Some((submenu_top, submenu_left, submenu_bottom, submenu_right))
+        let parent_offset = self.menu_rows(bus, &parent_menu.items).offset(parent_item);
+        let submenu = self.menus.get(submenu_idx)?;
+        let submenu_ptr = bus.read_long(submenu.handle);
+        let custom_definition =
+            submenu_ptr != 0 && !self.menu_uses_standard_definition(bus, submenu_ptr);
+        let (submenu_width, submenu_height) = if custom_definition {
+            (
+                bus.read_word(submenu_ptr + 2) as i16,
+                bus.read_word(submenu_ptr + 4) as i16,
+            )
+        } else {
+            (
+                self.dropdown_width_for_menu(bus, submenu_idx, 1),
+                self.menu_items_height(bus, &submenu.items),
+            )
+        };
+        standard_submenu_layout(
+            parent_rect,
+            parent_offset,
+            submenu_width,
+            submenu_height,
+            (screen_width, screen_height),
+            bus.read_word(addr::MBAR_HEIGHT) as i16,
+        )
+        .map(|layout| layout.rect())
     }
 
-    fn close_submenus_from(&mut self, bus: &mut MacMemoryBus, depth: usize) {
-        let submenus = self
+    fn ensure_submenu_for_request(&mut self, bus: &mut MacMemoryBus, request: SubmenuRequest<u32>) {
+        let resolved_child = self
+            .menu_index_for_handle(request.parent_handle)
+            .and_then(|parent_menu_idx| {
+                self.submenu_menu_index_for_parent_item(bus, parent_menu_idx, request.parent_item)
+            })
+            .and_then(|submenu_idx| self.menus.get(submenu_idx).map(|menu| menu.handle));
+        let reconciliation = self
             .menu_tracking
             .as_mut()
-            .map(|tracking| tracking.submenus.split_off(depth))
-            .unwrap_or_default();
-        for submenu in submenus.into_iter().rev() {
-            self.restore_dropdown_pixels(bus, submenu.dropdown_rect, &submenu.saved_pixels);
+            .map(|tracking| tracking.reconcile_submenu(request, resolved_child));
+        let (token, closed) = match reconciliation {
+            Some(SubmenuReconciliation::Stale | SubmenuReconciliation::Keep) | None => return,
+            Some(SubmenuReconciliation::Closed {
+                panes_deepest_first,
+            }) => {
+                for submenu in panes_deepest_first {
+                    self.restore_dropdown_pixels(
+                        bus,
+                        submenu.dropdown_rect(),
+                        &submenu.saved_pixels,
+                    );
+                }
+                return;
+            }
+            Some(SubmenuReconciliation::Open {
+                token,
+                panes_deepest_first,
+            }) => (token, panes_deepest_first),
+        };
+        for submenu in closed {
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
         }
-    }
+        let request = token.request();
+        let submenu_handle = token.child_handle();
 
-    fn ensure_submenu_for_parent_item(
-        &mut self,
-        bus: &mut MacMemoryBus,
-        parent_depth: Option<usize>,
-        parent_item: i16,
-    ) {
-        let Some((parent_menu_idx, parent_rect, child_depth)) =
-            self.menu_tracking.as_ref().and_then(|tracking| {
-                parent_depth.map_or_else(
-                    || Some((tracking.active_menu, tracking.dropdown_rect, 0)),
-                    |depth| {
-                        tracking
-                            .submenus
-                            .get(depth)
-                            .map(|submenu| (submenu.menu, submenu.dropdown_rect, depth + 1))
-                    },
-                )
-            })
+        let Some(parent_rect) =
+            self.menu_tracking
+                .as_ref()
+                .and_then(|tracking| match request.parent {
+                    MenuTrackingPane::Root => Some(tracking.dropdown_rect()),
+                    MenuTrackingPane::Submenu(depth) => tracking
+                        .submenus
+                        .get(depth)
+                        .map(|submenu| submenu.dropdown_rect()),
+                })
         else {
             return;
         };
-        let Some(submenu_idx) =
-            self.submenu_menu_index_for_parent_item(parent_menu_idx, parent_item)
-        else {
-            self.close_submenus_from(bus, child_depth);
+        let Some(parent_menu_idx) = self.menu_index_for_handle(request.parent_handle) else {
             return;
         };
-        let already_open = self
-            .menu_tracking
-            .as_ref()
-            .and_then(|tracking| tracking.submenus.get(child_depth))
-            .is_some_and(|submenu| {
-                submenu.menu == submenu_idx && submenu.parent_item == parent_item
-            });
-        if already_open {
+        let Some(submenu_idx) = self.menu_index_for_handle(submenu_handle) else {
             return;
-        }
-
+        };
         let Some(dropdown_rect) = self.submenu_rect_for_parent_item(
             bus,
             parent_menu_idx,
             parent_rect,
             submenu_idx,
-            parent_item,
+            request.parent_item,
         ) else {
-            self.close_submenus_from(bus, child_depth);
             return;
         };
-        self.close_submenus_from(bus, child_depth);
         let saved_pixels = self.save_dropdown_pixels(bus, dropdown_rect);
-        self.draw_menu_dropdown(bus, submenu_idx, dropdown_rect);
-        if let Some(tracking) = self.menu_tracking.as_mut() {
-            tracking.submenus.push(SubmenuTrackingState {
-                menu: submenu_idx,
-                parent_item,
-                highlighted_item: 0,
-                saved_pixels,
-                dropdown_rect,
-            });
-        }
-    }
-
-    fn submenu_item_at_point(
-        &self,
-        bus: &MacMemoryBus,
-        depth: usize,
-        mouse_x: i16,
-        mouse_y: i16,
-    ) -> Option<i16> {
-        let tracking = self.menu_tracking.as_ref()?;
-        let submenu = tracking.submenus.get(depth)?;
-        let (top, left, bottom, right) = submenu.dropdown_rect;
-        if mouse_x < left || mouse_x >= right || mouse_y < top || mouse_y >= bottom {
-            return None;
-        }
-        let menu = self.menus.get(submenu.menu)?;
-        let mut item_top = top + 1;
-        for (item_idx, item) in menu.items.iter().enumerate() {
-            let item_bottom = item_top + self.menu_item_height(bus, item);
-            if mouse_y >= item_top && mouse_y < item_bottom {
-                if item.text == "-" || !item.enabled {
-                    return Some(0);
-                }
-                return Some(item_idx as i16 + 1);
-            }
-            item_top = item_bottom;
-        }
-        Some(0)
-    }
-
-    fn update_submenu_highlight(&mut self, bus: &mut MacMemoryBus, depth: usize, new_item: i16) {
-        let Some((menu_idx, old_item, rect)) = self
-            .menu_tracking
-            .as_ref()
-            .and_then(|tracking| tracking.submenus.get(depth))
-            .map(|submenu| {
-                (
-                    submenu.menu,
-                    submenu.highlighted_item,
-                    submenu.dropdown_rect,
-                )
-            })
-        else {
-            return;
-        };
-        if old_item == new_item {
-            if new_item > 0 {
-                self.ensure_submenu_for_parent_item(bus, Some(depth), new_item);
-            }
-            return;
-        }
-        self.close_submenus_from(bus, depth + 1);
-        if let Some(submenu) = self
+        let submenu_ptr = bus.read_long(submenu_handle);
+        let custom_definition =
+            submenu_ptr != 0 && !self.menu_uses_standard_definition(bus, submenu_ptr);
+        let mut submenu = tracked_submenu_state(
+            submenu_handle,
+            request.parent_item,
+            dropdown_rect,
+            saved_pixels,
+        );
+        submenu.definition = custom_definition
+            .then(|| SharedMenuDefinitionTracking::begin_draw(submenu_handle, dropdown_rect));
+        let installed = self
             .menu_tracking
             .as_mut()
-            .and_then(|tracking| tracking.submenus.get_mut(depth))
-        {
-            submenu.highlighted_item = new_item;
+            .is_some_and(|tracking| tracking.install_submenu(token, submenu).is_ok());
+        if !installed {
+            return;
         }
-        self.draw_menu_dropdown(bus, menu_idx, rect);
-        if new_item > 0 {
-            self.ensure_submenu_for_parent_item(bus, Some(depth), new_item);
+        if custom_definition {
+            self.draw_menu_dropdown_chrome(bus, submenu_idx, dropdown_rect);
+        } else {
+            self.draw_menu_dropdown(bus, submenu_idx, dropdown_rect);
         }
     }
 
-    fn update_parent_menu_highlight(&mut self, bus: &mut MacMemoryBus, new_item: i16) {
-        let Some(old_item) = self
-            .menu_tracking
-            .as_ref()
-            .map(|tracking| tracking.highlighted_item)
-        else {
+    fn write_standard_menu_choice(
+        &self,
+        bus: &mut MacMemoryBus,
+        menu_handle: u32,
+        item_number: i16,
+    ) {
+        let menu_ptr = bus.read_long(menu_handle);
+        if menu_ptr == 0 {
             return;
-        };
-
-        if old_item != new_item {
-            self.close_submenus_from(bus, 0);
-            if let Some(tracking) = self.menu_tracking.as_mut() {
-                tracking.highlighted_item = new_item;
-            }
-            let Some((active_menu, dropdown_rect)) = self
-                .menu_tracking
-                .as_ref()
-                .map(|tracking| (tracking.active_menu, tracking.dropdown_rect))
-            else {
-                return;
-            };
-            self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
         }
-
-        if new_item > 0 {
-            self.ensure_submenu_for_parent_item(bus, None, new_item);
-        } else {
-            self.close_submenus_from(bus, 0);
-        }
+        let menu_id = bus.read_word(menu_ptr) as i16;
+        bus.write_long(addr::MENU_DISABLE, menu_choice_value(menu_id, item_number));
     }
 
     fn update_menu_tracking_for_point(
@@ -4891,22 +4668,122 @@ impl super::TrapDispatcher {
         mouse_x: i16,
         mouse_y: i16,
     ) {
-        let submenu_count = self
+        let point = (mouse_y, mouse_x);
+        let Some(menu_handle) = self
             .menu_tracking
             .as_ref()
-            .map(|tracking| tracking.submenus.len())
-            .unwrap_or(0);
-        for depth in (0..submenu_count).rev() {
-            if let Some(submenu_item) = self.submenu_item_at_point(bus, depth, mouse_x, mouse_y) {
-                self.update_submenu_highlight(bus, depth, submenu_item);
-                return;
+            .map(|tracking| tracking.menu_handle)
+        else {
+            return;
+        };
+        let Some(menu_idx) = self.menu_index_for_handle(menu_handle) else {
+            return;
+        };
+        let Some(menu) = self.menus.get(menu_idx) else {
+            return;
+        };
+        let root_rows = self.menu_tracking_rows(bus, menu);
+        let submenu_rows = self
+            .menu_tracking
+            .as_ref()
+            .map(|tracking| {
+                tracking
+                    .submenus
+                    .iter()
+                    .map(|submenu| {
+                        let menu_idx = self.menu_index_for_handle(submenu.menu_handle)?;
+                        let menu = self.menus.get(menu_idx)?;
+                        Some(self.menu_tracking_rows(bus, menu))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let update = self
+            .menu_tracking
+            .as_mut()
+            .and_then(|tracking| tracking.track_standard_pointer(&root_rows, &submenu_rows, point));
+        let Some(update) = update else {
+            return;
+        };
+        let submenu_request = update.submenu_request();
+        self.write_standard_menu_choice(bus, update.menu_handle, update.pointer.menu_choice_item);
+        for submenu in update.closed_panes_deepest_first {
+            self.restore_dropdown_pixels(bus, submenu.dropdown_rect(), &submenu.saved_pixels);
+        }
+        let pane = match update.pane {
+            MenuTrackingPane::Root => self
+                .menu_tracking
+                .as_ref()
+                .map(|tracking| (menu_idx, tracking.dropdown_rect())),
+            MenuTrackingPane::Submenu(depth) => self
+                .menu_tracking
+                .as_ref()
+                .and_then(|tracking| tracking.submenus.get(depth))
+                .and_then(|submenu| {
+                    self.menu_index_for_handle(submenu.menu_handle)
+                        .map(|menu_idx| (menu_idx, submenu.dropdown_rect()))
+                }),
+        };
+        if update.previous_item != update.pointer.item {
+            if let Some((menu_idx, rect)) = pane {
+                self.draw_menu_dropdown(bus, menu_idx, rect);
             }
         }
-        let new_item = self.dropdown_item_at_point(bus, mouse_x, mouse_y);
-        self.update_parent_menu_highlight(bus, new_item);
+        if let Some(request) = submenu_request {
+            self.ensure_submenu_for_request(bus, request);
+        }
+        if update.pointer.scrolled {
+            if let Some((menu_idx, rect)) = pane {
+                self.draw_menu_dropdown(bus, menu_idx, rect);
+            }
+        }
+        Self::write_menu_scrolling_bounds(bus, update.content_top, update.content_bottom);
+    }
+
+    fn write_menu_scrolling_bounds(bus: &mut MacMemoryBus, content_top: i16, content_bottom: i16) {
+        bus.write_word(addr::TOP_MENU_ITEM, content_top as u16);
+        bus.write_word(addr::AT_MENU_BOTTOM, content_bottom as u16);
+    }
+
+    fn write_menu_scrolling_globals(
+        bus: &mut MacMemoryBus,
+        rows: &SharedMenuRows,
+        content_top: i16,
+    ) {
+        Self::write_menu_scrolling_bounds(
+            bus,
+            content_top,
+            content_top.saturating_add(rows.total_height()),
+        );
+    }
+
+    /// Read the live MenuList title geometry and map guest handles to this
+    /// adapter's derived presentation-cache indices.
+    pub(crate) fn current_menu_title_regions_with_indices(
+        &self,
+        bus: &MacMemoryBus,
+    ) -> Vec<(usize, SharedMenuBarTitleRegion)> {
+        self.current_menu_list(bus)
+            .into_iter()
+            .flat_map(|menu_list| menu_list.regular_title_regions())
+            .filter_map(|region| {
+                self.menus
+                    .iter()
+                    .position(|menu| menu.handle == region.handle)
+                    .map(|index| (index, region))
+            })
+            .collect()
+    }
+
+    fn current_menu_title_hit_test(&self, bus: &MacMemoryBus, mouse_x: i16) -> Option<usize> {
+        self.current_menu_title_regions_with_indices(bus)
+            .into_iter()
+            .find(|(_menu_idx, region)| region.contains_horizontal(mouse_x))
+            .map(|(menu_idx, _region)| menu_idx)
     }
 
     /// Determine which menu title the x coordinate falls on.
+    #[cfg(test)]
     pub(crate) fn menu_title_hit_test(&self, mouse_x: i16) -> Option<usize> {
         for (menu_idx, left, right) in self.menu_title_regions_with_indices() {
             if mouse_x >= left && mouse_x < right {
@@ -4930,52 +4807,52 @@ impl super::TrapDispatcher {
     /// Compute menu title regions and keep the source `self.menus` index for
     /// each region so hit testing/highlighting can address the underlying
     /// inserted menu record directly.
+    #[cfg(test)]
     fn menu_title_regions_with_indices(&self) -> Vec<(usize, i16, i16)> {
         let mut regions = Vec::new();
-        let mut x: i16 = 18;
+        let mut left = STANDARD_MENU_BAR_FIRST_TITLE_LEFT;
         for (menu_idx, menu) in self.menus.iter().enumerate() {
             if !menu.visible_in_menu_bar {
                 continue;
             }
             let width = Self::menu_title_advance(&menu.title);
-            let left = x - 7; // padding before title
-            let right = x + width + 6; // padding after title
+            let right = left
+                .saturating_add(width)
+                .saturating_add(STANDARD_MENU_BAR_TITLE_SPACING);
             regions.push((menu_idx, left, right));
-            x += width + 13;
+            left = right;
         }
         regions
     }
 
     /// Determine which item (1-based) is at the given screen point, or 0.
+    #[cfg(test)]
     fn dropdown_item_at_point(&self, bus: &MacMemoryBus, mouse_x: i16, mouse_y: i16) -> i16 {
-        if let Some(ref tracking) = self.menu_tracking {
-            let (top, left, bottom, right) = tracking.dropdown_rect;
-            if mouse_x >= left && mouse_x < right && mouse_y >= top && mouse_y < bottom {
-                let menu = &self.menus[tracking.active_menu];
-                let mut item_top = top + 1;
-                for (item_idx, item) in menu.items.iter().enumerate() {
-                    let item_bottom = item_top + self.menu_item_height(bus, item);
-                    if mouse_y >= item_top && mouse_y < item_bottom {
-                        // Don't highlight separators or disabled items
-                        if item.text == "-" || !item.enabled {
-                            return 0;
-                        }
-                        return item_idx as i16 + 1; // 1-based
-                    }
-                    item_top = item_bottom;
-                }
-            }
+        if let Some(ref tracking) = *self.menu_tracking {
+            let Some(menu_idx) = self.menu_index_for_handle(tracking.menu_handle) else {
+                return 0;
+            };
+            let menu = &self.menus[menu_idx];
+            return self.menu_rows(bus, &menu.items).tracking_item_at_point(
+                tracking.dropdown_rect(),
+                tracking.content_top,
+                (mouse_y, mouse_x),
+            );
         }
         0
     }
 
-    /// Draw the menu dropdown box with items.
-    pub(super) fn draw_menu_dropdown(
+    /// Draw the Menu Manager-owned structure and erase a menu's contents.
+    ///
+    /// The menu bar definition function performs this pass before a custom
+    /// MDEF receives `mDrawMsg`; the MDEF draws only the menu items. Macintosh
+    /// Toolbox Essentials (1992), pp. 3-90 and 3-148--3-150.
+    fn draw_menu_dropdown_chrome(
         &self,
         bus: &mut MacMemoryBus,
         menu_idx: usize,
         rect: (i16, i16, i16, i16),
-    ) {
+    ) -> bool {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
         let screen = (
@@ -4987,14 +4864,14 @@ impl super::TrapDispatcher {
         );
         let (top, left, bottom, right) = rect;
         if menu_idx >= self.menus.len() {
-            return;
+            return false;
         }
         let menu = &self.menus[menu_idx];
         let dropdown_bg_index =
             Self::menu_dropdown_background_pixel_index(bus, menu.id, pixel_size);
         let detached_popup = self.menu_tracking.as_ref().is_some_and(|tracking| {
-            tracking.active_menu == menu_idx
-                && tracking.dropdown_rect == rect
+            tracking.menu_handle == menu.handle
+                && tracking.dropdown_rect() == rect
                 && !menu.visible_in_menu_bar
         });
         let attached_pulldown =
@@ -5034,41 +4911,69 @@ impl super::TrapDispatcher {
                 );
             }
 
-            if !attached_pulldown {
-                Self::menu_draw_standard_hline(bus, screen, top, left, right, true);
+            let kind = if attached_pulldown {
+                StandardMenuPaneKind::PullDown
+            } else if detached_popup {
+                StandardMenuPaneKind::PopUp
+            } else {
+                StandardMenuPaneKind::Hierarchical
+            };
+            if let Some(chrome) = StandardMenuChrome::new(kind, rect) {
+                chrome.for_each_frame_pixel(|x, y| {
+                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                });
+                chrome.for_each_shadow_pixel(|x, y| {
+                    Self::menu_set_standard_pixel(bus, screen, x, y, true);
+                });
             }
-            Self::menu_draw_standard_hline(bus, screen, bottom - 1, left, right, true);
-            for y in top..bottom {
-                Self::menu_set_standard_pixel(bus, screen, left, y, true);
-                Self::menu_set_standard_pixel(bus, screen, right - 1, y, true);
-            }
-
-            // Shadow (right edge + bottom edge). Detached popup menus start
-            // the right-edge shadow one pixel lower than attached pull-downs
-            // in the System 7.5.3 MDEF reference. MTE 1992, p. 3-120.
-            let shadow_top = if detached_popup { top + 3 } else { top + 2 };
-            for y in shadow_top..=bottom {
-                Self::menu_set_standard_pixel(bus, screen, right, y, true);
-            }
-            Self::menu_draw_standard_hline(bus, screen, bottom, left + 3, right + 1, true);
         }
+
+        attached_pulldown
+    }
+
+    /// Draw the menu dropdown box with standard MDEF items.
+    pub(super) fn draw_menu_dropdown(
+        &self,
+        bus: &mut MacMemoryBus,
+        menu_idx: usize,
+        rect: (i16, i16, i16, i16),
+    ) {
+        let attached_pulldown = self.draw_menu_dropdown_chrome(bus, menu_idx, rect);
+        let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
+            self.get_screen_params();
+        let screen = (
+            screen_base,
+            row_bytes,
+            pixel_size,
+            screen_width,
+            screen_height,
+        );
+        let (top, left, bottom, right) = rect;
+        if menu_idx >= self.menus.len() {
+            return;
+        }
+        let menu = &self.menus[menu_idx];
+        let dropdown_bg_index =
+            Self::menu_dropdown_background_pixel_index(bus, menu.id, pixel_size);
 
         // Draw items
         let font_id: i16 = 0;
         let font_size: i16 = 12;
         let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
-        let highlighted_item = self
+        let (highlighted_item, content_top) = self
             .menu_tracking
             .as_ref()
             .and_then(|tracking| {
-                if tracking.active_menu == menu_idx && tracking.dropdown_rect == rect {
-                    Some(tracking.highlighted_item)
+                if tracking.menu_handle == menu.handle && tracking.dropdown_rect() == rect {
+                    Some((tracking.highlighted_item, tracking.content_top))
                 } else {
                     tracking
                         .submenus
                         .iter()
-                        .find(|submenu| submenu.menu == menu_idx && submenu.dropdown_rect == rect)
-                        .map(|submenu| submenu.highlighted_item)
+                        .find(|submenu| {
+                            submenu.menu_handle == menu.handle && submenu.dropdown_rect() == rect
+                        })
+                        .map(|submenu| (submenu.highlighted_item, submenu.content_top))
                 }
             })
             .or_else(|| {
@@ -5077,23 +4982,40 @@ impl super::TrapDispatcher {
                     .filter(|tracking| {
                         tracking.active_menu == menu_idx && tracking.dropdown_rect == rect
                     })
-                    .map(|tracking| tracking.highlighted_item)
+                    .map(|tracking| (tracking.highlighted_item, top))
             })
             .or_else(|| {
                 self.dialog_tracking
                     .as_ref()
                     .and_then(|tracking| tracking.active_popup.as_ref())
                     .filter(|popup| popup.active_menu == menu_idx && popup.dropdown_rect == rect)
-                    .map(|popup| popup.highlighted_item)
+                    .map(|popup| (popup.highlighted_item, top))
             })
-            .unwrap_or(0);
+            .unwrap_or((0, top));
+        let rows = self.menu_rows(bus, &menu.items);
+        let (scroll_up, scroll_down) = rows.scroll_indicators(rect, content_top);
+        let visible_item_top = top.saturating_add(if scroll_up { MENU_ROW_HEIGHT } else { 0 });
+        let visible_item_bottom =
+            bottom.saturating_sub(if scroll_down { MENU_ROW_HEIGHT } else { 0 });
 
-        let mut item_top = top + 1;
+        let mut item_top = content_top;
         for (i, item) in Self::laid_out_items(&menu.items).iter().enumerate() {
             let item_no = i as i16 + 1;
             let item_height = self.menu_item_height(bus, item);
-            let item_bottom = item_top + item_height;
+            let item_bottom = item_top.saturating_add(item_height);
+            if item_bottom <= top {
+                item_top = item_bottom;
+                continue;
+            }
+            if item_top >= bottom {
+                break;
+            }
+            if item_top < visible_item_top || item_bottom > visible_item_bottom {
+                item_top = item_bottom;
+                continue;
+            }
             let is_separator = item.text == "-";
+            let row_enabled = menu.enabled && item.enabled;
             let mark_pixel_index =
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 4);
             let name_pixel_index =
@@ -5102,7 +5024,7 @@ impl super::TrapDispatcher {
                 Self::menu_item_component_pixel_index(bus, menu.id, item_no, pixel_size, 16);
             let classic_selected = self.ui_theme_id() == UiThemeId::ClassicSystem7
                 && highlighted_item == item_no
-                && item.enabled
+                && row_enabled
                 && !is_separator;
             let selected_mono = classic_selected && pixel_size == 1;
             let selected_colors =
@@ -5135,10 +5057,13 @@ impl super::TrapDispatcher {
                     selected_background,
                 );
             }
-            let cicn_icon_ptr = self.cicn_menu_icon_resource_ptr(item);
-            let reduced_icon_ptr = self.reduced_menu_icon_resource_ptr(item);
-            let small_icon_ptr = self.small_menu_icon_resource_ptr(item);
-            let normal_icon_ptr = self.normal_menu_icon_resource_ptr(item);
+            let icon_kind = self.menu_item_icon_kind(bus, item);
+            let cicn_icon_ptr = matches!(icon_kind, StandardMenuIconKind::Color { .. })
+                .then(|| self.cicn_menu_icon_resource_ptr(item))
+                .flatten();
+            let reduced_icon_ptr = self.reduced_menu_icon_resource_ptr(bus, item);
+            let small_icon_ptr = self.small_menu_icon_resource_ptr(bus, item);
+            let normal_icon_ptr = self.normal_menu_icon_resource_ptr(bus, item);
             let has_app_icon_resource = cicn_icon_ptr.is_some()
                 || reduced_icon_ptr.is_some()
                 || small_icon_ptr.is_some()
@@ -5152,27 +5077,31 @@ impl super::TrapDispatcher {
                 left + 1,
                 item_bottom,
                 right - 1,
-                item.enabled,
+                row_enabled,
                 highlighted_item == i as i16 + 1,
                 is_separator,
                 item.icon != 0 && !has_app_icon_resource,
                 item.mark != 0,
                 has_command_key,
             );
-            let text_baseline_adjust = if attached_pulldown { -1 } else { 0 };
-            let text_y = item_top
-                + (item_height - (metrics.ascent + metrics.descent)) / 2
-                + metrics.ascent
-                + text_baseline_adjust;
-            // IM:I I-358 / MTE 1992 p. 3-131: DisableItem dims an item and
-            // takes it out of MenuSelect and MenuKey, and HIG 1992 p. 54 says
-            // it stays visible while dimmed. Separator rows are dimmed the
-            // same way because IM:I I-353 keeps hyphen items disabled. On a
-            // colour screen the definition procedure resolves the dim shade
-            // through GetGray (IM:V 1986 p. V-142); where the device has no
-            // intermediate shade it knocks the drawn glyphs back with the 50%
-            // grey pattern instead.
-            let dim_row = !item.enabled || is_separator;
+            let layout = standard_menu_item_layout(
+                (left, right),
+                (item_top, item_height),
+                icon_kind,
+                item.mark != 0,
+                (metrics.ascent, metrics.descent),
+                attached_pulldown,
+            );
+            let text_y = layout.text_baseline;
+            // MTE 1992 pp. 3-6--3-7 and p. 3-131: disabling a whole menu or
+            // one item dims its rows and removes them from MenuSelect and
+            // MenuKey. HIG 1992 p. 54 says unavailable items stay visible.
+            // Separator rows are dimmed the same way because IM:I I-353 keeps
+            // hyphen items disabled. On a colour screen the definition
+            // procedure resolves the dim shade through GetGray (IM:V 1986
+            // p. V-142); where the device has no intermediate shade it knocks
+            // the drawn glyphs back with the 50% grey pattern instead.
+            let dim_row = !row_enabled || is_separator;
             let dim_index = if dim_row {
                 Self::menu_dim_pixel_index(bus, pixel_size, name_pixel_index, dropdown_bg_index)
             } else {
@@ -5197,7 +5126,7 @@ impl super::TrapDispatcher {
                 // Separator: a dividing line across the item row, one pixel
                 // above the row's midpoint in the System 7.5.3 standard MDEF.
                 // Inside Macintosh Volume I, I-359
-                let sep_y = item_top + item_height / 2 - 1;
+                let sep_y = layout.separator_y;
                 for x in (left + 1)..(right - 1) {
                     match dim_index {
                         Some(pixel_index) => Self::fb_set_pixel_index(
@@ -5212,9 +5141,9 @@ impl super::TrapDispatcher {
                             pixel_index,
                         ),
                         // 50% grey pattern: set pixels where the pattern bit
-                        // is on. Imaging With QuickDraw 1994 p. 3-9.
+                        // is on. Imaging With QuickDraw 1994 pp. 3-5--3-6.
                         None => {
-                            if (x + sep_y) % 2 == 0 {
+                            if standard_menu_gray_pattern_is_ink(x, sep_y) {
                                 if let Some(pixel_index) = name_pixel_index {
                                     Self::fb_set_pixel_index(
                                         bus,
@@ -5252,7 +5181,7 @@ impl super::TrapDispatcher {
 
             // Draw mark character if present (0x12 = checkmark, others rendered as-is).
             // Inside Macintosh Volume I, I-358
-            let mut text_left = left + 15;
+            let text_left = layout.text_left;
             if item.mark != 0 && !is_hierarchical {
                 // Map Mac Roman mark byte to a renderable string.
                 // Mac character 0x12 (18) is the standard checkmark in Chicago.
@@ -5270,7 +5199,7 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        left + 3,
+                        layout.mark_left,
                         text_y,
                         &mark_str,
                         font_id,
@@ -5286,7 +5215,7 @@ impl super::TrapDispatcher {
                         pixel_size,
                         screen_width,
                         screen_height,
-                        left + 3,
+                        layout.mark_left,
                         text_y,
                         &mark_str,
                         font_id,
@@ -5296,51 +5225,34 @@ impl super::TrapDispatcher {
             }
 
             if let Some(icon_ptr) = cicn_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, icon_left);
-                let icon_width = self
-                    .menu_item_cicn_size(bus, item)
-                    .map(|(width, _height)| width.max(MENU_ROW_HEIGHT))
-                    .unwrap_or(MENU_ROW_HEIGHT);
-                text_left = icon_left + icon_width;
+                self.draw_cicn_menu_icon(bus, icon_ptr, item_top, layout.icon_left);
             } else if let Some(icon_ptr) = normal_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_menu_icon_bitmap(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
-                    MENU_NORMAL_ICON_SIZE,
+                    layout.icon_left,
+                    StandardMenuIconKind::Normal,
                     content_index(name_pixel_index),
                 );
-                text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             } else if let Some(icon_ptr) = reduced_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_menu_icon_bitmap(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
-                    MENU_ROW_HEIGHT,
+                    layout.icon_left,
+                    StandardMenuIconKind::Reduced,
                     content_index(name_pixel_index),
                 );
-                text_left = icon_left + MENU_ROW_HEIGHT;
             } else if let Some(icon_ptr) = small_icon_ptr {
-                let icon_left = if item.mark != 0 { left + 18 } else { left + 2 };
-                self.draw_sicn_menu_icon(
+                self.draw_monochrome_menu_icon(
                     bus,
                     icon_ptr,
                     item_top,
-                    icon_left,
+                    layout.icon_left,
+                    StandardMenuIconKind::Small,
                     content_index(name_pixel_index),
                 );
-                text_left = icon_left + MENU_ROW_HEIGHT;
-            } else if Self::menu_item_uses_normal_icon(item) {
-                // MTE 1992 pp. 3-137 to 3-138 says SetItemIcon stores an
-                // icon number and the Menu Manager looks up icon+256. If no
-                // resource is present, the System 7 standard MDEF still
-                // reserves the normal icon column before drawing item text.
-                text_left = left + MENU_NORMAL_ICON_TEXT_LEFT_OFFSET;
             }
 
             // MTE 1992 pp. 3-60 and 3-133 to 3-134: `SetItemStyle`
@@ -5384,37 +5296,34 @@ impl super::TrapDispatcher {
             if is_hierarchical {
                 // IM:V V-23 / V-236: hierarchical items show a right-pointing
                 // indicator; their mark byte is the submenu ID, not a checkmark.
-                let tri_mid_y = item_top + item_height / 2;
-                for dx in 0..7 {
-                    let x = right - 12 + dx;
-                    let half_height = dx.min(6 - dx);
-                    for dy in -half_height..=half_height {
-                        match content_index(command_pixel_index) {
-                            Some(pixel_index) => Self::fb_set_pixel_index(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                tri_mid_y + dy,
-                                pixel_index,
-                            ),
-                            None => Self::fb_set_pixel(
-                                bus,
-                                screen_base,
-                                row_bytes,
-                                pixel_size,
-                                screen_width,
-                                screen_height,
-                                x,
-                                tri_mid_y + dy,
-                                true,
-                            ),
-                        }
-                    }
-                }
+                for_each_standard_hierarchy_indicator_pixel(
+                    layout.indicator_left,
+                    layout.indicator_mid_y,
+                    |x, y| match content_index(command_pixel_index) {
+                        Some(pixel_index) => Self::fb_set_pixel_index(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            pixel_index,
+                        ),
+                        None => Self::fb_set_pixel(
+                            bus,
+                            screen_base,
+                            row_bytes,
+                            pixel_size,
+                            screen_width,
+                            screen_height,
+                            x,
+                            y,
+                            true,
+                        ),
+                    },
+                );
             }
 
             // MTE 1992 pp. 3-12 and 3-16 define marks and Command-key
@@ -5428,7 +5337,7 @@ impl super::TrapDispatcher {
                 // right-aligning each glyph pair by measured width. This
                 // keeps N/O/W equivalents aligned in the System 7.5.3
                 // MenuSelect reference. MTE 1992 pp. 3-115 to 3-117.
-                let command_left = right - 25;
+                let command_left = layout.command_left;
                 if let Some(pixel_index) = content_index(command_pixel_index) {
                     Self::fb_draw_string_styled_index(
                         bus,
@@ -5468,11 +5377,12 @@ impl super::TrapDispatcher {
             // fallback when GetGray reports it cannot grey the content.
             // The pattern is `$AA $55 …` aligned to the port origin, so its
             // bits are on where x + y is even and the glyph keeps only those
-            // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994 p. 3-9.
+            // pixels. IM:V 1986 p. V-142; Imaging With QuickDraw 1994
+            // pp. 3-5--3-6.
             if dim_with_pattern && !provider_row_chrome {
                 for y in item_top..item_bottom {
                     for x in (left + 1)..(right - 1) {
-                        if (x + y) % 2 != 0 {
+                        if !standard_menu_gray_pattern_is_ink(x, y) {
                             if let Some(bg_index) = dropdown_bg_index {
                                 Self::fb_set_pixel_index(
                                     bus,
@@ -5521,6 +5431,21 @@ impl super::TrapDispatcher {
             }
 
             item_top = item_bottom;
+        }
+
+        // The standard MDEF replaces the first or last visible item position
+        // with a triangular scrolling indicator when content exists beyond
+        // that edge. Inside Macintosh Volume V (1986), pp. V-248--V-249.
+        let center_x = left.saturating_add(right.saturating_sub(left) / 2);
+        if scroll_up {
+            for_each_standard_scroll_up_indicator_pixel(center_x, top, |x, y| {
+                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+            });
+        }
+        if scroll_down {
+            for_each_standard_scroll_down_indicator_pixel(center_x, bottom, |x, y| {
+                Self::menu_set_standard_pixel(bus, screen, x, y, true);
+            });
         }
     }
 
@@ -5573,11 +5498,11 @@ impl super::TrapDispatcher {
 
     /// Restore previously saved framebuffer pixels.
     /// Mirrors save_dropdown_pixels off-screen guard.
-    pub(super) fn restore_dropdown_pixels(
+    pub(super) fn restore_dropdown_pixels<Pixel: Copy + Into<u16>>(
         &self,
         bus: &mut MacMemoryBus,
         rect: (i16, i16, i16, i16),
-        saved: &[u8],
+        saved: &[Pixel],
     ) {
         let (screen_base, row_bytes, _, screen_h, pixel_size) = self.get_screen_params();
         let (top, left, bottom, right) = rect;
@@ -5604,7 +5529,7 @@ impl super::TrapDispatcher {
             let row_start = screen_base + (y as u32) * row_bytes;
             for bx in byte_left..(byte_left + bytes_per_row) {
                 if idx < saved.len() {
-                    bus.write_byte(row_start + bx, saved[idx]);
+                    bus.write_byte(row_start + bx, saved[idx].into() as u8);
                     idx += 1;
                 }
             }
@@ -5664,6 +5589,32 @@ impl super::TrapDispatcher {
         }
     }
 
+    fn invert_menu_title_index(&self, bus: &mut MacMemoryBus, menu_idx: usize) -> bool {
+        let Some((_idx, region)) = self
+            .current_menu_title_regions_with_indices(bus)
+            .into_iter()
+            .find(|(idx, _region)| *idx == menu_idx)
+        else {
+            return false;
+        };
+        let Some(menu) = self.menus.get(menu_idx) else {
+            return false;
+        };
+        let (_screen_base, _row_bytes, _screen_width, _screen_height, pixel_size) =
+            self.get_screen_params();
+        let hilite_indexes = Self::menu_hilite_pixel_indexes(
+            bus,
+            self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
+            Self::menu_title_pixel_index(bus, menu.id, pixel_size),
+            pixel_size,
+        );
+        let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
+        let (top, left, bottom, right) = region.highlighted_rect(menu_bar_height);
+        self.invert_menu_bar_rect(bus, top, left, bottom, right, hilite_indexes);
+        self.redraw_color_system_menu_mark_title(bus, menu_idx, region.title_origin());
+        true
+    }
+
     fn flash_menu_bar(&self, bus: &mut MacMemoryBus, menu_id: i16) {
         if self.fullscreen_locked || self.menu_bar_hidden {
             return;
@@ -5679,27 +5630,18 @@ impl super::TrapDispatcher {
         }
 
         if menu_id != 0 {
-            if let Some((idx, left, right)) = self
-                .menu_title_regions_with_indices()
+            if let Some((idx, _region)) = self
+                .current_menu_title_regions_with_indices(bus)
                 .into_iter()
-                .find(|(idx, _, _)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
+                .find(|(idx, _region)| self.menus.get(*idx).is_some_and(|menu| menu.id == menu_id))
             {
-                let menu = &self.menus[idx];
-                let hilite_indexes = Self::menu_hilite_pixel_indexes(
-                    bus,
-                    self.menu_title_background_pixel_index(bus, menu.id, pixel_size),
-                    Self::menu_title_pixel_index(bus, menu.id, pixel_size),
-                    pixel_size,
-                );
-                self.invert_menu_bar_rect(
-                    bus,
-                    1,
-                    left - 2,
-                    menu_bar_height - 1,
-                    right + 3,
-                    hilite_indexes,
-                );
-                self.redraw_color_system_menu_mark_title(bus, idx, left + 7);
+                let current = self.current_menu_bar_highlight_index(bus);
+                if let Some(previous_idx) = current.filter(|previous_idx| *previous_idx != idx) {
+                    self.invert_menu_title_index(bus, previous_idx);
+                }
+                self.invert_menu_title_index(bus, idx);
+                let target_menu_id = if current == Some(idx) { 0 } else { menu_id };
+                bus.write_word(addr::THE_MENU, target_menu_id as u16);
                 return;
             }
         }
@@ -5737,10 +5679,15 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let Some((active_menu, dropdown_rect)) = self.menu_tracking.as_mut().map(|tracking| {
-            tracking.highlighted_item = item;
-            (tracking.active_menu, tracking.dropdown_rect)
-        }) else {
+        let Some((active_menu_handle, dropdown_rect)) =
+            self.menu_tracking.as_mut().map(|tracking| {
+                tracking.highlighted_item = item;
+                (tracking.menu_handle, tracking.dropdown_rect())
+            })
+        else {
+            return;
+        };
+        let Some(active_menu) = self.menu_index_for_handle(active_menu_handle) else {
             return;
         };
         self.draw_menu_dropdown(bus, active_menu, dropdown_rect);
@@ -5757,14 +5704,14 @@ impl super::TrapDispatcher {
         }
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        let mut target_region: Option<(i16, i16)> = None;
-        for (idx, left, right) in self.menu_title_regions_with_indices() {
+        let mut target_region = None;
+        for (idx, region) in self.current_menu_title_regions_with_indices(bus) {
             if idx == menu_idx {
-                target_region = Some((left, right));
+                target_region = Some(region);
                 break;
             }
         }
-        let Some((left, right)) = target_region else {
+        let Some(region) = target_region else {
             return;
         };
         let menu_bar_height = bus.read_word(addr::MBAR_HEIGHT) as i16;
@@ -5785,9 +5732,9 @@ impl super::TrapDispatcher {
             if self.draw_theme_menu_title_chrome(
                 bus,
                 1,
-                left,
+                region.left,
                 menu_bar_height - 1,
-                right,
+                region.right,
                 menu.enabled,
                 true,
             ) {
@@ -5803,7 +5750,7 @@ impl super::TrapDispatcher {
                     pixel_size,
                     screen_width,
                     screen_height,
-                    left + 7,
+                    region.title_origin(),
                     text_y,
                     &menu.title,
                     font_id,
@@ -5827,13 +5774,13 @@ impl super::TrapDispatcher {
             Self::menu_title_pixel_index(bus, menu.id, pixel_size),
             pixel_size,
         );
-        // Invert the title area in the menu bar. The standard MDEF's
+        // Invert the title area in the menu bar. The standard MBDF's
         // highlighted title rectangle begins two pixels before the logical
         // hit region, matching the pull-down rectangle captured by the
         // System 7.5.3 MenuSelect reference. Inside Macintosh Volume I, I-356.
-        let classic_left = left - 2;
-        let classic_right = right + 3;
-        for y in 1i16..(menu_bar_height - 1) {
+        let (classic_top, classic_left, classic_bottom, classic_right) =
+            region.highlighted_rect(menu_bar_height);
+        for y in classic_top..classic_bottom {
             for x in classic_left..classic_right {
                 if x >= 0 && x < screen_width && y >= 0 && y < screen_height {
                     if pixel_size == 1 {
@@ -5871,7 +5818,7 @@ impl super::TrapDispatcher {
         // itself: only its transparent cell background participates in the
         // reversal. Replotting is intentionally limited to indexed color;
         // the monochrome mark remains ordinary reversed one-bit title ink.
-        self.redraw_color_system_menu_mark_title(bus, menu_idx, left + 7);
+        self.redraw_color_system_menu_mark_title(bus, menu_idx, region.title_origin());
     }
 
     fn redraw_color_system_menu_mark_title(
@@ -5951,13 +5898,15 @@ impl super::TrapDispatcher {
 #[cfg(test)]
 mod tests {
     use super::super::test_helpers::{setup, setup_with_port, MockCpu, TEST_SP};
+    use super::super::TrapDispatcher;
     use super::{
-        count_menu_items_from_memory, parse_appendmenu_items, parse_menu_resource, Menu, MenuItem,
-        MenuTrackingState, MC_ENTRY_SIZE, MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON,
-        MENU_ROW_HEIGHT,
+        count_menu_items_from_memory, menu_list_from_memory, parse_appendmenu_items,
+        parse_menu_resource, test_tracked_menu_state, Menu, MenuItem, MC_ENTRY_SIZE,
+        MENU_KEY_REDUCED_ICON, MENU_KEY_SMALL_ICON, MENU_ROW_HEIGHT,
     };
     use crate::cpu::{CpuOps, Register};
     use crate::memory::{MacMemoryBus, MemoryBus};
+    use crate::menu_manager::{menu_choice_value, MenuDefinitionInvocation, TrackedMenuPaneView};
     use crate::ui_theme::UiThemeId;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -6827,9 +6776,32 @@ mod tests {
     }
 
     #[test]
-    fn addresmenu_exposes_builtin_font_families_without_guest_resources() {
+    fn addresmenu_prioritizes_fond_names_loads_resources_and_exposes_builtin_fonts() {
         let (mut disp, mut cpu, mut bus) = setup();
         let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 331, 0x306A00, "Font");
+        let fond_ptr = bus.alloc(1);
+        let font_ptr = bus.alloc(1);
+        bus.write_byte(fond_ptr, 1);
+        bus.write_byte(font_ptr, 2);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::new(),
+                    named: std::collections::HashMap::from([
+                        ((*b"FONT", "Custom Face".to_string()), (7, font_ptr)),
+                        ((*b"FOND", "Custom Face".to_string()), (8, fond_ptr)),
+                    ]),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        disp.res_load = false;
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, u32::from_be_bytes(*b"FONT"));
@@ -6840,6 +6812,7 @@ mod tests {
                 .is_ok(),
             "AddResMenu should succeed"
         );
+        assert!(disp.res_load, "AppendResMenu must restore SetResLoad(TRUE)");
 
         let menu = disp
             .menus
@@ -6856,6 +6829,18 @@ mod tests {
             !menu.items.iter().any(|item| item.text == "Application"),
             "the applFont selector is not a user-facing family"
         );
+        assert_eq!(
+            menu.items
+                .iter()
+                .filter(|item| item.text == "Custom Face")
+                .count(),
+            1,
+            "the FOND name must suppress the later FONT duplicate"
+        );
+        for (resource_type, id, ptr) in [(*b"FOND", 8, fond_ptr), (*b"FONT", 7, font_ptr)] {
+            let resource_handle = disp.resource_handles_by_key[&(0, resource_type, id)];
+            assert_eq!(bus.read_long(resource_handle), ptr);
+        }
     }
 
     // IM:I I-360: SetItemStyle takes one Style value, one item index,
@@ -7224,10 +7209,405 @@ mod tests {
 
         let width = bus.read_word(menu_ptr + 2) as i16;
         let height = bus.read_word(menu_ptr + 4) as i16;
-        assert!(
-            width > 0 && height > 0,
-            "CalcMenuSize should write nonzero width and height into the menu record"
+        assert_eq!(
+            width,
+            super::super::TrapDispatcher::fb_measure_string("Open", 0, 12) + 32,
+            "68k CalcMenuSize should use the shared Mac OS 8.1 width policy"
         );
+        assert_eq!(height, 16);
+    }
+
+    #[test]
+    fn calcmenusize_arms_custom_mdef_size_message_with_pascal_arguments() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 335, 0x306DD0, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        assert_eq!(bus.read_long(TEST_SP), return_pc);
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        assert_eq!(bus.read_long(trampoline + 10), handle);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 22), 0);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(bus.read_long(trampoline + 34), mdef_ptr);
+        assert!(disp.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn calcmenusize_calls_the_m68k_record_from_a_fat_mdef_descriptor() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306DE0, "Fat");
+        let menu_ptr = bus.read_long(handle);
+        let descriptor = bus.alloc(
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE
+                + 2 * crate::guest_procedure::ROUTINE_RECORD_SIZE,
+        );
+        let powerpc_entry = bus.alloc(4);
+        let m68k_entry = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(
+            descriptor,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        );
+        bus.write_byte(
+            descriptor + 2,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_VERSION,
+        );
+        bus.write_word(descriptor + 10, 1);
+        let powerpc_record = descriptor + crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        bus.write_byte(
+            powerpc_record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_POWERPC_ISA,
+        );
+        bus.write_long(
+            powerpc_record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            powerpc_entry,
+        );
+        let m68k_record = powerpc_record + crate::guest_procedure::ROUTINE_RECORD_SIZE;
+        bus.write_byte(
+            m68k_record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_M68K_ISA,
+        );
+        bus.write_long(
+            m68k_record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            m68k_entry,
+        );
+        bus.write_word(m68k_entry, 0x4E75);
+        bus.write_long(mdef_handle, descriptor);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), trampoline);
+        assert_eq!(bus.read_long(trampoline + 34), m68k_entry);
+        assert_ne!(bus.read_long(trampoline + 34), powerpc_entry);
+    }
+
+    #[test]
+    fn calcmenusize_does_not_enter_a_powerpc_only_mdef_descriptor_as_m68k() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 339, 0x306DE8, "PPC");
+        let menu_ptr = bus.read_long(handle);
+        let descriptor = bus.alloc(
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE
+                + crate::guest_procedure::ROUTINE_RECORD_SIZE,
+        );
+        let powerpc_entry = bus.alloc(4);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(
+            descriptor,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+        );
+        bus.write_byte(
+            descriptor + 2,
+            crate::guest_procedure::ROUTINE_DESCRIPTOR_VERSION,
+        );
+        bus.write_word(descriptor + 10, 0);
+        let record = descriptor + crate::guest_procedure::ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        bus.write_byte(
+            record + crate::guest_procedure::ROUTINE_RECORD_ISA_OFFSET,
+            crate::guest_procedure::ROUTINE_RECORD_POWERPC_ISA,
+        );
+        bus.write_long(
+            record + crate::guest_procedure::ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+            powerpc_entry,
+        );
+        bus.write_long(mdef_handle, descriptor);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (descriptor, *b"MDEF", 256));
+
+        let return_pc = 0x0012_3456;
+        cpu.write_reg(Register::PC, return_pc);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        assert!(disp
+            .dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(disp.menu_def_trampoline, 0);
+        assert_eq!(cpu.read_reg(Register::PC), return_pc);
+    }
+
+    #[test]
+    fn custom_mdef_adapter_marshals_shared_choose_invocation_scratch() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 336, 0x306DF0, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        cpu.write_reg(Register::PC, 0x0012_3456);
+        cpu.write_reg(Register::A7, TEST_SP);
+        let invocation = MenuDefinitionInvocation {
+            message: crate::menu_manager::MenuDefinitionMessage::Choose,
+            menu_handle: handle,
+            menu_rect: (20, 30, 120, 180),
+            hit_point: 0x0050_0060,
+            which_item: 4,
+        };
+        assert!(disp.arm_menu_definition(&mut cpu, &mut bus, invocation));
+
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 10), handle);
+        assert_eq!(bus.read_long(trampoline + 16), trampoline + 50);
+        assert_eq!(bus.read_long(trampoline + 22), 0x0050_0060);
+        assert_eq!(bus.read_long(trampoline + 28), trampoline + 58);
+        assert_eq!(
+            bus.read_bytes(trampoline + 50, 10),
+            invocation.scratch_bytes()
+        );
+    }
+
+    #[test]
+    fn menuselect_retains_custom_mdef_draw_and_choose_until_release() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 337, 0x306E40, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        bus.write_word(menu_ptr + 2, 80);
+        bus.write_word(menu_ptr + 4, 32);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+        disp.draw_menu_bar_to_fb(&mut bus);
+        let original_port = disp.current_port;
+
+        let trap_pc = 0x0012_3400;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, 12);
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 28);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 20);
+
+        assert!(disp
+            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 0);
+        assert_eq!(bus.read_long(TEST_SP - 4), trap_pc);
+        assert!(disp.is_menu_definition_callback_pending());
+        assert_eq!(disp.guest_calls.len(), 1);
+        assert_eq!(disp.current_port, disp.window_manager_cport);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 22), 0x001C_0014);
+        assert_eq!(bus.read_word(trampoline + 58), 0);
+
+        bus.write_word(trampoline + 58, 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        let (top, left, _, _) = disp.active_menu_definition().unwrap().menu_rect();
+        assert_eq!(
+            bus.read_long(trampoline + 22),
+            (u32::from((top - 1) as u16) << 16) | u32::from(left as u16)
+        );
+        assert_eq!(bus.read_word(trampoline + 58), 2);
+
+        bus.write_word(trampoline + 58, 0);
+        let tracking = disp.menu_tracking.as_mut().unwrap();
+        tracking.flash_remaining = 1;
+        tracking.flash_delay = 0;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), (337u32 << 16) | 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(disp.menu_tracking, None);
+        assert_eq!(disp.menu_definition_tracking, None);
+        assert!(disp.guest_calls.is_empty());
+        assert_eq!(disp.current_port, original_port);
+    }
+
+    #[test]
+    fn popup_menu_select_runs_custom_popup_draw_and_choose_sequence() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 338, 0x306E80, "Custom");
+        let menu_ptr = bus.read_long(handle);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(menu_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        let trap_pc = 0x0012_3500;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 4);
+        bus.write_word(TEST_SP + 2, 30);
+        bus.write_word(TEST_SP + 4, 40);
+        bus.write_long(TEST_SP + 6, handle);
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 52);
+        bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 45);
+
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 3);
+        assert_eq!(bus.read_long(trampoline + 22), 0x0028_001E);
+        assert_eq!(bus.read_word(trampoline + 58), 4);
+
+        for (offset, value) in [(0, 40i16), (2, 30), (4, 72), (6, 110), (8, 0)] {
+            bus.write_word(trampoline + 50 + offset, value as u16);
+        }
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 0);
+        assert_eq!(
+            bus.read_bytes(trampoline + 50, 8),
+            [0, 40, 0, 30, 0, 72, 0, 110]
+        );
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 22), 0x0034_002D);
+
+        bus.write_word(trampoline + 58, 2);
+        bus.write_byte(crate::memory::globals::addr::MB_STATE, 0x80);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().flash_remaining, 6);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+        disp.menu_tracking.as_mut().unwrap().flash_delay = 0;
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 22), 0x0027_001E);
+        assert_eq!(bus.read_word(trampoline + 58), 2);
+
+        bus.write_word(trampoline + 58, 0);
+        let tracking = disp.menu_tracking.as_mut().unwrap();
+        tracking.flash_remaining = 1;
+        tracking.flash_delay = 0;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x00B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 10), (338u32 << 16) | 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(disp.menu_tracking, None);
+        assert_eq!(disp.menu_definition_tracking, None);
+    }
+
+    #[test]
+    fn calcmenusize_caps_oversized_menu_height_from_profile_geometry() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.set_screen_mode_for_test(0x0040_0000, 100, 800, 600, 1);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 334, 0x306DE0, "File");
+        let description = (0..40).map(|_| "A").collect::<Vec<_>>().join(";");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x306E00,
+            &description,
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, handle);
+        disp.dispatch_menu(true, 0x148, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(bus.read_word(bus.read_long(handle) + 4), 560);
     }
 
     #[test]
@@ -7341,12 +7721,12 @@ mod tests {
             "classic CalcMenuSize should retain the standard minimum menu width"
         );
         assert_eq!(
-            classic.1, 120,
+            classic.1, 108,
             "classic CalcMenuSize should sum standard, normal ICON, cicn, and SICN row heights"
         );
         assert_eq!(
             classic,
-            (classic.0, 120, 0x1357, TEST_SP + 4, 0xCAFE),
+            (classic.0, 108, 0x1357, TEST_SP + 4, 0xCAFE),
             "CalcMenuSize should write menuWidth/menuHeight, preserve adjacent fields, and pop one MenuHandle"
         );
         assert_eq!(
@@ -7499,17 +7879,15 @@ mod tests {
 
     #[test]
     fn parse_appendmenu_items_handles_marks_icons_and_styles() {
-        let raw = b"Bold<B;Italic<I;Marked!\x12;IconItem^\x05";
+        let raw = b"BoldItalic<B<I;Marked!\x12\rIconItem^5";
         let items = parse_appendmenu_items(raw);
-        assert_eq!(items.len(), 4);
-        assert_eq!(items[0].text, "Bold");
-        assert_eq!(items[0].style, 0x01);
-        assert_eq!(items[1].text, "Italic");
-        assert_eq!(items[1].style, 0x02);
-        assert_eq!(items[2].text, "Marked");
-        assert_eq!(items[2].mark, 0x12);
-        assert_eq!(items[3].text, "IconItem");
-        assert_eq!(items[3].icon, 4); // icon = char - 1 = 5 - 1
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].text, "BoldItalic");
+        assert_eq!(items[0].style, 0x03);
+        assert_eq!(items[1].text, "Marked");
+        assert_eq!(items[1].mark, 0x12);
+        assert_eq!(items[2].text, "IconItem");
+        assert_eq!(items[2].icon, 5);
     }
 
     #[test]
@@ -7654,6 +8032,18 @@ mod tests {
     }
 
     #[test]
+    fn newmenu_allocates_the_complete_maximum_length_title_record() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let title = "A".repeat(255);
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 231, 0x30B200, &title);
+        let menu_ptr = bus.read_long(handle);
+
+        assert_eq!(bus.get_alloc_size(menu_ptr), Some(271));
+        assert_eq!(bus.read_byte(menu_ptr + 14), 255);
+        assert_eq!(bus.read_byte(menu_ptr + 270), 0);
+    }
+
+    #[test]
     fn newmenu_installs_callable_standard_mdef_handle() {
         // Inside Macintosh Volume I, I-352: NewMenu stores a handle to the
         // standard menu definition procedure in MenuInfo.menuProc.
@@ -7756,6 +8146,194 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_and_delete_menu_use_shared_order_and_hierarchical_precedence() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 100, 0x30B300, "First");
+        let last = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 300, 0x30B340, "Last");
+        let middle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 200, 0x30B380, "Middle");
+        let colliding_submenu =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 200, 0x30B3C0, "Submenu");
+
+        insert_menu(&mut disp, &mut cpu, &mut bus, first);
+        insert_menu(&mut disp, &mut cpu, &mut bus, last);
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, middle, 300);
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, colliding_submenu, -1);
+
+        let menu_list_handle = bus.read_long(crate::memory::globals::addr::MENU_LIST);
+        let inserted = super::menu_list_from_memory(&bus, menu_list_handle).unwrap();
+        assert_eq!(
+            inserted.regular_handles().collect::<Vec<_>>(),
+            vec![first, middle, last],
+            "InsertMenu must place a regular menu before the requested ID"
+        );
+        assert_eq!(
+            inserted.hierarchical_handles().collect::<Vec<_>>(),
+            vec![colliding_submenu]
+        );
+        assert_eq!(
+            get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 200),
+            colliding_submenu,
+            "GetMHandle must resolve a colliding hierarchical ID first"
+        );
+
+        delete_menu_by_id(&mut disp, &mut cpu, &mut bus, 200);
+        let after_submenu = super::menu_list_from_memory(&bus, menu_list_handle).unwrap();
+        assert!(after_submenu.hierarchical.is_empty());
+        assert_eq!(
+            after_submenu.regular_handles().collect::<Vec<_>>(),
+            vec![first, middle, last],
+            "DeleteMenu must remove a colliding hierarchical ID before a regular one"
+        );
+        assert_eq!(
+            get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 200),
+            middle
+        );
+
+        delete_menu_by_id(&mut disp, &mut cpu, &mut bus, 200);
+        let after_regular = super::menu_list_from_memory(&bus, menu_list_handle).unwrap();
+        assert_eq!(
+            after_regular.regular_handles().collect::<Vec<_>>(),
+            vec![first, last]
+        );
+    }
+
+    #[test]
+    fn submenu_resolution_uses_only_the_current_hierarchical_partition() {
+        // MTE 1992 pp. 3-53--3-55: MenuSelect resolves the ID stored by a
+        // hierarchical item only in the submenu portion of the current list.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let root = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x30B500, "Root");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, root, 0x30B540, "Child");
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, root, 1, 0x1B);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, root, 1, 138);
+        let child = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 138, 0x30B580, "Child");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, child, 0x30B5C0, "Choice");
+        insert_menu(&mut disp, &mut cpu, &mut bus, root);
+
+        let root_index = disp
+            .menus
+            .iter()
+            .position(|menu| menu.handle == root)
+            .unwrap();
+        assert_eq!(
+            disp.submenu_menu_index_for_parent_item(&bus, root_index, 1),
+            None,
+            "a detached menu record must not resolve as a submenu"
+        );
+
+        insert_menu(&mut disp, &mut cpu, &mut bus, child);
+        let root_index = disp
+            .menus
+            .iter()
+            .position(|menu| menu.handle == root)
+            .unwrap();
+        assert_eq!(
+            disp.submenu_menu_index_for_parent_item(&bus, root_index, 1),
+            None,
+            "a regular-partition ID match must not resolve as a submenu"
+        );
+
+        delete_menu_by_id(&mut disp, &mut cpu, &mut bus, 138);
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, child, -1);
+        let root_index = disp
+            .menus
+            .iter()
+            .position(|menu| menu.handle == root)
+            .unwrap();
+        let child_index = disp
+            .menus
+            .iter()
+            .position(|menu| menu.handle == child)
+            .unwrap();
+        assert_eq!(
+            disp.submenu_menu_index_for_parent_item(&bus, root_index, 1),
+            Some(child_index),
+            "the matching hierarchical-partition handle must resolve"
+        );
+
+        let root_ptr = bus.read_long(root);
+        let first_item = root_ptr + 15 + u32::from(bus.read_byte(root_ptr + 14));
+        let command = first_item + 2 + u32::from(bus.read_byte(first_item));
+        bus.write_byte(command, b'C');
+        assert!(disp.menus[root_index].items[0].key_equiv == 0x1B);
+        assert_eq!(
+            disp.submenu_menu_index_for_parent_item(&bus, root_index, 1),
+            None,
+            "live guest item bytes must override the stale presentation cache"
+        );
+        bus.write_byte(command, 0x1B);
+        assert_eq!(
+            disp.submenu_menu_index_for_parent_item(&bus, root_index, 1),
+            Some(child_index)
+        );
+    }
+
+    #[test]
+    fn insert_menu_uses_live_guest_list_order_instead_of_the_presentation_cache() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 100, 0x30B400, "First");
+        let second = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 200, 0x30B440, "Second");
+        let inserted =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 150, 0x30B480, "Inserted");
+        insert_menu(&mut disp, &mut cpu, &mut bus, first);
+        insert_menu(&mut disp, &mut cpu, &mut bus, second);
+
+        let menu_list_handle = bus.read_long(crate::memory::globals::addr::MENU_LIST);
+        let menu_list_ptr = bus.read_long(menu_list_handle);
+        bus.write_long(menu_list_ptr + 6, second);
+        bus.write_long(menu_list_ptr + 12, first);
+        bus.write_word(menu_list_ptr + 2, 120);
+        bus.write_word(menu_list_ptr + 10, 40);
+        bus.write_word(menu_list_ptr + 16, 80);
+        assert_eq!(
+            disp.current_menu_title_regions_with_indices(&bus)
+                .into_iter()
+                .map(|(index, region)| (disp.menus[index].handle, region.left, region.right))
+                .collect::<Vec<_>>(),
+            vec![(second, 40, 80), (first, 80, 120)],
+            "68k title geometry must come from the live guest MenuList"
+        );
+        assert_eq!(disp.current_menu_title_hit_test(&bus, 39), None);
+        assert_eq!(
+            disp.current_menu_title_hit_test(&bus, 40)
+                .map(|index| disp.menus[index].handle),
+            Some(second)
+        );
+        assert_eq!(
+            disp.current_menu_title_hit_test(&bus, 80)
+                .map(|index| disp.menus[index].handle),
+            Some(first)
+        );
+        assert_eq!(disp.current_menu_title_hit_test(&bus, 120), None);
+        assert_eq!(
+            disp.guest_menu_snapshot(&bus)
+                .menus
+                .iter()
+                .map(|menu| menu.id)
+                .collect::<Vec<_>>(),
+            vec![200, 100],
+            "frontend snapshots must follow direct guest MenuList ordering changes"
+        );
+
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, inserted, 100);
+        let live = super::menu_list_from_memory(&bus, menu_list_handle).unwrap();
+        assert_eq!(
+            live.regular_handles().collect::<Vec<_>>(),
+            vec![second, inserted, first],
+            "InsertMenu must preserve direct guest MenuList ordering changes"
+        );
+        assert_eq!(
+            disp.menus
+                .iter()
+                .filter(|menu| menu.in_menu_bar)
+                .map(|menu| menu.handle)
+                .collect::<Vec<_>>(),
+            vec![second, inserted, first],
+            "the 68k presentation cache must follow the guest list"
+        );
+    }
+
     // IM:I I-352: if the MENU resource can't be read, GetMenu returns NIL.
     #[test]
     fn test_get_menu_returns_nil_when_resource_missing() {
@@ -7842,7 +8420,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let menu_handle = bus.read_long(TEST_SP + 2);
         let live_menu_ptr = bus.read_long(menu_handle);
         let mdef_handle = bus.read_long(live_menu_ptr + 6);
         assert_ne!(
@@ -7890,7 +8468,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let menu_handle = bus.read_long(cpu.read_reg(Register::A7));
+        // While the MDEF callback is active A7 points at its synthetic return
+        // slot; the GetMenu result already occupies the caller's result slot.
+        let menu_handle = bus.read_long(TEST_SP + 2);
         let live_menu_ptr = bus.read_long(menu_handle);
         let mdef_handle = bus.read_long(live_menu_ptr + 6);
         assert_ne!(
@@ -7903,6 +8483,14 @@ mod tests {
             mdef_ptr,
             "custom MDEF handle should dereference to the loaded resource"
         );
+        let trampoline = disp.menu_def_trampoline;
+        assert_ne!(trampoline, 0);
+        assert_eq!(
+            bus.read_word(trampoline + 6),
+            2,
+            "GetMenu must size a newly created custom menu through mSizeMsg"
+        );
+        assert_eq!(bus.read_long(trampoline + 10), menu_handle);
     }
 
     #[test]
@@ -8066,6 +8654,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn getnewmbar_rejects_a_truncated_declared_menu_sequence() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let mbar_ptr = bus.alloc(4);
+        bus.write_bytes(mbar_ptr, &[0, 2, 0, 128]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([((*b"MBAR", 902), mbar_ptr)]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        bus.write_word(TEST_SP, 902);
+        bus.write_long(TEST_SP + 2, 0xDEAD_BEEF);
+
+        assert!(disp
+            .dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .is_some_and(|result| result.is_ok()));
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(bus.read_long(TEST_SP + 2), 0);
+    }
+
     // IM:I I-354: GetNewMBar creates and returns a menu list handle, and
     // SetMenuBar installs that list as the current menu list.
     #[test]
@@ -8110,22 +8728,37 @@ mod tests {
         );
         let mbar_handle = bus.read_long(TEST_SP + 2);
         assert_ne!(mbar_handle, 0, "GetNewMBar should return a non-NIL handle");
-        let list_ptr = bus.read_long(mbar_handle);
-        assert_ne!(list_ptr, 0, "returned menu-list handle should dereference");
+        let menu_list = menu_list_from_memory(&bus, mbar_handle)
+            .expect("returned handle should contain a DynamicMenuList");
+        assert_eq!(menu_list.mb_res_id, 900);
+        assert_eq!(menu_list.regular.len(), 2);
+        assert!(menu_list.regular.iter().all(|entry| entry.handle != 0));
+        let file_handle = menu_list.regular[0].handle;
         assert_eq!(
-            bus.read_word(list_ptr),
-            2,
-            "menu-list block should describe both MBAR menu IDs"
+            disp.loaded_handles.get(&file_handle).copied(),
+            Some((bus.read_long(file_handle), *b"MENU", 128)),
+            "GetNewMBar must obtain each menu through the Resource Manager",
+        );
+        assert_eq!(
+            disp.resource_handle_files.get(&file_handle).copied(),
+            Some(0),
+            "GetNewMBar menu handles should retain their resource-file owner",
         );
         assert_ne!(
-            bus.read_long(list_ptr + 2),
+            bus.read_long(bus.read_long(file_handle) + 6),
             0,
-            "first menu handle should be non-NIL"
+            "GetNewMBar should resolve the standard MDEF through GetMenu",
         );
-        assert_ne!(
-            bus.read_long(list_ptr + 6),
-            0,
-            "second menu handle should be non-NIL"
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 128);
+        disp.dispatch_menu(true, 0x1BF, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(cpu.read_reg(Register::A7)),
+            file_handle,
+            "GetMenu should reuse the MENU resource loaded by GetNewMBar",
         );
 
         // IM:I I-354: GetNewMBar only creates the list; SetMenuBar installs it.
@@ -8162,6 +8795,128 @@ mod tests {
             0,
             "SetMenuBar should install Edit menu from MBAR"
         );
+    }
+
+    #[test]
+    fn getnewmbar_sizes_each_custom_menu_before_returning_the_list() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first_menu = seed_menu_resource(&mut bus, 601, "First");
+        let second_menu = seed_menu_resource(&mut bus, 602, "Second");
+        for menu in [first_menu, second_menu] {
+            bus.write_word(menu + 6, 256);
+            bus.write_word(menu + 8, 0);
+        }
+        let mdef = bus.alloc(2);
+        bus.write_word(mdef, 0x4E75);
+        let mbar = seed_mbar_resource(&mut bus, &[601, 602]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MBAR", 900), mbar),
+                        ((*b"MENU", 601), first_menu),
+                        ((*b"MENU", 602), second_menu),
+                        ((*b"MDEF", 256), mdef),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+        let trap_pc = 0x0012_3600;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 900);
+
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let trampoline = disp.menu_def_trampoline;
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        let first_handle = bus.read_long(trampoline + 10);
+        assert_eq!(bus.read_word(bus.read_long(first_handle)), 601);
+        assert!(disp.is_tracking_refire(0xA9C0));
+        bus.write_word(bus.read_long(first_handle) + 2, 101);
+        bus.write_word(bus.read_long(first_handle) + 4, 41);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 2);
+        let second_handle = bus.read_long(trampoline + 10);
+        assert_eq!(bus.read_word(bus.read_long(second_handle)), 602);
+        bus.write_word(bus.read_long(second_handle) + 2, 102);
+        bus.write_word(bus.read_long(second_handle) + 4, 42);
+
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let list_handle = bus.read_long(TEST_SP + 2);
+        assert_ne!(list_handle, 0);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+        assert_eq!(disp.pending_menu_bar_build, None);
+        assert_eq!(bus.read_word(bus.read_long(first_handle) + 2), 101);
+        assert_eq!(bus.read_word(bus.read_long(second_handle) + 4), 42);
+        assert_eq!(
+            super::menu_list_from_memory(&bus, list_handle)
+                .unwrap()
+                .regular_handles()
+                .collect::<Vec<_>>(),
+            vec![first_handle, second_handle]
+        );
+    }
+
+    #[test]
+    fn getnewmbar_preserves_complete_resource_backed_menu_records() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let seed_ptr = seed_menu_resource(&mut bus, 640, "Long");
+        let menu_ptr = bus.alloc(320);
+        let seed_bytes = bus.read_bytes(seed_ptr, 256);
+        bus.write_bytes(menu_ptr, &seed_bytes);
+        bus.write_byte(menu_ptr + 300, 0xA5);
+        let mbar_ptr = seed_mbar_resource(&mut bus, &[640]);
+        disp.resources = Some(crate::trap::dispatch::LoadedResources {
+            files: std::collections::HashMap::from([(
+                0,
+                crate::trap::dispatch::ResourceFileMap {
+                    loaded: std::collections::HashMap::from([
+                        ((*b"MBAR", 940), mbar_ptr),
+                        ((*b"MENU", 640), menu_ptr),
+                    ]),
+                    named: std::collections::HashMap::new(),
+                    names_by_id: std::collections::HashMap::new(),
+                    attrs: std::collections::HashMap::new(),
+                    map_attrs: 0,
+                },
+            )]),
+            names: std::collections::HashMap::new(),
+            search_order: vec![0],
+            current_file: 0,
+        });
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 940);
+        disp.dispatch_menu(true, 0x1C0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let list_handle = bus.read_long(cpu.read_reg(Register::A7));
+        let list = menu_list_from_memory(&bus, list_handle).expect("GetNewMBar menu list");
+        let menu_handle = list.regular[0].handle;
+        assert_eq!(bus.read_long(menu_handle), menu_ptr);
+        assert_eq!(bus.get_alloc_size(menu_ptr), Some(320));
+        assert_eq!(bus.read_byte(menu_ptr + 300), 0xA5);
     }
 
     // IM:V 1986 p. V-244: GetNewMBar clears the current menu color
@@ -8397,6 +9152,76 @@ mod tests {
         assert_eq!(menu_key_result(&mut disp, &mut cpu, &mut bus, b'P'), 0);
     }
 
+    #[test]
+    fn menukey_prefers_regular_partition_and_highlights_hierarchical_owner() {
+        // IM:V V-235 and V-245: regular menus are searched before the
+        // hierarchical portion, and a submenu match highlights its owning
+        // regular title.
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 64;
+        let base = bus.alloc(row_bytes * 342);
+        disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
+        disp.menu_bar_hidden = false;
+        clear_1bpp_screen(&mut bus, base, row_bytes, 342);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let root = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 230, 0x306900, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            root,
+            0x306940,
+            "Regular/X;Recent",
+        );
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, root, 2, 0x1b);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, root, 2, 231);
+        insert_menu(&mut disp, &mut cpu, &mut bus, root);
+
+        let child = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 231, 0x306980, "Recent");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            child,
+            0x3069C0,
+            "Nested/H;Shadow/X",
+        );
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, child, -1);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            menu_key_result(&mut disp, &mut cpu, &mut bus, b'X'),
+            (230u32 << 16) | 1,
+            "a hierarchical shortcut must not beat a regular-menu match"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (left, right) = disp.menu_title_regions()[0];
+        let before = title_region_pixels(&bus, base, row_bytes, left, right);
+        assert_eq!(
+            menu_key_result(&mut disp, &mut cpu, &mut bus, b'H'),
+            (231u32 << 16) | 1
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::THE_MENU),
+            231,
+            "TheMenu must retain the selected submenu ID rather than its root title ID"
+        );
+        let after = title_region_pixels(&bus, base, row_bytes, left, right);
+        assert!(
+            changed_pixel_count(&before, &after) > 0,
+            "a hierarchical shortcut must highlight its owning regular title"
+        );
+    }
+
     // MTE 1992 p. 3-138: GetItemCmd returns 0 if the item has no
     // keyboard equivalent, submenu marker, script-code marker, or icon marker.
     #[test]
@@ -8542,6 +9367,21 @@ mod tests {
         assert_eq!(bus.read_byte(menu_ptr + 20), b'N');
         assert_eq!(bus.read_byte(menu_ptr + 21), b'e');
         assert_eq!(bus.read_byte(menu_ptr + 22), b'w');
+    }
+
+    #[test]
+    fn count_menu_items_rejects_an_unterminated_live_record() {
+        let (_disp, _cpu, mut bus) = setup();
+        let menu = bus.alloc(24);
+        let handle = bus.alloc(4);
+        bus.write_long(handle, menu);
+        bus.write_long(menu + 10, u32::MAX);
+        bus.write_byte(menu + 14, 0);
+        bus.write_byte(menu + 15, 4);
+        bus.write_bytes(menu + 16, b"Open");
+        bus.write_bytes(menu + 20, &[0, b'O', 0, 0]);
+
+        assert_eq!(count_menu_items_from_memory(&bus, handle), 0);
     }
 
     #[test]
@@ -9362,8 +10202,8 @@ mod tests {
             .is_ok());
 
         assert!(
-            !disp.menus[0].items[31].enabled,
-            "item 32 starts disabled from metacharacter input"
+            disp.menus[0].items[31].enabled,
+            "MenuInfo has no individual disable bit after item 31"
         );
         let menu_ptr = bus.read_long(handle);
         let flags_before = bus.read_long(menu_ptr + 10);
@@ -9377,8 +10217,8 @@ mod tests {
             .is_ok());
 
         assert!(
-            !disp.menus[0].items[31].enabled,
-            "EnableItem(item>31) must not change item state"
+            disp.menus[0].items[31].enabled,
+            "EnableItem(item>31) must remain a no-op"
         );
         assert_eq!(
             bus.read_long(menu_ptr + 10),
@@ -9672,6 +10512,87 @@ mod tests {
             cpu.read_reg(Register::A7),
             sp_before_five,
             "InvalMenuBar must preserve A7 across a 5-call composition"
+        );
+    }
+
+    #[test]
+    fn invalmenubar_defers_and_coalesces_one_draw_until_a_toolbox_event_scan() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.sent_open_app_event = true;
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let (base, row_bytes, width, height, depth) = disp.get_screen_params();
+        TrapDispatcher::fb_set_pixel(
+            &mut bus, base, row_bytes, depth, width, height, 100, 5, true,
+        );
+        let dirty =
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5);
+
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp.event_queue.menu_bar_is_invalid());
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "InvalMenuBar must not draw synchronously"
+        );
+
+        cpu.write_reg(Register::D0, 0);
+        cpu.write_reg(Register::A0, 0x0020_0000);
+        assert!(disp
+            .dispatch_event(false, 0x030, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(
+            disp.event_queue.menu_bar_is_invalid(),
+            "low-level OS event scans must not consume Toolbox redraw work"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0x0020_0000);
+        bus.write_word(TEST_SP + 4, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x171, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(!disp.event_queue.menu_bar_is_invalid());
+        assert_ne!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "the next Toolbox event scan must perform DrawMenuBar"
+        );
+
+        TrapDispatcher::fb_set_pixel(
+            &mut bus, base, row_bytes, depth, width, height, 100, 5, true,
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        assert!(disp
+            .dispatch_toolbox(true, 0x171, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            TrapDispatcher::fb_get_pixel_index(&bus, base, row_bytes, depth, width, height, 100, 5,),
+            dirty,
+            "the deferred redraw must be consumed exactly once"
+        );
+
+        assert!(disp
+            .dispatch_menu(true, 0x01D, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(disp
+            .dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert!(
+            !disp.event_queue.menu_bar_is_invalid(),
+            "an explicit DrawMenuBar must satisfy the deferred request"
         );
     }
 
@@ -10560,7 +11481,7 @@ mod tests {
 
     #[test]
     fn draw_menu_dropdown_systemless_theme_routes_item_states_through_provider() {
-        let rect = (20, 20, 86, 140);
+        let rect = (20, 20, 100, 140);
 
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let classic_row_bytes = 64;
@@ -10585,17 +11506,7 @@ mod tests {
         );
         classic.menus[0].items[0].mark = 0x12;
         classic.menus[0].items[1].icon = 7;
-        classic.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-            submenus: Vec::new(),
-        });
+        *classic.menu_tracking = Some(test_tracked_menu_state(classic_menu, rect, 1));
         classic.draw_menu_dropdown(&mut classic_bus, 0, rect);
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
@@ -10622,17 +11533,7 @@ mod tests {
         );
         themed.menus[0].items[0].mark = 0x12;
         themed.menus[0].items[1].icon = 7;
-        themed.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-            submenus: Vec::new(),
-        });
+        *themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
@@ -10804,17 +11705,7 @@ mod tests {
         );
 
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
-        themed.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-            submenus: Vec::new(),
-        });
+        *themed.menu_tracking = Some(test_tracked_menu_state(themed_menu, rect, 1));
         themed.draw_menu_dropdown(&mut themed_bus, 0, rect);
 
         assert!(
@@ -10863,7 +11754,7 @@ mod tests {
         }
 
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
-        themed.menu_tracking = None;
+        *themed.menu_tracking = None;
         themed.dialog_tracking = Some(super::super::dispatch::DialogTrackingState {
             active_popup: Some(super::super::dispatch::DialogPopupTrackingState {
                 item_no: 1,
@@ -10906,7 +11797,7 @@ mod tests {
 
     #[test]
     fn draw_menu_dropdown_applies_setitemstyle_pixels_with_classic_style_metrics() {
-        let rect = (20, 20, 104, 180);
+        let rect = (20, 20, 160, 180);
         let menu_data = "Bold;Italic;Underline;Outline;Shadow;Condense;Extend";
         let style_cases = [
             ("bold", "Bold", 0x01u8),
@@ -10984,7 +11875,12 @@ mod tests {
         );
         assert_eq!(
             styled_size.1,
-            plain_size.1 + (super::MENU_SHADOW_STYLE_ROW_HEIGHT - super::MENU_ROW_HEIGHT),
+            plain_size.1
+                + (super::standard_menu_row_height(
+                    None,
+                    false,
+                    super::QuickDrawTextStyle::from_bits(super::QuickDrawTextStyle::SHADOW_BIT),
+                ) - super::MENU_ROW_HEIGHT),
             "System 7.5.3's standard MDEF grows the shadow-styled item row"
         );
 
@@ -10992,8 +11888,12 @@ mod tests {
         for (idx, (label, text, style)) in style_cases.iter().enumerate() {
             let styled_height = styled.menu_item_height(&styled_bus, &styled.menus[0].items[idx]);
             let plain_height = plain.menu_item_height(&plain_bus, &plain.menus[0].items[idx]);
-            let expected_height = if (*style & super::MENU_TEXT_STYLE_SHADOW) != 0 {
-                plain_height.max(super::MENU_SHADOW_STYLE_ROW_HEIGHT)
+            let expected_height = if super::QuickDrawTextStyle::from_bits(*style).shadow() {
+                plain_height.max(super::standard_menu_row_height(
+                    None,
+                    false,
+                    super::QuickDrawTextStyle::from_bits(super::QuickDrawTextStyle::SHADOW_BIT),
+                ))
             } else {
                 plain_height
             };
@@ -11002,8 +11902,8 @@ mod tests {
                 "{label} style should use the classic MDEF row height"
             );
             assert_eq!(
-                styled.menu_item_width_extra(&styled_bus, &styled.menus[0].items[idx]),
-                plain.menu_item_width_extra(&plain_bus, &plain.menus[0].items[idx]),
+                styled.menu_item_icon_width(&styled_bus, &styled.menus[0].items[idx]),
+                plain.menu_item_icon_width(&plain_bus, &plain.menus[0].items[idx]),
                 "{label} style should not change mark/icon/command geometry"
             );
 
@@ -11071,14 +11971,16 @@ mod tests {
             super::super::TrapDispatcher::fb_gray_pixel_index_between(&bus, [0xFFFF; 3], [0, 0, 0])
                 .expect("8bpp test screen should express an intermediate shade");
 
-        let row_pixels = |top: i16| -> Vec<u8> {
-            (top..top + MENU_ROW_HEIGHT)
+        let row_pixels = |top: i16, height: i16| -> Vec<u8> {
+            (top..top + height)
                 .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
                 .map(|(x, y)| screen_pixel_index(&bus, base, row_bytes, x, y))
                 .collect()
         };
 
-        let disabled = row_pixels(rect.0 + 1);
+        // The detached test rectangle's top edge is menu chrome, not part of
+        // the disabled row's ink. Inspect only the row interior.
+        let disabled = row_pixels(rect.0 + 1, MENU_ROW_HEIGHT - 1);
         assert!(
             disabled.iter().any(|&pixel| pixel == gray),
             "the disabled item's text should draw in the intermediate grey shade"
@@ -11089,8 +11991,8 @@ mod tests {
         );
 
         // The divider is a solid grey line one pixel above the row midpoint.
-        let divider_top = rect.0 + 1 + MENU_ROW_HEIGHT;
-        let divider_y = divider_top + MENU_ROW_HEIGHT / 2 - 1;
+        let divider_top = rect.0 + MENU_ROW_HEIGHT;
+        let divider_y = divider_top + super::STANDARD_MENU_SEPARATOR_HEIGHT / 2 - 1;
         for x in (rect.1 + 1)..(rect.3 - 1) {
             assert_eq!(
                 screen_pixel_index(&bus, base, row_bytes, x, divider_y),
@@ -11104,11 +12006,63 @@ mod tests {
             "the divider should be a single line, not a filled row"
         );
 
-        let enabled = row_pixels(divider_top + MENU_ROW_HEIGHT);
+        let enabled = row_pixels(
+            divider_top + super::STANDARD_MENU_SEPARATOR_HEIGHT,
+            MENU_ROW_HEIGHT,
+        );
         assert!(
             enabled.iter().any(|&pixel| pixel == black),
             "an enabled item's text should still draw in full black"
         );
+    }
+
+    // Disabling item zero dims the title and every item without preventing
+    // the menu from being displayed. Macintosh Toolbox Essentials (1992),
+    // pp. 3-6--3-7 and 3-58--3-59.
+    #[test]
+    fn draw_menu_dropdown_8bpp_dims_every_item_in_a_disabled_menu() {
+        let rect = (20, 20, 52, 140);
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 96);
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 645, 0x303680, "View");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x3036C0,
+            "Zoom;Actual Size",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, menu);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        disp.draw_menu_dropdown(&mut bus, 0, rect);
+
+        let black = super::super::TrapDispatcher::fb_pixel_index_for_rgb(&bus, [0; 3]).unwrap();
+        let gray =
+            super::super::TrapDispatcher::fb_gray_pixel_index_between(&bus, [0xFFFF; 3], [0, 0, 0])
+                .expect("8bpp test screen should express an intermediate shade");
+        for row in 0..2 {
+            let pixels = ((rect.0 + row * MENU_ROW_HEIGHT + 1)
+                ..(rect.0 + (row + 1) * MENU_ROW_HEIGHT - 1))
+                .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
+                .map(|(x, y)| screen_pixel_index(&bus, base, row_bytes, x, y))
+                .collect::<Vec<_>>();
+            assert!(
+                pixels.iter().any(|pixel| *pixel == gray),
+                "disabled menu row {} did not retain dimmed ink",
+                row + 1,
+            );
+            assert!(
+                !pixels.iter().any(|pixel| *pixel == black),
+                "disabled menu row {} retained enabled black ink",
+                row + 1,
+            );
+        }
     }
 
     // MTE 1992 p. 3-30: a black-and-white screen has no intermediate shade,
@@ -11129,7 +12083,7 @@ mod tests {
 
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
-        let dimmed_row: Vec<(i16, i16)> = ((rect.0 + 1)..(rect.0 + 1 + MENU_ROW_HEIGHT))
+        let dimmed_row: Vec<(i16, i16)> = (rect.0..(rect.0 + MENU_ROW_HEIGHT))
             .flat_map(|y| ((rect.1 + 1)..(rect.3 - 1)).map(move |x| (x, y)))
             .collect();
         assert!(
@@ -11184,7 +12138,7 @@ mod tests {
         append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303280, "Note Pad");
         assert_eq!(
             disp.menu_items_height(&bus, &disp.menus[0].items),
-            MENU_ROW_HEIGHT * 3,
+            MENU_ROW_HEIGHT * 2 + super::STANDARD_MENU_SEPARATOR_HEIGHT,
             "the divider claims its row again once an item follows it"
         );
     }
@@ -11361,17 +12315,7 @@ mod tests {
             "4bpp cicn color should map through MainDevice instead of the foreign 8bpp TheGDevice"
         );
 
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            submenus: Vec::new(),
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
         assert_eq!(
             packed_4bpp_screen_pixel_index(&bus, base, row_bytes, icon_pixel.0, icon_pixel.1,),
@@ -11473,11 +12417,23 @@ mod tests {
             10,
             "menu-bar bottom rule should use MainDevice black"
         );
-        assert_eq!(
-            packed_4bpp_screen_pixel_index(&bus, base, row_bytes, 0, 0),
-            10,
-            "rounded corner mask should use MainDevice black"
-        );
+        let mut rounded_corner_pixels = Vec::new();
+        crate::menu_manager::for_each_standard_menu_bar_corner_pixel(128, |x, y| {
+            rounded_corner_pixels.push((x, y));
+        });
+        for y in 0..5 {
+            for x in (0..6).chain(122..128) {
+                assert_eq!(
+                    packed_4bpp_screen_pixel_index(&bus, base, row_bytes, x, y),
+                    if rounded_corner_pixels.contains(&(x, y)) {
+                        10
+                    } else {
+                        5
+                    },
+                    "rounded corner mask pixel ({x}, {y})",
+                );
+            }
+        }
         let regions = disp.menu_title_regions();
         assert!((1..19).any(|y| {
             (regions[0].0..regions[0].1)
@@ -11629,17 +12585,7 @@ mod tests {
             screen_pixel_is_set(&bus, base, row_bytes, outside_edge.0, outside_edge.1);
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            submenus: Vec::new(),
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         for (component, pixel) in [
@@ -11750,17 +12696,7 @@ mod tests {
             .expect("precondition: item RGB3 black command key should draw");
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            submenus: Vec::new(),
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         assert_eq!(
@@ -11859,17 +12795,7 @@ mod tests {
             .expect("precondition: item RGB3 black command key should draw");
         let before = bus.read_bytes(base, (row_bytes * 96) as usize);
 
-        disp.menu_tracking = Some(MenuTrackingState {
-            active_menu: 0,
-            highlighted_item: 1,
-            saved_pixels: Vec::new(),
-            dropdown_rect: rect,
-            submenus: Vec::new(),
-            stack_ptr: TEST_SP,
-            flash_remaining: 0,
-            flash_delay: 0,
-            flash_result: 0,
-        });
+        *disp.menu_tracking = Some(test_tracked_menu_state(menu, rect, 1));
         disp.draw_menu_dropdown(&mut bus, 0, rect);
 
         assert_eq!(
@@ -12141,22 +13067,14 @@ mod tests {
         disp.draw_menu_bar_to_fb(&mut bus);
 
         let regions = disp.menu_title_regions();
-        let expected_left = regions[0].0 - 2;
-        let expected_width = disp.menus[0]
-            .items
-            .iter()
-            .map(|item| {
-                super::super::TrapDispatcher::fb_measure_string(&item.text, 0, 12)
-                    + disp.menu_item_width_extra(&bus, item)
-                    + super::super::TrapDispatcher::menu_item_pulldown_padding(item)
-            })
-            .max()
-            .unwrap()
+        let expected_left = regions[0].0;
+        let expected_width = disp
+            .standard_menu_width(&bus, &disp.menus[0].items)
             .max(regions[0].1 - regions[0].0 + 20);
         let expected_rect = (
             20,
             expected_left,
-            20 + disp.menu_items_height(&bus, &disp.menus[0].items) + 1,
+            20 + disp.menu_items_height(&bus, &disp.menus[0].items),
             expected_left + expected_width,
         );
         let white =
@@ -12166,9 +13084,9 @@ mod tests {
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
 
         assert_eq!(
-            disp.menu_tracking.as_ref().unwrap().dropdown_rect,
+            disp.menu_tracking.as_ref().unwrap().dropdown_rect(),
             expected_rect,
-            "attached pull-down display rect should use the System 7 MDEF padding, not CalcMenuSize's stored width"
+            "attached pull-down display rect should use the shared standard MDEF width"
         );
         assert_eq!(
             screen_pixel_index(&bus, base, row_bytes, expected_left + 1, expected_rect.0),
@@ -12211,36 +13129,50 @@ mod tests {
         disp.draw_menu_bar_to_fb(&mut bus);
 
         let regions = disp.menu_title_regions();
-        let expected_left = regions[0].0 - 2;
-        let expected_width = disp.menus[0]
-            .items
-            .iter()
-            .map(|item| {
-                super::super::TrapDispatcher::fb_measure_string(&item.text, 0, 12)
-                    + disp.menu_item_width_extra(&bus, item)
-                    + super::super::TrapDispatcher::menu_item_pulldown_padding(item)
-            })
-            .max()
-            .unwrap()
+        let expected_left = regions[0].0;
+        let expected_width = disp
+            .standard_menu_width(&bus, &disp.menus[0].items)
             .max(regions[0].1 - regions[0].0 + 20);
         let wide_item_width =
-            super::super::TrapDispatcher::fb_measure_string("Wide Underline", 0, 12) + 26;
+            super::super::TrapDispatcher::fb_measure_string("Wide Underline", 0, 12) + 32;
 
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
 
         assert_eq!(
             expected_width, wide_item_width,
-            "plain no-mark/no-command rows should use the System 7 live pull-down padding"
+            "plain no-mark/no-command rows should use the Mac OS 8.1 standard width"
         );
         assert_eq!(
-            disp.menu_tracking.as_ref().unwrap().dropdown_rect,
+            disp.menu_tracking.as_ref().unwrap().dropdown_rect(),
             (
                 20,
                 expected_left,
-                20 + disp.menu_items_height(&bus, &disp.menus[0].items) + 1,
+                20 + disp.menu_items_height(&bus, &disp.menus[0].items),
                 expected_left + expected_width,
             ),
             "live pull-down geometry should match the System 7 plain-row width reference"
+        );
+    }
+
+    #[test]
+    fn script_code_item_does_not_reserve_icon_geometry() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 629, 0x303700, "Script");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x303740, "Localized");
+        disp.menus[0].items[0].icon = 7;
+        disp.menus[0].items[0].key_equiv = 0x1C;
+        let cicn = cicn_source_with_left_stripe(24, 20);
+        disp.install_test_resource(&mut bus, *b"cicn", 263, &cicn);
+
+        assert_eq!(
+            disp.menu_item_icon_width(&bus, &disp.menus[0].items[0]),
+            0,
+            "$1C makes the icon byte a script code even when a matching cicn exists",
+        );
+        assert_eq!(disp.menu_item_height(&bus, &disp.menus[0].items[0]), 16);
+        assert_eq!(
+            disp.cicn_menu_icon_resource_ptr(&disp.menus[0].items[0]),
+            None,
         );
     }
 
@@ -12268,26 +13200,18 @@ mod tests {
         disp.draw_menu_bar_to_fb(&mut bus);
 
         let regions = disp.menu_title_regions();
-        let expected_left = regions[0].0 - 2;
-        let expected_height = 34 + 34 + 34 + 34 + 16 + 16 + 1;
-        let expected_width = disp.menus[0]
-            .items
-            .iter()
-            .map(|item| {
-                super::super::TrapDispatcher::fb_measure_string(&item.text, 0, 12)
-                    + disp.menu_item_width_extra(&bus, item)
-                    + super::super::TrapDispatcher::menu_item_pulldown_padding(item)
-            })
-            .max()
-            .unwrap()
+        let expected_left = regions[0].0;
+        let expected_height = 34 + 34 + 34 + 34 + super::STANDARD_MENU_SEPARATOR_HEIGHT + 16;
+        let expected_width = disp
+            .standard_menu_width(&bus, &disp.menus[0].items)
             .max(regions[0].1 - regions[0].0 + 20);
 
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
-        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
             disp.menu_items_height(&bus, &disp.menus[0].items),
-            expected_height - 1,
+            expected_height,
             "icon-column menus should use 34px normal ICON rows and a standard separator row"
         );
         assert_eq!(
@@ -12301,12 +13225,12 @@ mod tests {
             "normal icon-number rows without resources should still reserve System 7 icon-column pull-down geometry"
         );
         assert_eq!(
-            super::super::TrapDispatcher::menu_item_pulldown_padding(&disp.menus[0].items[0]),
-            6,
-            "normal icon-column command rows should use the System 7 live pull-down padding"
+            disp.menu_item_icon_width(&bus, &disp.menus[0].items[0]),
+            32,
+            "normal icon-number rows should reserve a 32-pixel icon slot"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 34),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 33),
             1,
             "hit testing should include the full first 34px normal ICON row"
         );
@@ -12321,12 +13245,12 @@ mod tests {
             "hit testing in the separator row should not select an item"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 152),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 141),
             0,
             "hit testing should leave the full separator row unselectable"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 153),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 142),
             6,
             "hit testing below the icon-column separator should reach the following item"
         );
@@ -12383,11 +13307,11 @@ mod tests {
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
-        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
             rect.2 - rect.0,
-            16 + 16 + 1,
+            16 + 16,
             "SICN menu items should keep standard 16px attached pull-down geometry"
         );
         assert!(
@@ -12429,11 +13353,11 @@ mod tests {
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
-        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
             rect.2 - rect.0,
-            20 + 16 + 1,
+            20 + 16,
             "cicn menu rows should grow to the cicn resource rectangle height in an attached pull-down"
         );
         assert!(
@@ -12449,12 +13373,12 @@ mod tests {
             "an explicit cicn resource should suppress systemless icon placeholder chrome"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 20),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 19),
             1,
             "hit testing should include the full cicn-height first row"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 22),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 20),
             2,
             "hit testing below the cicn-height row should reach the next item"
         );
@@ -12495,7 +13419,7 @@ mod tests {
 
         assert_eq!(
             bus.read_word(menu_ptr + 4) as i16,
-            20 + 16 + 2,
+            20 + 16,
             "CalcMenuSize should use cicn resource height instead of normal ICON's 32px row"
         );
     }
@@ -12525,11 +13449,11 @@ mod tests {
         insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
         disp.open_menu_dropdown(&mut bus, 0, TEST_SP);
-        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
 
         assert_eq!(
             rect.2 - rect.0,
-            34 + 16 + 1,
+            34 + 16,
             "normal ICON row should enlarge the live attached pull-down height around its 32px icon slot"
         );
         assert!(
@@ -12537,14 +13461,33 @@ mod tests {
             "normal ICON resource should draw at full 32x32 size in the first row"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 34),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 33),
             1,
             "hit testing near the bottom of the 34px normal ICON row should still hit item 1"
         );
         assert_eq!(
-            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 36),
+            disp.dropdown_item_at_point(&bus, rect.1 + 5, rect.0 + 34),
             2,
             "hit testing below the normal ICON row should hit the following item"
+        );
+    }
+
+    #[test]
+    fn retained_selection_uses_guest_menu_handle_after_cache_reordering() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let first = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 701, 0x302680, "First");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, first, 0x3026C0, "Wrong");
+        let retained =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 702, 0x302700, "Retained");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, retained, 0x302740, "Right");
+
+        *disp.menu_tracking = Some(test_tracked_menu_state(retained, (20, 10, 38, 100), 1));
+        disp.menus.swap(0, 1);
+
+        assert_eq!(
+            disp.menu_tracking_selection_result(&bus),
+            (702u32 << 16) | 1,
+            "retained MenuSelect identity must survive presentation-cache reordering"
         );
     }
 
@@ -12578,7 +13521,7 @@ mod tests {
 
         assert_eq!(
             bus.read_word(menu_ptr + 4) as i16,
-            34 + 16 + 2,
+            34 + 16,
             "CalcMenuSize should write summed row heights including normal ICON rows"
         );
     }
@@ -12793,8 +13736,8 @@ mod tests {
         assert_eq!(bus.read_byte(menu_ptr + 14), title.len() as u8);
     }
 
-    // IM:I p. I-352: DisposeMenu releases memory occupied by a menu
-    // allocated with NewMenu.
+    // MTE 1992 p. 3-140: callers remove a menu from the current list before
+    // DisposeMenu releases a NewMenu-allocated record and handle.
     #[test]
     fn disposemenu_releases_newmenu_menuhandle_and_record_allocations() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -12817,6 +13760,16 @@ mod tests {
             "precondition: NewMenu should allocate a menu record block"
         );
 
+        delete_menu_by_id(&mut disp, &mut cpu, &mut bus, menu_id);
+        assert_eq!(
+            get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, menu_id),
+            0,
+            "DeleteMenu should remove the handle before disposal"
+        );
+        assert!(
+            bus.get_alloc_size(menu_ptr).is_some(),
+            "DeleteMenu must leave the menu record allocated"
+        );
         dispose_menu_by_handle(&mut disp, &mut cpu, &mut bus, handle);
 
         assert_eq!(
@@ -12828,11 +13781,6 @@ mod tests {
             bus.get_alloc_size(menu_ptr),
             None,
             "DisposeMenu should free the menu record allocation"
-        );
-        assert_eq!(
-            get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, menu_id),
-            0,
-            "Disposed menu should no longer be returned by GetMHandle"
         );
     }
 
@@ -12893,6 +13841,50 @@ mod tests {
             disp.menu_tracking.is_none(),
             "HiliteMenu(0) should clear active menu tracking/highlight state"
         );
+    }
+
+    #[test]
+    fn hilitemenu_retains_one_live_title_and_drawmenubar_replays_it() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let (base, row_bytes) = setup_8bpp_menu_screen(&mut disp, &mut bus, 160, 64);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 243, 0x30B800, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, file, 0x30B840, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, file);
+        let child = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 244, 0x30B880, "Recent");
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, child, -1);
+        disp.draw_menu_bar_to_fb(&mut bus);
+        let normal = bus.read_bytes(base, (row_bytes * 64) as usize);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 243);
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(crate::memory::globals::addr::THE_MENU), 243);
+        let highlighted = bus.read_bytes(base, (row_bytes * 64) as usize);
+        assert_ne!(highlighted, normal, "HiliteMenu must highlight its title");
+
+        disp.draw_menu_bar_to_fb(&mut bus);
+        assert_eq!(
+            bus.read_bytes(base, (row_bytes * 64) as usize),
+            highlighted,
+            "DrawMenuBar must replay the title retained in TheMenu"
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 244);
+        disp.dispatch_menu(true, 0x138, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::THE_MENU),
+            0,
+            "a submenu ID has no title for HiliteMenu to highlight"
+        );
+        assert_eq!(bus.read_bytes(base, (row_bytes * 64) as usize), normal);
     }
 
     // Five HiliteMenu(0) dispatches in sequence preserve A7 cumulatively.
@@ -13309,8 +14301,8 @@ mod tests {
     // Exercises the MenuChoice lowmem read path by seeding lowmem
     // MenuDisable directly. Per IM:MTb 1992 p. 3-118..3-119,
     // MenuChoice returns the packed (menuID, itemNumber) stored in
-    // MenuDisable when MenuSelect / MenuKey have tracked a disabled
-    // item. This test seeds the lowmem word and checks that
+    // MenuDisable after MenuSelect tracks a disabled item. This test seeds
+    // the lowmem word and checks that
     // the trap writes the same LongInt into the result slot while
     // still preserving A7 across the Pascal FUNCTION call sequence.
     #[test]
@@ -13614,7 +14606,7 @@ mod tests {
     // IM:I I-354: GetMenuBar returns a Handle to a copy of the current menu
     // list and takes no parameters.
     #[test]
-    fn getmenubar_returns_non_nil_counted_menu_list_and_preserves_stack_pointer() {
+    fn getmenubar_returns_dynamic_menu_list_copy_and_preserves_stack_pointer() {
         let (mut disp, mut cpu, mut bus) = setup();
         let file = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 510, 0x30B740, "File");
         let edit = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 511, 0x30B780, "Edit");
@@ -13634,22 +14626,12 @@ mod tests {
 
         let list_handle = bus.read_long(TEST_SP);
         assert_ne!(list_handle, 0, "GetMenuBar should return a non-NIL handle");
-        let list_ptr = bus.read_long(list_handle);
-        assert_ne!(list_ptr, 0, "returned menu-list handle should dereference");
+        let menu_list = menu_list_from_memory(&bus, list_handle)
+            .expect("returned handle should contain a DynamicMenuList");
         assert_eq!(
-            bus.read_word(list_ptr),
-            2,
-            "menu-list block should start with the current menu count"
-        );
-        assert_eq!(
-            bus.read_long(list_ptr + 2),
-            file,
-            "first menu handle in snapshot should match current list order"
-        );
-        assert_eq!(
-            bus.read_long(list_ptr + 6),
-            edit,
-            "second menu handle in snapshot should match current list order"
+            menu_list.regular_handles().collect::<Vec<_>>(),
+            vec![file, edit],
+            "snapshot should preserve current regular-menu order"
         );
     }
 
@@ -13676,6 +14658,8 @@ mod tests {
         let edit = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 129, 0x30B710, "Edit");
         insert_menu(&mut disp, &mut cpu, &mut bus, file);
         insert_menu(&mut disp, &mut cpu, &mut bus, edit);
+        let current_menu_list = bus.read_long(crate::memory::globals::addr::MENU_LIST);
+        assert_ne!(current_menu_list, 0);
 
         // Snapshot the current menu list with GetMenuBar.
         cpu.write_reg(Register::A7, TEST_SP);
@@ -13713,6 +14697,11 @@ mod tests {
                 .is_ok(),
             "SetMenuBar should succeed"
         );
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_LIST),
+            current_menu_list,
+            "SetMenuBar should preserve the manager-owned current-list Handle"
+        );
 
         assert_ne!(
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 128),
@@ -13728,6 +14717,16 @@ mod tests {
             get_mhandle_for_id(&mut disp, &mut cpu, &mut bus, 130),
             0,
             "SetMenuBar should replace current list with the saved snapshot"
+        );
+
+        bus.write_long(saved_menu_list, 0);
+        assert_eq!(
+            menu_list_from_memory(&bus, current_menu_list)
+                .expect("current list must outlive the caller-owned source")
+                .regular_handles()
+                .collect::<Vec<_>>(),
+            vec![file, edit],
+            "SetMenuBar must copy the list before the caller disposes its Handle"
         );
     }
 
@@ -13866,7 +14865,7 @@ mod tests {
         assert!(disp.menu_tracking.is_some());
 
         let (dropdown_top, dropdown_left, _, _) =
-            disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+            disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
@@ -13917,8 +14916,232 @@ mod tests {
         assert!(trace.contains("highlighted_item=2 result=$02080002 outcome=enabled_item_selected"));
     }
 
+    // The standard MDEF continually records the raw row under the pointer in
+    // MenuDisable, including disabled rows that MenuSelect cannot return.
+    // MenuChoice exposes that packed menu ID and item number after the
+    // zero-result release. Inside Macintosh Volume V (1986), pp. V-235 and
+    // V-248--V-249; Macintosh Toolbox Essentials (1992), pp. 3-118--3-119.
     #[test]
-    fn menuselect_release_over_item_selects_without_prior_tracking_refire() {
+    fn menuselect_disabled_item_updates_live_menuchoice_result() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 520, 0x30B980, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            handle,
+            0x30B9C0,
+            "Open/O;Close/W",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 2);
+        bus.write_long(TEST_SP + 2, handle);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let (dropdown_top, dropdown_left, _, _) =
+            disp.menu_tracking.as_ref().unwrap().dropdown_rect();
+        disp.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let expected = menu_choice_value(520, 2);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+            "a disabled row must not become the MenuSelect highlight",
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xDEAD_BEEF);
+        disp.dispatch_menu(true, 0x266, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), expected);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
+    }
+
+    // MenuSelect consults the live MenuInfo enable flags on every tracking
+    // slice instead of treating the presentation snapshot as authority.
+    // Macintosh Toolbox Essentials (1992), pp. 3-90--3-92 and 3-114--3-119.
+    #[test]
+    fn menuselect_observes_live_item_disable_during_tracking() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 523, 0x30BD00, "File");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x30BD40, "Open/O");
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let menu_ptr = bus.read_long(handle);
+        let enable_flags = bus.read_long(menu_ptr + 10);
+        assert_ne!(enable_flags & (1 << 1), 0, "item 1 should start enabled");
+        bus.write_long(menu_ptr + 10, enable_flags & !(1 << 1));
+
+        let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
+        disp.mouse_pos = (top + 8, left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            menu_choice_value(523, 1),
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+            "the live-disabled item became highlighted",
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+    }
+
+    // A disabled menu remains available for examination even though every
+    // row must behave as disabled. Macintosh Toolbox Essentials (1992),
+    // pp. 3-6--3-7 and 3-114--3-119.
+    #[test]
+    fn menuselect_disabled_menu_opens_without_selecting_an_item() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+
+        let handle = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 522, 0x30BC00, "View");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, handle, 0x30BC40, "Zoom/Z");
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        bus.write_long(TEST_SP + 2, handle);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        insert_menu(&mut disp, &mut cpu, &mut bus, handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (screen_base, row_bytes, _, screen_height, _) = disp.get_screen_params();
+        let screen_len = usize::try_from(
+            row_bytes.saturating_mul(u32::try_from(screen_height.max(0)).unwrap_or(0)),
+        )
+        .unwrap();
+        let screen_before = bus.read_bytes(screen_base, screen_len);
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        bus.write_long(TEST_SP + 4, 0xA5A5_A5A5);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let (top, left, _, _) = disp
+            .menu_tracking
+            .as_ref()
+            .expect("disabled title should still open")
+            .dropdown_rect();
+
+        disp.mouse_pos = (top + 8, left + 8);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let expected = menu_choice_value(522, 1);
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .map(|tracking| tracking.highlighted_item),
+            Some(0),
+        );
+
+        disp.mouse_button = false;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), 0);
+        assert!(disp.menu_tracking.is_none());
+        assert_eq!(
+            bus.read_long(crate::memory::globals::addr::MENU_DISABLE),
+            expected,
+        );
+        assert_eq!(
+            bus.read_bytes(screen_base, screen_len),
+            screen_before,
+            "disabled menu tracking did not restore the classic framebuffer",
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, 0xDEAD_BEEF);
+        disp.dispatch_menu(true, 0x266, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP), expected);
+    }
+
+    #[test]
+    fn setmenuflash_zero_returns_release_selection_without_blinking() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
@@ -13950,20 +15173,22 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let (top, left, _, _) = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.mouse_pos = (top + 17, left + 8);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0);
+        disp.dispatch_menu(true, 0x14A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         disp.mouse_button = false;
+        cpu.write_reg(Register::A7, TEST_SP);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
 
-        assert_eq!(
-            disp.menu_tracking
-                .as_ref()
-                .map(|tracking| tracking.flash_result),
-            Some(0x0209_0002),
-            "mouse-up over Save must select it even without a separate held-button refire"
-        );
+        assert_eq!(disp.menu_tracking, None);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(bus.read_long(TEST_SP + 4), 0x0209_0002);
     }
 
     struct MenuKeyThemeSnapshot {
@@ -14264,10 +15489,10 @@ mod tests {
 
         dispatch_popupmenuselect_start(&mut disp, &mut cpu, &mut bus, menu, 50, 40, 0);
 
-        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         assert_eq!(
             rect.2 - rect.0,
-            16 + 16 + 2,
+            16 + 16,
             "popup geometry should use the loaded 16-pixel cicn rows"
         );
         assert!(
@@ -14277,6 +15502,76 @@ mod tests {
         assert!(
             screen_pixel_is_set(&bus, base, row_bytes, rect.1 + 4, rect.0 + 2),
             "the popup should draw the application color icon"
+        );
+    }
+
+    #[test]
+    fn popupmenuselect_tracks_oversized_content_from_shared_layout() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        let row_bytes = 100;
+        let base = bus.alloc(row_bytes * 600);
+        disp.set_screen_mode_for_test(base, row_bytes, 800, 600, 1);
+        clear_1bpp_screen(&mut bus, base, row_bytes, 600);
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        disp.menu_bar_hidden = false;
+        disp.mouse_button = true;
+
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 734, 0x30BF00, "Long");
+        let description = (0..40).map(|_| "A").collect::<Vec<_>>().join(";");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x30BF40, &description);
+        insert_menu_before_id(&mut disp, &mut cpu, &mut bus, menu, -1);
+
+        dispatch_popupmenuselect_start(&mut disp, &mut cpu, &mut bus, menu, 100, 120, 20);
+
+        let tracking = disp.menu_tracking.as_ref().expect("popup tracking active");
+        assert_eq!(tracking.popup_top, 4);
+        assert_eq!(tracking.popup_height, 576);
+        assert_eq!(tracking.content_top, -204);
+        assert_eq!(tracking.highlighted_item, 20);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TOP_MENU_ITEM) as i16,
+            -204,
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            436,
+        );
+        assert_eq!(
+            disp.dropdown_item_at_point(&bus, tracking.popup_left + 4, 100),
+            20
+        );
+        assert!(
+            screen_pixel_is_set(
+                &bus,
+                base,
+                row_bytes,
+                tracking.popup_left + tracking.popup_width / 2,
+                tracking.popup_top + 4,
+            ),
+            "the hidden upper content must replace the first visible row with an indicator"
+        );
+
+        let popup_left = tracking.popup_left;
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 28);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().highlighted_item, 15);
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 12);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -204);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().highlighted_item, 0);
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 12);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -188);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::TOP_MENU_ITEM) as i16,
+            -188,
+        );
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            452,
+        );
+        disp.update_menu_tracking_for_point(&mut bus, popup_left + 4, 3);
+        assert_eq!(disp.menu_tracking.as_ref().unwrap().content_top, -172);
+        assert_eq!(
+            bus.read_word(crate::memory::globals::addr::AT_MENU_BOTTOM) as i16,
+            468,
         );
     }
 
@@ -14323,7 +15618,7 @@ mod tests {
 
         dispatch_popupmenuselect_start(&mut disp, &mut cpu, &mut bus, menu, 58, 30, 3);
         let tracking = disp.menu_tracking.as_ref().expect("popup tracking active");
-        let rect = tracking.dropdown_rect;
+        let rect = tracking.dropdown_rect();
         let highlighted_item = tracking.highlighted_item;
         let first_stack_after = cpu.read_reg(Register::A7);
         let item_at_requested_point = disp.dropdown_item_at_point(&bus, 35, 58);
@@ -14377,7 +15672,7 @@ mod tests {
             .menu_tracking
             .as_ref()
             .expect("clamped popup tracking active");
-        let clamped_rect = clamp_tracking.dropdown_rect;
+        let clamped_rect = clamp_tracking.dropdown_rect();
         let clamped_highlighted_item = clamp_tracking.highlighted_item;
 
         let (mut miss_disp, mut miss_cpu, mut miss_bus) = setup_with_port();
@@ -14436,18 +15731,18 @@ mod tests {
         let themed = popupmenuselect_theme_snapshot(UiThemeId::SystemlessDefault);
 
         // Width comes from the widest item "Three" measured in Chicago 12.
-        // Our strike now reproduces the original per-glyph advances exactly
-        // (T6 h8 r6 e8 e8 = 36), so the box is 36 + 26 = 62 wide: right =
-        // left(29) + 62 = 91. The clamped case pins the box against the
-        // 240px screen edge, so its left is 240 - 62 = 178.
-        assert_eq!(classic.rect, (25, 29, 91, 91));
+        // Our strike reproduces the original per-glyph advances exactly
+        // (T6 h8 r6 e8 e8 = 36), so the Mac OS 8.1 standard MDEF makes the
+        // box 36 + 32 = 68 pixels wide. The clamped case preserves the
+        // captured four-pixel standard MDEF screen margin.
+        assert_eq!(classic.rect, (26, 30, 90, 98));
         assert_eq!(classic.highlighted_item, 3);
         assert_eq!(classic.item_at_requested_point, 3);
         assert_eq!(classic.first_stack_after, TEST_SP);
         assert_eq!(classic.result, 0x02DA_0003);
         assert_eq!(classic.final_stack_after, TEST_SP + 10);
         assert!(classic.tracking_finished);
-        assert_eq!(classic.clamped_rect, (94, 178, 160, 240));
+        assert_eq!(classic.clamped_rect, (95, 168, 159, 236));
         assert_eq!(classic.clamped_highlighted_item, 4);
         assert_eq!(classic.uninserted_result, 0);
         assert_eq!(classic.uninserted_stack_after, TEST_SP + 10);
@@ -14516,7 +15811,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let dropdown_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let dropdown_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         let (dropdown_top, dropdown_left, _, _) = dropdown_rect;
         disp.mouse_pos = (dropdown_top + 17, dropdown_left + 8);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
@@ -14619,8 +15914,9 @@ mod tests {
             .menu_tracking
             .as_ref()
             .expect("MenuSelect should be tracking")
-            .dropdown_rect;
-        let parent_item_y = parent_rect.0 + 1 + 3 * 16 + 8;
+            .dropdown_rect();
+        let parent_item_y =
+            parent_rect.0 + disp.menu_rows(&bus, &disp.menus[0].items).offset(4) + 8;
 
         disp.mouse_pos = (parent_item_y, parent_rect.1 + 24);
         assert!(
@@ -14668,6 +15964,145 @@ mod tests {
     }
 
     #[test]
+    fn menuselect_routes_hierarchical_child_through_its_custom_mdef() {
+        let (mut disp, mut cpu, mut bus) = setup_with_port();
+        setup_8bpp_menu_screen(&mut disp, &mut bus, 240, 120);
+        disp.menu_bar_hidden = false;
+        bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
+        let original_port = disp.current_port;
+
+        let root = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 140, 0x310600, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            root,
+            0x310640,
+            "Custom child",
+        );
+        let child = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 141, 0x310800, "Child");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            child,
+            0x310840,
+            "Opaque definition data",
+        );
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, root, 1, 0x1B);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, root, 1, 141);
+
+        let child_ptr = bus.read_long(child);
+        bus.write_word(child_ptr + 2, 72);
+        bus.write_word(child_ptr + 4, 32);
+        let mdef_ptr = bus.alloc(2);
+        let mdef_handle = bus.alloc(4);
+        bus.write_word(mdef_ptr, 0x4E75);
+        bus.write_long(mdef_handle, mdef_ptr);
+        bus.write_long(child_ptr + 6, mdef_handle);
+        disp.loaded_handles
+            .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
+
+        insert_menu(&mut disp, &mut cpu, &mut bus, root);
+        insert_menu_before(&mut disp, &mut cpu, &mut bus, child, -1);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x137, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let title = disp.menu_title_regions()[0];
+        let title_mid_h = (title.0 + title.1) / 2;
+        let trap_pc = 0x0012_3600;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 10);
+        bus.write_word(TEST_SP + 2, title_mid_h as u16);
+        disp.mouse_pos = (10, title_mid_h);
+        disp.mouse_button = true;
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
+        disp.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        let trampoline = disp.menu_def_trampoline;
+        let child_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect();
+        assert_eq!(child_rect.3 - child_rect.1, 72);
+        assert_eq!(child_rect.2 - child_rect.0, 32);
+        assert_eq!(bus.read_word(trampoline + 6), 0);
+        assert_eq!(bus.read_long(trampoline + 10), child);
+        assert_eq!(
+            disp.menu_tracking
+                .as_ref()
+                .unwrap()
+                .active_definition_pane(),
+            Some(super::SharedMenuDefinitionPane::Submenu(0))
+        );
+
+        disp.mouse_pos = (10, title_mid_h);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        bus.write_word(trampoline + 58, 0);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(disp.menu_tracking.as_ref().unwrap().submenus.is_empty());
+        assert_eq!(disp.current_port, original_port);
+
+        disp.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 0);
+
+        disp.mouse_pos = (child_rect.0 + 8, child_rect.1 + 8);
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_word(trampoline + 6), 1);
+        assert_eq!(bus.read_long(trampoline + 10), child);
+
+        bus.write_word(trampoline + 58, 2);
+        disp.mouse_button = false;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.menu_tracking.as_ref().unwrap().flash_result,
+            (141u32 << 16) | 2
+        );
+
+        let tracking = disp.menu_tracking.as_mut().unwrap();
+        tracking.flash_remaining = 1;
+        tracking.flash_delay = 0;
+        cpu.write_reg(Register::PC, trap_pc + 2);
+        cpu.write_reg(Register::A7, TEST_SP);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(TEST_SP + 4), (141u32 << 16) | 2);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(disp.menu_tracking, None);
+    }
+
+    #[test]
     fn menuselect_tracks_nested_hierarchical_submenu_item() {
         // MTE 1992, pp. 3-137 to 3-141: hierarchical menus may themselves
         // contain hierarchical items. Tracking must retain every open level
@@ -14687,12 +16122,14 @@ mod tests {
             &mut bus,
             speed,
             0x310440,
-            "Very fast;Fast;Moderate;Slow",
+            "Cycle;Fast;Moderate;Slow",
         );
         set_item_cmd(&mut disp, &mut cpu, &mut bus, game, 1, 0x1B);
         set_item_mark(&mut disp, &mut cpu, &mut bus, game, 1, 138);
         set_item_cmd(&mut disp, &mut cpu, &mut bus, options, 1, 0x1B);
         set_item_mark(&mut disp, &mut cpu, &mut bus, options, 1, 139);
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, speed, 1, 0x1B);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, speed, 1, 138);
         insert_menu(&mut disp, &mut cpu, &mut bus, game);
         insert_menu_before(&mut disp, &mut cpu, &mut bus, options, -1);
         insert_menu_before(&mut disp, &mut cpu, &mut bus, speed, -1);
@@ -14713,18 +16150,27 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect;
+        let root_rect = disp.menu_tracking.as_ref().unwrap().dropdown_rect();
         disp.mouse_pos = (root_rect.0 + 9, root_rect.1 + 24);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        let options_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect;
+        let options_rect = disp.menu_tracking.as_ref().unwrap().submenus[0].dropdown_rect();
         disp.mouse_pos = (options_rect.0 + 9, options_rect.1 + 24);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
-        let speed_rect = disp.menu_tracking.as_ref().unwrap().submenus[1].dropdown_rect;
+        let speed_rect = disp.menu_tracking.as_ref().unwrap().submenus[1].dropdown_rect();
         disp.mouse_pos = (speed_rect.0 + 9, speed_rect.1 + 24);
+        disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            disp.menu_tracking.as_ref().unwrap().submenus.len(),
+            2,
+            "a circular submenu must not grow the retained hierarchy"
+        );
+        disp.mouse_pos = (speed_rect.0 + 1 + 16 + 8, speed_rect.1 + 24);
         disp.dispatch_menu(true, 0x13D, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -14739,7 +16185,7 @@ mod tests {
             }
         }
 
-        assert_eq!(bus.read_long(TEST_SP + 4), (139u32 << 16) | 1);
+        assert_eq!(bus.read_long(TEST_SP + 4), (139u32 << 16) | 2);
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     }
 
@@ -14800,17 +16246,12 @@ mod tests {
             "MenuSelect should enter tracking on the Edit title"
         );
 
-        let edit_idx = disp
-            .menus
-            .iter()
-            .position(|menu| menu.handle == edit)
-            .expect("Edit menu should still be tracked");
         assert_eq!(
             disp.menu_tracking
                 .as_ref()
                 .expect("MenuSelect should be tracking")
-                .active_menu,
-            edit_idx,
+                .menu_handle,
+            edit,
             "MenuSelect should open the regular menu after a hierarchical menu"
         );
     }
@@ -15021,68 +16462,50 @@ mod tests {
 
     #[test]
     fn guest_menu_snapshot_exposes_only_the_inserted_menu_list() {
-        let (mut disp, _cpu, bus) = setup();
-        disp.menus = vec![
-            Menu {
-                id: 100,
-                title: "File".into(),
-                items: vec![MenuItem {
-                    // The renderer-facing Menu model preserves Mac Roman
-                    // bytes as chars; the native snapshot must expose Unicode.
-                    text: "New Level\u{C9}".into(),
-                    icon: 0,
-                    key_equiv: b'N',
-                    mark: 0x12,
-                    style: 0,
-                    enabled: true,
-                }],
-                enabled: true,
-                handle: 0,
-                in_menu_bar: true,
-                hierarchical: false,
-                visible_in_menu_bar: true,
-            },
-            Menu {
-                id: 101,
-                title: "Detached".into(),
-                items: Vec::new(),
-                enabled: true,
-                handle: 0,
-                in_menu_bar: false,
-                hierarchical: false,
-                visible_in_menu_bar: false,
-            },
-        ];
+        let (mut disp, mut cpu, mut bus) = setup();
+        let inserted = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 100, 0x306A80, "File");
+        let item_ptr = 0x306A90;
+        let item = b"New Level\xC9/N";
+        bus.write_byte(item_ptr, item.len() as u8);
+        bus.write_bytes(item_ptr + 1, item);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, item_ptr);
+        bus.write_long(TEST_SP + 4, inserted);
+        disp.dispatch_menu(true, 0x133, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 0x0100);
+        bus.write_word(TEST_SP + 2, 1);
+        bus.write_long(TEST_SP + 4, inserted);
+        disp.dispatch_menu(true, 0x145, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        insert_menu(&mut disp, &mut cpu, &mut bus, inserted);
+
+        let system_menu =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 102, 0x306AA0, "\u{14}");
+        insert_menu(&mut disp, &mut cpu, &mut bus, system_menu);
+
+        let _detached =
+            new_menu_with_title(&mut disp, &mut cpu, &mut bus, 101, 0x306AB0, "Detached");
 
         let snapshot = disp.guest_menu_snapshot(&bus);
-        assert_eq!(snapshot.menus.len(), 1);
+        assert_eq!(snapshot.menus.len(), 2);
         assert_eq!(snapshot.menus[0].id, 100);
         assert_eq!(snapshot.menus[0].items[0].number, 1);
         assert_eq!(snapshot.menus[0].items[0].text, "New Level…");
         assert_eq!(snapshot.menus[0].items[0].key_equivalent, Some('n'));
         assert!(snapshot.menus[0].items[0].checked);
+        assert_eq!(snapshot.menus[1].title, "Systemless");
     }
 
     #[test]
     fn native_selection_returns_through_menuselect_pascal_frame() {
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.menus = vec![Menu {
-            id: -120,
-            title: "Game".into(),
-            items: vec![MenuItem {
-                text: "Pause".into(),
-                icon: 0,
-                key_equiv: 0,
-                mark: 0,
-                style: 0,
-                enabled: true,
-            }],
-            enabled: true,
-            handle: 0,
-            in_menu_bar: true,
-            hierarchical: false,
-            visible_in_menu_bar: true,
-        }];
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, -120, 0x306AC0, "Game");
+        append_menu_data(&mut disp, &mut cpu, &mut bus, menu, 0x306AD0, "Pause");
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
         assert!(disp.queue_native_menu_selection(&bus, -120, 1).is_some());
         cpu.write_reg(Register::A7, TEST_SP);
@@ -15100,34 +16523,25 @@ mod tests {
 
     #[test]
     fn native_selection_rejects_disabled_and_hierarchical_parent_items() {
-        let (mut disp, _cpu, bus) = setup();
-        disp.menus = vec![Menu {
-            id: 100,
-            title: "File".into(),
-            items: vec![
-                MenuItem {
-                    text: "Disabled".into(),
-                    icon: 0,
-                    key_equiv: 0,
-                    mark: 0,
-                    style: 0,
-                    enabled: false,
-                },
-                MenuItem {
-                    text: "Recent".into(),
-                    icon: 0,
-                    key_equiv: 0x1B,
-                    mark: 7,
-                    style: 0,
-                    enabled: true,
-                },
-            ],
-            enabled: true,
-            handle: 0,
-            in_menu_bar: true,
-            hierarchical: false,
-            visible_in_menu_bar: true,
-        }];
+        let (mut disp, mut cpu, mut bus) = setup();
+        let menu = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 100, 0x306AE0, "File");
+        append_menu_data(
+            &mut disp,
+            &mut cpu,
+            &mut bus,
+            menu,
+            0x306AF0,
+            "Disabled;Recent",
+        );
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 1);
+        bus.write_long(TEST_SP + 2, menu);
+        disp.dispatch_menu(true, 0x13A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        set_item_cmd(&mut disp, &mut cpu, &mut bus, menu, 2, 0x1B);
+        set_item_mark(&mut disp, &mut cpu, &mut bus, menu, 2, 7);
+        insert_menu(&mut disp, &mut cpu, &mut bus, menu);
 
         assert_eq!(disp.queue_native_menu_selection(&bus, 100, 1), None);
         assert_eq!(disp.queue_native_menu_selection(&bus, 100, 2), None);

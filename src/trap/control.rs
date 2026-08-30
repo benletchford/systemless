@@ -4,6 +4,7 @@ use super::dispatch::{ControlAuxRecordState, ControlTrackingState};
 use super::types::{decode_mac_roman_for_render, Rect, ShapeOp};
 use crate::cpu::{CpuOps, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
+use crate::menu_manager::standard_popup_menu_layout;
 use crate::quickdraw::text::get_font_metrics;
 use crate::ui_theme::ControlKind;
 use crate::Result;
@@ -733,45 +734,20 @@ impl super::TrapDispatcher {
 
         let mut width = (r_right - r_left).max(80);
         if let Some(menu) = self.menus.get(menu_idx) {
-            for item in &menu.items {
-                let w = Self::fb_measure_string(&item.text, 0, 12)
-                    + self.menu_item_width_extra(bus, item)
-                    + 24;
-                width = width.max(w);
-            }
-            let selected_item_offset = if selected_index >= 1 && selected_index <= menu.items.len()
-            {
-                menu.items
-                    .iter()
-                    .take(selected_index - 1)
-                    .map(|item| self.menu_item_height(bus, item))
-                    .sum::<i16>()
-            } else {
-                0
-            };
+            width = width.max(self.standard_menu_width(bus, &menu.items));
             // The standard popup CDEF opens the live menu with the current
             // value's item aligned to the popup box, matching the Menu
             // Manager's PopUpMenuSelect(top, left, popUpItem) convention.
-            let desired_top = abs_top - 1 - selected_item_offset;
-            let height = (self.menu_items_height(bus, &menu.items) + 2).max(1);
-            let clamped_top = if screen_height <= 0 {
-                desired_top
-            } else if height >= screen_height {
-                0
-            } else {
-                desired_top.clamp(0, screen_height - height)
-            };
-            let bottom = if screen_height > 0 {
-                (clamped_top + height).min(screen_height)
-            } else {
-                clamped_top + height
-            };
-            return (
-                clamped_top,
-                abs_left,
-                bottom,
-                (abs_left + width).min(screen_width),
-            );
+            let rows = self.menu_rows(bus, &menu.items);
+            if let Some(layout) = standard_popup_menu_layout(
+                &rows,
+                width,
+                (screen_width, screen_height),
+                (abs_top, abs_left),
+                selected_index as i16,
+            ) {
+                return layout.rect();
+            }
         }
 
         let desired_top = abs_top - 1;
@@ -807,7 +783,7 @@ impl super::TrapDispatcher {
         let Some(menu) = self.menus.get(tracking.active_menu) else {
             return 0;
         };
-        let mut item_top = top + 1;
+        let mut item_top = top;
         for (item_idx, item) in menu.items.iter().enumerate() {
             let item_bottom = item_top + self.menu_item_height(bus, item);
             if mouse_y >= item_top && mouse_y < item_bottom {
@@ -6153,13 +6129,13 @@ mod tests {
         let (dropdown_top, dropdown_left, dropdown_bottom, _) = dropdown_rect;
         assert_eq!(
             (dropdown_top, dropdown_left, dropdown_bottom),
-            (9, 20, 43),
+            (10, 20, 42),
             "popup tracking should align selected item 1 with the control box, \
              not open below the control bottom"
         );
         assert_eq!(bus.read_word(sp + 12), 0xBEEF);
 
-        disp.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
+        disp.mouse_pos = (dropdown_top + 16 + 1, dropdown_left + 5);
         disp.dispatch_control(true, 0x168, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();

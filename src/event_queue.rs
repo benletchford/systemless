@@ -1,4 +1,4 @@
-//! Architecture-neutral ownership for the Operating System event queue.
+//! Architecture-neutral ownership for Event Manager queue and redraw state.
 
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
@@ -22,23 +22,43 @@ pub struct QueuedEvent {
     pub modifiers: u16,
 }
 
-/// One serialized event queue that can be attached to both CPU adapters.
+/// One serialized Event Manager state that can be attached to both CPU
+/// adapters. It owns the OS event queue and the menu-bar-invalid bit consumed
+/// during Toolbox event scans.
 ///
 /// Ordinary construction owns a private queue. The runner may explicitly
 /// attach a second adapter to the same allocation once both adapters are its
 /// private children and all access is serialized through a mutable runner
 /// borrow.
+#[derive(Clone, Debug, Default)]
+struct SharedEventState {
+    events: VecDeque<QueuedEvent>,
+    menu_bar_invalid: bool,
+}
+
 #[derive(Debug, Default)]
-pub(crate) struct SharedEventQueue(Rc<UnsafeCell<VecDeque<QueuedEvent>>>);
+pub(crate) struct SharedEventQueue(Rc<UnsafeCell<SharedEventState>>);
 
 impl Clone for SharedEventQueue {
     fn clone(&self) -> Self {
         // A cloned runtime is a snapshot, not another live CPU adapter.
-        Self(Rc::new(UnsafeCell::new(self.deref().clone())))
+        Self(Rc::new(UnsafeCell::new(self.state().clone())))
     }
 }
 
 impl SharedEventQueue {
+    fn state(&self) -> &SharedEventState {
+        // SAFETY: shared handles can only be created under the serialized
+        // ownership contract documented by `shared_handle`.
+        unsafe { &*self.0.get() }
+    }
+
+    fn state_mut(&mut self) -> &mut SharedEventState {
+        // SAFETY: shared handles can only be created under the serialized
+        // ownership contract documented by `shared_handle`.
+        unsafe { &mut *self.0.get() }
+    }
+
     /// Attach another CPU adapter to this queue without copying it.
     ///
     /// # Safety
@@ -49,23 +69,36 @@ impl SharedEventQueue {
     pub(crate) unsafe fn shared_handle(&self) -> Self {
         Self(Rc::clone(&self.0))
     }
+
+    /// Mark the menu bar for one deferred redraw by the Toolbox Event
+    /// Manager. Repeated invalidations coalesce until the next event scan.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-93 and 3-114.
+    pub(crate) fn invalidate_menu_bar(&mut self) {
+        self.state_mut().menu_bar_invalid = true;
+    }
+
+    /// Consume the deferred menu-bar redraw request at an event scan.
+    pub(crate) fn take_menu_bar_invalidation(&mut self) -> bool {
+        std::mem::take(&mut self.state_mut().menu_bar_invalid)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_bar_is_invalid(&self) -> bool {
+        self.state().menu_bar_invalid
+    }
 }
 
 impl Deref for SharedEventQueue {
     type Target = VecDeque<QueuedEvent>;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: shared handles can only be created under the serialized
-        // ownership contract documented by `shared_handle`.
-        unsafe { &*self.0.get() }
+        &self.state().events
     }
 }
 
 impl DerefMut for SharedEventQueue {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: shared handles can only be created under the serialized
-        // ownership contract documented by `shared_handle`.
-        unsafe { &mut *self.0.get() }
+        &mut self.state_mut().events
     }
 }
 
@@ -88,6 +121,11 @@ mod tests {
         assert_eq!(second.front().map(|event| event.message), Some(0x1122_3344));
         second.pop_front();
         assert!(first.is_empty());
+
+        first.invalidate_menu_bar();
+        assert!(second.menu_bar_is_invalid());
+        assert!(second.take_menu_bar_invalidation());
+        assert!(!first.menu_bar_is_invalid());
     }
 
     #[test]
@@ -103,8 +141,22 @@ mod tests {
 
         let mut snapshot = live.clone();
         snapshot.front_mut().unwrap().message = 0x5566_7788;
+        snapshot.invalidate_menu_bar();
 
         assert_eq!(live.front().unwrap().message, 0x1122_3344);
         assert_eq!(snapshot.front().unwrap().message, 0x5566_7788);
+        assert!(!live.menu_bar_is_invalid());
+        assert!(snapshot.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn repeated_menu_bar_invalidations_coalesce_until_consumed() {
+        let mut queue = SharedEventQueue::default();
+
+        queue.invalidate_menu_bar();
+        queue.invalidate_menu_bar();
+
+        assert!(queue.take_menu_bar_invalidation());
+        assert!(!queue.take_menu_bar_invalidation());
     }
 }

@@ -11,11 +11,53 @@ use crate::{Error, Result};
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
+
+use super::dispatch::{
+    raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
+};
+use super::memory::{mac_roman_strip_diacriticals, mac_roman_to_upper};
 static TRACE_MENU_PICT: OnceLock<bool> = OnceLock::new();
 static TRACE_FSSPEC: OnceLock<bool> = OnceLock::new();
 static TRACE_SOUND_RESOURCE: OnceLock<bool> = OnceLock::new();
 static TRACE_GETRESOURCE: OnceLock<bool> = OnceLock::new();
 static TRACE_LOADSEG: OnceLock<bool> = OnceLock::new();
+
+const RESOURCE_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_resource_dispatch_operations.rs");
+const HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_high_level_fs_dispatch_operations.rs");
+const OS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_os_dispatch_operations.rs");
+
+fn resource_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA822 {
+        return None;
+    }
+    selector_operation_route(RESOURCE_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn high_level_fs_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xAA52 {
+        return None;
+    }
+    selector_operation_route(HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES, selector)
+}
+
+fn os_dispatch_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA88F {
+        return None;
+    }
+    selector_operation_route(OS_DISPATCH_OPERATION_ROUTES, u32::from(selector))
+}
 
 const CURRENT_PROCESS_PSN_HIGH: u32 = 0;
 const CURRENT_PROCESS_PSN_LOW: u32 = 2;
@@ -184,6 +226,8 @@ fn is_builtin_gestalt_selector(sel: &[u8; 4]) -> bool {
         b"vers"
             | b"sysv"
             | b"sysa"
+            | b"ostt"
+            | b"tbtt"
             | b"evnt"
             | b"edtn"
             | b"ppc "
@@ -567,7 +611,7 @@ impl super::TrapDispatcher {
             return false;
         }
 
-        let Some(handler_addr) = self.native_trap_table.get(&0xA9A0).copied() else {
+        let Some(handler_addr) = self.native_trap_handler(bus, 0xA9A0) else {
             return false;
         };
 
@@ -2314,14 +2358,13 @@ impl super::TrapDispatcher {
             // Inside Macintosh: More Macintosh Toolbox 1993, 1-69 .. 1-71
             // Inside Macintosh Volume VI 1991, p. C-27 (selector table)
             //
-            // Selector lives in D0; the dispatcher matches the low
-            // byte. IM:VI lists the selectors as $0001/$0002/$0003;
-            // MMTB 1993 lists them as $7001/$7002/$7003. Both forms
-            // route to the same routine because Apple's dispatcher
-            // consults only the low byte. The high byte is an MPW
-            // glue marker, not a parameter-bytes hint (param sizes
-            // here are 16/16/8 bytes — none of which equals
-            // 2 × 0x70 = 224).
+            // IM:VI lists the D0 values as $0001/$0002/$0003. MMTB
+            // prints $7001/$7002/$7003, which Universal Interfaces 3.4
+            // confirms are complete MOVEQ opcodes preceding $A822, not
+            // alternate D0 values. Runtime identity therefore uses 1--3.
+            // The semantic handler retains its existing low-byte behavior
+            // for compatibility, without attributing noncanonical values to
+            // a generated operation.
             //
             // The Mac maintains a disk/memory dichotomy that makes
             // the partial-resource workflow non-trivial there: a
@@ -2344,10 +2387,16 @@ impl super::TrapDispatcher {
             // break callers that treat any non-zero ResErr as a
             // failure when the operation actually succeeded.
             //
-            // ResourceDispatch ($A822): D0-low-byte selectors: 1=ReadPartialResource, 2=WritePartialResource, 3=SetResourceSize per MMTB 1-69..1-71. HLE is memory-resident so all three operate on the in-memory allocation directly; reports inputOutOfBounds/writingPastEnd/resNotFound per IM.
+            // ResourceDispatch ($A822)
+            // Reads, writes, or resizes part of a memory-resident resource.
+            // D0: selector; stack: routine parameters; ResErr: result code.
+            // More Macintosh Toolbox (1993), pp. 1-111 to 1-115.
             (true, 0x022) => {
                 let sp = cpu.read_reg(Register::A7);
-                let routine = (cpu.read_reg(Register::D0) & 0xFF) as u8;
+                let selector = cpu.read_reg(Register::D0);
+                let operation = resource_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let routine = (selector & 0xFF) as u8;
                 match routine {
                     // ReadPartialResource (selector 1) — 16 bytes args
                     // SP+12 theResource | SP+8 offset | SP+4 buffer | SP+0 count
@@ -2561,7 +2610,7 @@ impl super::TrapDispatcher {
                 let auto_pop_old_trap = (self.current_trap_word & 0x0400) != 0;
                 let original_trap_return = self.current_trap_caller;
                 let native_call = (is_loadseg_trampoline && auto_pop_old_trap)
-                    .then(|| self.pending_native_trap_calls.remove(&0xA9F0))
+                    .then(|| self.take_latest_native_trap_call(0xA9F0))
                     .flatten();
 
                 // Detect format: in standard format, [A9F0-4] = 3F3C (MOVE.W).
@@ -3292,21 +3341,22 @@ impl super::TrapDispatcher {
             // Gestalt family: _Gestalt ($A1AD), _NewGestalt ($A3AD),
             // _ReplaceGestalt ($A5AD). All three OS traps share the
             // low byte $AD and so reach the same dispatch arm — the
-            // dispatcher only forwards bits 0..7 for OS traps. We
-            // distinguish them by reading the original 16-bit trap
-            // word from `current_trap_word` (set by the dispatcher
-            // before each handler runs).
+            // dispatcher only forwards bits 0..7 for OS traps. The central
+            // raw route retains their operation identity before that mask.
             //
             // Trap word table per Inside Macintosh Volume VI, p. 6-308.
             // FUNCTION/Pascal signatures and register conventions per
             // Inside Macintosh: Operating System Utilities 1994,
             // 1-31..1-35.
             //
-            // Gestalt ($A0AD): documented selectors including vers/sysv/evnt/cput/proc/mach/kbd/qd/qdrw/ram/fpu/mmu/snd/ttsc/te/tmgr/alis/fs/fold/qtim/drag/os/powr/appr/addr/sdev/stdf/help/vm; guest-installed selector functions (NewGestalt/ReplaceGestalt) are registered but not invokable from a trap handler
+            // Gestalt ($A1AD)
+            // Returns the response registered for an environment selector.
+            // FUNCTION Gestalt (selector: OSType; VAR response: LongInt): OSErr;
+            // Inside Macintosh: Operating System Utilities (1994), pp. 1-25--1-31.
             (false, 0xAD) => {
                 let selector = cpu.read_reg(Register::D0);
                 let sel = selector.to_be_bytes();
-                match self.current_trap_word {
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
                     // _NewGestalt ($A3AD)
                     //
                     //   FUNCTION NewGestalt (selector: OSType;
@@ -3358,7 +3408,7 @@ impl super::TrapDispatcher {
                     //
                     // Regression coverage:
                     //   newgestalt_register_only_calling_convention_preserves_stack
-                    0xA3AD => {
+                    OsRoutineVariant::GestaltRegister => {
                         let already_known = is_builtin_gestalt_selector(&sel)
                             || self.gestalt_registry.contains_key(&selector);
                         if already_known {
@@ -3424,7 +3474,7 @@ impl super::TrapDispatcher {
                     //
                     // Regression coverage:
                     //   replacegestalt_register_only_calling_convention_preserves_stack
-                    0xA5AD => {
+                    OsRoutineVariant::GestaltReplace => {
                         let new_fn = cpu.read_reg(Register::A0);
                         if let Some(old_fn) = self.gestalt_registry.insert(selector, new_fn) {
                             cpu.write_reg(Register::A0, old_fn);
@@ -3442,16 +3492,15 @@ impl super::TrapDispatcher {
                         }
                         return Some(Ok(()));
                     }
-                    // _Gestalt ($A0AD/$A1AD): fall through to the query
-                    // handler below.
+                    // `_Gestalt` ($A1AD) and unresolved modifier forms fall
+                    // through to the query handler below.
                     _ => {}
                 }
                 match &sel {
                     // gestaltVersion ('vers') -> Gestalt Manager version.
                     // Inside Macintosh: Operating System Utilities 1994,
                     // p. 1-25: current version is 1, returned as $0001 in
-                    // the low-order word. Marathon 1 probes this before
-                    // drawing its first visible frame.
+                    // the low-order word.
                     b"vers" => {
                         cpu.write_reg(Register::A0, 0x0001);
                         cpu.write_reg(Register::D0, 0);
@@ -3471,6 +3520,18 @@ impl super::TrapDispatcher {
                     // p. 1-24: gestalt68k = 1, gestaltPowerPC = 2.
                     b"sysa" => {
                         cpu.write_reg(Register::A0, 1);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    // gestaltOSTable / gestaltToolboxTable return the bases
+                    // of the two writable raw dispatch tables. Inside
+                    // Macintosh Volume VI (1991), Gestalt Manager constants;
+                    // OSUtils 1994, pp. 8-4--8-6.
+                    b"ostt" => {
+                        cpu.write_reg(Register::A0, super::dispatch::OS_TRAP_TABLE_BASE);
+                        cpu.write_reg(Register::D0, 0);
+                    }
+                    b"tbtt" => {
+                        cpu.write_reg(Register::A0, super::dispatch::TOOLBOX_TRAP_TABLE_BASE);
                         cpu.write_reg(Register::D0, 0);
                     }
                     // gestaltAppleEventsAttr ('evnt') -> AppleEvents present
@@ -3955,7 +4016,10 @@ impl super::TrapDispatcher {
             // Files 1992, 2-84, 2-121 to 2-122, 2-238
             (false, 0x02) => {
                 let pb = cpu.read_reg(Register::A0);
-                let async_call = (self.current_trap_word & 0x0400) != 0;
+                let async_call = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::ParameterBlockAsynchronous
+                );
                 let completion_addr = bus.read_long(pb + 12);
                 let ref_num = bus.read_word(pb + 24);
                 let buffer = bus.read_long(pb + 32);
@@ -5398,7 +5462,10 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(pb + 18);
                 let filename = Self::read_pb_filename(bus, name_ptr);
                 let v_ref = bus.read_word(pb + 22) as i16;
-                let is_hfs_variant = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_variant = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 let dir_id = if is_hfs_variant {
                     bus.read_long(pb + 48)
                 } else {
@@ -5755,7 +5822,10 @@ impl super::TrapDispatcher {
                 let name_ptr = bus.read_long(pb + 18);
                 let name = Self::read_pb_filename(bus, name_ptr);
                 let requested_vref = bus.read_word(pb + 22) as i16;
-                let is_hfs_set_vol = (self.current_trap_word & 0x0F00) == 0x0200;
+                let is_hfs_set_vol = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::FileHfsSynchronous | OsRoutineVariant::FileHfsAsynchronous
+                );
                 let requested_dir_id = if is_hfs_set_vol {
                     bus.read_long(pb + 48)
                 } else {
@@ -5848,54 +5918,46 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // _CmpString ($A03C) — underlying trap for EqualString
-            // FUNCTION EqualString (aStr, bStr: Str255; caseSens, diacSens: BOOLEAN): BOOLEAN;
-            // Inside Macintosh Volume II, II-377
-            //
+            // _CmpString ($A03C), the register-level EqualString operation.
             // On entry: A0 = ptr to first string's first character
             //           A1 = ptr to second string's first character
             //           D0 high word = length of first string
             //           D0 low word  = length of second string
             // On exit:  D0 = 0 if equal, 1 if not equal (long word).
             //
-            // The default trap word $A03C is case-INSENSITIVE for ASCII
-            // (per IM:II II-377 the bare _CmpString has caseSens=FALSE).
-            // The MARKS / CASE trap-word bits 9 and 10 select different
-            // sensitivities; Systemless currently handles only the default.
-            //
-            // EqualString / CmpString ($A03C): String comparison per IM:II II-377
-            // Trap word bit 10 (0x0400): caseSens=TRUE → case-sensitive comparison.
-            // Default $A03C (bit 10 clear): caseSens=FALSE → case-insensitive.
-            // Trap word bit 9 (0x0200): diacSens flag (strip diacriticals when set).
-            // D0=0 means equal; D0=1 means not equal (EqualString Pascal glue inverts).
+            // MARKS (bit 9) makes comparison diacritic-sensitive; CASE (bit
+            // 10) makes it case-sensitive. The bare form ignores both. Inside
+            // Macintosh: Text (1993), pp. 5-51--5-52. This later four-row table
+            // supersedes the opposite MARKS annotation in Volume II (1985),
+            // p. II-377. D0 is 0 for equal and 1 for unequal.
             (false, 0x3C) => {
                 let a_ptr = cpu.read_reg(Register::A0);
                 let b_ptr = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
                 let a_len = (d0 >> 16) & 0xFFFF;
                 let b_len = d0 & 0xFFFF;
-                let case_sens = (self.current_trap_word & 0x0400) != 0;
+                let (case_sensitive, diacritic_sensitive) = raw_trap_route(self.current_trap_word)
+                    .os_routine_variant
+                    .text_comparison_sensitivity()
+                    .expect("CmpString trap word must have a classified comparison variant");
 
                 let result: u32 = if a_len != b_len {
                     1
                 } else {
-                    let a_bytes = bus.read_bytes(a_ptr, a_len as usize);
-                    let b_bytes = bus.read_bytes(b_ptr, b_len as usize);
-                    if case_sens {
-                        // Case-sensitive: exact byte comparison.
-                        if a_bytes == b_bytes {
-                            0
-                        } else {
-                            1
+                    let equal = (0..a_len).all(|offset| {
+                        let mut a = bus.read_byte(a_ptr + offset);
+                        let mut b = bus.read_byte(b_ptr + offset);
+                        if !diacritic_sensitive {
+                            a = mac_roman_strip_diacriticals(a);
+                            b = mac_roman_strip_diacriticals(b);
                         }
-                    } else {
-                        // Case-insensitive: fold ASCII letters before comparing.
-                        if a_bytes.eq_ignore_ascii_case(&b_bytes) {
-                            0
-                        } else {
-                            1
+                        if !case_sensitive {
+                            a = mac_roman_to_upper(a, false);
+                            b = mac_roman_to_upper(b, false);
                         }
-                    }
+                        a == b
+                    });
+                    u32::from(!equal)
                 };
                 cpu.write_reg(Register::D0, result);
                 Ok(())
@@ -5961,48 +6023,15 @@ impl super::TrapDispatcher {
             }
 
             // OSDispatch (0xA88F)
-            // Dispatches Temporary Memory and Process Manager selectors.
+            // Dispatches Temporary Memory, High-Level Event, and Process Manager routines selected by a stack word.
             // FUNCTION TempMaxMem(VAR grow: Size): Size;
-            // FUNCTION TempTopMem: Ptr;
-            // FUNCTION TempFreeMem: LongInt;
-            // FUNCTION TempNewHandle(logicalSize: Size; VAR resultCode: OSErr): Handle;
-            // PROCEDURE TempHLock(h: Handle; VAR resultCode: OSErr);
-            // PROCEDURE TempHUnlock(h: Handle; VAR resultCode: OSErr);
-            // PROCEDURE TempDisposeHandle(h: Handle; VAR resultCode: OSErr);
-            // Inside Macintosh Volume VI, 28-38 and 28-45.
-            // FUNCTION AcceptHighLevelEvent(VAR sender: TargetID; VAR msgRefcon:
-            //   LongInt; msgBuff: Ptr; VAR msgLen: LongInt): OSErr;
-            // FUNCTION PostHighLevelEvent(theEvent: EventRecord; receiverID: Ptr;
-            //   msgRefcon: LongInt; msgBuff: Ptr; msgLen: LongInt;
-            //   postingOptions: LongInt): OSErr;
-            // FUNCTION GetProcessSerialNumberFromPortName(portName: PPCPortRec;
-            //   VAR PSN: ProcessSerialNumber): OSErr;
-            // Inside Macintosh Volume VI, 5-29..5-32.
-            // FUNCTION LaunchDeskAccessory(pFileSpec: FSSpecPtr;
-            //   pDAName: StringPtr): OSErr;
-            // Inside Macintosh Volume VI, 29-22..29-23.
-            // FUNCTION GetCurrentProcess(VAR PSN: ProcessSerialNumber): OSErr;
-            // Processes 1994, 2-21 to 2-24.
-            //
-            // MPW emits each ProcessMgr selector as
-            //   MOVE.W #<sel>, -(SP)     ; push selector word on stack
-            //   _OSDispatch
-            // So selector is the TOP-OF-STACK word at trap entry. A few
-            // pre-existing direct-asm callers instead pre-load D0 before
-            // the trap -- if the top-of-stack word isn't a recognised
-            // selector, fall back to D0 for compatibility.
-            // MPW Universal Interfaces 3.4 MacMemory.a emits the 68k
-            // temporary-memory macros as `move.w #selector,-(sp); _OSDispatch`.
-            // OSDispatch ($A88F): selectors $0015 TempMaxMem, $0016
-            // TempTopMem, $0018 TempFreeMem, $001D TempNewHandle,
-            // $001E TempHLock, $001F TempHUnlock, and $0020
-            // TempDisposeHandle (IM VI Temporary Memory table);
-            // selectors $0033..$0036 are high-level event / desk accessory
-            // routines (IM VI pp. 5-29..5-32 and 29-23); selectors
-            // $0037..$003D are Process Manager routines (Processes 1994 p. 2-31).
+            // Inside Macintosh: Memory (1992), pp. 2-79 to 2-80 and 2-104.
             (true, 0x08F) => {
                 let sp_entry = cpu.read_reg(Register::A7);
                 let stack_sel = bus.read_word(sp_entry) as u32 & 0xFFFF;
+                let operation =
+                    os_dispatch_operation_route(self.current_trap_word, stack_sel as u16);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let d0_sel = cpu.read_reg(Register::D0) & 0xFFFF;
                 let (selector, sp, selector_from_stack) = match stack_sel {
                     0x0015 | 0x0016 | 0x0018 | 0x001D..=0x0020 | 0x0033..=0x003D | 0x0045 => {
@@ -6392,12 +6421,15 @@ impl super::TrapDispatcher {
             }
 
             // HighLevelFSDispatch ($AA52)
-            // HighLevelFSDispatch ($AA52): Selectors: 1=FSMakeFSSpec, 2=FSpOpenDF,
-            // 3=FSpOpenRF,
-            // 4=FSpCreate, 5=FSpDirCreate, 6=FSpDelete, 9=FSpSetFLock,
-            // 10=FSpRstFLock, 13=FSpOpenResFile, 14=FSpCreateResFile
+            // Dispatches high-level File Manager FSSpec routines selected in D0.
+            // FUNCTION FSMakeFSSpec(vRefNum: INTEGER; dirID: LONGINT; fileName: Str255; VAR spec: FSSpec): OSErr;
+            // Inside Macintosh: Files (1992), pp. 2-154 to 2-168.
             (true, 0x252) => {
-                let selector = cpu.read_reg(Register::D0) & 0xFFFF;
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation =
+                    high_level_fs_dispatch_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                let selector = raw_selector & 0xFFFF;
                 eprintln!("[TRAP] HighLevelFSDispatch Selector={}", selector);
                 match selector {
                     1 => {
@@ -8514,7 +8546,6 @@ impl super::TrapDispatcher {
         None
     }
 
-
     fn find_vfs_directory_for_hfs_lookup(
         &mut self,
         vref: i16,
@@ -8744,6 +8775,41 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0, "AA89 clears D0");
         assert_eq!(bus.read_word(sp + 2), 0, "AA89 writes zero result");
         assert_eq!(cpu.read_reg(Register::A7), sp + 2, "AA89 pops 2 bytes");
+    }
+
+    #[test]
+    fn cmpstring_variants_apply_documented_case_and_marks_sensitivity() {
+        // Inside Macintosh: Text (1993), pp. 5-51--5-52: MARKS and CASE
+        // independently enable diacritic-sensitive and case-sensitive matching.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let accented_lower = bus.alloc(1);
+        let plain_lower = bus.alloc(1);
+        let plain_upper = bus.alloc(1);
+        bus.write_byte(accented_lower, 0x8E); // Mac Roman e acute
+        bus.write_byte(plain_lower, b'e');
+        bus.write_byte(plain_upper, b'E');
+
+        for (trap_word, left, right, expected) in [
+            (0xA03C, accented_lower, plain_upper, 0),
+            (0xA23C, accented_lower, plain_upper, 1),
+            (0xA43C, accented_lower, plain_upper, 1),
+            (0xA63C, accented_lower, plain_upper, 1),
+            (0xA03C, plain_lower, plain_upper, 0),
+            (0xA23C, plain_lower, plain_upper, 0),
+            (0xA43C, plain_lower, plain_upper, 1),
+            (0xA63C, plain_lower, plain_upper, 1),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, left);
+            cpu.write_reg(Register::A1, right);
+            cpu.write_reg(Register::D0, 0x0001_0001);
+            call(&mut dispatcher, false, 0x3C, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected,
+                "trap ${trap_word:04X}"
+            );
+        }
     }
 
     /// Write a Pascal string (length-prefixed) into memory at `addr`.
@@ -10503,9 +10569,54 @@ mod tests {
     // 5d. ResourceDispatch (0x022) — selectors 1/2/3
     // ================================================================
     #[test]
+    fn resourcedispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::RESOURCE_DISPATCH_OPERATION_ROUTES.len(), 3);
+        assert!(super::RESOURCE_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let read = super::resource_dispatch_operation_route(0xA822, 0x0001)
+            .expect("ReadPartialResource route");
+        assert_eq!(read.routine_name, "ReadPartialResource");
+        assert_eq!(
+            read.operation_id,
+            "selector-operation:_ResourceDispatch:0x0001:d0-moveq-immediate:8"
+        );
+
+        assert!(super::resource_dispatch_operation_route(0xA822, 0x7001).is_none());
+        assert!(super::resource_dispatch_operation_route(0xA822, 0x0001_0001).is_none());
+        assert!(super::resource_dispatch_operation_route(0xAA22, 0x0001).is_none());
+    }
+
+    #[test]
+    fn resourcedispatch_records_every_generated_operation_and_rejects_opcode_spelling() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        for route in super::RESOURCE_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            bus.write_bytes(TEST_SP, &[0; 16]);
+            call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+            assert_eq!(disp.current_selector_operation, Some(route.operation_id));
+        }
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x7001);
+        bus.write_bytes(TEST_SP, &[0; 16]);
+        call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.current_selector_operation, None);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0001_0001);
+        bus.write_bytes(TEST_SP, &[0; 16]);
+        call_trap_word(&mut disp, 0xA822, &mut cpu, &mut bus).unwrap();
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
+    #[test]
     fn readpartialresource_selector_1_copies_requested_bytes_and_pops_16_bytes() {
-        // MMTB 1993 1-69 + IM:VI C-27: selector 1 (or $7001 glue form)
-        // performs ReadPartialResource and consumes 16 bytes of args.
+        // MMTB 1993 pp. 1-111 to 1-113 prints the MOVEQ opcode $7001;
+        // this compatibility probe preserves the handler's historical
+        // low-byte dispatch while generated runtime identity uses D0 = 1.
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(
             &mut disp,
@@ -12706,19 +12817,24 @@ mod tests {
         disp.native_trap_table.insert(0xA9A0, 0x300000);
 
         let return_pc = 0x12345678;
-        bus.write_long(TEST_SP, return_pc);
-        bus.write_word(TEST_SP + 4, 7);
-        bus.write_long(TEST_SP + 6, u32::from_be_bytes(*b"TEST"));
-        bus.write_long(TEST_SP + 10, 0);
+        bus.write_word(TEST_SP, 7);
+        bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"TEST"));
+        bus.write_long(TEST_SP + 6, 0);
         cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::PC, return_pc);
+        disp.dispatch(0xA9A0, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::PC), 0x300000);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP - 4);
+
         cpu.write_reg(Register::PC, 0x0029D256);
 
         call_trap_word(&mut disp, 0xADA0, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::PC), return_pc);
-        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 6);
         assert_ne!(cpu.read_reg(Register::A0), 0);
-        assert_eq!(bus.read_long(TEST_SP + 10), cpu.read_reg(Register::A0));
+        assert_eq!(bus.read_long(TEST_SP + 6), cpu.read_reg(Register::A0));
+        assert!(!disp.pending_native_trap_calls.contains_key(&0xA9A0));
     }
 
     // ================================================================
@@ -12926,6 +13042,69 @@ mod tests {
     // ================================================================
     // 13a. HighLevelFSDispatch (0x252) selector 1 — FSMakeFSSpec
     // ================================================================
+    #[test]
+    fn high_level_fs_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES.len(), 15);
+        assert!(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (1, "FSMakeFSSpec"),
+            (2, "FSpOpenDF"),
+            (3, "FSpOpenRF"),
+            (4, "FSpCreate"),
+            (5, "FSpDirCreate"),
+            (6, "FSpDelete"),
+            (7, "FSpGetFInfo"),
+            (8, "FSpSetFInfo"),
+            (9, "FSpSetFLock"),
+            (10, "FSpRstFLock"),
+            (11, "FSpRename"),
+            (12, "FSpCatMove"),
+            (13, "FSpOpenResFile"),
+            (14, "FSpCreateResFile"),
+            (15, "FSpExchangeFiles"),
+        ] {
+            let route = super::high_level_fs_dispatch_operation_route(0xAA52, selector)
+                .expect("HighLevelFSDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xAB52, 1),
+            (0xAA52, 0),
+            (0xAA52, 16),
+            (0xAA52, 0x0000_7001),
+            (0xAA52, 0x0001_0001),
+        ] {
+            assert!(super::high_level_fs_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn high_level_fs_dispatch_records_nonterminal_and_rejects_stale_high_word() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        disp.current_trap_word = 0xAA52;
+
+        cpu.write_reg(Register::D0, 11);
+        let result = disp
+            .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
+            .expect("HighLevelFSDispatch arm");
+        assert!(matches!(result, Err(crate::Error::Halted)));
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(super::HIGH_LEVEL_FS_DISPATCH_OPERATION_ROUTES[10].operation_id)
+        );
+
+        cpu.write_reg(Register::D0, 0x0001_000B);
+        let result = disp
+            .dispatch_resource(true, 0x252, &mut cpu, &mut bus)
+            .expect("HighLevelFSDispatch arm");
+        assert!(matches!(result, Err(crate::Error::Halted)));
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
     #[test]
     fn hlfs_dispatch_fsmakefsspec() {
         let (mut disp, mut cpu, mut bus) = setup();
@@ -13849,6 +14028,21 @@ mod tests {
     }
 
     #[test]
+    fn gestalt_reports_materialized_trap_table_bases() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for (selector, expected) in [
+            (*b"ostt", crate::trap::dispatch::OS_TRAP_TABLE_BASE),
+            (*b"tbtt", crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE),
+        ] {
+            cpu.write_reg(Register::D0, u32::from_be_bytes(selector));
+            call_trap_word(&mut disp, 0xA1AD, &mut cpu, &mut bus).unwrap();
+            assert_eq!(cpu.read_reg(Register::A0), expected);
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+        }
+    }
+
+    #[test]
     fn gestalt_sysv() {
         let (mut disp, mut cpu, mut bus) = setup();
 
@@ -14215,6 +14409,37 @@ mod tests {
                 std::str::from_utf8(selector_bytes).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn gestalt_mutators_keep_their_operation_when_the_a0_return_bit_changes() {
+        // Inside Macintosh: Operating System Utilities (1994),
+        // pp. 1-31--1-36 defines the three slot-$AD operations. Chapter 8,
+        // pp. 8-10--8-14 defines bit 8 independently as the dispatcher's A0
+        // preservation choice. UI 3.4 Gestalt.h lines 55--105 declares the
+        // ordinary $A3AD/$A5AD words; clearing bit 8 must not turn either
+        // operation into a Gestalt query.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let selector = u32::from_be_bytes(*b"A0op");
+        let first_fn = 0x0040_1000;
+        let replacement_fn = 0x0040_2000;
+
+        cpu.write_reg(Register::D0, selector);
+        cpu.write_reg(Register::A0, first_fn);
+        call_trap_word(&mut disp, 0xA2AD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.gestalt_registry.get(&selector), Some(&first_fn));
+
+        cpu.write_reg(Register::D0, selector);
+        cpu.write_reg(Register::A0, replacement_fn);
+        call_trap_word(&mut disp, 0xA4AD, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.gestalt_registry.get(&selector), Some(&replacement_fn));
+        assert_eq!(
+            cpu.read_reg(Register::A0),
+            replacement_fn,
+            "cleared bit 8 makes the dispatcher restore the caller's A0"
+        );
     }
 
     // ================================================================
@@ -14699,6 +14924,34 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0) as i32, -39);
         assert_eq!(bus.read_word(pb + 16) as i16, -39);
         assert_eq!(bus.read_long(pb + 12), 0);
+        assert!(disp.pending_file_completions.is_empty());
+    }
+
+    #[test]
+    fn pb_read_immediate_completes_without_queueing() {
+        // Inside Macintosh: Devices (1994), p. 1-16 and UI 3.4 Devices.h
+        // lines 985--996: $A202 is PBReadImmed, not the async $A402 form.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let pb = 0x300000u32;
+        let read_buf = 0x310000u32;
+
+        disp.vfs.insert("Immediate".to_string(), vec![1, 2, 3]);
+        disp.open_files.insert(100, "Immediate".to_string());
+        disp.file_positions.insert(100, 0);
+        cpu.write_reg(Register::A0, pb);
+        bus.write_long(pb + 12, 0x320000);
+        bus.write_word(pb + 24, 100);
+        bus.write_long(pb + 32, read_buf);
+        bus.write_long(pb + 36, 3);
+        bus.write_word(pb + 44, 0);
+        bus.write_long(pb + 46, 0);
+
+        call_trap_word(&mut disp, 0xA202, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(pb + 16), 0);
+        assert_eq!(bus.read_long(pb + 12), 0);
+        assert_eq!(bus.read_bytes(read_buf, 3), vec![1, 2, 3]);
         assert!(disp.pending_file_completions.is_empty());
     }
 
@@ -15620,7 +15873,7 @@ mod tests {
     }
 
     #[test]
-    fn pbh_create_setfinfo_then_open_honors_parent_dir_id() {
+    fn pbh_create_async_setfinfo_then_open_honors_parent_dir_id() {
         let (mut disp, mut cpu, mut bus) = setup();
         let temp_dir_id = disp.ensure_vfs_directory("Temporary Items");
 
@@ -15629,7 +15882,7 @@ mod tests {
         bus.write_word(pb + 22, super::super::dispatch::BOOT_VOLUME_REF_NUM as u16);
         bus.write_long(pb + 48, temp_dir_id);
 
-        call_trap_word(&mut disp, 0xA208, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA608, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -16907,7 +17160,7 @@ mod tests {
     }
 
     #[test]
-    fn pbhsetvol_sets_default_directory_from_iowddirid_for_volume_refnum_calls() {
+    fn pbhsetvol_async_sets_default_directory_from_iowddirid_for_volume_refnum_calls() {
         // Inside Macintosh: Files (1992), pp. 2-153 to 2-154:
         // with ioNamePtr = NIL and a volume refnum in ioVRefNum,
         // PBHSetVol uses ioWDDirID as the default directory.
@@ -16921,7 +17174,7 @@ mod tests {
         bus.write_long(pb + 48, dir_id);
         bus.write_long(pb + 18, 0); // ioNamePtr = NIL
 
-        call_trap_word(&mut disp, 0xA215, &mut cpu, &mut bus).unwrap();
+        call_trap_word(&mut disp, 0xA615, &mut cpu, &mut bus).unwrap();
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
@@ -17729,6 +17982,85 @@ mod tests {
     // OSDispatch ($A88F) selector contracts.
     // Temporary Memory: Inside Macintosh Volume VI, 28-38 and 28-45.
     // Process Manager: Processes (1994), pp. 2-21 to 2-28 and p. 2-31.
+    #[test]
+    fn os_dispatch_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::OS_DISPATCH_OPERATION_ROUTES.len(), 19);
+        assert!(super::OS_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0015, "TempMaxMem"),
+            (0x0016, "TempTopMem"),
+            (0x0018, "TempFreeMem"),
+            (0x001D, "TempNewHandle"),
+            (0x001E, "TempHLock"),
+            (0x001F, "TempHUnlock"),
+            (0x0020, "TempDisposeHandle"),
+            (0x0033, "AcceptHighLevelEvent"),
+            (0x0034, "PostHighLevelEvent"),
+            (0x0035, "GetProcessSerialNumberFromPortName"),
+            (0x0036, "LaunchDeskAccessory"),
+            (0x0038, "GetNextProcess"),
+            (0x0039, "GetFrontProcess"),
+            (0x003A, "GetProcessInformation"),
+            (0x003B, "SetFrontProcess"),
+            (0x003C, "WakeUpProcess"),
+            (0x003D, "SameProcess"),
+            (0x0045, "GetSpecificHighLevelEvent"),
+            (0x0046, "GetPortNameFromProcessSerialNumber"),
+        ] {
+            let route = super::os_dispatch_operation_route(0xA88F, selector)
+                .expect("OSDispatch operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA98F, 0x0015),
+            (0xA88E, 0x0046),
+            (0xA88F, 0x0037), // non-intersection GetCurrentProcess compatibility path
+            (0xA88F, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA88F, 0x1500), // byte-swapped TempMaxMem selector
+            (0xA88F, 0x0001), // partial selector byte
+        ] {
+            assert!(super::os_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn os_dispatch_records_stack_word_identity_without_changing_temp_free_mem_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+
+        for trap_word in [0xA88F, 0xA98F] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, TEST_SP);
+            cpu.write_reg(Register::D0, 0x0015); // conflicting D0 fallback selector
+            bus.write_word(TEST_SP, 0x0018); // TempFreeMem
+            bus.write_long(TEST_SP + 2, 0xDEAD_BEEF);
+
+            let result = disp
+                .dispatch_resource(true, 0x08F, &mut cpu, &mut bus)
+                .expect("OSDispatch arm");
+            assert!(result.is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
+            assert_eq!(bus.read_long(TEST_SP + 2), cpu.read_reg(Register::D0));
+
+            let expected = (trap_word == 0xA88F)
+                .then_some("selector-operation:_OSDispatch:0x0018:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+
+        disp.current_trap_word = 0xA88F;
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0018);
+        bus.write_word(TEST_SP, 0xBEEF); // compatibility fallback is not source identity
+        let result = disp
+            .dispatch_resource(true, 0x08F, &mut cpu, &mut bus)
+            .expect("OSDispatch arm");
+        assert!(result.is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+    }
+
     #[test]
     fn osdispatch_tempfreemem_selector_0018_uses_stack_selector_and_returns_free_bytes() {
         let (mut disp, mut cpu, mut bus) = setup();

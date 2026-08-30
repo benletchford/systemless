@@ -8,6 +8,7 @@
 use m68k::core::memory::{BusFault, BusFaultKind};
 use m68k::AddressBus;
 use ppc::{PpcMemory, PpcSectionMem, PpcSectionMemSpan};
+use std::ptr::NonNull;
 
 use super::bus::SharedRamRegion;
 
@@ -15,6 +16,7 @@ use super::bus::SharedRamRegion;
 struct SharedRegionMapping {
     base: u32,
     region: SharedRamRegion,
+    writable: bool,
 }
 
 /// A sparse guest address space that can be executed by either CPU backend.
@@ -26,6 +28,65 @@ struct SharedRegionMapping {
 pub struct GuestAddressSpace {
     regions: PpcSectionMem,
     shared_regions: Vec<SharedRegionMapping>,
+    readonly_allocation_exclusions: Vec<(u32, u32)>,
+}
+
+/// A temporary, non-owning view of one process address space.
+///
+/// The runner uses this only while the PowerPC application is parked and its
+/// emulated 68k context is executing. This keeps both CPU adapters on the same
+/// mapped bytes without changing the detached-snapshot semantics of
+/// [`GuestAddressSpace::clone`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SharedGuestAddressSpace(NonNull<GuestAddressSpace>);
+
+impl SharedGuestAddressSpace {
+    /// Borrow an address space through a stable raw pointer for a serialized
+    /// cross-ISA execution interval.
+    ///
+    /// # Safety
+    ///
+    /// The source address space must remain alive and unmoved, and no other
+    /// access may overlap any call through this view.
+    pub(crate) unsafe fn new(memory: &mut GuestAddressSpace) -> Self {
+        Self(NonNull::from(memory))
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u8(self, address: u32) -> Option<u8> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u8(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u16_be(self, address: u32) -> Option<u16> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u16_be(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn read_u32_be(self, address: u32) -> Option<u32> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::read_u32_be(self.0.as_ptr().as_mut()?, address) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u8(self, address: u32, value: u8) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u8(self.0.as_ptr().as_mut()?, address, value) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u16_be(self, address: u32, value: u16) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u16_be(self.0.as_ptr().as_mut()?, address, value) }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn write_u32_be(self, address: u32, value: u32) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { PpcMemory::write_u32_be(self.0.as_ptr().as_mut()?, address, value) }
+    }
 }
 
 impl Clone for GuestAddressSpace {
@@ -38,8 +99,10 @@ impl Clone for GuestAddressSpace {
                 .map(|mapping| SharedRegionMapping {
                     base: mapping.base,
                     region: mapping.region.detached_clone(),
+                    writable: mapping.writable,
                 })
                 .collect(),
+            readonly_allocation_exclusions: self.readonly_allocation_exclusions.clone(),
         }
     }
 }
@@ -48,6 +111,17 @@ impl GuestAddressSpace {
     /// Construct an empty address space.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a temporary view for another serialized CPU adapter.
+    ///
+    /// # Safety
+    ///
+    /// The returned view must not outlive or move this address space, and all
+    /// accesses through it must be exclusive of ordinary address-space use.
+    pub(crate) unsafe fn shared_view(&mut self) -> SharedGuestAddressSpace {
+        // SAFETY: the caller inherits the contract above.
+        unsafe { SharedGuestAddressSpace::new(self) }
     }
 
     /// Map a writable region. Newer mappings take precedence over overlaps.
@@ -71,8 +145,175 @@ impl GuestAddressSpace {
     /// serializes all access. No source-bus slice or fast-memory window may be
     /// used while this address space mutates the shared allocation.
     pub(crate) unsafe fn add_shared_region(&mut self, base: u32, region: SharedRamRegion) {
-        self.shared_regions
-            .push(SharedRegionMapping { base, region });
+        self.shared_regions.push(SharedRegionMapping {
+            base,
+            region,
+            writable: true,
+        });
+    }
+
+    /// Overlay runner-owned system code without allowing ordinary guest
+    /// writes. Trap Manager uses the privileged writer below when it must
+    /// update the protected exit of a permanent come-from head.
+    ///
+    /// # Safety
+    ///
+    /// The ownership and serialization requirements are the same as for
+    /// [`Self::add_shared_region`].
+    pub(crate) unsafe fn add_shared_readonly_region(&mut self, base: u32, region: SharedRamRegion) {
+        if let Ok(len) = u32::try_from(region.len()) {
+            self.readonly_allocation_exclusions
+                .retain(|&(excluded_base, excluded_len)| {
+                    (excluded_base, excluded_len) != (base, len)
+                });
+        }
+        self.shared_regions.push(SharedRegionMapping {
+            base,
+            region,
+            writable: false,
+        });
+    }
+
+    /// Reserve a range from native allocation before its runner-owned shared
+    /// mapping is attached. The exclusion survives detached launch-state
+    /// clones and is replaced by the real mapping at runner initialization.
+    pub(crate) fn add_readonly_allocation_exclusion(&mut self, base: u32, len: u32) -> Option<()> {
+        if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
+            return None;
+        }
+        if !self
+            .readonly_allocation_exclusions
+            .contains(&(base, len))
+        {
+            self.readonly_allocation_exclusions.push((base, len));
+        }
+        Some(())
+    }
+
+    pub(crate) fn has_readonly_allocation_exclusion(&self, base: u32, len: u32) -> bool {
+        self.readonly_allocation_exclusions.contains(&(base, len))
+    }
+
+    /// Whether an ordinary sparse mapping already occupies any byte in the
+    /// supplied non-wrapping range. Shared overlays are intentionally ignored.
+    pub(crate) fn ordinary_mapping_overlaps(&mut self, base: u32, len: u32) -> bool {
+        if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
+            return false;
+        }
+        (0..u64::from(len)).any(|offset| {
+            let address = u32::try_from(u64::from(base) + offset)
+                .expect("validated guest address remains in range");
+            self.regions.read_u8(address).is_some()
+        })
+    }
+
+    /// Write a big-endian long through a shared mapping regardless of its
+    /// guest write protection. This is intentionally restricted to runtime
+    /// services that own the mapped system bytes.
+    pub(crate) fn write_shared_system_u32_be(&mut self, address: u32, value: u32) -> Option<()> {
+        for (offset, byte) in value.to_be_bytes().into_iter().enumerate() {
+            let (mapping, relative) =
+                self.locate_shared_mapping(address.checked_add(offset as u32)?)?;
+            // SAFETY: shared mappings can only be installed by the serialized
+            // process runner, and this method does not retain a source view.
+            unsafe { mapping.region.write(relative, byte)? };
+        }
+        Some(())
+    }
+
+    pub(crate) fn is_shared_readonly_address(&self, address: u32) -> bool {
+        self.locate_shared_mapping(address)
+            .is_some_and(|(mapping, _)| !mapping.writable)
+    }
+
+    /// Return the highest end address among staged allocation exclusions or
+    /// live read-only shared mappings that overlap the supplied range.
+    pub(crate) fn readonly_allocation_overlap_end(&self, address: u32, len: u32) -> Option<u32> {
+        if len == 0 {
+            return None;
+        }
+        let start = u64::from(address);
+        let end = start.checked_add(u64::from(len))?;
+        let exclusion_ends = self
+            .readonly_allocation_exclusions
+            .iter()
+            .filter_map(|&(base, len)| {
+                let mapping_start = u64::from(base);
+                let mapping_end = mapping_start.checked_add(u64::from(len))?;
+                (start < mapping_end && mapping_start < end).then_some(mapping_end)
+            });
+        let shared_ends = self
+            .shared_regions
+            .iter()
+            .filter(|mapping| !mapping.writable)
+            .filter_map(|mapping| {
+                let mapping_start = u64::from(mapping.base);
+                let mapping_end = mapping_start.checked_add(mapping.region.len() as u64)?;
+                (start < mapping_end && mapping_start < end).then_some(mapping_end)
+            });
+        exclusion_ends
+            .chain(shared_ends)
+            .max()
+            .map(|mapping_end| u32::try_from(mapping_end).unwrap_or(u32::MAX))
+    }
+
+    /// Return the total and largest contiguous byte counts remaining in a
+    /// half-open range after clipping and unioning staged exclusions and live
+    /// read-only shared mappings.
+    pub(crate) fn readonly_allocation_available_bytes(
+        &self,
+        start: u32,
+        end: u32,
+    ) -> (u32, u32) {
+        if start >= end {
+            return (0, 0);
+        }
+        let range_start = u64::from(start);
+        let range_end = u64::from(end);
+        let excluded = self
+            .readonly_allocation_exclusions
+            .iter()
+            .filter_map(|&(base, len)| {
+                let mapping_start = u64::from(base).max(range_start);
+                let mapping_end = u64::from(base)
+                    .checked_add(u64::from(len))?
+                    .min(range_end);
+                (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
+            });
+        let shared = self
+            .shared_regions
+            .iter()
+            .filter(|mapping| !mapping.writable)
+            .filter_map(|mapping| {
+                let mapping_start = u64::from(mapping.base).max(range_start);
+                let mapping_end = u64::from(mapping.base)
+                    .checked_add(mapping.region.len() as u64)?
+                    .min(range_end);
+                (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
+            });
+        let mut reserved = excluded
+            .chain(shared)
+            .collect::<Vec<_>>();
+        reserved.sort_unstable_by_key(|&(mapping_start, _)| mapping_start);
+
+        let mut available_start = range_start;
+        let mut total = 0u64;
+        let mut largest = 0u64;
+        for (mapping_start, mapping_end) in reserved {
+            if mapping_start > available_start {
+                let available = mapping_start - available_start;
+                total += available;
+                largest = largest.max(available);
+            }
+            available_start = available_start.max(mapping_end);
+        }
+        if available_start < range_end {
+            let available = range_end - available_start;
+            total += available;
+            largest = largest.max(available);
+        }
+
+        (total as u32, largest as u32)
     }
 
     /// Return the number of mapped regions.
@@ -95,6 +336,12 @@ impl GuestAddressSpace {
     pub fn write_bytes(&mut self, addr: u32, src: &[u8]) -> Option<()> {
         if !self.shared_overlaps(addr, src.len()) {
             return self.regions.write_bytes(addr, src);
+        }
+        if (0..src.len()).any(|offset| {
+            self.locate_shared_mapping(addr.wrapping_add(offset as u32))
+                .is_some_and(|(mapping, _)| !mapping.writable)
+        }) {
+            return None;
         }
         if (0..src.len()).all(|offset| {
             self.locate_shared(addr.wrapping_add(offset as u32))
@@ -172,11 +419,16 @@ impl GuestAddressSpace {
     }
 
     #[inline]
-    fn locate_shared(&self, addr: u32) -> Option<(&SharedRamRegion, usize)> {
+    fn locate_shared_mapping(&self, addr: u32) -> Option<(&SharedRegionMapping, usize)> {
         self.shared_regions.iter().rev().find_map(|mapping| {
             let offset = usize::try_from(addr.checked_sub(mapping.base)?).ok()?;
-            (offset < mapping.region.len()).then_some((&mapping.region, offset))
+            (offset < mapping.region.len()).then_some((mapping, offset))
         })
+    }
+
+    fn locate_shared(&self, addr: u32) -> Option<(&SharedRamRegion, usize)> {
+        self.locate_shared_mapping(addr)
+            .map(|(mapping, offset)| (&mapping.region, offset))
     }
 
     fn shared_overlaps(&self, addr: u32, len: usize) -> bool {
@@ -264,10 +516,13 @@ impl PpcMemory for GuestAddressSpace {
 
     #[inline]
     fn write_u8(&mut self, addr: u32, value: u8) -> Option<()> {
-        if let Some((region, offset)) = self.locate_shared(addr) {
+        if let Some((mapping, offset)) = self.locate_shared_mapping(addr) {
+            if !mapping.writable {
+                return None;
+            }
             // SAFETY: `add_shared_region` requires the enclosing runtime to
             // serialize both adapters for the mapping's complete lifetime.
-            unsafe { region.write(offset, value) }
+            unsafe { mapping.region.write(offset, value) }
         } else {
             self.regions.write_u8(addr, value)
         }
@@ -536,5 +791,53 @@ mod tests {
             PpcMemory::read_u32_be(&mut snapshot, SHARED),
             Some(0xddee_ff00)
         );
+    }
+
+    #[test]
+    fn parked_process_mappings_temporarily_extend_the_68k_bus() {
+        const FLAT: u32 = 0x2000;
+        const SPARSE: u32 = 0x0100_0000;
+        const READ_ONLY: u32 = SPARSE + 0x100;
+
+        let mut bus = MacMemoryBus::new(64 * 1024);
+        MemoryBus::write_long(&mut bus, FLAT, 0x1122_3344);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(SPARSE, vec![0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0, 0, 0, 0, 0]);
+        memory.add_readonly_region(READ_ONLY, 0x99aa_bbccu32.to_be_bytes().to_vec());
+
+        // SAFETY: the test keeps `memory` in place, performs no direct access
+        // while attached, and detaches before using it again.
+        let shared = unsafe { memory.shared_view() };
+        unsafe {
+            bus.attach_guest_address_space(shared);
+        }
+        assert_eq!(MemoryBus::read_long(&bus, FLAT), 0x1122_3344);
+        assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0x5566_7788);
+        MemoryBus::write_long(&mut bus, SPARSE, 0xdead_beef);
+        MemoryBus::write_bytes(&mut bus, SPARSE + 4, &[1, 2, 3, 4]);
+        bus.block_move(FLAT, SPARSE + 8, 4);
+        bus.block_move(SPARSE + 4, FLAT + 4, 4);
+        assert_eq!(
+            MemoryBus::read_bytes(&bus, SPARSE + 4, 8),
+            [1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44]
+        );
+        assert_eq!(MemoryBus::read_long(&bus, FLAT + 4), 0x0102_0304);
+        MemoryBus::write_long(&mut bus, READ_ONLY, 0);
+        bus.detach_guest_address_space();
+
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, SPARSE),
+            Some(0xdead_beef)
+        );
+        assert_eq!(
+            PpcMemory::read_u32_be(&mut memory, READ_ONLY),
+            Some(0x99aa_bbcc)
+        );
+        let mut sparse_tail = [0; 8];
+        memory
+            .read_bytes_into(SPARSE + 4, &mut sparse_tail)
+            .unwrap();
+        assert_eq!(sparse_tail, [1, 2, 3, 4, 0x11, 0x22, 0x33, 0x44]);
+        assert_eq!(MemoryBus::read_long(&bus, SPARSE), 0);
     }
 }

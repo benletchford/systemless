@@ -6,6 +6,7 @@
 
 use crate::cpu::{M68kCpu, Register};
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
+use crate::menu_manager::TrackedMenuPaneView;
 use crate::trap::dispatch::{DialogItem, QueuedEvent};
 use crate::trap::TrapDispatcher;
 
@@ -37,7 +38,7 @@ pub fn scripted_menuselect_enabled_item_input_trace() -> Result<String, String> 
     scripted_insert_menu(&mut dispatcher, &mut cpu, &mut bus, menu_handle)?;
     scripted_call_menu_trap(&mut dispatcher, &mut cpu, &mut bus, 0x137, "DrawMenuBar")?;
 
-    let (_, title_left, title_right) = scripted_menu_title_regions(&dispatcher)
+    let (_, title_left, title_right) = scripted_menu_title_regions(&dispatcher, &bus)
         .into_iter()
         .next()
         .ok_or_else(|| "scripted MenuSelect replay could not find menu title region".to_string())?;
@@ -59,7 +60,7 @@ pub fn scripted_menuselect_enabled_item_input_trace() -> Result<String, String> 
     let (dropdown_top, dropdown_left, _, _) = dispatcher
         .menu_tracking
         .as_ref()
-        .map(|tracking| tracking.dropdown_rect)
+        .map(|tracking| tracking.dropdown_rect())
         .ok_or_else(|| "scripted MenuSelect replay did not enter tracking".to_string())?;
     dispatcher.set_mouse_position(dropdown_top + 17, dropdown_left + 8);
     scripted_call_menu_trap(
@@ -868,6 +869,10 @@ fn scripted_menu_setup() -> (TrapDispatcher, M68kCpu, MacMemoryBus) {
     // dispatcher-only mouse transitions from inheriting zero-filled RAM as a
     // held button. Inside Macintosh Volume II, II-371.
     bus.write_byte(addr::MB_STATE, 0x80);
+    bus.write_word(
+        addr::MENU_FLASH,
+        crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
+    );
     dispatcher.tick_count = 100;
 
     let screen_base = 0x300000u32;
@@ -1385,20 +1390,15 @@ fn scripted_insert_menu(
     scripted_call_menu_trap(dispatcher, cpu, bus, 0x135, "InsertMenu")
 }
 
-fn scripted_menu_title_regions(dispatcher: &TrapDispatcher) -> Vec<(usize, i16, i16)> {
-    let mut regions = Vec::new();
-    let mut x: i16 = 18;
-    for (menu_idx, menu) in dispatcher.menus.iter().enumerate() {
-        if !menu.in_menu_bar {
-            continue;
-        }
-        let width = TrapDispatcher::fb_measure_string(&menu.title, 0, 12);
-        let left = x - 7;
-        let right = x + width + 7;
-        regions.push((menu_idx, left, right));
-        x += width + 14;
-    }
-    regions
+fn scripted_menu_title_regions(
+    dispatcher: &TrapDispatcher,
+    bus: &MacMemoryBus,
+) -> Vec<(usize, i16, i16)> {
+    dispatcher
+        .current_menu_title_regions_with_indices(bus)
+        .into_iter()
+        .map(|(index, region)| (index, region.left, region.right))
+        .collect()
 }
 
 #[cfg(test)]

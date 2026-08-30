@@ -1,0 +1,28 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0001,
+        "selector-operation:_SCSIAtomic:0x0001:d0-moveq-immediate:8",
+        "SCSIAction",
+    ),
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_SCSIAtomic:0x0002:d0-moveq-immediate:8",
+        "SCSIRegisterBus",
+    ),
+    SelectorOperationRoute::new(
+        0x0003,
+        "selector-operation:_SCSIAtomic:0x0003:d0-moveq-immediate:8",
+        "SCSIDeregisterBus",
+    ),
+    SelectorOperationRoute::new(
+        0x0004,
+        "selector-operation:_SCSIAtomic:0x0004:d0-moveq-immediate:8",
+        "SCSIReregisterBus",
+    ),
+    SelectorOperationRoute::new(
+        0x0005,
+        "selector-operation:_SCSIAtomic:0x0005:d0-moveq-immediate:8",
+        "SCSIKillXPT",
+    ),
+]

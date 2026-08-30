@@ -9,8 +9,8 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
 use crate::trap::dispatch::{
-    CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState, RecentColorTableFetch,
-    ScreenCopyBitsRect, INVERSE_TABLE_CACHE_LIMIT,
+    selector_operation_route, CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState,
+    RecentColorTableFetch, ScreenCopyBitsRect, SelectorOperationRoute, INVERSE_TABLE_CACHE_LIMIT,
 };
 use crate::Result;
 use std::sync::OnceLock;
@@ -118,6 +118,18 @@ static TRACE_DIALOG_PORT_DUMP: OnceLock<bool> = OnceLock::new();
 static DUMP_COPYBITS_SRC_PATH: OnceLock<Option<String>> = OnceLock::new();
 static TRACE_PALETTE: OnceLock<bool> = OnceLock::new();
 static PALETTE_STRICT: OnceLock<bool> = OnceLock::new();
+const QD_EXTENSIONS_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_qd_extensions_operations.rs");
+
+fn qd_extensions_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xAB1D {
+        return None;
+    }
+    selector_operation_route(QD_EXTENSIONS_OPERATION_ROUTES, selector)
+}
 static PALETTE_AS_GAME_WROTE: OnceLock<bool> = OnceLock::new();
 static PICT_SEED_CLUT_DISABLED: OnceLock<bool> = OnceLock::new();
 static TRACE_QD_COLORS: OnceLock<bool> = OnceLock::new();
@@ -381,6 +393,48 @@ fn encode_text_face_style(face: i16) -> u16 {
 }
 
 impl super::TrapDispatcher {
+    fn dispose_color_compound_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) {
+        if bus.get_alloc_size(handle) != Some(4) {
+            return;
+        }
+        let record = bus.read_long(handle);
+        if bus.get_alloc_size(record).is_none() {
+            return;
+        }
+
+        // PixPat and CCrsr deliberately share their leading compound-object
+        // layout: map handle at +2, data at +6, expanded data at +10, and an
+        // expansion handle at +16. Inside Macintosh Volume V,
+        // V-55--V-56 and V-63; Imaging With QuickDraw (1994), pp. 4-58 and
+        // 8-4--8-5. Their disposal routines therefore release the same owned
+        // handle graph before releasing the record and master pointer.
+        for offset in [6u32, 10, 16] {
+            Self::free_memory_handle(bus, bus.read_long(record + offset));
+        }
+        Self::free_pixmap_handle(bus, bus.read_long(record + 2));
+        bus.free(record);
+        bus.write_long(handle, 0);
+        bus.free(handle);
+        self.makergbpat_colors.remove(&handle);
+    }
+
+    fn get_or_create_std_pix_gateway(&mut self, bus: &mut MacMemoryBus) -> u32 {
+        let unimplemented = self.get_or_create_tool_trap_trampoline(bus, 0xAA6E);
+        if self.std_pix_gateway == 0 {
+            self.std_pix_gateway = bus.alloc_synthetic(6);
+            bus.protect_readonly_code(self.std_pix_gateway, 6);
+        }
+        // StdPix is a distinct callable procedure with no A-line identity.
+        // QuickTime (1993), pp. 3-137--3-139 defines its eight-argument ABI.
+        // Preserve a unique callable address and fail through the documented
+        // `_Unimplemented` routine until the operation is implemented, rather
+        // than exposing a host marker or guessing partial drawing semantics.
+        bus.write_readonly_code_word(self.std_pix_gateway, 0x4EF9);
+        bus.write_readonly_code_word(self.std_pix_gateway + 2, (unimplemented >> 16) as u16);
+        bus.write_readonly_code_word(self.std_pix_gateway + 4, unimplemented as u16);
+        self.std_pix_gateway
+    }
+
     fn loaded_font_id_for_name(&self, name: &str) -> Option<i16> {
         let needle = name.trim();
         if needle.is_empty() {
@@ -1194,7 +1248,7 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ClosePort / CloseCPort ($A87D)
+            // ClosePort / CloseCPort ($A87D); CloseCPort ($AA02)
             //
             // Per IM:I I-163: "ClosePort releases the memory occupied
             // by the given grafPort's visRgn and clipRgn. When you're
@@ -1221,9 +1275,12 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-72 (CloseCPort)
             // Inside Macintosh Volume III line 9399: "ClosePort | A87D"
             // Inside Macintosh Volume V V-291 line 20688: "CloseCPort | A87D"
-            // (same trap word, polymorphic dispatch — Apple reused $A87D
-            // when Color QuickDraw was added; the dispatcher inspects
-            // the port's portRect rowBytes high bit to detect CGrafPort)
+            // Universal Interfaces 3.4 Quickdraw.h assigns CloseCPort to
+            // $AA02. Both forms use this polymorphic implementation; the
+            // dispatcher inspects the portVersion high bits to distinguish a
+            // CGrafPort from a GrafPort. The selected 68040 profile gives the
+            // two slots one default address, while the 604 profile retains
+            // distinct callable entries.
             // Imaging With QuickDraw 1994, 4-66
             //
             // Stack: SP+0 port GrafPtr/CGrafPtr (4 bytes). Pop 4.
@@ -1239,7 +1296,7 @@ impl super::TrapDispatcher {
             //   quickdraw::tests::closeport_releases_visrgn_and_cliprgn_and_nils_port_slots
             //   quickdraw::tests::closeport_consumes_port_argument_and_pops_four_bytes
             //   quickdraw::tests::closecport_releases_documented_cgrafport_subhandles_and_preserves_portpixmap_colortable
-            (true, 0x07D) => {
+            (true, 0x07D) | (true, 0x202) => {
                 let sp = cpu.read_reg(Register::A7);
                 let port_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
@@ -2109,20 +2166,9 @@ impl super::TrapDispatcher {
             // Imaging With QuickDraw 1994, 3-130
             //
             // Fills the 13-field QDProcs record with pointers to the standard
-            // low-level QuickDraw bottleneck routines. Real ROM writes actual
-            // ROM code addresses; Systemless writes synthesized $00F0AXXX fake
-            // addresses matching what `GetTrapAddress` returns for each
-            // `Std*` trap (memory.rs:340..372 — the canonical reverse-encoding
-            // for OS-trap fake-ptrs). Apps that only compare the field against
-            // their own installed routine (the common idiom for "is this still
-            // the default bottleneck?") see a stable non-NIL marker; apps that
-            // actually JSR to the field would land on the fake address, which
-            // faults clean if reached. The previous trap word for commentProc
-            // was incorrectly $A89F (`_Unimplemented` per IM:VI 31831 + the
-            // existing $A89F arm at quickdraw.rs:10287); the canonical trap is
-            // $A8F1 `StdComment` per IM:I I-198 + the existing $A8F1 arm at
-            // quickdraw.rs:7659.
-            // SetStdProcs ($A8EA): Writes 13 synthesized $00F0AXXX ProcPtr markers per QDProcs field order; markers match GetTrapAddress($A0XX) reverse encoding so apps comparing slot vs GetTrapAddress(_StdXxx) detect the default per IM:I I-197 + Imaging With QD 3-130
+            // low-level QuickDraw bottleneck routines. Each field receives the
+            // stable protected callable gateway for its standard Toolbox trap,
+            // so pointer comparison and direct JSR use the same identity.
             (true, 0x0EA) => {
                 let sp = cpu.read_reg(Register::A7);
                 let procs_ptr = bus.read_long(sp);
@@ -2133,7 +2179,7 @@ impl super::TrapDispatcher {
                 //   textProc, lineProc, rectProc, rRectProc, ovalProc,
                 //   arcProc, polyProc, rgnProc, bitsProc, commentProc,
                 //   txMeasProc, getPicProc, putPicProc
-                const STD_PROC_TRAPS: [u32; 13] = [
+                const STD_PROC_TRAPS: [u16; 13] = [
                     0xA882, // StdText
                     0xA890, // StdLine
                     0xA8A0, // StdRect
@@ -2150,7 +2196,8 @@ impl super::TrapDispatcher {
                 ];
                 if procs_ptr != 0 {
                     for (i, trap) in STD_PROC_TRAPS.iter().enumerate() {
-                        bus.write_long(procs_ptr + (i as u32) * 4, 0x00F00000 | trap);
+                        let gateway = self.get_or_create_tool_trap_trampoline(bus, *trap);
+                        bus.write_long(procs_ptr + (i as u32) * 4, gateway);
                     }
                 }
                 Ok(())
@@ -6903,62 +6950,18 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== QDExtensions / GWorld ==========
-
-            // QDExtensions dispatcher ($AB1D)
-            // Per IM:VI Table C-1 + Table C-3 line 58031+ the
-            // canonical trap-word name is _QDExtensions (a
-            // selector-based dispatcher), NOT NewGWorld. Selector
-            // table per IM:VI Table C-3 lines 58031..58058:
-            //   $0000 NewGWorld          $0001 LockPixels
-            //   $0002 UnlockPixels       $0003 UpdateGWorld
-            //   $0004 DisposeGWorld      $0005 GetGWorld
-            //   $0006 SetGWorld          $0007 CTabChanged
-            //   $0008 PixPatChanged      $0009 PortChanged
-            //   $000A GDeviceChanged     $000B AllowPurgePixels
-            //   $000C NoPurgePixels      $000D GetPixelsState
-            //   $000E SetPixelsState     $000F GetPixBaseAddr
-            //   $0010 NewScreenBuffer    $0011 DisposeScreenBuffer
-            //   $0012 GetGWorldDevice    $0013 QDDone
-            //   $0014 OffscreenVersion   $0015 NewTempScreenBuffer
-            //
-            // Systemless handles the documented selector set here:
-            // 0x0000 NewGWorld / 0x0001 LockPixels / 0x0002
-            // UnlockPixels / 0x0003 UpdateGWorld / 0x0004
-            // DisposeGWorld / 0x0005 GetGWorld / 0x0006 SetGWorld
-            // / 0x0007 CTabChanged / 0x0008 PixPatChanged /
-            // 0x0009 PortChanged / 0x000A GDeviceChanged / 0x000D
-            // GetPixelsState / 0x000E SetPixelsState / 0x000F
-            // GetPixBaseAddr / 0x0012 GetGWorldDevice / 0x0016
-            // PixMap32Bit / 0x0017 GetGWorldPixMap. Missing: 0x000B
-            // AllowPurgePixels (no-op-ok since no purgeable axis),
-            // 0x000C NoPurgePixels (same), 0x0010 NewScreenBuffer
-            // / 0x0011 DisposeScreenBuffer (no off-screen-buffer
-            // axis), 0x0013 QDDone / 0x0014 OffscreenVersion /
-            // 0x0015 NewTempScreenBuffer (System 7.5+ extras).
-            //
-            // Apps using legacy alias trap-words ($AB04 LockPixels
-            // direct, $AB05 UnlockPixels direct, $AB1E GetGWorld
-            // direct, $AB1F DisposeGWorld direct, $AB1C SetGWorld
-            // direct) bypass this dispatcher and land on
-            // dedicated arms — see the legacy-alias trap-doc lines
-            // at quickdraw.rs:5764 ($AB04) / 5793 ($AB05) /
-            // 5697 ($AB1E) / 5681 ($AB1F) / 5722 ($AB1C). Both
-            // dispatch paths reach the same Systemless HLE state.
-            //
-            // ## Trap-name mislabel fix
-            //
-            // Trap-doc Notes column previously said "NewGWorld |
-            // Complete" — both wrong: the trap-word's canonical
-            // name is QDExtensions per IM:VI Table C-1; status
-            // is Partial (5 missing selectors documented above).
-            // Fixed via the trap-name verification audit pattern.
-            // Imaging With QuickDraw 1994, Chapter 6
-            // Inside Macintosh Volume VI, 17-13..17-30
-            // QDExtensions ($AB1D): Selector-based dispatcher per IM:VI Table C-3 lines 58031..58058. Handles the documented selectors here: NewGWorld / LockPixels / UnlockPixels / UpdateGWorld / DisposeGWorld / GetGWorld / SetGWorld / CTabChanged / PixPatChanged / PortChanged / GDeviceChanged / AllowPurgePixels / NoPurgePixels / GetPixelsState / SetPixelsState / GetPixBaseAddr / PixMap32Bit / GetGWorldDevice / GetGWorldPixMap / QDDone / OffscreenVersion / NewScreenBuffer / DisposeScreenBuffer / NewTempScreenBuffer. Legacy alias trap-words $AB04 LockPixels / $AB05 UnlockPixels / $AB1C SetGWorld / $AB1E GetGWorld / $AB1F DisposeGWorld bypass this dispatcher.
+            // QDExtensions ($AB1D)
+            // Dispatches offscreen QuickDraw routines selected by the complete D0 value.
+            // FUNCTION NewGWorld(VAR offscreenGWorld: GWorldPtr; pixelDepth: INTEGER;
+            //     boundsRect: Rect; cTable: CTabHandle; aGDevice: GDHandle;
+            //     flags: GWorldFlags): QDErr;
+            // Imaging With QuickDraw (1994), pp. 3-125 to 3-126, 4-102 to 4-103,
+            //     and 6-22 to 6-46.
             (true, 0x31D) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = cpu.read_reg(Register::D0);
+                let operation = qd_extensions_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let routine = selector & 0xFFFF;
                 let param_bytes = (selector >> 16) & 0xFFFF;
                 match routine {
@@ -10918,16 +10921,9 @@ impl super::TrapDispatcher {
             // matches that shape: 15 non-NIL routine pointers followed by
             // 5 NIL reserved slots.
             //
-            // Systemless mirrors SetStdProcs' fake-ptr strategy for the 15
-            // concrete routines: synthesize stable $00F0AXXX markers that
-            // match GetTrapAddress(_StdXxx) comparisons where a trap exists,
-            // plus a stable non-NIL synthetic marker for StdPix (which is
-            // exposed only through SetStdCProcs rather than an A-line trap),
-            // then zero the 5 remaining reserved slots. This keeps caller-
-            // visible default-proc identity for code that snapshots CQDProcs,
-            // patches one slot, then later compares against the saved
-            // defaults.
-            // SetStdCProcs ($AA4E): Writes synthesized ProcPtr markers for textProc..putPicProc + opcodeProc (StdOpcodeProc $ABF8) + newProc1 (StdPix), then zeros reserved newProc2..newProc6 per IM:V V-77/V-91 + Imaging With QuickDraw 7-82..7-83 + QuickTime 1993 3-137..3-138
+            // Trap-backed fields receive their protected callable gateways.
+            // StdPix has no A-line identity, so its distinct callable gateway
+            // remains explicitly nonterminal and reaches `_Unimplemented`.
             (true, 0x24E) => {
                 let sp = cpu.read_reg(Register::A7);
                 let procs_ptr = bus.read_long(sp);
@@ -10936,11 +10932,9 @@ impl super::TrapDispatcher {
                     // CQDProcs field order per IM:V V-91 / IWQD 4-60:
                     //   13 inherited QDProcs slots + opcodeProc + newProc1
                     //   (StdPix) + 5 remaining reserved newProc slots.
-                    //   Write the 15 concrete defaults as
-                    //   synthesized trap markers, then leave the reserved
-                    //   extension slots NIL.
-                    const STD_PIX_FAKE_PROC: u32 = 0x00F05058;
-                    const STD_COLOR_PROC_TRAPS: [u32; 14] = [
+                    //   Write the 15 concrete defaults as callable system
+                    //   entries, then leave the reserved extension slots NIL.
+                    const STD_COLOR_PROC_TRAPS: [u16; 14] = [
                         0xA882, // textProc (StdText)
                         0xA890, // lineProc (StdLine)
                         0xA8A0, // rectProc (StdRect)
@@ -10957,9 +10951,11 @@ impl super::TrapDispatcher {
                         0xABF8, // opcodeProc (StdOpcodeProc)
                     ];
                     for (i, trap) in STD_COLOR_PROC_TRAPS.iter().enumerate() {
-                        bus.write_long(procs_ptr + (i as u32) * 4, 0x00F00000 | trap);
+                        let gateway = self.get_or_create_tool_trap_trampoline(bus, *trap);
+                        bus.write_long(procs_ptr + (i as u32) * 4, gateway);
                     }
-                    bus.write_long(procs_ptr + 14 * 4, STD_PIX_FAKE_PROC); // newProc1 (StdPix)
+                    let std_pix = self.get_or_create_std_pix_gateway(bus);
+                    bus.write_long(procs_ptr + 14 * 4, std_pix); // newProc1 (StdPix)
                     for i in 15..20u32 {
                         bus.write_long(procs_ptr + i * 4, 0);
                     }
@@ -11704,56 +11700,22 @@ impl super::TrapDispatcher {
             // The arm was SWAPPED with CopyPixPat ($AA09); fixed by
             // swapping the trap-word matches. Real-Mac apps emitting
             // _DisposPixPat now correctly land here.
-            (true, 0x208) => {
+            // DisposeCCursor ($AA26)
+            // Releases all records allocated by GetCCursor.
+            // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
+            // Inside Macintosh Volume V, V-75; Imaging With QuickDraw
+            // (1994), pp. 8-26--8-27
+            //
+            // Both procedures consume one four-byte compound-object handle.
+            // Their common record prefix is released by one implementation;
+            // the selected 68040 profile also exposes one default procedure
+            // address for the two slots, while the 604 profile keeps distinct
+            // gateway identities.
+            (true, 0x208) | (true, 0x226) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ppat_handle = bus.read_long(sp);
+                let handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                self.makergbpat_colors.remove(&ppat_handle);
-                if ppat_handle != 0 {
-                    let ppat_ptr = bus.read_long(ppat_handle);
-                    if ppat_ptr != 0 {
-                        // Free patData handle (+6)
-                        let pat_data_handle = bus.read_long(ppat_ptr + 6);
-                        if pat_data_handle != 0 {
-                            let pat_data_ptr = bus.read_long(pat_data_handle);
-                            if pat_data_ptr != 0 {
-                                bus.free(pat_data_ptr);
-                            }
-                            bus.free(pat_data_handle);
-                        }
-                        // Free patXData handle (+10)
-                        let pat_xdata_handle = bus.read_long(ppat_ptr + 10);
-                        if pat_xdata_handle != 0 {
-                            let pat_xdata_ptr = bus.read_long(pat_xdata_handle);
-                            if pat_xdata_ptr != 0 {
-                                bus.free(pat_xdata_ptr);
-                            }
-                            bus.free(pat_xdata_handle);
-                        }
-                        // Free patXMap handle (+16)
-                        Self::free_memory_handle(bus, bus.read_long(ppat_ptr + 16));
-                        // Free patMap (PixMapHandle at +2) — also frees its ctab
-                        let pat_map_handle = bus.read_long(ppat_ptr + 2);
-                        if pat_map_handle != 0 {
-                            let pat_map_ptr = bus.read_long(pat_map_handle);
-                            if pat_map_ptr != 0 {
-                                let ctab_handle = bus.read_long(pat_map_ptr + 42);
-                                if ctab_handle != 0 {
-                                    let ctab_ptr = bus.read_long(ctab_handle);
-                                    if ctab_ptr != 0 {
-                                        bus.free(ctab_ptr);
-                                    }
-                                    bus.free(ctab_handle);
-                                }
-                                bus.free(pat_map_ptr);
-                            }
-                            bus.free(pat_map_handle);
-                        }
-                        // Free the PixPat record
-                        bus.free(ppat_ptr);
-                    }
-                    bus.free(ppat_handle);
-                }
+                self.dispose_color_compound_handle(bus, handle);
                 Ok(())
             }
 
@@ -13942,23 +13904,6 @@ impl super::TrapDispatcher {
                         self.cursor_visible = self.cursor_level == 0;
                     }
                 }
-                Ok(())
-            }
-
-            // DisposeCCursor ($AA26)
-            // Releases a color cursor allocated by GetCCursor. No-op stub.
-            // PROCEDURE DisposeCCursor(cCrsr: CCrsrHandle);
-            // Inside Macintosh Volume V, V-80
-            // Stack: SP+0: cCrsr(4). Pop 4.
-            // DisposeCCursor ($AA26): Pops 4 bytes (cCrsr); Systemless keeps
-            // guest cursor allocations alive for the process lifetime, so
-            // disposal is a no-op per the current HLE memory model. Return
-            // noErr in D0 so callers can treat the procedure as a clean
-            // do-nothing path.
-            (true, 0x226) => {
-                let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 4);
-                cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
 
@@ -20605,7 +20550,7 @@ impl super::TrapDispatcher {
     /// `grafProcs` is the last field of both GrafPort and CGrafPort, at offset
     /// 104 (IM:I I-155; IM:V V-77), and `bitsProc` is the ninth of the thirteen
     /// QDProcs slots, at offset 32 within the record (IM:I I-197). SetStdProcs
-    /// and SetStdCProcs fill that slot with the synthesized `$00F0A8EB` marker,
+    /// and SetStdCProcs fill that slot with the protected StdBits gateway,
     /// which means "the standard proc" and must not be called back into.
     ///
     /// Returns `None` while we are nested inside a previous tail call, so a
@@ -20621,7 +20566,7 @@ impl super::TrapDispatcher {
             return None;
         }
         let bits_proc = bus.read_long(graf_procs + 32);
-        if bits_proc == 0 || (bits_proc & 0xFFFF_0000) == 0x00F0_0000 {
+        if bits_proc == 0 || self.tool_trap_trampolines.get(&0xA8EB).copied() == Some(bits_proc) {
             return None;
         }
         if let Some((active_proc, active_sp)) = self.bits_proc_reentry {
@@ -24533,6 +24478,75 @@ mod tests {
     }
 
     #[test]
+    fn qd_extensions_generated_routes_preserve_exact_long_values() {
+        assert_eq!(super::QD_EXTENSIONS_OPERATION_ROUTES.len(), 23);
+        assert!(super::QD_EXTENSIONS_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0004_0001, "LockPixels"),
+            (0x0004_0002, "UnlockPixels"),
+            (0x0004_0004, "DisposeGWorld"),
+            (0x0004_0007, "CTabChanged"),
+            (0x0004_0008, "PixPatChanged"),
+            (0x0004_0009, "PortChanged"),
+            (0x0004_000A, "GDeviceChanged"),
+            (0x0004_000B, "AllowPurgePixels"),
+            (0x0004_000C, "NoPurgePixels"),
+            (0x0004_000D, "GetPixelsState"),
+            (0x0004_000F, "GetPixBaseAddr"),
+            (0x0004_0011, "DisposeScreenBuffer"),
+            (0x0004_0012, "GetGWorldDevice"),
+            (0x0004_0013, "QDDone"),
+            (0x0004_0016, "PixMap32Bit"),
+            (0x0004_0017, "GetGWorldPixMap"),
+            (0x0008_0005, "GetGWorld"),
+            (0x0008_0006, "SetGWorld"),
+            (0x0008_000E, "SetPixelsState"),
+            (0x000E_0010, "NewScreenBuffer"),
+            (0x000E_0015, "NewTempScreenBuffer"),
+            (0x0016_0000, "NewGWorld"),
+            (0x0016_0003, "UpdateGWorld"),
+        ] {
+            let route =
+                super::qd_extensions_operation_route(0xAB1D, selector).expect("QDExtensions route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xAA1D, 0x0004_0001),
+            (0xAB1D, 0x0000_0001),
+            (0xAB1D, 0x0005_0001),
+            (0xAB1D, 0x0004_000E),
+            (0xAB1D, 0x0000_0014),
+            (0xAB1D, 0x0000_203C),
+        ] {
+            assert!(super::qd_extensions_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn qd_extensions_dispatch_records_exact_identity_and_rejects_wrong_parameter_size() {
+        let (mut d, mut cpu, mut bus) = setup();
+        d.current_trap_word = 0xAB1D;
+
+        cpu.write_reg(Register::D0, 0x0004_0008);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.expect("QDExtensions arm").is_ok());
+        assert_eq!(
+            d.current_selector_operation,
+            Some(super::QD_EXTENSIONS_OPERATION_ROUTES[4].operation_id)
+        );
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        cpu.write_reg(Register::D0, 0x0005_0008);
+        let result = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
+        assert!(result.expect("QDExtensions arm").is_ok());
+        assert_eq!(d.current_selector_operation, None);
+    }
+
+    #[test]
     fn growing_region_releases_each_superseded_backing_allocation() {
         let (_d, _cpu, mut bus) = setup();
         let handle = bus.alloc(4);
@@ -25703,13 +25717,36 @@ mod tests {
     }
 
     #[test]
-    fn disposeccursor_returns_noerr_and_consumes_ccrsrhandle_pointer_argument() {
-        // IM:V 1986 p. V-80: DisposCCursor is a procedure with one
-        // CCrsrHandle argument and no function result; Systemless pins
-        // the no-op path by clearing D0 to noErr.
+    fn disposeccursor_releases_promoted_ccrsr_object_graph() {
+        // Imaging With QuickDraw (1994), pp. 8-4–8-5 and 8-26–8-27:
+        // GetCCursor promotes a compiled resource into a relocatable CCrsr
+        // graph and DisposeCCursor releases that graph. The CCrsr's common
+        // color-compound prefix owns crsrMap, crsrData, crsrXData, and
+        // crsrXHandle; the PixMap in turn owns its color table.
         let (mut d, mut cpu, mut bus) = setup();
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        bus.write_long(TEST_SP, 0);
+        let crsr_data = compiled_crsr_resource_2bpp();
+        d.install_test_resource(&mut bus, *b"crsr", 1026, &crsr_data);
+        bus.write_word(TEST_SP, 1026);
+        assert!(d
+            .dispatch_quickdraw(true, 0x21B, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        let crsr_handle = bus.read_long(TEST_SP + 2);
+        let crsr_ptr = bus.read_long(crsr_handle);
+        let crsr_map_handle = bus.read_long(crsr_ptr + 2);
+        let crsr_map_ptr = bus.read_long(crsr_map_handle);
+        let crsr_data_handle = bus.read_long(crsr_ptr + 6);
+        let crsr_data_ptr = bus.read_long(crsr_data_handle);
+        let crsr_xdata_handle = bus.read_long(crsr_ptr + 10);
+        let crsr_xdata_ptr = bus.read_long(crsr_xdata_handle);
+        let crsr_xhandle = bus.read_long(crsr_ptr + 16);
+        let crsr_xhandle_ptr = bus.read_long(crsr_xhandle);
+        let color_table_handle = bus.read_long(crsr_map_ptr + 42);
+        let color_table_ptr = bus.read_long(color_table_handle);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, crsr_handle);
 
         let result = d.dispatch_quickdraw(true, 0x226, &mut cpu, &mut bus);
         assert!(result.is_some(), "DisposeCCursor should be handled");
@@ -25719,11 +25756,25 @@ mod tests {
             TEST_SP + 4,
             "DisposeCCursor should pop one CCrsrHandle argument"
         );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "DisposeCCursor should return noErr in D0"
-        );
+        for addr in [
+            crsr_handle,
+            crsr_ptr,
+            crsr_map_handle,
+            crsr_map_ptr,
+            crsr_data_handle,
+            crsr_data_ptr,
+            crsr_xdata_handle,
+            crsr_xdata_ptr,
+            crsr_xhandle,
+            crsr_xhandle_ptr,
+            color_table_handle,
+            color_table_ptr,
+        ] {
+            assert!(
+                bus.get_alloc_size(addr).is_none(),
+                "DisposeCCursor leaked allocation at ${addr:08X}"
+            );
+        }
     }
 
     // ==================== QuickDraw Initialization ====================
@@ -27605,6 +27656,9 @@ mod tests {
         // Inside Macintosh Volume V (1986), p. V-72: CloseCPort disposes
         // visRgn/clipRgn, bkPixPat/pnPixPat/fillPixPat, grafVars, and
         // portPixMap, but does NOT dispose the portPixMap color table.
+        // Universal Interfaces 3.4 assigns the named CloseCPort entry to
+        // $AA02, so this exercises that later entry rather than the earlier
+        // polymorphic $A87D ClosePort/CloseCPort entry recorded in IM:V.
         let (mut d, mut cpu, mut bus) = setup();
         let port_ptr = 0x300000u32;
         bus.write_word(port_ptr + 6, 0xC000); // CGrafPort signature
@@ -27708,7 +27762,7 @@ mod tests {
         }
 
         bus.write_long(TEST_SP, port_ptr);
-        let result = d.dispatch_quickdraw(true, 0x07D, &mut cpu, &mut bus);
+        let result = d.dispatch_quickdraw(true, 0x202, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
 
@@ -29960,37 +30014,26 @@ mod tests {
     fn setstdprocs_consumes_qdprocs_pointer_and_writes_13_standard_slots() {
         // IM:I I-197..I-198: SetStdProcs fills all 13 QDProcs fields with
         // the standard bottleneck routines in record order.
-        // Systemless writes synthesised $00F0AXXX markers that correspond to
-        // those standard bottlenecks.
         let (mut d, mut cpu, mut bus) = setup();
         let procs_ptr = 0x300000u32;
         bus.write_long(TEST_SP, procs_ptr);
         let result = d.dispatch_quickdraw(true, 0x0EA, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        // QDProcs field order per IM:I-196. Each field = 0x00F00000 | trap.
-        const EXPECTED: [u32; 13] = [
-            0x00F0A882, // textProc (StdText)
-            0x00F0A890, // lineProc (StdLine)
-            0x00F0A8A0, // rectProc (StdRect)
-            0x00F0A8AF, // rRectProc (StdRRect)
-            0x00F0A8B6, // ovalProc (StdOval)
-            0x00F0A8BD, // arcProc (StdArc)
-            0x00F0A8C5, // polyProc (StdPoly)
-            0x00F0A8D1, // rgnProc (StdRgn)
-            0x00F0A8EB, // bitsProc (StdBits)
-            0x00F0A8F1, // commentProc (StdComment) — corrected from $A89F (Unimplemented) per IM:I I-198
-            0x00F0A8ED, // txMeasProc (StdTxMeas)
-            0x00F0A8EE, // getPicProc (StdGetPic)
-            0x00F0A8F0, // putPicProc (StdPutPic)
+        const TRAPS: [u16; 13] = [
+            0xA882, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1, 0xA8ED,
+            0xA8EE, 0xA8F0,
         ];
-        for (i, expected) in EXPECTED.iter().enumerate() {
-            assert_eq!(
-                bus.read_long(procs_ptr + (i as u32) * 4),
-                *expected,
-                "QDProcs field {} should be synthesised trap marker",
-                i
-            );
+        for (i, trap) in TRAPS.into_iter().enumerate() {
+            let gateway = bus.read_long(procs_ptr + (i as u32) * 4);
+            d.current_trap_word = 0xA746;
+            cpu.write_reg(Register::D0, u32::from(trap & 0x03FF));
+            let result = d.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::A0), gateway);
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
+            bus.write_word(gateway, 0);
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
         }
     }
 
@@ -30010,31 +30053,21 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x24E, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        const EXPECTED: [u32; 15] = [
-            0x00F0A882, // textProc (StdText)
-            0x00F0A890, // lineProc (StdLine)
-            0x00F0A8A0, // rectProc (StdRect)
-            0x00F0A8AF, // rRectProc (StdRRect)
-            0x00F0A8B6, // ovalProc (StdOval)
-            0x00F0A8BD, // arcProc (StdArc)
-            0x00F0A8C5, // polyProc (StdPoly)
-            0x00F0A8D1, // rgnProc (StdRgn)
-            0x00F0A8EB, // bitsProc (StdBits)
-            0x00F0A8F1, // commentProc (StdComment)
-            0x00F0A8ED, // txMeasProc (StdTxMeas)
-            0x00F0A8EE, // getPicProc (StdGetPic)
-            0x00F0A8F0, // putPicProc (StdPutPic)
-            0x00F0ABF8, // opcodeProc (StdOpcodeProc)
-            0x00F05058, // newProc1 (StdPix synthetic marker)
+        const TRAPS: [u16; 14] = [
+            0xA882, 0xA890, 0xA8A0, 0xA8AF, 0xA8B6, 0xA8BD, 0xA8C5, 0xA8D1, 0xA8EB, 0xA8F1, 0xA8ED,
+            0xA8EE, 0xA8F0, 0xABF8,
         ];
-        for (i, expected) in EXPECTED.iter().enumerate() {
-            assert_eq!(
-                bus.read_long(cprocs_ptr + (i as u32) * 4),
-                *expected,
-                "CQDProcs field {} should be synthesised trap marker",
-                i
-            );
+        for (i, trap) in TRAPS.into_iter().enumerate() {
+            let gateway = bus.read_long(cprocs_ptr + (i as u32) * 4);
+            assert_eq!(d.tool_trap_trampolines.get(&trap), Some(&gateway));
+            assert_eq!(bus.read_word(gateway), trap | 0x0400);
         }
+        let std_pix = bus.read_long(cprocs_ptr + 14 * 4);
+        let unimplemented = d.tool_trap_trampolines[&0xAA6E];
+        assert_eq!(std_pix, d.std_pix_gateway);
+        assert_ne!(std_pix, unimplemented);
+        assert_eq!(bus.read_word(std_pix), 0x4EF9);
+        assert_eq!(bus.read_long(std_pix + 2), unimplemented);
     }
 
     #[test]
@@ -30671,13 +30704,14 @@ mod tests {
     }
 
     #[test]
-    fn copybits_ignores_the_synthesized_standard_bitsproc_marker() {
-        // SetStdProcs writes $00F0A8EB into the bitsProc slot to mean "the
-        // standard proc" (IM:I I-197). Calling back into that marker address
-        // would jump into nothing, so CopyBits must do the transfer itself.
+    fn copybits_uses_the_builtin_path_for_the_standard_bitsproc_gateway() {
+        // SetStdProcs installs the callable StdBits gateway in bitsProc
+        // (IM:I I-197). CopyBits is already executing that standard operation,
+        // so it must draw directly rather than recursively tail-call itself.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         d.current_port = 0x181000;
-        let _ = setup_copybits_through_port_bottleneck(&mut bus, 0x00F0_A8EB);
+        let std_bits = d.get_or_create_tool_trap_trampoline(&mut bus, 0xA8EB);
+        let _ = setup_copybits_through_port_bottleneck(&mut bus, std_bits);
         cpu.write_reg(Register::PC, 0x0004_5678);
 
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);

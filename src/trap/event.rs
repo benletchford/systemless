@@ -2,6 +2,7 @@
 
 use super::dispatch::trace_input_enabled;
 use crate::cpu::{CpuOps, Register};
+use crate::memory::globals::addr;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::Result;
 
@@ -25,6 +26,108 @@ impl super::TrapDispatcher {
     const EVQEL_WHERE_V_OFFSET: u32 = 16;
     const EVQEL_WHERE_H_OFFSET: u32 = 18;
     const EVQEL_MODIFIERS_OFFSET: u32 = 20;
+    const AUX_DCE_SIZE: u32 = 52;
+    const DCE_DRIVER_OFFSET: u32 = 0;
+    const DCE_FLAGS_OFFSET: u32 = 4;
+    const DCE_REF_NUM_OFFSET: u32 = 24;
+    const D_OPENED_MASK: u16 = 0x0020;
+    const D_RAM_BASED_MASK: u16 = 0x0040;
+    const BAD_UNIT_ERR: u32 = (-21i32) as u32;
+    const D_REMOVE_ERR: u32 = (-25i32) as u32;
+    const MEM_FULL_ERR: u32 = (-108i32) as u32;
+
+    /// Resolve a driver reference number to its unit-table entry address.
+    /// Inside Macintosh: Devices (1994), pp. 1-8--1-9 defines the unit
+    /// number as the one's complement of the reference number and exposes
+    /// the table through UTableBase and UnitNtryCnt.
+    fn driver_unit_table_slot(bus: &MacMemoryBus, ref_num: u16) -> Option<u32> {
+        let unit = !ref_num;
+        let count = bus.read_word(addr::UNIT_NTRY_CNT);
+        let table = bus.read_long(addr::U_TABLE_BASE);
+        (unit < count && table != 0).then(|| table + u32::from(unit) * 4)
+    }
+
+    fn install_driver_dce(&mut self, bus: &mut MacMemoryBus, ref_num: u16) -> u32 {
+        let Some(slot) = Self::driver_unit_table_slot(bus, ref_num) else {
+            return Self::BAD_UNIT_ERR;
+        };
+
+        let mut handle = bus.read_long(slot);
+        let mut dce = if handle == 0 {
+            0
+        } else {
+            bus.read_long(handle)
+        };
+        if dce == 0 {
+            dce = bus.alloc(Self::AUX_DCE_SIZE);
+            if dce == 0 {
+                return Self::MEM_FULL_ERR;
+            }
+            handle = bus.alloc(4);
+            if handle == 0 {
+                bus.free(dce);
+                return Self::MEM_FULL_ERR;
+            }
+            bus.write_long(handle, dce);
+            self.ptr_to_handle.insert(dce, handle);
+        }
+
+        // Devices 1994, pp. 1-83--1-85: both install forms clear the full
+        // AuxDCE, set only dRAMBased and dCtlRefNum, and place its handle in
+        // the selected unit-table entry. In particular dCtlDriver remains
+        // clear; the caller may populate it after installation.
+        bus.fill_zeros(dce, Self::AUX_DCE_SIZE);
+        bus.write_word(dce + Self::DCE_FLAGS_OFFSET, Self::D_RAM_BASED_MASK);
+        bus.write_word(dce + Self::DCE_REF_NUM_OFFSET, ref_num);
+        bus.write_long(slot, handle);
+        0
+    }
+
+    fn remove_driver_dce<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+        ref_num: u16,
+    ) -> u32 {
+        let Some(slot) = Self::driver_unit_table_slot(bus, ref_num) else {
+            return Self::BAD_UNIT_ERR;
+        };
+        let handle = bus.read_long(slot);
+        if handle == 0 {
+            return 0;
+        }
+        let dce = bus.read_long(handle);
+        if dce == 0 {
+            bus.write_long(slot, 0);
+            bus.free(handle);
+            return 0;
+        }
+        let flags = bus.read_word(dce + Self::DCE_FLAGS_OFFSET);
+        if flags & Self::D_OPENED_MASK != 0 {
+            return Self::D_REMOVE_ERR;
+        }
+
+        // Devices 1994, pp. 1-85--1-86: release a RAM-based driver resource
+        // before disposing its DCE handle. Reuse the Resource Manager path so
+        // residency and resource-map bookkeeping stay coherent.
+        let driver = bus.read_long(dce + Self::DCE_DRIVER_OFFSET);
+        if flags & Self::D_RAM_BASED_MASK != 0 && driver != 0 {
+            let saved_sp = cpu.read_reg(Register::A7);
+            let call_sp = saved_sp.wrapping_sub(4);
+            bus.write_long(call_sp, driver);
+            cpu.write_reg(Register::A7, call_sp);
+            let _ = self.dispatch_resource(true, 0x1A3, cpu, bus);
+            cpu.write_reg(Register::A7, saved_sp);
+        }
+
+        // DisposeHandle preserves stale RecoverHandle discovery until a
+        // master-pointer slot is reused; mirror that policy by retaining the
+        // ptr_to_handle entry while returning both blocks to the allocator.
+        bus.free(dce);
+        bus.free(handle);
+        bus.write_long(slot, 0);
+        0
+    }
 
     pub(crate) fn event_matches_mask(event_mask: u16, what: u16) -> bool {
         match what {
@@ -825,25 +928,6 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // OS trap 0x70 — officially SlotVRemove ($A070), but some apps/glue
-            // may emit this as a register-based GetNextEvent variant.
-            // The real Toolbox GetNextEvent is at (true, 0x170) in toolbox.rs.
-            // We handle it as register-based event dispatch for compatibility.
-            // Register-based: D0=event mask, A0=event record ptr; D0=result on exit.
-            // SlotVRemove ($A070): Officially SlotVRemove; also handles register-based event dispatch for compatibility
-            (false, 0x70) => {
-                let event_mask = cpu.read_reg(Register::D0) as u16;
-                let event_ptr = cpu.read_reg(Register::A0);
-                // tick_count is maintained by the runner via advance_guest_tick()
-
-                let (what, message, where_v, where_h, modifiers, has_event) =
-                    self.dequeue_toolbox_event(cpu, bus, event_mask);
-                self.write_event_record(bus, event_ptr, what, message, where_v, where_h, modifiers);
-                // Mac convention: OS trap boolean is $0000 (FALSE) or $FFFF (TRUE).
-                cpu.write_reg(Register::D0, if has_event { 0xFFFF } else { 0 });
-                Ok(())
-            }
-
             // AttachVBL ($A071)
             // Inside Macintosh: Processes 1994, p. 4-26.
             // FUNCTION AttachVBL (theSlot: Integer): OSErr;
@@ -983,14 +1067,12 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ========== Device Manager / Interrupt no-op family ==========
+            // ========== Device Manager / interrupt registration ==========
             //
-            // Six register-based OS traps that install / remove
-            // device drivers and slot-interrupt handlers. All
-            // collapse to "write noErr to D0" no-ops in Systemless's
-            // HLE because Systemless does NOT model:
-            //   - Classic Device Manager DRVR resource chaining
-            //     (no DCE / DCtl table, no driver dispatch table)
+            // Register-based OS traps that install / remove device drivers
+            // and interrupt handlers. DriverInstall and DriverRemove model
+            // their guest-visible DCE/unit-table state. Interrupt handlers
+            // remain registrations without synthetic hardware sources:
             //   - VBL queue scheduling (no VBLTask record chain;
             //     vertical-blank events are synthesized by the
             //     wall-clock-paced event loop, not by guest VBL
@@ -1044,22 +1126,19 @@ impl super::TrapDispatcher {
             // header, or open the driver" disclaimer, the install does
             // NOT execute the driver's open routine.
             //
-            // Systemless HLE compromise: no DCE chain, no unit table, no
-            // dispatch table. Returns D0=0 (noErr) unconditionally;
-            // the "installed" driver is never invoked because no
-            // synthetic interrupt source ever dispatches into a DRVR
-            // resource. Apps that defensively check OSErr proceed
-            // safely; apps that depend on the driver firing (rare for
-            // RAM-installed user drivers in modern System 7.5+ era
-            // apps) lose nothing observable since the driver routines
-            // were never going to run anyway.
-            //
             // Behavior:
-            //   (1) noErr return for the nominal-install path on an
-            //       empty unit-table slot.
-            //   (2) register-only ABI: A7 preserved across the call.
+            //   (1) noErr after installing or reinitializing the selected
+            //       52-byte AuxDCE and its unit-table handle.
+            //   (2) badUnitErr when the one's-complement refNum lies outside
+            //       UnitNtryCnt.
+            //   (3) bit 10 ($A43D) selects DriverInstallReserveMem. Its
+            //       preallocation ReserveMem has no separate placement effect
+            //       in Systemless's flat heap, but retains the same DCE state.
+            //   (4) register-only ABI: A7 preserved across the call.
             (false, 0x3D) => {
-                cpu.write_reg(Register::D0, 0);
+                let ref_num = cpu.read_reg(Register::D0) as u16;
+                let result = self.install_driver_dce(bus, ref_num);
+                cpu.write_reg(Register::D0, result);
                 Ok(())
             }
 
@@ -1088,15 +1167,16 @@ impl super::TrapDispatcher {
             // ReleaseResource on the driver resource. The driver must
             // be closed (per IM:Devices 1994 p. 1-85).
             //
-            // Systemless HLE compromise: no DCE chain to dispose. Returns
-            // D0=0 (noErr) unconditionally.
-            //
             // Behavior:
-            //   (1) noErr return when called on a just-installed
-            //       (closed) slot.
-            //   (2) register-only ABI: A7 preserved across the call.
+            //   (1) noErr after disposing a closed DCE and clearing its slot;
+            //       an already-empty valid slot is also a successful no-op.
+            //   (2) dRemoveErr with no mutation while dOpened is set.
+            //   (3) badUnitErr for a refNum outside UnitNtryCnt.
+            //   (4) register-only ABI: A7 preserved across the call.
             (false, 0x3E) => {
-                cpu.write_reg(Register::D0, 0);
+                let ref_num = cpu.read_reg(Register::D0) as u16;
+                let result = self.remove_driver_dce(cpu, bus, ref_num);
+                cpu.write_reg(Register::D0, result);
                 Ok(())
             }
 
@@ -1242,7 +1322,8 @@ mod tests {
     use super::super::dispatch::{QueuedEvent, TrapDispatcher};
     use super::super::test_helpers::setup;
     use crate::cpu::{CpuOps, Register};
-    use crate::memory::MemoryBus;
+    use crate::memory::globals::addr;
+    use crate::memory::{MacMemoryBus, MemoryBus};
 
     // ---- FlushEvents ($A032) ----
 
@@ -1647,13 +1728,22 @@ mod tests {
         assert_ne!(modifiers & 0x0100, 0, "cmdKey must be set on Cmd-S");
     }
 
-    // ---- Device/Interrupt no-op family ($A03D/$A03E/$A072/$A075/$A076) ----
+    // ---- Device Manager DCE/unit-table state ($A03D/$A43D/$A03E) ----
+
+    fn seed_device_unit_table(bus: &mut MacMemoryBus, count: u16) -> u32 {
+        let table = bus.alloc(u32::from(count) * 4);
+        bus.fill_zeros(table, u32::from(count) * 4);
+        bus.write_long(addr::U_TABLE_BASE, table);
+        bus.write_word(addr::UNIT_NTRY_CNT, count);
+        table
+    }
 
     #[test]
     fn drvrinstall_uses_a0_driverptr_d0_refnum_and_returns_oserr_in_d0() {
         // Inside Macintosh: Devices (1994), pp. 1-83 to 1-84:
         // _DrvrInstall uses A0=drvrPtr, D0=refNum, and returns OSErr in D0.
         let (mut disp, mut cpu, mut bus) = setup();
+        let table = seed_device_unit_table(&mut bus, 96);
         let driver_ptr = 0x320000;
         let stack_ptr = 0x00F0_1000;
         cpu.write_reg(Register::A0, driver_ptr);
@@ -1681,6 +1771,19 @@ mod tests {
             stack_ptr,
             "DrvrInstall is register-based and should preserve A7"
         );
+        let unit = !(0xFFECu16);
+        let dce_handle = bus.read_long(table + u32::from(unit) * 4);
+        let dce = bus.read_long(dce_handle);
+        assert_ne!(dce_handle, 0);
+        assert_ne!(dce, 0);
+        assert_eq!(bus.read_long(dce), 0, "dCtlDriver starts clear");
+        assert_eq!(bus.read_word(dce + 4), 0x0040, "only dRAMBased is set");
+        assert_eq!(bus.read_word(dce + 24), 0xFFEC, "dCtlRefNum is copied");
+        assert!(
+            bus.read_bytes(dce + 6, 18).iter().all(|&byte| byte == 0)
+                && bus.read_bytes(dce + 26, 26).iter().all(|&byte| byte == 0),
+            "all remaining AuxDCE fields start clear"
+        );
     }
 
     #[test]
@@ -1688,6 +1791,7 @@ mod tests {
         // Inside Macintosh: Devices (1994), pp. 1-85 to 1-86:
         // _DrvrRemove uses D0=refNum and returns OSErr in D0.
         let (mut disp, mut cpu, mut bus) = setup();
+        seed_device_unit_table(&mut bus, 96);
         let stack_ptr = 0x00F0_2000;
         cpu.write_reg(Register::D0, 0xFFFF_FFEC);
         cpu.write_reg(Register::A7, stack_ptr);
@@ -1698,7 +1802,7 @@ mod tests {
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
-            "DrvrRemove should return noErr in D0 for nominal calls"
+            "an empty valid unit-table slot is a successful no-op"
         );
         assert_eq!(
             cpu.read_reg(Register::A7),
@@ -1716,6 +1820,7 @@ mod tests {
         // both traps are register-only OS-bit FUNCTIONs with no Pascal
         // stack frame.
         let (mut disp, mut cpu, mut bus) = setup();
+        let table = seed_device_unit_table(&mut bus, 96);
         let driver_ptr: u32 = 0x320200;
         let stack_ptr: u32 = 0x200000;
         let sentinel_addr = stack_ptr;
@@ -1762,6 +1867,89 @@ mod tests {
             sentinel,
             "Install + Remove must not clobber caller memory above SP"
         );
+        let unit = !(ref_num as u16);
+        assert_eq!(
+            bus.read_long(table + u32::from(unit) * 4),
+            0,
+            "DriverRemove clears the installed unit-table entry"
+        );
+    }
+
+    #[test]
+    fn drvrinstall_rejects_out_of_range_refnum_without_allocating() {
+        // Devices 1994, pp. 1-83--1-84: an unmatched reference number
+        // returns badUnitErr (-21).
+        let (mut disp, mut cpu, mut bus) = setup();
+        let table = seed_device_unit_table(&mut bus, 32);
+        let allocation_end = bus.heap_bump_ptr();
+        cpu.write_reg(Register::A0, 0x0032_0000);
+        cpu.write_reg(Register::D0, (-50i32) as u32);
+
+        disp.dispatch_event(false, 0x3D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), (-21i32) as u32);
+        assert_eq!(bus.heap_bump_ptr(), allocation_end);
+        assert!(
+            bus.read_bytes(table, 32 * 4).iter().all(|&byte| byte == 0),
+            "badUnitErr must leave the unit table unchanged"
+        );
+    }
+
+    #[test]
+    fn driver_install_reserve_memory_raw_word_reaches_shared_dce_semantics() {
+        // Devices 1994, pp. 1-84--1-85 and UI 3.4 Devices.h lines
+        // 1126--1141: bit 10 selects DriverInstallReserveMem at $A43D.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let table = seed_device_unit_table(&mut bus, 96);
+        let ref_num = (-51i32) as u32;
+        cpu.write_reg(Register::A0, 0x0032_1000);
+        cpu.write_reg(Register::D0, ref_num);
+        cpu.write_reg(Register::A7, 0x00F0_1800);
+
+        disp.dispatch(0xA43D, &mut cpu, &mut bus).unwrap();
+
+        let slot = table + u32::from(!(ref_num as u16)) * 4;
+        let handle = bus.read_long(slot);
+        let dce = bus.read_long(handle);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_ne!(handle, 0);
+        assert_eq!(bus.read_word(dce + 4), 0x0040);
+        assert_eq!(bus.read_word(dce + 24), ref_num as u16);
+        assert_eq!(cpu.read_reg(Register::A7), 0x00F0_1800);
+    }
+
+    #[test]
+    fn drvrinstall_reuses_existing_dce_and_drvrremove_refuses_open_driver() {
+        // Devices 1994, pp. 1-83--1-86: install initializes the selected DCE;
+        // remove returns dRemoveErr (-25) without disposing an open DCE.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let table = seed_device_unit_table(&mut bus, 96);
+        let ref_num = (-50i32) as u32;
+        let slot = table + u32::from(!(ref_num as u16)) * 4;
+        let dce = bus.alloc(52);
+        let handle = bus.alloc(4);
+        bus.fill_bytes(dce, 52, 0xA5);
+        bus.write_long(handle, dce);
+        bus.write_long(slot, handle);
+
+        cpu.write_reg(Register::D0, ref_num);
+        disp.dispatch_event(false, 0x3D, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bus.read_long(slot), handle, "install reuses the DCE handle");
+        assert_eq!(bus.read_long(handle), dce);
+        assert_eq!(bus.read_word(dce + 4), 0x0040);
+
+        bus.write_word(dce + 4, 0x0060);
+        cpu.write_reg(Register::D0, ref_num);
+        disp.dispatch_event(false, 0x3E, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), (-25i32) as u32);
+        assert_eq!(bus.read_long(slot), handle, "open DCE remains installed");
+        assert_eq!(bus.read_long(handle), dce, "open DCE remains allocated");
     }
 
     #[test]
@@ -1981,8 +2169,6 @@ mod tests {
             "SIntRemove is register-based and should preserve A7"
         );
     }
-
-    // ---- GetNextEvent ($A070, OS) ----
 
     const EVENT_PTR: u32 = 0x300000;
     const QHDR_FLAGS_OFFSET: u32 = 0;
@@ -2260,132 +2446,10 @@ mod tests {
         assert_eq!(bus.read_word(q_header + QHDR_FLAGS_OFFSET), 0x5A5A);
     }
 
-    #[test]
-    fn get_next_event_empty_queue_returns_null_event() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
-
-        // D0 = event mask (all events), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0xFFFF);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be 0 (no event)
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-
-        // Event record should have what=0 (null event)
-        let (what, _message, _when, _where_v, _where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 0);
-    }
+    // ---- AttachVBL ($A071, OS) ----
 
     #[test]
-    fn get_next_event_matching_event_returns_it() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        disp.sent_open_app_event = true; // suppress synthetic oapp event
-
-        // Push a mouseDown event (what=1)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 100,
-            where_h: 200,
-            modifiers: 0,
-        });
-
-        // D0 = 0xFFFF (all events), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0xFFFF);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be $FFFF (TRUE = event found, Mac OS convention)
-        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF);
-
-        let (what, _message, when, where_v, where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 1); // mouseDown
-        assert_eq!(where_v, 100);
-        assert_eq!(where_h, 200);
-        // when should be the tick count read from $016A (set to 100 by setup)
-        assert_eq!(when, 100);
-
-        // Queue should now be empty
-        assert!(disp.event_queue.is_empty());
-    }
-
-    #[test]
-    fn get_next_event_non_matching_mask_returns_no_event() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        // Push a mouseDown event (what=1, bit 1)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 50,
-            where_h: 60,
-            modifiers: 0,
-        });
-
-        // D0 = 0x0004 (only keyDown, bit 2), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0x0004);
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be 0 (no matching event)
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-
-        // Event should still be in the queue (not consumed)
-        assert_eq!(disp.event_queue.len(), 1);
-    }
-
-    #[test]
-    fn get_next_event_mouse_up_clears_mouse_button() {
-        let (mut disp, mut cpu, mut bus) = setup();
-
-        // Simulate that mouse button is currently held
-        disp.mouse_button = true;
-
-        // Push a mouseUp event (what=2)
-        disp.event_queue.push_back(QueuedEvent {
-            what: 2,
-            message: 0,
-            where_v: 75,
-            where_h: 150,
-            modifiers: 0,
-        });
-
-        // D0 = mask with bit 2 set (mouseUp), A0 = event record pointer
-        cpu.write_reg(Register::D0, 0x0004); // bit 2 = mouseUp
-        cpu.write_reg(Register::A0, EVENT_PTR);
-
-        assert!(disp.mouse_button);
-
-        let result = disp.dispatch_event(false, 0x70, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok());
-
-        // D0 should be $FFFF (TRUE = event found, Mac OS convention)
-        assert_eq!(cpu.read_reg(Register::D0), 0xFFFF);
-
-        // mouse_button should now be false (dequeue_event clears it on mouseUp)
-        assert!(!disp.mouse_button);
-
-        let (what, _message, _when, where_v, where_h, _modifiers) =
-            read_event_record(&bus, EVENT_PTR);
-        assert_eq!(what, 2);
-        assert_eq!(where_v, 75);
-        assert_eq!(where_h, 150);
-    }
-
-    // ---- EventAvail ($A071, OS) ----
-
-    #[test]
-    fn event_avail_returns_d0_zero() {
+    fn attach_vbl_returns_noerr_for_primary_slot() {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let result = disp.dispatch_event(false, 0x71, &mut cpu, &mut bus);

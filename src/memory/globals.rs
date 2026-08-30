@@ -13,6 +13,12 @@ use std::collections::HashMap;
 /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99.
 pub(crate) const DEFAULT_SYS_EVT_MASK: u16 = 0xFFEF;
 
+/// Unit-table size for Systemless's Mac OS 8.1 machine profile. Inside
+/// Macintosh Volume V (1986), p. V-215 documents a 64-entry table that grows
+/// in 16-entry increments up to 128 entries; 96 preserves that documented
+/// layout while leaving the upper expansion range available to guest code.
+pub(crate) const DEFAULT_UNIT_TABLE_ENTRY_COUNT: u16 = 96;
+
 /// Low-memory global variable addresses
 pub mod addr {
     // System globals
@@ -23,6 +29,10 @@ pub mod addr {
     pub const BUF_PTR: u32 = 0x010C; // Sound/disk buffer (ptr)
     pub const HEAP_END: u32 = 0x0114; // End of heap zone (ptr)
     pub const THE_ZONE: u32 = 0x0118; // Current heap zone (ptr)
+    /// UTableBase: pointer to the first Device Manager unit-table entry.
+    /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
+    /// 3.4 LowMem.h lines 246--264.
+    pub const U_TABLE_BASE: u32 = 0x011C;
     /// SysEvtMask: current process's low-level event posting mask (word).
     /// Macintosh Toolbox Essentials (1992), pp. 2-28--2-29 and 2-99--2-100;
     /// Inside Macintosh Volume III (1985), low-memory globals table.
@@ -35,6 +45,10 @@ pub mod addr {
     /// the current key state indexed by key code; MPW's SysEqu.h names the
     /// low-memory mirror `KeyMapLM` at $0174.
     pub const KEY_MAP_LM: u32 = 0x0174;
+    /// UnitNtryCnt: number of handles in the Device Manager unit table.
+    /// Inside Macintosh: Devices (1994), pp. 1-8--1-9; Universal Interfaces
+    /// 3.4 LowMem.h lines 4304--4324.
+    pub const UNIT_NTRY_CNT: u32 = 0x01D2;
     pub const TIME: u32 = 0x020C; // Current date/time in seconds since 1904-01-01 (long)
     /// MemErr: current value of MemError (word).
     /// Inside Macintosh Volume IV, IV-80; low-memory table IV-246.
@@ -69,26 +83,40 @@ pub mod addr {
     pub const SOUND_LEVEL: u32 = 0x027F;
 
     // Menu Manager globals
+    /// TopMenuItem: global vertical coordinate of the first item in the
+    /// currently active scrollable menu (word).
+    /// Inside Macintosh Volume V (1986), pp. V-249 and V-571.
+    pub const TOP_MENU_ITEM: u32 = 0x0A0A;
+
+    /// AtMenuBottom: global vertical coordinate of the bottom of the complete
+    /// currently active scrollable menu content (word).
+    /// Inside Macintosh Volume V (1986), pp. V-249, V-254, and V-571.
+    pub const AT_MENU_BOTTOM: u32 = 0x0A0C;
+
     /// MenuList: handle to the current Menu Manager menu list.
     /// Inside Macintosh Volume III (1985), low-memory globals table;
     /// Inside Macintosh Volume V (1986), pp. V-228–V-230.
     pub const MENU_LIST: u32 = 0x0A1C;
     pub const MBAR_HEIGHT: u32 = 0x0BAA; // Menu bar height in pixels (word) - Inside Macintosh V, V-245
-    pub const MENU_FLASH: u32 = 0x0A24; // Number of times menu item blinks (word) - Inside Macintosh Volume I, I-361
+    /// MenuFlash: number of times a selected menu item blinks.
+    /// Macintosh Toolbox Essentials (1992), p. 3-142.
+    pub const MENU_FLASH: u32 = 0x0A24;
+
+    /// TheMenu: ID of the menu that owns the current selection/highlight.
+    /// For a submenu selection this remains the submenu ID even though its
+    /// owning regular title is the one displayed as highlighted.
+    /// Macintosh Toolbox Essentials (1992), pp. 3-115--3-119.
+    pub const THE_MENU: u32 = 0x0A26;
 
     /// MenuDisable: menu ID + item number of the last menu item the cursor
     /// passed over while a menu was down (4 bytes, LongInt — high word =
     /// menuID, low word = itemNumber). Maintained by the standard menu
     /// definition procedure ('MDEF' 0) on each cursor-into-item transition,
     /// regardless of whether the item is enabled or disabled. Read by
-    /// MenuChoice ($AA66) when the application's MenuSelect / MenuKey
-    /// returned zero, to surface "which disabled item did the user click?"
-    /// for help/explanation UI. Per IM:V V-248 + MTb 1992 3-118 (the
+    /// MenuChoice ($AA66) when MenuSelect returned zero, to surface which
+    /// disabled item received the mouse-up event for help/explanation UI.
+    /// Per IM:V V-248 + MTb 1992 3-118 (the
     /// canonical EQU at IM:V V-571 line 8689: `MenuDisable EQU $0B54`).
-    /// Systemless's HLE reads this lowmem word directly in MenuChoice; it
-    /// still does not synthesize the MDEF cursor-tracking writes that
-    /// classic ROMs receive, so tests seed the value explicitly when they
-    /// need a deterministic result.
     /// Inside Macintosh Volume V, V-248 (MenuChoice routine description)
     /// and V-571 (assembly globals table); Macintosh Toolbox Essentials
     /// 1992, 3-118..3-119 (MenuChoice canonical chapter).
@@ -101,8 +129,8 @@ pub mod addr {
     /// table, DispMCInfo ($AA63) disposes a caller-supplied table,
     /// GetMCEntry ($AA64) returns a pointer into the live table, and
     /// SetMCEntries / DelMCEntries ($AA65 / $AA60) update or remove
-    /// entries. Systemless HLE still does not auto-load 'mctb' resources,
-    /// but it now stores a real live table here for API compatibility.
+    /// entries. InitMenus and GetMenu also add matching compiled 'mctb'
+    /// resources to this live table.
     /// Per IM:V V-247 + V-571 line 8688: `MenuCInfo EQU $0D50`. The
     /// Menu Color Manager was deprecated in System 7.5 by the Theme
     /// Manager (Macintosh Toolbox Essentials 1992 treats the routines
@@ -281,6 +309,10 @@ pub mod addr {
     pub const CUR_STACK_BASE: u32 = 0x0908; // Stack base (ptr)
     pub const APPL_LIMIT: u32 = 0x0130; // Application heap limit (ptr)
 }
+
+/// Initial MenuFlash value installed by the General Controls panel.
+/// Macintosh Toolbox Essentials (1992), p. 3-142.
+pub const DEFAULT_MENU_FLASH_COUNT: u16 = 3;
 
 /// Manager for low-memory globals
 pub struct LowMemGlobals {

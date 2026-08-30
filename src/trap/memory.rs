@@ -1,5 +1,8 @@
 //! Memory Manager trap handlers.
 
+use super::dispatch::{
+    raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
+};
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
@@ -11,6 +14,75 @@ static TRACE_MEMORY: OnceLock<bool> = OnceLock::new();
 static TRACE_VIDEO_DRIVER: OnceLock<bool> = OnceLock::new();
 static TRACE_ENTROPY: OnceLock<bool> = OnceLock::new();
 static TRACE_VBL: OnceLock<bool> = OnceLock::new();
+
+const MEMORY_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_memory_dispatch_operations.rs");
+const MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_memory_dispatch_a0_result_operations.rs");
+const HWPRIV_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_hwpriv_operations.rs");
+const IDLE_STATE_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_idle_state_operations.rs");
+const SERIAL_POWER_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_serial_power_operations.rs");
+const SCSI_ATOMIC_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_scsi_atomic_operations.rs");
+const DEBUG_UTIL_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_debug_util_operations.rs");
+
+fn memory_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    let routes = match trap_word {
+        0xA05C => MEMORY_DISPATCH_OPERATION_ROUTES,
+        0xA15C => MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES,
+        _ => return None,
+    };
+    selector_operation_route(routes, selector)
+}
+
+fn hwpriv_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if !matches!(trap_word, 0xA098 | 0xA198) {
+        return None;
+    }
+    selector_operation_route(HWPRIV_OPERATION_ROUTES, selector)
+}
+
+fn power_control_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    let routes = match trap_word {
+        0xA485 => IDLE_STATE_OPERATION_ROUTES,
+        0xA685 => SERIAL_POWER_OPERATION_ROUTES,
+        _ => return None,
+    };
+    selector_operation_route(routes, selector)
+}
+
+fn scsi_atomic_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA089 {
+        return None;
+    }
+    selector_operation_route(SCSI_ATOMIC_OPERATION_ROUTES, selector)
+}
+
+fn debug_util_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA08D {
+        return None;
+    }
+    selector_operation_route(DEBUG_UTIL_OPERATION_ROUTES, selector)
+}
 
 /// `VBLQueue`, the 10-byte low-memory `QHdr` for the system VBL queue.
 /// Universal Interfaces 3.4 LowMem.h; Processes 1994, p. 4-28.
@@ -173,6 +245,7 @@ const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
 const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
+const MEM_WZ_ERR: u32 = (-111i32) as u32;
 const DT_QTYPE: u16 = 7;
 const NOT_HELD_ERR: u32 = (-621i32) as u32;
 const NOT_LOCKED_ERR: u32 = (-623i32) as u32;
@@ -472,21 +545,24 @@ impl super::TrapDispatcher {
     }
 
     fn trap_address_table_key(&self, trap_word: u16) -> u16 {
-        match self.current_trap_word & 0x0FFF {
+        let typed_word = match raw_trap_route(self.current_trap_word).os_routine_variant {
             // `_GetTrapAddress newTool` / `_SetTrapAddress newTool`.
-            // Inside Macintosh: Operating System Utilities 1994, pp. 8-27
-            // and 8-30: trapNum may be an A-line instruction or trap number;
-            // irrelevant high bits are masked according to the trap type.
-            0x647 | 0x746 => 0xA800 | (trap_word & 0x03FF),
-            // `_GetTrapAddress newOS` / `_SetTrapAddress newOS` mask to
-            // the low 8-bit Operating System table.
-            0x247 | 0x346 => 0xA000 | (trap_word & 0x00FF),
+            // Inside Macintosh: Operating System Utilities (1994),
+            // pp. 8-27--8-31: trapNum may be an A-line instruction or trap
+            // number; irrelevant high bits are masked to the selected table.
+            OsRoutineVariant::TrapAddressNewTool => 0xA800 | (trap_word & 0x03FF),
+            // The newOS forms mask to the low 8-bit Operating System table.
+            OsRoutineVariant::TrapAddressNewOs => 0xA000 | (trap_word & 0x00FF),
             // Legacy GetTrapAddress ($A146) and SetTrapAddress ($A047)
             // ignore the high-order bits and infer the table from the trap
             // number: $00-$4F, $54, and $57 are OS traps; all others are
             // Toolbox traps. Inside Macintosh: Operating System Utilities
             // 1994, pp. 8-32 to 8-33.
-            _ => {
+            variant => {
+                debug_assert!(matches!(
+                    variant,
+                    OsRoutineVariant::TrapAddressLegacy | OsRoutineVariant::Unclassified
+                ));
                 let trap_num = trap_word & 0x03FF;
                 if matches!(trap_num, 0x000..=0x04F | 0x054 | 0x057) {
                     0xA000 | (trap_num & 0x00FF)
@@ -494,7 +570,8 @@ impl super::TrapDispatcher {
                     0xA800 | trap_num
                 }
             }
-        }
+        };
+        super::dispatch::raw_trap_route(typed_word).canonical_word
     }
 
     fn looks_like_callable_proc(bus: &MacMemoryBus, proc_ptr: u32) -> bool {
@@ -601,12 +678,15 @@ impl super::TrapDispatcher {
     ) -> Option<Result<()>> {
         let result = match (is_tool, trap_num) {
             // ========== Memory Manager ==========
-            // NewPtr ($A01E) / NewPtrSys ($A11E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
+            // NewPtr ($A11E) / NewPtrSys ($A51E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
             // Allocates a nonrelocatable block. CLEAR variants zero the memory.
-            // Inside Macintosh Volume II, II-37
-            // NewPtr / NewPtrClear / NewPtrSys ($A01E): Allocates via `bus.alloc()`, returns ptr in A0; CLEAR variant ($A31E) zeros memory per IM:II II-37
+            // Inside Macintosh: Memory (1992), pp. 2-35--2-37.
+            // Allocates via `bus.alloc()` and returns the pointer in A0;
+            // CLEAR variants zero memory and SYS variants do not extend the
+            // application-zone header.
             (false, 0x1E) => {
                 let size = cpu.read_reg(Register::D0);
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 // `Size` is a signed Macintosh LONGINT. Reject negative
                 // requests before converting them into an unsigned heap
                 // allocation; otherwise an error value can wrap the bump
@@ -624,11 +704,17 @@ impl super::TrapDispatcher {
                     // Trap bit 10 selects the system-heap variants. Keep the
                     // application-zone header synchronized only for ordinary
                     // NewPtr/NewPtrClear allocations.
-                    if (self.current_trap_word & 0x0400) == 0 {
+                    if matches!(
+                        variant,
+                        OsRoutineVariant::CurrentHeap | OsRoutineVariant::CurrentHeapClear
+                    ) {
                         include_application_allocation_in_zone(bus, ptr, size);
                     }
-                    // Check CLEAR bit (bit 9 = 0x0200 in trap word)
-                    if (self.current_trap_word & 0x0200) != 0 && size > 0 {
+                    if matches!(
+                        variant,
+                        OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
+                    ) && size > 0
+                    {
                         bus.fill_zeros(ptr, size);
                     } else {
                         scribble_uninitialized_allocation(bus, ptr, size);
@@ -645,6 +731,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume II, II-27
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 // `Size` is a signed Macintosh LONGINT; negative sizes are
                 // invalid and must not be passed to the unsigned allocator.
                 if (size as i32) < 0 {
@@ -658,8 +745,11 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                // Check CLEAR bit (bit 9 = 0x0200 in trap word)
-                if (self.current_trap_word & 0x0200) != 0 && size > 0 {
+                if matches!(
+                    variant,
+                    OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
+                ) && size > 0
+                {
                     bus.fill_zeros(ptr, size);
                 } else {
                     scribble_uninitialized_allocation(bus, ptr, size);
@@ -932,64 +1022,41 @@ impl super::TrapDispatcher {
             // from the trap number; the newer forms select it explicitly.
             // Inside Macintosh: Operating System Utilities 1994, pp. 8-26
             // to 8-28 and 8-32 to 8-33.
-            // Tool traps get a 2-byte trampoline stub (auto-pop variant
-            // of the trap word) so games that `JSR (A0)` through the
-            // returned address re-enter the trap dispatcher cleanly
-            // instead of executing garbage memory at a bare fake-ptr.
-            // OS traps fall back to the simple `$00F0xxxx` fake-ptr
-            // because they have no auto-pop semantics. See
-            // `TrapDispatcher::get_or_create_tool_trap_trampoline`.
+            // Both tables return stable callable project-authored gateways.
+            // Toolbox gateways use the auto-pop variant so the Pascal
+            // argument frame begins below the JSR return address. OS gateways
+            // use the canonical register-based trap followed by RTS. See the
+            // two `get_or_create_*_trap_trampoline` helpers.
             (false, 0x46) => {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
-                let trap_variant = self.current_trap_word & 0x0FFF;
-                // Check native trap table first (returns address set by SetTrapAddress)
+                let trap_variant = raw_trap_route(self.current_trap_word).os_routine_variant;
+                // Once initialized, return the logical view of the selected
+                // raw table entry, including an unchanged default. This keeps
+                // profile availability probes tied to the materialized table
+                // rather than reconstructing them from host assumptions.
                 let trap_table_key = self.trap_address_table_key(trap_word);
-                if let Some(&addr) = self.native_trap_table.get(&trap_table_key) {
+                if let Some(addr) = self.trap_table_address(bus, trap_table_key) {
                     cpu.write_reg(Register::A0, addr);
-                } else if trap_variant == 0x746 {
+                } else if let Some(addr) = self.native_trap_handler(bus, trap_table_key) {
+                    cpu.write_reg(Register::A0, addr);
+                } else if trap_variant == OsRoutineVariant::TrapAddressNewTool {
                     // Real GetToolTrapAddress/GetToolBoxTrapAddress
                     // (trap word $A746) passes a bare tool-trap number
                     // in D0. Return a callable tool-trap trampoline so
                     // guests can JSR/JMP through the result.
                     //
-                    // DockingDispatch (0x257) is absent on the generic
-                    // target, so collapse that probe to _Unimplemented
-                    // (0xA89F) just like the other probe forms.
                     let trap_num = trap_word & 0x03FF;
-                    let canonical_tool_trap = if trap_num == 0x257 {
-                        0xA89F
-                    } else {
-                        0xA800 | trap_num
-                    };
+                    let canonical_tool_trap = 0xA800 | trap_num;
                     let addr = self.get_or_create_tool_trap_trampoline(bus, canonical_tool_trap);
                     cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0xAA57 {
-                    // DockingDispatch is PowerBook-only. On the generic
-                    // non-PowerBook target we alias the probe to the
-                    // existing _Unimplemented trampoline so callers that
-                    // compare against GetTrapAddress($A89F) see the trap
-                    // as absent rather than as a callable DockingDispatch
-                    // entry. IM:II II-384; IM:I I-89.
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, 0xA89F);
-                    cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0x257 {
-                    // NGetTrapAddress() probe for DockingDispatch uses
-                    // the low-number tool-trap form. Alias that probe to
-                    // the same unimplemented sentinel used for 0x09F so
-                    // selector-0 availability checks compare equal.
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + 0x09F);
-                } else if (trap_word & 0x0800) != 0 {
-                    // Tool trap (bit 11 set in the word): hand back a
-                    // callable trampoline so JSR-through-fake-ptr works.
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_word);
+                } else if (trap_table_key & 0x0800) != 0 {
+                    // Tool trap (bit 11 set in the word): return the
+                    // callable gateway for the selected table row.
+                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_table_key);
                     cpu.write_reg(Register::A0, addr);
                 } else {
-                    // OS trap (or bare trap number from NGetTrapAddress
-                    // where the caller only intends address comparison):
-                    // unique fake address per word so it never matches
-                    // _Unimplemented.
-                    let fake_addr = 0x00F00000 | (trap_word as u32);
-                    cpu.write_reg(Register::A0, fake_addr);
+                    let addr = self.get_or_create_os_trap_trampoline(bus, trap_table_key);
+                    cpu.write_reg(Register::A0, addr);
                 }
                 Ok(())
             }
@@ -1025,49 +1092,6 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Phantom GetToolTrapAddress arm for is_tool=true && idx=0x346.
-            //
-            // Real GetTrapAddress / GetOSTrapAddress / GetToolTrapAddress
-            // (trap words $A046 / $A146 / $A346 / $A746) all have bit
-            // 11 = 0, so they reach the (false, 0x46) handler above —
-            // *not* this arm. No assigned trap word in the IM trap
-            // tables has lower-10-bits 0x346 with bit 11 set, so this
-            // handler is unreachable from real guest code.
-            //
-            // Kept (rather than excised) only because legacy lib tests
-            // call dispatch_memory(true, 0x346, ...) directly to
-            // exercise the historical $CAFE0xxx fake-ptr emit path —
-            // that path's *decoder* in runner.rs::decode_fakeptr_pc is
-            // still active diagnostic surface (see
-            // decode_fakeptr_pc_recognizes_tool_style_range).
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_returns_native_table_entry_and_preserves_stack
-            //   src/trap/memory.rs::tests::test_get_tool_trap_address_docking_dispatch_aliases_unimplemented_probe
-            //   src/trap/memory.rs::tests::phantom_gettooltrapaddress_creates_stable_trampoline_for_tool_trap_word
-            //   src/trap/memory.rs::tests::test_get_tool_trap_address_tool
-            // Inside Macintosh Volume II, II-384
-            // (phantom GetToolTrapAddress) ($AB46): Unreachable from real guest code; emits $CAFE0xxx fake-ptr only via direct dispatch_memory test calls
-            (true, 0x346) => {
-                let trap_word = cpu.read_reg(Register::D0) as u16;
-                if let Some(&addr) = self.native_trap_table.get(&trap_word) {
-                    cpu.write_reg(Register::A0, addr);
-                } else if trap_word == 0x257 {
-                    // DockingDispatch probe uses the low-number tool-trap
-                    // form when callers go through NGetTrapAddress.
-                    // Mirror the same fake-ptr sentinel as the Unimplemented
-                    // tool trap probe so the two addresses compare equal.
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + 0x09F);
-                } else if (trap_word & 0x0800) != 0 {
-                    let addr = self.get_or_create_tool_trap_trampoline(bus, trap_word);
-                    cpu.write_reg(Register::A0, addr);
-                } else {
-                    let t = trap_word as u32 & 0x3FF;
-                    cpu.write_reg(Register::A0, 0xCAFE0000 + t);
-                }
-                Ok(())
-            }
-
             // SetTrapAddress ($A047/$A647 = (false, 0x47))
             // Installs a native 68K trap handler.
             // D0.W = trap number, A0 = new handler address
@@ -1077,34 +1101,19 @@ impl super::TrapDispatcher {
                 let trap_word = cpu.read_reg(Register::D0) as u16;
                 let trap_table_key = self.trap_address_table_key(trap_word);
                 let handler_addr = cpu.read_reg(Register::A0);
-                // Restore-to-default detection: when SetTrapAddress
-                // sees an address that *we* handed back from a prior
-                // GetTrapAddress (either the legacy $00F0xxxx fake-ptr
-                // range OR a tool-trap trampoline allocated by
-                // get_or_create_tool_trap_trampoline), the game is
-                // saying "put it back the way you found it" and the
-                // correct response is to remove our native_trap_table
-                // entry so subsequent traps go through the HLE
-                // dispatcher chain again.
-                //
-                // Without the trampoline arm, games that read +
-                // restore tool-trap addresses (e.g. Steel Fighters'
-                // ExitToShell shim) would store the trampoline
-                // address back into native_trap_table, and dispatch
-                // would JMP to the trampoline, which re-traps with
-                // auto-pop, which re-enters dispatch, which JMPs to
-                // the trampoline … infinite loop.
-                let is_legacy_fakeptr = (handler_addr & 0xFFFF0000) == 0x00F00000;
-                let is_trampoline = self
-                    .tool_trap_trampolines
-                    .values()
-                    .any(|&addr| addr == handler_addr);
-                self.pending_native_trap_calls.remove(&trap_table_key);
-                if is_legacy_fakeptr || is_trampoline {
-                    self.native_trap_table.remove(&trap_table_key);
-                } else {
-                    self.native_trap_table.insert(trap_table_key, handler_addr);
+                // The permanent system come-from format starts with
+                // `BRA.S +6; JMP absolute`. Installing such a routine as an
+                // application patch would splice a system head into the wrong
+                // chain, so NSetTrapAddress raises system error 12. Inside
+                // Macintosh: Operating System Utilities (1994), p. 8-30.
+                if bus.read_long(handler_addr) == 0x6006_4EF9 {
+                    bus.write_word(addr::DS_ERR_CODE, 12);
+                    return Some(Err(crate::Error::Halted));
                 }
+                // The helper updates the writable guest table as well as the
+                // pre-initialization mirror. Writing that slot's default
+                // callable gateway restores HLE dispatch without recursion.
+                self.install_trap_address(bus, trap_table_key, handler_addr);
                 Ok(())
             }
 
@@ -1148,16 +1157,12 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // SlotVRemove ($A070) shares trap space with a compatibility
-            // register-based GetNextEvent shim in event.rs. Only claim it when
-            // A0 clearly points at a VBLTask record.
-            // Processes 1994, 4-23 to 4-24
-            // SlotVRemove ($A070): Removes slot-VBLTask via remove_vbl_task; gated to claim only when A0 points at VBLTask record (qType=1) — defers to event.rs GetNextEvent shim otherwise
+            // SlotVRemove ($A070)
+            // Removes a slot-based vertical retrace task from its queue.
+            // FUNCTION SlotVRemove (vblTaskPtr: QElemPtr; theSlot: Integer): OSErr;
+            // Inside Macintosh: Processes (1994), pp. 4-23--4-24
             (false, 0x70) => {
                 let task_ptr = cpu.read_reg(Register::A0);
-                if task_ptr == 0 || bus.read_word(task_ptr + 4) as i16 != 1 {
-                    return None;
-                }
                 let slot = cpu.read_reg(Register::D0) as u16 as i16;
                 cpu.write_reg(
                     Register::D0,
@@ -1524,27 +1529,79 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // ReallocateHandle ($A027)
-            // Allocates a new relocatable block for a handle whose master pointer is nil
-            // (purged or disposed), updating the master pointer to the new block.
+            // ReallocateHandle ($A027) / ReallocateHandleSys ($A427)
+            // Replaces any existing relocatable block and updates the master
+            // pointer. The new block is unlocked, unpurgeable, and has
+            // undefined contents. Systemless has one flat guest heap, so the
+            // current- and system-heap forms share allocation behavior while
+            // retaining their exact raw-word identity in RawTrapRoute.
             // PROCEDURE ReallocateHandle (h: Handle; logicalSize: Size);
-            // Inside Macintosh: Memory 1992, 2-44
+            // Inside Macintosh: Memory (1992), pp. 2-52--2-53; Universal
+            // Interfaces 3.4 MacMemory.h lines 1184--1202.
             (false, 0x27) => {
                 let handle = cpu.read_reg(Register::A0);
                 let size = cpu.read_reg(Register::D0);
+
+                // A Handle must still own its four-byte master-pointer slot.
+                // A disposed handle is a free block and reports memWZErr.
+                if handle == 0 || bus.get_alloc_size(handle) != Some(4) {
+                    write_memory_result(cpu, bus, MEM_WZ_ERR);
+                    return Some(Ok(()));
+                }
+                // Size is a signed LONGINT. Reject negative requests before
+                // entering the unsigned allocator, preserving the master
+                // pointer and handle state on this error path.
+                if (size as i32) < 0 {
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
+                    return Some(Ok(()));
+                }
+
+                // Allocate first so an allocation failure leaves the old
+                // master pointer and block intact, as the documented atomic
+                // error contract requires.
                 let ptr = bus.alloc(size);
                 if ptr == 0 && size > 0 {
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    write_memory_result(cpu, bus, MEM_FULL_ERR);
                 } else {
-                    // Drop the old ptr→handle mapping (if any) and
-                    // install the new one.
+                    scribble_uninitialized_allocation(bus, ptr, size);
                     let old_ptr = bus.read_long(handle);
+                    let indexed_old_ptr = self
+                        .loaded_handles
+                        .get(&handle)
+                        .map(|entry| entry.0)
+                        .unwrap_or(old_ptr);
                     if old_ptr != 0 {
                         self.ptr_to_handle.remove(&old_ptr);
+                        bus.free(old_ptr);
                     }
                     bus.write_long(handle, ptr);
                     self.ptr_to_handle.insert(ptr, handle);
-                    cpu.write_reg(Register::D0, 0);
+                    if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                        entry.0 = ptr;
+                    }
+                    if let Some(resources) = self.resources.as_mut() {
+                        for file in resources.files.values_mut() {
+                            for loaded_ptr in file.loaded.values_mut() {
+                                if *loaded_ptr == indexed_old_ptr {
+                                    *loaded_ptr = ptr;
+                                }
+                            }
+                            for (_id, named_ptr) in file.named.values_mut() {
+                                if *named_ptr == indexed_old_ptr {
+                                    *named_ptr = ptr;
+                                }
+                            }
+                        }
+                    }
+                    // Reallocation resets only the lock and purge flags. Any
+                    // resource marker remains a property of the handle.
+                    if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
+                        *bits &= !0xC0;
+                        if *bits == 0 {
+                            self.handle_state_bits.remove(&handle);
+                        }
+                    }
+                    write_memory_result(cpu, bus, NO_ERR);
                 }
                 Ok(())
             }
@@ -1842,18 +1899,28 @@ impl super::TrapDispatcher {
 
             // ========== Time Manager ==========
 
-            // InsTime ($A058)
-            // Installs a task record into the Time Manager queue.
-            // PROCEDURE InsTime(tmTaskPtr: QElemPtr);
-            // Processes 1994, 3-18
+            // InsTime / InsXTime ($A058/$A458)
+            // Installs an original or extended task record into the Time Manager queue.
+            // PROCEDURE InsTime (tmTaskPtr: QElemPtr);
+            // PROCEDURE InsXTime (tmTaskPtr: QElemPtr);
+            // Inside Macintosh: Processes (1994), pp. 3-18--3-20
             // TMTask layout: qLink(+0,4) qType(+4,2) tmAddr(+6,4) tmCount(+10,4)
+            // Extended fields: tmWakeUp(+14,4) tmReserved(+18,4)
             (false, 0x58) => {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let tm_addr = bus.read_long(task_ptr + 6);
+                let extended = matches!(
+                    raw_trap_route(self.current_trap_word).os_routine_variant,
+                    OsRoutineVariant::TimeTaskExtended
+                );
+                if !extended || bus.read_long(task_ptr + 14) == 0 {
+                    self.timer_extended_wakeups.remove(&task_ptr);
+                }
                 // Remove any existing task for the same record address
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
                 self.timer_tasks.push(super::dispatch::TimerTask {
                     task_ptr,
+                    extended,
                     tm_addr,
                     active: false,
                     fire_at_tick: 0,
@@ -1922,8 +1989,8 @@ impl super::TrapDispatcher {
                 // We use 60 (not 60.15) to keep integer arithmetic exact for common
                 // millisecond values.
                 // Positive = milliseconds, negative = negated microseconds.
-                let delay_subticks = if delay == 0 {
-                    SUBTICKS_PER_TICK // Fire ASAP (next tick)
+                let requested_delay_subticks = if delay == 0 {
+                    0
                 } else if delay > 0 {
                     (delay as u64) * 60_000
                 } else {
@@ -1933,7 +2000,44 @@ impl super::TrapDispatcher {
                 let current_subtick = self
                     .timer_current_subtick
                     .max(current_ticks as u64 * SUBTICKS_PER_TICK);
-                let fire_at_subtick = current_subtick.saturating_add(delay_subticks);
+                let task_kind = self
+                    .timer_tasks
+                    .iter()
+                    .find(|task| task.task_ptr == task_ptr)
+                    .map(|task| task.extended);
+                let fire_at_subtick = if task_kind == Some(true) {
+                    // Processes 1994, pp. 3-8--3-9: an extended task whose
+                    // tmWakeUp is nonzero schedules relative to its preceding
+                    // intended expiry, eliminating callback/interrupt drift.
+                    // A target already in the past has an actual delay of 0,
+                    // while the intended (past) target remains the next base.
+                    let prior_wakeup = if bus.read_long(task_ptr + 14) == 0 {
+                        None
+                    } else {
+                        self.timer_extended_wakeups.get(&task_ptr).copied()
+                    };
+                    let intended_wakeup = prior_wakeup
+                        .unwrap_or(current_subtick)
+                        .saturating_add(requested_delay_subticks);
+                    self.timer_extended_wakeups
+                        .insert(task_ptr, intended_wakeup);
+                    // tmWakeUp is explicitly an opaque internal format. Keep
+                    // it nonzero so guest code can preserve or reset it, while
+                    // the exact deadline remains in manager-owned state.
+                    let opaque_wakeup = ((intended_wakeup / 60) as u32).max(1);
+                    bus.write_long(task_ptr + 14, opaque_wakeup);
+                    intended_wakeup.max(current_subtick)
+                } else {
+                    // Preserve the established next-tick scheduling boundary
+                    // for an original task's zero-delay "as soon as interrupts
+                    // are enabled" request.
+                    let delay_subticks = if delay == 0 {
+                        SUBTICKS_PER_TICK
+                    } else {
+                        requested_delay_subticks
+                    };
+                    current_subtick.saturating_add(delay_subticks)
+                };
                 let fire_at = fire_at_subtick.div_ceil(SUBTICKS_PER_TICK) as u32;
                 if let Some(task) = self.timer_tasks.iter_mut().find(|t| t.task_ptr == task_ptr) {
                     task.active = true;
@@ -2060,17 +2164,14 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // HWPriv ($A198)
-            // Hardware privilege trap for processor cache control.
-            // Selector in D0: 0=SwapInstructionCache, 1=FlushInstructionCache,
-            // 2=SwapDataCache, 3=FlushDataCache, 4-6=ExtCache, 9=FlushCodeCacheRange
-            // Memory 1992, 4-29
-            // HWPriv ($A198): Cache-control selectors (0/2 swap return previous
-            // state and update the simulated enable bit; 1/3/4/5/6 flush no-op;
-            // 9 range flush no-op) — Systemless has no physical caches but preserves
-            // the documented stateful Boolean surface per Memory 1992, 4-29..4-33
+            // HWPriv ($A198; cache-flush glue also uses $A098)
+            // Controls processor caches through a selector in D0.
+            // Register ABI: D0 = selector; FlushCodeCacheRange uses A0/A1 and returns OSErr in D0.
+            // Inside Macintosh: Memory (1992), pp. 4-29 to 4-33.
             (false, 0x98) => {
                 let selector = cpu.read_reg(Register::D0);
+                let operation = hwpriv_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 match selector {
                     0 => {
                         // SwapInstructionCache:
@@ -2586,21 +2687,18 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // UprString ($A054)
-            // Converts lowercase letters in a string to uppercase.
-            // PROCEDURE UprString(VAR theString: Str255; diacSens: BOOLEAN);
-            // Inside Macintosh Volume II, II-377
-            //
-            // Assembly calling convention:
-            //   On entry: A0 = pointer to first character, D0.W = length
-            //   On exit:  A0 = pointer to first character (unchanged)
-            //   Bit 9 of trap word: if set, diacSens=FALSE (strip diacriticals)
-            //
-            // UprString ($A054): Converts lowercase→uppercase in place; bit 9=strip diacriticals; per IM:II II-377
+            // UpperString / UprString ($A054/$A254)
+            // Converts lowercase Roman characters to uppercase in place.
+            // PROCEDURE UpperString(VAR theString: Str255; diacSens: Boolean);
+            // Inside Macintosh: Text (1993), pp. 5-64--5-65.
             (false, 0x54) => {
                 let ptr = cpu.read_reg(Register::A0);
                 let len = cpu.read_reg(Register::D0) & 0xFFFF;
-                let strip_marks = (self.current_trap_word & 0x0200) != 0;
+                let strip_marks = match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::UpperStringPreserveMarks => false,
+                    OsRoutineVariant::UpperStringStripMarks => true,
+                    _ => unreachable!("UprString trap word must have a classified variant"),
+                };
                 for i in 0..len {
                     let ch = bus.read_byte(ptr + i);
                     let upper = mac_roman_to_upper(ch, strip_marks);
@@ -2649,22 +2747,15 @@ impl super::TrapDispatcher {
             (false, 0x56) => {
                 let ptr = cpu.read_reg(Register::A0);
                 let len = cpu.read_reg(Register::D0) & 0xFFFF;
-                let bits = (self.current_trap_word >> 9) & 0x03;
-                let do_upper = (bits & 0x02) != 0;
-                let do_strip = (bits & 0x01) != 0;
-                let do_lower = bits == 0x00;
+                let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
                 for i in 0..len {
                     let ch = bus.read_byte(ptr + i);
-                    let result = if do_upper && do_strip {
-                        mac_roman_to_upper(ch, true)
-                    } else if do_upper {
-                        mac_roman_to_upper(ch, false)
-                    } else if do_strip {
-                        mac_roman_strip_diacriticals(ch)
-                    } else if do_lower {
-                        mac_roman_to_lower(ch)
-                    } else {
-                        ch
+                    let result = match variant {
+                        OsRoutineVariant::LowerText => mac_roman_to_lower(ch),
+                        OsRoutineVariant::StripText => mac_roman_strip_diacriticals(ch),
+                        OsRoutineVariant::UpperText => mac_roman_to_upper(ch, false),
+                        OsRoutineVariant::StripUpperText => mac_roman_to_upper(ch, true),
+                        _ => ch,
                     };
                     bus.write_byte(ptr + i, result);
                 }
@@ -2672,38 +2763,35 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // RelString ($A050)
-            // Compares two strings relationally, returning -1, 0, or 1.
-            // FUNCTION RelString(aStr, bStr: Str255; caseSens, diacSens: BOOLEAN): INTEGER;
-            // Inside Macintosh Volume IV, IV-234
+            // RelString compares two Roman strings relationally. MARKS (bit 9)
+            // makes comparison diacritic-sensitive; CASE (bit 10) makes it
+            // case-sensitive. Inside Macintosh: Text (1993), pp. 5-60--5-61.
             //
             // Assembly calling convention:
             //   On entry: A0 = ptr to first string, A1 = ptr to second string
             //             D0 high word = length of first, D0 low word = length of second
             //   On exit:  D0 = -1 (less), 0 (equal), or 1 (greater) as long word
-            //   Bit 9: if set, diacSens=FALSE (strip diacriticals)
-            //   Bit 10: if set, caseSens=TRUE
-            //
-            // RelString ($A050): Compares strings relationally: A0/A1=ptrs, D0=lengths; bit 9=strip marks, bit 10=case-sensitive; per IM:IV IV-234
             (false, 0x50) => {
                 let ptr_a = cpu.read_reg(Register::A0);
                 let ptr_b = cpu.read_reg(Register::A1);
                 let d0 = cpu.read_reg(Register::D0);
                 let len_a = (d0 >> 16) & 0xFFFF;
                 let len_b = d0 & 0xFFFF;
-                let strip_marks = (self.current_trap_word & 0x0200) != 0;
-                let case_sens = (self.current_trap_word & 0x0400) != 0;
+                let (case_sensitive, diacritic_sensitive) = raw_trap_route(self.current_trap_word)
+                    .os_routine_variant
+                    .text_comparison_sensitivity()
+                    .expect("RelString trap word must have a classified comparison variant");
 
                 let min_len = std::cmp::min(len_a, len_b);
                 let mut result: i32 = 0;
                 for i in 0..min_len {
                     let mut a = bus.read_byte(ptr_a + i);
                     let mut b = bus.read_byte(ptr_b + i);
-                    if strip_marks {
+                    if !diacritic_sensitive {
                         a = mac_roman_strip_diacriticals(a);
                         b = mac_roman_strip_diacriticals(b);
                     }
-                    if !case_sens {
+                    if !case_sensitive {
                         a = mac_roman_to_upper(a, false);
                         b = mac_roman_to_upper(b, false);
                     }
@@ -3115,16 +3203,51 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::tests::internalwait_five_call_composition_preserves_stack_across_alternating_selectors
             (false, 0x7F) => Ok(()),
 
-            // PMgrOp ($A085)
-            // Power Manager operations.
-            // Inside Macintosh Volume V
-            //
-            // D0 = selector. No-op — we don't have hardware power management.
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::pmgrop_returns_noerr_and_preserves_stack_pointer_in_noop_path
-            // PMgrOp ($A085): Returns noErr; no hardware power management; per IM:V
-            (false, 0x85) => return_noerr(cpu),
+            // IdleUpdate ($A285), IdleState ($A485), SerialPower ($A685)
+            // Resets the activity timer or controls idle and serial-port power through D0.
+            // FUNCTION IdleUpdate: LongInt;
+            // PROCEDURE EnableIdle; PROCEDURE DisableIdle;
+            // FUNCTION GetCPUSpeed: LongInt;
+            // PROCEDURE AOn; PROCEDURE AOnIgnoreModem; PROCEDURE BOn;
+            // PROCEDURE AOff; PROCEDURE BOff;
+            // Inside Macintosh: Devices (1994), pp. 6-29--6-30, 6-33--6-35.
+            // Universal Interfaces 3.4 Power.h lines 650--701 and 733--791.
+            (false, 0x85) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = power_control_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::PowerIdleUpdate => {
+                        self.power_idle_last_update_tick = self.tick_count;
+                        cpu.write_reg(Register::D0, self.tick_count);
+                    }
+                    OsRoutineVariant::PowerIdleState => {
+                        let selector = cpu.read_reg(Register::D0) as i32;
+                        if selector < 0 {
+                            cpu.write_reg(
+                                Register::D0,
+                                crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz
+                                    as u32,
+                            );
+                        } else if selector == 0 {
+                            self.power_idle_disable_count =
+                                self.power_idle_disable_count.saturating_sub(1);
+                        } else {
+                            self.power_idle_disable_count =
+                                self.power_idle_disable_count.saturating_add(1);
+                        }
+                    }
+                    OsRoutineVariant::PowerSerial => match cpu.read_reg(Register::D0) as u8 {
+                        0x04 | 0x05 => self.serial_port_a_powered = true,
+                        0x00 => self.serial_port_b_powered = true,
+                        0x84 => self.serial_port_a_powered = false,
+                        0x80 => self.serial_port_b_powered = false,
+                        _ => {}
+                    },
+                    _ => cpu.write_reg(Register::D0, 0),
+                }
+                Ok(())
+            }
 
             // IOPInfoAccess ($A086)
             // Access IOP information.
@@ -3166,20 +3289,37 @@ impl super::TrapDispatcher {
             (false, 0x92) => return_noerr(cpu),
 
             // SleepQInstall ($A28A) / SleepQRemove ($A48A)
-            // Sleep queue management.
-            // Inside Macintosh: Devices (1994), p. 6-33.
-            // No-op behavior in HLE — we don't have sleep/wake hardware.
-            // Both variants take one SleepQRecPtr Pascal argument on stack.
-            //
-            // SleepQInstall/SleepQRemove ($A08A): Returns noErr; no sleep/wake hardware; per IM:VI
+            // Adds or removes an A0-supplied SleepQRec from the ordered sleep
+            // queue; the manager maintains its first-longword link.
+            // PROCEDURE SleepQInstall(qRecPtr: SleepQRecPtr);
+            // PROCEDURE SleepQRemove(qRecPtr: SleepQRecPtr);
+            // Inside Macintosh: Devices (1994), pp. 6-18, 6-26, and 6-33.
+            // Universal Interfaces 3.4 Power.h lines 447--461 and 705--731.
             (false, 0x8A) => {
-                // Variant trap words: $A28A (install), $A48A (remove).
-                // Appendix C table C-2 (IM:VI 1991, p. C-3).
-                match self.current_trap_word {
-                    0xA28A | 0xA48A => {
-                        let sp = cpu.read_reg(Register::A7);
-                        let _q_rec_ptr = bus.read_long(sp);
-                        cpu.write_reg(Register::A7, sp.wrapping_add(4));
+                let q_rec_ptr = cpu.read_reg(Register::A0);
+                match raw_trap_route(self.current_trap_word).os_routine_variant {
+                    OsRoutineVariant::SleepQueueInstall
+                        if q_rec_ptr != 0 && !self.sleep_queue.contains(&q_rec_ptr) =>
+                    {
+                        if let Some(&tail) = self.sleep_queue.last() {
+                            bus.write_long(tail, q_rec_ptr);
+                        }
+                        bus.write_long(q_rec_ptr, 0);
+                        self.sleep_queue.push(q_rec_ptr);
+                    }
+                    OsRoutineVariant::SleepQueueRemove => {
+                        if let Some(index) = self
+                            .sleep_queue
+                            .iter()
+                            .position(|&entry| entry == q_rec_ptr)
+                        {
+                            let next = self.sleep_queue.get(index + 1).copied().unwrap_or(0);
+                            if index != 0 {
+                                let previous = self.sleep_queue[index - 1];
+                                bus.write_long(previous, next);
+                            }
+                            self.sleep_queue.remove(index);
+                        }
                     }
                     _ => {}
                 }
@@ -3188,19 +3328,14 @@ impl super::TrapDispatcher {
             }
 
             // SCSIAtomic ($A089)
-            // SCSI Manager 4.3 dispatch.
-            // Inside Macintosh: Devices (1994), pp. 4-49 to 4-50.
-            // Systemless models the SCSIGetVirtualIDInfo branch used by
-            // SCSIAtomic: the request header must be well formed, the
-            // nominal missing-ID lookup returns noErr / scsiExists =
-            // false, and malformed headers are rejected before the
-            // lookup path with scsiQLinkInvalid / scsiPBLengthError /
-            // scsiRequestInvalid.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::tests::scsiaction_scsigetvirtualidinfo_missing_virtual_id_clears_exists_and_preserves_stack
-            // SCSIAtomic ($A089): selector $0001 (SCSIAction) / SCSIGetVirtualIDInfo virtual-ID lookup, no virtual bus -> noErr + scsiExists false
+            // Dispatches SCSI Manager 4.3 client and XPT operations selected in D0.
+            // FUNCTION SCSIAction (scsiPB: SCSI_PBPtr): OSErr;
+            // Inside Macintosh: Devices (1994), pp. 4-38 to 4-39 and 4-54 to 4-58.
             (false, 0x89) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = scsi_atomic_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+
                 const SCSI_PB_Q_LINK_OFFSET: u32 = 0;
                 const SCSI_PB_LENGTH_OFFSET: u32 = 6;
                 const SCSI_PB_FUNCTION_CODE_OFFSET: u32 = 8;
@@ -3365,60 +3500,29 @@ impl super::TrapDispatcher {
             }
 
             // DebugUtil ($A08D)
-            // Debug utility selector-dispatch trap.
-            // Inside Macintosh Volume VI (1991), pp. 28-30..28-31; and
-            // Appendix C table C-3 (p. C-4) selector map:
-            //     | Selector | Routine             |
-            //     | $0000    | DebuggerGetMax      |
-            //     | $0001    | DebuggerEnter       |
-            //     | $0002    | DebuggerExit        |
-            //     | $0003    | DebuggerPoll        |
-            //     | $0004    | GetPageState        |
-            //     | $0005    | PageFaultFatal      |
-            //     | $0006    | DebuggerLockMemory  |
-            //     | $0007    | DebuggerUnlockMemory|
-            //     | $0008    | EnterSupervisorMode |
-            //
-            // Register convention:
-            //     D0 entry: selector (and selector-specific arg for some)
-            //     D0 exit:  result code or selector-specific return value
-            //     A0/A1 entry: selector-specific args (e.g. address)
-            // No Pascal stack frame is consumed and no result slot is
-            // allocated.
-            //
-            // MPW Universal Headers (MacMemory.h) expose each selector as
-            // a separate TWOWORDINLINE thunk, e.g.
-            //   EXTERN_API( long )
-            //   DebuggerGetMax(void) TWOWORDINLINE(0x7000, 0xA08D);
-            // which inlines "MOVEQ #0,D0" followed by the trap word.
-            //
-            // Systemless HLE models the safe selector-query path for
-            // DebuggerGetMax ($0000): it returns the highest documented
-            // selector number without entering the debugger, mutating
-            // page state, or changing supervisor mode. The other
-            // documented helper selectors are modelled as safe no-ops
-            // that still preserve the register-only OS-bit-trap calling
-            // convention (stack discipline).
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::debugutil_debuggergetmax_returns_max_selector_and_preserves_stack_pointer
-            //   src/trap/memory.rs::tests::debugutil_other_selectors_preserve_non_d0_registers
-            //   src/trap/memory.rs::tests::debugutil_five_call_composition_preserves_stack_across_documented_selectors
-            //   src/trap/memory.rs::tests::debugutil_debuggerpoll_five_call_composition_preserves_stack_across_repeated_selector_three_calls
-            (false, 0x8D) => match cpu.read_reg(Register::D0) {
-                0 => {
-                    cpu.write_reg(Register::D0, 8);
-                    Ok(())
+            // Dispatches virtual-memory debugger support routines selected in D0.
+            // FUNCTION DebuggerGetMax: LongInt;
+            // Inside Macintosh: Memory (1992), pp. 3-34 to 3-40.
+            (false, 0x8D) => {
+                let raw_selector = cpu.read_reg(Register::D0);
+                let operation = debug_util_operation_route(self.current_trap_word, raw_selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
+
+                match raw_selector {
+                    0 => {
+                        cpu.write_reg(Register::D0, 8);
+                        Ok(())
+                    }
+                    1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 => {
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
+                    _ => {
+                        cpu.write_reg(Register::D0, 0);
+                        Ok(())
+                    }
                 }
-                1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 => {
-                    cpu.write_reg(Register::D0, 0);
-                    Ok(())
-                }
-                _ => {
-                    cpu.write_reg(Register::D0, 0);
-                    Ok(())
-                }
-            },
+            }
 
             // NMInstall ($A05E)
             // Installs a notification request.
@@ -4119,9 +4223,14 @@ impl super::TrapDispatcher {
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_empty_range_returns_paramerr_and_preserves_table
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_unlocked_range_returns_notlockederr
             //   src/trap/memory.rs::test_memorydispatch_getphysical_entrycount_zero_on_locked_multpage_range_returns_two_and_preserves_table
-            // MemoryDispatch ($A05C): Tracks Hold/Lock page state and implements GetPhysical lock-check + identity mapping; selectors per IM:Memory 1992 pp.3-25..3-32
+            // MemoryDispatch ($A05C) / MemoryDispatchA0Result ($A15C)
+            // Tracks virtual-memory page state and reports physical mappings.
+            // D0: selector/result; A0: address/table/result; A1: count.
+            // Inside Macintosh: Memory (1992), pp. 3-25 to 3-32.
             (false, 0x5C) => {
                 let selector = cpu.read_reg(Register::D0);
+                let operation = memory_dispatch_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 let address = cpu.read_reg(Register::A0);
                 let count = cpu.read_reg(Register::A1);
                 match selector {
@@ -4439,7 +4548,7 @@ fn mac_roman_to_lower(ch: u8) -> u8 {
 
 /// Strip diacritical marks from a Mac Roman character without case conversion.
 /// Per IM:IV IV-235 stripping table.
-fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
+pub(crate) fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
     match ch {
         // Uppercase accented → uppercase base
         0x80 => b'A', // Ä → A
@@ -4493,7 +4602,7 @@ fn mac_roman_strip_diacriticals(ch: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_helpers::{setup, TEST_SP};
+    use super::super::test_helpers::{setup, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
@@ -4501,6 +4610,121 @@ mod tests {
     use std::collections::HashMap;
 
     // ==================== OS Traps (is_tool=false) ====================
+
+    fn call_trap_word(
+        dispatcher: &mut super::super::TrapDispatcher,
+        trap_word: u16,
+        cpu: &mut MockCpu,
+        bus: &mut crate::memory::MacMemoryBus,
+    ) -> crate::Result<()> {
+        dispatcher.dispatch(trap_word, cpu, bus)
+    }
+
+    #[test]
+    fn memorydispatch_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::MEMORY_DISPATCH_OPERATION_ROUTES.len(), 5);
+        assert!(super::MEMORY_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+        assert_eq!(super::MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES.len(), 1);
+
+        let hold =
+            super::memory_dispatch_operation_route(0xA05C, 0x0000).expect("HoldMemory route");
+        assert_eq!(hold.routine_name, "HoldMemory");
+        assert_eq!(
+            hold.operation_id,
+            "selector-operation:_MemoryDispatch:0x0000:d0-moveq-immediate:8"
+        );
+
+        let physical =
+            super::memory_dispatch_operation_route(0xA15C, 0x0005).expect("GetPhysical route");
+        assert_eq!(physical.routine_name, "GetPhysical");
+        assert_eq!(
+            physical.operation_id,
+            "selector-operation:_MemoryDispatchA0Result:0x0005:d0-moveq-immediate:8"
+        );
+
+        assert!(super::memory_dispatch_operation_route(0xA05C, 0x0005).is_none());
+        assert!(super::memory_dispatch_operation_route(0xA15C, 0x0000).is_none());
+        assert!(super::memory_dispatch_operation_route(0xA05C, 0x0001_0000).is_none());
+    }
+
+    #[test]
+    fn hwpriv_generated_selector_routes_are_sorted_unique_and_complete() {
+        assert_eq!(super::HWPRIV_OPERATION_ROUTES.len(), 3);
+        assert!(super::HWPRIV_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for trap_word in [0xA098, 0xA198] {
+            let flush = super::hwpriv_operation_route(trap_word, 0x0001).expect("flush route");
+            assert_eq!(flush.routine_name, "FlushInstructionCache");
+            assert_eq!(
+                flush.operation_id,
+                "selector-operation:_HWPriv:0x0001:d0-moveq-immediate:8"
+            );
+        }
+
+        assert!(super::hwpriv_operation_route(0xA298, 0x0001).is_none());
+        assert!(super::hwpriv_operation_route(0xA098, 0x7001).is_none());
+        assert!(super::hwpriv_operation_route(0xA098, 0x0001_0001).is_none());
+    }
+
+    #[test]
+    fn hwpriv_records_every_generated_operation_for_both_source_backed_trap_forms() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for trap_word in [0xA098, 0xA198] {
+            for route in super::HWPRIV_OPERATION_ROUTES {
+                cpu.write_reg(Register::D0, u32::from(route.selector));
+                call_trap_word(&mut dispatcher, trap_word, &mut cpu, &mut bus).unwrap();
+                assert_eq!(
+                    dispatcher.current_selector_operation,
+                    Some(route.operation_id)
+                );
+            }
+        }
+
+        for (trap_word, selector) in [(0xA298, 0x0001), (0xA098, 0x7001), (0xA098, 0x0001_0001)] {
+            cpu.write_reg(Register::D0, selector);
+            call_trap_word(&mut dispatcher, trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
+    }
+
+    #[test]
+    fn memorydispatch_records_every_generated_operation_for_its_exact_trap_form() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for route in super::MEMORY_DISPATCH_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, u32::from(route.selector));
+            cpu.write_reg(Register::A0, 0);
+            cpu.write_reg(Register::A1, 0);
+            dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        let get_physical = &super::MEMORY_DISPATCH_A0_RESULT_OPERATION_ROUTES[0];
+        cpu.write_reg(Register::D0, u32::from(get_physical.selector));
+        cpu.write_reg(Register::A0, 0);
+        cpu.write_reg(Register::A1, 0);
+        dispatcher.dispatch(0xA15C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some(get_physical.operation_id)
+        );
+
+        cpu.write_reg(Register::D0, 0x0005);
+        cpu.write_reg(Register::A0, 0);
+        cpu.write_reg(Register::A1, 0);
+        dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.current_selector_operation, None);
+
+        cpu.write_reg(Register::D0, 0x0001_0000);
+        dispatcher.dispatch(0xA05C, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.current_selector_operation, None);
+    }
 
     #[test]
     fn test_new_ptr() {
@@ -4921,6 +5145,57 @@ mod tests {
     }
 
     #[test]
+    fn scsi_atomic_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::SCSI_ATOMIC_OPERATION_ROUTES.len(), 5);
+        assert!(super::SCSI_ATOMIC_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (1, "SCSIAction"),
+            (2, "SCSIRegisterBus"),
+            (3, "SCSIDeregisterBus"),
+            (4, "SCSIReregisterBus"),
+            (5, "SCSIKillXPT"),
+        ] {
+            let route = super::scsi_atomic_operation_route(0xA089, selector)
+                .expect("fixed SCSIAtomic route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA189, 1),
+            (0xA089, 0),
+            (0xA089, 6),
+            (0xA089, 0x0000_7001),
+            (0xA089, 0x0001_0001),
+        ] {
+            assert!(super::scsi_atomic_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn scsi_atomic_dispatch_records_fixed_routes_only() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::A0, 0);
+
+        for route in super::SCSI_ATOMIC_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA089, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for selector in [0, 6, 0x0000_7001, 0x0001_0001] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA089, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
+    }
+
+    #[test]
     fn scsiaction_scsigetvirtualidinfo_missing_virtual_id_clears_exists_and_preserves_stack() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
 
@@ -5143,24 +5418,114 @@ mod tests {
     }
 
     #[test]
-    fn pmgrop_returns_noerr_and_preserves_stack_pointer_in_noop_path() {
-        // Inside Macintosh: Devices (1994), Power Manager chapter.
-        // PMgrOp is the no-op Power Manager dispatcher on systems with no
-        // hardware power management. The HLE path should consume no Pascal
-        // arguments, return noErr in D0, and leave A7 untouched.
+    fn power_manager_modifier_forms_preserve_stack_and_manager_state() {
+        // Inside Macintosh: Devices (1994), pp. 6-29--6-30 and 6-33--6-35;
+        // Universal Interfaces 3.4 Power.h lines 650--701 and 733--791.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
 
+        dispatcher.tick_count = 0x1234_5678;
+        dispatcher.dispatch(0xA285, &mut cpu, &mut bus).unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0x1234_5678);
+        assert_eq!(dispatcher.power_idle_last_update_tick, 0x1234_5678);
+
+        for selector in [1, 2] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA585, &mut cpu, &mut bus).unwrap();
+        }
+        assert_eq!(dispatcher.power_idle_disable_count, 2);
         cpu.write_reg(Register::D0, 0);
-        let result = dispatcher.dispatch_memory(false, 0x85, &mut cpu, &mut bus);
-        assert!(result.is_some(), "PMgrOp should be handled");
-        assert!(result.unwrap().is_ok(), "PMgrOp should succeed");
-        assert_eq!(cpu.read_reg(Register::D0), 0, "PMgrOp should return noErr");
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+        assert_eq!(dispatcher.power_idle_disable_count, 1);
+        cpu.write_reg(Register::D0, u32::MAX);
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
         assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "PMgrOp should preserve the caller stack pointer"
+            cpu.read_reg(Register::D0),
+            crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz as u32
         );
+
+        for (selector, a_power, b_power) in [
+            (0x04u32, true, false),
+            (0x00, true, true),
+            (0xFFFF_FF84, false, true),
+            (0xFFFF_FF80, false, false),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA785, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.serial_port_a_powered, a_power);
+            assert_eq!(dispatcher.serial_port_b_powered, b_power);
+        }
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+    }
+
+    #[test]
+    fn power_control_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::IDLE_STATE_OPERATION_ROUTES.len(), 1);
+        assert_eq!(super::SERIAL_POWER_OPERATION_ROUTES.len(), 5);
+        assert!(super::SERIAL_POWER_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        let enable = super::power_control_operation_route(0xA485, 0).expect("EnableIdle route");
+        assert_eq!(enable.routine_name, "EnableIdle");
+        assert_eq!(
+            enable.operation_id,
+            "selector-operation:_IdleState:0x0000:d0-moveq-immediate:8"
+        );
+
+        let a_off = super::power_control_operation_route(0xA685, 0xFFFF_FF84).expect("AOff route");
+        assert_eq!(a_off.routine_name, "AOff");
+        assert_eq!(
+            a_off.operation_id,
+            "selector-operation:_SerialPower:0xFF84:d0-moveq-immediate:8"
+        );
+
+        assert!(super::power_control_operation_route(0xA585, 0).is_none());
+        assert!(super::power_control_operation_route(0xA485, 1).is_none());
+        assert!(super::power_control_operation_route(0xA485, u32::MAX).is_none());
+        assert!(super::power_control_operation_route(0xA785, 0xFFFF_FF84).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0000_FF84).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0000_7084).is_none());
+        assert!(super::power_control_operation_route(0xA685, 0x0001_0004).is_none());
+    }
+
+    #[test]
+    fn power_control_dispatch_records_fixed_routes_and_leaves_ranges_unregistered() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        cpu.write_reg(Register::D0, 0);
+        dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some(super::IDLE_STATE_OPERATION_ROUTES[0].operation_id)
+        );
+
+        for selector in [1, u32::MAX] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA485, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
+
+        for route in super::SERIAL_POWER_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA685, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA585, 0),
+            (0xA785, 0xFFFF_FF84),
+            (0xA685, 0x0000_FF84),
+            (0xA685, 0x0000_7084),
+            (0xA685, 0x0001_0004),
+        ] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(trap_word, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     fn assert_no_hardware_trap_returns_noerr_and_preserves_stack(trap_num: u16, trap_name: &str) {
@@ -6327,6 +6692,27 @@ mod tests {
     }
 
     #[test]
+    fn slotvremove_invalid_task_returns_vtyperr_without_event_fallback() {
+        // Inside Macintosh: Processes (1994), p. 4-24: SlotVRemove returns
+        // vTypErr (-2) when qType is not ORD(vType). `$A070` is not an Event
+        // Manager alias; GetNextEvent is the Toolbox trap `$A970`.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = bus.alloc(14);
+        bus.write_word(task_ptr + 4, 0);
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 4);
+
+        let result = dispatcher.dispatch(0xA070, &mut cpu, &mut bus);
+
+        assert!(result.is_ok());
+        assert_eq!(cpu.read_reg(Register::D0) as i16, -2);
+        assert_eq!(
+            dispatcher.current_trap_adapter,
+            super::super::dispatch::TrapAdapterId::Memory
+        );
+    }
+
+    #[test]
     fn test_hpurge() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::A0, 0x200000);
@@ -6697,10 +7083,89 @@ mod tests {
         assert!(result.is_some(), "GetTrapAddress should be handled");
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let addr = cpu.read_reg(Register::A0);
+        assert_ne!(addr, 0, "GetTrapAddress should return a routine address");
+        assert_eq!(bus.read_word(addr), 0xA044);
+        assert_eq!(bus.read_word(addr + 2), 0x4E75);
+
+        bus.write_word(addr, 0);
+        cpu.write_reg(Register::D0, 0x0044);
+        dispatcher
+            .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+            .expect("GetTrapAddress should be handled")
+            .expect("GetTrapAddress should succeed repeatedly");
+        assert_eq!(cpu.read_reg(Register::A0), addr);
+        assert_eq!(bus.read_word(addr), 0xA044);
+        assert_eq!(bus.read_word(addr + 2), 0x4E75);
+    }
+
+    #[test]
+    fn restoring_an_os_trap_gateway_removes_the_installed_patch() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA346;
+        cpu.write_reg(Register::D0, 0x39);
+        dispatcher
+            .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+            .expect("GetOSTrapAddress should be handled")
+            .expect("GetOSTrapAddress should succeed");
+        let original = cpu.read_reg(Register::A0);
+
+        dispatcher.current_trap_word = 0xA247;
+        cpu.write_reg(Register::D0, 0x39);
+        cpu.write_reg(Register::A0, 0x0030_0000);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should install a patch");
         assert_eq!(
-            addr,
-            0x00F00000 | 0x0044,
-            "GetTrapAddress should return 0x00F00000 | trap_num in A0"
+            dispatcher.native_trap_table.get(&0xA039),
+            Some(&0x0030_0000)
+        );
+
+        cpu.write_reg(Register::A0, original);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should restore the original");
+        assert!(dispatcher.native_trap_table.get(&0xA039).is_none());
+    }
+
+    #[test]
+    fn changing_a_trap_head_does_not_cancel_an_active_native_invocation() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let sp = 0x003F_FF00u32;
+        dispatcher.native_trap_table.insert(0xA039, 0x0030_0000);
+        cpu.write_reg(Register::PC, 0x0020_0002);
+        cpu.write_reg(Register::A7, sp);
+        dispatcher.dispatch(0xA039, &mut cpu, &mut bus).unwrap();
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA039)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        dispatcher.current_trap_word = 0xA247;
+        cpu.write_reg(Register::D0, 0x39);
+        cpu.write_reg(Register::A0, 0x0031_0000);
+        dispatcher
+            .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+            .expect("SetOSTrapAddress should be handled")
+            .expect("SetOSTrapAddress should replace the table head");
+
+        assert_eq!(
+            dispatcher.native_trap_table.get(&0xA039),
+            Some(&0x0031_0000)
+        );
+        assert_eq!(
+            dispatcher
+                .pending_native_trap_calls
+                .get(&0xA039)
+                .unwrap()
+                .len(),
+            1,
+            "table mutation must not cancel an executing patch"
         );
     }
 
@@ -6745,8 +7210,61 @@ mod tests {
     }
 
     #[test]
-    fn test_get_trap_address_docking_dispatch_aliases_unimplemented_vector() {
+    fn trap_address_a0_variants_keep_new_os_and_new_tool_table_selection() {
+        // Inside Macintosh: Operating System Utilities (1994), pp. 8-27--8-31:
+        // bit 9 selects the new typed form, bit 10 then selects Toolbox, and
+        // bit 8 independently controls A0 return handling. UI 3.4 Patches.h
+        // lines 126--231 declares the new-OS and new-Tool entry points.
         let (mut dispatcher, mut cpu, mut bus) = setup();
+        let supplied_trap = 0xA9A0;
+        let os_key = 0xA0A0;
+        let tool_key = 0xA9A0;
+        dispatcher.native_trap_table.insert(os_key, 0x0030_0000);
+        dispatcher.native_trap_table.insert(tool_key, 0x0031_0000);
+
+        // Clear bit 8 from the declared getter words. The central route must
+        // retain their table type even though the dispatcher later restores
+        // A0 for a real no-A0-return invocation.
+        for (trap_word, expected) in [(0xA246, 0x0030_0000), (0xA646, 0x0031_0000)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, supplied_trap);
+            dispatcher
+                .dispatch_memory(false, 0x46, &mut cpu, &mut bus)
+                .expect("typed trap getter should be handled")
+                .expect("typed trap getter should succeed");
+            assert_eq!(
+                cpu.read_reg(Register::A0),
+                expected,
+                "trap ${trap_word:04X}"
+            );
+        }
+
+        // Add bit 8 to the declared setter words. It remains structural and
+        // must not make either setter fall back to obsolete number inference.
+        for (trap_word, key, handler) in [
+            (0xA347, os_key, 0x0032_0000),
+            (0xA747, tool_key, 0x0033_0000),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, supplied_trap);
+            cpu.write_reg(Register::A0, handler);
+            dispatcher
+                .dispatch_memory(false, 0x47, &mut cpu, &mut bus)
+                .expect("typed trap setter should be handled")
+                .expect("typed trap setter should succeed");
+            assert_eq!(
+                dispatcher.native_trap_table.get(&key),
+                Some(&handler),
+                "trap ${trap_word:04X}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_trap_address_does_not_misclassify_docking_dispatch_as_unimplemented() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher
+            .materialize_trap_tables(&mut bus, crate::trap::dispatch::TrapTableProfile::M68k68040);
 
         cpu.write_reg(Register::D0, 0xAA57);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
@@ -6757,7 +7275,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let docking_addr = cpu.read_reg(Register::A0);
 
-        cpu.write_reg(Register::D0, 0xA89F);
+        cpu.write_reg(Register::D0, 0xAA6E);
         let result = dispatcher.dispatch_memory(false, 0x46, &mut cpu, &mut bus);
         assert!(
             result.is_some(),
@@ -6766,139 +7284,22 @@ mod tests {
         assert!(result.unwrap().is_ok(), "GetTrapAddress should succeed");
         let unimplemented_addr = cpu.read_reg(Register::A0);
 
-        assert_eq!(
-            docking_addr, unimplemented_addr,
-            "DockingDispatch should alias the _Unimplemented trampoline on the generic target"
-        );
-    }
-
-    #[test]
-    fn phantom_gettooltrapaddress_returns_native_table_entry_and_preserves_stack() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0x1357_BEEF);
-        dispatcher.native_trap_table.insert(0xA89F, 0x00F0_2468);
-
-        cpu.write_reg(Register::D0, 0xA89F);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should be handled"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A0),
-            0x00F0_2468,
-            "native trap-table entries should take precedence"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0x1357_BEEF,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
-    }
-
-    #[test]
-    fn test_get_tool_trap_address_docking_dispatch_aliases_unimplemented_probe() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0x0BAD_F00D);
-
-        cpu.write_reg(Register::D0, 0x257);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress should handle DockingDispatch"
-        );
-        assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
-        let docking_addr = cpu.read_reg(Register::A0);
-
-        cpu.write_reg(Register::D0, 0x09F);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress should handle Unimplemented"
-        );
-        assert!(result.unwrap().is_ok(), "GetToolTrapAddress should succeed");
-        let unimplemented_addr = cpu.read_reg(Register::A0);
-
-        assert_eq!(
-            docking_addr, unimplemented_addr,
-            "DockingDispatch should alias the _Unimplemented probe sentinel on the generic target"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0x0BAD_F00D,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
-    }
-
-    #[test]
-    fn phantom_gettooltrapaddress_creates_stable_trampoline_for_tool_trap_word() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0xCAFE_BABE);
-
-        cpu.write_reg(Register::D0, 0xA89F);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should handle tool-trap words"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed"
-        );
-        let first_addr = cpu.read_reg(Register::A0);
         assert_ne!(
-            first_addr, 0,
-            "tool-trap trampoline address should be nonzero"
+            docking_addr, unimplemented_addr,
+            "the selected profile captures DockingDispatch as callable"
         );
-        bus.write_word(first_addr, 0);
+    }
 
+    #[test]
+    fn ab46_has_no_phantom_gettooltrapaddress_route() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
         cpu.write_reg(Register::D0, 0xA89F);
+        cpu.write_reg(Register::A0, 0x1234_5678);
+
         let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "phantom GetToolTrapAddress should handle repeated tool-trap words"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "phantom GetToolTrapAddress should succeed on repeated lookup"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A0),
-            first_addr,
-            "tool-trap trampoline lookup should be stable"
-        );
-        assert_eq!(
-            bus.read_word(first_addr),
-            0xAC9F,
-            "repeated lookup should restore the ROM-like auto-pop trap word"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "phantom GetToolTrapAddress should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0xCAFE_BABE,
-            "phantom GetToolTrapAddress should leave caller stack memory untouched"
-        );
+
+        assert!(result.is_none());
+        assert_eq!(cpu.read_reg(Register::A0), 0x1234_5678);
     }
 
     #[test]
@@ -7427,95 +7828,75 @@ mod tests {
     }
 
     #[test]
-    fn sleepqinstall_variant_consumes_sleepqrecptr_argument() {
-        // SleepQInstall is PROCEDURE SleepQInstall(qRecPtr: SleepQRecPtr),
-        // so it consumes one 4-byte pointer argument from stack.
-        // Inside Macintosh: Devices (1994), p. 6-33.
-        // Trap word mapping: SleepQInstall = $A28A (IM:VI 1991 Appendix C, p. C-3).
+    fn sleep_queue_variants_use_a0_and_keep_links_ordered_when_bit_8_changes() {
+        // Inside Macintosh: Devices (1994), pp. 6-18, 6-26, and 6-33 makes
+        // the SleepQRec link manager-owned and defines ordered install/remove.
+        // UI 3.4 Power.h lines 447--461 and 705--731 puts qRecPtr in A0.
+        // OS Utilities 1994, pp. 8-10--8-14 makes bit 8 independently control
+        // A0 restoration, so $A38A/$A58A retain their operation.
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        let q_rec_ptr = bus.alloc(12);
+        let first = bus.alloc(12);
+        let second = bus.alloc(12);
+        let third = bus.alloc(12);
         let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, q_rec_ptr);
-        dispatcher.current_trap_word = 0xA28A;
+        bus.write_long(sp_before, 0x1357_9BDF);
 
-        let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQInstall should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQInstall should return cleanly"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before.wrapping_add(4),
-            "SleepQInstall should pop one SleepQRecPtr argument (4 bytes)"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "SleepQInstall no-op path should report noErr in D0"
-        );
+        for (trap_word, q_rec_ptr) in [(0xA28A, first), (0xA38A, second), (0xA28A, third)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, q_rec_ptr);
+            dispatcher
+                .dispatch_memory(false, 0x8A, &mut cpu, &mut bus)
+                .expect("SleepQInstall should be handled")
+                .expect("SleepQInstall should return cleanly");
+        }
+        assert_eq!(dispatcher.sleep_queue, [first, second, third]);
+        assert_eq!(bus.read_long(first), second);
+        assert_eq!(bus.read_long(second), third);
+        assert_eq!(bus.read_long(third), 0);
+
+        for (trap_word, q_rec_ptr) in [(0xA58A, second), (0xA48A, first), (0xA48A, third)] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, q_rec_ptr);
+            dispatcher
+                .dispatch_memory(false, 0x8A, &mut cpu, &mut bus)
+                .expect("SleepQRemove should be handled")
+                .expect("SleepQRemove should return cleanly");
+            if q_rec_ptr == second {
+                assert_eq!(dispatcher.sleep_queue, [first, third]);
+                assert_eq!(bus.read_long(first), third);
+            }
+        }
+        assert!(dispatcher.sleep_queue.is_empty());
+        assert_eq!(cpu.read_reg(Register::A7), sp_before);
+        assert_eq!(bus.read_long(sp_before), 0x1357_9BDF);
     }
 
     #[test]
-    fn sleepqremove_variant_consumes_sleepqrecptr_argument() {
-        // SleepQRemove is PROCEDURE SleepQRemove(qRecPtr: SleepQRecPtr),
-        // so it consumes one 4-byte pointer argument from stack.
-        // Inside Macintosh: Devices (1994), p. 6-33.
-        // Trap word mapping: SleepQRemove = $A48A (IM:VI 1991 Appendix C, p. C-3).
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let q_rec_ptr = bus.alloc(12);
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, q_rec_ptr);
-        dispatcher.current_trap_word = 0xA48A;
-
-        let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQRemove should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQRemove should return cleanly"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before.wrapping_add(4),
-            "SleepQRemove should pop one SleepQRecPtr argument (4 bytes)"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "SleepQRemove no-op path should report noErr in D0"
-        );
-    }
-
-    #[test]
-    fn sleepq_family_trap_leaves_stack_untouched() {
-        // The family trap word ($A08A) is the shell that dispatches to the
-        // SleepQInstall/$A28A and SleepQRemove/$A48A variants.
-        // The shell itself should not consume a Pascal argument frame.
+    fn sleep_trap_leaves_stack_untouched() {
+        // Universal Interfaces 3.4 Traps.h line 794 identifies $A08A as the
+        // distinct _Sleep operation. It has no SleepQRec argument frame.
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0x1357_9BDF);
         dispatcher.current_trap_word = 0xA08A;
 
         let result = dispatcher.dispatch_memory(false, 0x8A, &mut cpu, &mut bus);
-        assert!(result.is_some(), "SleepQ family trap should be handled");
-        assert!(
-            result.unwrap().is_ok(),
-            "SleepQ family trap should return cleanly"
-        );
+        assert!(result.is_some(), "Sleep should be handled");
+        assert!(result.unwrap().is_ok(), "Sleep should return cleanly");
         assert_eq!(
             cpu.read_reg(Register::A7),
             sp_before,
-            "SleepQ family shell should not pop a Pascal frame"
+            "Sleep should not pop a Pascal frame"
         );
         assert_eq!(
             bus.read_long(sp_before),
             0x1357_9BDF,
-            "SleepQ family shell should leave the stack top untouched"
+            "Sleep should leave the stack top untouched"
         );
         assert_eq!(
             cpu.read_reg(Register::D0),
             0,
-            "SleepQ family shell should report noErr in D0"
+            "Sleep should report noErr in D0"
         );
     }
 
@@ -7859,6 +8240,59 @@ mod tests {
             sp_before,
             "CommToolboxDispatch should preserve the caller stack pointer for the three-item dialog"
         );
+    }
+
+    #[test]
+    fn debug_util_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::DEBUG_UTIL_OPERATION_ROUTES.len(), 9);
+        assert!(super::DEBUG_UTIL_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0, "DebuggerGetMax"),
+            (1, "DebuggerEnter"),
+            (2, "DebuggerExit"),
+            (3, "DebuggerPoll"),
+            (4, "GetPageState"),
+            (5, "PageFaultFatal"),
+            (6, "DebuggerLockMemory"),
+            (7, "DebuggerUnlockMemory"),
+            (8, "EnterSupervisorMode"),
+        ] {
+            let route =
+                super::debug_util_operation_route(0xA08D, selector).expect("DebugUtil route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA18D, 0),
+            (0xA08D, 9),
+            (0xA08D, 0x0000_7000),
+            (0xA08D, 0x0001_0000),
+        ] {
+            assert!(super::debug_util_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn debug_util_dispatch_records_fixed_routes_only() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+
+        for route in super::DEBUG_UTIL_OPERATION_ROUTES {
+            cpu.write_reg(Register::D0, route.selector);
+            dispatcher.dispatch(0xA08D, &mut cpu, &mut bus).unwrap();
+            assert_eq!(
+                dispatcher.current_selector_operation,
+                Some(route.operation_id)
+            );
+        }
+
+        for selector in [9, 0x0000_7000, 0x0001_0000] {
+            cpu.write_reg(Register::D0, selector);
+            dispatcher.dispatch(0xA08D, &mut cpu, &mut bus).unwrap();
+            assert_eq!(dispatcher.current_selector_operation, None);
+        }
     }
 
     #[test]
@@ -8434,6 +8868,29 @@ mod tests {
     }
 
     #[test]
+    fn uprstring_variants_preserve_or_strip_mac_roman_marks() {
+        // Inside Macintosh: Text (1993), pp. 5-64--5-65: the bare form has
+        // diacSens=TRUE, while MARKS has diacSens=FALSE and strips marks.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        for (trap_word, expected) in [
+            (0xA054u16, [0x83, 0x80, b'Q']),
+            (0xA254u16, [b'E', b'A', b'Q']),
+        ] {
+            let ptr = bus.alloc(3);
+            bus.write_bytes(ptr, &[0x8E, 0x8A, b'q']);
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, ptr);
+            cpu.write_reg(Register::D0, 3);
+
+            let result = dispatcher.dispatch_memory(false, 0x54, &mut cpu, &mut bus);
+
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(bus.read_bytes(ptr, 3), expected, "trap ${trap_word:04X}");
+            assert_eq!(cpu.read_reg(Register::A0), ptr);
+        }
+    }
+
+    #[test]
     fn uppertext_variant_converts_ascii_and_macroman_lowercase_to_uppercase() {
         // Inside Macintosh Volume VI (1991), p. 14-63: UpperText localizes
         // uppercase conversion for len bytes at A0.
@@ -8611,6 +9068,42 @@ mod tests {
                 bus.read_bytes(ptr, 4),
                 expected.to_vec(),
                 "Variant ${trap_word:04X} must produce documented byte sequence"
+            );
+        }
+    }
+
+    #[test]
+    fn relstring_variants_apply_documented_case_and_marks_sensitivity() {
+        // Inside Macintosh: Text (1993), pp. 5-60--5-61: the bare form
+        // ignores case and marks; MARKS and CASE independently enable them.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let accented_lower = bus.alloc(1);
+        let plain_lower = bus.alloc(1);
+        let plain_upper = bus.alloc(1);
+        bus.write_byte(accented_lower, 0x8E); // Mac Roman e acute
+        bus.write_byte(plain_lower, b'e');
+        bus.write_byte(plain_upper, b'E');
+
+        for (trap_word, left, right, expected) in [
+            (0xA050, accented_lower, plain_upper, 0),
+            (0xA250, accented_lower, plain_upper, 1),
+            (0xA450, accented_lower, plain_upper, 1),
+            (0xA650, accented_lower, plain_upper, 1),
+            (0xA050, plain_lower, plain_upper, 0),
+            (0xA250, plain_lower, plain_upper, 0),
+            (0xA450, plain_lower, plain_upper, 1),
+            (0xA650, plain_lower, plain_upper, 1),
+        ] {
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::A0, left);
+            cpu.write_reg(Register::A1, right);
+            cpu.write_reg(Register::D0, 0x0001_0001);
+            let result = dispatcher.dispatch_memory(false, 0x50, &mut cpu, &mut bus);
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(
+                cpu.read_reg(Register::D0),
+                expected,
+                "trap ${trap_word:04X}"
             );
         }
     }
@@ -9063,36 +9556,102 @@ mod tests {
     }
 
     #[test]
-    fn test_reallocate_handle() {
+    fn reallocate_handle_current_and_system_forms_replace_block_and_reset_state() {
+        // Memory (1992), pp. 2-52--2-53: both entry points replace any
+        // existing block with undefined contents and leave it unlocked and
+        // unpurgeable. UI 3.4 MacMemory.h lines 1184--1202 supplies the exact
+        // $A027/$A427 words; the emulator's flat heap makes their guest state
+        // equivalent.
+        for trap_word in [0xA027u16, 0xA427] {
+            let (mut dispatcher, mut cpu, mut bus) = setup();
+            dispatcher.current_trap_word = trap_word;
+            cpu.write_reg(Register::D0, 128);
+            dispatcher
+                .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+            let handle = cpu.read_reg(Register::A0);
+            let old_ptr = bus.read_long(handle);
+            dispatcher.ptr_to_handle.insert(old_ptr, handle);
+            dispatcher.handle_state_bits.insert(handle, 0xE0);
+
+            cpu.write_reg(Register::A0, handle);
+            cpu.write_reg(Register::D0, 17);
+            let result = dispatcher.dispatch_memory(false, 0x27, &mut cpu, &mut bus);
+
+            assert!(result.is_some() && result.unwrap().is_ok());
+            assert_eq!(cpu.read_reg(Register::D0), 0);
+            assert_eq!(cpu.read_reg(Register::A0), handle);
+            let new_ptr = bus.read_long(handle);
+            assert_ne!(new_ptr, old_ptr);
+            assert_eq!(
+                bus.get_alloc_size(old_ptr),
+                None,
+                "old block must be released"
+            );
+            assert_eq!(bus.get_alloc_size(new_ptr), Some(17));
+            assert_eq!(bus.read_bytes(new_ptr, 17), vec![0xA5; 17]);
+            assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), None);
+            assert_eq!(dispatcher.ptr_to_handle.get(&new_ptr), Some(&handle));
+            assert_eq!(
+                dispatcher.handle_state_bits.get(&handle),
+                Some(&0x20),
+                "lock/purge bits clear while the resource bit survives"
+            );
+        }
+    }
+
+    #[test]
+    fn reallocate_handle_error_preserves_master_pointer_block_and_state() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
-        // First create a handle via NewHandle
-        cpu.write_reg(Register::D0, 128);
-        let result = dispatcher.dispatch_memory(false, 0x22, &mut cpu, &mut bus);
-        assert!(result.unwrap().is_ok(), "NewHandle (setup) should succeed");
+        dispatcher.current_trap_word = 0xA027;
+        cpu.write_reg(Register::D0, 32);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
         let handle = cpu.read_reg(Register::A0);
         let old_ptr = bus.read_long(handle);
+        dispatcher.handle_state_bits.insert(handle, 0xC0);
 
-        // Now reallocate it with a new size
         cpu.write_reg(Register::A0, handle);
-        cpu.write_reg(Register::D0, 2048);
-        let result = dispatcher.dispatch_memory(false, 0x27, &mut cpu, &mut bus);
-        assert!(result.is_some(), "ReallocateHandle should be handled");
-        assert!(result.unwrap().is_ok(), "ReallocateHandle should succeed");
-        assert_eq!(
-            cpu.read_reg(Register::D0),
-            0,
-            "ReallocateHandle should set D0 to 0"
-        );
-        let new_ptr = bus.read_long(handle);
-        assert!(
-            new_ptr >= 0x200000,
-            "ReallocateHandle should update handle to a valid pointer, got ${:08X}",
-            new_ptr
-        );
-        assert_ne!(
-            new_ptr, old_ptr,
-            "ReallocateHandle should allocate a new block (different from old ptr)"
-        );
+        cpu.write_reg(Register::D0, u32::MAX);
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_FULL_ERR);
+        assert_eq!(bus.read_long(handle), old_ptr);
+        assert_eq!(bus.get_alloc_size(old_ptr), Some(32));
+        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), Some(&handle));
+        assert_eq!(dispatcher.handle_state_bits.get(&handle), Some(&0xC0));
+    }
+
+    #[test]
+    fn reallocate_handle_rejects_a_disposed_master_pointer_slot() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 8);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 16);
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_WZ_ERR);
+        assert_eq!(bus.get_alloc_size(handle), None);
     }
 
     #[test]
@@ -9334,6 +9893,84 @@ mod tests {
         let result = dispatcher.dispatch_memory(false, 0x58, &mut cpu, &mut bus);
         assert!(result.is_some(), "InsTime should be handled");
         assert!(result.unwrap().is_ok(), "InsTime should succeed (no-op)");
+    }
+
+    #[test]
+    fn ins_x_time_reprime_uses_the_previous_intended_expiry() {
+        // Inside Macintosh: Processes (1994), pp. 3-8--3-9 and 3-19:
+        // InsXTime selects the extended record. A nonzero tmWakeUp makes the
+        // next PrimeTime delay relative to the preceding intended expiry,
+        // not to callback latency; RmvTime/InsXTime may preserve that value.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let task_ptr = 0x200000;
+        bus.write_long(0x016A, 100);
+        bus.write_long(task_ptr + 6, 0x1234_5678);
+        bus.write_long(task_ptr + 14, 0);
+
+        dispatcher.current_trap_word = 0xA458;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(dispatcher.timer_tasks[0].extended);
+
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 10);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dispatcher.timer_tasks[0].fire_at_subtick, 100_600_000);
+        assert_ne!(bus.read_long(task_ptr + 14), 0);
+
+        dispatcher.timer_current_subtick = 100_750_000;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert!(dispatcher.timer_tasks.is_empty());
+
+        dispatcher.current_trap_word = 0xA458;
+        cpu.write_reg(Register::A0, task_ptr);
+        dispatcher
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 10);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            dispatcher.timer_tasks[0].fire_at_subtick, 101_200_000,
+            "callback latency must not shift the extended task's frequency"
+        );
+        assert_eq!(
+            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            Some(&101_200_000)
+        );
+
+        dispatcher.timer_current_subtick = 102_000_000;
+        dispatcher.timer_tasks[0].active = false;
+        cpu.write_reg(Register::A0, task_ptr);
+        cpu.write_reg(Register::D0, 1);
+        dispatcher
+            .dispatch_memory(false, 0x5A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            dispatcher.timer_tasks[0].fire_at_subtick, 102_000_000,
+            "an intended expiry in the past must receive an actual zero delay"
+        );
+        assert_eq!(
+            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            Some(&101_260_000),
+            "the past intended expiry remains the drift-free base"
+        );
     }
 
     #[test]
@@ -12039,40 +12676,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_tool_trap_address_tool() {
-        let (mut dispatcher, mut cpu, mut bus) = setup();
-        let sp_before = cpu.read_reg(Register::A7);
-        bus.write_long(sp_before, 0xAA55_AA55);
-
-        cpu.write_reg(Register::D0, 0x0234);
-        let result = dispatcher.dispatch_memory(true, 0x346, &mut cpu, &mut bus);
-        assert!(
-            result.is_some(),
-            "GetToolTrapAddress (tool) should be handled"
-        );
-        assert!(
-            result.unwrap().is_ok(),
-            "GetToolTrapAddress (tool) should succeed"
-        );
-        let addr = cpu.read_reg(Register::A0);
-        assert_eq!(
-            addr,
-            0xCAFE0000 + 0x0234,
-            "GetToolTrapAddress (tool) should return 0xCAFE0000 + (trap & 0x3FF) in A0"
-        );
-        assert_eq!(
-            cpu.read_reg(Register::A7),
-            sp_before,
-            "GetToolTrapAddress (tool) should preserve A7"
-        );
-        assert_eq!(
-            bus.read_long(sp_before),
-            0xAA55_AA55,
-            "GetToolTrapAddress (tool) should leave caller stack memory untouched"
-        );
-    }
-
-    #[test]
     fn gettooltrapaddress_trap_word_variant_returns_callable_trampoline() {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let sp_before = cpu.read_reg(Register::A7);
@@ -12095,10 +12698,6 @@ mod tests {
 
         let addr = cpu.read_reg(Register::A0);
         assert_ne!(addr, 0, "tool-trap trampoline address should be nonzero");
-        assert!(
-            !(0xCAFE0000..=0xCAFE03FF).contains(&addr),
-            "A746 variant must return a callable trampoline, not a CAFE fake-ptr"
-        );
         assert_eq!(
             bus.read_word(addr),
             0xACEC,
