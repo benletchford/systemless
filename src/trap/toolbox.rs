@@ -26508,6 +26508,120 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 260);
     }
 
+    #[test]
+    fn pack2_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK2_OPERATION_ROUTES.len(), 6);
+        assert!(super::PACK2_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "DIBadMount"),
+            (0x0002, "DILoad"),
+            (0x0004, "DIUnload"),
+            (0x0006, "DIFormat"),
+            (0x0008, "DIVerify"),
+            (0x000A, "DIZero"),
+        ] {
+            let route =
+                super::pack2_operation_route(0xA9E9, selector).expect("Pack2 operation route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack2:0x{selector:04X}:stack-word-via-d0-moveq-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA8E9, 0x0000),
+            (0xADE9, 0x0000), // same slot with a different raw trap form
+            (0xA9E8, 0x0006),
+            (0xA9E5, 0x0000), // InitPack is a distinct trap
+            (0xA9E9, 0x0001), // unassigned gap
+            (0xA9E9, 0x0003), // unassigned gap
+            (0xA9E9, 0x0005), // unassigned gap
+            (0xA9E9, 0x0007), // unassigned gap
+            (0xA9E9, 0x0009), // unassigned gap
+            (0xA9E9, 0x000B), // unassigned gap
+            (0xA9E9, 0x000C), // later UI 3.4 DIXFormat remains outside this 1992 generated slice
+            (0xA9E9, 0x000E), // later UI 3.4 DIXZero remains outside this 1992 generated slice
+            (0xA9E9, 0x0010), // later UI 3.4 DIReformat remains outside this 1992 generated slice
+            (0xA9E9, 0x000F), // odd adjacent value
+            (0xA9E9, 0x7000), // MOVEQ opcode setup spelling
+            (0xA9E9, 0x3F00), // MOVE.W D0,-(SP) glue opcode spelling
+            (0xA9E9, 0x0200), // byte-swapped DILoad selector
+            (0xA9E9, 0x0600), // byte-swapped DIFormat selector
+            (0xA9E9, 0x0A00), // byte-swapped DIZero selector
+        ] {
+            assert!(super::pack2_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack2_records_stack_word_identity_without_changing_behavior_and_clears_stale_identity() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        // 1. Exact A9E9 records known stack selector without changing existing frame/result
+        disp.current_trap_word = 0xA9E9;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::A0, 0x1234_0000);
+        cpu.write_reg(Register::A1, 0x1234_0001);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        cpu.write_reg(Register::D1, 0x1234_0002);
+        bus.write_word(sp, 0x0006); // DIFormat
+        bus.write_word(sp + 2, 7); // drvNum
+        bus.write_word(sp + 4, 0xBEEF); // OSErr result slot
+        bus.write_long(sp + 6, 0xCAFE_BABE); // adjacent stack poison
+
+        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
+        assert!(result.expect("Pack2 DIFormat arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack2:0x0006:stack-word-via-d0-moveq-immediate:16")
+        );
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(cpu.read_reg(Register::A0), 0x1234_0000);
+        assert_eq!(cpu.read_reg(Register::A1), 0x1234_0001);
+        assert_eq!(cpu.read_reg(Register::D1), 0x1234_0002);
+        assert_eq!(bus.read_long(sp + 6), 0xCAFE_BABE);
+
+        // 2. Pre-seeded stale identity is actively cleared for an unassigned gap
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xA9E9;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        bus.write_word(sp, 0x0005); // unassigned gap
+        bus.write_bytes(sp + 2, &[0xA5; 16]); // adjacent stack poison
+
+        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
+        assert!(result.expect("Pack2 unknown selector fallback").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(sp + 2, 16), vec![0xA5; 16]);
+
+        // 3. Pre-seeded stale identity is actively cleared for a wrong raw trap form
+        disp.current_selector_operation = Some("stale-identity");
+        disp.current_trap_word = 0xADE9; // wrong raw trap form for canonical slot 0x1E9
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        bus.write_word(sp, 0x0006); // DIFormat selector
+        bus.write_word(sp + 2, 7); // drvNum
+        bus.write_word(sp + 4, 0xBEEF); // OSErr result slot
+        bus.write_long(sp + 6, 0xCAFE_BABE);
+
+        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
+        assert!(result.expect("Pack2 arm under alternate trap form").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(sp + 6), 0xCAFE_BABE);
+    }
+
     // Pack3 / Standard File ($A9EA) — StandardGetFile selector $0006
     // IM:Files 1992 pp. 3-50 and 3-61: cancel sets sfGood to FALSE.
     #[test]
@@ -27384,120 +27498,6 @@ mod tests {
         assert_eq!(bus.read_byte(actual_reply_ptr), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 42);
         assert_eq!(cpu.read_reg(Register::D0), 0);
-    }
-
-    #[test]
-    fn pack2_generated_routes_preserve_exact_stack_word_values() {
-        assert_eq!(super::PACK2_OPERATION_ROUTES.len(), 6);
-        assert!(super::PACK2_OPERATION_ROUTES
-            .windows(2)
-            .all(|pair| pair[0].selector < pair[1].selector));
-
-        for (selector, routine_name) in [
-            (0x0000, "DIBadMount"),
-            (0x0002, "DILoad"),
-            (0x0004, "DIUnload"),
-            (0x0006, "DIFormat"),
-            (0x0008, "DIVerify"),
-            (0x000A, "DIZero"),
-        ] {
-            let route =
-                super::pack2_operation_route(0xA9E9, selector).expect("Pack2 operation route");
-            assert_eq!(route.routine_name, routine_name);
-            assert_eq!(
-                route.operation_id,
-                format!("selector-operation:_Pack2:0x{selector:04X}:stack-word-via-d0-moveq-immediate:16")
-            );
-        }
-
-        for (trap_word, selector) in [
-            (0xA8E9, 0x0000),
-            (0xADE9, 0x0000), // same slot with a different raw trap form
-            (0xA9E8, 0x0006),
-            (0xA9E5, 0x0000), // InitPack is a distinct trap
-            (0xA9E9, 0x0001), // unassigned gap
-            (0xA9E9, 0x0003), // unassigned gap
-            (0xA9E9, 0x0005), // unassigned gap
-            (0xA9E9, 0x0007), // unassigned gap
-            (0xA9E9, 0x0009), // unassigned gap
-            (0xA9E9, 0x000B), // unassigned gap
-            (0xA9E9, 0x000C), // later UI 3.4 DIXFormat remains outside this 1992 generated slice
-            (0xA9E9, 0x000E), // later UI 3.4 DIXZero remains outside this 1992 generated slice
-            (0xA9E9, 0x0010), // later UI 3.4 DIReformat remains outside this 1992 generated slice
-            (0xA9E9, 0x000F), // odd adjacent value
-            (0xA9E9, 0x7000), // MOVEQ opcode setup spelling
-            (0xA9E9, 0x3F00), // MOVE.W D0,-(SP) glue opcode spelling
-            (0xA9E9, 0x0200), // byte-swapped DILoad selector
-            (0xA9E9, 0x0600), // byte-swapped DIFormat selector
-            (0xA9E9, 0x0A00), // byte-swapped DIZero selector
-        ] {
-            assert!(super::pack2_operation_route(trap_word, selector).is_none());
-        }
-    }
-
-    #[test]
-    fn pack2_records_stack_word_identity_without_changing_behavior_and_clears_stale_identity() {
-        let (mut disp, mut cpu, mut bus) = setup();
-        let sp = TEST_SP;
-
-        // 1. Exact A9E9 records known stack selector without changing existing frame/result
-        disp.current_trap_word = 0xA9E9;
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::A0, 0x1234_0000);
-        cpu.write_reg(Register::A1, 0x1234_0001);
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        cpu.write_reg(Register::D1, 0x1234_0002);
-        bus.write_word(sp, 0x0006); // DIFormat
-        bus.write_word(sp + 2, 7); // drvNum
-        bus.write_word(sp + 4, 0xBEEF); // OSErr result slot
-        bus.write_long(sp + 6, 0xCAFE_BABE); // adjacent stack poison
-
-        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
-        assert!(result.expect("Pack2 DIFormat arm").is_ok());
-        assert_eq!(
-            disp.current_selector_operation,
-            Some("selector-operation:_Pack2:0x0006:stack-word-via-d0-moveq-immediate:16")
-        );
-        assert_eq!(bus.read_word(sp + 4), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(cpu.read_reg(Register::A0), 0x1234_0000);
-        assert_eq!(cpu.read_reg(Register::A1), 0x1234_0001);
-        assert_eq!(cpu.read_reg(Register::D1), 0x1234_0002);
-        assert_eq!(bus.read_long(sp + 6), 0xCAFE_BABE);
-
-        // 2. Pre-seeded stale identity is actively cleared for an unassigned gap
-        disp.current_selector_operation = Some("stale-identity");
-        disp.current_trap_word = 0xA9E9;
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        bus.write_word(sp, 0x0005); // unassigned gap
-        bus.write_bytes(sp + 2, &[0xA5; 16]); // adjacent stack poison
-
-        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
-        assert!(result.expect("Pack2 unknown selector fallback").is_ok());
-        assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(bus.read_bytes(sp + 2, 16), vec![0xA5; 16]);
-
-        // 3. Pre-seeded stale identity is actively cleared for a wrong raw trap form
-        disp.current_selector_operation = Some("stale-identity");
-        disp.current_trap_word = 0xADE9; // wrong raw trap form for canonical slot 0x1E9
-        cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x1234_5678);
-        bus.write_word(sp, 0x0006); // DIFormat selector
-        bus.write_word(sp + 2, 7); // drvNum
-        bus.write_word(sp + 4, 0xBEEF); // OSErr result slot
-        bus.write_long(sp + 6, 0xCAFE_BABE);
-
-        let result = disp.dispatch_toolbox(true, 0x1E9, &mut cpu, &mut bus);
-        assert!(result.expect("Pack2 arm under alternate trap form").is_ok());
-        assert_eq!(disp.current_selector_operation, None);
-        assert_eq!(bus.read_word(sp + 4), 0);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(cpu.read_reg(Register::D0), 0);
-        assert_eq!(bus.read_long(sp + 6), 0xCAFE_BABE);
     }
 
     #[test]
