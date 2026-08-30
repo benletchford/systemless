@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.19](https://github.com/benletchford/systemless/compare/v0.23.18...v0.23.19) (2026-08-30)
+
+
+### Bug Fixes
+
+* **files:** keep relative paths on the default volume ([#999](https://github.com/benletchford/systemless/issues/999)) ([f1a347f](https://github.com/benletchford/systemless/commit/f1a347fb538b34d8c7de17b8702f928017e30cdb))
+
 ## [0.23.18](https://github.com/benletchford/systemless/compare/v0.23.17...v0.23.18) (2026-08-30)
 
 
