@@ -60,6 +60,19 @@ pub(crate) fn selector_operation_route(
         .map(|index| &routes[index])
 }
 
+const POWER_MANAGER_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_power_manager_operations.rs");
+
+fn power_manager_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA09E {
+        return None;
+    }
+    selector_operation_route(POWER_MANAGER_OPERATION_ROUTES, u32::from(selector))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenCopyBitsRect {
     pub src_top: i16,
@@ -7862,6 +7875,13 @@ impl TrapDispatcher {
             trap
         };
         self.current_trap_word = effective_trap;
+        // PowerMgrDispatch ($A09E)
+        // Dispatches register-based Power Manager routines selected by D0.W.
+        // short PMSelectorCount(void);
+        // Inside Macintosh: Devices (1994), p. 6-41.
+        let power_operation =
+            power_manager_operation_route(effective_trap, cpu.read_reg(Register::D0) as u16);
+        self.current_selector_operation = power_operation.map(|route| route.operation_id);
         let route = raw_trap_route(effective_trap);
         let is_tool = route.is_toolbox;
         // Count game traps: from game code (PC < 0x800000), NOT during
@@ -8629,6 +8649,97 @@ mod tests {
             );
         }
         assert_eq!(seen.len(), 1280);
+    }
+
+    #[test]
+    fn power_manager_generated_routes_preserve_exact_low_word_values() {
+        assert_eq!(POWER_MANAGER_OPERATION_ROUTES.len(), 34);
+        assert!(POWER_MANAGER_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0000, "PMSelectorCount"),
+            (0x0001, "PMFeatures"),
+            (0x0002, "GetSleepTimeout"),
+            (0x0003, "SetSleepTimeout"),
+            (0x0004, "GetHardDiskTimeout"),
+            (0x0005, "SetHardDiskTimeout"),
+            (0x0006, "HardDiskPowered"),
+            (0x0007, "SpinDownHardDisk"),
+            (0x0008, "IsSpindownDisabled"),
+            (0x0009, "SetSpindownDisable"),
+            (0x000A, "HardDiskQInstall"),
+            (0x000B, "HardDiskQRemove"),
+            (0x000C, "GetScaledBatteryInfo"),
+            (0x000D, "AutoSleepControl"),
+            (0x000E, "GetIntModemInfo"),
+            (0x000F, "SetIntModemState"),
+            (0x0010, "MaximumProcessorSpeed"),
+            (0x0011, "CurrentProcessorSpeed"),
+            (0x0012, "FullProcessorSpeed"),
+            (0x0013, "SetProcessorSpeed"),
+            (0x0014, "GetSCSIDiskModeAddress"),
+            (0x0015, "SetSCSIDiskModeAddress"),
+            (0x0016, "GetWakeupTimer"),
+            (0x0017, "SetWakeupTimer"),
+            (0x0018, "IsProcessorCyclingEnabled"),
+            (0x0019, "EnableProcessorCycling"),
+            (0x001A, "BatteryCount"),
+            (0x001B, "GetBatteryVoltage"),
+            (0x001C, "GetBatteryTimes"),
+            (0x001D, "GetDimmingTimeout"),
+            (0x001E, "SetDimmingTimeout"),
+            (0x001F, "DimmingControl"),
+            (0x0020, "IsDimmingControlDisabled"),
+            (0x0021, "IsAutoSlpControlDisabled"),
+        ] {
+            let route =
+                power_manager_operation_route(0xA09E, selector).expect("PowerMgrDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA19E, 0x0003),
+            (0xA09E, 0x0022),
+            (0xA09E, 0x0036),
+            (0xA09E, 0x7000),
+            (0xA09E, 0x303C),
+        ] {
+            assert!(power_manager_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn power_manager_records_identity_while_remaining_fail_closed() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 0x1234_0003);
+
+        let result = dispatcher.dispatch(0xA09E, &mut cpu, &mut bus);
+        assert!(matches!(result, Err(Error::UnimplementedTrap(0xA09E))));
+        assert_eq!(dispatcher.current_trap_adapter, TrapAdapterId::Nonterminal);
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some("selector-operation:_PowerMgrDispatch:0x0003:d0-low-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::D0, 0x0004);
+        let result = dispatcher.dispatch(0xA09E, &mut cpu, &mut bus);
+        assert!(matches!(result, Err(Error::UnimplementedTrap(0xA09E))));
+        assert_eq!(
+            dispatcher.current_selector_operation,
+            Some("selector-operation:_PowerMgrDispatch:0x0004:d0-moveq-immediate:8")
+        );
+
+        cpu.write_reg(Register::D0, 0x0022);
+        let result = dispatcher.dispatch(0xA09E, &mut cpu, &mut bus);
+        assert!(matches!(result, Err(Error::UnimplementedTrap(0xA09E))));
+        assert_eq!(dispatcher.current_selector_operation, None);
+
+        cpu.write_reg(Register::D0, 0x0003);
+        let result = dispatcher.dispatch(0xA19E, &mut cpu, &mut bus);
+        assert!(matches!(result, Err(Error::UnimplementedTrap(0xA19E))));
+        assert_eq!(dispatcher.current_selector_operation, None);
     }
 
     #[test]
