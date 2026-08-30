@@ -4204,7 +4204,11 @@ impl super::TrapDispatcher {
         cpu.write_reg(Register::A7, stack_after);
     }
 
-    fn handle_interactive_alert_refire<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
+    fn handle_interactive_alert_refire<C: CpuOps>(
+        &mut self,
+        cpu: &mut C,
+        bus: &mut MacMemoryBus,
+    ) {
         if self.dialog_tracking.is_none() {
             return;
         }

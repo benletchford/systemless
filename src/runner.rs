@@ -2723,7 +2723,10 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_down(&mut self, v: i16, h: i16) {
-        self.dispatcher.push_mouse_down(v, h);
+        self.dispatcher
+            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+                d.push_mouse_down(v, h);
+            });
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2735,8 +2738,8 @@ impl FixtureRunner {
     /// consumed a posted mouse-down event; physical button duration is tracked
     /// independently.
     pub fn pending_mouse_down_count(&self) -> usize {
-        self.dispatcher
-            .event_queue
+        self.process_context
+            .event_queue()
             .iter()
             .filter(|event| event.what == 1)
             .count()
@@ -2763,7 +2766,10 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_up(&mut self, v: i16, h: i16) {
-        self.dispatcher.push_mouse_up(v, h);
+        self.dispatcher
+            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+                d.push_mouse_up(v, h);
+            });
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2811,7 +2817,10 @@ impl FixtureRunner {
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
-        self.dispatcher.push_key_down(key, char_code);
+        self.dispatcher
+            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+                d.push_key_down(key, char_code);
+            });
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2820,12 +2829,13 @@ impl FixtureRunner {
     /// Inject a key-up event, applying arrow→numpad remapping if configured.
     pub fn push_key_up(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
-        self.dispatcher.push_key_up_with_system_event_mask(
-            self.bus
-                .read_word(crate::memory::globals::addr::SYS_EVT_MASK),
-            key,
-            char_code,
-        );
+        let sys_evt_mask = self
+            .bus
+            .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
+        self.dispatcher
+            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+                d.push_key_up_with_system_event_mask(sys_evt_mask, key, char_code);
+            });
         self.sync_key_map_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -3987,6 +3997,10 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::PC, 0);
         self.ppc_sound_synced_file_playback_count = 0;
         self.ppc_sound_host_playbacks.clear();
+        let detached_events = std::mem::take(&mut ppc_app.event_queue);
+        self.process_context
+            .event_queue_mut()
+            .merge(detached_events);
         self.ppc_app = Some(ppc_app);
     }
 
@@ -5671,10 +5685,11 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    match self
-                        .dispatcher
-                        .dispatch(opcode, &mut self.cpu, &mut self.bus)
-                    {
+                    let dispatch_result = self.dispatcher.with_event_queue(
+                        self.process_context.event_queue_mut(),
+                        |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
+                    );
+                    match dispatch_result {
                         Ok(()) => {
                             let null_event = self.note_idle_cycle_trap_result(opcode);
                             // TickCount spin-loop acceleration is a post-dispatch
@@ -6011,14 +6026,16 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let probe = match (trace_ppc_imports, trace_ppc_fetches) {
-            (true, true) => {
-                ppc_app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
+        let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+            match (trace_ppc_imports, trace_ppc_fetches) {
+                (true, true) => {
+                    app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
+                }
+                (true, false) => app.run_with_hle_import_trace(ppc_max_steps as u64),
+                (false, true) => app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
+                (false, false) => app.run_with_hle_imports(ppc_max_steps as u64),
             }
-            (true, false) => ppc_app.run_with_hle_import_trace(ppc_max_steps as u64),
-            (false, true) => ppc_app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
-            (false, false) => ppc_app.run_with_hle_imports(ppc_max_steps as u64),
-        };
+        });
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
@@ -6057,15 +6074,18 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            self.fire_ppc_tick_callbacks(
-                &mut ppc_app,
-                ppc_start_tick,
-                ppc_start_time,
-                elapsed_ticks,
-                u64::from(cycles_per_tick),
-                trace_ppc_imports,
-                trace_ppc_fetches,
-            )
+            let probes = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+                Self::fire_ppc_tick_callbacks(
+                    app,
+                    ppc_start_tick,
+                    ppc_start_time,
+                    elapsed_ticks,
+                    u64::from(cycles_per_tick),
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                )
+            });
+            probes
         };
         if trace_vbl_enabled() {
             for vbl_probe in &vbl_probes {
@@ -6369,11 +6389,15 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    if self
-                        .dispatcher
-                        .dispatch(opcode, &mut self.cpu, &mut self.bus)
-                        .is_err()
-                    {
+                    let dispatch_err = self.dispatcher.with_event_queue(
+                        self.process_context.event_queue_mut(),
+                        |dispatcher| {
+                            dispatcher
+                                .dispatch(opcode, &mut self.cpu, &mut self.bus)
+                                .is_err()
+                        },
+                    );
+                    if dispatch_err {
                         running = false;
                         break;
                     }
@@ -6709,7 +6733,6 @@ impl FixtureRunner {
 
     #[allow(clippy::too_many_arguments)]
     fn fire_ppc_tick_callbacks(
-        &self,
         ppc_app: &mut PpcLoadedApp,
         start_tick: u32,
         start_time: u32,
@@ -7798,12 +7821,14 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let probe = ppc_app.run_sound_doubleback_callback(
-                doubleback,
-                PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                trace_ppc_imports,
-                trace_ppc_fetches,
-            );
+            let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+                app.run_sound_doubleback_callback(
+                    doubleback,
+                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                )
+            });
             let invocation = probe.invocation;
             if trace_sound_runner_enabled() {
                 eprintln!(
@@ -7902,12 +7927,14 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let probe = ppc_app.run_sound_completion_callback(
-                completion,
-                PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                trace_ppc_imports,
-                trace_ppc_fetches,
-            );
+            let probe = ppc_app.with_event_queue(self.process_context.event_queue_mut(), |app| {
+                app.run_sound_completion_callback(
+                    completion,
+                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                )
+            });
             let invocation = probe.invocation;
             if record_ppc_imports {
                 self.record_ppc_import_trace(&probe.import_trace);
@@ -8730,10 +8757,13 @@ impl FixtureRunner {
         let new_tick = self.bus.read_long(0x016A).wrapping_add(1);
         self.bus.write_long(0x016A, new_tick);
         self.dispatcher.tick_count = new_tick;
-        self.dispatcher.post_auto_key_if_due(
-            self.bus
-                .read_word(crate::memory::globals::addr::SYS_EVT_MASK),
-        );
+        let sys_evt_mask = self
+            .bus
+            .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
+        self.dispatcher
+            .with_event_queue(self.process_context.event_queue_mut(), |d| {
+                d.post_auto_key_if_due(sys_evt_mask);
+            });
 
         // Sync MBState ($0172) from the internal button state.
         // On real hardware the VBL interrupt handler reads the ADB mouse
@@ -8748,7 +8778,10 @@ impl FixtureRunner {
         // to 0x80 even when no GetNextEvent ever drains the queue —
         // critical for polling-only games (Bonkheads-Deluxe class titles)
         // that would otherwise see the button as "held forever".
-        let has_pending_unmatched_down = self.dispatcher.has_unmatched_queued_mouse_down();
+        let has_pending_unmatched_down = self.dispatcher.with_event_queue(
+            self.process_context.event_queue_mut(),
+            |d| d.has_unmatched_queued_mouse_down(),
+        );
         let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
@@ -8759,7 +8792,7 @@ impl FixtureRunner {
                     new_tick,
                     self.total_instructions,
                     self.ppc_input_snapshot(),
-                    self.dispatcher.event_queue.len(),
+                    self.process_context.event_queue().len(),
                     mb_state,
                 )
             );
@@ -8788,7 +8821,7 @@ impl FixtureRunner {
 
     fn deliver_pending_wait_next_event_if_available(&mut self) -> bool {
         let Some(pending) = self.dispatcher.pending_wait_next_event_return.take() else {
-            if !self.dispatcher.event_queue.is_empty()
+            if !self.process_context.event_queue().is_empty()
                 || self.dispatcher.has_pending_native_menu_event()
             {
                 self.dispatcher.pending_wait_sleep_ticks = 0;
@@ -8814,7 +8847,9 @@ impl FixtureRunner {
 
         let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) = self
             .dispatcher
-            .dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask);
+            .with_event_queue(self.process_context.event_queue_mut(), |dispatcher| {
+                dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
+            });
         if !has_event {
             if let Some(event) = self.dispatcher.mouse_moved_event_for_region(
                 &self.bus,
@@ -10183,8 +10218,8 @@ impl FixtureRunner {
     }
 
     fn dialog_filter_has_real_event_pending(&self, dialog_ptr: u32) -> bool {
-        self.dispatcher
-            .event_queue
+        self.process_context
+            .event_queue()
             .iter()
             .any(|event| matches!(event.what, 1 | 2 | 3 | 4 | 6))
             || self
@@ -10335,11 +10370,11 @@ impl FixtureRunner {
         // Mac ModalDialog which calls GetNextEvent before invoking the filter.
         // Inside Macintosh Volume I, I-415
         let idx = self
-            .dispatcher
-            .event_queue
+            .process_context
+            .event_queue()
             .iter()
             .position(|e| matches!(e.what, 1 | 2 | 3 | 4 | 6));
-        let next_event = idx.map(|i| self.dispatcher.event_queue.remove(i).unwrap());
+        let next_event = idx.map(|i| self.process_context.event_queue_mut().remove(i).unwrap());
 
         let filter_event = if let Some(e) = next_event {
             e
@@ -10632,10 +10667,11 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    match self
-                        .dispatcher
-                        .dispatch(opcode, &mut self.cpu, &mut self.bus)
-                    {
+                    let dispatch_result = self.dispatcher.with_event_queue(
+                        self.process_context.event_queue_mut(),
+                        |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
+                    );
+                    match dispatch_result {
                         Ok(()) => {
                             // Smart PC Advance:
                             // Only advance PC if the trap didn't change it
@@ -12120,6 +12156,75 @@ mod tests {
     }
 
     #[test]
+    fn init_ppc_app_merges_detached_events_and_menu_bar_invalidation() {
+        // Test case 1: Context has event and invalidation=true, detached PPC has event and invalidation=false
+        {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.process_context.event_queue_mut().push_back(QueuedEvent {
+                what: 3,
+                message: 0x1111,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0x0100,
+            });
+            runner.process_context.event_queue_mut().invalidate_menu_bar();
+
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+            ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+            ppc_app.event_queue.push_back(QueuedEvent {
+                what: 1,
+                message: 0x2222,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0x0200,
+            });
+
+            runner.init_app(&app);
+
+            let queue = runner.process_context.event_queue();
+            assert_eq!(queue.len(), 2);
+            assert_eq!(queue[0].message, 0x1111, "canonical event must remain in front");
+            assert_eq!(queue[1].message, 0x2222, "detached PPC event must be appended after canonical events");
+            assert!(queue.menu_bar_is_invalid(), "menu_bar_invalid should be true when context was true");
+            assert!(runner.ppc_app.as_ref().unwrap().event_queue.is_empty());
+        }
+
+        // Test case 2: Context has event and invalidation=false, detached PPC has event and invalidation=true
+        {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            runner.process_context.event_queue_mut().push_back(QueuedEvent {
+                what: 3,
+                message: 0x3333,
+                where_v: 10,
+                where_h: 20,
+                modifiers: 0x0100,
+            });
+
+            let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+            let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+            ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+            ppc_app.event_queue.push_back(QueuedEvent {
+                what: 1,
+                message: 0x4444,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0x0200,
+            });
+            ppc_app.event_queue.invalidate_menu_bar();
+
+            runner.init_app(&app);
+
+            let queue = runner.process_context.event_queue();
+            assert_eq!(queue.len(), 2);
+            assert_eq!(queue[0].message, 0x3333, "canonical event must remain in front");
+            assert_eq!(queue[1].message, 0x4444, "detached PPC event must be appended after canonical events");
+            assert!(queue.menu_bar_is_invalid(), "menu_bar_invalid should be true when detached PPC was true");
+            assert!(runner.ppc_app.as_ref().unwrap().event_queue.is_empty());
+        }
+    }
+
+    #[test]
     fn ppc_slice_keeps_ticks_coherent_across_runner_and_guest_memory() {
         use crate::memory::globals::addr;
 
@@ -12283,7 +12388,7 @@ mod tests {
         }
 
         let (vbl, timer) =
-            runner.fire_ppc_tick_callbacks(&mut ppc_app, 41, 0x1020_3040, 2, 64, false, false);
+            FixtureRunner::fire_ppc_tick_callbacks(&mut ppc_app, 41, 0x1020_3040, 2, 64, false, false);
 
         assert_eq!(vbl.len(), 2);
         assert!(timer.is_empty());
@@ -12512,60 +12617,6 @@ mod tests {
             ppc_app.memory.read_u32_be(addr::THE_ZONE),
             Some(0x1122_3344)
         );
-    }
-
-    #[test]
-    fn ppc_event_queue_has_immediate_bidirectional_visibility() {
-        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
-        let app_ppc = app.ppc.as_mut().expect("synthetic PPC app");
-        app_ppc.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
-        app_ppc.event_queue.push_back(QueuedEvent {
-            what: 23,
-            message: 0xaabb_ccdd,
-            where_v: 1,
-            where_h: 2,
-            modifiers: 0,
-        });
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.init_app(&app);
-        assert_eq!(
-            runner
-                .dispatcher
-                .event_queue
-                .front()
-                .map(|event| event.message),
-            Some(0xaabb_ccdd)
-        );
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
-        ppc_app.event_queue.pop_front();
-        assert!(runner.dispatcher.event_queue.is_empty());
-
-        let original = crate::trap::dispatch::QueuedEvent {
-            what: 3,
-            message: 0x1111,
-            where_v: 10,
-            where_h: 20,
-            modifiers: 0x0200,
-        };
-        runner.dispatcher.event_queue.push_back(original.clone());
-
-        let consumed = ppc_app.event_queue.pop_front().unwrap();
-        assert_eq!(consumed.message, original.message);
-        assert!(runner.dispatcher.event_queue.is_empty());
-
-        ppc_app.event_queue.push_back(original.clone());
-        assert_eq!(runner.dispatcher.event_queue.front(), Some(&original));
-        runner.dispatcher.event_queue.pop_front();
-        assert!(ppc_app.event_queue.is_empty());
-
-        // A byte-identical repost is a distinct queue mutation and requires
-        // no value-based reconciliation at a callback boundary.
-        runner.dispatcher.event_queue.push_back(original);
-        let reposted = ppc_app.event_queue.front().unwrap();
-        assert_eq!(reposted.what, 3);
-        assert_eq!(reposted.message, 0x1111);
-        assert_eq!((reposted.where_v, reposted.where_h), (10, 20));
-        assert_eq!(reposted.modifiers, 0x0200);
     }
 
     #[test]
@@ -15171,7 +15222,7 @@ mod tests {
             offset_v > 0 && offset_h > 0,
             "fixture must use a centered viewport"
         );
-        runner.dispatcher.event_queue.push_back(QueuedEvent {
+        runner.process_context.event_queue_mut().push_back(QueuedEvent {
             what: 3,
             message: 0x1122_3344,
             where_v: 120,
@@ -15190,8 +15241,8 @@ mod tests {
             ppc_app.memory.read_u16_be(PPC_SOUND_EVENT_RECORD + 12),
             Some(180)
         );
-        assert_eq!(runner.dispatcher.event_queue.len(), 1);
-        let posted = &runner.dispatcher.event_queue[0];
+        assert_eq!(runner.process_context.event_queue().len(), 1);
+        let posted = &runner.process_context.event_queue()[0];
         assert_eq!((posted.what, posted.message), (5, 0x5566_7788));
         assert_eq!((posted.where_v, posted.where_h), (17, 19));
         assert_eq!(
@@ -15268,13 +15319,63 @@ mod tests {
 
         runner.push_mouse_down(offset_v.saturating_add(12), offset_h.saturating_add(34));
 
-        let event = runner.dispatcher.event_queue.back().expect("mouseDown");
+        let event = runner.process_context.event_queue().back().expect("mouseDown");
         assert_eq!((event.where_v, event.where_h), (12, 34));
-        let ppc_app = runner.ppc_app.as_ref().expect("PPC app");
-        let native_event = ppc_app.event_queue.back().expect("shared mouseDown");
-        assert_eq!((native_event.where_v, native_event.where_h), (12, 34));
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app");
+        ppc_app.with_event_queue(runner.process_context.event_queue_mut(), |ppc_app| {
+            let native_event = ppc_app.event_queue.back().expect("shared mouseDown");
+            assert_eq!((native_event.where_v, native_event.where_h), (12, 34));
+        });
+        runner.ppc_app = Some(ppc_app);
         assert_eq!(runner.bus.read_word(addr::M_TEMP), 12);
         assert_eq!(runner.bus.read_word(addr::M_TEMP + 2), 34);
+    }
+
+    #[test]
+    fn ppc_event_queue_has_immediate_bidirectional_visibility() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        // Host input pushes directly into process context canonical queue
+        runner.push_mouse_down(10, 20);
+        assert_eq!(runner.process_context.event_queue().len(), 1);
+        assert_eq!(
+            (
+                runner.process_context.event_queue().front().unwrap().where_v,
+                runner.process_context.event_queue().front().unwrap().where_h
+            ),
+            (10, 20)
+        );
+
+        // PPC adapter receives canonical queue during execution
+        let mut ppc_app = runner.ppc_app.take().unwrap();
+        ppc_app.with_event_queue(runner.process_context.event_queue_mut(), |app| {
+            assert_eq!(app.event_queue.len(), 1);
+            let event = app.event_queue.pop_front().unwrap();
+            assert_eq!((event.where_v, event.where_h), (10, 20));
+            app.event_queue.push_back(QueuedEvent {
+                what: 2, // mouseUp
+                message: 0,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0,
+            });
+        });
+        runner.ppc_app = Some(ppc_app);
+
+        // Immediately visible in ProcessContext without sync copies
+        assert_eq!(runner.process_context.event_queue().len(), 1);
+        assert_eq!(runner.process_context.event_queue().front().unwrap().what, 2);
+
+        // 68k dispatcher receives canonical queue during execution
+        runner.dispatcher.with_event_queue(runner.process_context.event_queue_mut(), |classic| {
+            assert_eq!(classic.event_queue.len(), 1);
+            let event = classic.event_queue.pop_front().unwrap();
+            assert_eq!((event.where_v, event.where_h), (30, 40));
+        });
+
+        assert!(runner.process_context.event_queue().is_empty());
     }
 
     #[test]
@@ -16359,8 +16460,8 @@ mod tests {
         runner.push_key_up(0x7c, 29);
 
         assert!(runner
-            .dispatcher
-            .event_queue
+            .process_context
+            .event_queue()
             .iter()
             .any(|event| event.what == 4 && event.message == 0x0000_7c1d));
     }
@@ -16415,8 +16516,8 @@ mod tests {
         }
 
         assert!(runner
-            .dispatcher
-            .event_queue
+            .process_context
+            .event_queue()
             .iter()
             .any(|event| { event.what == 5 && event.message == 0x0000_0061 }));
     }
@@ -22019,7 +22120,7 @@ mod tests {
             assert_eq!(runner.cpu.read_reg(Register::PC), base);
 
             runner.dispatcher.modeless_dialog_draw_proc_queue.clear();
-            runner.dispatcher.event_queue.push_back(QueuedEvent {
+            runner.process_context.event_queue_mut().push_back(QueuedEvent {
                 what: 3,
                 message: 0x0000_351B, // Escape
                 where_v: 0,
@@ -22220,7 +22321,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.tick_count = 0;
-        runner.dispatcher.event_queue.push_back(QueuedEvent {
+        runner.process_context.event_queue_mut().push_back(QueuedEvent {
             what: 6,
             message: 0,
             where_v: 0,
@@ -22257,7 +22358,7 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.tick_count = 0;
-        runner.dispatcher.event_queue.push_back(QueuedEvent {
+        runner.process_context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0,
             where_v: 12,
@@ -22286,7 +22387,7 @@ mod tests {
         assert_eq!(runner.bus.read_word(event_ptr + 10), 12);
         assert_eq!(runner.bus.read_word(event_ptr + 12), 24);
         assert!(
-            runner.dispatcher.event_queue.is_empty(),
+            runner.process_context.event_queue().is_empty(),
             "the filter callback should consume a queued button mouseDown event"
         );
     }
@@ -22327,7 +22428,7 @@ mod tests {
         runner.dispatcher.tick_count = 42;
         runner.bus.write_long(0x016A, 42);
         runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
-        runner.dispatcher.event_queue.push_back(QueuedEvent {
+        runner.process_context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0,
             where_v: 12,
@@ -22340,7 +22441,7 @@ mod tests {
             "mouse/key/update events must still enter the filter immediately"
         );
 
-        runner.dispatcher.event_queue.clear();
+        runner.process_context.event_queue_mut().clear();
         let window_ptr = runner.bus.alloc(170);
         runner.dispatcher.init_cgraf_window(
             &mut runner.bus,
@@ -22569,7 +22670,7 @@ mod tests {
         runner.set_instructions_per_tick(1_000_000);
         runner.bus.write_long(sp, event);
         runner.bus.write_word(sp + 4, 0x0008); // keyDownMask
-        runner.dispatcher.push_key_down(0x31, b' ');
+        runner.push_key_down(0x31, b' ');
 
         let before_traps = runner.dispatcher.trap_count;
         let before_game = runner.dispatcher.game_trap_count;
@@ -22590,7 +22691,7 @@ mod tests {
             (0x31u32 << 8) | u32::from(b' ')
         );
         assert_eq!(
-            runner.dispatcher.event_queue.len(),
+            runner.process_context.event_queue().len(),
             1,
             "EventAvail must not dequeue the matching event"
         );
@@ -22981,8 +23082,8 @@ mod tests {
         assert!(runner.dispatcher.pending_wait_next_event_return.is_some());
         assert!(
             runner
-                .dispatcher
-                .event_queue
+                .process_context
+                .event_queue()
                 .iter()
                 .any(|event| event.what == 1 && event.where_v == 123 && event.where_h == 456),
             "the mouseDown should remain queued for the foreground event loop"
@@ -23015,7 +23116,7 @@ mod tests {
             resume_pc: Some(parked_pc),
             resume_sp: Some(parked_sp),
         });
-        runner.dispatcher.push_mouse_down(123, 456);
+        runner.push_mouse_down(123, 456);
 
         let (steps, running) = runner.run_steps(1, Some(10));
 
@@ -23030,8 +23131,8 @@ mod tests {
         assert!(runner.dispatcher.pending_wait_next_event_return.is_none());
         assert!(
             runner
-                .dispatcher
-                .event_queue
+                .process_context
+                .event_queue()
                 .iter()
                 .any(|event| event.what == 1 && event.where_v == 123 && event.where_h == 456),
             "stale WNE cleanup should not silently consume a queued event"
@@ -23342,7 +23443,7 @@ mod tests {
             false,
             0,
         );
-        runner.dispatcher.event_queue.clear();
+        runner.process_context.event_queue_mut().clear();
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
         runner
@@ -23386,7 +23487,7 @@ mod tests {
             false,
             0,
         );
-        runner.dispatcher.event_queue.clear();
+        runner.process_context.event_queue_mut().clear();
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0030_0000));
         runner
@@ -23415,7 +23516,7 @@ mod tests {
             "the same invalid-region update should not refire indefinitely in one guest tick"
         );
 
-        runner.dispatcher.event_queue.push_back(QueuedEvent {
+        runner.process_context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0,
             where_v: 123,
@@ -23431,7 +23532,7 @@ mod tests {
         assert_eq!(runner.bus.read_word(event_ptr + 10), 123);
         assert_eq!(runner.bus.read_word(event_ptr + 12), 234);
         assert!(
-            runner.dispatcher.event_queue.is_empty(),
+            runner.process_context.event_queue().is_empty(),
             "the queued mouse event should be consumed by the filter call"
         );
 
@@ -24342,7 +24443,7 @@ mod tests {
         runner.push_mouse_down(10, 20);
         assert_eq!(runner.pending_mouse_down_count(), 1);
 
-        runner.dispatcher.event_queue.pop_front();
+        runner.process_context.event_queue_mut().pop_front();
         assert_eq!(runner.pending_mouse_down_count(), 0);
     }
 
@@ -24397,14 +24498,13 @@ mod tests {
         );
         // Sanity-check the events ARE still in the queue (this test is
         // about MBState despite the unconsumed events, not about queue
-        // state). The dispatcher field is pub(crate); read it through
-        // the same accessor used by the production sync logic.
+        // state). Read it from the canonical process_context queue.
         assert!(
-            runner.dispatcher.event_queue.iter().any(|e| e.what == 1),
+            runner.process_context.event_queue().iter().any(|e| e.what == 1),
             "mouseDown event must remain in the queue (would be drained by GetNextEvent)"
         );
         assert!(
-            runner.dispatcher.event_queue.iter().any(|e| e.what == 2),
+            runner.process_context.event_queue().iter().any(|e| e.what == 2),
             "mouseUp event must remain in the queue"
         );
     }

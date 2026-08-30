@@ -14,7 +14,7 @@ use super::pef::{
     SECTION_KIND_PATTERN_DATA, SECTION_KIND_UNPACKED_DATA,
 };
 use super::ApplicationSizeResource;
-use crate::event_queue::{QueuedEvent, SharedEventQueue};
+use crate::event_queue::{EventQueue, QueuedEvent};
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::{
     resolve_guest_procedure, GuestIsa, GuestProcedure,
@@ -4959,7 +4959,7 @@ pub struct PpcLoadedApp {
     pub imports: Vec<PpcImportBinding>,
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
-    pub(crate) event_queue: SharedEventQueue,
+    pub(crate) event_queue: EventQueue,
     pub(crate) guest_calls: SharedGuestCallStack,
     pub draw_sprocket: PpcDrawSprocketState,
 }
@@ -5125,7 +5125,6 @@ impl PpcLoadedApp {
     /// owner that serializes all access to their shared handles.
     pub(crate) unsafe fn attach_process_context(&mut self, context: &ProcessContext) {
         unsafe {
-            context.attach_event_queue(&mut self.event_queue);
             context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         }
         context.attach_native_menu_selection(
@@ -5133,6 +5132,23 @@ impl PpcLoadedApp {
         );
         context.attach_guest_calls(&mut self.guest_calls);
         context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
+    }
+
+    /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
+    /// adapter's local queue for the duration of `f`, and guarantee it is swapped back
+    /// on normal exit, early return, or unwind.
+    pub(crate) fn with_event_queue<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        std::mem::swap(&mut self.event_queue, event_queue);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        std::mem::swap(&mut self.event_queue, event_queue);
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     /// Park the current native context and enter a PowerPC routine selected by
@@ -13604,7 +13620,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         imports,
         section_bases,
         input: PpcInputSnapshot::default(),
-        event_queue: SharedEventQueue::default(),
+        event_queue: EventQueue::default(),
         guest_calls: SharedGuestCallStack::default(),
         draw_sprocket: PpcDrawSprocketState::default(),
     })
@@ -15666,7 +15682,7 @@ fn dispatch_supported_import(
     scrap: &mut PpcScrapState,
     list_manager: &mut PpcListManagerState,
     input: PpcInputSnapshot,
-    event_queue: &mut SharedEventQueue,
+    event_queue: &mut EventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<PpcImportAction> {
     if is_quickdraw_3d_library(&binding.library_name)
@@ -71033,7 +71049,7 @@ fn ppc_draw_menu_bar_with_colors(
 }
 
 fn ppc_service_invalid_menu_bar(
-    event_queue: &mut SharedEventQueue,
+    event_queue: &mut EventQueue,
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
     gworlds: &[PpcGWorldRecord],
@@ -84571,45 +84587,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attached_68k_and_powerpc_event_adapters_share_menu_bar_invalidation() {
-        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-        classic.sent_open_app_event = true;
-        let pef = synthetic_pef_with_import(b"InvalMenuBar");
-        let mut native = load_pef_application(&pef).unwrap();
-        let context = ProcessContext::default();
-        // SAFETY: the test owns both adapters and accesses them sequentially.
-        unsafe {
-            classic.attach_process_context(&context);
-            native.attach_process_context(&context);
-        }
-
-        assert!(classic
-            .dispatch_menu(true, 0x01D, &mut classic_cpu, &mut classic_bus)
-            .unwrap()
-            .is_ok());
-        assert!(native.event_queue.menu_bar_is_invalid());
-        let native_event = PPC_DATA_BASE + 0x1000;
-        native.memory.add_region(native_event, vec![0; 16]);
-        native.cpu.gpr[3] = 0;
-        native.cpu.gpr[4] = native_event;
-        run_test_import(&mut native, PpcImportDispatcherTarget::GetNextEvent);
-        assert!(!classic.event_queue.menu_bar_is_invalid());
-        assert_eq!(native.toolbox_startup.menu_bar_draw_count, 1);
-
-        run_test_import(&mut native, PpcImportDispatcherTarget::InvalMenuBar);
-        assert!(classic.event_queue.menu_bar_is_invalid());
-        let classic_event = classic_bus.alloc(16);
-        classic_cpu.write_reg(Register::A7, TEST_SP);
-        classic_bus.write_long(TEST_SP, classic_event);
-        classic_bus.write_word(TEST_SP + 4, 0);
-        assert!(classic
-            .dispatch_toolbox(true, 0x171, &mut classic_cpu, &mut classic_bus)
-            .unwrap()
-            .is_ok());
-        assert!(!native.event_queue.menu_bar_is_invalid());
-    }
-
-    #[test]
     fn attached_68k_and_powerpc_adapters_share_one_retained_menu_continuation() {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let pef = synthetic_pef_with_import(b"MenuSelect");
@@ -84685,6 +84662,67 @@ pub(crate) mod tests {
 
         native.toolbox_startup.menu_tracking.take();
         assert!(classic.menu_tracking.is_none());
+    }
+
+    #[test]
+    fn attached_68k_and_powerpc_event_adapters_share_menu_bar_invalidation() {
+        let (mut classic, _, _) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"InvalMenuBar");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+
+        assert!(!context.event_queue().menu_bar_is_invalid());
+
+        classic.with_event_queue(context.event_queue_mut(), |classic| {
+            classic.event_queue.invalidate_menu_bar();
+            assert!(classic.event_queue.menu_bar_is_invalid());
+        });
+
+        assert!(context.event_queue().menu_bar_is_invalid());
+
+        native.with_event_queue(context.event_queue_mut(), |native| {
+            assert!(native.event_queue.menu_bar_is_invalid());
+            assert!(native.event_queue.take_menu_bar_invalidation());
+            assert!(!native.event_queue.menu_bar_is_invalid());
+        });
+
+        assert!(!context.event_queue().menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn ppc_with_event_queue_restores_context_and_adapter_state_on_panic() {
+        let pef = synthetic_pef_with_import(b"InvalMenuBar");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context_queue = EventQueue::default();
+        context_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0x1111,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native.with_event_queue(&mut context_queue, |app| {
+                app.event_queue.push_back(QueuedEvent {
+                    what: 2,
+                    message: 0x2222,
+                    where_v: 30,
+                    where_h: 40,
+                    modifiers: 0,
+                });
+                app.event_queue.invalidate_menu_bar();
+                panic!("simulated panic inside PPC guest execution");
+            })
+        }));
+
+        assert!(panic_result.is_err());
+        assert_eq!(context_queue.len(), 2);
+        assert_eq!(context_queue[0].message, 0x1111);
+        assert_eq!(context_queue[1].message, 0x2222);
+        assert!(context_queue.menu_bar_is_invalid());
+        assert!(native.event_queue.is_empty());
+        assert!(!native.event_queue.menu_bar_is_invalid());
     }
 
     #[test]

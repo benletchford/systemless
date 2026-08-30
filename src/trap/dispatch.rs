@@ -7,7 +7,7 @@
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
-use crate::event_queue::SharedEventQueue;
+use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
@@ -2393,7 +2393,7 @@ pub struct TrapDispatcher {
     pub(crate) input_trace_enabled: bool,
     pub(crate) input_trace_log: Vec<String>,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
-    pub(crate) event_queue: SharedEventQueue,
+    pub(crate) event_queue: EventQueue,
     /// A mouseDown consumed by ModalDialog can return to the application
     /// before the physical release arrives. Keep ownership of that release
     /// even if the application disposes the dialog in the meantime.
@@ -2933,11 +2933,27 @@ impl TrapDispatcher {
     /// owner that serializes all access to their shared handles.
     pub(crate) unsafe fn attach_process_context(&mut self, context: &ProcessContext) {
         unsafe {
-            context.attach_event_queue(&mut self.event_queue);
             context.attach_menu_tracking(&mut self.menu_tracking);
         }
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
+    }
+
+    /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
+    /// adapter's local queue for the duration of `f`, and guarantee it is swapped back
+    /// on normal exit, early return, or unwind.
+    pub(crate) fn with_event_queue<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        std::mem::swap(&mut self.event_queue, event_queue);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        std::mem::swap(&mut self.event_queue, event_queue);
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
@@ -3915,7 +3931,7 @@ impl TrapDispatcher {
             debug_scroll_rect_last_is_color: false,
             input_trace_enabled: false,
             input_trace_log: Vec::new(),
-            event_queue: SharedEventQueue::default(),
+            event_queue: EventQueue::default(),
             pending_modal_dialog_mouse_up: false,
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
@@ -11024,5 +11040,40 @@ mod tests {
             Some(bounds),
             "synthetic records without Window Manager regions fall back to content bounds"
         );
+    }
+
+    #[test]
+    fn with_event_queue_restores_context_and_adapter_state_on_panic() {
+        let mut dispatcher = TrapDispatcher::new();
+        let mut context_queue = EventQueue::default();
+        context_queue.push_back(QueuedEvent {
+            what: 1,
+            message: 0x1111,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dispatcher.with_event_queue(&mut context_queue, |disp| {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 2,
+                    message: 0x2222,
+                    where_v: 30,
+                    where_h: 40,
+                    modifiers: 0,
+                });
+                disp.event_queue.invalidate_menu_bar();
+                panic!("simulated panic inside guest execution");
+            })
+        }));
+
+        assert!(panic_result.is_err());
+        assert_eq!(context_queue.len(), 2);
+        assert_eq!(context_queue[0].message, 0x1111);
+        assert_eq!(context_queue[1].message, 0x2222);
+        assert!(context_queue.menu_bar_is_invalid());
+        assert!(dispatcher.event_queue.is_empty());
+        assert!(!dispatcher.event_queue.menu_bar_is_invalid());
     }
 }
