@@ -33,6 +33,8 @@ const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
 const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
 const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
+const PACK13_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack13_operations.rs");
 const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack14_operations.rs");
 const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
@@ -68,6 +70,16 @@ fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static Selec
         return None;
     }
     selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack13_operation_route(
+    trap_word: u16,
+    selector: u16,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82F {
+        return None;
+    }
+    selector_operation_route(PACK13_OPERATION_ROUTES, u32::from(selector))
 }
 
 fn pack14_operation_route(
@@ -14966,19 +14978,14 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // Pack13 ($A82F) — Data Access Manager
-            // Inside Macintosh: Interapplication Communication 1993,
-            // pp. 12-60 and 12-103.
-            //
-            // The Data Access Manager macros place the routine selector
-            // in D0 and call _Pack13. Systemless HLE currently only needs
-            // the InitDBPack selector ($0100), so this arm is a D0-driven
-            // no-op: return noErr and preserve the caller's Pascal stack.
-            //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::pack13_initdbpack_selector_returns_noerr_and_preserves_stack
+            // Pack13 (0xA82F)
+            // Dispatches Data Access Manager routines selected by D0.W.
+            // FUNCTION InitDBPack: OSErr;
+            // Inside Macintosh: Interapplication Communication (1993), pp. 12-60 and 12-103.
             (true, 0x02F) => {
-                let _selector = cpu.read_reg(Register::D0) as u16;
+                let selector = cpu.read_reg(Register::D0) as u16;
+                let operation = pack13_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
             }
@@ -25440,11 +25447,60 @@ mod tests {
     }
 
     #[test]
-    fn pack13_initdbpack_selector_returns_noerr_and_preserves_stack() {
+    fn pack13_generated_routes_preserve_exact_d0_low_word_values() {
+        assert_eq!(super::PACK13_OPERATION_ROUTES.len(), 22);
+        assert!(super::PACK13_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0100, "InitDBPack"),
+            (0x020E, "DBKill"),
+            (0x0210, "DBDisposeQuery"),
+            (0x0215, "DBRemoveResultHandler"),
+            (0x030F, "DBGetNewQuery"),
+            (0x0403, "DBEnd"),
+            (0x0408, "DBExec"),
+            (0x0409, "DBState"),
+            (0x040D, "DBUnGetItem"),
+            (0x0413, "DBResultsToText"),
+            (0x050B, "DBBreak"),
+            (0x0514, "DBInstallResultHandler"),
+            (0x0516, "DBGetResultHandler"),
+            (0x0605, "DBGetSessionNum"),
+            (0x0706, "DBSend"),
+            (0x0811, "DBStartQuery"),
+            (0x0A12, "DBGetQueryResults"),
+            (0x0B07, "DBSendItem"),
+            (0x0E02, "DBInit"),
+            (0x0E0A, "DBGetErr"),
+            (0x100C, "DBGetItem"),
+            (0x1704, "DBGetConnInfo"),
+        ] {
+            let route =
+                super::pack13_operation_route(0xA82F, selector).expect("Pack13 operation route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA830, 0x0100),
+            (0xA72F, 0x1704),
+            (0xA82F, 0x00FF),
+            (0xA82F, 0x303C),
+            (0xA82F, 0x0001),
+            (0xA82F, 0x000E),
+        ] {
+            assert!(super::pack13_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack13_records_d0_low_word_identity_without_changing_behavior() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        disp.current_trap_word = 0xA82F;
         cpu.write_reg(Register::A7, sp);
-        cpu.write_reg(Register::D0, 0x0000_0100); // InitDBPack selector
+        cpu.write_reg(Register::D0, 0xBEEF_0100); // stale high word + InitDBPack
         bus.write_long(sp, 0x1122_3344); // sentinel stack word
 
         let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
@@ -25465,6 +25521,18 @@ mod tests {
             0x1122_3344,
             "Pack13 selector-only call should not touch the stack frame"
         );
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack13:0x0100:d0-low-word-immediate:16")
+        );
+
+        disp.current_trap_word = 0xA830;
+        cpu.write_reg(Register::D0, 0x0000_0100);
+        let result = disp.dispatch_toolbox(true, 0x02F, &mut cpu, &mut bus);
+        assert!(result.expect("Pack13 arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), 0x1122_3344);
     }
 
     #[test]
