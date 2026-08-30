@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.23](https://github.com/benletchford/systemless/compare/v0.23.22...v0.23.23) (2026-08-30)
+
+
+### Code Refactoring
+
+* **menu:** make process context own tracking ([53e93d2](https://github.com/benletchford/systemless/commit/53e93d2c3c18716c04e34ce20b797d13ff913ef1))
+
 ## [0.23.22](https://github.com/benletchford/systemless/compare/v0.23.21...v0.23.22) (2026-08-30)
 
 
