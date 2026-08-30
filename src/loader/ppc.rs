@@ -79658,7 +79658,7 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
@@ -79882,6 +79882,101 @@ mod tests {
             &loaded.screen_clut,
             MenuColorTable::new(&menu_color_bytes),
         )
+    }
+
+    pub(crate) struct CrossAbiMenuSelectFixture {
+        pub(crate) app: PpcLoadedApp,
+        pub(crate) root_menu: u32,
+        pub(crate) root_record: u32,
+        pub(crate) callback_marker: u32,
+        pub(crate) title_h: i16,
+    }
+
+    pub(crate) fn cross_abi_menu_select_fixture() -> CrossAbiMenuSelectFixture {
+        const ROOT_MENU_ID: i16 = 140;
+        const CHILD_MENU_ID: i16 = 141;
+        const TARGET_ITEM: i16 = 2;
+        const MDEF_HANDLE: u32 = PPC_DATA_BASE + 0x7000;
+        const MDEF_ENTRY: u32 = PPC_DATA_BASE + 0x7100;
+        const CALLBACK_MARKER: u32 = PPC_DATA_BASE + 0x7200;
+        const CALLBACK_VALUE: u32 = 0x68c0_ab1e;
+
+        let pef = synthetic_pef_with_import(b"MenuSelect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let root_menu = install_test_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1000,
+            ROOT_MENU_ID,
+            b"File",
+            b"Custom child;Disabled after callback",
+        );
+        let child_menu = install_test_popup_menu(
+            &mut loaded,
+            PPC_DATA_BASE + 0x1400,
+            CHILD_MENU_ID,
+            b"Child",
+            b"Choice",
+        );
+
+        loaded.cpu.gpr[3] = root_menu;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = 0x1b;
+        ppc_set_item_cmd(&loaded.cpu, &mut loaded.memory, &loaded.handles);
+        loaded.cpu.gpr[5] = CHILD_MENU_ID as u32;
+        ppc_set_item_mark(&loaded.cpu, &mut loaded.memory, &loaded.handles);
+
+        let root_record = loaded.memory.read_u32_be(root_menu).unwrap();
+        let child_record = loaded.memory.read_u32_be(child_menu).unwrap();
+        loaded.memory.write_u16_be(child_record + 2, 72).unwrap();
+        loaded.memory.write_u16_be(child_record + 4, 32).unwrap();
+        loaded.memory.add_region(MDEF_HANDLE, vec![0; 4]);
+        loaded.memory.add_region(CALLBACK_MARKER, vec![0; 4]);
+
+        // The resource-backed MDEF is real 68k guest code. It pushes the
+        // Pascal DisableItem(rootMenu, 2) arguments, executes the A-line, then
+        // leaves a marker only after the trap returns and closes its own
+        // 18-byte MenuDefProc argument frame.
+        let mut mdef = Vec::new();
+        mdef.extend_from_slice(&0x2f3cu16.to_be_bytes()); // MOVE.L #rootMenu,-(SP)
+        mdef.extend_from_slice(&root_menu.to_be_bytes());
+        mdef.extend_from_slice(&0x3f3cu16.to_be_bytes()); // MOVE.W #2,-(SP)
+        mdef.extend_from_slice(&(TARGET_ITEM as u16).to_be_bytes());
+        mdef.extend_from_slice(&0xa93au16.to_be_bytes()); // DisableItem
+        mdef.extend_from_slice(&0x23fcu16.to_be_bytes()); // MOVE.L #value,marker
+        mdef.extend_from_slice(&CALLBACK_VALUE.to_be_bytes());
+        mdef.extend_from_slice(&CALLBACK_MARKER.to_be_bytes());
+        mdef.extend_from_slice(&0x4e74u16.to_be_bytes()); // RTD #18
+        mdef.extend_from_slice(&0x0012u16.to_be_bytes());
+        loaded.memory.add_region(MDEF_ENTRY, mdef.clone());
+        loaded.memory.write_u32_be(MDEF_HANDLE, MDEF_ENTRY).unwrap();
+        loaded
+            .memory
+            .write_u32_be(child_record + 6, MDEF_HANDLE)
+            .unwrap();
+        loaded.vfs_resources.push(PpcVfsResourceRecord {
+            ref_num: loaded.current_resource_refnum,
+            path: "Cross-ABI menu fixture".to_string(),
+            res_type: u32::from_be_bytes(*b"MDEF"),
+            res_id: 512,
+            name: Vec::new(),
+            data: mdef,
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: MDEF_HANDLE,
+        });
+
+        assert!(draw_current_test_menu_bar(&mut loaded));
+        let title_h = STANDARD_MENU_BAR_FIRST_TITLE_LEFT + 2;
+        loaded.cpu.gpr[3] = (u32::from(10u16) << 16) | u32::from(title_h as u16);
+
+        CrossAbiMenuSelectFixture {
+            app: loaded,
+            root_menu,
+            root_record,
+            callback_marker: CALLBACK_MARKER,
+            title_h,
+        }
     }
 
     fn test_wind_resource(

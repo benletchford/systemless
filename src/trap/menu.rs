@@ -1548,12 +1548,14 @@ impl super::TrapDispatcher {
         let Some(bytes) = items.rebuild(&original) else {
             return false;
         };
-        let required_size = bytes.len().max(256);
-        if record_size as usize >= required_size {
+        // A serialized 68k callback can be attached to a native process whose
+        // allocator capacity is not recorded by MacMemoryBus. Non-growing
+        // rebuilds still fit the decoded record and must preserve its handle.
+        if record_size as usize >= bytes.len() {
             bus.write_bytes(menu_ptr, &bytes);
         } else {
             let mut allocation = bytes;
-            allocation.resize(required_size, 0);
+            allocation.resize(allocation.len().max(256), 0);
             if !self.replace_handle_bytes(bus, menu_handle, &allocation) {
                 return false;
             }

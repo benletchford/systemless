@@ -4001,6 +4001,11 @@ impl FixtureRunner {
         // and 68k callers must observe one backing allocation rather than
         // values copied at CPU-slice boundaries.
         for (address, len) in [
+            // A native-to-68k callback executes in this process's writable
+            // Trap Manager topology. Keep line-A and line-F exception vectors
+            // attached to the same cells as the 68k dispatcher so nested
+            // A-lines do not fall through a detached native low-memory copy.
+            (0x28, 8),
             (
                 crate::trap::dispatch::OS_TRAP_TABLE_BASE,
                 u32::from(crate::trap::dispatch::OS_TRAP_TABLE_SLOTS) * 4,
@@ -11286,6 +11291,7 @@ mod tests {
     use crate::audio::AudioBackend;
     use crate::loader::ppc::*;
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
+    use crate::menu_manager::TrackedMenuPaneView;
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
@@ -13768,6 +13774,180 @@ mod tests {
             .toolbox_startup
             .pending_native_menu_selection
             .is_none());
+    }
+
+    #[test]
+    fn native_menu_select_observes_68k_disable_item_after_mdef_returns() {
+        use crate::loader::ppc::tests::cross_abi_menu_select_fixture;
+        use crate::memory::globals::addr;
+
+        const CALLBACK_VALUE: u32 = 0x68c0_ab1e;
+        const ROOT_MENU_ID: i16 = 140;
+        const TARGET_ITEM: i16 = 2;
+
+        let fixture = cross_abi_menu_select_fixture();
+        let root_menu = fixture.root_menu;
+        let root_record = fixture.root_record;
+        let callback_marker = fixture.callback_marker;
+        let title_h = fixture.title_h;
+        let app = LoadedApp::from_ppc(fixture.app);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let framebuffer_before = {
+            let native = runner.ppc_app.as_mut().expect("native app");
+            let front = native.current_front_buffer().expect("front buffer");
+            let mut framebuffer = Vec::with_capacity((front.row_bytes * front.height) as usize);
+            let mut row = vec![0; front.row_bytes as usize];
+            for y in 0..front.height {
+                native
+                    .read_front_buffer_row(front, y, &mut row)
+                    .expect("front-buffer row");
+                framebuffer.extend_from_slice(&row);
+            }
+            framebuffer
+        };
+        assert_ne!(
+            runner
+                .ppc_app
+                .as_mut()
+                .unwrap()
+                .memory
+                .read_u32_be(root_record + 10)
+                .unwrap()
+                & (1 << TARGET_ITEM),
+            0,
+            "the target row must begin enabled"
+        );
+
+        runner.push_canonical_mouse_down(10, title_h);
+        let root_rect = (0..16)
+            .find_map(|_| {
+                let (_, running) = runner.run_steps(512, None);
+                assert!(
+                    running,
+                    "native MenuSelect halted before opening the root menu"
+                );
+                runner
+                    .dispatcher
+                    .menu_tracking
+                    .as_ref()
+                    .filter(|tracking| tracking.menu_handle == root_menu)
+                    .map(|tracking| tracking.dropdown_rect())
+            })
+            .expect("native MenuSelect should retain the canonical root handle");
+
+        runner
+            .dispatcher
+            .set_mouse_position(root_rect.0 + 8, root_rect.1 + 16);
+        runner.sync_mouse_position_lowmem();
+        let callback_completed = (0..32).any(|_| {
+            let (_, running) = runner.run_steps(512, None);
+            assert!(
+                running,
+                "native MenuSelect halted during the 68k MDEF callback"
+            );
+            let callback_value = runner
+                .ppc_app
+                .as_mut()
+                .unwrap()
+                .memory
+                .read_u32_be(callback_marker);
+            callback_value == Some(CALLBACK_VALUE)
+                && runner.dispatcher.guest_calls.is_empty()
+        });
+        assert!(
+            callback_completed,
+            "the real 68k MDEF callback did not return"
+        );
+        let tracking = runner
+            .dispatcher
+            .menu_tracking
+            .as_ref()
+            .expect("native interaction should remain retained");
+        assert_eq!(tracking.menu_handle, root_menu);
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_mut()
+                .unwrap()
+                .memory
+                .read_u32_be(root_menu),
+            Some(root_record),
+            "a fixed-size 68k mutation must preserve the native handle allocation"
+        );
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_mut()
+                .unwrap()
+                .memory
+                .read_u32_be(root_record + 10)
+                .unwrap()
+                & (1 << TARGET_ITEM),
+            0,
+            "the 68k DisableItem trap must mutate the live native MenuInfo"
+        );
+
+        let target_v = root_rect.0 + 24;
+        let target_h = root_rect.1 + 16;
+        runner.dispatcher.set_mouse_position(target_v, target_h);
+        runner.sync_mouse_position_lowmem();
+        let raw_choice = (u32::from(ROOT_MENU_ID as u16) << 16) | u32::from(TARGET_ITEM as u16);
+        let native_observed_disabled_row = (0..16).any(|_| {
+            let (_, running) = runner.run_steps(512, None);
+            assert!(running, "native MenuSelect halted before the mouse release");
+            runner.bus.read_long(addr::MENU_DISABLE) == raw_choice
+                && runner
+                    .dispatcher
+                    .menu_tracking
+                    .as_ref()
+                    .is_some_and(|tracking| {
+                        tracking.menu_handle == root_menu && tracking.highlighted_item == 0
+                    })
+        });
+        assert!(
+            native_observed_disabled_row,
+            "native tracking did not reread the live disabled enableFlags"
+        );
+
+        runner.push_canonical_mouse_up(target_v, target_h);
+        for _ in 0..16 {
+            let (_, running) = runner.run_steps(512, None);
+            if !running {
+                break;
+            }
+        }
+        assert!(runner.is_halted());
+        assert!(runner.dispatcher.menu_tracking.is_none());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+
+        let native = runner.ppc_app.as_mut().expect("native app retained");
+        assert_eq!(native.cpu.gpr[3], 0, "disabled rows cannot be selected");
+        let framebuffer_after = {
+            let front = native.current_front_buffer().expect("front buffer");
+            let mut framebuffer = Vec::with_capacity((front.row_bytes * front.height) as usize);
+            let mut row = vec![0; front.row_bytes as usize];
+            for y in 0..front.height {
+                native
+                    .read_front_buffer_row(front, y, &mut row)
+                    .expect("front-buffer row");
+                framebuffer.extend_from_slice(&row);
+            }
+            framebuffer
+        };
+        assert_eq!(
+            framebuffer_after, framebuffer_before,
+            "the retained interaction must restore its saved presentation"
+        );
+
+        native.cpu.pc = native.entry_pc;
+        native.cpu.lr = PPC_HALT_PC;
+        native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MenuChoice;
+        let probe = native.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(native.cpu.gpr[3], raw_choice);
     }
 
     #[test]
