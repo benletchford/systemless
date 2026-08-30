@@ -1,0 +1,33 @@
+// Generated selector-operation routes. Do not edit by hand.
+[
+    SelectorOperationRoute::new(
+        0x0000,
+        "selector-operation:_Pack2:0x0000:stack-word-via-d0-moveq-immediate:16",
+        "DIBadMount",
+    ),
+    SelectorOperationRoute::new(
+        0x0002,
+        "selector-operation:_Pack2:0x0002:stack-word-via-d0-moveq-immediate:16",
+        "DILoad",
+    ),
+    SelectorOperationRoute::new(
+        0x0004,
+        "selector-operation:_Pack2:0x0004:stack-word-via-d0-moveq-immediate:16",
+        "DIUnload",
+    ),
+    SelectorOperationRoute::new(
+        0x0006,
+        "selector-operation:_Pack2:0x0006:stack-word-via-d0-moveq-immediate:16",
+        "DIFormat",
+    ),
+    SelectorOperationRoute::new(
+        0x0008,
+        "selector-operation:_Pack2:0x0008:stack-word-via-d0-moveq-immediate:16",
+        "DIVerify",
+    ),
+    SelectorOperationRoute::new(
+        0x000A,
+        "selector-operation:_Pack2:0x000A:stack-word-via-d0-moveq-immediate:16",
+        "DIZero",
+    ),
+]
