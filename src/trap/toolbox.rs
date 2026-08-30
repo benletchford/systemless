@@ -35,6 +35,8 @@ const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
 const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack14_operations.rs");
+const COMPONENT_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_component_dispatch_operations.rs");
 
 fn slot_manager_operation_route(selector: u32) -> Option<&'static SelectorOperationRoute> {
     selector_operation_route(SLOT_MANAGER_OPERATION_ROUTES, selector)
@@ -72,6 +74,16 @@ fn pack14_operation_route(
         return None;
     }
     selector_operation_route(PACK14_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn component_dispatch_operation_route(
+    trap_word: u16,
+    selector: u32,
+) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA82A {
+        return None;
+    }
+    selector_operation_route(COMPONENT_DISPATCH_OPERATION_ROUTES, selector)
 }
 
 const AE_TYPE_APPLE_EVENT: u32 = u32::from_be_bytes(*b"aevt");
@@ -15476,9 +15488,9 @@ impl super::TrapDispatcher {
             // Manager, Mixed Mode Manager (PowerPC), Code Fragment
             // Manager (PowerPC), Icon Utilities, Thread Manager, and
             // Translation Manager. Each one routes a sub-routine call
-            // selected by either a stack-pushed selector word
-            // (Component Manager) or a routine number in D0
-            // (everything else, Pack8/Pack14 convention).
+            // selected by D0. Component Manager additionally uses D0=0
+            // for component calls whose parameter size and request code
+            // are pushed together as a long word on the stack.
             //
             // HLE compromise — load-bearing rationale:
             //   1. Apps written for System 7+ uniformly probe presence
@@ -15527,10 +15539,13 @@ impl super::TrapDispatcher {
             // remaining stubbed dispatchers keep the register-
             // preservation + stack-untouched contract.
 
-            // ComponentDispatch ($A82A) — Component Manager
-            // Inside Macintosh: More Macintosh Toolbox (1993),
-            // pp. 6-6, 6-29, and 6-98:
-            // `Gestalt('cpnt', ...)` gates availability; component
+            // ComponentDispatch (0xA82A)
+            // Dispatches Component Manager internal requests selected by MOVEQ in D0.
+            // FUNCTION CountComponents (looking: ComponentDescription): LongInt;
+            // Inside Macintosh: More Macintosh Toolbox (1993), pp. 6-43 to 6-44.
+            //
+            // The manager also handles component calls through D0=0.
+            // `Gestalt('cpnt', ...)` gates manager availability; component
             // call glue uses `INLINE $2F3C, paramSize, callNum,
             // $7000, $A82A`, which pushes a 4-byte selector word
             // [paramSize:callNum] then traps.
@@ -15548,17 +15563,13 @@ impl super::TrapDispatcher {
             // calls consume selector + instance + arguments and return a
             // zero ComponentResult in the caller's four-byte result slot.
             //
-            // Regression coverage:
-            //   src/trap/toolbox.rs::tests::componentdispatch_*
-            // ComponentDispatch ($A82A): MMTB 1993 ch.6 17215. Stack-pushed
-            // [paramSize:callNum] selector at SP+0; D0=0 = call component,
-            // D0!=0 = CM internal. Gestalt 'cpnt'. HLE supplies the movie
-            // controller component and stateful open/close calls described above.
             (true, 0x02A) => {
                 const MOVIE_CONTROLLER_COMPONENT: u32 = u32::from_be_bytes(*b"play");
                 const SYNTHETIC_MOVIE_CONTROLLER: u32 = 0x00C0_0001;
 
                 let d0 = cpu.read_reg(Register::D0);
+                let operation = component_dispatch_operation_route(self.current_trap_word, d0);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 if d0 == 0 {
                     let sp = cpu.read_reg(Register::A7);
                     let param_size = u32::from(bus.read_word(sp));
@@ -25035,6 +25046,89 @@ mod tests {
     // System 7+ Dispatch Manager stubs
     // Inside Macintosh: More Macintosh Toolbox (1993),
     // pp. 6-6/6-29/6-98, 5-18/5-71, and 7-12/7-66.
+
+    #[test]
+    fn componentdispatch_generated_routes_preserve_exact_moveq_values() {
+        assert_eq!(super::COMPONENT_DISPATCH_OPERATION_ROUTES.len(), 26);
+        assert!(super::COMPONENT_DISPATCH_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x0001, "RegisterComponent"),
+            (0x0002, "UnregisterComponent"),
+            (0x0003, "CountComponents"),
+            (0x0004, "FindNextComponent"),
+            (0x0005, "GetComponentInfo"),
+            (0x0006, "GetComponentListModSeed"),
+            (0x0007, "OpenComponent"),
+            (0x0008, "CloseComponent"),
+            (0x000A, "GetComponentInstanceError"),
+            (0x000B, "SetComponentInstanceError"),
+            (0x000C, "GetComponentInstanceStorage"),
+            (0x000D, "SetComponentInstanceStorage"),
+            (0x000E, "GetComponentInstanceA5"),
+            (0x000F, "SetComponentInstanceA5"),
+            (0x0010, "GetComponentRefcon"),
+            (0x0011, "SetComponentRefcon"),
+            (0x0012, "RegisterComponentResource"),
+            (0x0013, "CountComponentInstances"),
+            (0x0014, "RegisterComponentResourceFile"),
+            (0x0015, "OpenComponentResFile"),
+            (0x0018, "CloseComponentResFile"),
+            (0x001C, "CaptureComponent"),
+            (0x001D, "UncaptureComponent"),
+            (0x001E, "SetDefaultComponent"),
+            (0x0021, "OpenDefaultComponent"),
+            (0x0024, "DelegateComponentCall"),
+        ] {
+            let route = super::component_dispatch_operation_route(0xA82A, selector)
+                .expect("ComponentDispatch route");
+            assert_eq!(route.routine_name, routine_name);
+        }
+
+        for (trap_word, selector) in [
+            (0xA92A, 0x0003),
+            (0xA82A, 0x0000),
+            (0xA82A, 0x0009),
+            (0xA82A, 0x002C),
+            (0xA82A, 0x7003),
+            (0xA82A, 0x1234_0003),
+            (0xA82A, 0x0000_FFFF),
+            (0xA82A, 0xFFFF_FFFF),
+        ] {
+            assert!(super::component_dispatch_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn componentdispatch_records_exact_internal_identity_without_changing_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA82A;
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+
+        let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
+        assert!(result.expect("ComponentDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_ComponentDispatch:0x0003:d0-moveq-immediate:8")
+        );
+        assert_eq!(bus.read_long(sp + 4), 1);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+
+        disp.current_trap_word = 0xA92A;
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0003);
+        bus.write_long(sp, 0);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        let result = disp.dispatch_toolbox(true, 0x02A, &mut cpu, &mut bus);
+        assert!(result.expect("ComponentDispatch arm").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(bus.read_long(sp + 4), 1);
+    }
 
     #[test]
     fn componentdispatch_call_path_pops_selector_instance_and_args_and_returns_noerr() {
