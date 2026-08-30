@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.21](https://github.com/benletchford/systemless/compare/v0.23.20...v0.23.21) (2026-08-30)
+
+
+### Code Refactoring
+
+* **runtime:** introduce process-owned context ([aa09e4e](https://github.com/benletchford/systemless/commit/aa09e4eb08d58f43c44e712f25399a7a6f31fecc)), closes [#1006](https://github.com/benletchford/systemless/issues/1006)
+
 ## [0.23.20](https://github.com/benletchford/systemless/compare/v0.23.19...v0.23.20) (2026-08-30)
 
 
