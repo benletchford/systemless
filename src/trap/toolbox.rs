@@ -33,6 +33,8 @@ const ALIAS_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
 const PPC_OPERATION_ROUTES: &[SelectorOperationRoute] = &include!("generated_ppc_operations.rs");
 const PACK8_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack8_operations.rs");
+const PACK6_OPERATION_ROUTES: &[SelectorOperationRoute] =
+    &include!("generated_pack6_operations.rs");
 const PACK13_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_pack13_operations.rs");
 const PACK14_OPERATION_ROUTES: &[SelectorOperationRoute] =
@@ -74,6 +76,13 @@ fn pack8_operation_route(trap_word: u16, selector: u16) -> Option<&'static Selec
         return None;
     }
     selector_operation_route(PACK8_OPERATION_ROUTES, u32::from(selector))
+}
+
+fn pack6_operation_route(trap_word: u16, selector: u16) -> Option<&'static SelectorOperationRoute> {
+    if trap_word != 0xA9ED {
+        return None;
+    }
+    selector_operation_route(PACK6_OPERATION_ROUTES, u32::from(selector))
 }
 
 fn pack13_operation_route(
@@ -12448,54 +12457,15 @@ impl super::TrapDispatcher {
 
             // Pack4 ($A9EB) and Pack5 ($A9EC) are handled by dispatch_sane
 
-            // Pack6 ($A9ED) — International Utilities Package
-            //
-            // Eighteen-routine selector dispatcher providing date/time
-            // formatting, international string comparison, and (System
-            // 7+) interscript ordering / itl2/itl4 cache management.
-            //
-            // Selector encoding is pure low-byte routine number (high
-            // byte $00) per IM:I I-487 + IM:VI 14-135 explicit
-            // "Selector: $XXXX" tables — same convention as Pack2 /
-            // Pack3, NOT the Pack8 / SANE param-size-in-high-byte
-            // convention.
-            //
-            // HLE compromise: Systemless runs a single-script (Roman /
-            // Latin-1) US-default environment. It synthesizes classic
-            // U.S. 'INTL' IDs 0 and 1, but no localised 'itl2' / 'itl4'
-            // resources. Date strings
-            // collapse to a "1/1/04" placeholder; time strings to
-            // "12:00 AM" / "12:00:00 AM"; metric query returns FALSE;
-            // comparators do byte-
-            // level compare returning -1/0/+1 (Mag/Comp variants;
-            // case-sensitive) or 0/1 (MagID/Equal variants; case-
-            // insensitive ASCII fold); script/lang ordering does
-            // numeric compare. IUClearCache / IUSetIntl /
-            // IUGetIntlTable are no-ops with documented VAR-out NIL
-            // writes. Apps that need locale-specific formatting see
-            // Mac-default English output.
-            //
-            // Stack frames assume Pascal arg conventions: LongInt =
-            // 4, Integer/Boolean/DateForm = 2 (DateForm = 1 byte at
-            // the source level but stack-aligned to 2 bytes), Handle
-            // / Ptr = 4, Str255 by REFERENCE (4-byte VAR ptr,
-            // matching the Toolbox-wide convention reaffirmed by
-            // Pack3, AppendMenu, SetWTitle, and
-            // ParamText). VAR LongDateTime is also a 4-byte ptr.
-            //
-            // IUCompString / IUEqualString / IUCompPString /
-            // IUEqualPString are pure Pascal-glue convenience wrappers
-            // (per IM:I I-498 "there's no trap for it; it eventually
-            // calls IUMagString" / IM:I I-501 same for IUEqualString)
-            // — they have NO selector and reach this dispatcher via
-            // their Mag / MagID counterparts.
-            //
-            // Inside Macintosh Volume I (1985), pages I-485..I-510.
-            // Inside Macintosh Volume VI (1991), pages 14-1..14-135.
-            // Pack6 / Intl Utilities ($A9ED): Per-selector Pascal frames per IM:I I-487 + IM:VI 14-135: $0000 IUDateString pop 12 result@SP+2, $0002 IUTimeString pop 12 result@SP+2, $0004 IUMetric pop 2 result@SP+2 (FALSE), $0006 IUGetIntl pop 4 result@SP+4 (INTL handle), $0008 IUSetIntl pop 10 (no-op), $000A IUMagString pop 14 result@SP+14 (-1/0/+1 byte cmp), $000C IUMagIDString pop 14 result@SP+14 (0/1 case-insens), $000E IUDatePString pop 16 result@SP+6, $0010 IUTimePString pop 16 result@SP+6, $0014 IULDateString pop 16 result@SP+6, $0016 IULTimeString pop 16 result@SP+6, $0018 IUClearCache pop 2 (no-op), $001A IUMagPString pop 18 result@SP+18 (-1/0/+1), $001C IUMagIDPString pop 18 result@SP+18 (0/1), $001E IUScriptOrder pop 6 result@SP+6 (-1/0/+1), $0020 IULangOrder pop 6 result@SP+6 (-1/0/+1), $0022 IUTextOrder pop 22 result@SP+22 (-1/0/+1), $0024 IUGetIntlTable pop 18 (writes NIL/0/0 to 3 VAR ptrs).
+            // _Pack6 (0xA9ED)
+            // Dispatches International and Text Utilities operations selected by a word on top of the stack.
+            // Selector ABI: 16-bit word at SP; routine-specific Pascal parameters follow.
+            // Inside Macintosh Volume I (1985), I-483; Inside Macintosh Volume VI (1991), 14-135; Inside Macintosh: Text (1993), 5-113.
             (true, 0x1ED) => {
                 let sp = cpu.read_reg(Register::A7);
                 let selector = bus.read_word(sp);
+                let operation = pack6_operation_route(self.current_trap_word, selector);
+                self.current_selector_operation = operation.map(|route| route.operation_id);
                 match selector {
                     // PROCEDURE IUDateString(dateTime: LongInt;
                     //                        form: DateForm;
@@ -27419,12 +27389,129 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
+    #[test]
+    fn pack6_generated_routes_preserve_exact_stack_word_values() {
+        assert_eq!(super::PACK6_OPERATION_ROUTES.len(), 9);
+        assert!(super::PACK6_OPERATION_ROUTES
+            .windows(2)
+            .all(|pair| pair[0].selector < pair[1].selector));
+
+        for (selector, routine_name) in [
+            (0x000E, "DateString"),
+            (0x0010, "TimeString"),
+            (0x0014, "LongDateString"),
+            (0x0016, "LongTimeString"),
+            (0x001A, "CompareText"),
+            (0x001C, "IdenticalText"),
+            (0x001E, "ScriptOrder"),
+            (0x0020, "LanguageOrder"),
+            (0x0022, "TextOrder"),
+        ] {
+            let route =
+                super::pack6_operation_route(0xA9ED, selector).expect("Pack6 operation route");
+            assert_eq!(route.routine_name, routine_name);
+            assert_eq!(
+                route.operation_id,
+                format!("selector-operation:_Pack6:0x{selector:04X}:stack-word-immediate:16")
+            );
+        }
+
+        for (trap_word, selector) in [
+            (0xA8ED, 0x000E),
+            (0xADED, 0x000E), // same slot with a different raw trap form
+            (0xA9EC, 0x0022),
+            (0xA9E5, 0x000E), // InitPack is a distinct trap
+            (0xA9ED, 0x0000), // outside generated slice: IUDateString
+            (0xA9ED, 0x0002), // outside generated slice: IUTimeString
+            (0xA9ED, 0x0004), // outside generated slice: IUMetric / IsMetric
+            (0xA9ED, 0x0006), // outside generated slice: IUGetIntl / GetIntlResource
+            (0xA9ED, 0x0008), // outside generated slice: IUSetIntl / SetIntlResource
+            (0xA9ED, 0x000A), // outside generated slice: IUMagString
+            (0xA9ED, 0x000C), // outside generated slice: IUMagIDString
+            (0xA9ED, 0x0012), // unassigned gap
+            (0xA9ED, 0x0018), // outside generated slice: IUClearCache
+            (0xA9ED, 0x0024), // outside generated slice: IUGetItlTable
+            (0xA9ED, 0x0028), // TypeSelect glue is outside the manual intersection
+            (0xA9ED, 0x000F), // odd adjacent value
+            (0xA9ED, 0x3F3C), // MOVE.W immediate-to-stack opcode spelling
+            (0xA9ED, 0x0E00), // byte-swapped DateString selector
+        ] {
+            assert!(super::pack6_operation_route(trap_word, selector).is_none());
+        }
+    }
+
+    #[test]
+    fn pack6_records_stack_word_identity_without_changing_script_order_behavior() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+
+        for trap_word in [0xA9ED, 0xADED] {
+            disp.current_trap_word = trap_word;
+            cpu.write_reg(Register::A7, sp);
+            cpu.write_reg(Register::A0, 0x1234_0000);
+            cpu.write_reg(Register::A1, 0x1234_0001);
+            cpu.write_reg(Register::D0, 0x1234_5678);
+            cpu.write_reg(Register::D1, 0x1234_0002);
+            bus.write_word(sp, 0x001E); // ScriptOrder
+            bus.write_word(sp + 2, 5); // script2
+            bus.write_word(sp + 4, 2); // script1
+            bus.write_word(sp + 6, 0xBEEF); // Integer result
+            bus.write_long(sp + 8, 0xCAFE_BABE); // adjacent stack poison
+
+            let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+            assert!(result.expect("Pack6 arm").is_ok());
+            assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+            assert_eq!(bus.read_word(sp + 6), 0xFFFF);
+            assert_eq!(cpu.read_reg(Register::D0), 0x0000_FFFF);
+            assert_eq!(cpu.read_reg(Register::A0), 0x1234_0000);
+            assert_eq!(cpu.read_reg(Register::A1), 0x1234_0001);
+            assert_eq!(cpu.read_reg(Register::D1), 0x1234_0002);
+            assert_eq!(bus.read_word(sp + 2), 5);
+            assert_eq!(bus.read_word(sp + 4), 2);
+            assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+
+            let expected = (trap_word == 0xA9ED)
+                .then_some("selector-operation:_Pack6:0x001E:stack-word-immediate:16");
+            assert_eq!(disp.current_selector_operation, expected);
+        }
+    }
+
+    #[test]
+    fn pack6_unknown_selector_clears_known_identity_without_touching_its_frame() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        disp.current_trap_word = 0xA9ED;
+
+        bus.write_word(sp, 0x001E); // ScriptOrder
+        bus.write_word(sp + 2, 5);
+        bus.write_word(sp + 4, 2);
+        bus.write_word(sp + 6, 0xBEEF);
+        let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+        assert!(result.expect("Pack6 ScriptOrder arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_Pack6:0x001E:stack-word-immediate:16")
+        );
+
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x1234_5678);
+        bus.write_word(sp, 0x0012); // unassigned gap
+        bus.write_bytes(sp + 2, &[0xA5; 16]);
+        let result = disp.dispatch_toolbox(true, 0x1ED, &mut cpu, &mut bus);
+        assert!(result.expect("Pack6 unknown-selector fallback").is_ok());
+        assert_eq!(disp.current_selector_operation, None);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 2);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_bytes(sp + 2, 16), vec![0xA5; 16]);
+    }
+
     // Pack6 / Intl Utilities ($A9ED) — IUMetric selector $0004
     // IM:I I-505: returns TRUE when metric, otherwise FALSE.
     #[test]
     fn iumetric_returns_false_in_result_slot_and_pops_selector_only() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        disp.current_trap_word = 0xA9ED;
         bus.write_word(sp, 0x0004); // IUMetric selector
         bus.write_word(sp + 2, 0xFFFF); // Boolean result slot
 
@@ -27435,6 +27522,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 2), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(disp.current_selector_operation, None);
     }
 
     // Pack6 / Intl Utilities ($A9ED) — IUGetIntl selector $0006.
