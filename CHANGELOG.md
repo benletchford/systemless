@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.6](https://github.com/benletchford/systemless/compare/v0.27.5...v0.27.6) (2026-08-31)
+
+
+### Bug Fixes
+
+* **dialog:** keep PowerPC alerts modal ([#1100](https://github.com/benletchford/systemless/issues/1100)) ([39f3e06](https://github.com/benletchford/systemless/commit/39f3e061e1d473144a42b70be49f461322eb38ca))
+
 ## [0.27.5](https://github.com/benletchford/systemless/compare/v0.27.4...v0.27.5) (2026-08-31)
 
 
