@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.5](https://github.com/benletchford/systemless/compare/v0.27.4...v0.27.5) (2026-08-31)
+
+
+### Bug Fixes
+
+* **qd3d:** render indexed Macintosh panes ([#1097](https://github.com/benletchford/systemless/issues/1097)) ([2a490f7](https://github.com/benletchford/systemless/commit/2a490f7e401d236854861040860a3a599a523550))
+
 ## [0.27.4](https://github.com/benletchford/systemless/compare/v0.27.3...v0.27.4) (2026-08-31)
 
 
