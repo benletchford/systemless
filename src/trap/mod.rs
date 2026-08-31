@@ -21,7 +21,7 @@ mod event;
 pub(crate) mod extended80;
 mod framebuffer;
 mod memory;
-mod menu;
+pub(crate) mod menu;
 mod movie_media;
 pub(crate) mod pict;
 mod qtrle;

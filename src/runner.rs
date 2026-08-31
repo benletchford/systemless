@@ -935,6 +935,10 @@ static WS_CANCEL_TRAP: AtomicU64 = AtomicU64::new(0);
 static WS_PARKED: AtomicU64 = AtomicU64::new(0);
 static WS_PERIOD_STEPS: AtomicU64 = AtomicU64::new(0);
 static WS_PROBE_OVERFLOWS: AtomicU64 = AtomicU64::new(0);
+static WS_RESUMED: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_MEM: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_HOST: AtomicU64 = AtomicU64::new(0);
+static WS_RESUME_FAIL_OTHER: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
     std::sync::Mutex::new(None);
 
@@ -968,6 +972,13 @@ pub fn dump_wait_stats() {
         WS_FAIL_CPU.load(AtomicOrdering::Relaxed),
         WS_FAIL_MEM.load(AtomicOrdering::Relaxed),
         WS_CANCEL_TRAP.load(AtomicOrdering::Relaxed),
+    );
+    eprintln!(
+        "[WAIT-STATS] resumed={} resume_fail_mem={} resume_fail_host={} resume_fail_other={}",
+        WS_RESUMED.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_MEM.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_HOST.load(AtomicOrdering::Relaxed),
+        WS_RESUME_FAIL_OTHER.load(AtomicOrdering::Relaxed),
     );
     if let Ok(guard) = WS_CANCEL_TRAP_WORDS.lock() {
         if let Some(map) = guard.as_ref() {
@@ -1063,13 +1074,45 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
     (is_tool, trap_num)
 }
 
-/// Traps an exact idle-cycle proof may observe without cancelling: every
-/// consequence lands in CPU registers or guest RAM, so the exact-state
-/// journal sees any real change. Event polls only qualify when they
-/// returned a null event; SystemTask only without periodic host work --
-/// callers pass those runtime facts in. ONE definition, consulted from
-/// both the inline pre-dispatch check and the post-dispatch quiescence
-/// classification (they were once two hand-synced copies and drifted).
+/// Traps an exact idle-cycle proof may observe without cancelling.
+///
+/// The prover parks a wait loop behind two independent gates, and a trap
+/// is admitted here only if it cannot beat either:
+///
+/// 1. **The proof.** Two arrivals at the same trap site in the same tick
+///    must show an identical `CpuArchitecturalSnapshot` *and* a write
+///    journal in which every guest-RAM byte written during the cycle
+///    still holds its original value (`try_exact_idle_cycle_fastfwd`).
+/// 2. **The park.** A proven cycle is reused only while guest memory, the
+///    CPU snapshot, `IdleCycleHostSnapshot` (mouse, keys, caps lock, the
+///    window list, any staged native menu selection) and the guest tick
+///    are all unchanged and the Event Manager has nothing to deliver
+///    (`try_resume_proven_idle_cycle`). A park is at most one tick.
+///
+/// A trap is *journal-complete* -- admissible -- when every input it acts
+/// on is CPU state, guest RAM or the current tick, and every consequence
+/// of calling it is either nothing at all or a write through the bus into
+/// guest RAM, so that any real difference between two iterations shows
+/// up in one of the two comparisons above. Concretely, before admitting a
+/// trap check all of:
+///
+/// - it reads no host state outside `IdleCycleHostSnapshot` -- or, if it
+///   reads a host mirror (the window list, a staged menu selection), every
+///   mutation of that mirror is also written into journaled guest RAM or
+///   posts an event the park gate sees;
+/// - on any path that writes guest RAM it writes *before* it touches
+///   host-cached state the journal cannot see (TEIdle's caret stamps
+///   precede its draw; MoveTo, which only mirrors pnLoc into dispatcher
+///   state, is the counter-example and stays out);
+/// - its only other effects are diagnostics (trace `eprintln!`s).
+///
+/// Event polls only qualify when they returned a null event; SystemTask
+/// only without periodic host work -- callers pass those runtime facts
+/// in. ONE definition, consulted from both the inline pre-dispatch check
+/// and the post-dispatch quiescence classification (they were once two
+/// hand-synced copies and drifted). The membership test
+/// `journal_complete_traps_do_not_cancel_an_idle_probe` covers both the
+/// plain and the auto-pop encodings.
 fn idle_cycle_trap_is_journal_complete(
     opcode: u16,
     null_event: bool,
@@ -1077,8 +1120,20 @@ fn idle_cycle_trap_is_journal_complete(
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
-        // GlobalToLocal: pure register/memory transform.
-        (true, 0x0071) => true,
+        // Pure transforms of a Point on the stack (quickdraw.rs).
+        (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
+        // TEIdle (dialog.rs `textedit_idle`) reads the TERec and the tick and
+        // either returns having written nothing, or stamps caretState and
+        // caretTime into guest RAM *before* it paints -- that ordering is
+        // what lets the journal fail a proof a due blink lands in.
+        (true, 0x01DA) => true, // TEIdle
+        // Window Manager queries (window.rs) whose results reach the guest
+        // through RAM and the stack. The host window list they read is
+        // rewritten into the guest chain (journaled) by every mutation
+        // (`sync_window_list_links`), a staged native menu selection is
+        // always paired with a pending event the parked resume sees, and
+        // `IdleCycleHostSnapshot` carries both besides.
+        (true, 0x0117) | (true, 0x0124) | (true, 0x012C) => true, // GetWRefCon, FrontWindow, FindWindow
         // Input-poll family: GetMouse/StillDown/Button/TickCount/GetKeys.
         (true, 0x0172..=0x0176) => true,
         // SANE Pack4/Pack5: pure transforms of stack operands.
@@ -1314,6 +1369,15 @@ struct IdleCycleHostSnapshot {
     mouse_button: bool,
     key_map: [u8; 16],
     caps_lock_physically_pressed: bool,
+    /// Host mirror of the guest window chain, read by the admitted Window
+    /// Manager queries. Every mutation of it is also written into the guest
+    /// chain (journaled), so this is belt-and-braces: a parked cycle must
+    /// not resume across a reordering the journal somehow missed.
+    window_list: Vec<u32>,
+    /// A native menu selection staged for MenuSelect. It is always paired
+    /// with a pending event the resume gate sees; recorded here so the
+    /// pairing is not the only thing standing between it and a proof.
+    pending_native_menu_selection: Option<(i16, i16)>,
 }
 
 impl IdleCycleHostSnapshot {
@@ -1323,6 +1387,8 @@ impl IdleCycleHostSnapshot {
             mouse_button: dispatcher.mouse_button,
             key_map: *dispatcher.key_map_bytes(),
             caps_lock_physically_pressed: dispatcher.caps_lock_physically_pressed,
+            window_list: dispatcher.window_list.clone(),
+            pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
         }
     }
 }
@@ -2601,7 +2667,7 @@ impl FixtureRunner {
     /// Call before reading raw pixels for screenshots.
     pub fn composite_frame(&mut self) {
         self.sync_ppc_deferred_host_state();
-        self.redraw_chrome();
+        self.redraw_chrome_outside_idle_journal();
     }
 
     fn redraw_chrome(&mut self) {
@@ -4156,12 +4222,44 @@ impl FixtureRunner {
         self.sync_ppc_sound_completions_from_dispatcher();
     }
 
+    /// Repaint host chrome without recording it against an armed
+    /// idle-proof journal (the per-frame repaint would overflow the
+    /// journal's guest-wait-cycle entry cap at 8 bpp and void every proof).
+    ///
+    /// Correctness boundary (issue #1052): suspending the journal is safe
+    /// only while the repaint cannot change guest RAM relative to a proven
+    /// state. During the probing phase that holds trivially -- proofs
+    /// re-execute the whole cycle, so a changed repaint just fails to
+    /// prove. While PARKED the proof is reused without re-execution, so
+    /// the first repaint after a park (guest code may have overwritten a
+    /// chrome pixel before entering its idle loop) is checked for
+    /// byte-identity with an uncapped journal; a repaint that changed
+    /// anything revokes the park and the site re-proves from scratch.
+    fn redraw_chrome_outside_idle_journal(&mut self) {
+        let suspended = self.bus.suspend_write_probe();
+        let check_parked_repaint = self.idle_cycle_sleep.is_some() && suspended.is_some();
+        if check_parked_repaint {
+            self.bus.begin_uncapped_write_probe();
+        }
+        self.redraw_chrome();
+        let revoke = check_parked_repaint && !self.bus.finish_write_probe_unchanged();
+        if let Some(journal) = suspended {
+            self.bus.resume_write_probe(journal);
+        }
+        if revoke {
+            if wait_stats_enabled() {
+                WS_RESUME_FAIL_MEM.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            self.cancel_idle_cycle_detector();
+        }
+    }
+
     fn finish_host_frame(&mut self, audio_samples: usize, sound_interrupt_dispatched: bool) {
         // Redraw menu bar and window chrome after each frame.
         // On a real Mac the Window Manager maintains these as
         // separate layers; here they are raw framebuffer pixels
         // that game drawing (explosions, etc.) can overwrite.
-        self.redraw_chrome();
+        self.redraw_chrome_outside_idle_journal();
         self.finish_audio_frame(audio_samples, sound_interrupt_dispatched);
     }
 
@@ -4517,6 +4615,16 @@ impl FixtureRunner {
             || !host_unchanged
             || !event_stream_empty
         {
+            if wait_stats_enabled() {
+                let counter = if !memory_unchanged {
+                    &WS_RESUME_FAIL_MEM
+                } else if !host_unchanged {
+                    &WS_RESUME_FAIL_HOST
+                } else {
+                    &WS_RESUME_FAIL_OTHER
+                };
+                counter.fetch_add(1, AtomicOrdering::Relaxed);
+            }
             self.cancel_idle_cycle_detector();
             return false;
         }
@@ -4527,6 +4635,9 @@ impl FixtureRunner {
         };
         match self.advance_until_tick(sleep.wake_tick, Some(cap)) {
             AdvanceResult::CapHit => {
+                if wait_stats_enabled() {
+                    WS_RESUMED.fetch_add(1, AtomicOrdering::Relaxed);
+                }
                 self.park_proven_idle_cycle(sleep.trap_pc, sleep.wake_tick);
                 true
             }
@@ -5161,7 +5272,7 @@ impl FixtureRunner {
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
                 if self.halted_by_exit_to_shell() {
-                    self.redraw_chrome();
+                    self.redraw_chrome_outside_idle_journal();
                 } else {
                     self.finish_host_frame(audio_samples, false);
                 }
@@ -6298,7 +6409,7 @@ impl FixtureRunner {
         self.ppc_app = Some(ppc_app);
         if exited_via_ppc_exit_to_shell {
             if finish_frame {
-                self.redraw_chrome();
+                self.redraw_chrome_outside_idle_journal();
             }
         } else {
             self.queue_due_ppc_sound_completions();
@@ -20988,10 +21099,12 @@ mod tests {
     }
 
     #[test]
-    fn poll_traps_and_sane_do_not_cancel_an_idle_probe() {
+    fn journal_complete_traps_do_not_cancel_an_idle_probe() {
         // EV Override's crawl idles in a GetKeys/Button cycle interleaved
-        // with SANE math; the proof must survive every one of those traps
-        // and still cancel on anything with unjournaled consequences.
+        // with SANE math; SimCity 2000's dialog loops poll LocalToGlobal,
+        // the Window Manager queries and TEIdle. The proof must survive every
+        // one of those traps, in the plain and the auto-pop encodings, and
+        // still cancel on anything with unjournaled consequences.
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         let trap_pc = 0x0002_0000u32;
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
@@ -21000,17 +21113,236 @@ mod tests {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert!(runner.idle_cycle_probe.is_some());
 
-        for opcode in [0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC] {
+        for opcode in [
+            0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917,
+            0xA924, 0xA92C, 0xA9DA, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+        ] {
             runner.note_idle_cycle_trap_result(opcode);
             assert!(
                 runner.idle_cycle_probe.is_some(),
-                "poll/SANE trap {opcode:04X} must not cancel the probe"
+                "journal-complete trap {opcode:04X} must not cancel the probe"
             );
         }
-        // A drawing trap has host-visible consequences the journal cannot
-        // observe; it must cancel.
+        // MoveTo mirrors pnLoc into dispatcher state the journal cannot
+        // see; anything with host-cached consequences must cancel.
         runner.note_idle_cycle_trap_result(0xA893);
         assert!(runner.idle_cycle_probe.is_none());
+    }
+
+    #[test]
+    fn chrome_repaint_stays_out_of_an_armed_idle_journal() {
+        // The runner repaints host-owned chrome every frame. Painted under an
+        // armed idle-proof journal it would be recorded against the proof
+        // (and at 8 bpp overflow it -- see
+        // memory::bus::tests::suspended_write_probe_ignores_writes_and_rearms_intact);
+        // the runner's wrapper must leave the journal armed and untouched.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.bus.begin_write_probe();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(!runner.bus.take_write_probe_overflow());
+        assert!(
+            runner.bus.suspend_write_probe().is_some(),
+            "the journal must still be armed after the repaint"
+        );
+        runner.bus.cancel_write_probe();
+
+        runner.bus.begin_write_probe();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(runner.bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn first_parked_repaint_revokes_the_park_when_guest_overwrote_a_chrome_pixel() {
+        // Issue #1052: the park reuses its proof without re-execution, so a
+        // suspended repaint that is not byte-identical (guest code scribbled
+        // over chrome before entering the idle loop) would silently change
+        // guest RAM relative to the proven state. It must revoke the park.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.dispatcher.menus.push(crate::trap::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        runner.dispatcher.front_window = 0;
+        runner.dispatcher.fullscreen_locked = false;
+        runner.dispatcher.menu_bar_hidden = false;
+
+        // Establish the current chrome pixels, then scribble one menu-bar
+        // pixel the way pre-idle guest drawing would.
+        runner.redraw_chrome_outside_idle_journal();
+        let pixel = screen_base + 5 * 1024 + 100;
+        assert_ne!(
+            runner.bus.read_byte(pixel),
+            0xAA,
+            "fixture: a painted menu-bar pixel must differ from the sentinel"
+        );
+        runner.bus.write_byte(pixel, 0xAA);
+
+        runner.park_proven_idle_cycle(0x0002_0000, 205);
+        assert!(runner.idle_cycle_sleep.is_some());
+
+        runner.redraw_chrome_outside_idle_journal();
+        assert_ne!(
+            runner.bus.read_byte(pixel),
+            0xAA,
+            "the repaint repainted the scribbled chrome pixel"
+        );
+        assert!(
+            runner.idle_cycle_sleep.is_none(),
+            "a repaint that changed guest RAM must revoke the park"
+        );
+        assert!(
+            runner.bus.suspend_write_probe().is_none(),
+            "the revoked park's journal must be closed"
+        );
+    }
+
+    #[test]
+    fn byte_identical_parked_repaints_keep_the_park() {
+        // The control for the revocation gate: chrome that is already
+        // current repaints byte-identically, the park survives, and its
+        // journal stays armed and unchanged.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.dispatcher.menus.push(crate::trap::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        runner.dispatcher.front_window = 0;
+        runner.dispatcher.fullscreen_locked = false;
+        runner.dispatcher.menu_bar_hidden = false;
+
+        runner.redraw_chrome_outside_idle_journal();
+        runner.park_proven_idle_cycle(0x0002_0000, 205);
+        assert!(runner.idle_cycle_sleep.is_some());
+
+        runner.redraw_chrome_outside_idle_journal();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(
+            runner.idle_cycle_sleep.is_some(),
+            "byte-identical repaints must keep the park"
+        );
+        let journal = runner
+            .bus
+            .suspend_write_probe()
+            .expect("the park's journal must still be armed");
+        runner.bus.resume_write_probe(journal);
+        assert!(runner.bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
+    fn host_snapshot_tracks_window_list_and_pending_native_menu_selection() {
+        let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+        let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
+        runner.dispatcher.window_list.push(0x0012_3456);
+        assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+        runner.dispatcher.window_list.pop();
+        assert_eq!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+        runner.dispatcher.pending_native_menu_selection.stage((3, 1));
+        assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
+    }
+
+    #[test]
+    fn window_and_textedit_mutators_still_cancel_an_idle_probe() {
+        // The admission is a list of specific traps, not a range: the
+        // neighbours that mutate host-mirrored window or TextEdit state
+        // must go on cancelling.
+        for opcode in [0xA918u16, 0xA91F, 0xA928, 0xA929, 0xA9D8, 0xA9D9, 0xA9DC] {
+            let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
+            let trap_pc = 0x0002_0000u32;
+            runner.cpu.write_reg(Register::A7, 0x0008_0000);
+            runner.dispatcher.tick_count = 100;
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+            runner.note_idle_cycle_trap_result(opcode);
+            assert!(
+                runner.idle_cycle_probe.is_none(),
+                "{opcode:04X} must cancel the probe"
+            );
+        }
+    }
+
+    #[test]
+    fn teidle_inside_a_proof_parks_when_idle_and_fails_on_memory_when_it_blinks() {
+        // TEIdle is admitted because it either writes nothing or stamps
+        // caretState/caretTime into guest RAM before it paints. Both halves
+        // of that claim, through the real handler under a real probe.
+        for (blink_due, expect_park) in [(false, true), (true, false)] {
+            let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+            let trap_pc = 0x0002_0000u32;
+            let sp = 0x0010_0000u32;
+            let te_handle = 0x0020_0000u32;
+            let te_rec = 0x0020_0100u32;
+            runner.cpu.write_reg(Register::PC, trap_pc + 2);
+            runner.cpu.core.ppc = trap_pc;
+            runner.cpu.core.ir = 0xA975; // the loop's TickCount anchor
+            runner.bus.write_long(0x016A, 100);
+            runner.dispatcher.tick_count = 100;
+            runner.bus.write_long(te_handle, te_rec);
+            runner.bus.write_word(te_rec + 0x20, 5); // selStart
+            runner.bus.write_word(te_rec + 0x22, 5); // selEnd: an insertion point
+            runner.bus.write_word(te_rec + 0x24, 1); // active
+            runner
+                .bus
+                .write_long(te_rec + 0x34, if blink_due { 60 } else { 100 }); // caretTime
+            runner.bus.write_word(te_rec + 0x38, 0); // caretState
+                                                     // The argument slot holds hTE before the journal opens, so the
+                                                     // loop's push below rewrites the same bytes.
+            runner.bus.write_long(sp - 4, te_handle);
+            runner.cpu.write_reg(Register::A7, sp);
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
+            assert!(runner.idle_cycle_probe.is_some());
+
+            let before = CpuArchitecturalSnapshot::capture(&runner.cpu.core);
+            // One loop iteration: push hTE, call TEIdle (which pops it).
+            runner.cpu.write_reg(Register::A7, sp - 4);
+            runner.bus.write_long(sp - 4, te_handle);
+            let result =
+                runner
+                    .dispatcher
+                    .dispatch_dialog(true, 0x1DA, &mut runner.cpu, &mut runner.bus);
+            assert!(result.unwrap().is_ok());
+            assert_eq!(runner.cpu.read_reg(Register::A7), sp);
+            runner.note_idle_cycle_trap_result(0xA9DA);
+            assert!(runner.idle_cycle_probe.is_some(), "TEIdle is admitted");
+            assert_eq!(
+                before,
+                CpuArchitecturalSnapshot::capture(&runner.cpu.core),
+                "TEIdle must leave the architectural state as it found it"
+            );
+            assert_eq!(runner.bus.read_word(te_rec + 0x38), u16::from(blink_due));
+
+            let parked = runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105));
+            assert_eq!(parked, expect_park, "blink_due={blink_due}");
+            assert_eq!(runner.idle_cycle_sleep.is_some(), expect_park);
+        }
     }
 
     #[test]
