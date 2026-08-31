@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.10](https://github.com/benletchford/systemless/compare/v0.27.9...v0.27.10) (2026-08-31)
+
+
+### Code Refactoring
+
+* unify classic text line breaking ([#1114](https://github.com/benletchford/systemless/issues/1114)) ([a7b0fc6](https://github.com/benletchford/systemless/commit/a7b0fc6bc23656069db45dd30a98695940d8f30d))
+
 ## [0.27.9](https://github.com/benletchford/systemless/compare/v0.27.8...v0.27.9) (2026-08-31)
 
 
