@@ -63090,16 +63090,10 @@ fn ppc_frame_front_rect(
     wrote
 }
 
-fn ppc_draw_dialog_text(
-    memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
-    rect: (i16, i16, i16, i16),
-    bytes: &[u8],
-) {
-    let max_width = rect.3.saturating_sub(rect.1).max(1);
-    let mut lines = Vec::<Vec<u8>>::new();
+fn ppc_wrap_dialog_text_paragraph(lines: &mut Vec<Vec<u8>>, paragraph: &[u8], max_width: i16) {
+    let initial_line_count = lines.len();
     let mut line = Vec::<u8>::new();
-    for word in bytes.split(|byte| matches!(*byte, b' ' | b'\r' | b'\n')) {
+    for word in paragraph.split(|byte| *byte == b' ') {
         if word.is_empty() {
             continue;
         }
@@ -63124,6 +63118,42 @@ fn ppc_draw_dialog_text(
     if !line.is_empty() {
         lines.push(line);
     }
+    if lines.len() == initial_line_count {
+        lines.push(Vec::new());
+    }
+}
+
+fn ppc_dialog_text_lines(bytes: &[u8], max_width: i16) -> Vec<Vec<u8>> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::<Vec<u8>>::new();
+    let mut paragraph_start = 0usize;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        if matches!(bytes[index], b'\r' | b'\n') {
+            ppc_wrap_dialog_text_paragraph(&mut lines, &bytes[paragraph_start..index], max_width);
+            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                index += 1;
+            }
+            paragraph_start = index + 1;
+        }
+        index += 1;
+    }
+    if paragraph_start < bytes.len() {
+        ppc_wrap_dialog_text_paragraph(&mut lines, &bytes[paragraph_start..], max_width);
+    }
+    lines
+}
+
+fn ppc_draw_dialog_text(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    rect: (i16, i16, i16, i16),
+    bytes: &[u8],
+) {
+    let max_width = rect.3.saturating_sub(rect.1).max(1);
+    let lines = ppc_dialog_text_lines(bytes, max_width);
     for (index, line) in lines.iter().enumerate() {
         let baseline = rect
             .0
@@ -140688,6 +140718,20 @@ pub(crate) mod tests {
         let mut standard_items = user_items.to_vec();
         standard_items.push(user_item(PPC_DIALOG_ITEM_BUTTON, (60, 60, 80, 140)));
         assert!(!ppc_dialog_is_game_managed(bounds, &standard_items));
+    }
+
+    #[test]
+    fn dialog_static_text_preserves_resource_line_breaks_before_wrapping() {
+        let text = b"Toolbox Showcase 2.0\rClassic Macintosh Fat-App Fixture\rRunning 68K and PowerPC slices";
+
+        assert_eq!(
+            ppc_dialog_text_lines(text, 260),
+            vec![
+                b"Toolbox Showcase 2.0".to_vec(),
+                b"Classic Macintosh Fat-App Fixture".to_vec(),
+                b"Running 68K and PowerPC slices".to_vec(),
+            ]
+        );
     }
 
     #[test]
