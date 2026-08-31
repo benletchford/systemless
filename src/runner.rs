@@ -4222,16 +4222,6 @@ impl FixtureRunner {
         self.sync_ppc_sound_completions_from_dispatcher();
     }
 
-    /// Repaint the host-owned chrome (menu bar, window frames, cursor)
-    /// without it counting against an armed idle-proof journal. The runner
-    /// paints it every frame on the guest's behalf, so it is not a guest
-    /// memory effect, and at 8 bpp the menu bar alone is more journal words
-    /// than `WRITE_PROBE_MAX_ENTRIES`: recorded, it would overflow the
-    /// journal and void a parked cycle on every frame. Its pixels change
-    /// only when dispatcher state does, which happens through guest traps
-    /// (never admitted into a proof) or host input (gated by
-    /// `IdleCycleHostSnapshot` before a park resumes), so leaving them out
-    /// of the journal takes nothing away from the proof.
     /// Repaint host chrome without recording it against an armed
     /// idle-proof journal (the per-frame repaint would overflow the
     /// journal's guest-wait-cycle entry cap at 8 bpp and void every proof).
