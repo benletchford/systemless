@@ -4456,7 +4456,17 @@ fn should_preserve_source_palette_indices(
     // still need color translation; preserving raw source indices there turns
     // gray art into the orange/green system cube.
     if src_clut.len() == 256 {
-        src_clut.iter().zip(device_clut.iter()).all(|(s, d)| s == d)
+        // Indexed 8-bit hardware exposes the high byte of each 16-bit RGB
+        // component. ColorTable bookkeeping may differ in the low bytes even
+        // when every displayed entry is identical; remapping such a table can
+        // move authored pixels to duplicate colors at unrelated indexes.
+        // Imaging With QuickDraw (1994), p. 4-13.
+        src_clut.iter().zip(device_clut.iter()).all(|(source, destination)| {
+            source
+                .iter()
+                .zip(destination)
+                .all(|(s, d)| s >> 8 == d >> 8)
+        })
     } else {
         false
     }
@@ -6864,6 +6874,19 @@ mod tests {
         let table = build_src_to_dst_table(&src, &dst);
 
         assert_eq!(table[14], 73);
+    }
+
+    #[test]
+    fn display_equivalent_palettes_preserve_authored_indices() {
+        let mut src = [[0u16; 3]; 256];
+        let mut dst = [[0u16; 3]; 256];
+        src[14] = [0xFF0E, 0x2D0E, 0x890E];
+        dst[14] = [0xFFFF, 0x2D2D, 0x8989];
+        dst[73] = [0xFFFF, 0x2D2D, 0x8989];
+
+        let table = build_src_to_dst_table(&src, &dst);
+
+        assert_eq!(table[14], 14);
     }
 
     #[test]

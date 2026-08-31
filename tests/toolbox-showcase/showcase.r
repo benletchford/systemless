@@ -4,12 +4,15 @@
 #include "Menus.r"
 #include "Windows.r"
 #include "Dialogs.r"
+#include "Palettes.r"
 
 #define rMenuBar 128
 #define rMainWindow 128
 #define rPrefDialog 129
 #define rAboutAlert 130
 #define rShowcaseIcon 128
+#define rShowcasePalette 150
+#define pmAnimatedExplicit 12
 
 #define mApple 128
 #define mPages 129
@@ -83,7 +86,34 @@ resource 'MENU' (mPages, preload) {
         "Windows", noIcon, noKey, noMark, plain;
         "Drawing & 3D Bevels", noIcon, noKey, noMark, plain;
         "Game Preferences", noIcon, noKey, noMark, plain;
-        "Dialogs & Alerts", noIcon, noKey, noMark, plain
+        "Dialogs & Alerts", noIcon, noKey, noMark, plain;
+        "Palettes", noIcon, noKey, noMark, plain
+    }
+};
+
+/*
+ * The first three colored entries combine pmAnimated with pmExplicit, making
+ * their palette positions stable CLUT indexes. The remaining colors exercise
+ * tolerant allocation. Inside Macintosh Volume VI (1991), pp. 20-14..20-16.
+ */
+resource 'pltt' (rShowcasePalette, "Showcase Palette") {
+    {
+        65535, 65535, 65535, pmTolerant, 0,
+        0, 0, 0, pmTolerant, 0,
+        65535, 65535, 0, pmAnimatedExplicit, 0,
+        65535, 26214, 0, pmAnimatedExplicit, 0,
+        0, 52428, 43690, pmAnimatedExplicit, 0,
+        0, 50000, 50000, pmTolerant, 0,
+        22015, 0, 0, pmTolerant, 0,
+        56683, 2242, 1698, pmTolerant, 0,
+        49152, 49152, 49152, pmTolerant, 0,
+        32768, 32768, 32768, pmTolerant, 0,
+        65535, 50140, 33120, pmTolerant, 0,
+        37887, 10266, 4812, pmTolerant, 0,
+        25892, 49919, 0, pmTolerant, 0,
+        0, 65535, 1265, pmTolerant, 0,
+        0, 0, 65535, pmTolerant, 0,
+        32768, 0, 65535, pmTolerant, 0
     }
 };
 

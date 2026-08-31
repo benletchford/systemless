@@ -7,6 +7,8 @@
  * - Menu Manager & Hierarchical Submenus (Macintosh Toolbox Essentials ch 3)
  * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
  * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
+ * - Palette Manager activation, indexed drawing & animation
+ *   (Inside Macintosh Volume VI ch 20)
  * - QuickDraw Geometry, Arcs, Polygons, Regions, PICT, Icons & 3D Bevels
  *   (Imaging With QuickDraw ch 3, 4, 7, 8)
  */
@@ -19,6 +21,7 @@
 #include <Memory.h>
 #include <Menus.h>
 #include <OSUtils.h>
+#include <Palettes.h>
 #include <Quickdraw.h>
 #include <Resources.h>
 #include <ToolUtils.h>
@@ -47,6 +50,7 @@
 #define rPrefDialog 129
 #define rAboutAlert 130
 #define rShowcaseIcon 128
+#define rShowcasePalette 150
 
 #define mApple 128
 #define mPages 129
@@ -65,6 +69,7 @@
 #define iDrawing 4
 #define iPreferences 5
 #define iDialogs 6
+#define iPalettes 7
 
 /* State menu items */
 #define iButtonState 1
@@ -109,6 +114,7 @@
 #define pageDrawing 4
 #define pagePreferences 5
 #define pageDialogs 6
+#define pagePalettes 7
 
 static QDGlobals qd;
 static WindowPtr gMainWindow;
@@ -136,6 +142,12 @@ static ControlHandle gPrefBtnModal;
 /* Page 6: Dialogs Controls */
 static ControlHandle gDlgBtnOpenPrefs;
 static ControlHandle gDlgBtnOpenAlert;
+
+/* Page 7: Palette Manager */
+static ControlHandle gPaletteAnimate;
+static PaletteHandle gShowcasePalette;
+static PaletteHandle gOriginalPalette;
+static Boolean gPaletteAnimated = false;
 
 /* State variables */
 static short gPage = pageGraphics;
@@ -1002,6 +1014,83 @@ static void DrawDialogsPage(void)
     DrawControls(gMainWindow);
 }
 
+/*
+ * Palette Manager page. Animated + explicit entries deliberately occupy
+ * stable device indexes so AnimateEntry recolors already-drawn pixels without
+ * touching the window bitmap. Inside Macintosh Volume VI (1991), pp. 20-10
+ * through 20-15 and 20-19 through 20-22.
+ */
+static void DrawPalettesPage(void)
+{
+    Rect r;
+    RGBColor black;
+    RGBColor white;
+
+    black.red = black.green = black.blue = 0;
+    white.red = white.green = white.blue = 0xffff;
+
+    RGBForeColor(&black);
+    RGBBackColor(&white);
+    DrawHeading("\pPalette activation, indexed drawing, and animation");
+    MoveTo(24, 58);
+    DrawString("\pThe swatches use PmForeColor; the lower well uses PmBackColor.");
+    MoveTo(24, 76);
+    DrawString("\pAnimated + explicit colors stay at known CLUT indexes.");
+
+    PmForeColor(2);
+    SetRect(&r, 30, 96, 180, 166);
+    PaintRect(&r);
+    PmForeColor(3);
+    SetRect(&r, 205, 96, 355, 166);
+    PaintOval(&r);
+    PmForeColor(4);
+    SetRect(&r, 380, 96, 530, 166);
+    PaintRect(&r);
+
+    RGBForeColor(&black);
+    SetRect(&r, 30, 96, 180, 166); FrameRect(&r);
+    SetRect(&r, 205, 96, 355, 166); FrameOval(&r);
+    SetRect(&r, 380, 96, 530, 166); FrameRoundRect(&r, 18, 18);
+    MoveTo(62, 186); DrawString("\pEntry 2");
+    MoveTo(246, 186); DrawString("\pEntry 3");
+    MoveTo(422, 186); DrawString("\pEntry 4");
+
+    SetRect(&r, 30, 205, 530, 264);
+    FrameRect(&r);
+    InsetRect(&r, 2, 2);
+    PmBackColor(5);
+    EraseRect(&r);
+    RGBBackColor(&white);
+    RGBForeColor(&black);
+    MoveTo(48, 239);
+    DrawString("\pTolerant background entry allocated by the Palette Manager");
+
+    MoveTo(205, 292);
+    DrawString(gPaletteAnimated ? "\pAnimated CLUT values" : "\pInitial CLUT values");
+    DrawControls(gMainWindow);
+}
+
+static void AnimateShowcasePalette(void)
+{
+    RGBColor color;
+
+    gPaletteAnimated = !gPaletteAnimated;
+    color.red = 0xffff;
+    color.green = gPaletteAnimated ? 0x1111 : 0xffff;
+    color.blue = gPaletteAnimated ? 0x9999 : 0x0000;
+    AnimateEntry(gMainWindow, 2, &color);
+
+    color.red = gPaletteAnimated ? 0x1111 : 0xffff;
+    color.green = gPaletteAnimated ? 0xdddd : 0x6666;
+    color.blue = gPaletteAnimated ? 0x5555 : 0x0000;
+    AnimateEntry(gMainWindow, 3, &color);
+
+    color.red = gPaletteAnimated ? 0x2222 : 0x0000;
+    color.green = gPaletteAnimated ? 0x5555 : 0xcccc;
+    color.blue = gPaletteAnimated ? 0xffff : 0xaaaa;
+    AnimateEntry(gMainWindow, 4, &color);
+}
+
 static void DrawMainWindow(void)
 {
     SetPort(gMainWindow);
@@ -1025,6 +1114,9 @@ static void DrawMainWindow(void)
         case pageDialogs:
             DrawDialogsPage();
             break;
+        case pagePalettes:
+            DrawPalettesPage();
+            break;
     }
 }
 
@@ -1045,6 +1137,7 @@ static void ShowAllControls(short page)
     Boolean isControls = (page == pageControls);
     Boolean isPrefs = (page == pagePreferences);
     Boolean isDialogs = (page == pageDialogs);
+    Boolean isPalettes = (page == pagePalettes);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -1094,6 +1187,13 @@ static void ShowAllControls(short page)
         HideControl(gDlgBtnOpenPrefs);
         HideControl(gDlgBtnOpenAlert);
     }
+
+    /* Page 7: Palette Manager */
+    if (isPalettes) {
+        ShowControl(gPaletteAnimate);
+    } else {
+        HideControl(gPaletteAnimate);
+    }
 }
 
 static void SyncMenuState(void)
@@ -1106,7 +1206,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 6; i++) {
+        for (i = 1; i <= 7; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -1191,7 +1291,15 @@ static void SetPage(short page)
 {
     Rect bounds;
 
+    if (gPage == pagePalettes && page != pagePalettes) {
+        SetPalette(gMainWindow, gOriginalPalette, true);
+        ActivatePalette(gMainWindow);
+    }
     gPage = page;
+    if (page == pagePalettes) {
+        SetPalette(gMainWindow, gShowcasePalette, true);
+        ActivatePalette(gMainWindow);
+    }
     ShowAllControls(page);
     SyncMenuState();
 
@@ -1249,6 +1357,14 @@ static void Initialize(void)
     }
     SetPort(gMainWindow);
     ShowWindow(gMainWindow);
+
+    gOriginalPalette = GetPalette(gMainWindow);
+    if (gOriginalPalette == nil) {
+        gOriginalPalette = GetNewPalette(0);
+    }
+    gShowcasePalette = GetNewPalette(rShowcasePalette);
+    SetPalette(gMainWindow, gOriginalPalette, true);
+    ActivatePalette(gMainWindow);
 
     /* Page 2: Controls */
     SetRect(&r, 40, 255, 150, 279);
@@ -1310,6 +1426,11 @@ static void Initialize(void)
     gDlgBtnOpenAlert = NewControl(gMainWindow, &r, "\pDisplay About Alert…", false, 0, 0, 1,
                                   pushButProc, 0);
 
+    /* Page 7: Palette Manager Control */
+    SetRect(&r, 40, 307, 190, 333);
+    gPaletteAnimate = NewControl(gMainWindow, &r, "\pAnimate Palette", false, 0, 0, 1,
+                                 pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -1321,7 +1442,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iDialogs) {
+    if (menuID == mPages && item >= iGraphics && item <= iPalettes) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -1465,6 +1586,9 @@ static void DoContentClick(WindowPtr window, Point where)
     } else if (control == gDlgBtnOpenAlert) {
         DoAboutAlert();
         return;
+    } else if (control == gPaletteAnimate) {
+        AnimateShowcasePalette();
+        return;
     }
     DrawMainWindow();
 }
@@ -1530,5 +1654,8 @@ void main(void)
             DoEvent(&event);
         }
     }
+    SetPalette(gMainWindow, nil, true);
+    if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
+    if (gOriginalPalette != nil) DisposePalette(gOriginalPalette);
     ExitToShell();
 }

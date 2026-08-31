@@ -1,4 +1,4 @@
-//! Integration test exercising Toolbox Showcase for issue #1078.
+//! Integration test exercising Toolbox Showcase for issues #1078 and #1081.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ const ITEM_PAGE_WINDOWS: i16 = 3;
 const ITEM_PAGE_DRAWING: i16 = 4;
 const ITEM_PAGE_PREFERENCES: i16 = 5;
 const ITEM_PAGE_DIALOGS: i16 = 6;
+const ITEM_PAGE_PALETTES: i16 = 7;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -341,6 +342,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DIALOGS),
         "Dialogs page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_PALETTES),
+        "Palettes page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -729,7 +734,44 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, powerpc, "09-dialogs.png");
 
-    // 8. Menu-bar hover selection: press mouse down in File, hover/drag
+    // 10. Activate a mixed-usage palette, draw with palette entries, then
+    // animate three explicit device indexes without redrawing the swatches.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_PALETTES),
+        "failed to queue selection of Palettes page"
+    );
+    step_until(&mut runner, "switch to Palettes page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_PALETTES,
+        )
+    });
+    run_ticks(&mut runner, "initial palette activation to settle", 1);
+    let initial_palette_rgb = screen_rgb(
+        &mut runner,
+        (win_top + 130) as u16,
+        (win_left + 100) as u16,
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, powerpc, "10-palette.png");
+
+    // Animate Palette button: local Rect (307, 40, 333, 190).
+    click_point(&mut runner, win_top + 320, win_left + 115);
+    run_ticks(&mut runner, "palette animation to settle", 1);
+    let animated_palette_rgb = screen_rgb(
+        &mut runner,
+        (win_top + 130) as u16,
+        (win_left + 100) as u16,
+    );
+    assert_ne!(
+        animated_palette_rgb, initial_palette_rgb,
+        "AnimateEntry must recolor an already-indexed swatch without a redraw"
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, powerpc, "11-palette-animated.png");
+
+    // 12. Menu-bar hover selection: press mouse down in File, hover/drag
     // to Pages menu, and release over the Graphics item to select it.
     runner.set_mouse_position(10, 146); // Options menu bar cell
     runner.push_mouse_down(10, 146);
@@ -740,7 +782,7 @@ fn test_toolbox_showcase() {
 
     runner.set_mouse_position(28, 56); // Hover down to Graphics item
     run_ticks(&mut runner, "Menu tracking hover to Graphics item", 2);
-    assert_reference_frame(&mut runner, powerpc, "10-menu-hover.png");
+    assert_reference_frame(&mut runner, powerpc, "12-menu-hover.png");
     runner.push_mouse_up(28, 56); // Release mouse to trigger selection
 
     step_until(&mut runner, "hover-select switch to Graphics page", |r| {
@@ -766,6 +808,11 @@ fn test_toolbox_showcase() {
         ITEM_PAGE_PREFERENCES
     ));
     assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DIALOGS));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_PALETTES
+    ));
     if !powerpc {
         assert_eq!(
             runner.dispatcher().window_count(),
@@ -780,5 +827,5 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "returned Graphics page to settle", 1);
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "11-graphics-return.png");
+    assert_reference_frame(&mut runner, powerpc, "13-graphics-return.png");
 }
