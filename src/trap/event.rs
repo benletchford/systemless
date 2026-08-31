@@ -929,14 +929,13 @@ impl super::TrapDispatcher {
             }
 
             // AttachVBL ($A071)
-            // Inside Macintosh: Processes 1994, p. 4-26.
-            // FUNCTION AttachVBL (theSlot: Integer): OSErr;
-            // The trap uses a register-only ABI: D0 carries the slot
-            // number on entry and the OSErr result on exit.
+            // Changes the slot number of the primary video monitor.
+            // FUNCTION AttachVBL (theSlot: Integer): OSErr; register-only: D0=theSlot -> D0=OSErr, A7 preserved
+            // Inside Macintosh: Processes (1994), p. 4-26 (slotNumErr -360)
             (false, 0x71) => {
                 let slot = cpu.read_reg(Register::D0) as u16 as i16;
                 if !(0..=15).contains(&slot) {
-                    cpu.write_reg(Register::D0, (-337i32) as u32);
+                    cpu.write_reg(Register::D0, (-360i32) as u32);
                     return Some(Ok(()));
                 }
                 self.primary_vbl_slot = slot;
@@ -1195,48 +1194,13 @@ impl super::TrapDispatcher {
             // Inside Macintosh Volume V, V-575
 
             // DoVBLTask ($A072)
-            // FUNCTION DoVBLTask (theSlot: Integer): OSErr;
-            // Inside Macintosh: Processes (1994), p. 4-27.
-            //
-            // Per the IM:Processes 1994 p. 4-27 register table, DoVBLTask
-            // is a register-only OS-bit FUNCTION:
-            //   Registers on entry: D0 = slot number
-            //   Registers on exit:  D0 = result code (OSErr)
-            // No Pascal stack frame is consumed — A7 is unchanged across
-            // the call.
-            //
-            // Result codes (IM:Processes 1994, p. 4-27):
-            //   noErr       0     No error
-            //   slotNumErr -337   Invalid slot number
-            //
-            // MPW Universal Headers Retrace.h declares:
-            //   #pragma parameter __D0 DoVBLTask(__D0)
-            //   EXTERN_API( OSErr )
-            //   DoVBLTask(short theSlot)        ONEWORDINLINE(0xA072);
-            //
-            // Behavior per IM:Processes 1994 p. 4-27: DoVBLTask decrements
-            // the vblCount field of each task in the vertical retrace
-            // queue corresponding to the theSlot parameter (except for
-            // tasks whose vblCount field already contains 0), and
-            // executes a task if decrementing results in a value of 0.
-            // If theSlot designates the slot of the primary video device,
-            // the cursor position is also updated. Invalid slots return
-            // slotNumErr (-337).
-            //
-            // Systemless HLE compromise: the host runtime has no slot VBL
-            // queue (vertical-blank events are synthesised from the
-            // wall-clock-paced event loop) so valid slots remain a
-            // no-op/noErr path, but the documented invalid-slot error
-            // path is preserved.
-            //
-            // The register-only OS-bit FUNCTION calling convention itself
-            // (A7 unchanged, no Pascal stack frame consumed) plus the
-            // invalid-slot error path (an out-of-range slot=16 returns
-            // slotNumErr).
+            // Decrements vblCount and executes tasks in a slot-based vertical retrace queue.
+            // FUNCTION DoVBLTask (theSlot: Integer): OSErr; register-only: D0=theSlot -> D0=OSErr, A7 preserved
+            // Inside Macintosh: Processes (1994), p. 4-27 (slotNumErr -360)
             (false, 0x72) => {
                 let slot = cpu.read_reg(Register::D0) as u16 as i16;
                 if !(0..=15).contains(&slot) {
-                    cpu.write_reg(Register::D0, (-337i32) as u32);
+                    cpu.write_reg(Register::D0, (-360i32) as u32);
                     return Some(Ok(()));
                 }
                 cpu.write_reg(Register::D0, 0);
@@ -2013,7 +1977,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "DoVBLTask should return normally");
         assert_eq!(
             cpu.read_reg(Register::D0) as i32,
-            -337,
+            -360,
             "DoVBLTask should return slotNumErr for an invalid slot"
         );
         assert_eq!(
@@ -2067,7 +2031,7 @@ mod tests {
         assert!(result.unwrap().is_ok(), "AttachVBL should return normally");
         assert_eq!(
             cpu.read_reg(Register::D0) as i32,
-            -337,
+            -360,
             "AttachVBL should return slotNumErr for an invalid slot"
         );
         assert_eq!(
