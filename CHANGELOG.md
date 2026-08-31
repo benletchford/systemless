@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.7](https://github.com/benletchford/systemless/compare/v0.27.6...v0.27.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* **dialog:** preserve PowerPC static text line breaks ([#1105](https://github.com/benletchford/systemless/issues/1105)) ([41eb8e8](https://github.com/benletchford/systemless/commit/41eb8e829eacc4da5e53771b00973cf39a3464d2))
+
 ## [0.27.6](https://github.com/benletchford/systemless/compare/v0.27.5...v0.27.6) (2026-08-31)
 
 
