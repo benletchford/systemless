@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.3](https://github.com/benletchford/systemless/compare/v0.27.2...v0.27.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* **quickdraw:** preserve curved OpenRgn geometry ([#1091](https://github.com/benletchford/systemless/issues/1091)) ([6a0ef51](https://github.com/benletchford/systemless/commit/6a0ef51e0443103597324a41c5c18bd0a837298c))
+
 ## [0.27.2](https://github.com/benletchford/systemless/compare/v0.27.1...v0.27.2) (2026-08-31)
 
 
