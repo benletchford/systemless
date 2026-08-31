@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.9](https://github.com/benletchford/systemless/compare/v0.27.8...v0.27.9) (2026-08-31)
+
+
+### Bug Fixes
+
+* formatting issues in README.md ([fcdfa10](https://github.com/benletchford/systemless/commit/fcdfa103fe04b8ecd81f51fa9386288c6ad4663d))
+* **ppc:** bind the StdCLib floating-point constants ([#1112](https://github.com/benletchford/systemless/issues/1112)) ([2762509](https://github.com/benletchford/systemless/commit/276250914b25f458fd69b3621eb02e3b3dbf1155))
+
 ## [0.27.8](https://github.com/benletchford/systemless/compare/v0.27.7...v0.27.8) (2026-08-31)
 
 
