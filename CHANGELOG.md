@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.2](https://github.com/benletchford/systemless/compare/v0.27.1...v0.27.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* **dialog:** draw PowerPC DITL controls ([#1088](https://github.com/benletchford/systemless/issues/1088)) ([ced326d](https://github.com/benletchford/systemless/commit/ced326d0582f8f392eca9885a6e0f6c5a8330410))
+
 ## [0.27.1](https://github.com/benletchford/systemless/compare/v0.27.0...v0.27.1) (2026-08-31)
 
 
