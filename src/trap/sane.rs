@@ -522,7 +522,20 @@ impl super::TrapDispatcher {
                 0x12 => fp1_result("FSQRT", libm::sqrt(dst_f)),
                 0x14 => fp1_result("FRTI", libm::rint(dst_f)),
                 0x16 => fp1_result("FTTI", libm::trunc(dst_f)),
-                0x1A => fp1_result("FLOGB", libm::ilogb(dst_f) as f64),
+                0x1A => {
+                    let result_ext = dst_ext.logb();
+                    if trace_sane_nan {
+                        report_nan_if_enabled(
+                            trap_pc,
+                            trap_caller,
+                            "FLOGB",
+                            dst_f,
+                            None,
+                            f64::from(result_ext),
+                        );
+                    }
+                    Some(result_ext)
+                }
                 0x01 | 0x17 => {
                     bus.write_word(dst_ptr, 0);
                     return Ok(());
@@ -970,6 +983,7 @@ impl super::TrapDispatcher {
 
 #[cfg(test)]
 mod tests {
+    use super::super::extended80::Extended80;
     use super::super::test_helpers::{setup, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::MemoryBus;
@@ -1321,9 +1335,50 @@ mod tests {
 
     #[test]
     fn test_flogb() {
-        let (result, new_sp) = run_fp68k_one_addr(0x001A, 8.0);
-        assert!((result - 3.0).abs() < 1e-10, "expected 3.0, got {}", result);
-        assert_eq!(new_sp, TEST_SP + 6);
+        // PowerPC Numerics (1994), pp. 10-27 to 10-28: denormals are
+        // normalized first; zero, infinity and NaN retain floating results.
+        let test_cases = [
+            (Extended80::from(8.0), Some(Extended80::from(3.0))),
+            (
+                Extended80 {
+                    sign: false,
+                    exponent: 0,
+                    significand: 1,
+                },
+                Some(Extended80::from(-16445.0)),
+            ),
+            (Extended80::ZERO, Some(Extended80::NEG_INFINITY)),
+            (Extended80::NEG_ZERO, Some(Extended80::NEG_INFINITY)),
+            (Extended80::INFINITY, Some(Extended80::INFINITY)),
+            (Extended80::NEG_INFINITY, Some(Extended80::INFINITY)),
+            (Extended80::NAN, None),
+        ];
+
+        for (input, expected) in test_cases {
+            let (mut disp, mut cpu, mut bus) = setup();
+            let saved = seed_non_stack_registers(&mut cpu);
+            let sp = TEST_SP;
+
+            input.write_to_bus(&mut bus, DST_ADDR);
+            bus.write_long(DST_ADDR + 10, 0x5A5A_A5A5);
+
+            bus.write_word(sp, 0x001A); // FLOGB opcode
+            bus.write_long(sp + 2, DST_ADDR);
+            bus.write_long(sp + 6, 0xCAFE_BEEF);
+
+            disp.dispatch_sane(true, 0x1EB, &mut cpu, &mut bus);
+
+            assert_eq!(cpu.read_reg(Register::A7), sp + 6);
+            assert_eq!(bus.read_long(sp + 6), 0xCAFE_BEEF);
+            assert_eq!(bus.read_long(DST_ADDR + 10), 0x5A5A_A5A5);
+            assert_non_stack_registers_unchanged(&cpu, &saved);
+
+            let result = Extended80::read_from_bus(&bus, DST_ADDR);
+            match expected {
+                Some(expected) => assert_eq!(result, expected, "input: {input:?}"),
+                None => assert!(result.is_nan(), "input: {input:?}, result: {result:?}"),
+            }
+        }
     }
 
     #[test]

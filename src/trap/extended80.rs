@@ -157,15 +157,24 @@ impl Extended80 {
         }
     }
 
-    /// FLOGB: unbiased exponent as extended float (floor of log2|x|).
+    /// FLOGB: unbiased exponent as an extended float (floor of log2|x|).
+    /// Denormals are normalized before the exponent is determined.
+    /// Inside Macintosh: PowerPC Numerics (1994), pp. 10-27 to 10-28.
     pub fn logb(self) -> Self {
+        if self.is_nan() {
+            return self;
+        }
+        if self.is_infinite() {
+            return Self::INFINITY;
+        }
         if self.is_zero() {
             return Self::NEG_INFINITY;
         }
-        if self.is_nan() || self.is_infinite() {
-            return self.abs();
-        }
-        let exp = self.exponent as i32 - BIAS;
+        let exp = if self.exponent == 0 {
+            1 - BIAS - self.significand.leading_zeros() as i32
+        } else {
+            self.exponent as i32 - BIAS
+        };
         Self::from(exp as f64)
     }
 
@@ -1095,5 +1104,33 @@ mod tests {
         assert!(inf.add(one).is_infinite());
         assert!(inf.add(inf.neg()).is_nan()); // inf + (-inf) = NaN
         assert!(inf.mul(Extended80::ZERO).is_nan()); // inf * 0 = NaN
+    }
+
+    #[test]
+    fn logb_special_cases_and_denormals() {
+        let top_denormal = Extended80 {
+            sign: false,
+            exponent: 0,
+            significand: 0x7FFF_FFFF_FFFF_FFFF,
+        };
+        let least_denormal = Extended80 {
+            sign: false,
+            exponent: 0,
+            significand: 1,
+        };
+        for (input, exponent) in [
+            (Extended80::from(8.0), 3.0),
+            (Extended80::from(-8.0), 3.0),
+            (top_denormal, -16383.0),
+            (least_denormal, -16445.0),
+        ] {
+            assert_eq!(input.logb(), Extended80::from(exponent));
+            assert_eq!(input.neg().logb(), Extended80::from(exponent));
+        }
+        assert_eq!(Extended80::ZERO.logb(), Extended80::NEG_INFINITY);
+        assert_eq!(Extended80::NEG_ZERO.logb(), Extended80::NEG_INFINITY);
+        assert_eq!(Extended80::INFINITY.logb(), Extended80::INFINITY);
+        assert_eq!(Extended80::NEG_INFINITY.logb(), Extended80::INFINITY);
+        assert!(Extended80::NAN.logb().is_nan());
     }
 }
