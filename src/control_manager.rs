@@ -6,6 +6,71 @@
 /// limit. A repeated handle terminates traversal before this bound is reached.
 const MAX_CONTROL_LIST_ENTRIES: usize = 4096;
 
+/// Standard `pushButProc` corner oval used by the classic control definition.
+pub(crate) const STANDARD_BUTTON_OVAL: i16 = 10;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CheckboxLayout {
+    pub(crate) indicator: (i16, i16, i16, i16),
+    pub(crate) label_left: i16,
+}
+
+/// Resolve standard checkbox indicator and label geometry from `contrlRect`.
+///
+/// The checkbox CDEF owns a 12-pixel indicator, inset two pixels from the
+/// control's leading edge, with four pixels before its title. Macintosh
+/// Toolbox Essentials (1992), pp. 5-15--5-16.
+pub(crate) fn standard_checkbox_layout(
+    (top, left, bottom, _right): (i16, i16, i16, i16),
+) -> CheckboxLayout {
+    let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
+    let indicator_top =
+        top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
+    let indicator_left = left.saturating_add(2);
+    CheckboxLayout {
+        indicator: (
+            indicator_top,
+            indicator_left,
+            indicator_top.saturating_add(indicator_size),
+            indicator_left.saturating_add(indicator_size),
+        ),
+        label_left: indicator_left
+            .saturating_add(indicator_size)
+            .saturating_add(4),
+    }
+}
+
+/// Visit the two diagonal pixels for each row of a selected checkbox mark.
+/// Inside Macintosh Volume I (1985), p. I-322, Figure 27.
+pub(crate) fn for_each_standard_checkbox_mark_pixel(
+    size: i16,
+    mut visit: impl FnMut(i16, i16),
+) {
+    for offset in 1..size.saturating_sub(1) {
+        visit(offset, offset);
+        visit(size.saturating_sub(1).saturating_sub(offset), offset);
+    }
+}
+
+/// Center one system-font label inside a standard control rectangle.
+pub(crate) fn centered_control_label_origin(
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    text_advance: i16,
+    ascent: i16,
+    descent: i16,
+) -> (i16, i16) {
+    (
+        left.saturating_add(right.saturating_sub(left).saturating_sub(text_advance) / 2),
+        top.saturating_add(
+            bottom
+                .saturating_sub(top)
+                .saturating_sub(ascent.saturating_add(descent))
+                / 2,
+        )
+        .saturating_add(ascent),
+    )
+}
+
 /// Resolve the handles that `DrawControls` must present, in draw order.
 ///
 /// `NewControl` prepends records to `wControlList`. `DrawControls` draws in
@@ -56,5 +121,23 @@ mod tests {
             control_draw_order(3, |handle| next.get(&handle).copied()),
             [2, 3]
         );
+    }
+
+    #[test]
+    fn standard_checkbox_layout_is_shared_guest_geometry() {
+        assert_eq!(
+            standard_checkbox_layout((255, 185, 279, 315)),
+            CheckboxLayout {
+                indicator: (261, 187, 273, 199),
+                label_left: 203,
+            }
+        );
+    }
+
+    #[test]
+    fn standard_checkbox_mark_is_the_two_interior_diagonals() {
+        let mut pixels = Vec::new();
+        for_each_standard_checkbox_mark_pixel(5, |x, y| pixels.push((x, y)));
+        assert_eq!(pixels, [(1, 1), (3, 1), (2, 2), (2, 2), (3, 3), (1, 3)]);
     }
 }

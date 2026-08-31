@@ -63534,24 +63534,24 @@ fn ppc_draw_control_inner(
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let framed = match proc_id {
         0 => {
-            frame_cpu.gpr[4] = 16;
-            frame_cpu.gpr[5] = 16;
+            frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
+            frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
             ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK, None)
         }
         1 => {
             // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
             // standard checkbox CDEF draws a compact indicator at the left
             // of the control title and marks it when contrlValue is nonzero.
-            let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
-            let box_top =
-                top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
-            let box_bottom = box_top.saturating_add(indicator_size);
-            let box_right = left.saturating_add(indicator_size);
+            let layout = crate::control_manager::standard_checkbox_layout((
+                top, left, bottom, right,
+            ));
+            let (box_top, box_left, box_bottom, box_right) = layout.indicator;
+            let indicator_size = box_bottom.saturating_sub(box_top);
             let mut wrote = ppc_line_to(
                 memory,
                 gworlds,
                 owner,
-                (left, box_top),
+                (box_left, box_top),
                 (box_right.saturating_sub(1), box_top),
                 PPC_RGB_BLACK,
                 None,
@@ -63570,7 +63570,7 @@ fn ppc_draw_control_inner(
                 gworlds,
                 owner,
                 (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                (left, box_bottom.saturating_sub(1)),
+                (box_left, box_bottom.saturating_sub(1)),
                 PPC_RGB_BLACK,
                 None,
             );
@@ -63578,8 +63578,8 @@ fn ppc_draw_control_inner(
                 memory,
                 gworlds,
                 owner,
-                (left, box_bottom.saturating_sub(1)),
-                (left, box_top),
+                (box_left, box_bottom.saturating_sub(1)),
+                (box_left, box_top),
                 PPC_RGB_BLACK,
                 None,
             );
@@ -63588,26 +63588,19 @@ fn ppc_draw_control_inner(
                 .unwrap_or(0)
                 != 0
             {
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (
-                        left.saturating_add(2),
-                        box_top.saturating_add(indicator_size / 2),
-                    ),
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    (box_right.saturating_sub(2), box_top.saturating_add(2)),
-                    PPC_RGB_BLACK,
-                    None,
+                crate::control_manager::for_each_standard_checkbox_mark_pixel(
+                    indicator_size,
+                    |x, y| {
+                        wrote |= ppc_line_to(
+                            memory,
+                            gworlds,
+                            owner,
+                            (box_left.saturating_add(x), box_top.saturating_add(y)),
+                            (box_left.saturating_add(x), box_top.saturating_add(y)),
+                            PPC_RGB_BLACK,
+                            None,
+                        );
+                    },
                 );
             }
             wrote
@@ -63766,14 +63759,21 @@ fn ppc_draw_control_inner(
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
         );
+        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+        let (centered_h, centered_v) = crate::control_manager::centered_control_label_origin(
+            (top, left, bottom, right),
+            advance,
+            metrics.ascent,
+            metrics.descent,
+        );
         let title_h = if proc_id == 0 {
-            left.saturating_add(right.saturating_sub(left).saturating_sub(advance) / 2)
+            centered_h
+        } else if proc_id == 1 {
+            crate::control_manager::standard_checkbox_layout((top, left, bottom, right)).label_left
         } else {
             left.saturating_add(16)
         };
-        let title_v = top
-            .saturating_add(bottom.saturating_sub(top).saturating_add(9) / 2)
-            .min(bottom.saturating_sub(1));
+        let title_v = centered_v.min(bottom.saturating_sub(1));
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,

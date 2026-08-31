@@ -1354,15 +1354,16 @@ impl super::TrapDispatcher {
             1 => {
                 // checkBoxProc — checkbox
                 let checked = value != 0;
-                let height = r_bottom - r_top;
-                let box_size = 12i16;
-                let box_top = r_top + (height - box_size) / 2;
-                let box_left = r_left + 2;
+                let layout = crate::control_manager::standard_checkbox_layout((
+                    r_top, r_left, r_bottom, r_right,
+                ));
+                let (box_top, box_left, box_bottom, box_right) = layout.indicator;
+                let box_size = box_bottom.saturating_sub(box_top);
                 let box_r = Rect {
                     top: box_top,
                     left: box_left,
-                    bottom: box_top + box_size,
-                    right: box_left + box_size,
+                    bottom: box_bottom,
+                    right: box_right,
                 };
 
                 if !self.draw_theme_control_chrome(
@@ -1392,8 +1393,15 @@ impl super::TrapDispatcher {
                 let font_id = 0i16;
                 let font_size = 12i16;
                 let metrics = get_font_metrics(font_id, font_size);
-                let text_x = scr_left + box_left + box_size + 4;
-                let text_y = scr_top + r_top + (height + metrics.ascent - metrics.descent) / 2;
+                let text_x = scr_left + layout.label_left;
+                let text_y = scr_top
+                    + crate::control_manager::centered_control_label_origin(
+                        (r_top, r_left, r_bottom, r_right),
+                        0,
+                        metrics.ascent,
+                        metrics.descent,
+                    )
+                    .1;
                 self.draw_control_label_text(
                     bus,
                     abs_top,
@@ -1660,7 +1668,7 @@ impl super::TrapDispatcher {
 
         // Standard CDEF uses FrameRoundRect with oval 10x10.
         // Macintosh Revealed Volume One, p. 412.
-        let oval: i16 = 10;
+        let oval = crate::control_manager::STANDARD_BUTTON_OVAL;
 
         // Erase first so a re-draw (e.g. from SetCTitle) overwrites the old title
         // instead of overlapping the new one. Checkbox / radio CDEFs already do this.
@@ -1701,10 +1709,12 @@ impl super::TrapDispatcher {
         let font_size = 12i16;
         let metrics = get_font_metrics(font_id, font_size);
         let text_w = Self::fb_measure_string(title, font_id, font_size);
-        let text_x = abs_left + (abs_right - abs_left - text_w) / 2;
-        let text_y = abs_top
-            + (abs_bottom - abs_top - (metrics.ascent + metrics.descent)) / 2
-            + metrics.ascent;
+        let (text_x, text_y) = crate::control_manager::centered_control_label_origin(
+            (abs_top, abs_left, abs_bottom, abs_right),
+            text_w,
+            metrics.ascent,
+            metrics.descent,
+        );
         if pixel_size == 8 {
             // Control drawing writes straight to the screen framebuffer, so
             // the ink has to be resolved against the colour table the screen
@@ -1827,7 +1837,7 @@ impl super::TrapDispatcher {
     ) {
         let (screen_base, row_bytes, screen_width, screen_height, pixel_size) =
             self.get_screen_params();
-        for i in 1..box_size - 1 {
+        crate::control_manager::for_each_standard_checkbox_mark_pixel(box_size, |x, y| {
             Self::fb_set_pixel(
                 bus,
                 screen_base,
@@ -1835,22 +1845,11 @@ impl super::TrapDispatcher {
                 pixel_size,
                 screen_width,
                 screen_height,
-                box_left_screen + i,
-                box_top_screen + i,
+                box_left_screen + x,
+                box_top_screen + y,
                 true,
             );
-            Self::fb_set_pixel(
-                bus,
-                screen_base,
-                row_bytes,
-                pixel_size,
-                screen_width,
-                screen_height,
-                box_left_screen + box_size - 1 - i,
-                box_top_screen + i,
-                true,
-            );
-        }
+        });
     }
 
     /// Dim a rectangular area with a 50% gray pattern (checkerboard).
