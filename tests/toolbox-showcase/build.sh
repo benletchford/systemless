@@ -41,8 +41,7 @@ cp "${work_dir}/showcase" "${build_dir}/showcase"
 cp "${work_dir}/showcase.rsrc" "${build_dir}/showcase.rsrc"
 
 cargo run --quiet --locked \
-    --manifest-path "${fixture_dir}/../../Cargo.toml" \
-    --example toolbox_showcase_packer \
+    --manifest-path "${fixture_dir}/packer/Cargo.toml" \
     -- \
     "${build_dir}/showcase" \
     "${build_dir}/showcase.rsrc" \

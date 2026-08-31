@@ -25,8 +25,8 @@ surface follows *Inside Macintosh: Imaging With QuickDraw* (1994), pp. 3-38,
 
 Docker is the only build prerequisite. The image pins the `mps` source commit,
 checks the MPW image checksum before installation, and pins `macresources`.
-The packaged Rust example used as the archive packer shares the runtime's
-locked `stuffit` dependency.
+The fixture-local, non-publishable Rust packer pins the same released
+`stuffit` crate as the runtime.
 
 ```sh
 ./tests/toolbox-showcase/build.sh
