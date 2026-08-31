@@ -109,14 +109,17 @@ These full-frame 800×600 captures all come from the same committed archive.
 The Systemless images are exact RGB baselines checked by the integration test;
 the classic-Mac images are human-review oracles because system fonts, desktop
 patterns, and window chrome can vary between compatible OS installations.
-The paired frames intentionally retain visible compatibility differences—such
-as rendered QuickDraw 3D output and modal alert handling—so later runtime work
-produces an explicit, reviewable baseline change.
+The paired frames are therefore functional comparisons rather than pixel-identical
+targets. Cursor placement and preference values can also differ when a manual
+oracle capture is taken at a different point in the interaction sequence. The
+current Systemless PowerPC baselines exercise the same application-visible
+QuickDraw 3D geometry and live modal-alert lifecycle as SheepShaver, while the
+surrounding operating-system presentation remains environment-dependent.
 
 SheepShaver's oracle display is direct color, so its animation checkpoint is
 intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11 notes
 that color-table animation is unavailable on direct devices. The Systemless
-and BasiliskII 8-bit captures demonstrate the indexed CLUT transition.
+8-bit captures demonstrate the indexed CLUT transition.
 
 ### 68K
 
@@ -147,7 +150,7 @@ and BasiliskII 8-bit captures demonstrate the indexed CLUT transition.
 | 5. Game preferences | <img src="reference/systemless-ppc/05-preferences.png" alt="Changed game preferences in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/05-preferences.png" alt="Changed game preferences in SheepShaver" width="360"> |
 | 6. Nested menus | <img src="reference/systemless-ppc/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/06-nested-menus.png" alt="File and nested Game Options menus in SheepShaver" width="360"> |
 | 7. Modal dialog | <img src="reference/systemless-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |
-| 8. Alert invocation | <img src="reference/systemless-ppc/08-alert.png" alt="Dialogs page after the PowerPC alert import returns in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
+| 8. Alert | <img src="reference/systemless-ppc/08-alert.png" alt="Live system alert in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
 | 9. Dialog result | <img src="reference/systemless-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="360"> |
 | 10. Palette activation | <img src="reference/systemless-ppc/10-palette.png" alt="Initial mixed-usage palette in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/10-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
 | 11. Palette animation | <img src="reference/systemless-ppc/11-palette-animated.png" alt="Animated explicit CLUT entries in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/11-palette-animated.png" alt="Animated explicit CLUT entries in SheepShaver" width="360"> |
