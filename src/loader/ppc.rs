@@ -62750,9 +62750,24 @@ fn ppc_draw_dialog(
         let rect = ppc_dialog_rect_to_global(bounds, item.rect);
         match item.item_type & !PPC_DIALOG_ITEM_DISABLED {
             PPC_DIALOG_ITEM_BUTTON | PPC_DIALOG_ITEM_CHECKBOX | PPC_DIALOG_ITEM_RADIO => {
-                let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_WHITE);
-                let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
-                if index + 1 == default_item {
+                // Macintosh Toolbox Essentials (1992), pp. 5-4--5-6 and
+                // 6-26--6-42: DITL buttons, checkboxes, and radio buttons are
+                // live Control Manager controls. Draw the materialized record
+                // so its CDEF, value, visibility, and title determine the
+                // result instead of treating every item as a push button.
+                let _ = ppc_draw_control_inner(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    current_resource_refnum,
+                    item.handle,
+                    true,
+                );
+                if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_BUTTON
+                    && index + 1 == default_item
+                {
                     let outer = (
                         rect.0.saturating_sub(3),
                         rect.1.saturating_sub(3),
@@ -62761,28 +62776,6 @@ fn ppc_draw_dialog(
                     );
                     let _ = ppc_frame_front_rect(memory, front, outer, PPC_RGB_BLACK, 2);
                 }
-                let title = ppc_dialog_item_title(memory, handles, item);
-                let advance = ppc_text_bytes_advance_for_font(
-                    &title,
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
-                );
-                let h = rect
-                    .1
-                    .saturating_add(rect.3.saturating_sub(rect.1).saturating_sub(advance) / 2);
-                let v = rect.0.saturating_add(14);
-                let _ = ppc_draw_text_bytes(
-                    memory,
-                    gworlds,
-                    PPC_MAIN_GWORLD,
-                    (h, v),
-                    PPC_QD_TEXT_FONT_DEFAULT,
-                    PPC_QD_TEXT_SIZE_SYSTEM,
-                    PPC_QD_TEXT_MODE_SRC_OR,
-                    PPC_RGB_BLACK,
-                    None,
-                    &title,
-                );
             }
             PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
@@ -140498,6 +140491,93 @@ pub(crate) mod tests {
                 proc_id: 0,
                 popup_menu_id: 0,
             }]
+        );
+    }
+
+    #[test]
+    fn draw_dialog_uses_live_checkbox_control_instead_of_button_fallback() {
+        let pef = synthetic_pef_with_import(b"GetNewDialog");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let mut dlog = vec![0; 22];
+        dlog[0..2].copy_from_slice(&40i16.to_be_bytes());
+        dlog[2..4].copy_from_slice(&60i16.to_be_bytes());
+        dlog[4..6].copy_from_slice(&140i16.to_be_bytes());
+        dlog[6..8].copy_from_slice(&260i16.to_be_bytes());
+        dlog[10] = 1;
+        dlog[18..20].copy_from_slice(&128i16.to_be_bytes());
+        let mut ditl = vec![0; 32];
+        ditl[6..8].copy_from_slice(&12i16.to_be_bytes());
+        ditl[8..10].copy_from_slice(&20i16.to_be_bytes());
+        ditl[10..12].copy_from_slice(&32i16.to_be_bytes());
+        ditl[12..14].copy_from_slice(&190i16.to_be_bytes());
+        ditl[14] = PPC_DIALOG_ITEM_CHECKBOX;
+        ditl[15] = 13;
+        ditl[16..29].copy_from_slice(b"Sound Effects");
+        for (res_type, data) in [(*b"DLOG", dlog), (*b"DITL", ditl)] {
+            loaded.vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: loaded.current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: 128,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = 128;
+        loaded.run_with_hle_imports(128);
+        let dialog = loaded.cpu.gpr[3];
+        let items_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+            .unwrap();
+        let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+        let control_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+        let control = loaded.memory.read_u32_be(control_handle).unwrap();
+        loaded
+            .memory
+            .write_u16_be(control + PPC_CONTROL_VALUE_OFFSET, 1)
+            .unwrap();
+
+        assert!(ppc_draw_dialog(
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.screen_clut,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
+            dialog,
+        ));
+
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, dialog).unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (82, 56)),
+            Some(black),
+            "live checkbox indicator was not drawn"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (87, 61)),
+            Some(black),
+            "live checkbox value did not draw its checkmark"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (249, 52)),
+            Some(white),
+            "checkbox title area retained the rectangular button frame"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (77, 49)),
+            Some(white),
+            "the first checkbox incorrectly received the default-button outline"
         );
     }
 
