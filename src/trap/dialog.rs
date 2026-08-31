@@ -7981,7 +7981,7 @@ impl super::TrapDispatcher {
             bottom,
             right,
         };
-        let outer_spans = self.compute_rrect_spans(&r, oval_width, oval_height);
+        let outer_spans = Self::compute_rrect_spans(&r, oval_width, oval_height);
 
         let r_inset = Rect {
             top: top + pen_size,
@@ -7989,7 +7989,7 @@ impl super::TrapDispatcher {
             bottom: bottom - pen_size,
             right: right - pen_size,
         };
-        let inner_spans = self.compute_rrect_spans(
+        let inner_spans = Self::compute_rrect_spans(
             &r_inset,
             (oval_width - 2 * pen_size).max(0),
             (oval_height - 2 * pen_size).max(0),
