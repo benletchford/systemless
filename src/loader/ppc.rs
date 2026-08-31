@@ -20746,20 +20746,31 @@ fn dispatch_supported_import(
             })
         }
         PpcImportDispatcherTarget::DrawControls => {
-            // Inside Macintosh Volume I (1985), p. I-322: DrawControls draws
-            // every visible control owned by the window. Dialog controls are
-            // represented by the live DITL in the native PPC HLE, and the
-            // shared dialog renderer walks that complete list in draw order.
-            let _ = ppc_draw_dialog(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                vfs_resources,
-                *current_resource_refnum,
-                cpu.gpr[3],
-            );
+            let window = cpu.gpr[3];
+            if memory.read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2) {
+                // Dialog controls are represented by the live DITL, whose
+                // renderer also translates dialog-local item coordinates.
+                let _ = ppc_draw_dialog(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    window,
+                );
+            } else {
+                let _ = ppc_draw_window_controls(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    window,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
@@ -63392,6 +63403,42 @@ fn ppc_draw_control(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn ppc_draw_window_controls(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    window: u32,
+) -> bool {
+    // Macintosh Toolbox Essentials (1992), pp. 5-87--5-88: DrawControls
+    // draws every visible control in reverse order of creation. NewControl
+    // prepends to wControlList, so walking the list tail-first preserves the
+    // documented overlap order (the first-created control is frontmost).
+    let head = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
+        .unwrap_or(0);
+    let control_handles = crate::control_manager::control_draw_order(head, |handle| {
+        ppc_control_ptr(memory, handle)
+            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
+    });
+    let mut drew = false;
+    for handle in control_handles {
+        drew |= ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    drew
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
     _handles: &[PpcHandleRecord],
@@ -87563,6 +87610,50 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (179, 10)),
             Some(white)
+        );
+    }
+
+    #[test]
+    fn draw_controls_redraws_visible_controls_in_a_document_window() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
+        let handle = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 100),
+            b"Redraw",
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        assert_ne!(handle, 0);
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 120),
+            PPC_RGB_WHITE,
+            None,
+        ));
+
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.run_with_hle_imports(64);
+
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (60, 10)),
+            Some(black)
         );
     }
 

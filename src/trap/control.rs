@@ -3609,22 +3609,21 @@ impl super::TrapDispatcher {
                 let mut cdef_draw_calls = Vec::new();
 
                 if window_ptr != 0 {
-                    // Collect handles and pointers first so application CDEF
-                    // callbacks can be dispatched after the standard controls
-                    // have finished their immediate HLE redraw.
-                    let mut ctrl_handle = bus.read_long(window_ptr + 140);
-                    let mut controls: Vec<(u32, u32)> = Vec::new();
-                    while ctrl_handle != 0 {
+                    // The shared Control Manager owns traversal and documented
+                    // draw order; this adapter only reads live Handle fields
+                    // and executes presentation or CDEF callbacks.
+                    let controls = crate::control_manager::control_draw_order(
+                        bus.read_long(window_ptr + 140),
+                        |ctrl_handle| {
+                            let ctrl_ptr = bus.read_long(ctrl_handle);
+                            (ctrl_ptr != 0).then(|| bus.read_long(ctrl_ptr))
+                        },
+                    );
+                    for ctrl_handle in controls {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
                         if ctrl_ptr == 0 {
-                            break;
+                            continue;
                         }
-                        controls.push((ctrl_handle, ctrl_ptr));
-                        ctrl_handle = bus.read_long(ctrl_ptr);
-                    }
-
-                    // Draw controls in reverse order (last added = bottom of list = drawn first)
-                    for &(ctrl_handle, ctrl_ptr) in controls.iter().rev() {
                         if self.control_uses_application_def_proc(bus, ctrl_ptr) {
                             if Self::control_vis_is_visible(bus.read_byte(ctrl_ptr + 16)) {
                                 cdef_draw_calls.push((
