@@ -17854,7 +17854,8 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawChar => {
             let ch = (cpu.gpr[3] & 0xff) as u8;
             let text_font = ppc_current_text_font(memory, *current_gworld);
-            let advance = ppc_draw_text_bytes(
+            let text_style = ppc_current_text_style(memory, *current_gworld);
+            let advance = ppc_draw_text_bytes_styled(
                 memory,
                 gworlds,
                 *current_gworld,
@@ -17864,6 +17865,7 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices.get(current_gworld).copied(),
+                text_style,
                 &[ch],
             );
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17888,7 +17890,8 @@ fn dispatch_supported_import(
                 bytes.push(byte);
             }
             let text_font = ppc_current_text_font(memory, *current_gworld);
-            let advance = ppc_draw_text_bytes(
+            let text_style = ppc_current_text_style(memory, *current_gworld);
+            let advance = ppc_draw_text_bytes_styled(
                 memory,
                 gworlds,
                 *current_gworld,
@@ -17898,6 +17901,7 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices.get(current_gworld).copied(),
+                text_style,
                 &bytes,
             );
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17907,6 +17911,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawString => {
             if let Some(bytes) = ppc_read_pascal_string(memory, cpu.gpr[3]) {
                 let text_font = ppc_current_text_font(memory, *current_gworld);
+                let text_style = ppc_current_text_style(memory, *current_gworld);
                 if std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some() {
                     eprintln!(
                         "[FONT] PPC DrawString port=${:08X} font={} size={} text={:?}",
@@ -17916,7 +17921,7 @@ fn dispatch_supported_import(
                         decode_mac_roman(&bytes),
                     );
                 }
-                let advance = ppc_draw_text_bytes(
+                let advance = ppc_draw_text_bytes_styled(
                     memory,
                     gworlds,
                     *current_gworld,
@@ -17926,6 +17931,7 @@ fn dispatch_supported_import(
                     *quickdraw_text_mode,
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(current_gworld).copied(),
+                    text_style,
                     &bytes,
                 );
                 *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17950,9 +17956,9 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::TextFace => {
             if *current_gworld != 0 {
-                let _ = memory.write_u16_be(
+                let _ = memory.write_u8(
                     *current_gworld + PPC_CGRAF_PORT_TX_FACE_OFFSET,
-                    cpu.gpr[3] as u16,
+                    cpu.gpr[3] as u8,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -51575,6 +51581,15 @@ fn ppc_current_text_font(memory: &mut PpcSectionMem, current_gworld: u32) -> i16
         .unwrap_or(PPC_QD_TEXT_FONT_DEFAULT)
 }
 
+fn ppc_current_text_style(memory: &mut PpcSectionMem, current_gworld: u32) -> u8 {
+    if current_gworld == 0 {
+        return 0;
+    }
+    memory
+        .read_u8(current_gworld + PPC_CGRAF_PORT_TX_FACE_OFFSET)
+        .unwrap_or(0)
+}
+
 fn ppc_text_byte_advance_for_font(ch: u8, text_font: i16, text_size: i16) -> i16 {
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     get_glyph(text_font, face.size, ch as char)
@@ -51703,8 +51718,16 @@ fn ppc_draw_text_bytes_styled(
     style: u8,
     bytes: &[u8],
 ) -> i16 {
-    let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
     let style = QuickDrawTextStyle::from_bits(style);
+    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
+    let base_advance = bytes.iter().fold(0i32, |advance, ch| {
+        advance.saturating_add(
+            get_glyph(text_font, face.size, *ch as char)
+                .map(|(glyph, _)| style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or_else(|| style.glyph_advance(6)),
+        )
+    });
+    let advance = ppc_scale_font_value(base_advance, numerator, denominator);
     if style.is_plain() {
         ppc_draw_text_chars(
             memory,
@@ -144505,6 +144528,45 @@ pub(crate) mod tests {
             loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 50),
             Some((50 + string_advance) as u16)
         );
+    }
+
+    #[test]
+    fn text_face_writes_the_cgrafport_style_byte() {
+        let pef = synthetic_pef_with_import(b"TextFace");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded
+            .memory
+            .write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET + 1, 0xa5)
+            .unwrap();
+        loaded.cpu.gpr[3] = QuickDrawTextStyle::BOLD_BIT.into();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET),
+            Some(QuickDrawTextStyle::BOLD_BIT)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET + 1),
+            Some(0xa5),
+            "TextFace must not overwrite the adjacent filler byte"
+        );
+
+        loaded.quickdraw_pen_h = 20;
+        loaded.quickdraw_pen_v = 30;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawChar;
+        loaded.cpu.gpr[3] = b'H'.into();
+        loaded.run_with_hle_imports(64);
+
+        let plain_advance = ppc_text_byte_advance(b'H', loaded.quickdraw_text_size);
+        assert_eq!(loaded.quickdraw_pen_h, 20 + plain_advance + 1);
     }
 
     #[test]
