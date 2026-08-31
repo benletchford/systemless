@@ -81,6 +81,7 @@ use crate::trap::dispatch::key_map_key_is_down;
 use crate::trap::extended80::Extended80;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::trap::{pict, TrapDispatcher};
+use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcFetchHistogram, PpcFetchObserver, PpcImportAction,
     PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMemSpan,
@@ -17853,7 +17854,8 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawChar => {
             let ch = (cpu.gpr[3] & 0xff) as u8;
             let text_font = ppc_current_text_font(memory, *current_gworld);
-            let advance = ppc_draw_text_bytes(
+            let text_style = ppc_current_text_style(memory, *current_gworld);
+            let advance = ppc_draw_text_bytes_styled(
                 memory,
                 gworlds,
                 *current_gworld,
@@ -17863,6 +17865,7 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices.get(current_gworld).copied(),
+                text_style,
                 &[ch],
             );
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17887,7 +17890,8 @@ fn dispatch_supported_import(
                 bytes.push(byte);
             }
             let text_font = ppc_current_text_font(memory, *current_gworld);
-            let advance = ppc_draw_text_bytes(
+            let text_style = ppc_current_text_style(memory, *current_gworld);
+            let advance = ppc_draw_text_bytes_styled(
                 memory,
                 gworlds,
                 *current_gworld,
@@ -17897,6 +17901,7 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_fore_color,
                 quickdraw_fore_indices.get(current_gworld).copied(),
+                text_style,
                 &bytes,
             );
             *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17906,6 +17911,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawString => {
             if let Some(bytes) = ppc_read_pascal_string(memory, cpu.gpr[3]) {
                 let text_font = ppc_current_text_font(memory, *current_gworld);
+                let text_style = ppc_current_text_style(memory, *current_gworld);
                 if std::env::var_os("SYSTEMLESS_TRACE_FONT_TRAPS").is_some() {
                     eprintln!(
                         "[FONT] PPC DrawString port=${:08X} font={} size={} text={:?}",
@@ -17915,7 +17921,7 @@ fn dispatch_supported_import(
                         decode_mac_roman(&bytes),
                     );
                 }
-                let advance = ppc_draw_text_bytes(
+                let advance = ppc_draw_text_bytes_styled(
                     memory,
                     gworlds,
                     *current_gworld,
@@ -17925,6 +17931,7 @@ fn dispatch_supported_import(
                     *quickdraw_text_mode,
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(current_gworld).copied(),
+                    text_style,
                     &bytes,
                 );
                 *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
@@ -17949,9 +17956,9 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::TextFace => {
             if *current_gworld != 0 {
-                let _ = memory.write_u16_be(
+                let _ = memory.write_u8(
                     *current_gworld + PPC_CGRAF_PORT_TX_FACE_OFFSET,
-                    cpu.gpr[3] as u16,
+                    cpu.gpr[3] as u8,
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -18417,6 +18424,13 @@ fn dispatch_supported_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 quickdraw_fore_indices.remove(&window);
                 *current_gworld = window;
                 *current_gdevice =
@@ -18459,6 +18473,13 @@ fn dispatch_supported_import(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 quickdraw_fore_indices.remove(&window);
                 *current_gworld = window;
                 *current_gdevice =
@@ -18506,10 +18527,24 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::SizeWindow => {
             let _ = ppc_size_window(cpu, memory, gworlds);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MoveWindow => {
             let _ = ppc_move_window(cpu, memory, gworlds);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ShowWindow => {
@@ -18517,6 +18552,13 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, true);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
@@ -18559,6 +18601,13 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             let next_front = ppc_front_visible_window(memory, gworlds);
             ppc_transition_front_window_chrome(
                 memory,
@@ -18592,6 +18641,13 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, visible);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
@@ -18656,6 +18712,13 @@ fn dispatch_supported_import(
                         || gworld.port == PPC_DSP_BACK_GWORLD
                         || gworld.port != window
                 });
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 ppc_transition_front_window_chrome(
                     memory,
                     gworlds,
@@ -18848,6 +18911,13 @@ fn dispatch_supported_import(
             if cpu.gpr[3] != 0 {
                 let previous_front = ppc_front_visible_window(memory, gworlds);
                 ppc_reorder_window(gworlds, cpu.gpr[3], 0, true);
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 if previous_front == Some(cpu.gpr[3]) {
                     let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
                     ppc_redraw_visible_window_frame(
@@ -20746,20 +20816,31 @@ fn dispatch_supported_import(
             })
         }
         PpcImportDispatcherTarget::DrawControls => {
-            // Inside Macintosh Volume I (1985), p. I-322: DrawControls draws
-            // every visible control owned by the window. Dialog controls are
-            // represented by the live DITL in the native PPC HLE, and the
-            // shared dialog renderer walks that complete list in draw order.
-            let _ = ppc_draw_dialog(
-                memory,
-                handles,
-                controls,
-                gworlds,
-                screen_clut,
-                vfs_resources,
-                *current_resource_refnum,
-                cpu.gpr[3],
-            );
+            let window = cpu.gpr[3];
+            if memory.read_u16_be(window + PPC_CWINDOW_WINDOW_KIND_OFFSET) == Some(2) {
+                // Dialog controls are represented by the live DITL, whose
+                // renderer also translates dialog-local item coordinates.
+                let _ = ppc_draw_dialog(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    window,
+                );
+            } else {
+                let _ = ppc_draw_window_controls(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    window,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
@@ -47880,7 +47961,7 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         PPC_MAIN_SCREEN_HEIGHT as i16,
         PPC_MAIN_SCREEN_WIDTH as i16,
     );
-    PpcGWorldRecord {
+    let record = PpcGWorldRecord {
         port: PPC_MAIN_GWORLD,
         pixmap_handle: PPC_MAIN_PIXMAP_HANDLE,
         pixmap: PPC_MAIN_PIXMAP,
@@ -47892,7 +47973,56 @@ fn ppc_seed_main_gworld(memory: &mut PpcSectionMem) -> PpcGWorldRecord {
         row_bytes,
         pixels_locked: false,
         pixels_no_purge: false,
+    };
+    let front_buffer = PpcFrontBuffer {
+        base_addr: record.base_addr,
+        row_bytes: record.row_bytes,
+        width: record.width,
+        height: record.height,
+        depth: record.depth,
+    };
+    let fallback = TrapDispatcher::standard_mac_indexed_clut(front_buffer.depth as u16)
+        .map(|(clut, _)| clut)
+        .unwrap_or_else(TrapDispatcher::standard_mac_8bpp_clut);
+    let clut = ppc_read_ctable_clut(memory, PPC_MAIN_CTABLE_HANDLE, &fallback).unwrap_or(fallback);
+    let entry_count = ppc_indexed_depth_entry_count(front_buffer.depth).unwrap_or(256);
+    let black = u16::from(ppc_rgb_color_to_index_in_clut(
+        PPC_RGB_BLACK,
+        &clut,
+        entry_count,
+    ));
+    let white = u16::from(ppc_rgb_color_to_index_in_clut(
+        PPC_RGB_WHITE,
+        &clut,
+        entry_count,
+    ));
+    for v in i32::from(menu_bar_height)..PPC_MAIN_SCREEN_HEIGHT as i32 {
+        if front_buffer.depth == 8 {
+            let row = (0..PPC_MAIN_SCREEN_WIDTH as i32)
+                .map(|h| {
+                    if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+                        black as u8
+                    } else {
+                        white as u8
+                    }
+                })
+                .collect::<Vec<_>>();
+            let _ = memory.write_bytes(
+                front_buffer.base_addr + v as u32 * front_buffer.row_bytes,
+                &row,
+            );
+        } else {
+            for h in 0..PPC_MAIN_SCREEN_WIDTH as i32 {
+                let pixel = if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
+                    black
+                } else {
+                    white
+                };
+                let _ = ppc_quickdraw_write_raw_pixel(memory, front_buffer, (h, v), pixel);
+            }
+        }
     }
+    record
 }
 
 fn ppc_init_graf(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], global_ptr: u32) -> bool {
@@ -48340,16 +48470,16 @@ fn ppc_window_structure_bounds(
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
     let border: i16 = if has_title_bar { 1 } else { 6 };
-    (
-        if has_title_bar {
-            content.0.saturating_sub(18)
-        } else {
-            content.0.saturating_sub(border)
-        },
-        content.1.saturating_sub(border),
-        content.2.saturating_add(border),
-        content.3.saturating_add(border),
-    )
+    if has_title_bar {
+        crate::window_manager::standard_window_structure_bounds(content)
+    } else {
+        (
+            content.0.saturating_sub(border),
+            content.1.saturating_sub(border),
+            content.2.saturating_add(border),
+            content.3.saturating_add(border),
+        )
+    }
 }
 
 fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
@@ -48676,8 +48806,8 @@ fn ppc_draw_standard_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     window: u32,
-    width: i16,
-    height: i16,
+    _width: i16,
+    _height: i16,
     go_away: bool,
 ) {
     // Macintosh Toolbox Essentials (1992), pp. 4-24--4-27: the standard
@@ -48686,44 +48816,13 @@ fn ppc_draw_standard_window_frame(
         .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
         .unwrap_or(0)
         != 0;
-    let is_movable_dialog = ppc_window_proc_id(memory, window) == 5;
-    let has_close_box = active && !is_movable_dialog && go_away;
-    let white = PPC_RGB_WHITE;
-    for (rect, color) in [
-        ((-18, 0, 0, width), white),
-        ((-1, -1, 0, width.saturating_add(1)), PPC_RGB_BLACK),
-        ((-18, -1, height.saturating_add(1), 0), PPC_RGB_BLACK),
-        (
-            (
-                -18,
-                width,
-                height.saturating_add(1),
-                width.saturating_add(1),
-            ),
-            PPC_RGB_BLACK,
-        ),
-        (
-            (
-                height,
-                -1,
-                height.saturating_add(1),
-                width.saturating_add(1),
-            ),
-            PPC_RGB_BLACK,
-        ),
-    ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, color, None);
-    }
-    if is_movable_dialog {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            window,
-            (-18, -1, -17, width.saturating_add(1)),
-            PPC_RGB_BLACK,
-            None,
-        );
-    }
+    let proc_id = ppc_window_proc_id(memory, window);
+    let Some(content) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
     let title = memory
         .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
         .filter(|handle| *handle != 0)
@@ -48733,88 +48832,38 @@ fn ppc_draw_standard_window_frame(
         .unwrap_or_default();
     let title_width =
         ppc_text_bytes_advance_for_font(&title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let title_h = width.saturating_sub(title_width) / 2;
-    let (title_clear_left, title_clear_right) = if title.is_empty() {
-        (width, width)
-    } else {
-        (
-            title_h.saturating_sub(6),
-            title_h.saturating_add(title_width).saturating_add(6),
-        )
-    };
-
-    if has_close_box {
-        let close_top = -15;
-        let close_left = 8;
-        for rect in [
-            (close_top, close_left, close_top + 1, close_left + 11),
-            (close_top, close_left, close_top + 11, close_left + 1),
-            (
-                close_top + 2,
-                close_left + 9,
-                close_top + 10,
-                close_left + 10,
-            ),
-            (
-                close_top + 9,
-                close_left + 2,
-                close_top + 10,
-                close_left + 10,
-            ),
-        ] {
-            let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
-        }
-    }
-
-    if active {
-        let stripe_left = 1;
-        let stripe_right = width.saturating_sub(1);
-        let (close_gap_left, close_gap_right) = if has_close_box {
-            (7, 20)
-        } else {
-            (stripe_right, stripe_right)
-        };
-        for top in [-17, -15, -13] {
-            if has_close_box {
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    window,
-                    (top, stripe_left, top + 1, close_gap_left),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-            }
-            let left_start = if has_close_box {
-                close_gap_right
-            } else {
-                stripe_left
-            };
-            for (left, right) in [
-                (left_start, title_clear_left),
-                (title_clear_right, stripe_right),
-            ] {
-                if left >= right {
-                    continue;
-                }
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    window,
-                    (top, left, top + 1, right),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-            }
-        }
+    let title_metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
+    let chrome = crate::window_manager::standard_window_chrome(
+        content,
+        menu_bar_height,
+        title_width,
+        title_metrics.ascent,
+        title_metrics.descent,
+        !title.is_empty(),
+        active,
+        matches!(proc_id, 0 | 4 | 8 | 12),
+        proc_id == 5,
+        go_away,
+    );
+    let _ = ppc_paint_rect_bounds(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        chrome.background,
+        PPC_RGB_WHITE,
+        None,
+    );
+    for rect in chrome.ink {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 
     if !title.is_empty() {
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,
-            window,
-            (title_h, -5),
+            PPC_MAIN_GWORLD,
+            (chrome.title_h, chrome.title_baseline),
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             PPC_QD_TEXT_MODE_SRC_OR,
@@ -48883,6 +48932,69 @@ fn ppc_transition_front_window_chrome(
     }
 }
 
+fn ppc_recalculate_window_vis_regions(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+) {
+    let front_to_back: Vec<u32> = gworlds
+        .iter()
+        .rev()
+        .map(|record| record.port)
+        .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD))
+        .collect();
+    for window in front_to_back.iter().copied() {
+        let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
+            continue;
+        };
+        if !ppc_window_is_visible(memory, window) {
+            let _ = ppc_set_empty_rgn(memory, vis_rgn);
+            continue;
+        }
+        let Some(content_rgn) = memory.read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET) else {
+            continue;
+        };
+        if ppc_copy_rgn(
+            memory,
+            heap_cursor,
+            heap_limit,
+            handles,
+            content_rgn,
+            vis_rgn,
+        ) != PPC_NO_ERR
+        {
+            continue;
+        }
+        let occluders = crate::window_manager::window_occluders(
+            front_to_back.iter().copied(),
+            window,
+            |front| ppc_window_is_visible(memory, front),
+        );
+        for front in occluders {
+            let Some(structure_rgn) =
+                memory.read_u32_be(front + PPC_CWINDOW_STRUCTURE_RGN_OFFSET)
+            else {
+                continue;
+            };
+            let _ = ppc_region_boolean_op(
+                memory,
+                heap_cursor,
+                heap_limit,
+                handles,
+                vis_rgn,
+                structure_rgn,
+                vis_rgn,
+                PpcRegionBooleanOp::Difference,
+            );
+        }
+        if let Some((top, left, _, _)) = ppc_read_rgn_bbox(memory, content_rgn) {
+            let _ = ppc_offset_rgn(memory, vis_rgn, left.saturating_neg(), top.saturating_neg());
+        }
+    }
+}
+
 fn ppc_draw_dialog_box_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -48907,27 +49019,75 @@ fn ppc_draw_dialog_box_frame(
         WINDOW_GRAY,
         None,
     );
-    let outer_bottom = height.saturating_add(BORDER);
-    let outer_right = width.saturating_add(BORDER);
+    let Some((top, left, bottom, right)) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
+    let outer_top = top.saturating_sub(BORDER);
+    let outer_left = left.saturating_sub(BORDER);
+    let outer_bottom = bottom.saturating_add(BORDER);
+    let outer_right = right.saturating_add(BORDER);
     for rect in [
-        (-BORDER, -BORDER, 0, outer_right),
-        (height, -BORDER, outer_bottom, outer_right),
-        (0, -BORDER, height, 0),
-        (0, width, height, outer_right),
+        (outer_top, outer_left, top, outer_right),
+        (bottom, outer_left, outer_bottom, outer_right),
+        (top, outer_left, bottom, left),
+        (top, right, bottom, outer_right),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, WINDOW_GRAY, None);
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, WINDOW_GRAY, None);
     }
     for rect in [
-        (-BORDER, -BORDER, -BORDER + 1, outer_right),
-        (outer_bottom - 1, -BORDER, outer_bottom, outer_right),
-        (-BORDER, -BORDER, outer_bottom, -BORDER + 1),
-        (-BORDER, outer_right - 1, outer_bottom, outer_right),
-        (-1, -1, 0, width + 1),
-        (height, -1, height + 1, width + 1),
-        (-1, -1, height + 1, 0),
-        (-1, width, height + 1, width + 1),
+        (
+            outer_top,
+            outer_left,
+            outer_top.saturating_add(1),
+            outer_right,
+        ),
+        (
+            outer_bottom.saturating_sub(1),
+            outer_left,
+            outer_bottom,
+            outer_right,
+        ),
+        (
+            outer_top,
+            outer_left,
+            outer_bottom,
+            outer_left.saturating_add(1),
+        ),
+        (
+            outer_top,
+            outer_right.saturating_sub(1),
+            outer_bottom,
+            outer_right,
+        ),
+        (
+            top.saturating_sub(1),
+            left.saturating_sub(1),
+            top,
+            right.saturating_add(1),
+        ),
+        (
+            bottom,
+            left.saturating_sub(1),
+            bottom.saturating_add(1),
+            right.saturating_add(1),
+        ),
+        (
+            top.saturating_sub(1),
+            left.saturating_sub(1),
+            bottom.saturating_add(1),
+            left,
+        ),
+        (
+            top.saturating_sub(1),
+            right,
+            bottom.saturating_add(1),
+            right.saturating_add(1),
+        ),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 }
 
@@ -49456,10 +49616,10 @@ fn ppc_paint_behind(
             if let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) {
                 for v in i32::from(paint.0)..i32::from(paint.2) {
                     for h in i32::from(paint.1)..i32::from(paint.3) {
-                        let color = if (h ^ v) & 1 == 0 {
-                            PPC_RGB_WHITE
-                        } else {
+                        let color = if crate::window_manager::standard_desktop_pattern_is_ink(h, v) {
                             PPC_RGB_BLACK
+                        } else {
+                            PPC_RGB_WHITE
                         };
                         let _ = ppc_quickdraw_write_pixel(memory, front_buffer, (h, v), color);
                     }
@@ -51154,19 +51314,12 @@ fn ppc_line_to(
     let mut wrote = false;
 
     loop {
-        let port_h = x0 + i32::from(surface.left);
-        let port_v = y0 + i32::from(surface.top);
-        let port_point = i16::try_from(port_h).ok().zip(i16::try_from(port_v).ok());
-        // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is
-        // constrained by the intersection of a port's visRgn and clipRgn.
-        let inside_regions = port_point.is_some_and(|(h, v)| {
-            vis_storage
-                .as_ref()
-                .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
-                && clip_storage
-                    .as_ref()
-                    .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
-        });
+        let inside_regions = ppc_local_point_in_port_regions(
+            surface,
+            (x0, y0),
+            vis_storage.as_deref(),
+            clip_storage.as_deref(),
+        );
         if inside_regions {
             wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x0, y0), color_pixel);
         }
@@ -51185,6 +51338,24 @@ fn ppc_line_to(
     }
 
     wrote
+}
+
+fn ppc_local_point_in_port_regions(
+    surface: PpcQuickDrawSurface,
+    (x, y): (i32, i32),
+    vis_storage: Option<&[u8]>,
+    clip_storage: Option<&[u8]>,
+) -> bool {
+    let port_h = x + i32::from(surface.left);
+    let port_v = y + i32::from(surface.top);
+    let port_point = i16::try_from(port_h).ok().zip(i16::try_from(port_v).ok());
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-20--2-21 and
+    // 2-47--2-49: every QuickDraw primitive is constrained by the
+    // intersection of the current port's visRgn and clipRgn.
+    port_point.is_some_and(|(h, v)| {
+        vis_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+            && clip_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+    })
 }
 
 fn ppc_draw_oval(
@@ -51347,6 +51518,15 @@ fn ppc_current_text_font(memory: &mut PpcSectionMem, current_gworld: u32) -> i16
         .unwrap_or(PPC_QD_TEXT_FONT_DEFAULT)
 }
 
+fn ppc_current_text_style(memory: &mut PpcSectionMem, current_gworld: u32) -> u8 {
+    if current_gworld == 0 {
+        return 0;
+    }
+    memory
+        .read_u8(current_gworld + PPC_CGRAF_PORT_TX_FACE_OFFSET)
+        .unwrap_or(0)
+}
+
 fn ppc_text_byte_advance_for_font(ch: u8, text_font: i16, text_size: i16) -> i16 {
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     get_glyph(text_font, face.size, ch as char)
@@ -51404,11 +51584,17 @@ fn ppc_read_pascal_string(memory: &mut PpcSectionMem, string_ptr: u32) -> Option
 
 fn ppc_apply_text_pixel(
     memory: &mut PpcSectionMem,
-    front_buffer: PpcFrontBuffer,
+    surface: PpcQuickDrawSurface,
+    vis_storage: Option<&[u8]>,
+    clip_storage: Option<&[u8]>,
     point: (i32, i32),
     color_pixel: u16,
     text_mode: i16,
 ) -> bool {
+    if !ppc_local_point_in_port_regions(surface, point, vis_storage, clip_storage) {
+        return false;
+    }
+    let front_buffer = surface.front_buffer;
     let mode = text_mode & 0x3f;
     match mode {
         2 => {
@@ -51469,8 +51655,16 @@ fn ppc_draw_text_bytes_styled(
     style: u8,
     bytes: &[u8],
 ) -> i16 {
-    let advance = ppc_text_bytes_advance_for_font(bytes, text_font, text_size);
     let style = QuickDrawTextStyle::from_bits(style);
+    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
+    let base_advance = bytes.iter().fold(0i32, |advance, ch| {
+        advance.saturating_add(
+            get_glyph(text_font, face.size, *ch as char)
+                .map(|(glyph, _)| style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or_else(|| style.glyph_advance(6)),
+        )
+    });
+    let advance = ppc_scale_font_value(base_advance, numerator, denominator);
     if style.is_plain() {
         ppc_draw_text_chars(
             memory,
@@ -51527,6 +51721,12 @@ fn ppc_draw_text_chars(
     else {
         return;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
 
     let (local_h, local_v) = surface.local_point((i32::from(pen.0), i32::from(pen.1)));
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
@@ -51553,7 +51753,9 @@ fn ppc_draw_text_chars(
                             for x in left..right {
                                 let _ = ppc_apply_text_pixel(
                                     memory,
-                                    front_buffer,
+                                    surface,
+                                    vis_storage.as_deref(),
+                                    clip_storage.as_deref(),
                                     (x, y),
                                     color_pixel,
                                     text_mode,
@@ -51573,7 +51775,9 @@ fn ppc_draw_text_chars(
 #[allow(clippy::too_many_arguments)]
 fn ppc_apply_scaled_text_source_pixel(
     memory: &mut PpcSectionMem,
-    front_buffer: PpcFrontBuffer,
+    surface: PpcQuickDrawSurface,
+    vis_storage: Option<&[u8]>,
+    clip_storage: Option<&[u8]>,
     local_h: i32,
     local_v: i32,
     source_x: i32,
@@ -51593,7 +51797,15 @@ fn ppc_apply_scaled_text_source_pixel(
         local_v + ppc_scale_font_floor(source_y + 1, numerator, denominator).max(scaled_y + 1);
     for y in top..bottom {
         for x in left..right {
-            let _ = ppc_apply_text_pixel(memory, front_buffer, (x, y), color_pixel, text_mode);
+            let _ = ppc_apply_text_pixel(
+                memory,
+                surface,
+                vis_storage,
+                clip_storage,
+                (x, y),
+                color_pixel,
+                text_mode,
+            );
         }
     }
 }
@@ -51624,6 +51836,12 @@ fn ppc_draw_text_chars_styled(
     else {
         return;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let (local_h, local_v) = surface.local_point((i32::from(pen.0), i32::from(pen.1)));
     let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
     let metrics = get_font_metrics(text_font, face.size);
@@ -51699,7 +51917,9 @@ fn ppc_draw_text_chars_styled(
                     if smeared {
                         ppc_apply_scaled_text_source_pixel(
                             memory,
-                            front_buffer,
+                            surface,
+                            vis_storage.as_deref(),
+                            clip_storage.as_deref(),
                             local_h,
                             local_v,
                             source_x,
@@ -51716,7 +51936,9 @@ fn ppc_draw_text_chars_styled(
             for (source_x, source_y) in base_pixels.iter().copied() {
                 ppc_apply_scaled_text_source_pixel(
                     memory,
-                    front_buffer,
+                    surface,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
                     local_h,
                     local_v,
                     source_x,
@@ -51738,7 +51960,9 @@ fn ppc_draw_text_chars_styled(
             for source_x in 0..source_advance {
                 ppc_apply_scaled_text_source_pixel(
                     memory,
-                    front_buffer,
+                    surface,
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
                     local_h,
                     local_v,
                     source_x,
@@ -51796,10 +52020,24 @@ fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let mut wrote = false;
     for y in top..bottom {
         let pattern_row = pattern[(y as usize) & 7];
         for x in left..right {
+            if !ppc_local_point_in_port_regions(
+                surface,
+                (x, y),
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+            ) {
+                continue;
+            }
             let mask = 0x80 >> ((x as usize) & 7);
             let pixel = if pattern_row & mask != 0 {
                 fore_pixel
@@ -51842,48 +52080,27 @@ fn ppc_paint_rect_bounds(
     else {
         return false;
     };
-    if matches!(front_buffer.depth, 1 | 2 | 4) {
-        // Indexed pixels smaller than a byte share their storage byte with
-        // neighboring pixels. Imaging With QuickDraw (1994), pp. 4-14--4-16,
-        // defines those packed pixel values; update them individually so an
-        // unaligned rectangle never overwrites adjacent fields or row padding.
-        let mut wrote = false;
-        for y in top..bottom {
-            for x in left..right {
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    // Imaging With QuickDraw (1994), pp. 2-20--2-21: every destination pixel
+    // is constrained by visRgn ∩ clipRgn. Per-pixel writes also preserve the
+    // neighboring fields of packed 1/2/4-bit PixMaps.
+    let mut wrote = false;
+    for y in top..bottom {
+        for x in left..right {
+            if ppc_local_point_in_port_regions(
+                surface,
+                (x, y),
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+            ) {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
-        return wrote;
-    }
-    let pixel_bytes = match front_buffer.depth {
-        8 => vec![color_pixel as u8; (right - left) as usize],
-        16 => {
-            let color = color_pixel.to_be_bytes();
-            let mut row = Vec::with_capacity((right - left) as usize * 2);
-            for _ in left..right {
-                row.extend_from_slice(&color);
-            }
-            row
-        }
-        _ => return false,
-    };
-    let bytes_per_pixel = u32::from(front_buffer.depth / 8);
-    let Some(left_offset) = (left as u32).checked_mul(bytes_per_pixel) else {
-        return false;
-    };
-    let mut wrote = false;
-    for y in top..bottom {
-        let Some(row_offset) = (y as u32).checked_mul(front_buffer.row_bytes) else {
-            continue;
-        };
-        let Some(row_addr) = front_buffer
-            .base_addr
-            .checked_add(row_offset)
-            .and_then(|addr| addr.checked_add(left_offset))
-        else {
-            continue;
-        };
-        wrote |= memory.write_bytes(row_addr, &pixel_bytes).is_some();
     }
     wrote
 }
@@ -52055,6 +52272,12 @@ fn ppc_frame_round_rect(
     else {
         return false;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let inner_left = left + pen_width;
     let inner_top = top + pen_height;
     let inner_right = right - pen_width;
@@ -52076,7 +52299,15 @@ fn ppc_frame_round_rect(
                     oval_width.saturating_sub(pen_width.saturating_mul(2)),
                     oval_height.saturating_sub(pen_height.saturating_mul(2)),
                 );
-            if outer && !inner {
+            if outer
+                && !inner
+                && ppc_local_point_in_port_regions(
+                    surface,
+                    (x, y),
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                )
+            {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -63367,6 +63598,103 @@ fn ppc_draw_control(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn ppc_draw_window_controls(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    controls: &[PpcControlRecord],
+    gworlds: &[PpcGWorldRecord],
+    vfs_resources: &[PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    window: u32,
+) -> bool {
+    // Macintosh Toolbox Essentials (1992), pp. 5-87--5-88: DrawControls
+    // draws every visible control in reverse order of creation. NewControl
+    // prepends to wControlList, so walking the list tail-first preserves the
+    // documented overlap order (the first-created control is frontmost).
+    let head = memory
+        .read_u32_be(window.wrapping_add(PPC_CWINDOW_CONTROL_LIST_OFFSET))
+        .unwrap_or(0);
+    let control_handles = crate::control_manager::control_draw_order(head, |handle| {
+        ppc_control_ptr(memory, handle)
+            .and_then(|control| memory.read_u32_be(control.wrapping_add(PPC_CONTROL_NEXT_OFFSET)))
+    });
+    let mut drew = false;
+    for handle in control_handles {
+        drew |= ppc_draw_control(
+            memory,
+            handles,
+            controls,
+            gworlds,
+            vfs_resources,
+            current_resource_refnum,
+            handle,
+        );
+    }
+    drew
+}
+
+fn ppc_blit_theme_bitmap(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    top: i16,
+    left: i16,
+    bitmap: &ThemeBitmap,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+        return false;
+    };
+    let clip_storage = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    let mut pixels = HashMap::new();
+    let rgba = bitmap.rgba();
+    let mut wrote = false;
+    for y in 0..bitmap.height() {
+        for x in 0..bitmap.width() {
+            let offset = ((y * bitmap.width() + x) * 4) as usize;
+            let rgb = Rgb8 {
+                r: rgba[offset],
+                g: rgba[offset + 1],
+                b: rgba[offset + 2],
+            };
+            let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
+                ppc_quickdraw_surface_color_pixel(
+                    memory,
+                    surface,
+                    PpcRgbColor {
+                        red: u16::from(rgb.r) * 0x0101,
+                        green: u16::from(rgb.g) * 0x0101,
+                        blue: u16::from(rgb.b) * 0x0101,
+                    },
+                )
+                .unwrap_or(0)
+            });
+            let port_h = i32::from(left) + x as i32;
+            let port_v = i32::from(top) + y as i32;
+            let point = surface.local_point((port_h, port_v));
+            if ppc_local_point_in_port_regions(
+                surface,
+                point,
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+            ) {
+                wrote |= ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    surface.front_buffer,
+                    point,
+                    pixel,
+                );
+            }
+        }
+    }
+    wrote
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
     _handles: &[PpcHandleRecord],
@@ -63400,24 +63728,24 @@ fn ppc_draw_control_inner(
     frame_cpu.gpr[3] = control + PPC_CONTROL_RECT_OFFSET;
     let framed = match proc_id {
         0 => {
-            frame_cpu.gpr[4] = 16;
-            frame_cpu.gpr[5] = 16;
+            frame_cpu.gpr[4] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
+            frame_cpu.gpr[5] = crate::control_manager::STANDARD_BUTTON_OVAL as u32;
             ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK, None)
         }
         1 => {
             // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
             // standard checkbox CDEF draws a compact indicator at the left
             // of the control title and marks it when contrlValue is nonzero.
-            let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
-            let box_top =
-                top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
-            let box_bottom = box_top.saturating_add(indicator_size);
-            let box_right = left.saturating_add(indicator_size);
+            let layout = crate::control_manager::standard_checkbox_layout((
+                top, left, bottom, right,
+            ));
+            let (box_top, box_left, box_bottom, box_right) = layout.indicator;
+            let indicator_size = box_bottom.saturating_sub(box_top);
             let mut wrote = ppc_line_to(
                 memory,
                 gworlds,
                 owner,
-                (left, box_top),
+                (box_left, box_top),
                 (box_right.saturating_sub(1), box_top),
                 PPC_RGB_BLACK,
                 None,
@@ -63436,7 +63764,7 @@ fn ppc_draw_control_inner(
                 gworlds,
                 owner,
                 (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                (left, box_bottom.saturating_sub(1)),
+                (box_left, box_bottom.saturating_sub(1)),
                 PPC_RGB_BLACK,
                 None,
             );
@@ -63444,8 +63772,8 @@ fn ppc_draw_control_inner(
                 memory,
                 gworlds,
                 owner,
-                (left, box_bottom.saturating_sub(1)),
-                (left, box_top),
+                (box_left, box_bottom.saturating_sub(1)),
+                (box_left, box_top),
                 PPC_RGB_BLACK,
                 None,
             );
@@ -63454,29 +63782,49 @@ fn ppc_draw_control_inner(
                 .unwrap_or(0)
                 != 0
             {
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (
-                        left.saturating_add(2),
-                        box_top.saturating_add(indicator_size / 2),
-                    ),
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    (box_right.saturating_sub(2), box_top.saturating_add(2)),
-                    PPC_RGB_BLACK,
-                    None,
+                crate::control_manager::for_each_standard_checkbox_mark_pixel(
+                    indicator_size,
+                    |x, y| {
+                        wrote |= ppc_line_to(
+                            memory,
+                            gworlds,
+                            owner,
+                            (box_left.saturating_add(x), box_top.saturating_add(y)),
+                            (box_left.saturating_add(x), box_top.saturating_add(y)),
+                            PPC_RGB_BLACK,
+                            None,
+                        );
+                    },
                 );
             }
             wrote
+        }
+        16 => {
+            // Both CPU adapters submit the same ControlRecord state to the
+            // architecture-neutral presentation provider. Only this final
+            // guest-framebuffer blit remains adapter-specific.
+            let value = memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                .unwrap_or(0) as i16;
+            let min = memory
+                .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
+                .unwrap_or(0) as i16;
+            let max = memory
+                .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
+                .unwrap_or(0) as i16;
+            let hilite = memory
+                .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+                .unwrap_or(0);
+            let bitmap = render_scrollbar_bitmap(
+                UiThemeId::ClassicSystem7,
+                right.saturating_sub(left),
+                bottom.saturating_sub(top),
+                value,
+                min,
+                max,
+                hilite,
+            );
+            ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
         }
         1008..=1023 => {
             // The standard pop-up CDEF is resource ID 63, whose proc IDs
@@ -63605,14 +63953,21 @@ fn ppc_draw_control_inner(
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
         );
+        let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+        let (centered_h, centered_v) = crate::control_manager::centered_control_label_origin(
+            (top, left, bottom, right),
+            advance,
+            metrics.ascent,
+            metrics.descent,
+        );
         let title_h = if proc_id == 0 {
-            left.saturating_add(right.saturating_sub(left).saturating_sub(advance) / 2)
+            centered_h
+        } else if proc_id == 1 {
+            crate::control_manager::standard_checkbox_layout((top, left, bottom, right)).label_left
         } else {
             left.saturating_add(16)
         };
-        let title_v = top
-            .saturating_add(bottom.saturating_sub(top).saturating_add(9) / 2)
-            .min(bottom.saturating_sub(1));
+        let title_v = centered_v.min(bottom.saturating_sub(1));
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,
@@ -63672,6 +64027,13 @@ fn ppc_dispatch_legacy_window(
                 toolbox_startup.host_menu_bar_hidden,
             );
             if window != 0 {
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 *current_gworld = window;
                 if ppc_front_visible_window(memory, gworlds) != previous_front {
                     let _ = ppc_activate_front_window_palette(
@@ -63734,6 +64096,13 @@ fn ppc_dispatch_legacy_window(
                 PPC_NO_ERR
             };
             if window != 0 {
+                ppc_recalculate_window_vis_regions(
+                    memory,
+                    gworlds,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                );
                 *current_gworld = window;
                 if ppc_front_visible_window(memory, gworlds) != previous_front {
                     let _ = ppc_activate_front_window_palette(
@@ -63807,6 +64176,13 @@ fn ppc_dispatch_legacy_window(
                 current_gdevice,
                 window,
             );
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
@@ -63878,6 +64254,13 @@ fn ppc_dispatch_legacy_window(
         "BringToFront" => {
             let previous_front = ppc_front_visible_window(memory, gworlds);
             ppc_reorder_window(gworlds, cpu.gpr[3], 0, true);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             if ppc_front_visible_window(memory, gworlds) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
@@ -63895,6 +64278,13 @@ fn ppc_dispatch_legacy_window(
         "SendBehind" => {
             let previous_front = ppc_front_visible_window(memory, gworlds);
             ppc_reorder_window(gworlds, cpu.gpr[3], cpu.gpr[4], false);
+            ppc_recalculate_window_vis_regions(
+                memory,
+                gworlds,
+                heap_cursor,
+                heap_limit,
+                handles,
+            );
             if ppc_front_visible_window(memory, gworlds) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
@@ -68732,7 +69122,7 @@ fn ppc_draw_tracked_menu(
                 .unwrap_or(StandardMenuIconKind::None),
             mark != 0,
             (metrics.ascent, metrics.descent),
-            false,
+            kind == StandardMenuPaneKind::PullDown,
         );
         let text_baseline = layout.text_baseline;
 
@@ -70981,7 +71371,16 @@ fn ppc_draw_menu_bar_with_colors(
     let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
     let highlighted_menu_id =
         ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
-    let mut highlighted_title_drawn = false;
+    struct PendingTitleHighlight {
+        region: MenuBarTitleRegion,
+        background: u16,
+        foreground: u16,
+        system_menu_mark: bool,
+        title_h: i16,
+        dim_pattern: Option<((i16, i16, i16, i16), u16)>,
+    }
+
+    let mut pending_highlight = None;
     let menu_bar_height = i16::try_from(height).unwrap_or(i16::MAX);
     let title_v = ppc_menu_bar_title_baseline(menu_bar_height);
     let (title_ascent, title_descent) = ppc_menu_bar_title_metrics();
@@ -71064,30 +71463,14 @@ fn ppc_draw_menu_bar_with_colors(
                 &title,
             );
         }
-        let highlighted =
-            !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id;
-        if highlighted {
-            ppc_reverse_menu_title_cell(
-                memory,
-                front_buffer,
-                region,
-                menu_bar_height,
-                title_background_pixel,
-                title_foreground_pixel,
-            );
-            // Color title artwork is replotted after reversing its cell so
-            // only the transparent background participates in highlighting.
-            // Inside Macintosh Volume V (1986), pp. V-235 and V-244.
-            if system_menu_mark && front_buffer.depth != 1 {
-                ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
-            }
-            highlighted_title_drawn = true;
-        }
+        let highlighted = pending_highlight.is_none()
+            && highlighted_menu_id != 0
+            && menu_id == highlighted_menu_id;
         let dim_with_pattern = !menu_enabled
             && (system_menu_mark
                 || dimmed_title_pixel == title_foreground_pixel
                 || dimmed_title_pixel == title_background_pixel);
-        if dim_with_pattern {
+        let dim_pattern = dim_with_pattern.then(|| {
             let dim_top = if system_menu_mark {
                 1
             } else {
@@ -71100,9 +71483,7 @@ fn ppc_draw_menu_bar_with_colors(
                     .saturating_add(title_descent)
                     .min(menu_bar_height.saturating_sub(1))
             };
-            ppc_apply_menu_title_dim_pattern(
-                memory,
-                front_buffer,
+            (
                 (
                     dim_top,
                     title_h,
@@ -71114,7 +71495,40 @@ fn ppc_draw_menu_bar_with_colors(
                 } else {
                     title_background_pixel
                 },
-            );
+            )
+        });
+        if highlighted {
+            pending_highlight = Some(PendingTitleHighlight {
+                region,
+                background: title_background_pixel,
+                foreground: title_foreground_pixel,
+                system_menu_mark,
+                title_h,
+                dim_pattern,
+            });
+        } else if let Some((rect, background)) = dim_pattern {
+            ppc_apply_menu_title_dim_pattern(memory, front_buffer, rect, background);
+        }
+    }
+    if let Some(highlight) = pending_highlight {
+        // Reverse the selected title only after every normal title has been
+        // drawn. Adjacent MBDF cells overlap the three-pixel highlight
+        // overhang, so drawing a later title after this step would erase the
+        // selected title's right edge. Inside Macintosh Volume V (1986),
+        // pp. V-235 and V-244.
+        ppc_reverse_menu_title_cell(
+            memory,
+            front_buffer,
+            highlight.region,
+            menu_bar_height,
+            highlight.background,
+            highlight.foreground,
+        );
+        if highlight.system_menu_mark && front_buffer.depth != 1 {
+            ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, highlight.title_h);
+        }
+        if let Some((rect, background)) = highlight.dim_pattern {
+            ppc_apply_menu_title_dim_pattern(memory, front_buffer, rect, background);
         }
     }
     true
@@ -81612,8 +82026,8 @@ pub(crate) mod tests {
             let menu_bar_bytes = front.row_bytes * 20;
             let normal =
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes).unwrap();
-            let file_cell = (i32::from(regions[0].left - 1), 2);
-            let edit_cell = (i32::from(regions[1].left - 1), 2);
+            let file_cell = (i32::from(regions[0].left.saturating_add(3)), 2);
+            let edit_cell = (i32::from(regions[1].left.saturating_add(3)), 2);
             let bar_point = (200, 5);
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, file_cell),
@@ -81803,7 +82217,7 @@ pub(crate) mod tests {
                 let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
                 (metrics.ascent, metrics.descent)
             },
-            false,
+            true,
         );
         assert_glyph_color(
             &mut loaded.memory,
@@ -81818,7 +82232,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(1) + 12),
+                i32::from(row_top(1) + 11),
             ),
             '\u{2713}',
             black,
@@ -81827,7 +82241,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25),
-                i32::from(row_top(2) + 12),
+                i32::from(row_top(2) + 11),
             ),
             '\u{2318}',
             black,
@@ -81842,7 +82256,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
-                i32::from(row_top(2) + 12),
+                i32::from(row_top(2) + 11),
             ),
             'C',
             black,
@@ -81851,7 +82265,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 15),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             'D',
             gray,
@@ -81860,7 +82274,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             '\u{2713}',
             gray,
@@ -81869,7 +82283,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             '\u{2318}',
             gray,
@@ -81878,7 +82292,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             'C',
             gray,
@@ -81938,7 +82352,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(1) + 12),
+                i32::from(row_top(1) + 11),
             ),
             '\u{2713}',
             white,
@@ -83306,7 +83720,7 @@ pub(crate) mod tests {
             );
             let item_origin = (
                 i32::from(tracking.popup_left.saturating_add(15)),
-                i32::from(tracking.popup_top.saturating_add(12)),
+                i32::from(tracking.popup_top.saturating_add(11)),
             );
             let normal_item_ink = item_glyph_pixels
                 .iter()
@@ -87538,6 +87952,50 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (179, 10)),
             Some(white)
+        );
+    }
+
+    #[test]
+    fn draw_controls_redraws_visible_controls_in_a_document_window() {
+        let mut loaded = load_pef_application(&synthetic_pef_with_import(b"DrawControls")).unwrap();
+        let handle = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 100),
+            b"Redraw",
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        assert_ne!(handle, 0);
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 120),
+            PPC_RGB_WHITE,
+            None,
+        ));
+
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+        loaded.run_with_hle_imports(64);
+
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (60, 10)),
+            Some(black)
         );
     }
 
@@ -123102,7 +123560,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((2, 9, 261, 331))
+            Some((1, 9, 262, 332))
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, content_rgn),
@@ -123206,12 +123664,12 @@ pub(crate) mod tests {
                 "{depth}bpp document top frame did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(white),
                 "{depth}bpp title bar did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp active title stripes did not draw",
             );
@@ -123273,7 +123731,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(white),
                 "{depth}bpp inactive title retained stripes",
             );
@@ -123286,7 +123744,7 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = 1;
             run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp reactivated title did not restore stripes",
             );
@@ -123340,7 +123798,7 @@ pub(crate) mod tests {
                 "{depth}bpp new front window was not activated",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(white),
                 "{depth}bpp previous title was not visibly deactivated",
             );
@@ -123348,7 +123806,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -17)),
+                    second_surface.local_point((30, -16)),
                 ),
                 Some(black),
                 "{depth}bpp new title was not visibly activated",
@@ -123365,7 +123823,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp selected title was not visibly activated",
             );
@@ -123373,7 +123831,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -17)),
+                    second_surface.local_point((30, -16)),
                 ),
                 Some(white),
                 "{depth}bpp prior title was not visibly deactivated by SelectWindow",
@@ -123441,7 +123899,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[8] = u32::MAX;
         loaded.cpu.gpr[9] = 0;
         loaded.cpu.gpr[10] = 0;
-        let dialog_frame_point = (299, 299);
+        let dialog_frame_point = (299, 300);
         let dialog_frame_before =
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, dialog_frame_point);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
@@ -123719,7 +124177,7 @@ pub(crate) mod tests {
                     .as_ref()
                     .unwrap()
                     .outline,
-                (112, 129, 231, 331),
+                (111, 129, 232, 332),
             );
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2,
@@ -123887,7 +124345,7 @@ pub(crate) mod tests {
                     .as_ref()
                     .unwrap()
                     .outline,
-                (82, 99, 281, 361),
+                (81, 99, 282, 362),
                 "{depth}bpp held size did not clamp to maximums",
             );
             loaded.event_queue.push_back(PpcQueuedEvent {
@@ -123990,7 +124448,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((22, 29, 281, 351))
+            Some((21, 29, 282, 352))
         );
 
         let mut size_cpu = loaded.cpu.clone();
@@ -124007,7 +124465,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((22, 29, 141, 231))
+            Some((21, 29, 142, 232))
         );
     }
 
@@ -142495,15 +142953,15 @@ pub(crate) mod tests {
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 21)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
         );
     }
 
@@ -143864,6 +144322,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn frame_round_rect_respects_the_current_port_clip_region() {
+        let pef = synthetic_pef_with_import(b"ClipRect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let rect_ptr = PPC_DATA_BASE + 0x1000;
+        let clip_ptr = rect_ptr + 8;
+        loaded.memory.add_region(rect_ptr, vec![0; 16]);
+        ppc_write_rect(&mut loaded.memory, rect_ptr, 10, 10, 30, 30).unwrap();
+        ppc_write_rect(&mut loaded.memory, clip_ptr, 0, 20, 40, 40).unwrap();
+        loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let clipped_pixel_before =
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20));
+
+        loaded.cpu.gpr[3] = clip_ptr;
+        loaded.run_with_hle_imports(64);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FrameRoundRect;
+        loaded.cpu.gpr[3] = rect_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 8;
+        loaded.run_with_hle_imports(64);
+
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20)),
+            clipped_pixel_before,
+            "the rounded rectangle must not draw left of clipRgn"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 20)),
+            Some(103),
+            "the rounded rectangle must draw inside clipRgn"
+        );
+    }
+
+    #[test]
     fn hle_import_runner_draws_quickdraw_text_into_current_gworld() {
         let pef = synthetic_pef_with_import(b"TextSize");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -143996,6 +144492,45 @@ pub(crate) mod tests {
             loaded.memory.read_u16_be(PPC_MAIN_GWORLD + 50),
             Some((50 + string_advance) as u16)
         );
+    }
+
+    #[test]
+    fn text_face_writes_the_cgrafport_style_byte() {
+        let pef = synthetic_pef_with_import(b"TextFace");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded
+            .memory
+            .write_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET + 1, 0xa5)
+            .unwrap();
+        loaded.cpu.gpr[3] = QuickDrawTextStyle::BOLD_BIT.into();
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET),
+            Some(QuickDrawTextStyle::BOLD_BIT)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u8(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_TX_FACE_OFFSET + 1),
+            Some(0xa5),
+            "TextFace must not overwrite the adjacent filler byte"
+        );
+
+        loaded.quickdraw_pen_h = 20;
+        loaded.quickdraw_pen_v = 30;
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::DrawChar;
+        loaded.cpu.gpr[3] = b'H'.into();
+        loaded.run_with_hle_imports(64);
+
+        let plain_advance = ppc_text_byte_advance(b'H', loaded.quickdraw_text_size);
+        assert_eq!(loaded.quickdraw_pen_h, 20 + plain_advance + 1);
     }
 
     #[test]

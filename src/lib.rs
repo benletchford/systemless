@@ -50,6 +50,7 @@
 mod adb;
 pub mod audio;
 pub mod binhex;
+mod control_manager;
 pub mod cpu;
 pub mod debug_overlay;
 pub mod disk_image;
@@ -81,5 +82,6 @@ pub mod trace;
 pub mod trap;
 mod ui_art;
 pub mod ui_theme;
+mod window_manager;
 
 pub use error::{Error, Result};

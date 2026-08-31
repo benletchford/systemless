@@ -1,0 +1,8 @@
+build/
+*.o
+*.68k
+*.ppc
+*.rdump
+*.idump
+*.rsrc
+showcase

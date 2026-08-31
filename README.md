@@ -71,6 +71,55 @@ same Mac OS Toolbox and operating-system HLE implemented in native Rust. Native
 builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
 uses its portable trace executor.
 
+68K and PowerPC are execution formats, not separate Macintosh platforms. The
+architectural direction is one logical Macintosh process—with one guest address
+space and one canonical set of Toolbox, event, window, menu, file, resource,
+and callback state—served by architecture-specific CPU adapters. Mixed Mode
+transitions should switch execution engines without copying or synchronizing
+process-visible state, just as original software expects.
+
+```text
+              Classic Macintosh Application
+                         │
+          ┌──────────────┴──────────────┐
+          │                             │
+      68K CODE                      PowerPC PEF
+          │                             │
+          ▼                             ▼
+      m68k CPU                       PPC CPU
+          │                             │
+          │     architecture-specific   │
+          │        execution state      │
+          │                             │
+          └─────────┐         ┌─────────┘
+                    ▼         ▼
+                     Mixed Mode
+                  UPP / ProcInfo
+                  RoutineDescriptor
+                         │
+                         ▼
+              Shared Macintosh Process
+                         │
+       ┌─────────────────┼─────────────────┐
+       │                 │                 │
+       ▼                 ▼                 ▼
+    Memory            QuickDraw          Events
+    Handles           Windows            Input
+    Zones             Regions            Timers
+       │                 │                 │
+       ├────────────┬────┴─────┬──────────┤
+       ▼            ▼          ▼          ▼
+     Menus        Files      Sound      Resources
+       │            │          │          │
+       └────────────┴────┬─────┴──────────┘
+                         ▼
+                  Rust Mac OS HLE
+                         │
+                         ▼
+                   Host Platform
+                macOS / Web / others
+```
+
 ## Status
 
 Systemless is focused on real classic Macintosh applications that use the Mac

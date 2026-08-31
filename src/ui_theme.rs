@@ -514,6 +514,48 @@ impl ThemeBitmap {
     }
 }
 
+/// Render one complete scrollbar from architecture-neutral Control Manager
+/// state. CPU adapters only blit the returned pixels into their active port.
+/// Macintosh Toolbox Essentials (1992), pp. 5-58--5-61.
+pub(crate) fn render_scrollbar_bitmap(
+    theme_id: UiThemeId,
+    width: i16,
+    height: i16,
+    value: i16,
+    min: i16,
+    max: i16,
+    hilite: u8,
+) -> ThemeBitmap {
+    let width = width.max(0);
+    let height = height.max(0);
+    let theme = theme_id.provider();
+    let palette = theme.palette();
+    let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
+    let mut ctx = ThemeDrawCtx::new(&mut bitmap);
+    theme.draw_scrollbar(
+        &mut ctx,
+        ScrollbarState {
+            rect: ThemeRect {
+                top: 0,
+                left: 0,
+                bottom: height,
+                right: width,
+            },
+            orientation: if height > width {
+                ScrollbarOrientation::Vertical
+            } else {
+                ScrollbarOrientation::Horizontal
+            },
+            enabled: hilite != 255 && min < max,
+            value,
+            min,
+            max,
+            highlighted_part: ScrollbarPart::from_control_part_code(hilite),
+        },
+    );
+    bitmap
+}
+
 pub struct ThemeDrawCtx<'a> {
     bitmap: &'a mut ThemeBitmap,
 }

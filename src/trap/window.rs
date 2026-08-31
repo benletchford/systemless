@@ -1271,12 +1271,9 @@ impl super::TrapDispatcher {
         } else {
             content_rect.0.saturating_sub(19).max(mbar_h)
         };
-        (
-            title_top,
-            content_rect.1.saturating_sub(1),
-            content_rect.2.saturating_add(2),
-            content_rect.3.saturating_add(2),
-        )
+        let mut structure = crate::window_manager::standard_window_structure_bounds(content_rect);
+        structure.0 = title_top;
+        structure
     }
 
     pub(super) fn window_structure_global_rect_for_proc(
@@ -1379,7 +1376,7 @@ impl super::TrapDispatcher {
                 left,
                 bottom,
                 right,
-                [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
+                crate::window_manager::STANDARD_DESKTOP_PATTERN,
             );
         }
     }
@@ -2305,18 +2302,18 @@ impl super::TrapDispatcher {
         );
 
         let ghost_window = bus.read_long(crate::memory::globals::addr::GHOST_WINDOW);
-        for &front in &self.window_list {
-            if front == window_ptr {
-                break;
-            }
-            if front == ghost_window || !self.window_visible(bus, front) {
-                continue;
-            }
-            // Windows parked wholly off-screen never occlude anything on the
-            // real screen, and their structure regions are far outside it.
-            if self.windows_placed_offscreen.contains(&front) {
-                continue;
-            }
+        let occluders = crate::window_manager::window_occluders(
+            self.window_list.iter().copied(),
+            window_ptr,
+            |front| {
+                front != ghost_window
+                    && self.window_visible(bus, front)
+                    // Windows parked wholly off-screen never occlude anything
+                    // on the real screen.
+                    && !self.windows_placed_offscreen.contains(&front)
+            },
+        );
+        for front in occluders {
             let struc_handle = bus.read_long(front + Self::WINDOW_STRUC_RGN_OFFSET);
             if struc_handle == 0 || Self::region_handle_rect(bus, struc_handle).is_none() {
                 continue;
