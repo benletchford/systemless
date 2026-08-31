@@ -51154,19 +51154,12 @@ fn ppc_line_to(
     let mut wrote = false;
 
     loop {
-        let port_h = x0 + i32::from(surface.left);
-        let port_v = y0 + i32::from(surface.top);
-        let port_point = i16::try_from(port_h).ok().zip(i16::try_from(port_v).ok());
-        // Imaging With QuickDraw (1994), pp. 2-20--2-21: drawing is
-        // constrained by the intersection of a port's visRgn and clipRgn.
-        let inside_regions = port_point.is_some_and(|(h, v)| {
-            vis_storage
-                .as_ref()
-                .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
-                && clip_storage
-                    .as_ref()
-                    .is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
-        });
+        let inside_regions = ppc_local_point_in_port_regions(
+            surface,
+            (x0, y0),
+            vis_storage.as_deref(),
+            clip_storage.as_deref(),
+        );
         if inside_regions {
             wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x0, y0), color_pixel);
         }
@@ -51185,6 +51178,24 @@ fn ppc_line_to(
     }
 
     wrote
+}
+
+fn ppc_local_point_in_port_regions(
+    surface: PpcQuickDrawSurface,
+    (x, y): (i32, i32),
+    vis_storage: Option<&[u8]>,
+    clip_storage: Option<&[u8]>,
+) -> bool {
+    let port_h = x + i32::from(surface.left);
+    let port_v = y + i32::from(surface.top);
+    let port_point = i16::try_from(port_h).ok().zip(i16::try_from(port_v).ok());
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-20--2-21 and
+    // 2-47--2-49: every QuickDraw primitive is constrained by the
+    // intersection of the current port's visRgn and clipRgn.
+    port_point.is_some_and(|(h, v)| {
+        vis_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+            && clip_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+    })
 }
 
 fn ppc_draw_oval(
@@ -52055,6 +52066,12 @@ fn ppc_frame_round_rect(
     else {
         return false;
     };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let inner_left = left + pen_width;
     let inner_top = top + pen_height;
     let inner_right = right - pen_width;
@@ -52076,7 +52093,15 @@ fn ppc_frame_round_rect(
                     oval_width.saturating_sub(pen_width.saturating_mul(2)),
                     oval_height.saturating_sub(pen_height.saturating_mul(2)),
                 );
-            if outer && !inner {
+            if outer
+                && !inner
+                && ppc_local_point_in_port_regions(
+                    surface,
+                    (x, y),
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                )
+            {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -143860,6 +143885,41 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_region_storage(&mut loaded.memory, saved),
             ppc_region_storage(&mut loaded.memory, region)
+        );
+    }
+
+    #[test]
+    fn frame_round_rect_respects_the_current_port_clip_region() {
+        let pef = synthetic_pef_with_import(b"ClipRect");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let rect_ptr = PPC_DATA_BASE + 0x1000;
+        let clip_ptr = rect_ptr + 8;
+        loaded.memory.add_region(rect_ptr, vec![0; 16]);
+        ppc_write_rect(&mut loaded.memory, rect_ptr, 10, 10, 30, 30).unwrap();
+        ppc_write_rect(&mut loaded.memory, clip_ptr, 0, 20, 40, 40).unwrap();
+        loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
+
+        loaded.cpu.gpr[3] = clip_ptr;
+        loaded.run_with_hle_imports(64);
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FrameRoundRect;
+        loaded.cpu.gpr[3] = rect_ptr;
+        loaded.cpu.gpr[4] = 8;
+        loaded.cpu.gpr[5] = 8;
+        loaded.run_with_hle_imports(64);
+
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20)),
+            Some(0),
+            "the rounded rectangle must not draw left of clipRgn"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (29, 20)),
+            Some(103),
+            "the rounded rectangle must draw inside clipRgn"
         );
     }
 
