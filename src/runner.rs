@@ -4232,11 +4232,35 @@ impl FixtureRunner {
     /// (never admitted into a proof) or host input (gated by
     /// `IdleCycleHostSnapshot` before a park resumes), so leaving them out
     /// of the journal takes nothing away from the proof.
+    /// Repaint host chrome without recording it against an armed
+    /// idle-proof journal (the per-frame repaint would overflow the
+    /// journal's guest-wait-cycle entry cap at 8 bpp and void every proof).
+    ///
+    /// Correctness boundary (issue #1052): suspending the journal is safe
+    /// only while the repaint cannot change guest RAM relative to a proven
+    /// state. During the probing phase that holds trivially -- proofs
+    /// re-execute the whole cycle, so a changed repaint just fails to
+    /// prove. While PARKED the proof is reused without re-execution, so
+    /// the first repaint after a park (guest code may have overwritten a
+    /// chrome pixel before entering its idle loop) is checked for
+    /// byte-identity with an uncapped journal; a repaint that changed
+    /// anything revokes the park and the site re-proves from scratch.
     fn redraw_chrome_outside_idle_journal(&mut self) {
         let suspended = self.bus.suspend_write_probe();
+        let check_parked_repaint = self.idle_cycle_sleep.is_some() && suspended.is_some();
+        if check_parked_repaint {
+            self.bus.begin_uncapped_write_probe();
+        }
         self.redraw_chrome();
+        let revoke = check_parked_repaint && !self.bus.finish_write_probe_unchanged();
         if let Some(journal) = suspended {
             self.bus.resume_write_probe(journal);
+        }
+        if revoke {
+            if wait_stats_enabled() {
+                WS_RESUME_FAIL_MEM.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+            self.cancel_idle_cycle_detector();
         }
     }
 
@@ -21143,6 +21167,105 @@ mod tests {
     }
 
     #[test]
+    fn first_parked_repaint_revokes_the_park_when_guest_overwrote_a_chrome_pixel() {
+        // Issue #1052: the park reuses its proof without re-execution, so a
+        // suspended repaint that is not byte-identical (guest code scribbled
+        // over chrome before entering the idle loop) would silently change
+        // guest RAM relative to the proven state. It must revoke the park.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.dispatcher.menus.push(crate::trap::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        runner.dispatcher.front_window = 0;
+        runner.dispatcher.fullscreen_locked = false;
+        runner.dispatcher.menu_bar_hidden = false;
+
+        // Establish the current chrome pixels, then scribble one menu-bar
+        // pixel the way pre-idle guest drawing would.
+        runner.redraw_chrome_outside_idle_journal();
+        let pixel = screen_base + 5 * 1024 + 100;
+        assert_ne!(
+            runner.bus.read_byte(pixel),
+            0xAA,
+            "fixture: a painted menu-bar pixel must differ from the sentinel"
+        );
+        runner.bus.write_byte(pixel, 0xAA);
+
+        runner.park_proven_idle_cycle(0x0002_0000, 205);
+        assert!(runner.idle_cycle_sleep.is_some());
+
+        runner.redraw_chrome_outside_idle_journal();
+        assert_ne!(
+            runner.bus.read_byte(pixel),
+            0xAA,
+            "the repaint repainted the scribbled chrome pixel"
+        );
+        assert!(
+            runner.idle_cycle_sleep.is_none(),
+            "a repaint that changed guest RAM must revoke the park"
+        );
+        assert!(
+            runner.bus.suspend_write_probe().is_none(),
+            "the revoked park's journal must be closed"
+        );
+    }
+
+    #[test]
+    fn byte_identical_parked_repaints_keep_the_park() {
+        // The control for the revocation gate: chrome that is already
+        // current repaints byte-identically, the park survives, and its
+        // journal stays armed and unchanged.
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        let screen_base = 0x0040_0000u32;
+        runner.dispatcher.screen_mode = (screen_base, 1024, 1024, 768, 8);
+        runner.bus.write_long(0x0824, screen_base);
+        runner.bus.write_word(0x0BAA, 20);
+
+        runner.dispatcher.menus.push(crate::trap::menu::Menu {
+            id: 1,
+            title: String::from("Apple"),
+            items: Vec::new(),
+            enabled: true,
+            handle: 0,
+            in_menu_bar: true,
+            hierarchical: false,
+            visible_in_menu_bar: true,
+        });
+        runner.dispatcher.front_window = 0;
+        runner.dispatcher.fullscreen_locked = false;
+        runner.dispatcher.menu_bar_hidden = false;
+
+        runner.redraw_chrome_outside_idle_journal();
+        runner.park_proven_idle_cycle(0x0002_0000, 205);
+        assert!(runner.idle_cycle_sleep.is_some());
+
+        runner.redraw_chrome_outside_idle_journal();
+        runner.redraw_chrome_outside_idle_journal();
+        assert!(
+            runner.idle_cycle_sleep.is_some(),
+            "byte-identical repaints must keep the park"
+        );
+        let journal = runner
+            .bus
+            .suspend_write_probe()
+            .expect("the park's journal must still be armed");
+        runner.bus.resume_write_probe(journal);
+        assert!(runner.bus.finish_write_probe_unchanged());
+    }
+
+    #[test]
     fn host_snapshot_tracks_window_list_and_pending_native_menu_selection() {
         let mut runner = FixtureRunner::new(1024 * 1024, FixtureRunnerConfig::default());
         let before = IdleCycleHostSnapshot::capture(&runner.dispatcher);
@@ -21150,7 +21273,7 @@ mod tests {
         assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
         runner.dispatcher.window_list.pop();
         assert_eq!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
-        runner.dispatcher.pending_native_menu_selection = Some((3, 1));
+        runner.dispatcher.pending_native_menu_selection.stage((3, 1));
         assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
     }
 

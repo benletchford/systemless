@@ -517,6 +517,10 @@ pub struct MacMemoryBus {
     /// probed cycle was doing work, not waiting. Sticky until the runner
     /// takes it, so the verdict survives the journal's disappearance.
     write_probe_overflowed: bool,
+    /// Armed journal has no entry cap (parked-repaint byte-identity check:
+    /// no guest code runs, so unbounded growth is impossible and overflow
+    /// must not void the check).
+    write_probe_uncapped: bool,
     /// Temporary sparse-memory view used only while a parked native process
     /// runs its emulated 68k context. The runner installs and removes this
     /// view around each serialized execution interval.
@@ -1137,6 +1141,7 @@ impl MacMemoryBus {
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
+            write_probe_uncapped: false,
             foreign_address_space: None,
         };
         bus.write_word(super::globals::addr::ROM85, 0x7FFF);
@@ -1233,6 +1238,7 @@ impl MacMemoryBus {
             write_probe_spare: WriteProbeJournal::default(),
             write_probe_invalid: false,
             write_probe_overflowed: false,
+            write_probe_uncapped: false,
             foreign_address_space: None,
         }
     }
@@ -1341,6 +1347,17 @@ impl MacMemoryBus {
         self.write_probe_original = Some(journal);
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
+        self.write_probe_uncapped = false;
+    }
+
+    /// Begin a write probe with no entry cap. Only for host-owned drawing
+    /// performed while the guest is parked (no guest code runs, so the
+    /// journal is bounded by what the drawing touches): the byte-identity
+    /// answer from [`Self::finish_write_probe_unchanged`] must never be
+    /// voided by the overflow guard sized for guest wait cycles.
+    pub(crate) fn begin_uncapped_write_probe(&mut self) {
+        self.begin_write_probe();
+        self.write_probe_uncapped = true;
     }
 
     /// Discard an incomplete write probe and restore normal fast-memory use.
@@ -1348,6 +1365,7 @@ impl MacMemoryBus {
         self.park_write_probe_journal();
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
+        self.write_probe_uncapped = false;
     }
 
     /// Detach the armed journal so writes made meanwhile -- host-owned
@@ -1382,6 +1400,7 @@ impl MacMemoryBus {
         self.write_probe_spare = original;
         self.write_probe_invalid = false;
         self.write_probe_overflowed = false;
+        self.write_probe_uncapped = false;
         unchanged
     }
 
@@ -1431,7 +1450,7 @@ impl MacMemoryBus {
                 .as_mut()
                 .expect("write probe checked above");
             journal.entry(word).or_insert(original);
-            if journal.len() > WRITE_PROBE_MAX_ENTRIES {
+            if !self.write_probe_uncapped && journal.len() > WRITE_PROBE_MAX_ENTRIES {
                 // Too much written for a wait cycle: void the probe now so
                 // the fast paths (and fastmem) come back for the work in
                 // progress.
