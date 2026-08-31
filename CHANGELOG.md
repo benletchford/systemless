@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.26.0](https://github.com/benletchford/systemless/compare/v0.25.0...v0.26.0) (2026-08-31)
+
+
+### Features
+
+* **desktop:** draw the guest cursor as the host pointer on macOS ([#992](https://github.com/benletchford/systemless/issues/992)) ([5747b14](https://github.com/benletchford/systemless/commit/5747b14db5a1d0f9a3fc17adaedfe8bd711dcd9a))
+
+
+### Bug Fixes
+
+* **dialog:** make CountDITL count only the target dialog ([#1055](https://github.com/benletchford/systemless/issues/1055)) ([91a4da1](https://github.com/benletchford/systemless/commit/91a4da1bb8aa459327052eddc303256c42db1483))
+* **event:** return documented VBL slot error ([#1063](https://github.com/benletchford/systemless/issues/1063)) ([f310753](https://github.com/benletchford/systemless/commit/f310753965bb3800d4a90b8843edac988dc89c68))
+* **ppc:** reclaim Mixed Mode routine descriptors ([#1059](https://github.com/benletchford/systemless/issues/1059)) ([cebadf5](https://github.com/benletchford/systemless/commit/cebadf5a224eb21c9bbdf190909cb982a4e028fb))
+* **quickdraw:** consume the complete StdOpcode frame ([#1061](https://github.com/benletchford/systemless/issues/1061)) ([2262fb2](https://github.com/benletchford/systemless/commit/2262fb28bb43a6b7ae0a5531d06ebdd9d8c62d14))
+* **quicktime:** parse Cinepak 24-bit lengths ([#1068](https://github.com/benletchford/systemless/issues/1068)) ([61abf4c](https://github.com/benletchford/systemless/commit/61abf4c55fed0f8032ea66201b1d7b1f87f3839f))
+* **sane:** preserve FLOGB floating results ([#1066](https://github.com/benletchford/systemless/issues/1066)) ([0d3b6b9](https://github.com/benletchford/systemless/commit/0d3b6b91655d704444e6e7ee9375adfe19b7f1e1))
+* **sound:** route MIDIStopTime by source identity ([#1057](https://github.com/benletchford/systemless/issues/1057)) ([0801fba](https://github.com/benletchford/systemless/commit/0801fba623b9a17e8e1c1acbe817b8551df7fad0))
+* **textedit:** preserve TEStyleInsert caller registers ([#1048](https://github.com/benletchford/systemless/issues/1048)) ([a764acd](https://github.com/benletchford/systemless/commit/a764acd7a228dd26bb01cfcc52de8ed0e31458f2))
+* **toolbox:** correct SystemClick pointer argument ABI ([#1074](https://github.com/benletchford/systemless/issues/1074)) ([8e00b71](https://github.com/benletchford/systemless/commit/8e00b712a70237be9d38be14c34378b92339c849))
+* **toolbox:** correct SystemEvent pointer argument ABI ([#1072](https://github.com/benletchford/systemless/issues/1072)) ([fcdc676](https://github.com/benletchford/systemless/commit/fcdc6764a4076c83981c65f0fd69e463d21ee092))
+* **toolbox:** correct X2Fix pointer argument ABI ([#1051](https://github.com/benletchford/systemless/issues/1051)) ([0298afb](https://github.com/benletchford/systemless/commit/0298afba916827a56ef31950f79f648056bfbacf))
+* **window:** use system wctb resource for default window color table ([#1005](https://github.com/benletchford/systemless/issues/1005)) ([ec2d367](https://github.com/benletchford/systemless/commit/ec2d367f23fcd27779bf4b09f7c1bcaa8257e545))
+
+
+### Performance Improvements
+
+* **runner:** admit journal-complete Window Manager queries and TEIdle to idle-cycle proofs ([#962](https://github.com/benletchford/systemless/issues/962)) ([ecb1a5e](https://github.com/benletchford/systemless/commit/ecb1a5e3541eb74b4d808e3fbf10f6dbad6c8110))
+
 ## [0.25.0](https://github.com/benletchford/systemless/compare/v0.24.0...v0.25.0) (2026-08-30)
 
 
