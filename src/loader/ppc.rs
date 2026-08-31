@@ -98,6 +98,7 @@ const PPC_IMPORT_DATA_BASE: u32 = 0x01d0_0000;
 const PPC_IMPORT_DATA_SIZE: usize = 0x1000;
 const PPC_IMPORT_CTYPE_POINTER: u32 = PPC_IMPORT_DATA_BASE + 0x40c;
 const PPC_IMPORT_MATH_PI: u32 = PPC_IMPORT_DATA_BASE + 0x410;
+const PPC_IMPORT_MATH_FE_DFL_ENV: u32 = PPC_IMPORT_DATA_BASE + 0x418;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
@@ -80992,6 +80993,7 @@ fn import_data_address_for(library_name: &str, symbol_name: &str) -> Option<u32>
         // dereference it directly as a double, so bind the known export to
         // stable data storage regardless of the PEF class tag.
         ("MathLib", "pi") => Some(PPC_IMPORT_MATH_PI),
+        ("MathLib", "_FE_DFL_ENV") => Some(PPC_IMPORT_MATH_FE_DFL_ENV),
         _ => None,
     }
 }
@@ -81002,6 +81004,10 @@ fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
     // ctype indirection at a complete 256-entry classification table.
     let _ = memory.write_u32_be(PPC_IMPORT_CTYPE_POINTER, PPC_IMPORT_CTYPE_TABLE);
     let _ = memory.write_u64_be(PPC_IMPORT_MATH_PI, std::f64::consts::PI.to_bits());
+    // Inside Macintosh: PowerPC Numerics (1994), Chapter 8 and Appendix C:
+    // PowerPC fenv_t is a 32-bit word, with zero selecting round-to-nearest
+    // and leaving every floating-point exception flag clear.
+    let _ = memory.write_u32_be(PPC_IMPORT_MATH_FE_DFL_ENV, 0);
     let _ = memory.write_bytes(
         PPC_STDIO_IOB_ADDR,
         &vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize],
@@ -123904,6 +123910,27 @@ pub(crate) mod tests {
         assert_eq!(
             loaded.memory.read_u64_be(PPC_IMPORT_MATH_PI),
             Some(std::f64::consts::PI.to_bits())
+        );
+    }
+
+    #[test]
+    fn mathlib_default_environment_data_import_binds_to_zeroed_fenv() {
+        let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"MathLib",
+            b"_FE_DFL_ENV",
+            1,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&pef).unwrap();
+
+        assert_eq!(loaded.imports[0].class, 1);
+        assert_eq!(loaded.imports[0].address, PPC_IMPORT_MATH_FE_DFL_ENV);
+        assert_eq!(loaded.imports[0].tvector_address, None);
+        assert_ne!(PPC_IMPORT_MATH_FE_DFL_ENV, PPC_IMPORT_MATH_PI);
+        assert_eq!(loaded.memory.read_u32_be(PPC_IMPORT_MATH_FE_DFL_ENV), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(PPC_IMPORT_MATH_FE_DFL_ENV)
         );
     }
 
