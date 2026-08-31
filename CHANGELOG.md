@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/benletchford/systemless/compare/v0.27.0...v0.27.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* **control:** render PowerPC radio buttons ([#1085](https://github.com/benletchford/systemless/issues/1085)) ([6f1aaf2](https://github.com/benletchford/systemless/commit/6f1aaf2e7aac4e320dd3a772b33e67312902e193))
+
 ## [0.27.0](https://github.com/benletchford/systemless/compare/v0.26.0...v0.27.0) (2026-08-31)
 
 
