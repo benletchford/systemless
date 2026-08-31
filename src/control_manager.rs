@@ -15,6 +15,12 @@ pub(crate) struct CheckboxLayout {
     pub(crate) label_left: i16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RadioButtonLayout {
+    pub(crate) indicator: (i16, i16, i16, i16),
+    pub(crate) label_left: i16,
+}
+
 /// Resolve standard checkbox indicator and label geometry from `contrlRect`.
 ///
 /// The checkbox CDEF owns a 12-pixel indicator, inset two pixels from the
@@ -28,6 +34,32 @@ pub(crate) fn standard_checkbox_layout(
         top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
     let indicator_left = left.saturating_add(2);
     CheckboxLayout {
+        indicator: (
+            indicator_top,
+            indicator_left,
+            indicator_top.saturating_add(indicator_size),
+            indicator_left.saturating_add(indicator_size),
+        ),
+        label_left: indicator_left
+            .saturating_add(indicator_size)
+            .saturating_add(4),
+    }
+}
+
+/// Resolve standard radio-button indicator and label geometry from
+/// `contrlRect`.
+///
+/// The standard radio-button CDEF uses a 12-pixel round indicator, inset two
+/// pixels from the control's leading edge, with four pixels before its title.
+/// Inside Macintosh Volume I (1985), p. I-322.
+pub(crate) fn standard_radio_button_layout(
+    (top, left, bottom, _right): (i16, i16, i16, i16),
+) -> RadioButtonLayout {
+    let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
+    let indicator_top =
+        top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
+    let indicator_left = left.saturating_add(2);
+    RadioButtonLayout {
         indicator: (
             indicator_top,
             indicator_left,
@@ -139,5 +171,16 @@ mod tests {
         let mut pixels = Vec::new();
         for_each_standard_checkbox_mark_pixel(5, |x, y| pixels.push((x, y)));
         assert_eq!(pixels, [(1, 1), (3, 1), (2, 2), (2, 2), (3, 3), (1, 3)]);
+    }
+
+    #[test]
+    fn standard_radio_button_layout_is_shared_guest_geometry() {
+        assert_eq!(
+            standard_radio_button_layout((70, 250, 90, 390)),
+            RadioButtonLayout {
+                indicator: (74, 252, 86, 264),
+                label_left: 268,
+            }
+        );
     }
 }

@@ -1424,15 +1424,16 @@ impl super::TrapDispatcher {
             2 => {
                 // radioButProc — radio button
                 let selected = value != 0;
-                let height = r_bottom - r_top;
-                let circle_size = 12i16;
-                let circle_top = r_top + (height - circle_size) / 2;
-                let circle_left = r_left + 2;
+                let layout = crate::control_manager::standard_radio_button_layout((
+                    r_top, r_left, r_bottom, r_right,
+                ));
+                let (circle_top, circle_left, circle_bottom, circle_right) = layout.indicator;
+                let circle_size = circle_bottom.saturating_sub(circle_top);
                 let circle_r = Rect {
                     top: circle_top,
                     left: circle_left,
-                    bottom: circle_top + circle_size,
-                    right: circle_left + circle_size,
+                    bottom: circle_bottom,
+                    right: circle_right,
                 };
 
                 if !self.draw_theme_control_chrome(
@@ -1468,8 +1469,15 @@ impl super::TrapDispatcher {
                 let font_id = 0i16;
                 let font_size = 12i16;
                 let metrics = get_font_metrics(font_id, font_size);
-                let text_x = scr_left + circle_left + circle_size + 4;
-                let text_y = scr_top + r_top + (height + metrics.ascent - metrics.descent) / 2;
+                let text_x = scr_left + layout.label_left;
+                let text_y = scr_top
+                    + crate::control_manager::centered_control_label_origin(
+                        (r_top, r_left, r_bottom, r_right),
+                        0,
+                        metrics.ascent,
+                        metrics.descent,
+                    )
+                    .1;
                 self.draw_control_label_text(
                     bus,
                     abs_top,

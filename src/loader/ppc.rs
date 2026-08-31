@@ -51487,6 +51487,27 @@ fn ppc_draw_oval(
     let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
         return false;
     };
+    ppc_draw_oval_bounds(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        color,
+        explicit_index,
+        frame_only,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_oval_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    frame_only: bool,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -64064,6 +64085,53 @@ fn ppc_draw_control_inner(
             }
             wrote
         }
+        2 => {
+            // Inside Macintosh Volume I (1985), p. I-322: radioButProc is a
+            // round indicator whose on state is a small filled black circle.
+            let layout = crate::control_manager::standard_radio_button_layout((
+                top, left, bottom, right,
+            ));
+            let indicator = layout.indicator;
+            let mut wrote = ppc_paint_rect_bounds(
+                memory,
+                gworlds,
+                owner,
+                indicator,
+                PPC_RGB_WHITE,
+                None,
+            );
+            wrote |= ppc_draw_oval_bounds(
+                memory,
+                gworlds,
+                owner,
+                indicator,
+                PPC_RGB_BLACK,
+                None,
+                true,
+            );
+            if memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                .unwrap_or(0)
+                != 0
+            {
+                let (dot_top, dot_left, dot_bottom, dot_right) = indicator;
+                wrote |= ppc_draw_oval_bounds(
+                    memory,
+                    gworlds,
+                    owner,
+                    (
+                        dot_top.saturating_add(3),
+                        dot_left.saturating_add(3),
+                        dot_bottom.saturating_sub(3),
+                        dot_right.saturating_sub(3),
+                    ),
+                    PPC_RGB_BLACK,
+                    None,
+                    false,
+                );
+            }
+            wrote
+        }
         16 => {
             // Both CPU adapters submit the same ControlRecord state to the
             // architecture-neutral presentation provider. Only this final
@@ -64225,12 +64293,13 @@ fn ppc_draw_control_inner(
             metrics.ascent,
             metrics.descent,
         );
-        let title_h = if proc_id == 0 {
-            centered_h
-        } else if proc_id == 1 {
-            crate::control_manager::standard_checkbox_layout((top, left, bottom, right)).label_left
-        } else {
-            left.saturating_add(16)
+        let title_h = match proc_id {
+            0 => centered_h,
+            1 => crate::control_manager::standard_checkbox_layout((top, left, bottom, right))
+                .label_left,
+            2 => crate::control_manager::standard_radio_button_layout((top, left, bottom, right))
+                .label_left,
+            _ => left.saturating_add(16),
         };
         let title_v = centered_v.min(bottom.saturating_sub(1));
         let _ = ppc_draw_text_bytes(
@@ -88309,6 +88378,75 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (179, 10)),
             Some(white)
+        );
+    }
+
+    #[test]
+    fn selected_radio_button_draws_round_indicator_and_inner_dot() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let handle = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 180),
+            b"Veteran",
+            true,
+            1,
+            0,
+            1,
+            2,
+            0,
+        );
+        assert_ne!(handle, 0);
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 200),
+            PPC_RGB_WHITE,
+            None,
+        ));
+
+        assert!(ppc_draw_control(
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
+            handle,
+        ));
+
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (27, 14)),
+            Some(black),
+            "the outer radio indicator should be round"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (22, 14)),
+            Some(white),
+            "the indicator corner must remain outside the round outline"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (27, 19)),
+            Some(black),
+            "contrlValue 1 should draw the inner selection dot"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (179, 10)),
+            Some(white),
+            "radioButProc must not frame the full control rectangle"
         );
     }
 
