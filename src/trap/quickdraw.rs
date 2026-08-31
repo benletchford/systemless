@@ -17511,13 +17511,11 @@ impl super::TrapDispatcher {
         // substantial, non-grayscale PICT CTabs; sparse helper pictures and
         // dense grayscale fades still use normal color matching.
         //
-        // Do not preserve when the destination is still the system palette
-        // (possibly mid-fade). In that case QuickDraw should translate the
-        // PICT colors into system-palette grays instead of storing raw PICT
-        // indices that would display as unrelated color-cube entries.
-        if Self::uses_canonical_system_8bpp_clut(current_clut)
-            || Self::uses_scaled_canonical_system_8bpp_clut(current_clut)
-            || Self::uses_canonical_system_8bpp_clut(logical_screen_clut)
+        // Do not preserve when the logical screen is still the system palette
+        // (possibly mid-fade). A canonical offscreen CTab paired with a custom
+        // logical screen is exactly the stale-table case that needs authored
+        // indices preserved for the later screen blit.
+        if Self::uses_canonical_system_8bpp_clut(logical_screen_clut)
             || Self::uses_scaled_canonical_system_8bpp_clut(logical_screen_clut)
         {
             return false;
@@ -23196,12 +23194,8 @@ impl super::TrapDispatcher {
 
         let target_is_screen = self.set_entries_target_is_screen(bus);
         let is_full_replace = start == 0 && count == 255;
-        let sequence_uses_client_ids = is_full_replace
-            && (1..=count as u32)
-                .all(|index| bus.read_word(table_ptr + index * 8) == bus.read_word(table_ptr));
         let previous_frame_was_dimmed =
             Self::clut_is_dimmed_derivative_of(&self.device_clut, &self.color_manager_clut);
-        let physical_clut_before_update = self.device_clut;
 
         // Normal path: install the supplied RGB values into device_clut
         // unconditionally. Per Inside Macintosh Volume V, V-143 the caller's
@@ -23247,47 +23241,11 @@ impl super::TrapDispatcher {
             // palette installs must never affect screen CopyBits decisions.
             self.screen_palette_fade_active = target_is_screen && transient_fade_table;
         }
-        // Uniform sequence-mode ColorSpec.value fields are client IDs after
-        // Color Manager processing, not physical CLUT indices. Preserve the
-        // independently valid physical mapping while updating the logical
-        // GDevice table; treating the latter as a physical palette
-        // reinterprets already indexed artwork through unrelated colors.
-        // After a full-table fade, the DAC contents are only a dimmed
-        // derivative of the stable physical mapping. Restore that mapping
-        // before publishing the client-owned logical colors: installing the
-        // logical table physically would reinterpret pixels that were already
-        // authored for the stable device indices. This is observable in both
-        // Prince of Destruction's registration PICT and Marathon 2's first
-        // gameplay palette transition.
-        // Inside Macintosh Volume V (1986), pp. V-142..V-143.
-        if target_is_screen && sequence_uses_client_ids && !transient_fade_table {
-            if previous_frame_was_dimmed {
-                self.device_clut = self.color_manager_clut;
-            } else {
-                let gdh = self.set_entries_target_gdevice_handle(bus);
-                let ctab = Self::color_table_ptr(bus, Self::gdevice_ctab_handle(bus, gdh));
-                if ctab != 0 {
-                    for index in 0..256u32 {
-                        let value = bus.read_word(ctab + 8 + index * 8);
-                        if (value & ((PM_EXPLICIT as u16) << 8)) != 0 {
-                            self.device_clut[index as usize] =
-                                physical_clut_before_update[index as usize];
-                        }
-                    }
-                }
-            }
-            for index in 0..256u32 {
-                let entry = table_ptr + index * 8;
-                self.color_manager_clut[index as usize] = [
-                    bus.read_word(entry + 2),
-                    bus.read_word(entry + 4),
-                    bus.read_word(entry + 6),
-                ];
-            }
-        }
-
-        if target_is_screen && is_full_replace && !transient_fade_table && !sequence_uses_client_ids
-        {
+        // In sequence mode, ColorSpec.value is ignored; it is commonly filled
+        // with a repeated Color Manager client ID. The RGB fields still replace
+        // the corresponding hardware entries. Inside Macintosh Volume V
+        // (1986), pp. V-142..V-143.
+        if target_is_screen && is_full_replace && !transient_fade_table {
             if std::env::var_os("SYSTEMLESS_TRACE_CM_WRITE").is_some() {
                 let cm_before = self.color_manager_clut[0];
                 let dev0 = self.device_clut[0];
@@ -44484,6 +44442,27 @@ mod tests {
     }
 
     #[test]
+    fn test_offscreen_pict_indices_preserved_from_stale_system_to_custom_screen_palette() {
+        let current = TrapDispatcher::standard_mac_8bpp_clut();
+        let mut logical = current;
+        logical[42] = [0x1234, 0x5678, 0x9ABC];
+        let mut pict = [[0u16; 3]; 256];
+        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
+            *rgb = [
+                ((index as u16) << 8) | index as u16,
+                0x8000u16.saturating_sub((index as u16) << 6),
+                0x1000u16.saturating_add((index as u16) << 5),
+            ];
+        }
+
+        assert!(
+            TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &logical
+            )
+        );
+    }
+
+    #[test]
     fn test_offscreen_pict_indices_not_preserved_when_port_matches_screen_palette() {
         let mut current = TrapDispatcher::standard_mac_8bpp_clut();
         current[42] = [0x1234, 0x5678, 0x9ABC];
@@ -44747,7 +44726,7 @@ mod tests {
     }
 
     #[test]
-    fn test_setentries_client_id_sequence_after_fade_restores_stable_physical_palette() {
+    fn test_setentries_client_id_sequence_after_fade_installs_fresh_physical_palette() {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let baseline = TrapDispatcher::standard_mac_8bpp_clut();
@@ -44764,7 +44743,7 @@ mod tests {
 
         d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
 
-        assert_eq!(d.device_clut, baseline);
+        assert_eq!(d.device_clut[42], [0x2A00, 0xD500, 0x5500]);
         assert_eq!(d.color_manager_clut[42], [0x2A00, 0xD500, 0x5500]);
         let ctab_handle = d.current_gdevice_ctab_handle(&bus);
         let ctab = bus.read_long(ctab_handle);
@@ -44840,7 +44819,7 @@ mod tests {
     }
 
     #[test]
-    fn test_repeated_client_id_sequences_preserve_explicit_physical_cells_without_fade() {
+    fn test_repeated_client_id_sequences_replace_every_physical_cell() {
         let (mut d, _cpu, mut bus) = setup_with_port();
         d.ensure_main_gdevice(&mut bus);
         let physical = TrapDispatcher::standard_mac_8bpp_clut();
@@ -44857,7 +44836,10 @@ mod tests {
                 bus.write_word(entry + 6, 0x5500);
             }
             d.apply_set_entries_with_gdevice(&mut bus, table_ptr, 0, 255);
-            assert_eq!(d.device_clut[245], physical[245]);
+            assert_eq!(
+                d.device_clut[245],
+                [((245u16).wrapping_add(pass)) << 8, 0x0A00, 0x5500]
+            );
             assert_eq!(
                 d.device_clut[42],
                 [((42u16).wrapping_add(pass)) << 8, 0xD500, 0x5500]

@@ -7,7 +7,7 @@ the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects six interactive views:
+test protocol. Its Pages menu selects seven interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -23,6 +23,9 @@ test protocol. Its Pages menu selects six interactive views:
    action buttons. Its settings stay synchronized with hierarchical menus.
 6. Dialogs & Alerts exercises resource-backed modal dialogs, controls,
    editable text, and a system alert.
+7. Palettes activates a resource-backed mixed-usage palette, draws through
+   `PmForeColor` and `PmBackColor`, and animates explicit CLUT entries without
+   redrawing their indexed pixels.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -32,7 +35,9 @@ These calls follow the contracts in *Inside Macintosh: Macintosh Toolbox
 Essentials* (1992), Event Manager pp. 2-50–2-71, Menu Manager pp. 3-48–3-65,
 Window Manager pp. 4-63–4-93, Control Manager pp. 5-78–5-96, and Dialog
 Manager pp. 6-43–6-84. The drawing surface follows *Inside Macintosh: Imaging
-With QuickDraw* (1994), pp. 3-38, 3-55–3-95, and 4-68.
+With QuickDraw* (1994), pp. 3-38, 3-55–3-95, and 4-68. Palette activation,
+usage categories, indexed drawing, and animation follow *Inside Macintosh,
+Volume VI* (1991), pp. 20-8–20-22.
 
 ## Rebuild and verify
 
@@ -73,9 +78,14 @@ selects the 68K `CODE` slice, and the second launch selects the native PEF with
 8. Invoke the system alert, capturing its live modal state on implementations
    that block for a response, then dismiss it or record its return.
 9. Verify the final dialog status after both modal sessions.
-10. Open File, drag across the menu bar to Pages, and capture Graphics
+10. Activate the Palettes page and capture its initial tolerant and
+    animated-explicit color environment.
+11. Click Animate Palette and capture the same indexed pixels recolored by
+    `AnimateEntry` without repainting the swatches.
+12. Open File, drag across the menu bar to Pages, and capture Graphics
     highlighted before releasing.
-11. Confirm the release selected Graphics and disposed the auxiliary window.
+13. Confirm the release selected Graphics, restored the default color
+    environment, and disposed the auxiliary window.
 
 For a manual launch from the public repository:
 
@@ -88,7 +98,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the eleven interaction steps above. Use an 800×600,
+PowerPC slice, then follow the thirteen interaction steps above. Use an 800×600,
 8-bit display for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
 and final page provide the comparison points between runs.
@@ -103,6 +113,11 @@ The paired frames intentionally retain visible compatibility differences—such
 as rendered QuickDraw 3D output and modal alert handling—so later runtime work
 produces an explicit, reviewable baseline change.
 
+SheepShaver's oracle display is direct color, so its animation checkpoint is
+intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11 notes
+that color-table animation is unavailable on direct devices. The Systemless
+and BasiliskII 8-bit captures demonstrate the indexed CLUT transition.
+
 ### 68K
 
 | Checkpoint | Systemless | BasiliskII |
@@ -116,8 +131,10 @@ produces an explicit, reviewable baseline change.
 | 7. Modal dialog | <img src="reference/systemless-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in BasiliskII" width="360"> |
 | 8. Alert | <img src="reference/systemless-68k/08-alert.png" alt="System alert in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/08-alert.png" alt="System alert in BasiliskII" width="360"> |
 | 9. Dialog result | <img src="reference/systemless-68k/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/09-dialogs.png" alt="Dialogs page after modal interactions in BasiliskII" width="360"> |
-| 10. Menu-bar hover | <img src="reference/systemless-68k/10-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/10-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
-| 11. Graphics return | <img src="reference/systemless-68k/11-graphics-return.png" alt="Returned Graphics page in Systemless after the 68K interaction sequence" width="360"> | <img src="reference/basiliskii-68k/11-graphics-return.png" alt="Returned Graphics page in BasiliskII after the interaction sequence" width="360"> |
+| 10. Palette activation | <img src="reference/systemless-68k/10-palette.png" alt="Initial mixed-usage palette in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/10-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="360"> |
+| 11. Palette animation | <img src="reference/systemless-68k/11-palette-animated.png" alt="Animated explicit CLUT entries in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/11-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="360"> |
+| 12. Menu-bar hover | <img src="reference/systemless-68k/12-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/12-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
+| 13. Palette restoration | <img src="reference/systemless-68k/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the 68K interaction sequence" width="360"> | <img src="reference/basiliskii-68k/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -132,11 +149,13 @@ produces an explicit, reviewable baseline change.
 | 7. Modal dialog | <img src="reference/systemless-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |
 | 8. Alert invocation | <img src="reference/systemless-ppc/08-alert.png" alt="Dialogs page after the PowerPC alert import returns in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
 | 9. Dialog result | <img src="reference/systemless-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="360"> |
-| 10. Menu-bar hover | <img src="reference/systemless-ppc/10-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/10-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
-| 11. Graphics return | <img src="reference/systemless-ppc/11-graphics-return.png" alt="Returned Graphics page in Systemless after the PowerPC interaction sequence" width="360"> | <img src="reference/sheepshaver-ppc/11-graphics-return.png" alt="Returned Graphics page in SheepShaver after the interaction sequence" width="360"> |
+| 10. Palette activation | <img src="reference/systemless-ppc/10-palette.png" alt="Initial mixed-usage palette in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/10-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
+| 11. Palette animation | <img src="reference/systemless-ppc/11-palette-animated.png" alt="Animated explicit CLUT entries in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/11-palette-animated.png" alt="Animated explicit CLUT entries in SheepShaver" width="360"> |
+| 12. Menu-bar hover | <img src="reference/systemless-ppc/12-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/12-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
+| 13. Palette restoration | <img src="reference/systemless-ppc/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the PowerPC interaction sequence" width="360"> | <img src="reference/sheepshaver-ppc/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all eleven rendered
+state rather than relying on fixed delays, and compares all thirteen rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 
