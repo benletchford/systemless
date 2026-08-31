@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.8](https://github.com/benletchford/systemless/compare/v0.27.7...v0.27.8) (2026-08-31)
+
+
+### Bug Fixes
+
+* **ppc:** bind the MathLib default environment ([#1108](https://github.com/benletchford/systemless/issues/1108)) ([b2408ea](https://github.com/benletchford/systemless/commit/b2408ead588ed793138a315b17628d0222e0a1e3))
+
 ## [0.27.7](https://github.com/benletchford/systemless/compare/v0.27.6...v0.27.7) (2026-08-31)
 
 
