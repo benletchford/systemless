@@ -10352,24 +10352,19 @@ impl super::TrapDispatcher {
             }
 
             // X2Fix ($A844)
-            // Converts an Extended (80-bit SANE) to a Fixed value.
+            // Converts an Extended number to its best Fixed approximation.
             // FUNCTION X2Fix(x: Extended): Fixed;
-            // Operating System Utilities 1994, p. 3-45
-            // Pascal convention for function returning Fixed (4 bytes):
-            //   SP+0: x (Extended, 10 bytes)
-            //   SP+10: 4 bytes reserved for Fixed return
-            // Callee pops 10 bytes (x), leaves Fixed at SP.
-            // X2Fix ($A844): Converts Extended to Fixed with saturation
-            // semantics per OS Utils 3-45.
+            // Inside Macintosh: Operating System Utilities (1994), p. 3-45.
             (true, 0x044) => {
                 let sp = cpu.read_reg(Register::A7);
-                let ext = super::extended80::Extended80::read_from_bus(bus, sp);
+                let ext_ptr = bus.read_long(sp);
+                let ext = super::extended80::Extended80::read_from_bus(bus, ext_ptr);
                 let val = f64::from(ext);
                 let fixed = (val * 65536.0)
                     .round()
                     .clamp(i32::MIN as f64, i32::MAX as f64) as i32;
-                bus.write_long(sp + 10, fixed as u32);
-                cpu.write_reg(Register::A7, sp + 10);
+                bus.write_long(sp + 4, fixed as u32);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -32366,37 +32361,72 @@ mod tests {
     }
 
     // X2Fix ($A844)
-    // Operating System Utilities 1994, p. 3-45.
+    // Inside Macintosh: Operating System Utilities (1994), p. 3-45.
     #[test]
-    fn x2fix_returns_best_fixed_approximation_and_saturates_out_of_range() {
+    fn x2fix_dereferences_extended_pointer_and_preserves_pascal_frame() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
+        let ext_ptr = bus.alloc(10);
+        Extended80::from(1.75).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0xDEAD_BEEF);
+        bus.write_long(sp + 8, 0xCAFE_BABE);
+        let preserved = [
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+            (Register::A2, 0xA200_0002),
+            (Register::A3, ext_ptr),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+        ];
+        for (register, value) in preserved {
+            cpu.write_reg(register, value);
+        }
 
-        Extended80::from(1.75).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
         let exact = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(exact.is_some());
         assert!(exact.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x0001_C000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp), ext_ptr);
+        assert_eq!(bus.read_long(sp + 4), 0x0001_C000);
+        assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        for (register, value) in preserved {
+            assert_eq!(
+                cpu.read_reg(register),
+                value,
+                "stack-based X2Fix must preserve {register:?}"
+            );
+        }
+    }
 
-        cpu.write_reg(Register::A7, sp);
-        Extended80::from(40000.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+    #[test]
+    fn x2fix_saturates_out_of_range_pointer_values() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let ext_ptr = bus.alloc(10);
+
+        Extended80::from(40000.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let high = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(high.is_some());
         assert!(high.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x7FFF_FFFF);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x7FFF_FFFF);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
 
         cpu.write_reg(Register::A7, sp);
-        Extended80::from(-40000.0).write_to_bus(&mut bus, sp);
-        bus.write_long(sp + 10, 0);
+        Extended80::from(-40000.0).write_to_bus(&mut bus, ext_ptr);
+        bus.write_long(sp, ext_ptr);
+        bus.write_long(sp + 4, 0);
         let low = disp.dispatch_toolbox(true, 0x044, &mut cpu, &mut bus);
         assert!(low.is_some());
         assert!(low.unwrap().is_ok());
-        assert_eq!(bus.read_long(sp + 10), 0x8000_0000);
-        assert_eq!(cpu.read_reg(Register::A7), sp + 10);
+        assert_eq!(bus.read_long(sp + 4), 0x8000_0000);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
     }
 
     // Frac2X ($A845)
