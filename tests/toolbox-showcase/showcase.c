@@ -96,7 +96,7 @@ static void DrawGraphicsPage(void)
 
     savedClip = NewRgn();
     GetClip(savedClip);
-    SetRect(&clip, 360, 55, 455, 135);
+    SetRect(&clip, 405, 35, 486, 156);
     ClipRect(&clip);
     RGBForeColor(&blue);
     SetRect(&r, 330, 35, 485, 155);

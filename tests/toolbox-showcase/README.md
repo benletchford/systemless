@@ -64,6 +64,19 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
 PowerPC slice, then follow the four interaction steps above. Keep each emulator
-at an 8-bit, 640×480 display so coordinates and indexed colors match the CI
-contract. The Pages and State checkmarks, window count, control values, and
-visible drawing should agree between the two runs.
+at an 8-bit display; 640×480 is sufficient for the interaction coordinates.
+The Pages and State checkmarks, window count, control values, and visible
+drawing should agree between the two runs.
+
+## Reference screenshots
+
+These full-frame 800×600 captures are human-review oracles from the same
+committed archive. They are intentionally not pixel-exact test goldens: system
+fonts, desktop patterns, and window chrome can vary between compatible classic
+Mac OS installations.
+
+| Page | BasiliskII (68K) | SheepShaver (PowerPC) |
+| --- | --- | --- |
+| Graphics | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> | <img src="reference/sheepshaver-ppc/01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="360"> |
+| Controls after interaction | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> | <img src="reference/sheepshaver-ppc/02-controls.png" alt="Interacted Controls page and State menu in SheepShaver" width="360"> |
+| Windows | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page and auxiliary window in BasiliskII" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page and auxiliary window in SheepShaver" width="360"> |
