@@ -13,10 +13,9 @@ use crate::quickdraw::text::{
     get_font_metrics, get_glyph, get_glyph_italic, get_underline_thickness, QuickDrawTextStyle,
 };
 use crate::ui_theme::{
-    CaretState, ControlKind, ControlState, DialogFrameKind, DialogFrameState, MenuBarState,
-    MenuDropdownState, MenuItemState, MenuTitleState, Rgb8, ScrollbarOrientation, ScrollbarPart,
-    ScrollbarState, TextFieldState, TextSelectionState, ThemeBitmap, ThemeDrawCtx, ThemeRect,
-    UiThemeId,
+    render_scrollbar_bitmap, CaretState, ControlKind, ControlState, DialogFrameKind,
+    DialogFrameState, MenuBarState, MenuDropdownState, MenuItemState, MenuTitleState, Rgb8,
+    TextFieldState, TextSelectionState, ThemeBitmap, ThemeDrawCtx, ThemeRect, UiThemeId,
 };
 
 /// Opt-in gate for visRgn auto-expansion. Setting
@@ -135,40 +134,19 @@ impl super::TrapDispatcher {
         max: i16,
         hilite: u8,
     ) -> bool {
-        if self.ui_theme_id() == UiThemeId::ClassicSystem7 {
-            return false;
-        }
-
         let width = right.saturating_sub(left);
         let height = bottom.saturating_sub(top);
         if width <= 0 || height <= 0 {
             return true;
         }
-
-        let theme = self.ui_theme();
-        let palette = theme.palette();
-        let mut bitmap = ThemeBitmap::new(width as u32, height as u32, palette.window_background);
-        let mut ctx = ThemeDrawCtx::new(&mut bitmap);
-        theme.draw_scrollbar(
-            &mut ctx,
-            ScrollbarState {
-                rect: ThemeRect {
-                    top: 0,
-                    left: 0,
-                    bottom: height,
-                    right: width,
-                },
-                orientation: if height > width {
-                    ScrollbarOrientation::Vertical
-                } else {
-                    ScrollbarOrientation::Horizontal
-                },
-                enabled: hilite != 255 && min < max,
-                value,
-                min,
-                max,
-                highlighted_part: ScrollbarPart::from_control_part_code(hilite),
-            },
+        let bitmap = render_scrollbar_bitmap(
+            self.ui_theme_id(),
+            width,
+            height,
+            value,
+            min,
+            max,
+            hilite,
         );
         self.blit_theme_bitmap_mono(bus, top, left, &bitmap);
         true

@@ -81,6 +81,7 @@ use crate::trap::dispatch::key_map_key_is_down;
 use crate::trap::extended80::Extended80;
 use crate::trap::types::{decode_mac_roman, encode_mac_roman_lossy};
 use crate::trap::{pict, TrapDispatcher};
+use crate::ui_theme::{render_scrollbar_bitmap, Rgb8, ThemeBitmap, UiThemeId};
 use ppc::{
     PpcAlignmentPolicy, PpcCpu, PpcException, PpcFetchHistogram, PpcFetchObserver, PpcImportAction,
     PpcMemory, PpcMemoryWriteObserver, PpcNativeReturnGpr3, PpcRunResult, PpcSectionMemSpan,
@@ -63438,6 +63439,67 @@ fn ppc_draw_window_controls(
     drew
 }
 
+fn ppc_blit_theme_bitmap(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    port: u32,
+    top: i16,
+    left: i16,
+    bitmap: &ThemeBitmap,
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, port) else {
+        return false;
+    };
+    let clip_storage = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(port.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    let mut pixels = HashMap::new();
+    let rgba = bitmap.rgba();
+    let mut wrote = false;
+    for y in 0..bitmap.height() {
+        for x in 0..bitmap.width() {
+            let offset = ((y * bitmap.width() + x) * 4) as usize;
+            let rgb = Rgb8 {
+                r: rgba[offset],
+                g: rgba[offset + 1],
+                b: rgba[offset + 2],
+            };
+            let pixel = *pixels.entry((rgb.r, rgb.g, rgb.b)).or_insert_with(|| {
+                ppc_quickdraw_surface_color_pixel(
+                    memory,
+                    surface,
+                    PpcRgbColor {
+                        red: u16::from(rgb.r) * 0x0101,
+                        green: u16::from(rgb.g) * 0x0101,
+                        blue: u16::from(rgb.b) * 0x0101,
+                    },
+                )
+                .unwrap_or(0)
+            });
+            let port_h = i32::from(left) + x as i32;
+            let port_v = i32::from(top) + y as i32;
+            let point = surface.local_point((port_h, port_v));
+            if ppc_local_point_in_port_regions(
+                surface,
+                point,
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+            ) {
+                wrote |= ppc_quickdraw_write_raw_pixel(
+                    memory,
+                    surface.front_buffer,
+                    point,
+                    pixel,
+                );
+            }
+        }
+    }
+    wrote
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
@@ -63549,6 +63611,33 @@ fn ppc_draw_control_inner(
                 );
             }
             wrote
+        }
+        16 => {
+            // Both CPU adapters submit the same ControlRecord state to the
+            // architecture-neutral presentation provider. Only this final
+            // guest-framebuffer blit remains adapter-specific.
+            let value = memory
+                .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+                .unwrap_or(0) as i16;
+            let min = memory
+                .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
+                .unwrap_or(0) as i16;
+            let max = memory
+                .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
+                .unwrap_or(0) as i16;
+            let hilite = memory
+                .read_u8(control + PPC_CONTROL_HILITE_OFFSET)
+                .unwrap_or(0);
+            let bitmap = render_scrollbar_bitmap(
+                UiThemeId::ClassicSystem7,
+                right.saturating_sub(left),
+                bottom.saturating_sub(top),
+                value,
+                min,
+                max,
+                hilite,
+            );
+            ppc_blit_theme_bitmap(memory, gworlds, owner, top, left, &bitmap)
         }
         1008..=1023 => {
             // The standard pop-up CDEF is resource ID 63, whose proc IDs

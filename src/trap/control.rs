@@ -7609,7 +7609,7 @@ mod tests {
     }
 
     #[test]
-    fn scrollbar_systemless_theme_routes_chrome_through_provider_and_keeps_part_codes() {
+    fn scrollbar_themes_share_the_presentation_provider_and_keep_part_codes() {
         let sp = 0x300000u32;
         let bounds = (20, 20, 180, 36);
 
@@ -7626,7 +7626,7 @@ mod tests {
         classic_bus.write_word(classic_ptr + 20, 0);
         classic_bus.write_word(classic_ptr + 22, 100);
         assert!(
-            !classic.draw_theme_scrollbar_chrome(
+            classic.draw_theme_scrollbar_chrome(
                 &mut classic_bus,
                 bounds.0,
                 bounds.1,
@@ -7637,7 +7637,7 @@ mod tests {
                 100,
                 0,
             ),
-            "classic-system7 keeps the existing scrollBarProc renderer"
+            "classic-system7 should use the architecture-neutral scrollbar renderer"
         );
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
