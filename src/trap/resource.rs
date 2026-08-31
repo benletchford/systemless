@@ -3303,50 +3303,14 @@ impl super::TrapDispatcher {
             }
 
             // SystemEvent ($A9B2)
-            // Per IM:I I-441: "SystemEvent is called only by the
-            // Toolbox Event Manager function GetNextEvent when it
-            // receives an event, to determine whether the event
-            // should be handled by the application or by the system.
-            // If the given event should be handled by the
-            // application, SystemEvent returns FALSE; otherwise, it
-            // calls the appropriate system code to handle the event
-            // and returns TRUE."
-            //
-            // Per IM:I I-441 dispatch matrix:
-            //   - null / mouse-down events: returns FALSE (lets app
-            //     run FindWindow then optionally call SystemClick).
-            //   - mouse-up / keyboard events: TRUE iff active window
-            //     is DA-owned and DA can handle it; else FALSE.
-            //   - activate / update events: TRUE iff event window is
-            //     DA-owned and DA can handle it; else FALSE.
-            // Systemless's HLE has no DA-owned windows so EVERY path
-            // resolves to FALSE — apps correctly receive every event
-            // and perform their own dispatch.
-            // FUNCTION SystemEvent(theEvent: EventRecord): BOOLEAN;
-            // Inside Macintosh Volume I, I-441
-            //
-            // Stack: SP+0..15 theEvent EventRecord by VALUE (16
-            // bytes — IM:I I-251 layout: what(2) + message(4) +
-            // when(4) + where Point(4) + modifiers(2)), SP+16
-            // result BOOLEAN (2-byte FUNCTION result slot pre-pushed
-            // by caller). Pop 16; result at post-pop A7 = pre-call
-            // SP+16. Returns FALSE per IM:I I-441 "app handles event"
-            // path — corpus games' GetNextEvent → SystemEvent →
-            // app-event-loop sequence proceeds correctly.
-            //
-            // Manager classification corrected: was "Resource Manager
-            // — Toolbox Traps" (an artifact of where the arm landed
-            // in the dispatch chain) but per IM:I-441 chapter heading
-            // "Handling Events in Desk Accessories" this trap belongs
-            // to the Desk Accessory family — same family rationale
-            // block at toolbox.rs $A9B6 OpenDeskAcc applies.
-            // SystemEvent ($A9B2): Pops 16-byte EventRecord by VALUE per IM:I I-251 layout + writes FALSE to 2-byte BOOLEAN result slot at post-pop A7 per IM:I I-441 PROCEDURE sig; HLE has no DA-owned windows so FALSE matches the IM-documented "event should be handled by the application" path for every event class (null/mouse-down/mouse-up/keyboard/activate/update).
+            // Lets the Desk Manager handle an event or returns FALSE for application handling.
+            // FUNCTION SystemEvent (theEvent: EventRecord): BOOLEAN;
+            // Inside Macintosh Volume I (1985), pp. I-90--I-91 and I-442.
             (true, 0x1B2) => {
                 let sp = cpu.read_reg(Register::A7);
-                // EventRecord = 16 bytes by value, result = 2 bytes
-                bus.write_word(sp + 16, 0); // FALSE
+                bus.write_word(sp + 4, 0); // FALSE
                 cpu.write_reg(Register::D0, 0);
-                cpu.write_reg(Register::A7, sp + 16);
+                cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
             }
 
@@ -8907,24 +8871,53 @@ mod tests {
     }
 
     #[test]
-    fn systemevent_mouse_down_returns_false_and_preserves_stack_and_d0() {
+    fn systemevent_uses_event_pointer_pascal_frame() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-
-        // EventRecord (16 bytes by value): mouseDown event.
-        bus.write_word(sp, 1); // what = mouseDown
-        bus.write_long(sp + 2, 0x1122_3344); // message
-        bus.write_long(sp + 6, 0x5566_7788); // when
-        bus.write_long(sp + 10, 0x99AA_BBCC); // where
-        bus.write_word(sp + 14, 0x0102); // modifiers
-        bus.write_word(sp + 16, 0xBEEF); // result sentinel
+        let event_ptr = bus.alloc(16);
+        bus.write_word(event_ptr, 1); // what = mouseDown
+        bus.write_long(event_ptr + 2, 0x1122_3344); // message
+        bus.write_long(event_ptr + 6, 0x5566_7788); // when
+        bus.write_long(event_ptr + 10, 0x99AA_BBCC); // where
+        bus.write_word(event_ptr + 14, 0x0102); // modifiers
+        bus.write_long(sp - 4, 0xDEAD_BEEF);
+        bus.write_long(sp, event_ptr);
+        bus.write_word(sp + 4, 0xBEEF); // result sentinel
+        bus.write_long(sp + 6, 0xCAFE_BABE);
+        bus.write_long(sp + 16, 0x5A5A_C0DE); // catches the former result location
+        let preserved = [
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+            (Register::A2, 0xA200_0002),
+            (Register::A3, event_ptr),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+        ];
+        for (register, value) in preserved {
+            cpu.write_reg(register, value);
+        }
 
         let result = disp.dispatch_resource(true, 0x1B2, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), sp + 16);
-        assert_eq!(bus.read_word(sp + 16), 0);
+        assert_eq!(bus.read_long(sp - 4), 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(sp), event_ptr);
+        assert_eq!(bus.read_word(sp + 4), 0);
+        assert_eq!(bus.read_long(sp + 6), 0xCAFE_BABE);
+        assert_eq!(bus.read_long(sp + 16), 0x5A5A_C0DE);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
         assert_eq!(cpu.read_reg(Register::D0), 0);
+        for (register, value) in preserved {
+            assert_eq!(
+                cpu.read_reg(register),
+                value,
+                "stack-based SystemEvent must preserve {register:?}"
+            );
+        }
     }
 
     /// Set up loaded resources with one entry.
