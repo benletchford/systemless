@@ -3399,22 +3399,9 @@ impl super::TrapDispatcher {
             }
 
             // CommToolboxDispatch ($A08B)
-            // Communications Toolbox dispatch.
-            // Inside Macintosh Volume VI (1991), Appendix C table C-3 (p. C-4).
-            // Selector-dispatch trap (e.g. $0402 AppendDITL, $0403 CountDITL,
-            // $0404 ShortenDITL).
-            //
-            // Systemless HLE implements the Dialog Manager selectors that
-            // System 7 exposes through this trap. MPW glue observed in the
-            // Marathon 2 preferences path places the return address at SP+0,
-            // selector word at SP+4, and selector-specific arguments after it
-            // (for AppendDITL: method at SP+6, DITL handle at SP+8, DialogPtr
-            // at SP+12). The trap itself does not consume the caller frame.
-            //
-            // Contract coverage:
-            //   src/trap/memory.rs::tests::commtoolboxdispatch_countditl_returns_dialog_item_count_and_preserves_stack_pointer
-            //   src/trap/memory.rs::tests::commtoolboxdispatch_countditl_preserves_non_d0_registers
-            //   src/trap/memory.rs::tests::commtoolboxdispatch_appendditl_overlay_appends_items_and_preserves_stack_pointer
+            // Dispatches Communications Toolbox routines by selector.
+            // SELECTOR(selector: INTEGER; parameters: selector-specific);
+            // Inside Macintosh Volume VI (1991), Appendix C, p. C-4.
             (false, 0x8B) => {
                 fn count_dialog_items(bus: &MacMemoryBus, dialog_ptr: u32) -> u16 {
                     if dialog_ptr == 0 {
@@ -3453,28 +3440,19 @@ impl super::TrapDispatcher {
                             self.append_ditl_to_dialog(bus, dialog_ptr, ditl_handle, method);
                         cpu.write_reg(Register::D0, count as u32);
                     }
+                    // CountDITL ($A08B/$0403)
+                    // Returns the number of current items in the specified dialog box.
+                    // FUNCTION CountDITL (theDialog: DialogPtr): Integer;
+                    // Inside Macintosh: Macintosh Toolbox Essentials (1992), pp. 6-128 to 6-129.
                     (0x0403, _) | (_, 0x0403) => {
                         let dialog_ptr = bus.read_long(sp + 6);
-                        let mut resolved_ptr = dialog_ptr;
-                        let mut count = count_dialog_items(bus, resolved_ptr);
+                        let mut count = count_dialog_items(bus, dialog_ptr);
                         if count == 0 {
                             count = self
                                 .dialog_items
-                                .get(&resolved_ptr)
+                                .get(&dialog_ptr)
                                 .map(|items| items.len() as u16)
                                 .unwrap_or(0);
-                        }
-                        if count == 0 && self.front_window != 0 && self.front_window != resolved_ptr
-                        {
-                            resolved_ptr = self.front_window;
-                            count = count_dialog_items(bus, resolved_ptr);
-                            if count == 0 {
-                                count = self
-                                    .dialog_items
-                                    .get(&resolved_ptr)
-                                    .map(|items| items.len() as u16)
-                                    .unwrap_or(0);
-                            }
                         }
 
                         cpu.write_reg(Register::D0, count as u32);
@@ -7977,6 +7955,49 @@ mod tests {
             3,
             "CountDITL should report the three dialog items we installed"
         );
+    }
+
+    #[test]
+    fn commtoolboxdispatch_countditl_empty_dialog_ignores_front_window() {
+        // Macintosh Toolbox Essentials (1992), pp. 6-128 to 6-129:
+        // CountDITL returns the number of items in the dialog passed as
+        // theDialog, irrespective of which other window is frontmost.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        dispatcher.current_trap_word = 0xA08B;
+
+        let empty_dialog = bus.alloc(170);
+        let empty_items_handle = bus.alloc(4);
+        let empty_ditl = bus.alloc(2);
+        bus.write_long(empty_dialog + 156, empty_items_handle);
+        bus.write_long(empty_items_handle, empty_ditl);
+        bus.write_word(empty_ditl, u16::MAX);
+
+        let front_dialog = bus.alloc(170);
+        let front_items_handle = bus.alloc(4);
+        let front_ditl = bus.alloc(2);
+        bus.write_long(front_dialog + 156, front_items_handle);
+        bus.write_long(front_items_handle, front_ditl);
+        bus.write_word(front_ditl, 1); // two items
+        dispatcher.front_window = front_dialog;
+
+        let sp = cpu.read_reg(Register::A7);
+        bus.write_long(sp, 0xCAFE_BABE);
+        bus.write_word(sp + 4, 0x0403);
+        bus.write_long(sp + 6, empty_dialog);
+
+        dispatcher
+            .dispatch_memory(false, 0x8B, &mut cpu, &mut bus)
+            .expect("CommToolboxDispatch should be handled")
+            .expect("CountDITL should return cleanly");
+
+        assert_eq!(
+            cpu.read_reg(Register::D0),
+            0,
+            "CountDITL must not substitute the front window for an empty target dialog"
+        );
+        assert_eq!(cpu.read_reg(Register::A7), sp);
+        assert_eq!(bus.read_long(sp), 0xCAFE_BABE);
+        assert_eq!(bus.read_long(sp + 6), empty_dialog);
     }
 
     #[test]
