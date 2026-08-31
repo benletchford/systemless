@@ -8395,7 +8395,7 @@ impl super::TrapDispatcher {
             //   manager-classification — actual manager is Desk
             //   Mgr per IM:I I-441 + IM:I-435).
             //
-            // - $A9B3 SystemClick (PROCEDURE): no-op pop 20 — apps
+            // - $A9B3 SystemClick (PROCEDURE): no-op pop 8 — apps
             //   call this only after FindWindow returns inSysWindow,
             //   which can never happen in HLE (every window is
             //   application-owned with windowKind >= 0 / userKind
@@ -8557,29 +8557,12 @@ impl super::TrapDispatcher {
             }
 
             // SystemClick ($A9B3)
-            // Per IM:I I-441: "When a mouse-down event occurs and
-            // the Window Manager function FindWindow reports that
-            // the mouse button was pressed in a system window, the
-            // application should call SystemClick with the event
-            // record and the window pointer. If the given window
-            // belongs to a desk accessory, SystemClick sees that
-            // the event gets handled properly."
-            // PROCEDURE SystemClick(theEvent: EventRecord;
-            //                       theWindow: WindowPtr);
-            // Inside Macintosh Volume I, I-441
-            //
-            // Stack: SP+0 theEvent EventRecord by VALUE (16 bytes —
-            // confirmed in IM:I I-251 EventRecord layout: what(2) +
-            // message(4) + when(4) + where Point(4) + modifiers(2) =
-            // 16 bytes), SP+16 theWindow WindowPtr (4 bytes). Pop 20.
-            // No result (PROCEDURE). HLE no-op because FindWindow
-            // never returns inSysWindow (negative windowKind doesn't
-            // exist), so this trap is unreachable from corpus games
-            // following the documented FindWindow → SystemClick gate.
-            // SystemClick ($A9B3): Pops 20 bytes (EventRecord 16 by VALUE + WindowPtr 4) per IM:I I-441 PROCEDURE sig + IM:I I-251 EventRecord layout; HLE no-op since FindWindow never returns inSysWindow per IM:I I-435 windowKind convention — defensive no-op for any caller that bypasses the FindWindow gate.
+            // Passes a system-window mouse-down event to its desk accessory.
+            // PROCEDURE SystemClick (theEvent: EventRecord; theWindow: WindowPtr);
+            // Inside Macintosh Volume I (1985), pp. I-90--I-91 and I-440--I-441.
             (true, 0x1B3) => {
                 let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 20);
+                cpu.write_reg(Register::A7, sp + 8);
                 Ok(())
             }
 
@@ -20063,51 +20046,71 @@ mod tests {
 
     // SystemClick ($A9B3)
     #[test]
-    fn systemclick_consumes_eventrecord_and_windowptr_arguments() {
-        // IM:I 1985, p. I-441: SystemClick(theEvent: EventRecord; theWindow: WindowPtr)
-        // IM:I 1985, p. I-251: EventRecord layout totals 16 bytes.
+    fn systemclick_uses_pointer_frame_and_preserves_pascal_registers() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-
-        // 16-byte EventRecord by value + 4-byte WindowPtr.
-        for i in 0..16u32 {
-            bus.write_byte(sp + i, (0x40u8).wrapping_add(i as u8));
+        let event_ptr = bus.alloc(16);
+        let window_ptr = bus.alloc(4);
+        for offset in 0..16 {
+            bus.write_byte(event_ptr + offset, 0x40u8.wrapping_add(offset as u8));
         }
-        bus.write_long(sp + 16, 0x00AB_CDEF);
-        bus.write_word(sp + 20, 0xBEEF); // sentinel after argument frame
+        bus.write_long(sp - 4, 0xDEAD_BEEF);
+        bus.write_long(sp, window_ptr);
+        bus.write_long(sp + 4, event_ptr);
+        bus.write_long(sp + 8, 0xCAFE_BABE);
+        bus.write_long(sp + 20, 0x5A5A_C0DE); // catches the former frame end
+        let preserved = [
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+            (Register::A2, 0xA200_0002),
+            (Register::A3, event_ptr),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+        ];
+        for (register, value) in preserved {
+            cpu.write_reg(register, value);
+        }
 
         let result = disp.dispatch_toolbox(true, 0x1B3, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A7), sp + 20);
-        assert_eq!(
-            bus.read_word(sp + 20),
-            0xBEEF,
-            "SystemClick must pop exactly 20 bytes and not overwrite trailing stack memory"
-        );
+        assert_eq!(bus.read_long(sp - 4), 0xDEAD_BEEF);
+        assert_eq!(bus.read_long(sp), window_ptr);
+        assert_eq!(bus.read_long(sp + 4), event_ptr);
+        assert_eq!(bus.read_long(sp + 8), 0xCAFE_BABE);
+        assert_eq!(bus.read_long(sp + 20), 0x5A5A_C0DE);
+        assert_eq!(cpu.read_reg(Register::A7), sp + 8);
+        for (register, value) in preserved {
+            assert_eq!(
+                cpu.read_reg(register),
+                value,
+                "stack-based SystemClick must preserve {register:?}"
+            );
+        }
     }
 
     #[test]
-    fn systemclick_repeated_calls_preserve_stack_and_sentinel() {
-        // Repeating the direct trap call catches cumulative stack drift
-        // that a single call could miss if the ABI were off by a byte.
+    fn systemclick_five_call_composition_advances_stack_by_forty() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-
-        for i in 0..16u32 {
-            bus.write_byte(sp + i, (0x50u8).wrapping_add(i as u8));
+        for call in 0..5u32 {
+            let frame = sp + call * 8;
+            bus.write_long(frame, 0x0024_0000 + call * 4); // WindowPtr
+            bus.write_long(frame + 4, 0x0025_0000 + call * 16); // EventRecord pointer
         }
-        bus.write_long(sp + 16, 0x1020_3040);
-        bus.write_word(sp + 20, 0xC0DE);
+        bus.write_long(sp + 40, 0xCAFE_BABE);
 
-        for _ in 0..5 {
-            cpu.write_reg(Register::A7, sp);
+        for call in 0..5u32 {
             let result = disp.dispatch_toolbox(true, 0x1B3, &mut cpu, &mut bus);
             assert!(result.is_some());
             assert!(result.unwrap().is_ok());
-            assert_eq!(cpu.read_reg(Register::A7), sp + 20);
-            assert_eq!(bus.read_word(sp + 20), 0xC0DE);
+            assert_eq!(cpu.read_reg(Register::A7), sp + (call + 1) * 8);
         }
+        assert_eq!(bus.read_long(sp + 40), 0xCAFE_BABE);
     }
 
     // SystemTask ($A9B4)
