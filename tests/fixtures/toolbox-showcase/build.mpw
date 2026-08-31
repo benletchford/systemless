@@ -1,0 +1,12 @@
+Directory FS:workspace:
+
+MrC -i FS:root:MPW:Interfaces:CIncludes: -w 17 -proto strict -sym off -d TARGET_POWERPC=1 FS:workspace:src:main.c -o main.ppc.o
+PPCLink -d -c 'SLSH' -t 'APPL' -sym off main.ppc.o "{SharedLibraries}"StdCLib "{SharedLibraries}"InterfaceLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o "{PPCLibraries}"PPCToolLibs.o -o ToolboxShowcase.ppc
+
+SC -i FS:root:MPW:Interfaces:CIncludes: -w 17 -proto strict -sym off -d TARGET_POWERPC=0 FS:workspace:src:main.c -o main.68k.o
+Link -d -c 'SLSH' -t 'APPL' -sym off main.68k.o "{CLibraries}"StdCLib.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o "{Libraries}"ToolLibs.o -o ToolboxShowcase.68k
+
+Duplicate -y ToolboxShowcase.ppc ToolboxShowcase
+Duplicate -y -r ToolboxShowcase.68k ToolboxShowcase
+Rez -i FS:root:MPW:Interfaces:RIncludes: FS:workspace:src:showcase.r FS:workspace:src:cfrg.r -append -o ToolboxShowcase
+SetFile ToolboxShowcase -t 'APPL' -c 'SLSH' -a B

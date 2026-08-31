@@ -68,8 +68,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Verify Toolbox showcase fixture is reproducible
+        run: ./tests/fixtures/toolbox-showcase/build.sh --check
+
       - name: Headless library build (no default features)
         run: cargo check --no-default-features
+
+      - name: Run 68K and PowerPC Toolbox showcase probes
+        run: cargo test --locked --no-default-features --test toolbox_showcase
 
       - name: Build API documentation
         env:

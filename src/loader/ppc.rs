@@ -1012,11 +1012,15 @@ pub enum PpcImportDispatcherTarget {
     FrameOval,
     PaintOval,
     EraseOval,
+    FrameArc,
+    PaintArc,
+    FrameRgn,
     PaintRgn,
     FillRgn,
     InvertRgn,
     FillCRect,
     FrameRoundRect,
+    PaintRoundRect,
     InvalRect,
     ValidRect,
     BeginUpdate,
@@ -1054,6 +1058,8 @@ pub enum PpcImportDispatcherTarget {
     OpenPoly,
     ClosePoly,
     KillPoly,
+    FramePoly,
+    PaintPoly,
     FillPoly,
     NewCWindow,
     GetNewCWindow,
@@ -2958,6 +2964,8 @@ pub struct PpcToolboxStartupState {
     pub open_region_port: u32,
     pub open_region_save_handle: u32,
     pub open_region_bounds: Option<(i16, i16, i16, i16)>,
+    open_region_storage: Option<Vec<u8>>,
+    open_region_geometry_exact: bool,
     application_palette: u32,
     application_palette_updates: u16,
     palette_allocations: Vec<PpcPaletteAllocation>,
@@ -3020,6 +3028,8 @@ impl Default for PpcToolboxStartupState {
             open_region_port: 0,
             open_region_save_handle: 0,
             open_region_bounds: None,
+            open_region_storage: None,
+            open_region_geometry_exact: false,
             application_palette: 0,
             application_palette_updates: 0,
             palette_allocations: Vec::new(),
@@ -14894,11 +14904,15 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FrameOval") => PpcImportDispatcherTarget::FrameOval,
         ("InterfaceLib", "PaintOval") => PpcImportDispatcherTarget::PaintOval,
         ("InterfaceLib", "EraseOval") => PpcImportDispatcherTarget::EraseOval,
+        ("InterfaceLib", "FrameArc") => PpcImportDispatcherTarget::FrameArc,
+        ("InterfaceLib", "PaintArc") => PpcImportDispatcherTarget::PaintArc,
+        ("InterfaceLib", "FrameRgn") => PpcImportDispatcherTarget::FrameRgn,
         ("InterfaceLib", "PaintRgn") => PpcImportDispatcherTarget::PaintRgn,
         ("InterfaceLib", "FillRgn") => PpcImportDispatcherTarget::FillRgn,
         ("InterfaceLib", "InvertRgn") => PpcImportDispatcherTarget::InvertRgn,
         ("InterfaceLib", "FillCRect") => PpcImportDispatcherTarget::FillCRect,
         ("InterfaceLib", "FrameRoundRect") => PpcImportDispatcherTarget::FrameRoundRect,
+        ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
         ("InterfaceLib", "InvalRect") => PpcImportDispatcherTarget::InvalRect,
         ("InterfaceLib", "ValidRect") => PpcImportDispatcherTarget::ValidRect,
         ("InterfaceLib", "BeginUpdate") => PpcImportDispatcherTarget::BeginUpdate,
@@ -14936,6 +14950,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenPoly") => PpcImportDispatcherTarget::OpenPoly,
         ("InterfaceLib", "ClosePoly") => PpcImportDispatcherTarget::ClosePoly,
         ("InterfaceLib", "KillPoly") => PpcImportDispatcherTarget::KillPoly,
+        ("InterfaceLib", "FramePoly") => PpcImportDispatcherTarget::FramePoly,
+        ("InterfaceLib", "PaintPoly") => PpcImportDispatcherTarget::PaintPoly,
         ("InterfaceLib", "FillPoly") => PpcImportDispatcherTarget::FillPoly,
         ("InterfaceLib", "NewCWindow") => PpcImportDispatcherTarget::NewCWindow,
         ("InterfaceLib", "GetNewCWindow") => PpcImportDispatcherTarget::GetNewCWindow,
@@ -17995,16 +18011,20 @@ fn dispatch_supported_import(
                     quickdraw_fore_color.blue,
                 );
             }
-            let _ = ppc_paint_rect(
-                cpu,
-                memory,
-                gworlds,
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-                *quickdraw_back_color,
-                &toolbox_startup.quickdraw_pen_pattern,
-            );
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_rect(
+                    cpu,
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                    *quickdraw_back_color,
+                    &toolbox_startup.quickdraw_pen_pattern,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EraseRect => {
@@ -18020,7 +18040,9 @@ fn dispatch_supported_import(
                     quickdraw_back_color.blue,
                 );
             }
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,
@@ -18052,7 +18074,9 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FillRect | PpcImportDispatcherTarget::FillCRect => {
-            if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else if let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) {
                 let _ = ppc_paint_rect_bounds(
                     memory,
                     gworlds,
@@ -18067,6 +18091,10 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::FrameOval
         | PpcImportDispatcherTarget::PaintOval
         | PpcImportDispatcherTarget::EraseOval => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_oval(toolbox_startup, memory, cpu.gpr[3]);
+                return Some(PpcImportAction::ReturnPreserve);
+            }
             let color = if matches!(
                 binding.dispatcher_target,
                 PpcImportDispatcherTarget::EraseOval
@@ -18094,6 +18122,38 @@ fn dispatch_supported_import(
             );
             Some(PpcImportAction::ReturnPreserve)
         }
+        PpcImportDispatcherTarget::FrameArc | PpcImportDispatcherTarget::PaintArc => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_approximate_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_draw_arc(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                    matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::FrameArc
+                    ),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FrameRgn => {
+            let _ = ppc_frame_region(
+                memory,
+                gworlds,
+                *current_gworld,
+                cpu.gpr[3],
+                *quickdraw_fore_color,
+                quickdraw_fore_indices.get(current_gworld).copied(),
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
         PpcImportDispatcherTarget::PaintRgn | PpcImportDispatcherTarget::FillRgn => {
             let _ = ppc_paint_region(
                 memory,
@@ -18109,17 +18169,27 @@ fn dispatch_supported_import(
             let _ = ppc_invert_region(memory, gworlds, *current_gworld, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::FrameRoundRect => {
+        PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
             if toolbox_startup.open_region_port == *current_gworld {
-                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+                ppc_open_region_include_round_rect(
+                    toolbox_startup,
+                    memory,
+                    cpu.gpr[3],
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                );
             } else {
-                let _ = ppc_frame_round_rect(
+                let _ = ppc_draw_round_rect(
                     cpu,
                     memory,
                     gworlds,
                     *current_gworld,
                     *quickdraw_fore_color,
                     quickdraw_fore_indices.get(current_gworld).copied(),
+                    matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::FrameRoundRect
+                    ),
                 );
             }
             Some(PpcImportAction::ReturnPreserve)
@@ -18295,6 +18365,8 @@ fn dispatch_supported_import(
             ppc_close_rgn(
                 memory,
                 cpu.gpr[3],
+                heap_cursor,
+                heap_limit,
                 last_mem_error,
                 handles,
                 handle_states,
@@ -18392,7 +18464,18 @@ fn dispatch_supported_import(
             ppc_dispose_tracked_handle(polygon, memory, handles, handle_states);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::FillPoly => {
+        PpcImportDispatcherTarget::FramePoly => {
+            let _ = ppc_frame_polygon(
+                memory,
+                gworlds,
+                *current_gworld,
+                cpu.gpr[3],
+                *quickdraw_fore_color,
+                quickdraw_fore_indices.get(current_gworld).copied(),
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PaintPoly | PpcImportDispatcherTarget::FillPoly => {
             let _ = ppc_paint_polygon(
                 memory,
                 gworlds,
@@ -20748,9 +20831,10 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DrawControls => {
             // Inside Macintosh Volume I (1985), p. I-322: DrawControls draws
             // every visible control owned by the window. Dialog controls are
-            // represented by the live DITL in the native PPC HLE, and the
-            // shared dialog renderer walks that complete list in draw order.
-            let _ = ppc_draw_dialog(
+            // represented by the live DITL in the native PPC HLE; ordinary
+            // windows instead expose their controls through the WindowRecord.
+            let window = cpu.gpr[3];
+            let drew_dialog = ppc_draw_dialog(
                 memory,
                 handles,
                 controls,
@@ -20758,8 +20842,21 @@ fn dispatch_supported_import(
                 screen_clut,
                 vfs_resources,
                 *current_resource_refnum,
-                cpu.gpr[3],
+                window,
             );
+            if !drew_dialog {
+                for handle in ppc_window_control_handles(memory, window).into_iter().rev() {
+                    let _ = ppc_draw_control(
+                        memory,
+                        handles,
+                        controls,
+                        gworlds,
+                        vfs_resources,
+                        *current_resource_refnum,
+                        handle,
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ModalDialog => Some(ppc_modal_dialog(
@@ -48712,10 +48809,10 @@ fn ppc_draw_standard_window_frame(
             PPC_RGB_BLACK,
         ),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, color, None);
+        let _ = ppc_paint_rect_bounds_unclipped(memory, gworlds, window, rect, color, None);
     }
     if is_movable_dialog {
-        let _ = ppc_paint_rect_bounds(
+        let _ = ppc_paint_rect_bounds_unclipped(
             memory,
             gworlds,
             window,
@@ -48762,7 +48859,14 @@ fn ppc_draw_standard_window_frame(
                 close_left + 10,
             ),
         ] {
-            let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
+            let _ = ppc_paint_rect_bounds_unclipped(
+                memory,
+                gworlds,
+                window,
+                rect,
+                PPC_RGB_BLACK,
+                None,
+            );
         }
     }
 
@@ -48776,7 +48880,7 @@ fn ppc_draw_standard_window_frame(
         };
         for top in [-17, -15, -13] {
             if has_close_box {
-                let _ = ppc_paint_rect_bounds(
+                let _ = ppc_paint_rect_bounds_unclipped(
                     memory,
                     gworlds,
                     window,
@@ -48797,7 +48901,7 @@ fn ppc_draw_standard_window_frame(
                 if left >= right {
                     continue;
                 }
-                let _ = ppc_paint_rect_bounds(
+                let _ = ppc_paint_rect_bounds_unclipped(
                     memory,
                     gworlds,
                     window,
@@ -48899,7 +49003,7 @@ fn ppc_draw_dialog_box_frame(
         green: 0xcccc,
         blue: 0xcccc,
     };
-    let _ = ppc_paint_rect_bounds(
+    let _ = ppc_paint_rect_bounds_unclipped(
         memory,
         gworlds,
         window,
@@ -48915,7 +49019,14 @@ fn ppc_draw_dialog_box_frame(
         (0, -BORDER, height, 0),
         (0, width, height, outer_right),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, WINDOW_GRAY, None);
+        let _ = ppc_paint_rect_bounds_unclipped(
+            memory,
+            gworlds,
+            window,
+            rect,
+            WINDOW_GRAY,
+            None,
+        );
     }
     for rect in [
         (-BORDER, -BORDER, -BORDER + 1, outer_right),
@@ -48927,7 +49038,14 @@ fn ppc_draw_dialog_box_frame(
         (-1, -1, height + 1, 0),
         (-1, width, height + 1, width + 1),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
+        let _ = ppc_paint_rect_bounds_unclipped(
+            memory,
+            gworlds,
+            window,
+            rect,
+            PPC_RGB_BLACK,
+            None,
+        );
     }
 }
 
@@ -51199,6 +51317,26 @@ fn ppc_draw_oval(
     let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
         return false;
     };
+    ppc_draw_oval_bounds(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        color,
+        explicit_index,
+        frame_only,
+    )
+}
+
+fn ppc_draw_oval_bounds(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    frame_only: bool,
+) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
     };
@@ -51232,9 +51370,19 @@ fn ppc_draw_oval(
     let radius_y2 = height;
     let inner_radius_x2 = (width - 2 * pen_width).max(0);
     let inner_radius_y2 = (height - 2 * pen_height).max(0);
+    let (clip_storage, vis_storage) = ppc_quickdraw_port_region_storage(memory, current_gworld);
     let mut wrote = false;
     for y in top.max(0)..bottom.min(front_buffer.height as i32) {
         for x in left.max(0)..right.min(front_buffer.width as i32) {
+            if !ppc_quickdraw_point_in_port_regions(
+                surface,
+                clip_storage.as_deref(),
+                vis_storage.as_deref(),
+                x,
+                y,
+            ) {
+                continue;
+            }
             let dx2 = 2 * x + 1 - center_x2;
             let dy2 = 2 * y + 1 - center_y2;
             let outer = i64::from(dx2) * i64::from(dx2) * i64::from(radius_y2).pow(2)
@@ -51254,6 +51402,106 @@ fn ppc_draw_oval(
         }
     }
     wrote
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_draw_arc(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect_ptr: u32,
+    start_angle: i16,
+    arc_angle: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    frame_only: bool,
+) -> bool {
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0
+        || height <= 0
+        || arc_angle == 0
+        || !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16)
+    {
+        return false;
+    }
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+    let pen_height = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+            .unwrap_or(1),
+    )
+    .max(1);
+    let pen_width = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+            .unwrap_or(1),
+    )
+    .max(1);
+    let center_x2 = left * 2 + width;
+    let center_y2 = top * 2 + height;
+    let radius_x2 = width;
+    let radius_y2 = height;
+    let inner_radius_x2 = (width - 2 * pen_width).max(0);
+    let inner_radius_y2 = (height - 2 * pen_height).max(0);
+    let mut wrote = false;
+
+    // Imaging With QuickDraw (1994), pp. 3-71--3-75: zero degrees points
+    // straight up, and positive angles proceed clockwise. FrameArc draws the
+    // oval circumference while PaintArc draws the corresponding wedge.
+    for y in top.max(0)..bottom.min(front_buffer.height as i32) {
+        for x in left.max(0)..right.min(front_buffer.width as i32) {
+            let dx2 = 2 * x + 1 - center_x2;
+            let dy2 = 2 * y + 1 - center_y2;
+            let outer = i64::from(dx2) * i64::from(dx2) * i64::from(radius_y2).pow(2)
+                + i64::from(dy2) * i64::from(dy2) * i64::from(radius_x2).pow(2)
+                <= i64::from(radius_x2).pow(2) * i64::from(radius_y2).pow(2);
+            if !outer {
+                continue;
+            }
+            let angle = f64::from(dx2)
+                .atan2(-f64::from(dy2))
+                .to_degrees()
+                .rem_euclid(360.0);
+            if !ppc_angle_in_arc(angle, start_angle, arc_angle) {
+                continue;
+            }
+            let inner = inner_radius_x2 > 0
+                && inner_radius_y2 > 0
+                && i64::from(dx2) * i64::from(dx2) * i64::from(inner_radius_y2).pow(2)
+                    + i64::from(dy2) * i64::from(dy2) * i64::from(inner_radius_x2).pow(2)
+                    <= i64::from(inner_radius_x2).pow(2) * i64::from(inner_radius_y2).pow(2);
+            if !frame_only || !inner {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+            }
+        }
+    }
+    wrote
+}
+
+fn ppc_angle_in_arc(angle: f64, start_angle: i16, arc_angle: i16) -> bool {
+    let extent = i32::from(arc_angle);
+    if extent.abs() >= 360 {
+        return true;
+    }
+    let start = f64::from(start_angle).rem_euclid(360.0);
+    if extent > 0 {
+        (angle - start).rem_euclid(360.0) <= f64::from(extent)
+    } else {
+        (start - angle).rem_euclid(360.0) <= f64::from(-extent)
+    }
 }
 
 fn ppc_paint_region(
@@ -51291,6 +51539,69 @@ fn ppc_paint_region(
             {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
+        }
+    }
+    wrote
+}
+
+fn ppc_frame_region(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    region_handle: u32,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    let Some(storage) = ppc_region_storage(memory, region_handle) else {
+        return false;
+    };
+    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&storage) else {
+        return true;
+    };
+    let Some(rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+    let pen_height = i16::try_from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+            .unwrap_or(1)
+            .max(1),
+    )
+    .unwrap_or(i16::MAX);
+    let pen_width = i16::try_from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+            .unwrap_or(1)
+            .max(1),
+    )
+    .unwrap_or(i16::MAX);
+    let mut points = HashSet::new();
+    for (row, endpoints) in rows.iter().enumerate() {
+        let v = top.saturating_add(i16::try_from(row).unwrap_or(i16::MAX));
+        for interval in endpoints.chunks_exact(2) {
+            for h in interval[0]..interval[1] {
+                points.insert((h, v));
+            }
+        }
+    }
+    let mut wrote = false;
+    for &(h, v) in &points {
+        let boundary = !points.contains(&(h.saturating_sub(pen_width), v))
+            || !points.contains(&(h.saturating_add(pen_width), v))
+            || !points.contains(&(h, v.saturating_sub(pen_height)))
+            || !points.contains(&(h, v.saturating_add(pen_height)));
+        if boundary {
+            let (x, y) = surface.local_point((i32::from(h), i32::from(v)));
+            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
         }
     }
     wrote
@@ -51796,10 +52107,20 @@ fn ppc_paint_rect(
     let top = top.max(0).min(front_buffer.height as i32);
     let right = right.max(0).min(front_buffer.width as i32);
     let bottom = bottom.max(0).min(front_buffer.height as i32);
+    let (clip_storage, vis_storage) = ppc_quickdraw_port_region_storage(memory, current_gworld);
     let mut wrote = false;
     for y in top..bottom {
         let pattern_row = pattern[(y as usize) & 7];
         for x in left..right {
+            if !ppc_quickdraw_point_in_port_regions(
+                surface,
+                clip_storage.as_deref(),
+                vis_storage.as_deref(),
+                x,
+                y,
+            ) {
+                continue;
+            }
             let mask = 0x80 >> ((x as usize) & 7);
             let pixel = if pattern_row & mask != 0 {
                 fore_pixel
@@ -51812,6 +52133,66 @@ fn ppc_paint_rect(
     wrote
 }
 
+fn ppc_quickdraw_port_region_storage(
+    memory: &mut PpcSectionMem,
+    current_gworld: u32,
+) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    let clip_rgn = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .unwrap_or(0);
+    let vis_rgn = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .unwrap_or(0);
+    (
+        ppc_region_storage(memory, clip_rgn),
+        ppc_region_storage(memory, vis_rgn),
+    )
+}
+
+fn ppc_quickdraw_point_in_port_regions(
+    surface: PpcQuickDrawSurface,
+    clip_storage: Option<&[u8]>,
+    vis_storage: Option<&[u8]>,
+    x: i32,
+    y: i32,
+) -> bool {
+    let h = x.saturating_add(i32::from(surface.left));
+    let v = y.saturating_add(i32::from(surface.top));
+    let Some((h, v)) = i16::try_from(h).ok().zip(i16::try_from(v).ok()) else {
+        return false;
+    };
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-20--2-21:
+    // QuickDraw limits drawing to the intersection of visRgn and clipRgn.
+    vis_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+        && clip_storage.is_none_or(|storage| ppc_point_in_region_storage(storage, v, h))
+}
+
+fn ppc_quickdraw_simple_regions_contain_rect(
+    surface: PpcQuickDrawSurface,
+    clip_storage: Option<&[u8]>,
+    vis_storage: Option<&[u8]>,
+    top: i32,
+    left: i32,
+    bottom: i32,
+    right: i32,
+) -> bool {
+    let port_top = top.saturating_add(i32::from(surface.top));
+    let port_left = left.saturating_add(i32::from(surface.left));
+    let port_bottom = bottom.saturating_add(i32::from(surface.top));
+    let port_right = right.saturating_add(i32::from(surface.left));
+    [clip_storage, vis_storage].into_iter().all(|storage| {
+        storage.is_none_or(|storage| {
+            storage.len() == 10
+                && ppc_region_storage_bbox(storage).is_some_and(|(t, l, b, r)| {
+                    i32::from(t) <= port_top
+                        && i32::from(l) <= port_left
+                        && i32::from(b) >= port_bottom
+                        && i32::from(r) >= port_right
+                })
+        })
+    })
+}
+
 fn ppc_paint_rect_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -51819,6 +52200,45 @@ fn ppc_paint_rect_bounds(
     rect: (i16, i16, i16, i16),
     color: PpcRgbColor,
     explicit_index: Option<u8>,
+) -> bool {
+    ppc_paint_rect_bounds_impl(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        color,
+        explicit_index,
+        true,
+    )
+}
+
+fn ppc_paint_rect_bounds_unclipped(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    ppc_paint_rect_bounds_impl(
+        memory,
+        gworlds,
+        current_gworld,
+        rect,
+        color,
+        explicit_index,
+        false,
+    )
+}
+
+fn ppc_paint_rect_bounds_impl(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect: (i16, i16, i16, i16),
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+    honor_port_regions: bool,
 ) -> bool {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
         return false;
@@ -51842,6 +52262,20 @@ fn ppc_paint_rect_bounds(
     else {
         return false;
     };
+    let (clip_storage, vis_storage) = if honor_port_regions {
+        ppc_quickdraw_port_region_storage(memory, current_gworld)
+    } else {
+        (None, None)
+    };
+    let fully_visible = ppc_quickdraw_simple_regions_contain_rect(
+        surface,
+        clip_storage.as_deref(),
+        vis_storage.as_deref(),
+        top,
+        left,
+        bottom,
+        right,
+    );
     if matches!(front_buffer.depth, 1 | 2 | 4) {
         // Indexed pixels smaller than a byte share their storage byte with
         // neighboring pixels. Imaging With QuickDraw (1994), pp. 4-14--4-16,
@@ -51850,7 +52284,36 @@ fn ppc_paint_rect_bounds(
         let mut wrote = false;
         for y in top..bottom {
             for x in left..right {
-                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+                if fully_visible
+                    || ppc_quickdraw_point_in_port_regions(
+                        surface,
+                        clip_storage.as_deref(),
+                        vis_storage.as_deref(),
+                        x,
+                        y,
+                    )
+                {
+                    wrote |=
+                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+                }
+            }
+        }
+        return wrote;
+    }
+    if !fully_visible {
+        let mut wrote = false;
+        for y in top..bottom {
+            for x in left..right {
+                if ppc_quickdraw_point_in_port_regions(
+                    surface,
+                    clip_storage.as_deref(),
+                    vis_storage.as_deref(),
+                    x,
+                    y,
+                ) {
+                    wrote |=
+                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+                }
             }
         }
         return wrote;
@@ -52007,13 +52470,14 @@ fn ppc_frame_rect(
     wrote
 }
 
-fn ppc_frame_round_rect(
+fn ppc_draw_round_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     current_gworld: u32,
     color: PpcRgbColor,
     explicit_index: Option<u8>,
+    frame_only: bool,
 ) -> bool {
     let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
         return false;
@@ -52076,7 +52540,7 @@ fn ppc_frame_round_rect(
                     oval_width.saturating_sub(pen_width.saturating_mul(2)),
                     oval_height.saturating_sub(pen_height.saturating_mul(2)),
                 );
-            if outer && !inner {
+            if outer && (!frame_only || !inner) {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -63279,7 +63743,7 @@ fn ppc_control_part_at_point(
             let axis_start = if vertical { top } else { left };
             let axis_end = if vertical { bottom } else { right };
             let coordinate = if vertical { v } else { h };
-            let arrow = (axis_end - axis_start).min(16).max(1);
+            let arrow = (axis_end - axis_start).clamp(1, 16);
             if coordinate < axis_start.saturating_add(arrow) {
                 return Some(20);
             }
@@ -63366,6 +63830,249 @@ fn ppc_draw_control(
     )
 }
 
+fn ppc_draw_control_rect_frame(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    (top, left, bottom, right): (i16, i16, i16, i16),
+) -> bool {
+    if top >= bottom || left >= right {
+        return false;
+    }
+    let right_edge = right.saturating_sub(1);
+    let bottom_edge = bottom.saturating_sub(1);
+    let mut wrote = false;
+    for (start, end) in [
+        ((left, top), (right_edge, top)),
+        ((right_edge, top), (right_edge, bottom_edge)),
+        ((right_edge, bottom_edge), (left, bottom_edge)),
+        ((left, bottom_edge), (left, top)),
+    ] {
+        wrote |= ppc_line_to(memory, gworlds, owner, start, end, PPC_RGB_BLACK, None);
+    }
+    wrote
+}
+
+fn ppc_paint_control_track(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    rect: (i16, i16, i16, i16),
+) -> bool {
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, owner) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let Some(black) = ppc_quickdraw_surface_color_pixel(memory, surface, PPC_RGB_BLACK) else {
+        return false;
+    };
+    let Some(white) = ppc_quickdraw_surface_color_pixel(memory, surface, PPC_RGB_WHITE) else {
+        return false;
+    };
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let (clip_storage, vis_storage) = ppc_quickdraw_port_region_storage(memory, owner);
+    let mut wrote = false;
+    for y in top.max(0)..bottom.min(front_buffer.height as i32) {
+        for x in left.max(0)..right.min(front_buffer.width as i32) {
+            if ppc_quickdraw_point_in_port_regions(
+                surface,
+                clip_storage.as_deref(),
+                vis_storage.as_deref(),
+                x,
+                y,
+            ) {
+                let pixel = if (x ^ y) & 1 == 0 { black } else { white };
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), pixel);
+            }
+        }
+    }
+    wrote
+}
+
+fn ppc_draw_standard_scrollbar(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    owner: u32,
+    control: u32,
+    rect @ (top, left, bottom, right): (i16, i16, i16, i16),
+) -> bool {
+    let height = bottom.saturating_sub(top);
+    let width = right.saturating_sub(left);
+    if height <= 0 || width <= 0 {
+        return false;
+    }
+    let vertical = height >= width;
+    let cross_extent = if vertical { width } else { height };
+    let axis_start = if vertical { top } else { left };
+    let axis_end = if vertical { bottom } else { right };
+    let arrow_extent = cross_extent
+        .min(axis_end.saturating_sub(axis_start) / 2)
+        .max(1);
+    let track_start = axis_start.saturating_add(arrow_extent);
+    let track_end = axis_end.saturating_sub(arrow_extent);
+
+    let mut wrote = ppc_paint_rect_bounds(memory, gworlds, owner, rect, PPC_RGB_WHITE, None);
+    wrote |= ppc_draw_control_rect_frame(memory, gworlds, owner, rect);
+    let track_rect = if vertical {
+        (
+            track_start,
+            left.saturating_add(1),
+            track_end,
+            right.saturating_sub(1),
+        )
+    } else {
+        (
+            top.saturating_add(1),
+            track_start,
+            bottom.saturating_sub(1),
+            track_end,
+        )
+    };
+    wrote |= ppc_paint_control_track(memory, gworlds, owner, track_rect);
+
+    if vertical {
+        let center = left.saturating_add(width / 2);
+        let upper_base = top.saturating_add(arrow_extent.saturating_sub(4).max(3));
+        let lower_base = bottom.saturating_sub(arrow_extent.saturating_sub(4).max(3));
+        for offset in 0..4i16 {
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (
+                    center.saturating_sub(offset),
+                    upper_base.saturating_add(offset),
+                ),
+                (
+                    center.saturating_add(offset),
+                    upper_base.saturating_add(offset),
+                ),
+                PPC_RGB_BLACK,
+                None,
+            );
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (
+                    center.saturating_sub(offset),
+                    lower_base.saturating_sub(offset),
+                ),
+                (
+                    center.saturating_add(offset),
+                    lower_base.saturating_sub(offset),
+                ),
+                PPC_RGB_BLACK,
+                None,
+            );
+        }
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            owner,
+            (left, track_start),
+            (right.saturating_sub(1), track_start),
+            PPC_RGB_BLACK,
+            None,
+        );
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            owner,
+            (left, track_end.saturating_sub(1)),
+            (right.saturating_sub(1), track_end.saturating_sub(1)),
+            PPC_RGB_BLACK,
+            None,
+        );
+    } else {
+        let center = top.saturating_add(height / 2);
+        let left_base = left.saturating_add(arrow_extent.saturating_sub(4).max(3));
+        let right_base = right.saturating_sub(arrow_extent.saturating_sub(4).max(3));
+        for offset in 0..4i16 {
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (
+                    left_base.saturating_add(offset),
+                    center.saturating_sub(offset),
+                ),
+                (
+                    left_base.saturating_add(offset),
+                    center.saturating_add(offset),
+                ),
+                PPC_RGB_BLACK,
+                None,
+            );
+            wrote |= ppc_line_to(
+                memory,
+                gworlds,
+                owner,
+                (
+                    right_base.saturating_sub(offset),
+                    center.saturating_sub(offset),
+                ),
+                (
+                    right_base.saturating_sub(offset),
+                    center.saturating_add(offset),
+                ),
+                PPC_RGB_BLACK,
+                None,
+            );
+        }
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            owner,
+            (track_start, top),
+            (track_start, bottom.saturating_sub(1)),
+            PPC_RGB_BLACK,
+            None,
+        );
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            owner,
+            (track_end.saturating_sub(1), top),
+            (track_end.saturating_sub(1), bottom.saturating_sub(1)),
+            PPC_RGB_BLACK,
+            None,
+        );
+    }
+
+    let track_extent = track_end.saturating_sub(track_start).max(1);
+    let thumb_extent = 10.min(track_extent).max(1);
+    let min = memory
+        .read_u16_be(control + PPC_CONTROL_MIN_OFFSET)
+        .unwrap_or(0) as i16;
+    let max = memory
+        .read_u16_be(control + PPC_CONTROL_MAX_OFFSET)
+        .unwrap_or(0) as i16;
+    let value = memory
+        .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
+        .unwrap_or(0) as i16;
+    let range = i32::from(max).saturating_sub(i32::from(min));
+    let available = i32::from(track_extent.saturating_sub(thumb_extent));
+    let thumb_offset = if range == 0 {
+        0
+    } else {
+        i32::from(value.saturating_sub(min))
+            .clamp(0, range.abs())
+            .saturating_mul(available)
+            / range.abs()
+    };
+    let thumb_start = track_start.saturating_add(i16::try_from(thumb_offset).unwrap_or(0));
+    let thumb_end = thumb_start.saturating_add(thumb_extent);
+    let thumb_rect = if vertical {
+        (thumb_start, left, thumb_end, right)
+    } else {
+        (top, thumb_start, bottom, thumb_end)
+    };
+    wrote |= ppc_paint_rect_bounds(memory, gworlds, owner, thumb_rect, PPC_RGB_WHITE, None);
+    wrote |= ppc_draw_control_rect_frame(memory, gworlds, owner, thumb_rect);
+    wrote
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_draw_control_inner(
     memory: &mut PpcSectionMem,
@@ -63402,81 +64109,91 @@ fn ppc_draw_control_inner(
         0 => {
             frame_cpu.gpr[4] = 16;
             frame_cpu.gpr[5] = 16;
-            ppc_frame_round_rect(&frame_cpu, memory, gworlds, owner, PPC_RGB_BLACK, None)
+            ppc_draw_round_rect(
+                &frame_cpu,
+                memory,
+                gworlds,
+                owner,
+                PPC_RGB_BLACK,
+                None,
+                true,
+            )
         }
-        1 => {
+        1 | 2 => {
             // Macintosh Toolbox Essentials (1992), pp. 5-15--5-16: the
-            // standard checkbox CDEF draws a compact indicator at the left
-            // of the control title and marks it when contrlValue is nonzero.
+            // standard checkbox and radio-button CDEFs draw compact indicators
+            // at the left of the control title and mark nonzero values.
             let indicator_size = 12.min(bottom.saturating_sub(top).max(1));
             let box_top =
                 top.saturating_add(bottom.saturating_sub(top).saturating_sub(indicator_size) / 2);
             let box_bottom = box_top.saturating_add(indicator_size);
             let box_right = left.saturating_add(indicator_size);
-            let mut wrote = ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (left, box_top),
-                (box_right.saturating_sub(1), box_top),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_right.saturating_sub(1), box_top),
-                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (box_right.saturating_sub(1), box_bottom.saturating_sub(1)),
-                (left, box_bottom.saturating_sub(1)),
-                PPC_RGB_BLACK,
-                None,
-            );
-            wrote |= ppc_line_to(
-                memory,
-                gworlds,
-                owner,
-                (left, box_bottom.saturating_sub(1)),
-                (left, box_top),
-                PPC_RGB_BLACK,
-                None,
-            );
+            let mut wrote = if proc_id == 1 {
+                ppc_draw_control_rect_frame(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_top, left, box_bottom, box_right),
+                )
+            } else {
+                ppc_draw_oval_bounds(
+                    memory,
+                    gworlds,
+                    owner,
+                    (box_top, left, box_bottom, box_right),
+                    PPC_RGB_BLACK,
+                    None,
+                    true,
+                )
+            };
             if memory
                 .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
                 .unwrap_or(0)
                 != 0
             {
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (
-                        left.saturating_add(2),
-                        box_top.saturating_add(indicator_size / 2),
-                    ),
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-                wrote |= ppc_line_to(
-                    memory,
-                    gworlds,
-                    owner,
-                    (left.saturating_add(5), box_bottom.saturating_sub(3)),
-                    (box_right.saturating_sub(2), box_top.saturating_add(2)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
+                if proc_id == 1 {
+                    wrote |= ppc_line_to(
+                        memory,
+                        gworlds,
+                        owner,
+                        (
+                            left.saturating_add(2),
+                            box_top.saturating_add(indicator_size / 2),
+                        ),
+                        (left.saturating_add(5), box_bottom.saturating_sub(3)),
+                        PPC_RGB_BLACK,
+                        None,
+                    );
+                    wrote |= ppc_line_to(
+                        memory,
+                        gworlds,
+                        owner,
+                        (left.saturating_add(5), box_bottom.saturating_sub(3)),
+                        (box_right.saturating_sub(2), box_top.saturating_add(2)),
+                        PPC_RGB_BLACK,
+                        None,
+                    );
+                } else {
+                    wrote |= ppc_draw_oval_bounds(
+                        memory,
+                        gworlds,
+                        owner,
+                        (
+                            box_top.saturating_add(3),
+                            left.saturating_add(3),
+                            box_bottom.saturating_sub(3),
+                            box_right.saturating_sub(3),
+                        ),
+                        PPC_RGB_BLACK,
+                        None,
+                        false,
+                    );
+                }
             }
             wrote
+        }
+        16 => {
+            ppc_draw_standard_scrollbar(memory, gworlds, owner, control, (top, left, bottom, right))
         }
         1008..=1023 => {
             // The standard pop-up CDEF is resource ID 63, whose proc IDs
@@ -72139,22 +72856,10 @@ fn ppc_set_port_origin(memory: &mut PpcSectionMem, port: u32, h: i16, v: i16) ->
     )
 }
 
-fn ppc_open_region_include_point(startup: &mut PpcToolboxStartupState, h: i16, v: i16) {
-    startup.open_region_bounds = Some(match startup.open_region_bounds {
-        Some((top, left, bottom, right)) => (top.min(v), left.min(h), bottom.max(v), right.max(h)),
-        None => (v, h, v, h),
-    });
-}
-
-fn ppc_open_region_include_rect(
+fn ppc_open_region_include_bounds(
     startup: &mut PpcToolboxStartupState,
-    memory: &mut PpcSectionMem,
-    rect_ptr: u32,
+    (rect_top, rect_left, rect_bottom, rect_right): (i16, i16, i16, i16),
 ) {
-    let Some((rect_top, rect_left, rect_bottom, rect_right)) = ppc_read_rect(memory, rect_ptr)
-    else {
-        return;
-    };
     startup.open_region_bounds = Some(match startup.open_region_bounds {
         Some((top, left, bottom, right)) => (
             top.min(rect_top),
@@ -72164,6 +72869,168 @@ fn ppc_open_region_include_rect(
         ),
         None => (rect_top, rect_left, rect_bottom, rect_right),
     });
+}
+
+fn ppc_open_region_include_storage(startup: &mut PpcToolboxStartupState, storage: Vec<u8>) {
+    if !startup.open_region_geometry_exact {
+        return;
+    }
+    startup.open_region_storage = match startup.open_region_storage.take() {
+        Some(current) => {
+            match ppc_region_boolean_storage(&current, &storage, PpcRegionBooleanOp::Union) {
+                Some(combined) => Some(combined),
+                None => {
+                    startup.open_region_geometry_exact = false;
+                    None
+                }
+            }
+        }
+        None => Some(storage),
+    };
+}
+
+fn ppc_rect_region_storage((top, left, bottom, right): (i16, i16, i16, i16)) -> Option<Vec<u8>> {
+    if bottom <= top || right <= left {
+        return ppc_region_storage_from_rows(0, &[]);
+    }
+    let mut storage = Vec::with_capacity(10);
+    storage.extend_from_slice(&10u16.to_be_bytes());
+    for value in [top, left, bottom, right] {
+        storage.extend_from_slice(&value.to_be_bytes());
+    }
+    Some(storage)
+}
+
+fn ppc_shape_region_storage(
+    (top, left, bottom, right): (i16, i16, i16, i16),
+    mut contains: impl FnMut(i16, i16) -> bool,
+) -> Option<Vec<u8>> {
+    if bottom <= top || right <= left {
+        return ppc_region_storage_from_rows(0, &[]);
+    }
+    let height = usize::try_from(i32::from(bottom) - i32::from(top)).ok()?;
+    let mut rows = Vec::with_capacity(height);
+    for v32 in i32::from(top)..i32::from(bottom) {
+        let v = i16::try_from(v32).ok()?;
+        let mut endpoints = Vec::new();
+        let mut inside = false;
+        for h32 in i32::from(left)..i32::from(right) {
+            let h = i16::try_from(h32).ok()?;
+            let point_inside = contains(h, v);
+            if point_inside != inside {
+                endpoints.push(h);
+                inside = point_inside;
+            }
+        }
+        if inside {
+            endpoints.push(right);
+        }
+        rows.push(endpoints);
+    }
+    ppc_region_storage_from_rows(top, &rows)
+}
+
+fn ppc_open_region_include_point(startup: &mut PpcToolboxStartupState, h: i16, v: i16) {
+    ppc_open_region_include_bounds(startup, (v, h, v, h));
+    // A sequence of line endpoints must be closed and scan-converted as a
+    // path. Until that representation is available, retain the prior safe
+    // bounding-region fallback instead of silently dropping line geometry.
+    startup.open_region_geometry_exact = false;
+    startup.open_region_storage = None;
+}
+
+fn ppc_open_region_include_rect(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+) {
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
+        return;
+    };
+    ppc_open_region_include_bounds(startup, rect);
+    if let Some(storage) = ppc_rect_region_storage(rect) {
+        ppc_open_region_include_storage(startup, storage);
+    }
+}
+
+fn ppc_open_region_include_approximate_rect(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+) {
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
+        return;
+    };
+    ppc_open_region_include_bounds(startup, rect);
+    startup.open_region_geometry_exact = false;
+    startup.open_region_storage = None;
+}
+
+fn ppc_open_region_include_oval(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+) {
+    let Some(rect @ (top, left, bottom, right)) = ppc_read_rect(memory, rect_ptr) else {
+        return;
+    };
+    ppc_open_region_include_bounds(startup, rect);
+    let width = f64::from(i32::from(right) - i32::from(left));
+    let height = f64::from(i32::from(bottom) - i32::from(top));
+    let center_h2 = i32::from(left)
+        .saturating_mul(2)
+        .saturating_add(i32::from(right) - i32::from(left));
+    let center_v2 = i32::from(top)
+        .saturating_mul(2)
+        .saturating_add(i32::from(bottom) - i32::from(top));
+    // Imaging With QuickDraw (1994), pp. 3-88--3-90: shape calls between
+    // OpenRgn and CloseRgn define the enclosed mathematical region, not just
+    // its bounding box. Scan-convert the oval so later Boolean and clip
+    // operations preserve its curved boundary.
+    let storage = (width > 0.0 && height > 0.0).then(|| {
+        ppc_shape_region_storage(rect, |h, v| {
+            let dh = f64::from(i32::from(h).saturating_mul(2) + 1 - center_h2) / width;
+            let dv = f64::from(i32::from(v).saturating_mul(2) + 1 - center_v2) / height;
+            dh.mul_add(dh, dv * dv) <= 1.0
+        })
+    });
+    if let Some(Some(storage)) = storage {
+        ppc_open_region_include_storage(startup, storage);
+    } else {
+        startup.open_region_geometry_exact = false;
+        startup.open_region_storage = None;
+    }
+}
+
+fn ppc_open_region_include_round_rect(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    rect_ptr: u32,
+    oval_width: i16,
+    oval_height: i16,
+) {
+    let Some(rect @ (top, left, bottom, right)) = ppc_read_rect(memory, rect_ptr) else {
+        return;
+    };
+    ppc_open_region_include_bounds(startup, rect);
+    let storage = ppc_shape_region_storage(rect, |h, v| {
+        ppc_point_in_rounded_rect(
+            i32::from(h),
+            i32::from(v),
+            i32::from(left),
+            i32::from(top),
+            i32::from(right),
+            i32::from(bottom),
+            i32::from(oval_width.max(0)),
+            i32::from(oval_height.max(0)),
+        )
+    });
+    if let Some(storage) = storage {
+        ppc_open_region_include_storage(startup, storage);
+    } else {
+        startup.open_region_geometry_exact = false;
+        startup.open_region_storage = None;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -72190,11 +73057,15 @@ fn ppc_open_rgn(
         startup.open_region_port = 0;
         startup.open_region_save_handle = 0;
         startup.open_region_bounds = None;
+        startup.open_region_storage = None;
+        startup.open_region_geometry_exact = false;
         return;
     }
     startup.open_region_port = current_gworld;
     startup.open_region_save_handle = save_handle;
     startup.open_region_bounds = None;
+    startup.open_region_storage = None;
+    startup.open_region_geometry_exact = true;
 
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 3-88--3-89:
     // OpenRgn installs temporary rgnSave state in the current port and calls
@@ -72217,25 +73088,57 @@ fn ppc_open_rgn(
     *last_mem_error = PPC_NO_ERR;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ppc_close_rgn(
     memory: &mut PpcSectionMem,
     destination: u32,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     startup: &mut PpcToolboxStartupState,
 ) {
-    let result = match startup.open_region_bounds {
-        Some((top, left, bottom, right)) if bottom > top && right > left => {
-            ppc_write_rgn_bbox(memory, destination, top, left, bottom, right)
-        }
-        _ => ppc_set_empty_rgn(memory, destination),
-    };
-    *last_mem_error = if result.is_some() {
-        PPC_NO_ERR
+    let result = if startup.open_region_geometry_exact {
+        startup
+            .open_region_storage
+            .as_deref()
+            .map(|storage| {
+                ppc_write_region_storage(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    destination,
+                    storage,
+                )
+            })
+            .unwrap_or_else(|| {
+                if ppc_set_empty_rgn(memory, destination).is_some() {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            })
     } else {
-        PPC_PARAM_ERR
+        match startup.open_region_bounds {
+            Some((top, left, bottom, right)) if bottom > top && right > left => {
+                if ppc_write_rgn_bbox(memory, destination, top, left, bottom, right).is_some() {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            }
+            _ => {
+                if ppc_set_empty_rgn(memory, destination).is_some() {
+                    PPC_NO_ERR
+                } else {
+                    PPC_PARAM_ERR
+                }
+            }
+        }
     };
+    *last_mem_error = result;
 
     let port = startup.open_region_port;
     if port != 0 {
@@ -72261,6 +73164,8 @@ fn ppc_close_rgn(
     startup.open_region_port = 0;
     startup.open_region_save_handle = 0;
     startup.open_region_bounds = None;
+    startup.open_region_storage = None;
+    startup.open_region_geometry_exact = false;
 }
 
 fn ppc_bitmap_to_region(
@@ -72792,6 +73697,40 @@ fn ppc_write_region_storage(
     PPC_NO_ERR
 }
 
+fn ppc_region_boolean_storage(
+    storage_a: &[u8],
+    storage_b: &[u8],
+    operation: PpcRegionBooleanOp,
+) -> Option<Vec<u8>> {
+    let bbox_a = ppc_region_storage_bbox(storage_a);
+    let bbox_b = ppc_region_storage_bbox(storage_b);
+    let band = match operation {
+        PpcRegionBooleanOp::Intersection => match (bbox_a, bbox_b) {
+            (Some(a), Some(b)) if a.2.min(b.2) > a.0.max(b.0) => Some((a.0.max(b.0), a.2.min(b.2))),
+            _ => None,
+        },
+        PpcRegionBooleanOp::Difference => bbox_a.map(|a| (a.0, a.2)),
+        PpcRegionBooleanOp::Union | PpcRegionBooleanOp::Xor => match (bbox_a, bbox_b) {
+            (Some(a), Some(b)) => Some((a.0.min(b.0), a.2.max(b.2))),
+            (Some(a), None) => Some((a.0, a.2)),
+            (None, Some(b)) => Some((b.0, b.2)),
+            (None, None) => None,
+        },
+    };
+    if let Some((top, bottom)) = band {
+        let rows_a = ppc_region_rows_for_band(storage_a, top, bottom)?;
+        let rows_b = ppc_region_rows_for_band(storage_b, top, bottom)?;
+        let rows = rows_a
+            .iter()
+            .zip(&rows_b)
+            .map(|(lhs, rhs)| ppc_region_combine_rows(lhs, rhs, operation))
+            .collect::<Vec<_>>();
+        ppc_region_storage_from_rows(top, &rows)
+    } else {
+        ppc_region_storage_from_rows(0, &[])
+    }
+}
+
 fn ppc_region_boolean_op(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -72812,39 +73751,8 @@ fn ppc_region_boolean_op(
     let Some(storage_b) = ppc_region_storage(memory, src_b) else {
         return PPC_PARAM_ERR;
     };
-    let bbox_a = ppc_region_storage_bbox(&storage_a);
-    let bbox_b = ppc_region_storage_bbox(&storage_b);
-    let band = match operation {
-        PpcRegionBooleanOp::Intersection => match (bbox_a, bbox_b) {
-            (Some(a), Some(b)) if a.2.min(b.2) > a.0.max(b.0) => Some((a.0.max(b.0), a.2.min(b.2))),
-            _ => None,
-        },
-        PpcRegionBooleanOp::Difference => bbox_a.map(|a| (a.0, a.2)),
-        PpcRegionBooleanOp::Union | PpcRegionBooleanOp::Xor => match (bbox_a, bbox_b) {
-            (Some(a), Some(b)) => Some((a.0.min(b.0), a.2.max(b.2))),
-            (Some(a), None) => Some((a.0, a.2)),
-            (None, Some(b)) => Some((b.0, b.2)),
-            (None, None) => None,
-        },
-    };
-    let output = if let Some((top, bottom)) = band {
-        let Some(rows_a) = ppc_region_rows_for_band(&storage_a, top, bottom) else {
-            return PPC_PARAM_ERR;
-        };
-        let Some(rows_b) = ppc_region_rows_for_band(&storage_b, top, bottom) else {
-            return PPC_PARAM_ERR;
-        };
-        let rows = rows_a
-            .iter()
-            .zip(&rows_b)
-            .map(|(lhs, rhs)| ppc_region_combine_rows(lhs, rhs, operation))
-            .collect::<Vec<_>>();
-        let Some(output) = ppc_region_storage_from_rows(top, &rows) else {
-            return PPC_MEM_FULL_ERR;
-        };
-        output
-    } else {
-        vec![0, 10, 0, 0, 0, 0, 0, 0, 0, 0]
+    let Some(output) = ppc_region_boolean_storage(&storage_a, &storage_b, operation) else {
+        return PPC_MEM_FULL_ERR;
     };
     ppc_write_region_storage(memory, heap_cursor, heap_limit, handles, dst, &output)
 }
@@ -73161,6 +74069,32 @@ fn ppc_paint_polygon(
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
+    }
+    wrote
+}
+
+fn ppc_frame_polygon(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    handle: u32,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    let Some(points) = ppc_polygon_points(memory, handle).filter(|points| points.len() >= 2) else {
+        return false;
+    };
+    let mut wrote = false;
+    for index in 0..points.len() {
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            current_gworld,
+            points[index],
+            points[(index + 1) % points.len()],
+            color,
+            explicit_index,
+        );
     }
     wrote
 }
@@ -87542,6 +88476,218 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn draw_controls_paints_visible_controls_in_an_ordinary_window() {
+        let pef = synthetic_pef_with_import(b"DrawControls");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let handle = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 120),
+            b"Run",
+            true,
+            0,
+            0,
+            1,
+            0,
+            0,
+        );
+        assert_ne!(handle, 0);
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 140),
+            PPC_RGB_WHITE,
+            None,
+        ));
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        loaded.cpu.gpr[3] = PPC_MAIN_GWORLD;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (70, 10)),
+            Some(black)
+        );
+    }
+
+    #[test]
+    fn standard_radio_and_scrollbar_controls_draw_state_and_parts() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let radio = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (10, 20, 30, 180),
+            b"Choice",
+            true,
+            1,
+            0,
+            1,
+            2,
+            0,
+        );
+        let scrollbar = ppc_new_control_record_values(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.controls,
+            PPC_MAIN_GWORLD,
+            (40, 20, 56, 180),
+            b"",
+            true,
+            50,
+            0,
+            100,
+            16,
+            0,
+        );
+        assert_ne!(radio, 0);
+        assert_ne!(scrollbar, 0);
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 70, 200),
+            PPC_RGB_WHITE,
+            None,
+        ));
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+
+        assert!(ppc_draw_control(
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
+            radio,
+        ));
+        assert!(ppc_draw_control(
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.controls,
+            &loaded.gworlds,
+            &loaded.vfs_resources,
+            loaded.current_resource_refnum,
+            scrollbar,
+        ));
+
+        let front = surface.front_buffer;
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (26, 20)),
+            Some(black),
+            "selected radio button should have a filled center"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (20, 14)),
+            Some(white),
+            "radio indicator should be oval rather than rectangular"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (32, 48)),
+            Some(black),
+            "scrollbar should draw its leading arrow"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (99, 40)),
+            Some(black),
+            "scrollbar should frame a value-positioned thumb"
+        );
+    }
+
+    #[test]
+    fn patterned_paint_rect_honors_clip_and_visibility_regions() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let surface =
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, PPC_MAIN_GWORLD)
+                .unwrap();
+        let black =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
+        assert!(ppc_paint_rect_bounds(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            (0, 0, 40, 40),
+            PPC_RGB_WHITE,
+            None,
+        ));
+        let clip_rgn = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_CLIP_RGN_OFFSET)
+            .unwrap();
+        let vis_rgn = loaded
+            .memory
+            .read_u32_be(PPC_MAIN_GWORLD + PPC_CGRAF_PORT_VIS_RGN_OFFSET)
+            .unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, clip_rgn, 10, 10, 30, 30).unwrap();
+        ppc_write_rgn_bbox(&mut loaded.memory, vis_rgn, 15, 5, 25, 35).unwrap();
+        let rect = ppc_heap_alloc(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            8,
+            true,
+        );
+        ppc_write_rect(&mut loaded.memory, rect, 5, 5, 35, 35).unwrap();
+        let mut cpu = PpcCpu::new();
+        cpu.gpr[3] = rect;
+
+        assert!(ppc_paint_rect(
+            &cpu,
+            &mut loaded.memory,
+            &loaded.gworlds,
+            PPC_MAIN_GWORLD,
+            PPC_RGB_BLACK,
+            None,
+            PPC_RGB_WHITE,
+            &[0xaa; 8],
+        ));
+
+        let front = surface.front_buffer;
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (16, 16)),
+            Some(black),
+            "a patterned foreground pixel inside both regions should draw"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (12, 12)),
+            Some(white),
+            "clip-only pixels outside visRgn must remain unchanged"
+        );
+        assert_eq!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (8, 16)),
+            Some(white),
+            "visRgn-only pixels outside clipRgn must remain unchanged"
+        );
+    }
+
+    #[test]
     fn classic_control_hit_testing_and_disposal_follow_the_window_list() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
         let scratch = ppc_heap_alloc(
@@ -89341,14 +90487,21 @@ pub(crate) mod tests {
             ("FrameOval", PpcImportDispatcherTarget::FrameOval),
             ("PaintOval", PpcImportDispatcherTarget::PaintOval),
             ("EraseOval", PpcImportDispatcherTarget::EraseOval),
+            ("FrameArc", PpcImportDispatcherTarget::FrameArc),
+            ("PaintArc", PpcImportDispatcherTarget::PaintArc),
+            ("FrameRgn", PpcImportDispatcherTarget::FrameRgn),
             ("PaintRgn", PpcImportDispatcherTarget::PaintRgn),
             ("FillRgn", PpcImportDispatcherTarget::FillRgn),
             ("InvertRgn", PpcImportDispatcherTarget::InvertRgn),
+            ("FrameRoundRect", PpcImportDispatcherTarget::FrameRoundRect),
+            ("PaintRoundRect", PpcImportDispatcherTarget::PaintRoundRect),
             ("PtInRgn", PpcImportDispatcherTarget::PtInRgn),
             ("RectInRgn", PpcImportDispatcherTarget::RectInRgn),
             ("OpenPoly", PpcImportDispatcherTarget::OpenPoly),
             ("ClosePoly", PpcImportDispatcherTarget::ClosePoly),
             ("KillPoly", PpcImportDispatcherTarget::KillPoly),
+            ("FramePoly", PpcImportDispatcherTarget::FramePoly),
+            ("PaintPoly", PpcImportDispatcherTarget::PaintPoly),
             ("FillPoly", PpcImportDispatcherTarget::FillPoly),
         ] {
             assert_eq!(
@@ -142398,6 +143551,8 @@ pub(crate) mod tests {
         ppc_close_rgn(
             &mut loaded.memory,
             destination,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.handle_states,
@@ -142422,6 +143577,58 @@ pub(crate) mod tests {
             Some(0)
         );
         assert_eq!(loaded.toolbox_startup.open_region_port, 0);
+    }
+
+    #[test]
+    fn open_and_close_rgn_preserve_captured_oval_geometry() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let destination = ppc_new_rgn(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+        );
+        let rect = ppc_heap_alloc(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            8,
+            true,
+        );
+        ppc_write_rect(&mut loaded.memory, rect, 20, 10, 70, 110).unwrap();
+
+        ppc_open_rgn(
+            &mut loaded.memory,
+            PPC_MAIN_GWORLD,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.handle_states,
+            &mut loaded.toolbox_startup,
+        );
+        ppc_open_region_include_oval(&mut loaded.toolbox_startup, &mut loaded.memory, rect);
+        ppc_close_rgn(
+            &mut loaded.memory,
+            destination,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.last_mem_error,
+            &mut loaded.handles,
+            &mut loaded.handle_states,
+            &mut loaded.toolbox_startup,
+        );
+
+        let storage = ppc_region_storage(&mut loaded.memory, destination).unwrap();
+        assert!(
+            storage.len() > 10,
+            "an oval must not collapse to its bounds"
+        );
+        assert_eq!(ppc_region_storage_bbox(&storage), Some((20, 10, 70, 110)));
+        assert!(ppc_point_in_region_storage(&storage, 45, 60));
+        assert!(ppc_point_in_region_storage(&storage, 45, 10));
+        assert!(!ppc_point_in_region_storage(&storage, 20, 10));
     }
 
     #[test]

@@ -3754,7 +3754,10 @@ impl super::TrapDispatcher {
             //   VAR whichControl: ControlHandle): INTEGER;
             // Inside Macintosh Volume I, I-334
             // Stack: SP+0=whichControl(4), SP+4=theWindow(4), SP+8=thePt(4), SP+12=result(2)
-            // FindControl ($A96C): Walks window's control list, checks visibility and hilite, hit-tests point against contrlRect, returns part code and control handle
+            // FindControl ($A96C): Walks the window's control list, checks
+            // visibility and hilite, and returns the standard CDEF part code
+            // together with the control handle. Macintosh Toolbox Essentials
+            // (1992), pp. 5-32 to 5-34.
             (true, 0x16C) => {
                 let sp = cpu.read_reg(Register::A7);
                 let which_ctrl_ptr = bus.read_long(sp);
@@ -3789,13 +3792,19 @@ impl super::TrapDispatcher {
 
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
-                                found_handle = ctrl_handle;
-                                // Return part code 10 (kControlButtonPart) for
-                                // simple button controls. The proper approach
-                                // would call the CDEF's testCntl, but for HLE
-                                // we return a generic hit indicator.
-                                found_part = 10;
-                                break;
+                                let proc_id =
+                                    self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                                let part = match proc_id {
+                                    16 => self.standard_scrollbar_testcontrol_part_code(
+                                        bus, ctrl_ptr, pt_v, pt_h,
+                                    ),
+                                    _ => self.standard_testcontrol_part_code(ctrl_ptr),
+                                };
+                                if part != 0 {
+                                    found_handle = ctrl_handle;
+                                    found_part = part;
+                                    break;
+                                }
                             }
                         }
 
@@ -6472,6 +6481,42 @@ mod tests {
         assert_eq!(bus.read_long(which_ctrl_out), ctrl_handle);
         assert_eq!(bus.read_word(sp + 12), 10);
         assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+    }
+
+    #[test]
+    fn findcontrol_returns_standard_scrollbar_part_codes() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = 0x300000u32;
+        let window_ptr = bus.alloc(200);
+        let which_ctrl_out = bus.alloc(4);
+        let (scroll_handle, scroll_ptr) =
+            alloc_scrollbar_control(&mut disp, &mut bus, (60, 240, 220, 256), 255, 0, 40, 0, 100);
+        bus.write_long(scroll_ptr, 0);
+        bus.write_long(window_ptr + 140, scroll_handle);
+
+        for (pt_v, pt_h, expected) in [
+            (70i16, 248i16, 20u16),
+            (95, 248, 22),
+            (126, 248, 129),
+            (150, 248, 23),
+            (210, 248, 21),
+        ] {
+            cpu.write_reg(Register::A7, sp);
+            bus.write_long(which_ctrl_out, 0);
+            bus.write_long(sp, which_ctrl_out);
+            bus.write_long(sp + 4, window_ptr);
+            bus.write_word(sp + 8, pt_v as u16);
+            bus.write_word(sp + 10, pt_h as u16);
+            bus.write_word(sp + 12, 0xBEEF);
+
+            disp.dispatch_control(true, 0x16C, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(bus.read_long(which_ctrl_out), scroll_handle);
+            assert_eq!(bus.read_word(sp + 12), expected);
+            assert_eq!(cpu.read_reg(Register::A7), sp + 12);
+        }
     }
 
     #[test]

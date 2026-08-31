@@ -198,9 +198,15 @@ launched archive under `.systemless/saves/<archive-name>/`.
 cargo build --release
 cargo test --lib
 cargo test --lib --features test-support   # also covers scripted_traces
+cargo test --no-default-features --test toolbox_showcase
 cargo check --no-default-features
 cargo package
 ```
+
+The Toolbox showcase integration fixture is a reproducible fat 68K/PowerPC
+application. Its [fixture README](tests/fixtures/toolbox-showcase/README.md)
+documents the source, MPW-in-Docker rebuild, interactive pages, and emulator
+oracle pass.
 
 The off-by-default `test-support` feature exposes `scripted_traces`, the
 deterministic trap-replay test scaffolding. It is kept out of the published
