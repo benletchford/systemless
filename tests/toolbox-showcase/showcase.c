@@ -1,7 +1,14 @@
 /*
- * One Toolbox application built unchanged for 68K and native PowerPC.
- * Its menu checkmarks expose deterministic state to automated runners while
- * the window remains useful for human inspection on a classic Macintosh.
+ * Toolbox Showcase: Classic Macintosh Fat-App Fixture.
+ * Compiled unchanged for 68K and native PowerPC.
+ *
+ * Exercises standard Macintosh Toolbox subsystems:
+ * - Window Manager & Event Manager (Macintosh Toolbox Essentials ch 2, 4)
+ * - Menu Manager & Hierarchical Submenus (Macintosh Toolbox Essentials ch 3)
+ * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
+ * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
+ * - QuickDraw Geometry, Arcs, Polygons, Regions, PICT, Icons & 3D Bevels
+ *   (Imaging With QuickDraw ch 3, 4, 7, 8)
  */
 
 #include <Controls.h>
@@ -17,38 +24,131 @@
 #include <ToolUtils.h>
 #include <Windows.h>
 
+#if defined(__POWERPC__) || defined(powerc) || defined(PowerPC) || defined(__powerc)
+#define SHOWCASE_TARGET_PPC 1
+#endif
+
+#ifdef SHOWCASE_TARGET_PPC
+#include <QD3D.h>
+#include <QD3DCamera.h>
+#include <QD3DDrawContext.h>
+#include <QD3DGeometry.h>
+#include <QD3DGroup.h>
+#include <QD3DLight.h>
+#include <QD3DRenderer.h>
+#include <QD3DShader.h>
+#include <QD3DStyle.h>
+#include <QD3DTransform.h>
+#include <QD3DSet.h>
+#endif
+
 #define rMenuBar 128
 #define rMainWindow 128
+#define rPrefDialog 129
+#define rAboutAlert 130
+#define rShowcaseIcon 128
 
 #define mApple 128
 #define mPages 129
 #define mState 130
 #define mFile 131
+#define mOptions 132
 
+#define mDifficulty 140
+#define mSoundMenu 141
+#define mRendererMenu 142
+
+/* Pages menu items */
 #define iGraphics 1
 #define iControls 2
 #define iWindows 3
+#define iDrawing 4
+#define iPreferences 5
+#define iDialogs 6
 
+/* State menu items */
 #define iButtonState 1
 #define iCheckboxState 2
 #define iScrollbarState 3
 #define iWindowState 4
 
-#define iQuit 1
+/* Options menu items */
+#define iOptDifficulty 1
+#define iOptSound 2
+#define iOptRenderer 3
+#define iOptResetPrefs 5
+#define iOptLaunchDialog 6
 
+/* Difficulty submenu items */
+#define iDiffEasy 1
+#define iDiffNormal 2
+#define iDiffHard 3
+
+/* Sound submenu items */
+#define iSndMute 1
+#define iSndFXOnly 2
+#define iSndMusicOnly 3
+#define iSndFull 4
+
+/* Renderer submenu items */
+#define iRendFlat 1
+#define iRendBevel 2
+#define iRendContrast 3
+
+/* File menu items */
+#define iFilePrefs 1
+#define iQuit 4
+
+/* Apple menu items */
+#define iAbout 1
+
+/* Page indices */
 #define pageGraphics 1
 #define pageControls 2
 #define pageWindows 3
+#define pageDrawing 4
+#define pagePreferences 5
+#define pageDialogs 6
 
 static QDGlobals qd;
 static WindowPtr gMainWindow;
 static WindowPtr gAuxWindow;
+
+/* Page 2: Controls */
 static ControlHandle gButton;
 static ControlHandle gCheckbox;
 static ControlHandle gScrollbar;
+
+/* Page 5: Game Preferences Controls */
+static ControlHandle gPrefSndFX;
+static ControlHandle gPrefMusic;
+static ControlHandle gPrefVolume;
+static ControlHandle gPrefDiffEasy;
+static ControlHandle gPrefDiffNormal;
+static ControlHandle gPrefDiffHard;
+static ControlHandle gPrefRendFlat;
+static ControlHandle gPrefRendBevel;
+static ControlHandle gPrefRendContrast;
+static ControlHandle gPrefBtnApply;
+static ControlHandle gPrefBtnReset;
+static ControlHandle gPrefBtnModal;
+
+/* Page 6: Dialogs Controls */
+static ControlHandle gDlgBtnOpenPrefs;
+static ControlHandle gDlgBtnOpenAlert;
+
+/* State variables */
 static short gPage = pageGraphics;
 static Boolean gQuit = false;
 static Boolean gButtonActivated = false;
+
+/* Preferences state */
+static short gDifficulty = iDiffNormal;
+static Boolean gSoundFX = true;
+static Boolean gMusic = true;
+static short gVolume = 75;
+static short gRenderer = iRendBevel;
+static Boolean gModalDialogCompleted = false;
 
 static MenuHandle StateMenu(void)
 {
@@ -63,6 +163,65 @@ static void DrawHeading(ConstStr255Param heading)
     MoveTo(24, 34);
     DrawString(heading);
     TextFace(0);
+}
+
+/*
+ * QuickDraw 3D-style Beveled Treatment (Emulated QuickDraw)
+ * Renders raised 3D panels and sunken wells using dual-tone light/shadow borders.
+ */
+static void DrawBeveledBox(const Rect *r, Boolean sunken)
+{
+    RGBColor white;
+    RGBColor lightGray;
+    RGBColor midGray;
+    RGBColor darkGray;
+    RGBColor black;
+    Rect inner;
+
+    white.red = 0xffff; white.green = 0xffff; white.blue = 0xffff;
+    lightGray.red = 0xeeee; lightGray.green = 0xeeee; lightGray.blue = 0xeeee;
+    midGray.red = 0xcccc; midGray.green = 0xcccc; midGray.blue = 0xcccc;
+    darkGray.red = 0x6666; darkGray.green = 0x6666; darkGray.blue = 0x6666;
+    black.red = 0x0000; black.green = 0x0000; black.blue = 0x0000;
+
+    RGBForeColor(&black);
+    FrameRect(r);
+
+    inner = *r;
+    InsetRect(&inner, 1, 1);
+
+    if (!sunken) {
+        /* Raised 3D Panel: White top/left, Dark bottom/right */
+        RGBForeColor(&white);
+        MoveTo(inner.left, inner.bottom - 1);
+        LineTo(inner.left, inner.top);
+        LineTo(inner.right - 1, inner.top);
+
+        RGBForeColor(&darkGray);
+        MoveTo(inner.right - 1, inner.top + 1);
+        LineTo(inner.right - 1, inner.bottom - 1);
+        LineTo(inner.left + 1, inner.bottom - 1);
+
+        InsetRect(&inner, 1, 1);
+        RGBForeColor(&lightGray);
+        PaintRect(&inner);
+    } else {
+        /* Sunken 3D Well: Dark top/left, White bottom/right */
+        RGBForeColor(&darkGray);
+        MoveTo(inner.left, inner.bottom - 1);
+        LineTo(inner.left, inner.top);
+        LineTo(inner.right - 1, inner.top);
+
+        RGBForeColor(&white);
+        MoveTo(inner.right - 1, inner.top + 1);
+        LineTo(inner.right - 1, inner.bottom - 1);
+        LineTo(inner.left + 1, inner.bottom - 1);
+
+        InsetRect(&inner, 1, 1);
+        RGBForeColor(&midGray);
+        PaintRect(&inner);
+    }
+    RGBForeColor(&black);
 }
 
 static void DrawGraphicsPage(void)
@@ -130,16 +289,742 @@ static void DrawWindowsPage(void)
     DrawString("\pChoose another page to dispose it again.");
 }
 
+#ifdef SHOWCASE_TARGET_PPC
+/*
+ * Native PowerPC QuickDraw 3D Rendering Pipeline.
+ * Exercises real QuickDraw3DLib lifecycle:
+ * - Initialization & Teardown (Q3Initialize, Q3Exit)
+ * - Macintosh Draw Context with Pane Viewport (Q3MacDrawContext_New)
+ * - View Angle Aspect Perspective Camera (Q3ViewAngleAspectCamera_New)
+ * - Interactive Renderer (Q3Renderer_NewFromType)
+ * - Multi-source Lighting: Ambient & Directional (Q3LightGroup_New, Q3AmbientLight_New, Q3DirectionalLight_New)
+ * - Material Attribute Set with Diffuse Color (Q3AttributeSet_New, Q3AttributeSet_Add)
+ * - 3D Geometry: TriMesh model with vertex points & triangle indexing (Q3TriMesh_New)
+ * - Phong Illumination Shader (Q3PhongIllumination_New)
+ * - Rendering traversal loop (Q3View_StartRendering, Q3InterpolationStyle_Submit, Q3BackfacingStyle_Submit, Q3FillStyle_Submit, Q3Shader_Submit, Q3TriMesh_Submit, Q3View_EndRendering)
+ * - Comprehensive resource disposal (Q3Object_Dispose)
+ */
+static void RenderQD3DScene(WindowPtr window)
+{
+    TQ3DrawContextObject drawContext = nil;
+    TQ3CameraObject camera = nil;
+    TQ3RendererObject renderer = nil;
+    TQ3GroupObject lightGroup = nil;
+    TQ3LightObject ambientLight = nil;
+    TQ3LightObject dirLight = nil;
+    TQ3ViewObject view = nil;
+    TQ3ShaderObject shader = nil;
+    TQ3AttributeSet attrSet = nil;
+    TQ3GeometryObject geom = nil;
+    TQ3MacDrawContextData macDCData;
+    TQ3ViewAngleAspectCameraData cameraData;
+    TQ3LightData ambData;
+    TQ3DirectionalLightData dirData;
+    TQ3ColorRGB diffColor;
+    TQ3TriMeshData triMeshData;
+    TQ3Point3D points[4];
+    TQ3TriMeshTriangleData triangles[4];
+    TQ3ViewStatus viewStatus;
+
+    if (Q3Initialize() != kQ3Success) {
+        return;
+    }
+
+    /* Bounded 3D Viewport Pane within Section 1 of Drawing Page: local (30, 80, 125, 130) */
+    macDCData.drawContextData.clearImageMethod = kQ3ClearMethodWithColor;
+    macDCData.drawContextData.clearImageColor.a = 1.0f;
+    macDCData.drawContextData.clearImageColor.r = 0.12f;
+    macDCData.drawContextData.clearImageColor.g = 0.16f;
+    macDCData.drawContextData.clearImageColor.b = 0.28f;
+    macDCData.drawContextData.pane.min.x = 30.0f;
+    macDCData.drawContextData.pane.min.y = 80.0f;
+    macDCData.drawContextData.pane.max.x = 125.0f;
+    macDCData.drawContextData.pane.max.y = 130.0f;
+    macDCData.drawContextData.paneState = kQ3True;
+    macDCData.drawContextData.mask.image = nil;
+    macDCData.drawContextData.mask.width = 0;
+    macDCData.drawContextData.mask.height = 0;
+    macDCData.drawContextData.mask.rowBytes = 0;
+    macDCData.drawContextData.mask.bitOrder = kQ3EndianBig;
+    macDCData.drawContextData.maskState = kQ3False;
+    macDCData.drawContextData.doubleBufferState = kQ3False;
+    macDCData.window = (CWindowPtr)window;
+    macDCData.library = kQ3Mac2DLibraryNone;
+    macDCData.viewPort = nil;
+    macDCData.grafPort = (CGrafPtr)window;
+
+    drawContext = Q3MacDrawContext_New(&macDCData);
+
+    cameraData.cameraData.placement.cameraLocation.x = 0.0f;
+    cameraData.cameraData.placement.cameraLocation.y = 0.35f;
+    cameraData.cameraData.placement.cameraLocation.z = 2.4f;
+    cameraData.cameraData.placement.pointOfInterest.x = 0.0f;
+    cameraData.cameraData.placement.pointOfInterest.y = 0.0f;
+    cameraData.cameraData.placement.pointOfInterest.z = 0.0f;
+    cameraData.cameraData.placement.upVector.x = 0.0f;
+    cameraData.cameraData.placement.upVector.y = 1.0f;
+    cameraData.cameraData.placement.upVector.z = 0.0f;
+    cameraData.cameraData.range.hither = 0.1f;
+    cameraData.cameraData.range.yon = 100.0f;
+    cameraData.cameraData.viewPort.origin.x = -1.0f;
+    cameraData.cameraData.viewPort.origin.y = 1.0f;
+    cameraData.cameraData.viewPort.width = 2.0f;
+    cameraData.cameraData.viewPort.height = 2.0f;
+    cameraData.fov = 0.85f;
+    cameraData.aspectRatioXToY = 1.0f;
+
+    camera = Q3ViewAngleAspectCamera_New(&cameraData);
+
+    renderer = Q3Renderer_NewFromType(kQ3RendererTypeInteractive);
+
+    lightGroup = Q3LightGroup_New();
+    if (lightGroup != nil) {
+        ambData.isOn = kQ3True;
+        ambData.brightness = 0.35f;
+        ambData.color.r = 1.0f;
+        ambData.color.g = 1.0f;
+        ambData.color.b = 1.0f;
+        ambientLight = Q3AmbientLight_New(&ambData);
+        if (ambientLight != nil) {
+            Q3Group_AddObject(lightGroup, ambientLight);
+            Q3Object_Dispose(ambientLight);
+        }
+
+        dirData.lightData.isOn = kQ3True;
+        dirData.lightData.brightness = 0.85f;
+        dirData.lightData.color.r = 1.0f;
+        dirData.lightData.color.g = 1.0f;
+        dirData.lightData.color.b = 1.0f;
+        dirData.castsShadows = kQ3False;
+        dirData.direction.x = 1.0f;
+        dirData.direction.y = -1.0f;
+        dirData.direction.z = -1.0f;
+        dirLight = Q3DirectionalLight_New(&dirData);
+        if (dirLight != nil) {
+            Q3Group_AddObject(lightGroup, dirLight);
+            Q3Object_Dispose(dirLight);
+        }
+    }
+
+    view = Q3View_New();
+    if (view != nil) {
+        if (drawContext != nil) Q3View_SetDrawContext(view, drawContext);
+        if (camera != nil) Q3View_SetCamera(view, camera);
+        if (renderer != nil) Q3View_SetRenderer(view, renderer);
+        if (lightGroup != nil) Q3View_SetLightGroup(view, lightGroup);
+    }
+
+    /* 3D Tetrahedron / Pyramid Model */
+    points[0].x =  0.0f; points[0].y =  0.55f; points[0].z =  0.0f;
+    points[1].x = -0.5f; points[1].y = -0.35f; points[1].z =  0.5f;
+    points[2].x =  0.5f; points[2].y = -0.35f; points[2].z =  0.5f;
+    points[3].x =  0.0f; points[3].y = -0.35f; points[3].z = -0.5f;
+
+    triangles[0].pointIndices[0] = 0;
+    triangles[0].pointIndices[1] = 1;
+    triangles[0].pointIndices[2] = 2;
+
+    triangles[1].pointIndices[0] = 0;
+    triangles[1].pointIndices[1] = 2;
+    triangles[1].pointIndices[2] = 3;
+
+    triangles[2].pointIndices[0] = 0;
+    triangles[2].pointIndices[1] = 3;
+    triangles[2].pointIndices[2] = 1;
+
+    triangles[3].pointIndices[0] = 1;
+    triangles[3].pointIndices[1] = 3;
+    triangles[3].pointIndices[2] = 2;
+
+    attrSet = Q3AttributeSet_New();
+    if (attrSet != nil) {
+        diffColor.r = 0.2f;
+        diffColor.g = 0.65f;
+        diffColor.b = 0.95f;
+        Q3AttributeSet_Add(attrSet, kQ3AttributeTypeDiffuseColor, &diffColor);
+    }
+
+    triMeshData.triMeshAttributeSet = attrSet;
+    triMeshData.numTriangles = 4;
+    triMeshData.triangles = triangles;
+    triMeshData.numTriangleAttributeTypes = 0;
+    triMeshData.triangleAttributeTypes = nil;
+    triMeshData.numEdges = 0;
+    triMeshData.edges = nil;
+    triMeshData.numEdgeAttributeTypes = 0;
+    triMeshData.edgeAttributeTypes = nil;
+    triMeshData.numPoints = 4;
+    triMeshData.points = points;
+    triMeshData.numVertexAttributeTypes = 0;
+    triMeshData.vertexAttributeTypes = nil;
+    triMeshData.bBox.isEmpty = kQ3False;
+    triMeshData.bBox.min.x = -0.5f;
+    triMeshData.bBox.min.y = -0.35f;
+    triMeshData.bBox.min.z = -0.5f;
+    triMeshData.bBox.max.x =  0.5f;
+    triMeshData.bBox.max.y =  0.55f;
+    triMeshData.bBox.max.z =  0.5f;
+
+    geom = Q3TriMesh_New(&triMeshData);
+    shader = Q3PhongIllumination_New();
+
+    if (view != nil && Q3View_StartRendering(view) == kQ3Success) {
+        do {
+            Q3InterpolationStyle_Submit(kQ3InterpolationStyleVertex, view);
+            Q3BackfacingStyle_Submit(kQ3BackfacingStyleBoth, view);
+            Q3FillStyle_Submit(kQ3FillStyleFilled, view);
+            if (shader != nil) {
+                Q3Shader_Submit(shader, view);
+            }
+            Q3TriMesh_Submit(&triMeshData, view);
+            viewStatus = Q3View_EndRendering(view);
+        } while (viewStatus == kQ3ViewStatusRetraverse);
+    }
+
+    if (geom != nil) Q3Object_Dispose(geom);
+    if (shader != nil) Q3Object_Dispose(shader);
+    if (attrSet != nil) Q3Object_Dispose(attrSet);
+    if (view != nil) Q3Object_Dispose(view);
+    if (lightGroup != nil) Q3Object_Dispose(lightGroup);
+    if (renderer != nil) Q3Object_Dispose(renderer);
+    if (camera != nil) Q3Object_Dispose(camera);
+    if (drawContext != nil) Q3Object_Dispose(drawContext);
+
+    Q3Exit();
+}
+#endif
+
+/*
+ * Page 4: Broader Drawing, QuickDraw 3D, Polygons, Arcs, Regions, PICT & Text
+ */
+static void DrawDrawingPage(void)
+{
+    Rect r;
+    Rect arcRect;
+    Rect subRect;
+    Rect picFrame;
+    Rect dstRect;
+    PolyHandle poly;
+    RgnHandle rgnA;
+    RgnHandle rgnB;
+    RgnHandle rgnCombined;
+    PicHandle pic;
+    Handle iconH;
+    RGBColor color;
+    RGBColor white;
+    RGBColor darkGray;
+    RGBColor black;
+    FontInfo fInfo;
+    short strW;
+    Str255 strBuf;
+
+    white.red = white.green = white.blue = 0xffff;
+    darkGray.red = darkGray.green = darkGray.blue = 0x5555;
+    black.red = black.green = black.blue = 0x0000;
+
+    /* Section 1: QuickDraw 3D Native PowerPC vs 68K Beveled Treatment */
+    SetRect(&r, 20, 48, 270, 165);
+    DrawBeveledBox(&r, false);
+
+#ifdef SHOWCASE_TARGET_PPC
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pNative PowerPC QuickDraw 3D");
+    TextFace(0);
+    MoveTo(28, 74);
+    DrawString("\p(Interactive 3D Pipeline & TriMesh)");
+
+    /* Sunken 3D Viewport Frame */
+    SetRect(&subRect, 29, 79, 126, 131);
+    DrawBeveledBox(&subRect, true);
+
+    /* Real QuickDraw 3D Render Pass into Bounded Viewport Pane */
+    RenderQD3DScene(gMainWindow);
+
+    /* Sunken 3D Gauge Well beside 3D viewport */
+    SetRect(&subRect, 135, 95, 260, 125);
+    DrawBeveledBox(&subRect, true);
+    color.red = 0x2222; color.green = 0x8888; color.blue = 0x3333;
+    RGBForeColor(&color);
+    SetRect(&arcRect, 138, 98, 215, 122);
+    PaintRect(&arcRect);
+    RGBForeColor(&black);
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(145, 113);
+    DrawString("\pGauge: 65%");
+
+    /* Inset status bar */
+    SetRect(&subRect, 30, 136, 260, 157);
+    DrawBeveledBox(&subRect, true);
+    TextFont(3);
+    TextSize(9);
+    MoveTo(38, 150);
+    DrawString("\pQ3 View / Camera / Lights / TriMesh");
+
+#else
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pQuickDraw 3D-style Beveled Treatment");
+    TextFace(0);
+    MoveTo(28, 74);
+    DrawString("\p(68K 2D Fallback Representation)");
+
+    /* Metallic horizontal ridges */
+    RGBForeColor(&white);
+    MoveTo(28, 80); LineTo(262, 80);
+    MoveTo(28, 84); LineTo(262, 84);
+    RGBForeColor(&darkGray);
+    MoveTo(28, 81); LineTo(262, 81);
+    MoveTo(28, 85); LineTo(262, 85);
+
+    /* Raised 3D Button */
+    SetRect(&subRect, 30, 95, 125, 125);
+    DrawBeveledBox(&subRect, false);
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(44, 113);
+    DrawString("\pEmbossed");
+    TextFace(0);
+
+    /* Sunken 3D Gauge Well */
+    SetRect(&subRect, 135, 95, 260, 125);
+    DrawBeveledBox(&subRect, true);
+    color.red = 0x2222; color.green = 0x8888; color.blue = 0x3333;
+    RGBForeColor(&color);
+    SetRect(&arcRect, 138, 98, 215, 122);
+    PaintRect(&arcRect);
+    RGBForeColor(&black);
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(145, 113);
+    DrawString("\pGauge: 65%");
+
+    /* Inset chamfer status bar */
+    SetRect(&subRect, 30, 134, 260, 155);
+    DrawBeveledBox(&subRect, true);
+    TextFont(3);
+    TextSize(9);
+    MoveTo(38, 148);
+    DrawString("\pBeveled Facet Lighting (White / Gray)");
+#endif
+
+    /* Section 2: Polygons & Arcs */
+    SetRect(&r, 280, 48, 535, 165);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(288, 62);
+    DrawString("\pPolygons and Arcs (QuickDraw Geometry)");
+    TextFace(0);
+
+    /* Star Polygon */
+    poly = OpenPoly();
+    MoveTo(345, 75);
+    LineTo(356, 102); LineTo(385, 102); LineTo(362, 118);
+    LineTo(371, 148); LineTo(345, 130); LineTo(319, 148);
+    LineTo(328, 118); LineTo(305, 102); LineTo(334, 102);
+    LineTo(345, 75);
+    ClosePoly();
+
+    color.red = 0xeeee; color.green = 0x9999; color.blue = 0x1111;
+    RGBForeColor(&color);
+    PaintPoly(poly);
+    RGBForeColor(&black);
+    FramePoly(poly);
+    KillPoly(poly);
+
+    /* 3-Sector Pie Chart with Arcs */
+    SetRect(&arcRect, 415, 78, 495, 158);
+    color.red = 0xdddd; color.green = 0x2222; color.blue = 0x3333;
+    RGBForeColor(&color);
+    PaintArc(&arcRect, 0, 120);
+
+    color.red = 0x2222; color.green = 0x9999; color.blue = 0x4444;
+    RGBForeColor(&color);
+    PaintArc(&arcRect, 120, 110);
+
+    color.red = 0x2222; color.green = 0x4444; color.blue = 0xdddd;
+    RGBForeColor(&color);
+    PaintArc(&arcRect, 230, 130);
+
+    RGBForeColor(&black);
+    FrameOval(&arcRect);
+
+    /* Section 3: QuickDraw Regions */
+    SetRect(&r, 20, 175, 185, 320);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 190);
+    DrawString("\pQuickDraw Regions");
+    TextFace(0);
+
+    rgnA = NewRgn();
+    rgnB = NewRgn();
+    rgnCombined = NewRgn();
+
+    SetRect(&subRect, 30, 205, 105, 275);
+    OpenRgn();
+    FrameOval(&subRect);
+    CloseRgn(rgnA);
+
+    SetRect(&subRect, 65, 225, 140, 290);
+    OpenRgn();
+    FrameRoundRect(&subRect, 16, 16);
+    CloseRgn(rgnB);
+
+    XorRgn(rgnA, rgnB, rgnCombined);
+    color.red = 0x3333; color.green = 0x6666; color.blue = 0xbbbb;
+    RGBForeColor(&color);
+    PaintRgn(rgnCombined);
+    RGBForeColor(&black);
+    FrameRgn(rgnCombined);
+
+    DisposeRgn(rgnA);
+    DisposeRgn(rgnB);
+    DisposeRgn(rgnCombined);
+
+    TextFont(3);
+    TextSize(9);
+    MoveTo(28, 308);
+    DrawString("\pXorRgn Oval + RoundRect");
+
+    /* Section 4: Icons & Picture (PICT) Recording */
+    SetRect(&r, 195, 175, 360, 320);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(203, 190);
+    DrawString("\pIcons & Pictures (PICT)");
+    TextFace(0);
+
+    /* Plot standard icon resource */
+    SetRect(&subRect, 205, 205, 237, 237);
+    iconH = GetIcon(rShowcaseIcon);
+    if (iconH != nil) {
+        PlotIcon(&subRect, iconH);
+        ReleaseResource(iconH);
+    }
+
+    /* Dynamic PICT Recording & Playback */
+    SetRect(&picFrame, 0, 0, 40, 40);
+    pic = OpenPicture(&picFrame);
+    color.red = 0xeeee; color.green = 0x7777; color.blue = 0x1111;
+    RGBForeColor(&color);
+#ifdef SHOWCASE_TARGET_PPC
+    PaintRect(&picFrame);
+#else
+    PaintRoundRect(&picFrame, 10, 10);
+#endif
+    RGBForeColor(&black);
+    FrameRoundRect(&picFrame, 10, 10);
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(6, 25);
+    DrawString("\pPICT");
+    TextFace(0);
+    ClosePicture();
+
+    /* Draw picture 1:1 and scaled */
+    SetRect(&dstRect, 250, 205, 290, 245);
+    DrawPicture(pic, &dstRect);
+    SetRect(&dstRect, 300, 205, 350, 255);
+    DrawPicture(pic, &dstRect);
+    KillPicture(pic);
+
+    TextFont(3);
+    TextSize(9);
+    MoveTo(203, 280);
+    DrawString("\pPlotIcon (32x32 bitmap)");
+    MoveTo(203, 295);
+    DrawString("\pOpenPicture/DrawPicture");
+
+    /* Section 5: Typography & Measurements */
+    SetRect(&r, 370, 175, 535, 320);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(378, 190);
+    DrawString("\pTypography & Metrics");
+    TextFace(0);
+
+    TextFont(systemFont);
+    TextSize(12);
+    TextFace(bold);
+    MoveTo(378, 212);
+    DrawString("\pSystem 12pt Bold");
+
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(0);
+    MoveTo(378, 228);
+    DrawString("\pGeneva 9pt Plain Text");
+
+    TextFont(4); /* Monaco */
+    TextSize(9);
+    MoveTo(378, 244);
+    DrawString("\pMonaco 9pt Code Font");
+
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(italic | underline | shadow);
+    MoveTo(378, 262);
+    DrawString("\pItalic Underline Shadow");
+    TextFace(0);
+
+    /* Text measurement */
+    GetFontInfo(&fInfo);
+    strBuf[0] = 0;
+    MoveTo(378, 282);
+    TextFont(3);
+    TextSize(9);
+    DrawString("\pMeasureText: ");
+    strW = StringWidth("\pToolbox Showcase");
+    NumToString(strW, strBuf);
+    DrawString(strBuf);
+    DrawString("\ppx");
+
+    /* Ruler line */
+    MoveTo(378, 295);
+    LineTo(378 + (strW > 140 ? 140 : strW), 295);
+
+    /* Footer note */
+    MoveTo(20, 345);
+    TextFont(applFont);
+    TextSize(9);
+    DrawString("\pAll operations executed through standard QuickDraw traps on 68K and PowerPC.");
+
+    /* Draw this last because QuickDraw 3D flushes its pane asynchronously. */
+    TextFont(systemFont);
+    TextSize(12);
+    TextFace(bold);
+    MoveTo(70, 34);
+    DrawString("\pDrawing: QuickDraw 3D, Polygons, Arcs, Regions, Pictures & Text");
+    TextFace(0);
+}
+
+/*
+ * Page 5: Game Preferences & Settings Panel
+ */
+static void DrawPreferencesPage(void)
+{
+    Rect r;
+    Rect well;
+    Str255 volStr;
+
+    DrawHeading("\pGame Preferences & Configuration Panel");
+
+    /* Audio Settings Group Box */
+    SetRect(&r, 20, 48, 230, 160);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pAudio & Sound FX");
+    TextFace(0);
+
+    /* Difficulty Group Box */
+    SetRect(&r, 240, 48, 535, 160);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(248, 62);
+    DrawString("\pGameplay Difficulty");
+    TextFace(0);
+
+    /* Volume Slider Box */
+    SetRect(&r, 20, 170, 230, 255);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 184);
+    DrawString("\pMaster Volume: ");
+    NumToString(gVolume, volStr);
+    DrawString(volStr);
+    DrawString("\p%");
+    TextFace(0);
+
+    /* Renderer Group Box */
+    SetRect(&r, 240, 170, 535, 255);
+    DrawBeveledBox(&r, false);
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(248, 184);
+    DrawString("\pGraphics Pipeline / Shading Style");
+    TextFace(0);
+
+    /* Status Readout Sunken Well */
+    SetRect(&well, 20, 265, 535, 305);
+    DrawBeveledBox(&well, true);
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 282);
+    DrawString("\pActive Profile: ");
+    TextFace(0);
+    if (gDifficulty == iDiffEasy) {
+        DrawString("\pRecruit (Easy)");
+    } else if (gDifficulty == iDiffHard) {
+        DrawString("\pNightmare (Hard)");
+    } else {
+        DrawString("\pVeteran (Normal)");
+    }
+    DrawString("\p | Audio: ");
+    if (!gSoundFX && !gMusic) {
+        DrawString("\pMuted");
+    } else if (gSoundFX && !gMusic) {
+        DrawString("\pFX Only");
+    } else if (!gSoundFX && gMusic) {
+        DrawString("\pMusic Only");
+    } else {
+        DrawString("\pFull (FX+Music)");
+    }
+    DrawString("\p | Volume: ");
+    DrawString(volStr);
+    DrawString("\p% | Pipeline: ");
+    if (gRenderer == iRendFlat) {
+        DrawString("\pFlat 2D");
+    } else if (gRenderer == iRendContrast) {
+        DrawString("\pHigh Contrast");
+    } else {
+        DrawString("\pQD3D Bevels");
+    }
+
+    MoveTo(28, 297);
+    TextFont(3);
+    TextSize(9);
+    DrawString("\pSettings synchronize bidirectionally with the Options hierarchical menus.");
+
+    DrawControls(gMainWindow);
+}
+
+/*
+ * Page 6: Dialog Manager, Modal Dialogs & System Alerts
+ */
+static void DrawDialogsPage(void)
+{
+    Rect r;
+    Rect btnRect;
+    Rect editRect;
+    RGBColor black;
+
+    black.red = black.green = black.blue = 0x0000;
+
+    DrawHeading("\pDialog Manager: Modal Dialogs & System Alerts");
+
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(24, 52);
+    DrawString("\pThe Dialog Manager provides standardized modal and modeless user interaction.");
+    MoveTo(24, 66);
+    DrawString("\pClick the action buttons below or use the Options menu to trigger live sessions.");
+
+    /* Embedded Dialog Simulation Preview */
+    SetRect(&r, 20, 80, 535, 290);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(12);
+    TextFace(bold);
+    MoveTo(35, 105);
+    DrawString("\pSimulated Modal Dialog Structure (DLOG / DITL)");
+    TextFace(0);
+
+    /* Default Button 3px Bold Outline Ring */
+    SetRect(&btnRect, 410, 235, 510, 265);
+    PenSize(3, 3);
+    FrameRoundRect(&btnRect, 16, 16);
+    PenNormal();
+    TextFont(systemFont);
+    TextSize(12);
+    MoveTo(445, 255);
+    DrawString("\pOK");
+
+    /* Cancel Button */
+    SetRect(&btnRect, 295, 238, 385, 262);
+    FrameRoundRect(&btnRect, 8, 8);
+    MoveTo(320, 255);
+    DrawString("\pCancel");
+
+    /* Dialog Item Types showcase */
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(35, 130);
+    DrawString("\p* Item Type 1 (btnCtrl): Standard & Default Action Push Buttons (3px ring)");
+    MoveTo(35, 150);
+    DrawString("\p* Item Type 2 (chkCtrl / radCtrl): Checkboxes & Mutual Exclusion Radio Buttons");
+    MoveTo(35, 170);
+    DrawString("\p* Item Type 3 (statText): Non-editable Information & Prompt Strings");
+    MoveTo(35, 190);
+    DrawString("\p* Item Type 4 (editText): TextEdit Buffer with Keyboard Focus & Selection:");
+
+    /* Sample EditText Field */
+    SetRect(&editRect, 170, 202, 380, 222);
+    RGBForeColor(&black);
+    FrameRect(&editRect);
+    TextFont(4); /* Monaco */
+    TextSize(9);
+    MoveTo(176, 216);
+    DrawString("\pAce Pilot |");
+
+    /* Status of last modal session */
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(35, 282);
+    DrawString("\pModal Dialog Status: ");
+    TextFace(0);
+    if (gModalDialogCompleted) {
+        DrawString("\pLast session confirmed with OK.");
+    } else {
+        DrawString("\pNo modal dialog session completed yet.");
+    }
+
+    DrawControls(gMainWindow);
+}
+
 static void DrawMainWindow(void)
 {
     SetPort(gMainWindow);
     EraseRect(&gMainWindow->portRect);
-    if (gPage == pageGraphics) {
-        DrawGraphicsPage();
-    } else if (gPage == pageControls) {
-        DrawControlsPage();
-    } else {
-        DrawWindowsPage();
+    switch (gPage) {
+        case pageGraphics:
+            DrawGraphicsPage();
+            break;
+        case pageControls:
+            DrawControlsPage();
+            break;
+        case pageWindows:
+            DrawWindowsPage();
+            break;
+        case pageDrawing:
+            DrawDrawingPage();
+            break;
+        case pagePreferences:
+            DrawPreferencesPage();
+            break;
+        case pageDialogs:
+            DrawDialogsPage();
+            break;
     }
 }
 
@@ -155,9 +1040,14 @@ static void DrawAuxWindow(void)
     DrawString("\pCreated and destroyed through ordinary Window Manager calls.");
 }
 
-static void ShowPageControls(Boolean visible)
+static void ShowAllControls(short page)
 {
-    if (visible) {
+    Boolean isControls = (page == pageControls);
+    Boolean isPrefs = (page == pagePreferences);
+    Boolean isDialogs = (page == pageDialogs);
+
+    /* Page 2: Controls */
+    if (isControls) {
         ShowControl(gButton);
         ShowControl(gCheckbox);
         ShowControl(gScrollbar);
@@ -166,19 +1056,144 @@ static void ShowPageControls(Boolean visible)
         HideControl(gCheckbox);
         HideControl(gScrollbar);
     }
+
+    /* Page 5: Game Preferences */
+    if (isPrefs) {
+        ShowControl(gPrefSndFX);
+        ShowControl(gPrefMusic);
+        ShowControl(gPrefVolume);
+        ShowControl(gPrefDiffEasy);
+        ShowControl(gPrefDiffNormal);
+        ShowControl(gPrefDiffHard);
+        ShowControl(gPrefRendFlat);
+        ShowControl(gPrefRendBevel);
+        ShowControl(gPrefRendContrast);
+        ShowControl(gPrefBtnApply);
+        ShowControl(gPrefBtnReset);
+        ShowControl(gPrefBtnModal);
+    } else {
+        HideControl(gPrefSndFX);
+        HideControl(gPrefMusic);
+        HideControl(gPrefVolume);
+        HideControl(gPrefDiffEasy);
+        HideControl(gPrefDiffNormal);
+        HideControl(gPrefDiffHard);
+        HideControl(gPrefRendFlat);
+        HideControl(gPrefRendBevel);
+        HideControl(gPrefRendContrast);
+        HideControl(gPrefBtnApply);
+        HideControl(gPrefBtnReset);
+        HideControl(gPrefBtnModal);
+    }
+
+    /* Page 6: Dialogs */
+    if (isDialogs) {
+        ShowControl(gDlgBtnOpenPrefs);
+        ShowControl(gDlgBtnOpenAlert);
+    } else {
+        HideControl(gDlgBtnOpenPrefs);
+        HideControl(gDlgBtnOpenAlert);
+    }
+}
+
+static void SyncMenuState(void)
+{
+    MenuHandle pages;
+    MenuHandle hDiff;
+    MenuHandle hSound;
+    MenuHandle hRend;
+    short i;
+
+    pages = GetMenuHandle(mPages);
+    if (pages != nil) {
+        for (i = 1; i <= 6; i++) {
+            CheckItem(pages, i, gPage == i);
+        }
+    }
+
+    hDiff = GetMenuHandle(mDifficulty);
+    if (hDiff != nil) {
+        CheckItem(hDiff, iDiffEasy, gDifficulty == iDiffEasy);
+        CheckItem(hDiff, iDiffNormal, gDifficulty == iDiffNormal);
+        CheckItem(hDiff, iDiffHard, gDifficulty == iDiffHard);
+    }
+
+    hSound = GetMenuHandle(mSoundMenu);
+    if (hSound != nil) {
+        CheckItem(hSound, iSndMute, !gSoundFX && !gMusic);
+        CheckItem(hSound, iSndFXOnly, gSoundFX && !gMusic);
+        CheckItem(hSound, iSndMusicOnly, !gSoundFX && gMusic);
+        CheckItem(hSound, iSndFull, gSoundFX && gMusic);
+    }
+
+    hRend = GetMenuHandle(mRendererMenu);
+    if (hRend != nil) {
+        CheckItem(hRend, iRendFlat, gRenderer == iRendFlat);
+        CheckItem(hRend, iRendBevel, gRenderer == iRendBevel);
+        CheckItem(hRend, iRendContrast, gRenderer == iRendContrast);
+    }
+
+    /* Update control handles if created */
+    if (gPrefSndFX != nil) {
+        SetControlValue(gPrefSndFX, gSoundFX ? 1 : 0);
+        SetControlValue(gPrefMusic, gMusic ? 1 : 0);
+        SetControlValue(gPrefVolume, gVolume);
+        SetControlValue(gPrefDiffEasy, gDifficulty == iDiffEasy ? 1 : 0);
+        SetControlValue(gPrefDiffNormal, gDifficulty == iDiffNormal ? 1 : 0);
+        SetControlValue(gPrefDiffHard, gDifficulty == iDiffHard ? 1 : 0);
+        SetControlValue(gPrefRendFlat, gRenderer == iRendFlat ? 1 : 0);
+        SetControlValue(gPrefRendBevel, gRenderer == iRendBevel ? 1 : 0);
+        SetControlValue(gPrefRendContrast, gRenderer == iRendContrast ? 1 : 0);
+    }
+}
+
+static void DoModalPrefsDialog(void)
+{
+    DialogPtr theDialog;
+    short itemHit;
+    short itemType;
+    Handle itemHandle;
+    Rect itemRect;
+
+    theDialog = GetNewDialog(rPrefDialog, nil, (WindowPtr)-1);
+    if (theDialog == nil) {
+        return;
+    }
+    SetPort(theDialog);
+    ShowWindow(theDialog);
+
+    do {
+        ModalDialog(nil, &itemHit);
+        if (itemHit == 4 || itemHit == 5) {
+            GetDialogItem(theDialog, itemHit, &itemType, &itemHandle, &itemRect);
+            SetControlValue((ControlHandle)itemHandle,
+                            GetControlValue((ControlHandle)itemHandle) == 0 ? 1 : 0);
+        }
+    } while (itemHit != 1 && itemHit != 2);
+
+    if (itemHit == 1) {
+        gModalDialogCompleted = true;
+    }
+
+    DisposeDialog(theDialog);
+    SetPort(gMainWindow);
+    DrawMainWindow();
+}
+
+static void DoAboutAlert(void)
+{
+    Alert(rAboutAlert, nil);
+    SetPort(gMainWindow);
+    DrawMainWindow();
 }
 
 static void SetPage(short page)
 {
-    MenuHandle pages;
     Rect bounds;
 
     gPage = page;
-    pages = GetMenuHandle(mPages);
-    CheckItem(pages, iGraphics, page == pageGraphics);
-    CheckItem(pages, iControls, page == pageControls);
-    CheckItem(pages, iWindows, page == pageWindows);
-    ShowPageControls(page == pageControls);
+    ShowAllControls(page);
+    SyncMenuState();
 
     if (page == pageWindows && gAuxWindow == nil) {
         SetRect(&bounds, 180, 155, 570, 300);
@@ -198,6 +1213,7 @@ static void SetPage(short page)
 static void Initialize(void)
 {
     Handle menuBar;
+    MenuHandle hMenu;
     Rect r;
 
     InitGraf(&qd.thePort);
@@ -214,6 +1230,17 @@ static void Initialize(void)
     }
     SetMenuBar(menuBar);
     DisposeHandle(menuBar);
+
+    /* Insert hierarchical submenus into the hierarchical partition (-1) */
+    hMenu = GetMenu(mOptions);
+    if (hMenu != nil) InsertMenu(hMenu, -1);
+    hMenu = GetMenu(mDifficulty);
+    if (hMenu != nil) InsertMenu(hMenu, -1);
+    hMenu = GetMenu(mSoundMenu);
+    if (hMenu != nil) InsertMenu(hMenu, -1);
+    hMenu = GetMenu(mRendererMenu);
+    if (hMenu != nil) InsertMenu(hMenu, -1);
+
     DrawMenuBar();
 
     gMainWindow = GetNewCWindow(rMainWindow, nil, (WindowPtr)-1);
@@ -223,6 +1250,7 @@ static void Initialize(void)
     SetPort(gMainWindow);
     ShowWindow(gMainWindow);
 
+    /* Page 2: Controls */
     SetRect(&r, 40, 255, 150, 279);
     gButton = NewControl(gMainWindow, &r, "\pActivate", false, 0, 0, 1,
                          pushButProc, 0);
@@ -232,6 +1260,56 @@ static void Initialize(void)
     SetRect(&r, 40, 310, 500, 326);
     gScrollbar = NewControl(gMainWindow, &r, "\p", false, 0, 0, 10,
                             scrollBarProc, 0);
+
+    /* Page 5: Game Preferences Controls */
+    SetRect(&r, 35, 70, 210, 90);
+    gPrefSndFX = NewControl(gMainWindow, &r, "\pSound Effects (SFX)", false, 1, 0, 1,
+                            checkBoxProc, 0);
+    SetRect(&r, 35, 95, 210, 115);
+    gPrefMusic = NewControl(gMainWindow, &r, "\pBackground Music", false, 1, 0, 1,
+                            checkBoxProc, 0);
+    SetRect(&r, 35, 195, 215, 211);
+    gPrefVolume = NewControl(gMainWindow, &r, "\p", false, 75, 0, 100,
+                             scrollBarProc, 0);
+
+    SetRect(&r, 250, 70, 390, 90);
+    gPrefDiffEasy = NewControl(gMainWindow, &r, "\pRecruit (Easy)", false, 0, 0, 1,
+                               radioButProc, 0);
+    SetRect(&r, 250, 95, 390, 115);
+    gPrefDiffNormal = NewControl(gMainWindow, &r, "\pVeteran (Normal)", false, 1, 0, 1,
+                                 radioButProc, 0);
+    SetRect(&r, 250, 120, 390, 140);
+    gPrefDiffHard = NewControl(gMainWindow, &r, "\pNightmare (Hard)", false, 0, 0, 1,
+                               radioButProc, 0);
+
+    SetRect(&r, 250, 195, 420, 215);
+    gPrefRendFlat = NewControl(gMainWindow, &r, "\pClassic 2D Flat", false, 0, 0, 1,
+                               radioButProc, 0);
+    SetRect(&r, 250, 215, 420, 235);
+    gPrefRendBevel = NewControl(gMainWindow, &r, "\pQD3D Bevels (Emul.)", false, 1, 0, 1,
+                                radioButProc, 0);
+    SetRect(&r, 250, 235, 420, 255);
+    gPrefRendContrast = NewControl(gMainWindow, &r, "\pHigh Contrast", false, 0, 0, 1,
+                                   radioButProc, 0);
+
+    SetRect(&r, 35, 315, 145, 339);
+    gPrefBtnApply = NewControl(gMainWindow, &r, "\pSave & Apply", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 160, 315, 270, 339);
+    gPrefBtnReset = NewControl(gMainWindow, &r, "\pReset Defaults", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 285, 315, 425, 339);
+    gPrefBtnModal = NewControl(gMainWindow, &r, "\pModal Dialog…", false, 0, 0, 1,
+                               pushButProc, 0);
+
+    /* Page 6: Dialogs Controls */
+    SetRect(&r, 40, 305, 220, 329);
+    gDlgBtnOpenPrefs = NewControl(gMainWindow, &r, "\pOpen Modal Dialog…", false, 0, 0, 1,
+                                  pushButProc, 0);
+    SetRect(&r, 240, 305, 410, 329);
+    gDlgBtnOpenAlert = NewControl(gMainWindow, &r, "\pDisplay About Alert…", false, 0, 0, 1,
+                                  pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -242,10 +1320,55 @@ static void DoMenuChoice(long choice)
 
     menuID = HiWord(choice);
     item = LoWord(choice);
-    if (menuID == mPages && item >= iGraphics && item <= iWindows) {
+
+    if (menuID == mPages && item >= iGraphics && item <= iDialogs) {
         SetPage(item);
-    } else if (menuID == mFile && item == iQuit) {
-        gQuit = true;
+    } else if (menuID == mDifficulty) {
+        gDifficulty = item;
+        SyncMenuState();
+        DrawMainWindow();
+    } else if (menuID == mSoundMenu) {
+        if (item == iSndMute) {
+            gSoundFX = false;
+            gMusic = false;
+        } else if (item == iSndFXOnly) {
+            gSoundFX = true;
+            gMusic = false;
+        } else if (item == iSndMusicOnly) {
+            gSoundFX = false;
+            gMusic = true;
+        } else if (item == iSndFull) {
+            gSoundFX = true;
+            gMusic = true;
+        }
+        SyncMenuState();
+        DrawMainWindow();
+    } else if (menuID == mRendererMenu) {
+        gRenderer = item;
+        SyncMenuState();
+        DrawMainWindow();
+    } else if (menuID == mOptions) {
+        if (item == iOptResetPrefs) {
+            gDifficulty = iDiffNormal;
+            gSoundFX = true;
+            gMusic = true;
+            gVolume = 75;
+            gRenderer = iRendBevel;
+            SyncMenuState();
+            DrawMainWindow();
+        } else if (item == iOptLaunchDialog) {
+            DoModalPrefsDialog();
+        }
+    } else if (menuID == mFile) {
+        if (item == iFilePrefs) {
+            SetPage(pagePreferences);
+        } else if (item == iQuit) {
+            gQuit = true;
+        }
+    } else if (menuID == mApple) {
+        if (item == iAbout) {
+            DoAboutAlert();
+        }
     }
     HiliteMenu(0);
 }
@@ -257,7 +1380,7 @@ static void DoContentClick(WindowPtr window, Point where)
     short trackedPart;
     short value;
 
-    if (window != gMainWindow || gPage != pageControls) {
+    if (window != gMainWindow) {
         return;
     }
     SetPort(window);
@@ -271,6 +1394,7 @@ static void DoContentClick(WindowPtr window, Point where)
         return;
     }
     part = trackedPart;
+
     if (control == gButton) {
         gButtonActivated = !gButtonActivated;
         CheckItem(StateMenu(), iButtonState, gButtonActivated);
@@ -290,6 +1414,57 @@ static void DoContentClick(WindowPtr window, Point where)
         SetControlValue(gScrollbar, value);
         CheckItem(StateMenu(), iScrollbarState,
                   GetControlValue(gScrollbar) != 0);
+    } else if (control == gPrefSndFX) {
+        gSoundFX = !gSoundFX;
+        SyncMenuState();
+    } else if (control == gPrefMusic) {
+        gMusic = !gMusic;
+        SyncMenuState();
+    } else if (control == gPrefVolume) {
+        value = GetControlValue(gPrefVolume);
+        if (part == kControlUpButtonPart || part == kControlPageUpPart) {
+            value -= part == kControlPageUpPart ? 15 : 5;
+        } else if (part == kControlDownButtonPart || part == kControlPageDownPart) {
+            value += part == kControlPageDownPart ? 15 : 5;
+        }
+        if (value < 0) value = 0;
+        if (value > 100) value = 100;
+        gVolume = value;
+        SetControlValue(gPrefVolume, gVolume);
+    } else if (control == gPrefDiffEasy) {
+        gDifficulty = iDiffEasy;
+        SyncMenuState();
+    } else if (control == gPrefDiffNormal) {
+        gDifficulty = iDiffNormal;
+        SyncMenuState();
+    } else if (control == gPrefDiffHard) {
+        gDifficulty = iDiffHard;
+        SyncMenuState();
+    } else if (control == gPrefRendFlat) {
+        gRenderer = iRendFlat;
+        SyncMenuState();
+    } else if (control == gPrefRendBevel) {
+        gRenderer = iRendBevel;
+        SyncMenuState();
+    } else if (control == gPrefRendContrast) {
+        gRenderer = iRendContrast;
+        SyncMenuState();
+    } else if (control == gPrefBtnApply) {
+        /* Save / Apply feedback */
+        SyncMenuState();
+    } else if (control == gPrefBtnReset) {
+        gDifficulty = iDiffNormal;
+        gSoundFX = true;
+        gMusic = true;
+        gVolume = 75;
+        gRenderer = iRendBevel;
+        SyncMenuState();
+    } else if (control == gPrefBtnModal || control == gDlgBtnOpenPrefs) {
+        DoModalPrefsDialog();
+        return;
+    } else if (control == gDlgBtnOpenAlert) {
+        DoAboutAlert();
+        return;
     }
     DrawMainWindow();
 }
