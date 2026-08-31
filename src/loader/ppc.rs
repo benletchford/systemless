@@ -790,6 +790,7 @@ const PPC_DIALOG_RESOURCE_ID_OFFSET: u32 = 170;
 // Host-private Dialog Manager state follows the documented DialogRecord. The
 // System 7 cancel-item API has no canonical public record field.
 const PPC_DIALOG_CANCEL_ITEM_HLE_OFFSET: u32 = 172;
+const PPC_DIALOG_ALERT_HIT_HLE_OFFSET: u32 = 174;
 const PPC_DIALOG_ITEM_DISABLED: u8 = 0x80;
 const PPC_DIALOG_ITEM_USER_ITEM: u8 = 0;
 const PPC_DIALOG_ITEM_BUTTON: u8 = 4;
@@ -23034,17 +23035,108 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::AlertReturnDefault => {
+            let alert_id = cpu.gpr[3] as u16 as i16;
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] Alert id={} params={:?}",
-                    cpu.gpr[3] as u16 as i16,
+                    alert_id,
                     param_text
                         .iter()
                         .map(|bytes| decode_mac_roman(bytes))
                         .collect::<Vec<_>>()
                 );
             }
-            Some(PpcImportAction::Return(1))
+            let mut dialog = gworlds.iter().rev().find_map(|record| {
+                (memory
+                    .read_u16_be(record.port + PPC_CWINDOW_WINDOW_KIND_OFFSET)
+                    == Some(2)
+                    && ppc_window_is_visible(memory, record.port)
+                    && memory.read_u16_be(record.port + PPC_DIALOG_RESOURCE_ID_OFFSET)
+                        == Some(alert_id as u16))
+                .then_some(record.port)
+            });
+            if dialog.is_none() {
+                let created = ppc_new_alert_dialog(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    free_handle_blocks,
+                    handle_states,
+                    controls,
+                    gworlds,
+                    *current_gdevice,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    last_resource_error,
+                    alert_id,
+                );
+                if created == 0 {
+                    return Some(PpcImportAction::Return(ppc_i16_result(-1)));
+                }
+                *current_gworld = created;
+                *current_gdevice =
+                    ppc_gworld_device(gworlds, created).unwrap_or(*current_gdevice);
+                let _ = ppc_draw_dialog(
+                    memory,
+                    handles,
+                    controls,
+                    gworlds,
+                    screen_clut,
+                    vfs_resources,
+                    *current_resource_refnum,
+                    created,
+                );
+                dialog = Some(created);
+            }
+            let dialog = dialog.unwrap();
+            *current_gworld = dialog;
+            *current_gdevice = ppc_gworld_device(gworlds, dialog).unwrap_or(*current_gdevice);
+            let mut modal_cpu = cpu.clone();
+            modal_cpu.gpr[4] = dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET;
+            let action = ppc_modal_dialog(
+                &mut modal_cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+                controls,
+                gworlds,
+                current_gworld,
+                current_gdevice,
+                screen_clut,
+                *quickdraw_fore_color,
+                quickdraw_fore_indices,
+                input,
+                event_queue,
+                dialog_callback_stack,
+                vfs_resources,
+                *current_resource_refnum,
+            );
+            if matches!(action, PpcImportAction::ReturnPreserve) {
+                let hit = memory
+                    .read_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET)
+                    .unwrap_or(1);
+                ppc_dispose_window(
+                    memory,
+                    handles,
+                    free_handle_blocks,
+                    controls,
+                    gworlds,
+                    current_gworld,
+                    current_gdevice,
+                    dialog,
+                );
+                if *current_gworld != PPC_MAIN_GWORLD {
+                    ppc_enqueue_window_update_event(event_queue, *current_gworld, input);
+                }
+                Some(PpcImportAction::Return(u32::from(hit)))
+            } else {
+                Some(action)
+            }
         }
         PpcImportDispatcherTarget::MathCeil => {
             ppc_math_ceil(cpu);
@@ -59889,6 +59981,142 @@ fn ppc_position_dialog_bounds(
         ppc_i32_to_i16_saturating(top + height),
         ppc_i32_to_i16_saturating(left + width),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_new_alert_dialog(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    controls: &mut Vec<PpcControlRecord>,
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    current_gdevice: u32,
+    vfs_resources: &mut [PpcVfsResourceRecord],
+    current_resource_refnum: i16,
+    last_resource_error: &mut i16,
+    alert_id: i16,
+) -> u32 {
+    let Some(alert_index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"ALRT"),
+        alert_id,
+        false,
+    ) else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        return 0;
+    };
+    let alert = &vfs_resources[alert_index].data;
+    if alert.len() < 12 {
+        *last_resource_error = PPC_PARAM_ERR;
+        return 0;
+    }
+    let bounds = (
+        i16::from_be_bytes([alert[0], alert[1]]),
+        i16::from_be_bytes([alert[2], alert[3]]),
+        i16::from_be_bytes([alert[4], alert[5]]),
+        i16::from_be_bytes([alert[6], alert[7]]),
+    );
+    let items_id = i16::from_be_bytes([alert[8], alert[9]]);
+    let stages = u16::from_be_bytes([alert[10], alert[11]]);
+    let position = alert
+        .get(12..14)
+        .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
+        .unwrap_or(0);
+    let Some(ditl_index) = ppc_vfs_resource_index(
+        vfs_resources,
+        current_resource_refnum,
+        u32::from_be_bytes(*b"DITL"),
+        items_id,
+        false,
+    ) else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        return 0;
+    };
+    let ditl_bytes = vfs_resources[ditl_index].data.clone();
+    if ppc_parse_dialog_items(&ditl_bytes).is_none() {
+        *last_resource_error = PPC_PARAM_ERR;
+        return 0;
+    }
+    let items_handle =
+        ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &ditl_bytes);
+    if items_handle == 0 {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
+    let bounds = ppc_position_dialog_bounds(bounds, position, gworlds);
+    let scratch = ppc_heap_alloc(memory, heap_cursor, heap_limit, 9, true);
+    let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+    else {
+        *last_mem_error = PPC_PARAM_ERR;
+        return 0;
+    };
+    if scratch == 0
+        || ppc_write_rect(memory, scratch, bounds.0, bounds.1, bounds.2, bounds.3).is_none()
+        || memory.write_u8(scratch + 8, 0).is_none()
+    {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
+    let saved_items_slot = memory.read_u32_be(items_slot).unwrap_or(0);
+    if memory.write_u32_be(items_slot, items_handle).is_none() {
+        *last_mem_error = PPC_PARAM_ERR;
+        return 0;
+    }
+    let mut dialog_cpu = cpu.clone();
+    dialog_cpu.gpr[3] = 0;
+    dialog_cpu.gpr[4] = scratch;
+    dialog_cpu.gpr[5] = scratch + 8;
+    dialog_cpu.gpr[6] = 1;
+    dialog_cpu.gpr[7] = 1;
+    dialog_cpu.gpr[8] = u32::MAX;
+    dialog_cpu.gpr[9] = 0;
+    dialog_cpu.gpr[10] = alert_id as u16 as u32;
+    let dialog = ppc_new_dialog(
+        &dialog_cpu,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        handles,
+        gworlds,
+        current_gdevice,
+    );
+    let _ = memory.write_u32_be(items_slot, saved_items_slot);
+    let dialog = if dialog != 0
+        && !ppc_initialize_dialog_items(
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            controls,
+            dialog,
+            vfs_resources,
+            current_resource_refnum,
+            last_resource_error,
+        )
+    {
+        0
+    } else {
+        dialog
+    };
+    if dialog != 0 {
+        let first_stage = stages & 0x000f;
+        let default_item = if first_stage & 0x0008 == 0 { 1 } else { 2 };
+        let _ = memory.write_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET, alert_id as u16);
+        let _ = memory.write_u16_be(dialog + PPC_DIALOG_DEFAULT_ITEM_OFFSET, default_item);
+        let _ = memory.write_u16_be(dialog + PPC_DIALOG_ALERT_HIT_HLE_OFFSET, 0);
+        *last_resource_error = PPC_NO_ERR;
+    }
+    dialog
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -153892,7 +154120,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hle_import_runner_handles_note_alert_default_item() {
+    fn hle_import_runner_returns_minus_one_for_missing_note_alert() {
         let pef = synthetic_pef_with_import(b"NoteAlert");
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.cpu.gpr[3] = 128;
@@ -153902,7 +154130,74 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+    }
+
+    #[test]
+    fn hle_import_runner_keeps_resource_alert_modal_until_default_item() {
+        let pef = synthetic_pef_with_import(b"Alert");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let alert_id = 128i16;
+        let mut alert = vec![0; 14];
+        for (offset, value) in [(0, 130i16), (2, 150), (4, 260), (6, 450)] {
+            alert[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        alert[8..10].copy_from_slice(&alert_id.to_be_bytes());
+        alert[10..12].copy_from_slice(&0x4444u16.to_be_bytes());
+        let mut ditl = vec![0; 18];
+        for (offset, value) in [(6, 90i16), (8, 210), (10, 110), (12, 280)] {
+            ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        ditl[14] = PPC_DIALOG_ITEM_BUTTON;
+        ditl[15] = 2;
+        ditl[16..18].copy_from_slice(b"OK");
+        for (res_type, data) in [(*b"ALRT", alert), (*b"DITL", ditl)] {
+            loaded.vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: loaded.current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: alert_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.cpu.gpr[3] = alert_id as u16 as u32;
+        loaded.cpu.gpr[4] = 0;
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let dialog = loaded.current_gworld;
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(dialog + PPC_DIALOG_RESOURCE_ID_OFFSET),
+            Some(alert_id as u16)
+        );
+        assert!(ppc_window_is_visible(&mut loaded.memory, dialog));
+
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert!(matches!(
+            probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                ..
+            }
+        ));
         assert_eq!(loaded.cpu.gpr[3], 1);
+        assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
     }
 
     #[test]
