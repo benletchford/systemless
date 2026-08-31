@@ -256,9 +256,127 @@ pub fn get_underline_thickness(_font_id: i16, _size: i16) -> i16 {
     1
 }
 
+/// One architecture-neutral Classic Mac text line.
+///
+/// `start..visible_end` is the part drawn on screen; `next` is the guest-text
+/// offset at which the following line begins. This keeps hard line endings and
+/// wrap whitespace in the logical text while excluding them from rasterization.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WrappedTextLine {
+    pub(crate) start: usize,
+    pub(crate) visible_end: usize,
+    pub(crate) next: usize,
+}
+
+/// Break Classic Mac text into display lines using caller-supplied glyph widths.
+///
+/// Both guest adapters use this primitive so TextEdit and dialog static text
+/// agree on word wrapping and CR/LF/CRLF hard breaks. The width callback is
+/// indexed so styled TextEdit can resolve the style run for each byte without
+/// coupling this shared semantic layer to either guest's memory representation.
+///
+/// Inside Macintosh: Text (1993), pp. 2-88--2-89 and 5-24--5-27: TextEdit
+/// prefers word-boundary breaks, uses glyph widths when laying out a line, and
+/// treats trailing whitespace as non-visible.
+pub(crate) fn wrap_classic_text<F>(
+    text: &[u8],
+    max_width: i16,
+    mut byte_advance: F,
+) -> Vec<WrappedTextLine>
+where
+    F: FnMut(usize, u8) -> i16,
+{
+    let mut lines = Vec::new();
+    let mut line_start = 0usize;
+    let max_width = max_width.max(1);
+
+    while line_start < text.len() {
+        let mut index = line_start;
+        let mut width = 0i16;
+        let mut last_whitespace = None::<(usize, usize)>;
+        let mut completed = false;
+
+        while index < text.len() {
+            if matches!(text[index], b'\r' | b'\n') {
+                let next = if text[index] == b'\r' && text.get(index + 1) == Some(&b'\n') {
+                    index + 2
+                } else {
+                    index + 1
+                };
+                lines.push(WrappedTextLine {
+                    start: line_start,
+                    visible_end: trim_classic_line_end(text, line_start, index),
+                    next,
+                });
+                line_start = next;
+                completed = true;
+                break;
+            }
+
+            let advance = byte_advance(index, text[index]).max(0);
+            if index > line_start && width.saturating_add(advance) > max_width {
+                let (visible_end, next) = if text[index] <= b' ' {
+                    let mut next = index + 1;
+                    while next < text.len()
+                        && text[next] <= b' '
+                        && !matches!(text[next], b'\r' | b'\n')
+                    {
+                        next += 1;
+                    }
+                    (trim_classic_line_end(text, line_start, index), next)
+                } else if let Some((visible_end, next)) = last_whitespace {
+                    (visible_end, next)
+                } else {
+                    (index, index)
+                };
+                lines.push(WrappedTextLine {
+                    start: line_start,
+                    visible_end,
+                    next,
+                });
+                line_start = next;
+                completed = true;
+                break;
+            }
+
+            width = width.saturating_add(advance);
+            if text[index] <= b' ' {
+                let whitespace_start = index;
+                let mut next = index + 1;
+                while next < text.len()
+                    && text[next] <= b' '
+                    && !matches!(text[next], b'\r' | b'\n')
+                {
+                    next += 1;
+                }
+                last_whitespace = Some((whitespace_start, next));
+            }
+            index += 1;
+        }
+
+        if !completed {
+            lines.push(WrappedTextLine {
+                start: line_start,
+                visible_end: trim_classic_line_end(text, line_start, text.len()),
+                next: text.len(),
+            });
+            break;
+        }
+    }
+
+    lines
+}
+
+fn trim_classic_line_end(text: &[u8], start: usize, mut end: usize) -> usize {
+    while end > start && text[end - 1] <= b' ' {
+        end -= 1;
+    }
+    end
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_glyph, QuickDrawTextStyle};
+    use super::{get_glyph, wrap_classic_text, QuickDrawTextStyle, WrappedTextLine};
 
     #[test]
     fn quickdraw_style_plan_combines_all_low_order_face_bits() {
@@ -299,5 +417,86 @@ mod tests {
         assert!(data[glyph.data_offset..glyph.data_offset + glyph_len]
             .iter()
             .any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn classic_text_wrap_prefers_words_and_hides_wrap_whitespace() {
+        let text = b"one two three";
+
+        assert_eq!(
+            wrap_classic_text(text, 6, |_, _| 1),
+            vec![
+                WrappedTextLine {
+                    start: 0,
+                    visible_end: 3,
+                    next: 4,
+                },
+                WrappedTextLine {
+                    start: 4,
+                    visible_end: 7,
+                    next: 8,
+                },
+                WrappedTextLine {
+                    start: 8,
+                    visible_end: 13,
+                    next: 13,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn classic_text_wrap_normalizes_cr_lf_and_crlf_hard_breaks() {
+        let text = b"one\rtwo\nthree\r\nfour";
+
+        assert_eq!(
+            wrap_classic_text(text, 80, |_, _| 1),
+            vec![
+                WrappedTextLine {
+                    start: 0,
+                    visible_end: 3,
+                    next: 4,
+                },
+                WrappedTextLine {
+                    start: 4,
+                    visible_end: 7,
+                    next: 8,
+                },
+                WrappedTextLine {
+                    start: 8,
+                    visible_end: 13,
+                    next: 15,
+                },
+                WrappedTextLine {
+                    start: 15,
+                    visible_end: 19,
+                    next: 19,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn classic_text_wrap_breaks_an_overlong_word_at_a_character() {
+        assert_eq!(
+            wrap_classic_text(b"toolbox", 3, |_, _| 1),
+            vec![
+                WrappedTextLine {
+                    start: 0,
+                    visible_end: 3,
+                    next: 3,
+                },
+                WrappedTextLine {
+                    start: 3,
+                    visible_end: 6,
+                    next: 6,
+                },
+                WrappedTextLine {
+                    start: 6,
+                    visible_end: 7,
+                    next: 7,
+                },
+            ]
+        );
     }
 }

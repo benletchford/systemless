@@ -63097,60 +63097,17 @@ fn ppc_frame_front_rect(
     wrote
 }
 
-fn ppc_wrap_dialog_text_paragraph(lines: &mut Vec<Vec<u8>>, paragraph: &[u8], max_width: i16) {
-    let initial_line_count = lines.len();
-    let mut line = Vec::<u8>::new();
-    for word in paragraph.split(|byte| *byte == b' ') {
-        if word.is_empty() {
-            continue;
-        }
-        let mut candidate = line.clone();
-        if !candidate.is_empty() {
-            candidate.push(b' ');
-        }
-        candidate.extend_from_slice(word);
-        if !line.is_empty()
-            && ppc_text_bytes_advance_for_font(
-                &candidate,
-                PPC_QD_TEXT_FONT_DEFAULT,
-                PPC_QD_TEXT_SIZE_SYSTEM,
-            ) > max_width
-        {
-            lines.push(std::mem::take(&mut line));
-            line.extend_from_slice(word);
-        } else {
-            line = candidate;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    if lines.len() == initial_line_count {
-        lines.push(Vec::new());
-    }
-}
-
 fn ppc_dialog_text_lines(bytes: &[u8], max_width: i16) -> Vec<Vec<u8>> {
-    if bytes.is_empty() {
-        return Vec::new();
-    }
-    let mut lines = Vec::<Vec<u8>>::new();
-    let mut paragraph_start = 0usize;
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if matches!(bytes[index], b'\r' | b'\n') {
-            ppc_wrap_dialog_text_paragraph(&mut lines, &bytes[paragraph_start..index], max_width);
-            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
-                index += 1;
-            }
-            paragraph_start = index + 1;
-        }
-        index += 1;
-    }
-    if paragraph_start < bytes.len() {
-        ppc_wrap_dialog_text_paragraph(&mut lines, &bytes[paragraph_start..], max_width);
-    }
-    lines
+    crate::quickdraw::text::wrap_classic_text(bytes, max_width, |_, byte| {
+        ppc_text_byte_advance_for_font(
+            byte,
+            PPC_QD_TEXT_FONT_DEFAULT,
+            PPC_QD_TEXT_SIZE_SYSTEM,
+        )
+    })
+    .into_iter()
+    .map(|line| bytes[line.start..line.visible_end].to_vec())
+    .collect()
 }
 
 fn ppc_draw_dialog_text(
@@ -67003,28 +66960,12 @@ fn ppc_te_recalculate_layout(
         ppc_read_rect(memory, te_ptr + PPC_TE_DEST_RECT_OFFSET).unwrap_or((0, 0, 0, i16::MAX));
     let max_width = right.saturating_sub(left).max(1);
     let (font, size) = ppc_te_primary_font_and_size(memory, te_ptr);
-    let mut starts = if text.is_empty() {
-        Vec::new()
-    } else {
-        vec![0u16]
-    };
-    let mut line_width = 0i16;
-    for (index, byte) in text.iter().copied().enumerate() {
-        if byte == b'\r' || byte == b'\n' {
-            if index + 1 < text.len() {
-                starts.push((index + 1).min(u16::MAX as usize) as u16);
-            }
-            line_width = 0;
-            continue;
-        }
-        let advance = ppc_text_byte_advance_for_font(byte, font, size);
-        if line_width > 0 && line_width.saturating_add(advance) > max_width {
-            starts.push(index.min(u16::MAX as usize) as u16);
-            line_width = advance;
-        } else {
-            line_width = line_width.saturating_add(advance);
-        }
-    }
+    let starts = crate::quickdraw::text::wrap_classic_text(&text, max_width, |_, byte| {
+        ppc_text_byte_advance_for_font(byte, font, size)
+    })
+    .into_iter()
+    .map(|line| line.start.min(u16::MAX as usize) as u16)
+    .collect::<Vec<_>>();
     let required_size = PPC_TE_REC_MIN_SIZE.max(
         PPC_TE_LINE_STARTS_OFFSET
             .saturating_add((starts.len() as u32).saturating_add(2).saturating_mul(2)),
@@ -67393,40 +67334,17 @@ fn ppc_te_draw_text_box(
         .saturating_add(face.metrics.leading.saturating_mul(scale))
         .max(1);
     let max_width = right.saturating_sub(left).max(1);
-    let mut lines = Vec::new();
-    let mut start = 0usize;
-    let mut width = 0i16;
-    for (index, byte) in text.iter().copied().enumerate() {
-        if matches!(byte, b'\r' | b'\n') {
-            lines.push((start, index));
-            start = index + 1;
-            width = 0;
-            continue;
-        }
-        let advance = ppc_text_byte_advance_for_font(byte, font, text_size);
-        if width > 0 && width.saturating_add(advance) > max_width {
-            lines.push((start, index));
-            start = index;
-            width = advance;
-        } else {
-            width = width.saturating_add(advance);
-        }
-    }
-    if start < text.len()
-        || text
-            .last()
-            .is_some_and(|byte| matches!(byte, b'\r' | b'\n'))
-    {
-        lines.push((start, text.len()));
-    }
-    for (line, (start, end)) in lines.into_iter().enumerate() {
+    let lines = crate::quickdraw::text::wrap_classic_text(text, max_width, |_, byte| {
+        ppc_text_byte_advance_for_font(byte, font, text_size)
+    });
+    for (line_index, line) in lines.into_iter().enumerate() {
         let baseline = top
             .saturating_add(ascent)
-            .saturating_add((line as i16).saturating_mul(line_height));
+            .saturating_add((line_index as i16).saturating_mul(line_height));
         if baseline.saturating_sub(ascent) >= bottom {
             break;
         }
-        let bytes = &text[start..end];
+        let bytes = &text[line.start..line.visible_end];
         let width = ppc_text_bytes_advance_for_font(bytes, font, text_size);
         let x = ppc_te_aligned_left(left, right, width, alignment);
         let _ = ppc_draw_text_bytes(
@@ -142647,6 +142565,80 @@ pub(crate) mod tests {
             .read_u32_be(te_ptr + PPC_TE_CLICK_TIME_OFFSET)
             .unwrap();
         assert!((100..=164).contains(&click_time));
+    }
+
+    #[test]
+    fn native_textedit_line_starts_follow_shared_word_boundaries() {
+        // Inside Macintosh: Text (1993), pp. 5-24--5-27: prefer a word
+        // boundary over splitting the next word at the overflowing glyph.
+        let pef = synthetic_pef_with_import(b"TECalText");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let rects = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(rects, vec![0; 16]);
+        let font = PPC_QD_TEXT_FONT_DEFAULT;
+        let size = PPC_QD_TEXT_SIZE_SYSTEM;
+        let first_line_width = ppc_text_bytes_advance_for_font(b"one two", font, size);
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects,
+            10,
+            20,
+            80,
+            20 + first_line_width,
+        )
+        .unwrap();
+        ppc_write_rect(
+            &mut loaded.memory,
+            rects + 8,
+            10,
+            20,
+            80,
+            20 + first_line_width,
+        )
+        .unwrap();
+        let te_handle = ppc_te_initialize_record(
+            &mut loaded.memory,
+            &mut loaded.heap_cursor,
+            loaded.heap_limit,
+            &mut loaded.handles,
+            rects,
+            rects + 8,
+            PPC_MAIN_GWORLD,
+            1,
+            PPC_QD_TEXT_MODE_SRC_OR,
+            size,
+            PPC_RGB_BLACK,
+            false,
+        );
+
+        assert_eq!(
+            ppc_te_set_text(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                &mut loaded.handles,
+                te_handle,
+                b"one two three",
+            ),
+            PPC_NO_ERR
+        );
+        let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+        assert_eq!(
+            loaded.memory.read_u16_be(te_ptr + PPC_TE_N_LINES_OFFSET),
+            Some(2)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET),
+            Some(0)
+        );
+        assert_eq!(
+            loaded
+                .memory
+                .read_u16_be(te_ptr + PPC_TE_LINE_STARTS_OFFSET + 2),
+            Some(8)
+        );
     }
 
     #[test]

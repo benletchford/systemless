@@ -1901,72 +1901,19 @@ impl super::TrapDispatcher {
         width
     }
 
-    fn te_next_break_styled(
-        &self,
-        runs: &[TeStyleRun],
-        text_bytes: &[u8],
-        offset: usize,
-        max_width: i16,
-    ) -> usize {
-        let len = text_bytes.len();
-        if offset >= len {
-            return len;
-        }
-
-        let mut width = 0i16;
-        let mut index = offset;
-        while width <= max_width && index < len && !matches!(text_bytes[index], b'\r' | b'\n') {
-            let style = Self::te_style_at_offset(runs, index);
-            width =
-                width.saturating_add(self.te_char_width(style.font, style.size, text_bytes[index]));
-            index += 1;
-        }
-
-        let mut next = if width > max_width {
-            let max_index = index.saturating_sub(1);
-            if text_bytes[max_index] == b' ' {
-                let mut scan = index;
-                while scan < len && text_bytes[scan] == b' ' {
-                    scan += 1;
-                }
-                scan
-            } else {
-                let mut scan = max_index;
-                while scan > offset && !Self::te_word_break_byte(text_bytes[scan - 1]) {
-                    scan -= 1;
-                }
-                if scan == offset {
-                    max_index
-                } else {
-                    scan
-                }
-            }
-        } else if index == len {
-            len
-        } else {
-            index + 1
-        };
-
-        if next == offset && offset < len {
-            next += 1;
-        }
-        next
-    }
-
     fn te_wrap_lines_styled(
         &self,
         runs: &[TeStyleRun],
         text_bytes: &[u8],
         box_width: i16,
     ) -> Vec<(usize, usize)> {
-        let mut lines = Vec::new();
-        let mut line_start = 0usize;
-        while line_start < text_bytes.len() {
-            let next = self.te_next_break_styled(runs, text_bytes, line_start, box_width);
-            lines.push((line_start, next.min(text_bytes.len())));
-            line_start = next;
-        }
-        lines
+        crate::quickdraw::text::wrap_classic_text(text_bytes, box_width, |index, byte| {
+            let style = Self::te_style_at_offset(runs, index);
+            self.te_char_width(style.font, style.size, byte)
+        })
+        .into_iter()
+        .map(|line| (line.start, line.next))
+        .collect()
     }
 
     fn te_line_metrics_for_range(runs: &[TeStyleRun], start: usize, end: usize) -> (i16, i16) {
@@ -2781,57 +2728,6 @@ impl super::TrapDispatcher {
         byte <= 0x20
     }
 
-    fn te_next_break(
-        &self,
-        font: i16,
-        size: i16,
-        text_bytes: &[u8],
-        offset: usize,
-        max_width: i16,
-    ) -> usize {
-        let len = text_bytes.len();
-        if offset >= len {
-            return len;
-        }
-
-        let mut width = 0i16;
-        let mut index = offset;
-        while width <= max_width && index < len && !matches!(text_bytes[index], b'\r' | b'\n') {
-            width = width.saturating_add(self.te_char_width(font, size, text_bytes[index]));
-            index += 1;
-        }
-
-        let mut next = if width > max_width {
-            let max_index = index.saturating_sub(1);
-            if text_bytes[max_index] == b' ' {
-                let mut scan = index;
-                while scan < len && text_bytes[scan] == b' ' {
-                    scan += 1;
-                }
-                scan
-            } else {
-                let mut scan = max_index;
-                while scan > offset && !Self::te_word_break_byte(text_bytes[scan - 1]) {
-                    scan -= 1;
-                }
-                if scan == offset {
-                    max_index
-                } else {
-                    scan
-                }
-            }
-        } else if index == len {
-            len
-        } else {
-            index + 1
-        };
-
-        if next == offset && offset < len {
-            next += 1;
-        }
-        next
-    }
-
     fn te_wrap_lines(
         &self,
         font: i16,
@@ -2839,15 +2735,12 @@ impl super::TrapDispatcher {
         text_bytes: &[u8],
         box_width: i16,
     ) -> Vec<(usize, usize)> {
-        let mut lines: Vec<(usize, usize)> = Vec::new();
-        let mut line_start = 0usize;
-        while line_start < text_bytes.len() {
-            let next = self.te_next_break(font, size, text_bytes, line_start, box_width);
-            lines.push((line_start, next.min(text_bytes.len())));
-            line_start = next;
-        }
-
-        lines
+        crate::quickdraw::text::wrap_classic_text(text_bytes, box_width, |_, byte| {
+            self.te_char_width(font, size, byte)
+        })
+        .into_iter()
+        .map(|line| (line.start, line.next))
+        .collect()
     }
 
     fn te_recalculate_layout(&mut self, bus: &mut MacMemoryBus, te_handle: u32) {
@@ -15242,60 +15135,28 @@ impl super::TrapDispatcher {
                             w
                         };
 
-                        // Word-wrap: split into lines that fit within box_width.
-                        // Break on spaces; if a single word exceeds box_width, break mid-word.
-                        let mut lines: Vec<(usize, usize)> = Vec::new();
-                        let mut line_start = 0usize;
-                        let mut last_break = 0usize;
-                        let mut line_width = 0i16;
-
-                        for (i, &b) in text_bytes.iter().enumerate() {
-                            if b == b'\r' || b == b'\n' {
-                                lines.push((line_start, i));
-                                line_start = i + 1;
-                                last_break = line_start;
-                                line_width = 0;
-                                continue;
-                            }
-                            let ch = b as char;
-                            let char_w = if let Some((g, _)) =
-                                crate::quickdraw::text::get_glyph(font_id, font_size, ch)
-                            {
-                                g.advance as i16 + advance_extra
-                            } else {
-                                missing_advance
-                            };
-                            line_width += char_w;
-                            if b == b' ' {
-                                last_break = i + 1;
-                            }
-                            if line_width > box_width && i > line_start {
-                                if last_break > line_start {
-                                    lines.push((line_start, last_break - 1));
-                                    line_start = last_break;
-                                } else {
-                                    lines.push((line_start, i));
-                                    line_start = i;
-                                }
-                                last_break = line_start;
-                                line_width = measure(line_start, i + 1);
-                            }
-                        }
-                        if line_start < text_bytes.len() {
-                            lines.push((line_start, text_bytes.len()));
-                        }
+                        let lines = crate::quickdraw::text::wrap_classic_text(
+                            &text_bytes,
+                            box_width,
+                            |_, byte| {
+                                crate::quickdraw::text::get_glyph(
+                                    font_id,
+                                    font_size,
+                                    byte as char,
+                                )
+                                .map_or(missing_advance, |(glyph, _)| {
+                                    glyph.advance as i16 + advance_extra
+                                })
+                            },
+                        );
 
                         // Draw each line
                         let mut y = box_top + metrics.ascent;
-                        for (start, end) in &lines {
+                        for line in &lines {
                             if y + metrics.descent > box_bottom {
                                 break;
                             }
-                            let mut trimmed_end = *end;
-                            while trimmed_end > *start && text_bytes[trimmed_end - 1] == b' ' {
-                                trimmed_end -= 1;
-                            }
-                            let lw = measure(*start, trimmed_end);
+                            let lw = measure(line.start, line.visible_end);
                             // Per Inside Macintosh: Text 1993, lines 7320-7323:
                             //   teJustLeft   =  0 (flush left — system default)
                             //   teJustCenter =  1 (centered)
@@ -15303,7 +15164,7 @@ impl super::TrapDispatcher {
                             //   teForceLeft  = -2 (force flush left)
                             let x = Self::te_line_origin_x(align, box_left, box_right, lw);
                             self.pn_loc = (y, x);
-                            for &byte in &text_bytes[*start..trimmed_end] {
+                            for &byte in &text_bytes[line.start..line.visible_end] {
                                 self.draw_char(cpu, bus, byte as char);
                             }
                             y += line_height;
