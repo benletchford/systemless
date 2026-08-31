@@ -1148,6 +1148,8 @@ static WS_RESUME_FAIL_HOST: AtomicU64 = AtomicU64::new(0);
 static WS_RESUME_FAIL_OTHER: AtomicU64 = AtomicU64::new(0);
 static WS_CANCEL_TRAP_WORDS: std::sync::Mutex<Option<std::collections::BTreeMap<u16, u64>>> =
     std::sync::Mutex::new(None);
+static WS_CANCEL_AB1D_SELECTORS: std::sync::Mutex<Option<std::collections::BTreeMap<u32, u64>>> =
+    std::sync::Mutex::new(None);
 
 fn ws_note_cancel_trap(opcode: u16) {
     if !wait_stats_enabled() {
@@ -1158,6 +1160,21 @@ fn ws_note_cancel_trap(opcode: u16) {
         *guard
             .get_or_insert_with(Default::default)
             .entry(opcode)
+            .or_insert(0) += 1;
+    }
+}
+
+/// QDExtensions multiplexes many routines through one trap word; a
+/// cancel count against $AB1D alone cannot name the selector that needs
+/// vetting. Record live D0 at the pre-dispatch cancel site.
+fn ws_note_cancel_ab1d_selector(selector: u32) {
+    if !wait_stats_enabled() {
+        return;
+    }
+    if let Ok(mut guard) = WS_CANCEL_AB1D_SELECTORS.lock() {
+        *guard
+            .get_or_insert_with(Default::default)
+            .entry(selector)
             .or_insert(0) += 1;
     }
 }
@@ -1193,6 +1210,15 @@ pub fn dump_wait_stats() {
             rows.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
             for (word, n) in rows.iter().take(12) {
                 eprintln!("[WAIT-STATS]   cancel trap {word:04X}: {n}");
+            }
+        }
+    }
+    if let Ok(guard) = WS_CANCEL_AB1D_SELECTORS.lock() {
+        if let Some(map) = guard.as_ref() {
+            let mut rows: Vec<_> = map.iter().collect();
+            rows.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+            for (sel, n) in rows.iter().take(12) {
+                eprintln!("[WAIT-STATS]   cancel AB1D selector {sel:08X}: {n}");
             }
         }
     }
@@ -1316,7 +1342,9 @@ fn canonical_trap_number(opcode: u16) -> (bool, u16) {
 ///
 /// Event polls only qualify when they returned a null event; SystemTask
 /// only without periodic host work -- callers pass those runtime facts
-/// in. ONE definition, consulted from both the inline pre-dispatch check
+/// in. `selector` carries live D0, consulted only for the
+/// selector-multiplexed QDExtensions trap.
+/// ONE definition, consulted from both the inline pre-dispatch check
 /// and the post-dispatch quiescence classification (they were once two
 /// hand-synced copies and drifted). The membership test
 /// `journal_complete_traps_do_not_cancel_an_idle_probe` covers both the
@@ -1325,11 +1353,29 @@ fn idle_cycle_trap_is_journal_complete(
     opcode: u16,
     null_event: bool,
     system_task_idle: bool,
+    selector: u32,
 ) -> bool {
     match canonical_trap_number(opcode) {
         (true, 0x0170) | (true, 0x0171) => null_event,
         // Pure transforms of a Point on the stack (quickdraw.rs).
         (true, 0x0070) | (true, 0x0071) => true, // LocalToGlobal, GlobalToLocal
+        // PtInRect: reads pt+rect from the stack/RAM, writes a Boolean at
+        // sp+8 (journaled) and pops A7 (CPU state the proof compares).
+        (true, 0x00AD) => true, // PtInRect
+        // QDExtensions ($AB1D) multiplexes on the D0 selector; admit only
+        // the GetGWorld/SetGWorld save/restore pair (quickdraw.rs) games
+        // bracket their poll-loop hit-testing with. GetGWorld writes its
+        // two VAR results through the bus (journaled) and pops A7;
+        // SetGWorld's writes (the THE_PORT low global and the A5 world's
+        // thePort mirror) are journaled, and the dispatcher
+        // port/draw-state mirrors it rewrites are pure functions of its
+        // stack arguments and guest RAM, so they sit at a fixed point
+        // across two proven-identical cycles. A cold-start
+        // `ensure_main_gdevice` allocation writes fresh heap bytes the
+        // byte-identity proof rejects by itself. Every other selector
+        // (NewGWorld, LockPixels, UpdateGWorld, ...) allocates, locks or
+        // frees host-mirrored state and must cancel.
+        (true, 0x031D) => matches!(selector, 0x0008_0005 | 0x0008_0006),
         // TEIdle (dialog.rs `textedit_idle`) reads the TERec and the tick and
         // either returns having written nothing, or stamps caretState and
         // caretTime into guest RAM *before* it paints -- that ordering is
@@ -4889,10 +4935,16 @@ impl FixtureRunner {
         if self.idle_cycle_probe.is_none() {
             return null_event;
         }
+        // Live D0 still holds the QDExtensions selector here for any
+        // admitted selector (GetGWorld/SetGWorld write no registers but
+        // A7); a non-admitted selector never reaches this classification
+        // -- the pre-dispatch check cancelled the probe before the
+        // handler ran.
         let quiescent = idle_cycle_trap_is_journal_complete(
             opcode,
             null_event,
             !self.dispatcher.system_task_has_periodic_work(),
+            self.cpu.read_reg(Register::D0),
         );
         if !quiescent {
             ws_note_cancel_trap(opcode);
@@ -6080,8 +6132,16 @@ impl FixtureRunner {
                     // are not yet known, so they pass here optimistically
                     // and are classified for real after dispatch.
                     if self.idle_cycle_probe.is_some()
-                        && !idle_cycle_trap_is_journal_complete(opcode, true, true)
+                        && !idle_cycle_trap_is_journal_complete(
+                            opcode,
+                            true,
+                            true,
+                            self.cpu.read_reg(Register::D0),
+                        )
                     {
+                        if opcode == 0xAB1D {
+                            ws_note_cancel_ab1d_selector(self.cpu.read_reg(Register::D0));
+                        }
                         ws_note_cancel_trap(opcode);
                         self.cancel_idle_cycle_detector();
                     }
@@ -22287,13 +22347,27 @@ mod tests {
 
         for opcode in [
             0xA972u16, 0xA973, 0xA974, 0xA975, 0xA976, 0xA9EB, 0xA9EC, 0xA870, 0xA871, 0xA917,
-            0xA924, 0xA92C, 0xA9DA, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+            0xA924, 0xA92C, 0xA9DA, 0xA8AD, 0xAC70, 0xAC71, 0xAD17, 0xAD24, 0xAD2C, 0xADDA,
+            0xACAD,
         ] {
             runner.note_idle_cycle_trap_result(opcode);
             assert!(
                 runner.idle_cycle_probe.is_some(),
                 "journal-complete trap {opcode:04X} must not cancel the probe"
             );
+        }
+        // QDExtensions multiplexes on the D0 selector: the
+        // GetGWorld/SetGWorld save/restore pair a poll loop brackets
+        // its hit-testing with survives in both encodings.
+        for selector in [0x0008_0005u32, 0x0008_0006] {
+            runner.cpu.write_reg(Register::D0, selector);
+            for opcode in [0xAB1Du16, 0xAF1D] {
+                runner.note_idle_cycle_trap_result(opcode);
+                assert!(
+                    runner.idle_cycle_probe.is_some(),
+                    "admitted QDExtensions selector {selector:08X} must not cancel the probe"
+                );
+            }
         }
         // MoveTo mirrors pnLoc into dispatcher state the journal cannot
         // see; anything with host-cached consequences must cancel.
@@ -22848,7 +22922,8 @@ mod tests {
         assert!(!runner.try_exact_idle_cycle_fastfwd(trap_pc, 200, Some(105)));
         assert_eq!(runner.guest_tick(), 100);
 
-        runner.note_idle_cycle_trap_result(0xA8AD); // PtInRect has host-side HLE semantics
+        runner.cpu.write_reg(Register::D0, 0x0004_0001); // LockPixels
+        runner.note_idle_cycle_trap_result(0xAB1D); // non-admitted QDExtensions selector
         assert!(runner.idle_cycle_probe.is_none());
         assert!(runner.idle_cycle_last_seen.is_none());
         assert!(runner.bus.fast_mem_window().is_some());
