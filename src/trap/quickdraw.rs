@@ -15220,15 +15220,13 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // StdOpcodeProc ($ABF8)
-            // Default picture-opcode handler invoked during picture playback.
-            // PROCEDURE StdOpcodeProc(dataPtr: Ptr; opcode: INTEGER);
-            // Imaging With QuickDraw (1994), p. 7-82.
-            // Matching BasiliskII, the payload is left unchanged and the
-            // public call surface needs a 10-byte A7 unwind here.
+            // _StdOpcodeProc / StdOpcode ($ABF8).
+            // void StdOpcode(const Rect *fromRect, const Rect *toRect, UInt16 opcode, SInt16 version).
+            // Pascal void frame: fromRect(4) + toRect(4) + opcode(2) + version(2) = 12 bytes; no result.
+            // Universal Interfaces 3.4 Quickdraw.h:632,4243-4247; Traps.h:938.
             (true, 0x3F8) => {
                 let sp = cpu.read_reg(Register::A7);
-                cpu.write_reg(Register::A7, sp + 10);
+                cpu.write_reg(Register::A7, sp + 12);
                 Ok(())
             }
 
@@ -30361,6 +30359,40 @@ mod tests {
                 "reserved CQDProcs slot {} should remain NIL",
                 i
             );
+        }
+    }
+
+    #[test]
+    fn stdopcode_consumes_complete_frame_and_preserves_nonvolatile_state() {
+        let (mut d, mut cpu, mut bus) = setup();
+        bus.write_word(TEST_SP, 0x1357); // version
+        bus.write_word(TEST_SP + 2, 0x2468); // opcode
+        bus.write_long(TEST_SP + 4, 0x0030_0200); // toRect
+        bus.write_long(TEST_SP + 8, 0x0030_0100); // fromRect
+        bus.write_long(TEST_SP + 12, 0xCAFE_BABE); // adjacent caller data
+        let preserved = [
+            (Register::A2, 0xA200_0002),
+            (Register::A3, 0xA300_0003),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+        ];
+        for &(register, value) in &preserved {
+            cpu.write_reg(register, value);
+        }
+
+        let result = d.dispatch_quickdraw(true, 0x3F8, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 12);
+        assert_eq!(bus.read_long(TEST_SP + 12), 0xCAFE_BABE);
+        for &(register, value) in &preserved {
+            assert_eq!(cpu.read_reg(register), value);
         }
     }
 
