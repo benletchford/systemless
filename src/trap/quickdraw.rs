@@ -2732,7 +2732,11 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                let spans = Self::compute_oval_spans(r.right - r.left, r.bottom - r.top)
+                    .into_iter()
+                    .map(|(left, right)| (r.left + left, r.left + right))
+                    .collect::<Vec<_>>();
+                if self.extend_recording_region_from_spans(r.top, &spans) {
                     return Some(Ok(()));
                 }
                 self.draw_oval(cpu, bus, &r, ShapeOp::Frame);
@@ -2813,11 +2817,9 @@ impl super::TrapDispatcher {
             // PROCEDURE FrameRoundRect(r: Rect; ovalWidth, ovalHeight: INTEGER);
             // Inside Macintosh Volume I, I-178
             //
-            // Inside OpenRgn, extend the recording region by the round-rect's
-            // outer bounds and suppress drawing. Per IM:I I-184 the outlined-
-            // shape procedures add to the region being built. The rounded
-            // corners pull inward from the outer bbox, so the bbox-approx
-            // region storage uses the outer rect.
+            // Inside OpenRgn, add the round-rect's exact scanline boundary and
+            // suppress drawing. Imaging With QuickDraw (1994), pp. 3-87--3-89,
+            // requires framed-shape geometry rather than its bounding box.
             // FrameRoundRect ($A8B0)
             (true, 0x0B0) => {
                 let sp = cpu.read_reg(Register::A7);
@@ -2826,7 +2828,8 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
-                if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
+                let spans = Self::compute_rrect_spans(&r, oval_width, oval_height);
+                if self.extend_recording_region_from_spans(r.top, &spans) {
                     return Some(Ok(()));
                 }
                 self.draw_round_rect(cpu, bus, &r, oval_width, oval_height, ShapeOp::Frame);
@@ -15914,6 +15917,37 @@ impl super::TrapDispatcher {
         } else {
             false
         }
+    }
+
+    /// Add exact scanline boundaries for a framed QuickDraw shape to the
+    /// active region. Each span is recorded as a one-row closed loop, which
+    /// preserves QuickDraw's even-odd boundary organization while avoiding a
+    /// lossy bounding-box substitution for curved shapes.
+    fn extend_recording_region_from_spans(
+        &mut self,
+        top: i16,
+        spans: &[(i16, i16)],
+    ) -> bool {
+        let Some(recording) = self.recording_region.as_mut() else {
+            return false;
+        };
+        for (row_index, &(left, right)) in spans.iter().enumerate() {
+            if right <= left {
+                continue;
+            }
+            let Ok(row_offset) = i16::try_from(row_index) else {
+                break;
+            };
+            let y = top.saturating_add(row_offset);
+            Self::record_region_rect_boundary(
+                recording,
+                y,
+                left,
+                y.saturating_add(1),
+                right,
+            );
+        }
+        true
     }
 
     pub(crate) fn record_region_line(&mut self, v0: i16, h0: i16, v1: i16, h1: i16) -> bool {
@@ -33879,6 +33913,62 @@ mod tests {
             !TrapDispatcher::region_contains_point(&bus, dst, 20, 25),
             "the concave notch must not be filled merely because it lies inside polyBBox"
         );
+    }
+
+    #[test]
+    fn closergn_preserves_framed_oval_and_round_rect_scanlines() {
+        // Imaging With QuickDraw (1994), pp. 3-87--3-89: framed-shape
+        // boundaries form closed loops in an open region, independent of the
+        // pen. Their curved corners must survive CloseRgn as complex rows.
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let oval_rect = bus.alloc(8);
+        write_rect(&mut bus, oval_rect, 10, 10, 30, 30);
+        let round_rect = bus.alloc(8);
+        write_rect(&mut bus, round_rect, 40, 10, 60, 50);
+
+        let oval_ptr = bus.alloc(10);
+        let oval = bus.alloc(4);
+        make_rgn(&mut bus, oval_ptr, oval, 0, 0, 0, 0);
+        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, oval_rect);
+        d.dispatch_quickdraw(true, 0x0B7, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, oval);
+        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(TrapDispatcher::region_contains_point(&bus, oval, 20, 20));
+        assert!(!TrapDispatcher::region_contains_point(&bus, oval, 10, 10));
+        assert!(bus.read_word(bus.read_long(oval)) > 10);
+
+        let rounded_ptr = bus.alloc(10);
+        let rounded = bus.alloc(4);
+        make_rgn(&mut bus, rounded_ptr, rounded, 0, 0, 0, 0);
+        d.dispatch_quickdraw(true, 0x0DA, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_word(TEST_SP, 12); // ovalHeight
+        bus.write_word(TEST_SP + 2, 12); // ovalWidth
+        bus.write_long(TEST_SP + 4, round_rect);
+        d.dispatch_quickdraw(true, 0x0B0, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, rounded);
+        d.dispatch_quickdraw(true, 0x0DB, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(TrapDispatcher::region_contains_point(&bus, rounded, 50, 10));
+        assert!(!TrapDispatcher::region_contains_point(&bus, rounded, 40, 10));
+        assert!(bus.read_word(bus.read_long(rounded)) > 10);
     }
 
     // IM:I I-190: PaintPoly fills polygon interior using pnPat/pnMode and pops

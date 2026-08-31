@@ -783,7 +783,7 @@ impl super::TrapDispatcher {
         });
     }
 
-    pub(super) fn compute_oval_spans(&self, width: i16, height: i16) -> Vec<(i16, i16)> {
+    pub(crate) fn compute_oval_spans(width: i16, height: i16) -> Vec<(i16, i16)> {
         if width <= 0 || height <= 0 {
             return vec![];
         }
@@ -856,7 +856,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let spans = self.compute_oval_spans(width, height);
+        let spans = Self::compute_oval_spans(width, height);
         let r_inset = Rect {
             top: r.top + pen_h,
             left: r.left + pen_w,
@@ -864,7 +864,7 @@ impl super::TrapDispatcher {
             right: r.right - pen_w,
         };
         let spans_inset =
-            self.compute_oval_spans(r_inset.right - r_inset.left, r_inset.bottom - r_inset.top);
+            Self::compute_oval_spans(r_inset.right - r_inset.left, r_inset.bottom - r_inset.top);
 
         self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
             let idx = (y - r.top) as usize;
@@ -895,7 +895,7 @@ impl super::TrapDispatcher {
         });
     }
 
-    pub(super) fn compute_rrect_spans(&self, r: &Rect, ow: i16, oh: i16) -> Vec<(i16, i16)> {
+    pub(crate) fn compute_rrect_spans(r: &Rect, ow: i16, oh: i16) -> Vec<(i16, i16)> {
         let width = r.right - r.left;
         let height = r.bottom - r.top;
         if width <= 0 || height <= 0 {
@@ -909,7 +909,7 @@ impl super::TrapDispatcher {
             return vec![(r.left, r.right); height as usize];
         }
 
-        let corner_spans = self.compute_oval_spans(ow, oh);
+        let corner_spans = Self::compute_oval_spans(ow, oh);
         let mut spans = Vec::new();
 
         let mid_y = oh / 2;
@@ -962,7 +962,7 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let spans = self.compute_rrect_spans(r, ow, oh);
+        let spans = Self::compute_rrect_spans(r, ow, oh);
 
         let r_inset = Rect {
             top: r.top + pen_h,
@@ -970,7 +970,7 @@ impl super::TrapDispatcher {
             bottom: r.bottom - pen_h,
             right: r.right - pen_w,
         };
-        let spans_inset = self.compute_rrect_spans(&r_inset, ow - 2 * pen_w, oh - 2 * pen_h);
+        let spans_inset = Self::compute_rrect_spans(&r_inset, ow - 2 * pen_w, oh - 2 * pen_h);
 
         self.draw_generic_shape(cpu, bus, r, op, false, |y, x| {
             let idx = (y - r.top) as usize;
