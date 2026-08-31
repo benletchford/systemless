@@ -8,7 +8,7 @@ Rez -append -o showcase.68k showcase.r
 
 # Build the same source as a native PowerPC CFM application.
 MrC -sym off -opt off showcase.c -o showcase.ppc.o
-PPCLink showcase.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o showcase.ppc
+PPCLink showcase.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"QuickDraw3DLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o showcase.ppc
 Rez -append -o showcase.ppc -d PowerPC showcase.r
 
 # Keep the PEF data fork and append the 68K CODE resources.

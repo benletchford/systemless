@@ -1013,6 +1013,8 @@ pub enum PpcImportDispatcherTarget {
     FrameOval,
     PaintOval,
     EraseOval,
+    PaintArc,
+    FrameRgn,
     PaintRgn,
     FillRgn,
     InvertRgn,
@@ -1055,6 +1057,8 @@ pub enum PpcImportDispatcherTarget {
     OpenPoly,
     ClosePoly,
     KillPoly,
+    PaintPoly,
+    FramePoly,
     FillPoly,
     NewCWindow,
     GetNewCWindow,
@@ -14895,6 +14899,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FrameOval") => PpcImportDispatcherTarget::FrameOval,
         ("InterfaceLib", "PaintOval") => PpcImportDispatcherTarget::PaintOval,
         ("InterfaceLib", "EraseOval") => PpcImportDispatcherTarget::EraseOval,
+        ("InterfaceLib", "PaintArc") => PpcImportDispatcherTarget::PaintArc,
+        ("InterfaceLib", "FrameRgn") => PpcImportDispatcherTarget::FrameRgn,
         ("InterfaceLib", "PaintRgn") => PpcImportDispatcherTarget::PaintRgn,
         ("InterfaceLib", "FillRgn") => PpcImportDispatcherTarget::FillRgn,
         ("InterfaceLib", "InvertRgn") => PpcImportDispatcherTarget::InvertRgn,
@@ -14937,6 +14943,8 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "OpenPoly") => PpcImportDispatcherTarget::OpenPoly,
         ("InterfaceLib", "ClosePoly") => PpcImportDispatcherTarget::ClosePoly,
         ("InterfaceLib", "KillPoly") => PpcImportDispatcherTarget::KillPoly,
+        ("InterfaceLib", "PaintPoly") => PpcImportDispatcherTarget::PaintPoly,
+        ("InterfaceLib", "FramePoly") => PpcImportDispatcherTarget::FramePoly,
         ("InterfaceLib", "FillPoly") => PpcImportDispatcherTarget::FillPoly,
         ("InterfaceLib", "NewCWindow") => PpcImportDispatcherTarget::NewCWindow,
         ("InterfaceLib", "GetNewCWindow") => PpcImportDispatcherTarget::GetNewCWindow,
@@ -18072,42 +18080,82 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::FrameOval
         | PpcImportDispatcherTarget::PaintOval
         | PpcImportDispatcherTarget::EraseOval => {
-            let color = if matches!(
-                binding.dispatcher_target,
-                PpcImportDispatcherTarget::EraseOval
-            ) {
-                *quickdraw_back_color
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
             } else {
-                *quickdraw_fore_color
-            };
-            let _ = ppc_draw_oval(
-                memory,
-                gworlds,
-                *current_gworld,
-                cpu.gpr[3],
-                color,
-                (!matches!(
+                let color = if matches!(
                     binding.dispatcher_target,
                     PpcImportDispatcherTarget::EraseOval
-                ))
-                .then(|| quickdraw_fore_indices.get(current_gworld).copied())
-                .flatten(),
-                matches!(
-                    binding.dispatcher_target,
-                    PpcImportDispatcherTarget::FrameOval
-                ),
-            );
+                ) {
+                    *quickdraw_back_color
+                } else {
+                    *quickdraw_fore_color
+                };
+                let _ = ppc_draw_oval(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    color,
+                    (!matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::EraseOval
+                    ))
+                    .then(|| quickdraw_fore_indices.get(current_gworld).copied())
+                    .flatten(),
+                    matches!(
+                        binding.dispatcher_target,
+                        PpcImportDispatcherTarget::FrameOval
+                    ),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PaintArc => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_rect(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_arc(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::FrameRgn => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_frame_region(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PaintRgn | PpcImportDispatcherTarget::FillRgn => {
-            let _ = ppc_paint_region(
-                memory,
-                gworlds,
-                *current_gworld,
-                cpu.gpr[3],
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-            );
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_region(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_region(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InvertRgn => {
@@ -18397,15 +18445,34 @@ fn dispatch_supported_import(
             ppc_dispose_tracked_handle(polygon, memory, handles, handle_states);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::FillPoly => {
-            let _ = ppc_paint_polygon(
-                memory,
-                gworlds,
-                *current_gworld,
-                cpu.gpr[3],
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-            );
+        PpcImportDispatcherTarget::FramePoly => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_frame_polygon(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                );
+            }
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::PaintPoly | PpcImportDispatcherTarget::FillPoly => {
+            if toolbox_startup.open_region_port == *current_gworld {
+                ppc_open_region_include_polygon(toolbox_startup, memory, cpu.gpr[3]);
+            } else {
+                let _ = ppc_paint_polygon(
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    cpu.gpr[3],
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NewCWindow => {
@@ -51477,6 +51544,83 @@ fn ppc_draw_oval(
     wrote
 }
 
+fn ppc_paint_arc(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    rect_ptr: u32,
+    start_angle: i16,
+    arc_angle: i16,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    // Inside Macintosh: Imaging With QuickDraw, pp. 3-73–3-74: PaintArc
+    // paints the wedge inside the oval, with zero at 12 o'clock and positive
+    // angles proceeding clockwise.
+    let Some(rect) = ppc_read_rect(memory, rect_ptr) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let width = right - left;
+    let height = bottom - top;
+    if width <= 0
+        || height <= 0
+        || arc_angle == 0
+        || !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16)
+    {
+        return false;
+    }
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+
+    let mut a_start = start_angle as f64;
+    let mut a_extent = arc_angle as f64;
+    if a_extent < 0.0 {
+        a_start += a_extent;
+        a_extent = -a_extent;
+    }
+    if a_extent > 360.0 {
+        a_extent = 360.0;
+    }
+    a_start = a_start.rem_euclid(360.0);
+    let a_end = a_start + a_extent;
+
+    let cx = (left as f64 + right as f64) / 2.0;
+    let cy = (top as f64 + bottom as f64) / 2.0;
+    let rx = width as f64 / 2.0;
+    let ry = height as f64 / 2.0;
+
+    let mut wrote = false;
+    for y in top.max(0)..bottom.min(front_buffer.height as i32) {
+        for x in left.max(0)..right.min(front_buffer.width as i32) {
+            let dx = (x as f64 - cx + 0.5) / rx;
+            let dy = (y as f64 - cy + 0.5) / ry;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq > 1.0 {
+                continue;
+            }
+            let angle = (-(y as f64 - cy + 0.5)).atan2(x as f64 - cx + 0.5);
+            let mut mac_angle = 90.0 - angle.to_degrees();
+            if mac_angle < 0.0 {
+                mac_angle += 360.0;
+            }
+            let in_arc = (mac_angle >= a_start && mac_angle < a_end)
+                || (a_end > 360.0 && mac_angle + 360.0 < a_end);
+            if in_arc {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+            }
+        }
+    }
+    wrote
+}
+
 fn ppc_paint_region(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -51511,6 +51655,77 @@ fn ppc_paint_region(
                 ..(i32::from(interval[1]) - i32::from(surface.left))
             {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+            }
+        }
+    }
+    wrote
+}
+
+fn ppc_frame_region(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    region_handle: u32,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    // Inside Macintosh: Imaging With QuickDraw, pp. 3-100–3-101: FrameRgn
+    // draws the outline just inside the region boundary using the pen size.
+    let Some(storage) = ppc_region_storage(memory, region_handle) else {
+        return false;
+    };
+    let Some((top, _, bottom, _)) = ppc_region_storage_bbox(&storage) else {
+        return true;
+    };
+    let Some(rows) = ppc_region_rows_for_band(&storage, top, bottom) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+    let pen_height = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+            .unwrap_or(1),
+    )
+    .max(1);
+    let pen_width = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+            .unwrap_or(1),
+    )
+    .max(1);
+
+    let row_contains = |row_idx: i32, x: i16| -> bool {
+        if row_idx < 0 || (row_idx as usize) >= rows.len() {
+            return false;
+        }
+        rows[row_idx as usize]
+            .chunks_exact(2)
+            .any(|interval| x >= interval[0] && x < interval[1])
+    };
+
+    let mut wrote = false;
+    for (row_idx, endpoints) in rows.iter().enumerate() {
+        let v = i32::from(top) + row_idx as i32;
+        let y = v - i32::from(surface.top);
+        for interval in endpoints.chunks_exact(2) {
+            for h in interval[0]..interval[1] {
+                let x = i32::from(h) - i32::from(surface.left);
+                let inside_inset = row_contains(row_idx as i32, h.saturating_add(pen_width as i16))
+                    && row_contains(row_idx as i32, h.saturating_sub(pen_width as i16))
+                    && row_contains(row_idx as i32 - pen_height, h)
+                    && row_contains(row_idx as i32 + pen_height, h);
+                if !inside_inset {
+                    wrote |=
+                        ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+                }
             }
         }
     }
@@ -72630,6 +72845,56 @@ fn ppc_open_region_include_rect(
     });
 }
 
+fn ppc_open_region_include_region(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    region_handle: u32,
+) {
+    // Inside Macintosh: Imaging With QuickDraw, pp. 3-87–3-89: while a
+    // region is open, drawing commands contribute to its collected outline.
+    let Some(storage) = ppc_region_storage(memory, region_handle) else {
+        return;
+    };
+    let Some((rect_top, rect_left, rect_bottom, rect_right)) = ppc_region_storage_bbox(&storage)
+    else {
+        return;
+    };
+    startup.open_region_bounds = Some(match startup.open_region_bounds {
+        Some((top, left, bottom, right)) => (
+            top.min(rect_top),
+            left.min(rect_left),
+            bottom.max(rect_bottom),
+            right.max(rect_right),
+        ),
+        None => (rect_top, rect_left, rect_bottom, rect_right),
+    });
+}
+
+fn ppc_open_region_include_polygon(
+    startup: &mut PpcToolboxStartupState,
+    memory: &mut PpcSectionMem,
+    polygon_handle: u32,
+) {
+    // Inside Macintosh: Imaging With QuickDraw, p. 3-82: framing a polygon
+    // while a region is open adds the polygon outline to that region.
+    let Some(ptr) = memory.read_u32_be(polygon_handle) else {
+        return;
+    };
+    let Some((rect_top, rect_left, rect_bottom, rect_right)) = ppc_read_rect(memory, ptr + 2)
+    else {
+        return;
+    };
+    startup.open_region_bounds = Some(match startup.open_region_bounds {
+        Some((top, left, bottom, right)) => (
+            top.min(rect_top),
+            left.min(rect_left),
+            bottom.max(rect_bottom),
+            right.max(rect_right),
+        ),
+        None => (rect_top, rect_left, rect_bottom, rect_right),
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ppc_open_rgn(
     memory: &mut PpcSectionMem,
@@ -73625,6 +73890,36 @@ fn ppc_paint_polygon(
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
+    }
+    wrote
+}
+
+fn ppc_frame_polygon(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    handle: u32,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    // Inside Macintosh: Imaging With QuickDraw, pp. 3-81–3-82: FramePoly
+    // plays back the polygon's line-drawing commands with the current pen.
+    let Some(points) = ppc_polygon_points(memory, handle).filter(|points| points.len() >= 2) else {
+        return false;
+    };
+    let mut wrote = false;
+    for i in 0..points.len() {
+        let from = points[i];
+        let to = points[(i + 1) % points.len()];
+        wrote |= ppc_line_to(
+            memory,
+            gworlds,
+            current_gworld,
+            from,
+            to,
+            color,
+            explicit_index,
+        );
     }
     wrote
 }
@@ -89861,6 +90156,8 @@ pub(crate) mod tests {
             ("FrameOval", PpcImportDispatcherTarget::FrameOval),
             ("PaintOval", PpcImportDispatcherTarget::PaintOval),
             ("EraseOval", PpcImportDispatcherTarget::EraseOval),
+            ("PaintArc", PpcImportDispatcherTarget::PaintArc),
+            ("FrameRgn", PpcImportDispatcherTarget::FrameRgn),
             ("PaintRgn", PpcImportDispatcherTarget::PaintRgn),
             ("FillRgn", PpcImportDispatcherTarget::FillRgn),
             ("InvertRgn", PpcImportDispatcherTarget::InvertRgn),
@@ -89869,6 +90166,8 @@ pub(crate) mod tests {
             ("OpenPoly", PpcImportDispatcherTarget::OpenPoly),
             ("ClosePoly", PpcImportDispatcherTarget::ClosePoly),
             ("KillPoly", PpcImportDispatcherTarget::KillPoly),
+            ("PaintPoly", PpcImportDispatcherTarget::PaintPoly),
+            ("FramePoly", PpcImportDispatcherTarget::FramePoly),
             ("FillPoly", PpcImportDispatcherTarget::FillPoly),
         ] {
             assert_eq!(
@@ -110961,7 +111260,7 @@ pub(crate) mod tests {
         assert_eq!(stats.commands, 1);
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels >= 8);
-        for offset in [4 * 16 + 4 * 2, 0 * 16 + 4 * 2, 4 * 16 + 7 * 2] {
+        for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
             assert_eq!(
                 loaded.memory.read_u16_be(pixmap_base + offset),
                 Some(0x03e0)
@@ -111118,7 +111417,7 @@ pub(crate) mod tests {
         assert_eq!(stats.commands, 1);
         assert_eq!(stats.triangles, 1);
         assert!(stats.pixels >= 8);
-        for offset in [4 * 16 + 4 * 2, 0 * 16 + 4 * 2, 4 * 16 + 7 * 2] {
+        for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
             assert_eq!(
                 loaded.memory.read_u16_be(window_base + offset),
                 Some(0x03e0)
@@ -111283,7 +111582,7 @@ pub(crate) mod tests {
                 .map(|front_buffer| front_buffer.base_addr),
             Some(main_base)
         );
-        for offset in [4 * 16 + 4 * 2, 0 * 16 + 4 * 2, 4 * 16 + 7 * 2] {
+        for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
             assert_eq!(loaded.memory.read_u16_be(back_base + offset), Some(0x03e0));
             assert_eq!(loaded.memory.read_u16_be(main_base + offset), Some(0));
         }
@@ -111306,7 +111605,7 @@ pub(crate) mod tests {
                 .map(|front_buffer| front_buffer.base_addr),
             Some(main_base)
         );
-        for offset in [4 * 16 + 4 * 2, 0 * 16 + 4 * 2, 4 * 16 + 7 * 2] {
+        for offset in [4 * 16 + 4 * 2, 4 * 2, 4 * 16 + 7 * 2] {
             assert_eq!(loaded.memory.read_u16_be(main_base + offset), Some(0x03e0));
         }
     }

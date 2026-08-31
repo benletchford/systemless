@@ -1,4 +1,5 @@
-//! Integration test exercising Toolbox Showcase for issue #1064.
+//! Integration test exercising Toolbox Showcase for issue #1078.
+#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 
@@ -9,17 +10,60 @@ use systemless::runner::FixtureRunner;
 
 const SHOWCASE_SIT: &[u8] = include_bytes!("toolbox-showcase/toolbox-showcase.sit");
 
+const MENU_APPLE: i16 = 128;
 const MENU_PAGES: i16 = 129;
 const MENU_STATE: i16 = 130;
+const MENU_FILE: i16 = 131;
+const MENU_OPTIONS: i16 = 132;
 
+const MENU_DIFFICULTY: i16 = 140;
+const MENU_SOUND: i16 = 141;
+const MENU_RENDERER: i16 = 142;
+
+/* Pages menu items */
 const ITEM_PAGE_GRAPHICS: i16 = 1;
 const ITEM_PAGE_CONTROLS: i16 = 2;
 const ITEM_PAGE_WINDOWS: i16 = 3;
+const ITEM_PAGE_DRAWING: i16 = 4;
+const ITEM_PAGE_PREFERENCES: i16 = 5;
+const ITEM_PAGE_DIALOGS: i16 = 6;
 
+/* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
 const ITEM_STATE_CHECKBOX: i16 = 2;
 const ITEM_STATE_SCROLLBAR: i16 = 3;
 const ITEM_STATE_AUX_WINDOW: i16 = 4;
+
+/* Options menu items */
+const ITEM_OPT_DIFFICULTY: i16 = 1;
+const ITEM_OPT_SOUND: i16 = 2;
+const ITEM_OPT_RENDERER: i16 = 3;
+const ITEM_OPT_RESET_PREFS: i16 = 5;
+const ITEM_OPT_LAUNCH_DIALOG: i16 = 6;
+
+/* Difficulty submenu items */
+const ITEM_DIFF_EASY: i16 = 1;
+const ITEM_DIFF_NORMAL: i16 = 2;
+const ITEM_DIFF_HARD: i16 = 3;
+
+/* Sound submenu items */
+const ITEM_SOUND_MUTE: i16 = 1;
+const ITEM_SOUND_FX_ONLY: i16 = 2;
+const ITEM_SOUND_MUSIC_ONLY: i16 = 3;
+const ITEM_SOUND_FULL: i16 = 4;
+
+/* Renderer submenu items */
+const ITEM_RENDERER_FLAT: i16 = 1;
+const ITEM_RENDERER_BEVEL: i16 = 2;
+const ITEM_RENDERER_CONTRAST: i16 = 3;
+
+/* File menu items */
+const ITEM_FILE_PREFERENCES: i16 = 1;
+const ITEM_FILE_OPTIONS: i16 = 2;
+const ITEM_FILE_QUIT: i16 = 4;
+
+/* Apple menu items */
+const ITEM_APPLE_ABOUT: i16 = 1;
 
 const REFERENCE_UPDATE_ENV: &str = "SYSTEMLESS_UPDATE_TOOLBOX_REFERENCES";
 
@@ -203,6 +247,39 @@ fn assert_graphics_page_rendered(runner: &mut FixtureRunner) {
     );
 }
 
+fn assert_drawing_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) {
+    // Star polygon center at local (110, 345) -> global (win_top + 110, win_left + 345)
+    // Gold fill: red/green prominent
+    let [star_r, star_g, star_b] =
+        screen_rgb(runner, (win_top + 110) as u16, (win_left + 345) as u16);
+    assert!(
+        star_r > 150 && star_g > 100 && star_b < 100,
+        "Drawing page star polygon was not rendered: rgb=({star_r}, {star_g}, {star_b})"
+    );
+
+    // Pie chart arc red slice at local (105, 470)
+    let [pie_r, pie_g, pie_b] = screen_rgb(runner, (win_top + 105) as u16, (win_left + 470) as u16);
+    assert!(
+        pie_r > pie_g.saturating_add(40) && pie_r > pie_b.saturating_add(40),
+        "Drawing page pie chart red arc was not rendered: rgb=({pie_r}, {pie_g}, {pie_b})"
+    );
+
+    // Raised 3D bevel white highlight at local (50, 22)
+    let [bev_r, bev_g, bev_b] = screen_rgb(runner, (win_top + 50) as u16, (win_left + 22) as u16);
+    assert!(
+        bev_r > 200 && bev_g > 200 && bev_b > 200,
+        "Drawing page 3D bevel highlight was not rendered: rgb=({bev_r}, {bev_g}, {bev_b})"
+    );
+
+    // Sunken gauge well green bar at local (110, 175)
+    let [gauge_r, gauge_g, gauge_b] =
+        screen_rgb(runner, (win_top + 110) as u16, (win_left + 175) as u16);
+    assert!(
+        gauge_g > gauge_r.saturating_add(30) && gauge_g > gauge_b.saturating_add(30),
+        "Drawing page sunken gauge bar was not rendered: rgb=({gauge_r}, {gauge_g}, {gauge_b})"
+    );
+}
+
 #[test]
 fn test_toolbox_showcase() {
     let mut runner = new_runner_with_screen_depth(8);
@@ -231,12 +308,13 @@ fn test_toolbox_showcase() {
     step_until(&mut runner, "initial menu and window readiness", |r| {
         let snapshot = r.guest_menu_snapshot();
         let has_pages_menu = snapshot.menus.iter().any(|m| m.id == MENU_PAGES);
+        let has_options_menu = snapshot.menus.iter().any(|m| m.id == MENU_OPTIONS);
         // Native PowerPC Window Manager state is owned by the PPC adapter;
         // the public dispatcher window probes currently describe only 68K.
         let has_window = powerpc || r.dispatcher().window_count() >= 1;
         let has_bounds = powerpc || r.dispatcher().window_bounds() != (0, 0, 0, 0);
         let graphics_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
-        has_pages_menu && has_window && has_bounds && graphics_checked
+        has_pages_menu && has_options_menu && has_window && has_bounds && graphics_checked
     });
 
     let snapshot = runner.guest_menu_snapshot();
@@ -252,6 +330,94 @@ fn test_toolbox_showcase() {
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS),
         "Windows page must not be checked initially"
     );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING),
+        "Drawing page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_PREFERENCES),
+        "Preferences page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DIALOGS),
+        "Dialogs page must not be checked initially"
+    );
+
+    // Validate hierarchical menu structure in snapshot
+    let file_menu = snapshot
+        .menus
+        .iter()
+        .find(|m| m.id == MENU_FILE)
+        .expect("File menu must be present in menu snapshot");
+    assert!(
+        file_menu.visible_in_menu_bar,
+        "File menu must be visible in menu bar"
+    );
+    assert!(
+        !file_menu.hierarchical,
+        "File menu must be a top-level menu"
+    );
+    assert_eq!(
+        file_menu.items[(ITEM_FILE_OPTIONS - 1) as usize].submenu_id,
+        Some(MENU_OPTIONS),
+        "Game Options must attach submenu 132"
+    );
+
+    let options_menu = snapshot
+        .menus
+        .iter()
+        .find(|m| m.id == MENU_OPTIONS)
+        .expect("Options menu must be present in menu snapshot");
+    assert!(
+        !options_menu.visible_in_menu_bar,
+        "Options submenu must not be visible in the menu bar"
+    );
+    assert!(
+        options_menu.hierarchical,
+        "Options menu must be registered as a hierarchical submenu"
+    );
+    assert_eq!(
+        options_menu.items[0].submenu_id,
+        Some(MENU_DIFFICULTY),
+        "Difficulty item must attach submenu 140"
+    );
+    assert_eq!(
+        options_menu.items[1].submenu_id,
+        Some(MENU_SOUND),
+        "Sound item must attach submenu 141"
+    );
+    assert_eq!(
+        options_menu.items[2].submenu_id,
+        Some(MENU_RENDERER),
+        "Renderer item must attach submenu 142"
+    );
+
+    let diff_menu = snapshot
+        .menus
+        .iter()
+        .find(|m| m.id == MENU_DIFFICULTY)
+        .expect("Difficulty submenu must be registered in snapshot");
+    assert!(
+        diff_menu.hierarchical,
+        "Difficulty submenu must be flagged hierarchical"
+    );
+    assert!(
+        !diff_menu.visible_in_menu_bar,
+        "Difficulty submenu must not be visible on the top menu bar"
+    );
+    assert!(
+        menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_NORMAL),
+        "Veteran (Normal) difficulty must be checked initially"
+    );
+    assert!(
+        menu_item_checked(&snapshot, MENU_SOUND, ITEM_SOUND_FULL),
+        "Full Audio must be checked initially"
+    );
+    assert!(
+        menu_item_checked(&snapshot, MENU_RENDERER, ITEM_RENDERER_BEVEL),
+        "QD3D Bevels renderer must be checked initially"
+    );
+
     if !powerpc {
         assert_eq!(
             runner.dispatcher().window_count(),
@@ -396,22 +562,195 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, powerpc, "03-windows.png");
 
-    // 4. Return to Graphics and verify that the auxiliary window is disposed.
+    // 4. Switch to Drawing & 3D Bevels page (disposing auxiliary window).
     assert!(
-        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_GRAPHICS),
-        "failed to queue selection of Graphics page"
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_DRAWING),
+        "failed to queue selection of Drawing page"
     );
-    step_until(
-        &mut runner,
-        "switch to Graphics page and dispose auxiliary window",
-        |r| {
-            let snapshot = r.guest_menu_snapshot();
-            let page_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
-            let aux_cleared = !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
-            let one_window = powerpc || r.dispatcher().window_count() == 1;
-            page_checked && aux_cleared && one_window
-        },
+    step_until(&mut runner, "switch to Drawing page", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        let page_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING);
+        let aux_cleared = !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
+        let one_window = powerpc || r.dispatcher().window_count() == 1;
+        page_checked && aux_cleared && one_window
+    });
+    step_until(&mut runner, "QuickDraw 3D page to finish rendering", |r| {
+        let [red, green, blue] = screen_rgb(r, (win_top + 110) as u16, (win_left + 345) as u16);
+        red > 150 && green > 100 && blue < 100
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING));
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, powerpc, "04-drawing.png");
+    assert_drawing_page_rendered(&mut runner, win_top, win_left);
+
+    // 5. Switch to Game Preferences and test bidirectional control & submenu synchronization.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_PREFERENCES),
+        "failed to queue selection of Game Preferences page"
     );
+    step_until(&mut runner, "switch to Game Preferences page", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_PREFERENCES)
+    });
+
+    // 5a. Click "Recruit (Easy)" radio button: local (80, 320)
+    click_point(&mut runner, win_top + 80, win_left + 320);
+    step_until(&mut runner, "select Easy difficulty radio", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_EASY)
+            && !menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_NORMAL)
+    });
+    let snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(
+        &snapshot,
+        MENU_DIFFICULTY,
+        ITEM_DIFF_EASY
+    ));
+
+    // 5b. Click "Nightmare (Hard)" radio button: local (130, 320)
+    click_point(&mut runner, win_top + 130, win_left + 320);
+    step_until(&mut runner, "select Hard difficulty radio", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_HARD)
+            && !menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_EASY)
+    });
+
+    // 5c. Toggle SFX checkbox off: local (80, 122)
+    click_point(&mut runner, win_top + 80, win_left + 122);
+    step_until(&mut runner, "toggle SFX checkbox off", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_SOUND, ITEM_SOUND_MUSIC_ONLY)
+    });
+
+    // 5d. Toggle Music checkbox off: local (105, 122)
+    click_point(&mut runner, win_top + 105, win_left + 122);
+    step_until(&mut runner, "toggle Music checkbox off", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_SOUND, ITEM_SOUND_MUTE)
+    });
+
+    // 5e. Click "Classic 2D Flat" renderer radio: local (205, 335)
+    click_point(&mut runner, win_top + 205, win_left + 335);
+    step_until(&mut runner, "select Flat renderer radio", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_RENDERER, ITEM_RENDERER_FLAT)
+    });
+
+    // 5f. Test hierarchical submenu command directly updates preferences state
+    assert!(
+        runner.select_guest_menu_item(MENU_DIFFICULTY, ITEM_DIFF_NORMAL),
+        "failed to select Veteran (Normal) from Difficulty submenu"
+    );
+    step_until(&mut runner, "submenu select Normal difficulty", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_DIFFICULTY, ITEM_DIFF_NORMAL)
+    });
+
+    assert!(
+        runner.select_guest_menu_item(MENU_SOUND, ITEM_SOUND_FULL),
+        "failed to select Full Audio from Sound submenu"
+    );
+    step_until(&mut runner, "submenu select Full Audio", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_SOUND, ITEM_SOUND_FULL)
+    });
+
+    assert!(
+        runner.select_guest_menu_item(MENU_RENDERER, ITEM_RENDERER_BEVEL),
+        "failed to select QD3D Bevels from Renderer submenu"
+    );
+    step_until(&mut runner, "submenu select QD3D Bevels", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_RENDERER, ITEM_RENDERER_BEVEL)
+    });
+
+    // Move volume scrollbar
+    click_point(&mut runner, win_top + 203, win_left + 207);
+    run_ticks(&mut runner, "Preferences page to settle", 1);
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, powerpc, "05-preferences.png");
+
+    // 6. Hold open the nested File > Game Options parent so the hierarchical
+    // indicator is part of the visual baseline, then exercise a leaf command.
+    runner.set_mouse_position(10, 146);
+    runner.push_mouse_down(10, 146);
+    run_ticks(&mut runner, "File menu to open", 2);
+    runner.set_mouse_position(49, 170);
+    run_ticks(&mut runner, "Game Options parent to highlight", 4);
+    assert_reference_frame(&mut runner, powerpc, "06-nested-menus.png");
+    runner.push_mouse_up(49, 170);
+    run_ticks(&mut runner, "File menu to close", 1);
+    assert!(runner.select_guest_menu_item(MENU_RENDERER, ITEM_RENDERER_CONTRAST));
+    step_until(&mut runner, "nested menu select High Contrast", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_RENDERER,
+            ITEM_RENDERER_CONTRAST,
+        )
+    });
+
+    // Restore QD3D Bevels through the deterministic semantic selector.
+    assert!(runner.select_guest_menu_item(MENU_RENDERER, ITEM_RENDERER_BEVEL));
+    step_until(&mut runner, "restore QD3D Bevels renderer", |r| {
+        menu_item_checked(&r.guest_menu_snapshot(), MENU_RENDERER, ITEM_RENDERER_BEVEL)
+    });
+
+    // 7. Switch to Dialogs & Alerts page and exercise modal dialog and alert sessions.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_DIALOGS),
+        "failed to queue selection of Dialogs page"
+    );
+    step_until(&mut runner, "switch to Dialogs page", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DIALOGS)
+    });
+
+    // 6a. Open Modal Preferences Dialog via button: local (317, 130)
+    click_point(&mut runner, win_top + 317, win_left + 130);
+    run_ticks(&mut runner, "Modal preferences dialog to open", 2);
+    assert_reference_frame(&mut runner, powerpc, "07-modal-dialog.png");
+    // Dialog bounds: {100, 130, 290, 470}
+    // Click Checkbox item 4 (Enable 3D): global (155, 300)
+    click_point(&mut runner, 155, 300);
+    // Click OK button item 1: global (260, 405)
+    click_point(&mut runner, 260, 405);
+    run_ticks(&mut runner, "Modal dialog to close", 2);
+
+    // 6b. Display About Alert via button: local (317, 325)
+    click_point(&mut runner, win_top + 317, win_left + 325);
+    run_ticks(&mut runner, "About alert to open", 2);
+    assert_reference_frame(&mut runner, powerpc, "08-alert.png");
+    // Alert bounds: {130, 150, 260, 450}
+    // Click OK button item 1: global (230, 395)
+    click_point(&mut runner, 230, 395);
+    run_ticks(&mut runner, "Alert to close", 2);
+
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, powerpc, "09-dialogs.png");
+
+    // 8. Menu-bar hover selection: press mouse down in File, hover/drag
+    // to Pages menu, and release over the Graphics item to select it.
+    runner.set_mouse_position(10, 146); // Options menu bar cell
+    runner.push_mouse_down(10, 146);
+    run_ticks(&mut runner, "Menu tracking start", 2);
+
+    runner.set_mouse_position(10, 56); // Drag across menu bar to Pages menu
+    run_ticks(&mut runner, "Menu tracking hover to Pages", 2);
+
+    runner.set_mouse_position(28, 56); // Hover down to Graphics item
+    run_ticks(&mut runner, "Menu tracking hover to Graphics item", 2);
+    assert_reference_frame(&mut runner, powerpc, "10-menu-hover.png");
+    runner.push_mouse_up(28, 56); // Release mouse to trigger selection
+
+    step_until(&mut runner, "hover-select switch to Graphics page", |r| {
+        let snapshot = r.guest_menu_snapshot();
+        let graphics_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
+        let aux_cleared = !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
+        let one_window = powerpc || r.dispatcher().window_count() == 1;
+        graphics_checked && aux_cleared && one_window
+    });
+
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS));
     assert!(!menu_item_checked(
@@ -420,19 +759,26 @@ fn test_toolbox_showcase() {
         ITEM_PAGE_CONTROLS
     ));
     assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_PREFERENCES
+    ));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DIALOGS));
     if !powerpc {
         assert_eq!(
             runner.dispatcher().window_count(),
             1,
-            "auxiliary window disposal must return window count to 1"
+            "window count must remain 1 after returning to Graphics"
         );
     }
     assert!(
         !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
-        "Auxiliary window state checkmark must be cleared"
+        "Auxiliary window state checkmark must remain cleared"
     );
     run_ticks(&mut runner, "returned Graphics page to settle", 1);
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "04-graphics-return.png");
+    assert_reference_frame(&mut runner, powerpc, "11-graphics-return.png");
 }
