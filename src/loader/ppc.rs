@@ -99,6 +99,12 @@ const PPC_IMPORT_DATA_SIZE: usize = 0x1000;
 const PPC_IMPORT_CTYPE_POINTER: u32 = PPC_IMPORT_DATA_BASE + 0x40c;
 const PPC_IMPORT_MATH_PI: u32 = PPC_IMPORT_DATA_BASE + 0x410;
 const PPC_IMPORT_MATH_FE_DFL_ENV: u32 = PPC_IMPORT_DATA_BASE + 0x418;
+const PPC_IMPORT_STD_DBL_EPSILON: u32 = PPC_IMPORT_DATA_BASE + 0x420;
+const PPC_IMPORT_STD_DBL_MAX: u32 = PPC_IMPORT_DATA_BASE + 0x428;
+const PPC_IMPORT_STD_DBL_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x430;
+const PPC_IMPORT_STD_FLT_EPSILON: u32 = PPC_IMPORT_DATA_BASE + 0x438;
+const PPC_IMPORT_STD_FLT_MAX: u32 = PPC_IMPORT_DATA_BASE + 0x43c;
+const PPC_IMPORT_STD_FLT_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x440;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
@@ -80988,6 +80994,12 @@ fn import_data_address_for(library_name: &str, symbol_name: &str) -> Option<u32>
         ("StdCLib", "_exit_status") => Some(PPC_IMPORT_DATA_BASE + 0x408),
         ("StdCLib", "_iob") => Some(PPC_STDIO_IOB_ADDR),
         ("StdCLib", "__p_CType") => Some(PPC_IMPORT_CTYPE_POINTER),
+        ("StdCLib", "_DBL_EPSILON") => Some(PPC_IMPORT_STD_DBL_EPSILON),
+        ("StdCLib", "_DBL_MAX") => Some(PPC_IMPORT_STD_DBL_MAX),
+        ("StdCLib", "_DBL_MIN") => Some(PPC_IMPORT_STD_DBL_MIN),
+        ("StdCLib", "_FLT_EPSILON") => Some(PPC_IMPORT_STD_FLT_EPSILON),
+        ("StdCLib", "_FLT_MAX") => Some(PPC_IMPORT_STD_FLT_MAX),
+        ("StdCLib", "_FLT_MIN") => Some(PPC_IMPORT_STD_FLT_MIN),
         // PowerPC Numerics exposes `pi` as an addressable MathLib export.
         // Some CFM clients label the import as a transition-vector symbol but
         // dereference it directly as a double, so bind the known export to
@@ -81008,6 +81020,15 @@ fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
     // PowerPC fenv_t is a 32-bit word, with zero selecting round-to-nearest
     // and leaving every floating-point exception flag clear.
     let _ = memory.write_u32_be(PPC_IMPORT_MATH_FE_DFL_ENV, 0);
+    // Universal Interfaces 3.4 float.h exposes these values by dereferencing
+    // imported StdCLib objects. Seed their exact IEEE single- and
+    // double-precision representations in big-endian guest memory.
+    let _ = memory.write_u64_be(PPC_IMPORT_STD_DBL_EPSILON, f64::EPSILON.to_bits());
+    let _ = memory.write_u64_be(PPC_IMPORT_STD_DBL_MAX, f64::MAX.to_bits());
+    let _ = memory.write_u64_be(PPC_IMPORT_STD_DBL_MIN, f64::MIN_POSITIVE.to_bits());
+    let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_EPSILON, f32::EPSILON.to_bits());
+    let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_MAX, f32::MAX.to_bits());
+    let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_MIN, f32::MIN_POSITIVE.to_bits());
     let _ = memory.write_bytes(
         PPC_STDIO_IOB_ADDR,
         &vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize],
@@ -123932,6 +123953,66 @@ pub(crate) mod tests {
             loaded.memory.read_u32_be(PPC_DATA_BASE),
             Some(PPC_IMPORT_MATH_FE_DFL_ENV)
         );
+    }
+
+    #[test]
+    fn stdclib_floating_point_data_imports_bind_to_ieee_constants() {
+        let double_constants = [
+            (b"_DBL_EPSILON".as_slice(), PPC_IMPORT_STD_DBL_EPSILON, f64::EPSILON.to_bits()),
+            (b"_DBL_MAX".as_slice(), PPC_IMPORT_STD_DBL_MAX, f64::MAX.to_bits()),
+            (b"_DBL_MIN".as_slice(), PPC_IMPORT_STD_DBL_MIN, f64::MIN_POSITIVE.to_bits()),
+        ];
+        for (symbol, expected_address, expected_bits) in double_constants {
+            let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+                b"StdCLib",
+                symbol,
+                1,
+                &[sm_index_reloc(0x30, 0)],
+            ));
+            let mut loaded = load_pef_application(&pef).unwrap();
+
+            assert_eq!(loaded.imports[0].class, 1);
+            assert_eq!(loaded.imports[0].address, expected_address);
+            assert_eq!(loaded.imports[0].tvector_address, None);
+            assert_eq!(expected_address % 8, 0);
+            assert_eq!(loaded.memory.read_u64_be(expected_address), Some(expected_bits));
+            assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(expected_address));
+        }
+
+        let float_constants = [
+            (b"_FLT_EPSILON".as_slice(), PPC_IMPORT_STD_FLT_EPSILON, f32::EPSILON.to_bits()),
+            (b"_FLT_MAX".as_slice(), PPC_IMPORT_STD_FLT_MAX, f32::MAX.to_bits()),
+            (b"_FLT_MIN".as_slice(), PPC_IMPORT_STD_FLT_MIN, f32::MIN_POSITIVE.to_bits()),
+        ];
+        for (symbol, expected_address, expected_bits) in float_constants {
+            let pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+                b"StdCLib",
+                symbol,
+                1,
+                &[sm_index_reloc(0x30, 0)],
+            ));
+            let mut loaded = load_pef_application(&pef).unwrap();
+
+            assert_eq!(loaded.imports[0].class, 1);
+            assert_eq!(loaded.imports[0].address, expected_address);
+            assert_eq!(loaded.imports[0].tvector_address, None);
+            assert_eq!(expected_address % 4, 0);
+            assert_eq!(loaded.memory.read_u32_be(expected_address), Some(expected_bits));
+            assert_eq!(loaded.memory.read_u32_be(PPC_DATA_BASE), Some(expected_address));
+        }
+
+        let occupied = [
+            PPC_IMPORT_MATH_PI,
+            PPC_IMPORT_MATH_FE_DFL_ENV,
+            PPC_IMPORT_STD_DBL_EPSILON,
+            PPC_IMPORT_STD_DBL_MAX,
+            PPC_IMPORT_STD_DBL_MIN,
+            PPC_IMPORT_STD_FLT_EPSILON,
+            PPC_IMPORT_STD_FLT_MAX,
+            PPC_IMPORT_STD_FLT_MIN,
+        ];
+        assert!(occupied.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(PPC_IMPORT_STD_FLT_MIN + 4 <= PPC_IMPORT_CTYPE_TABLE);
     }
 
     #[test]
