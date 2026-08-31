@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.4](https://github.com/benletchford/systemless/compare/v0.27.3...v0.27.4) (2026-08-31)
+
+
+### Bug Fixes
+
+* **quickdraw:** record dynamic pictures ([#1094](https://github.com/benletchford/systemless/issues/1094)) ([5fa923c](https://github.com/benletchford/systemless/commit/5fa923c8354c60a0f555c401c9b53d651b6a08fb))
+
 ## [0.27.3](https://github.com/benletchford/systemless/compare/v0.27.2...v0.27.3) (2026-08-31)
 
 
