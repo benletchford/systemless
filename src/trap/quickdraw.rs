@@ -8,6 +8,7 @@ use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::quickdraw::fonts::{font_id_for_name, font_name_for_id, get_font_face_scaled};
 use crate::quickdraw::text::get_glyph;
+use crate::trap::pict;
 use crate::trap::dispatch::{
     selector_operation_route, CachedCopyBitmapInfo, InverseTableCacheEntry, PortDrawState,
     RecentColorTableFetch, ScreenCopyBitsRect, SelectorOperationRoute, INVERSE_TABLE_CACHE_LIMIT,
@@ -1841,6 +1842,10 @@ impl super::TrapDispatcher {
                 self.tx_font = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_word(commands, 0x0003); // TxFont
+                    pict::recording_push_word(commands, self.tx_font as u16);
+                }
                 Ok(())
             }
 
@@ -1854,6 +1859,10 @@ impl super::TrapDispatcher {
                 self.tx_face = decode_text_face_style(bus.read_word(sp));
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_word(commands, 0x0004); // TxFace
+                    commands.extend_from_slice(&[self.tx_face as u8, 0]);
+                }
                 Ok(())
             }
 
@@ -1867,6 +1876,10 @@ impl super::TrapDispatcher {
                 self.tx_mode = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_word(commands, 0x0005); // TxMode
+                    pict::recording_push_word(commands, self.tx_mode as u16);
+                }
                 Ok(())
             }
 
@@ -1880,6 +1893,10 @@ impl super::TrapDispatcher {
                 self.tx_size = bus.read_word(sp) as i16;
                 cpu.write_reg(Register::A7, sp + 2);
                 self.sync_current_port_draw_state(bus);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_word(commands, 0x000D); // TxSize
+                    pict::recording_push_word(commands, self.tx_size as u16);
+                }
                 Ok(())
             }
 
@@ -2063,6 +2080,27 @@ impl super::TrapDispatcher {
                         self.tx_mode,
                         String::from_utf8_lossy(&bytes),
                     );
+                }
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    let len = usize::from(bus.read_byte(str_ptr));
+                    let text = bus.read_bytes(str_ptr + 1, len);
+                    pict::recording_push_long_text(commands, self.pn_loc.0, self.pn_loc.1, &text);
+                    let mut advance = 0i32;
+                    for &byte in &text {
+                        advance += if let Some((glyph, _)) =
+                            get_glyph(self.tx_font, self.tx_size, byte as char)
+                        {
+                            i32::from(self.glyph_advance(glyph))
+                        } else {
+                            i32::from(self.missing_glyph_advance())
+                        };
+                    }
+                    self.pn_loc.1 = self
+                        .pn_loc
+                        .1
+                        .saturating_add(self.proportional_text_width(advance));
+                    self.sync_current_port_draw_state(bus);
+                    return Some(Ok(()));
                 }
                 self.draw_string(cpu, bus, str_ptr);
                 self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
@@ -2579,10 +2617,8 @@ impl super::TrapDispatcher {
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
-                    Self::push_pict_word(commands, 0x0030); // frameRect
-                    for value in [r.top, r.left, r.bottom, r.right] {
-                        Self::push_pict_word(commands, value as u16);
-                    }
+                    pict::recording_push_rect(commands, 0x0030, (r.top, r.left, r.bottom, r.right));
+                    return Some(Ok(()));
                 }
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
@@ -2598,6 +2634,10 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 let r = read_rect(bus, rect_ptr);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_rect(commands, 0x0031, (r.top, r.left, r.bottom, r.right));
+                    return Some(Ok(()));
+                }
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
@@ -2828,6 +2868,16 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0040,
+                        (r.top, r.left, r.bottom, r.right),
+                        oval_width,
+                        oval_height,
+                    );
+                    return Some(Ok(()));
+                }
                 let spans = Self::compute_rrect_spans(&r, oval_width, oval_height);
                 if self.extend_recording_region_from_spans(r.top, &spans) {
                     return Some(Ok(()));
@@ -2850,6 +2900,16 @@ impl super::TrapDispatcher {
                 let rect_ptr = bus.read_long(sp + 4);
                 cpu.write_reg(Register::A7, sp + 8);
                 let r = read_rect(bus, rect_ptr);
+                if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
+                    pict::recording_push_round_rect(
+                        commands,
+                        0x0041,
+                        (r.top, r.left, r.bottom, r.right),
+                        oval_width,
+                        oval_height,
+                    );
+                    return Some(Ok(()));
+                }
                 if self.extend_recording_region(r.top, r.left, r.bottom, r.right) {
                     return Some(Ok(()));
                 }
@@ -21079,19 +21139,7 @@ impl super::TrapDispatcher {
         right: i16,
         commands: Vec<u8>,
     ) -> Vec<u8> {
-        let mut picture = Vec::with_capacity(16 + commands.len());
-        Self::push_pict_word(&mut picture, 0); // patched after encoding
-        for value in [top, left, bottom, right] {
-            Self::push_pict_word(&mut picture, value as u16);
-        }
-        // PICT v2 begins with the byte-sized VersionOp understood by both
-        // QuickDraw and Systemless, followed by alignment before word opcodes.
-        picture.extend_from_slice(&[0x11, 0x02, 0xFF, 0x00]);
-        picture.extend_from_slice(&commands);
-        Self::push_pict_word(&mut picture, 0x00FF); // EndOfPicture
-        let picture_size = u16::try_from(picture.len()).unwrap_or(0);
-        picture[0..2].copy_from_slice(&picture_size.to_be_bytes());
-        picture
+        pict::finish_recording((top, left, bottom, right), commands)
     }
 
     fn encode_bitmap_copy_pict(
@@ -45663,6 +45711,70 @@ mod tests {
         assert_ne!(bus.read_byte(screen_base + 1 + 8), 0);
         assert_ne!(bus.read_byte(screen_base + 2 + 2 * 8), 0);
         assert_eq!(bus.read_byte(screen_base + 4 + 4 * 8), 0);
+    }
+
+    #[test]
+    fn openpicture_records_round_rect_text_without_drawing_live_pixels() {
+        // Imaging With QuickDraw (1994), pp. 7-39--7-42: OpenPicture
+        // collects drawing commands and hides the pen until ClosePicture.
+        let (mut d, mut cpu, mut bus) = setup();
+        let screen_base = bus.alloc(64 * 64);
+        bus.fill_zeros(screen_base, 64 * 64);
+        d.screen_mode = (screen_base, 64, 64, 64, 8);
+        let frame = bus.alloc(8);
+        write_rect(&mut bus, frame, 0, 0, 40, 40);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, frame);
+        d.dispatch_quickdraw(true, 0x0F3, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = bus.read_long(TEST_SP + 4);
+
+        for trap in [0x0B1, 0x0B0] {
+            cpu.write_reg(Register::A7, TEST_SP);
+            bus.write_word(TEST_SP, 10); // ovalHeight
+            bus.write_word(TEST_SP + 2, 10); // ovalWidth
+            bus.write_long(TEST_SP + 4, frame);
+            d.dispatch_quickdraw(true, trap, &mut cpu, &mut bus)
+                .unwrap()
+                .unwrap();
+        }
+        let text = bus.alloc(5);
+        bus.write_bytes(text, b"\x04PICT");
+        d.pn_loc = (25, 6);
+        d.tx_face = 1;
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, text);
+        d.dispatch_quickdraw(true, 0x084, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+
+        assert!(bus.read_bytes(screen_base, 64 * 64).iter().all(|byte| *byte == 0));
+        cpu.write_reg(Register::A7, TEST_SP);
+        d.dispatch_quickdraw(true, 0x0F4, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let pic_ptr = bus.read_long(handle);
+        let bytes = bus.read_bytes(pic_ptr, usize::from(bus.read_word(pic_ptr)));
+        assert!(bytes.windows(2).any(|word| word == [0x00, 0x41]));
+        assert!(bytes.windows(2).any(|word| word == [0x00, 0x40]));
+        assert!(bytes.windows(2).any(|word| word == [0x00, 0x28]));
+
+        let (drawn, _) = crate::trap::pict::draw_picture(
+            &mut bus,
+            pic_ptr,
+            0,
+            0,
+            40,
+            40,
+            d.screen_mode,
+            &d.device_clut,
+            0,
+            None,
+        );
+        assert!(drawn);
+        assert_eq!(bus.read_byte(screen_base), 0);
+        assert_ne!(bus.read_byte(screen_base + 20 * 64 + 20), 0);
     }
 
     #[test]

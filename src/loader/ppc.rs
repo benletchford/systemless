@@ -2965,6 +2965,8 @@ pub struct PpcToolboxStartupState {
     pub open_region_bounds: Option<(i16, i16, i16, i16)>,
     /// Exact collected scanlines for framed shapes in an open region.
     pub open_region_rows: Option<(i16, Vec<Vec<i16>>)>,
+    /// PicHandle, recording port, frame, and PICT v2 command stream.
+    open_picture: Option<(u32, u32, (i16, i16, i16, i16), Vec<u8>)>,
     application_palette: u32,
     application_palette_updates: u16,
     palette_allocations: Vec<PpcPaletteAllocation>,
@@ -3028,6 +3030,7 @@ impl Default for PpcToolboxStartupState {
             open_region_save_handle: 0,
             open_region_bounds: None,
             open_region_rows: None,
+            open_picture: None,
             application_palette: 0,
             application_palette_updates: 0,
             palette_allocations: Vec::new(),
@@ -14872,7 +14875,6 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "HiliteMenu") => PpcImportDispatcherTarget::HiliteMenu,
         ("InterfaceLib", "InvalMenuBar") => PpcImportDispatcherTarget::InvalMenuBar,
         ("InterfaceLib", "OpenCPicture")
-        | ("InterfaceLib", "ClosePicture")
         | ("InterfaceLib", "LSetDrawingMode")
         | ("InterfaceLib", "DrawGrowIcon")
         | ("InterfaceLib", "DebugStr") => PpcImportDispatcherTarget::MenuNoop,
@@ -15537,7 +15539,8 @@ fn dispatcher_target_for_import(
             "AnimateEntry" | "AnimatePalette" | "BackPat" | "BackPixPat" | "CopyMask"
             | "CopyPalette" | "CTab2Palette" | "DisposeGDevice" | "DisposePalette" | "Exp1to3"
             | "Exp1to6" | "GetCPixel" | "GetEntryUsage" | "GetItemIcon" | "GetItemStyle"
-            | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture" | "PenPat" | "PlotIcon"
+            | "ClosePicture" | "GetNewPalette" | "NewGDevice" | "NewPalette" | "OpenPicture"
+            | "PenPat" | "PlotIcon"
             | "Palette2CTab" | "ScrollRect" | "SetEntryColor" | "SetEntryUsage" | "SetItemIcon"
             | "SetItemStyle" | "SetStdCProcs" | "SetStdProcs",
         ) => PpcImportDispatcherTarget::QuickDrawCompatibility,
@@ -17572,6 +17575,13 @@ fn dispatch_supported_import(
                     PPC_CGRAF_PORT_RGB_FG_COLOR_OFFSET,
                     color,
                 );
+                if let Some(commands) = ppc_open_picture_commands(toolbox_startup, *current_gworld)
+                {
+                    pict::recording_push_word(commands, 0x001A);
+                    for component in [color.red, color.green, color.blue] {
+                        pict::recording_push_word(commands, component);
+                    }
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -17930,19 +17940,31 @@ fn dispatch_supported_import(
                         decode_mac_roman(&bytes),
                     );
                 }
-                let advance = ppc_draw_text_bytes_styled(
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    (*quickdraw_pen_h, *quickdraw_pen_v),
-                    text_font,
-                    *quickdraw_text_size,
-                    *quickdraw_text_mode,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                    text_style,
-                    &bytes,
-                );
+                let advance = if let Some(commands) =
+                    ppc_open_picture_commands(toolbox_startup, *current_gworld)
+                {
+                    pict::recording_push_long_text(
+                        commands,
+                        *quickdraw_pen_v,
+                        *quickdraw_pen_h,
+                        &bytes,
+                    );
+                    ppc_text_width_bytes(text_font, *quickdraw_text_size, text_style, &bytes)
+                } else {
+                    ppc_draw_text_bytes_styled(
+                        memory,
+                        gworlds,
+                        *current_gworld,
+                        (*quickdraw_pen_h, *quickdraw_pen_v),
+                        text_font,
+                        *quickdraw_text_size,
+                        *quickdraw_text_mode,
+                        *quickdraw_fore_color,
+                        quickdraw_fore_indices.get(current_gworld).copied(),
+                        text_style,
+                        &bytes,
+                    )
+                };
                 *quickdraw_pen_h = (*quickdraw_pen_h).saturating_add(advance);
                 ppc_sync_gworld_pen(memory, *current_gworld, *quickdraw_pen_h, *quickdraw_pen_v);
             }
@@ -17961,6 +17983,10 @@ fn dispatch_supported_import(
                     cpu.gpr[3] as u16,
                 );
             }
+            if let Some(commands) = ppc_open_picture_commands(toolbox_startup, *current_gworld) {
+                pict::recording_push_word(commands, 0x0003);
+                pict::recording_push_word(commands, cpu.gpr[3] as u16);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TextFace => {
@@ -17969,6 +17995,10 @@ fn dispatch_supported_import(
                     *current_gworld + PPC_CGRAF_PORT_TX_FACE_OFFSET,
                     cpu.gpr[3] as u8,
                 );
+            }
+            if let Some(commands) = ppc_open_picture_commands(toolbox_startup, *current_gworld) {
+                pict::recording_push_word(commands, 0x0004);
+                commands.extend_from_slice(&[cpu.gpr[3] as u8, 0]);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -17980,6 +18010,10 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_text_size,
             );
+            if let Some(commands) = ppc_open_picture_commands(toolbox_startup, *current_gworld) {
+                pict::recording_push_word(commands, 0x0005);
+                pict::recording_push_word(commands, *quickdraw_text_mode as u16);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TextSize => {
@@ -17996,6 +18030,10 @@ fn dispatch_supported_import(
                 *quickdraw_text_mode,
                 *quickdraw_text_size,
             );
+            if let Some(commands) = ppc_open_picture_commands(toolbox_startup, *current_gworld) {
+                pict::recording_push_word(commands, 0x000D);
+                pict::recording_push_word(commands, *quickdraw_text_size as u16);
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PaintRect => {
@@ -18011,16 +18049,23 @@ fn dispatch_supported_import(
                     quickdraw_fore_color.blue,
                 );
             }
-            let _ = ppc_paint_rect(
-                cpu,
-                memory,
-                gworlds,
-                *current_gworld,
-                *quickdraw_fore_color,
-                quickdraw_fore_indices.get(current_gworld).copied(),
-                *quickdraw_back_color,
-                &toolbox_startup.quickdraw_pen_pattern,
-            );
+            if let (Some(commands), Some(rect)) = (
+                ppc_open_picture_commands(toolbox_startup, *current_gworld),
+                ppc_read_rect(memory, cpu.gpr[3]),
+            ) {
+                pict::recording_push_rect(commands, 0x0031, rect);
+            } else {
+                let _ = ppc_paint_rect(
+                    cpu,
+                    memory,
+                    gworlds,
+                    *current_gworld,
+                    *quickdraw_fore_color,
+                    quickdraw_fore_indices.get(current_gworld).copied(),
+                    *quickdraw_back_color,
+                    &toolbox_startup.quickdraw_pen_pattern,
+                );
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::EraseRect => {
@@ -18184,7 +18229,18 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrameRoundRect => {
-            if toolbox_startup.open_region_port == *current_gworld {
+            if let (Some(commands), Some(rect)) = (
+                ppc_open_picture_commands(toolbox_startup, *current_gworld),
+                ppc_read_rect(memory, cpu.gpr[3]),
+            ) {
+                pict::recording_push_round_rect(
+                    commands,
+                    0x0040,
+                    rect,
+                    cpu.gpr[4] as u16 as i16,
+                    cpu.gpr[5] as u16 as i16,
+                );
+            } else if toolbox_startup.open_region_port == *current_gworld {
                 if let Some((top, left, bottom, right)) = ppc_read_rect(memory, cpu.gpr[3]) {
                     let rect = Rect {
                         top,
@@ -26147,9 +26203,36 @@ fn ppc_dispatch_quickdraw_compatibility(
             *last_mem_error = if handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
+                toolbox_startup.open_picture = Some((handle, current_gworld, rect, Vec::new()));
                 PPC_NO_ERR
             };
             PpcImportAction::Return(handle)
+        }
+        "ClosePicture" => {
+            if let Some((handle, _, frame, commands)) = toolbox_startup.open_picture.take() {
+                let picture = pict::finish_recording(frame, commands);
+                let size = u32::try_from(picture.len()).unwrap_or(u32::MAX);
+                let result = ppc_set_handle_size(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    handle,
+                    size,
+                );
+                if result == PPC_NO_ERR {
+                    if let Some(ptr) = memory.read_u32_be(handle) {
+                        *last_mem_error = if memory.write_bytes(ptr, &picture).is_some() {
+                            PPC_NO_ERR
+                        } else {
+                            PPC_PARAM_ERR
+                        };
+                    }
+                } else {
+                    *last_mem_error = result;
+                }
+            }
+            PpcImportAction::ReturnPreserve
         }
         "PlotIcon" => {
             let rect = ppc_read_rect(memory, cpu.gpr[3]);
@@ -51876,6 +51959,19 @@ fn ppc_text_bytes_advance_for_font(bytes: &[u8], text_font: i16, text_size: i16)
     ppc_scale_font_value(base_advance, numerator, denominator)
 }
 
+fn ppc_text_width_bytes(text_font: i16, text_size: i16, style: u8, bytes: &[u8]) -> i16 {
+    let style = QuickDrawTextStyle::from_bits(style);
+    let (face, numerator, denominator) = get_font_face_scale_ratio(text_font, text_size);
+    let base_advance = bytes.iter().fold(0i32, |advance, ch| {
+        advance.saturating_add(
+            get_glyph(text_font, face.size, *ch as char)
+                .map(|(glyph, _)| style.glyph_advance(i32::from(glyph.advance)))
+                .unwrap_or_else(|| style.glyph_advance(6)),
+        )
+    });
+    ppc_scale_font_value(base_advance, numerator, denominator)
+}
+
 fn ppc_scale_font_value(value: i32, numerator: i32, denominator: i32) -> i16 {
     let scaled = value
         .saturating_mul(numerator)
@@ -72924,6 +73020,17 @@ fn ppc_open_region_include_point(startup: &mut PpcToolboxStartupState, h: i16, v
         Some((top, left, bottom, right)) => (top.min(v), left.min(h), bottom.max(v), right.max(h)),
         None => (v, h, v, h),
     });
+}
+
+fn ppc_open_picture_commands(
+    startup: &mut PpcToolboxStartupState,
+    current_gworld: u32,
+) -> Option<&mut Vec<u8>> {
+    startup
+        .open_picture
+        .as_mut()
+        .filter(|(_, port, _, _)| *port == current_gworld)
+        .map(|(_, _, _, commands)| commands)
 }
 
 fn ppc_open_region_include_rows(
@@ -143781,6 +143888,104 @@ pub(crate) mod tests {
                 .and_then(|ptr| loaded.memory.read_u16_be(ptr))
                 .unwrap()
                 > 10
+        );
+    }
+
+    #[test]
+    fn powerpc_openpicture_records_and_replays_dynamic_commands() {
+        // Imaging With QuickDraw (1994), pp. 7-39--7-45: commands issued
+        // between OpenPicture and ClosePicture are hidden, retained, and replayed.
+        let pef = synthetic_pef_with_import(b"OpenPicture");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x1800;
+        let frame = scratch;
+        let color = scratch + 8;
+        let text = scratch + 16;
+        let destination = scratch + 32;
+        loaded.memory.add_region(scratch, vec![0; 64]);
+        ppc_write_rect(&mut loaded.memory, frame, 0, 0, 40, 40).unwrap();
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            color,
+            PpcRgbColor {
+                red: 0xEEEE,
+                green: 0x7777,
+                blue: 0x1111,
+            },
+        )
+        .unwrap();
+        loaded.memory.write_bytes(text, b"\x04PICT").unwrap();
+        ppc_write_rect(&mut loaded.memory, destination, 50, 50, 90, 90).unwrap();
+        let surface = ppc_live_quickdraw_surface(
+            &mut loaded.memory,
+            &loaded.gworlds,
+            loaded.current_gworld,
+        )
+        .unwrap();
+        let before = ppc_quickdraw_read_pixel(
+            &mut loaded.memory,
+            surface.front_buffer,
+            surface.local_point((20, 20)),
+        );
+
+        loaded.cpu.gpr[3] = frame;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+        let handle = loaded.cpu.gpr[3];
+        assert_ne!(handle, 0);
+        loaded.cpu.gpr[3] = color;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
+        loaded.cpu.gpr[3] = frame;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        loaded.cpu.gpr[3] = frame;
+        loaded.cpu.gpr[4] = 10;
+        loaded.cpu.gpr[5] = 10;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::FrameRoundRect);
+        loaded.cpu.gpr[3] = 3;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextFont);
+        loaded.cpu.gpr[3] = 9;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextSize);
+        loaded.cpu.gpr[3] = 1;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::TextFace);
+        loaded.cpu.gpr[3] = 6;
+        loaded.cpu.gpr[4] = 25;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::MoveTo);
+        loaded.cpu.gpr[3] = text;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::DrawString);
+        assert_eq!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                surface.front_buffer,
+                surface.local_point((20, 20)),
+            ),
+            before,
+            "recording must not paint into the live port"
+        );
+
+        loaded.imports[0].symbol_name = "ClosePicture".to_string();
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::QuickDrawCompatibility);
+        let picture = ppc_handle_bytes(&mut loaded.memory, &loaded.handles, handle).unwrap();
+        for opcode in [[0x00, 0x31], [0x00, 0x40], [0x00, 0x28]] {
+            assert!(picture.windows(2).any(|word| word == opcode));
+        }
+        loaded.cpu.gpr[3] = handle;
+        loaded.cpu.gpr[4] = destination;
+        assert!(ppc_draw_picture(
+            &mut loaded.cpu,
+            &mut loaded.memory,
+            &loaded.handles,
+            &loaded.vfs_resources,
+            &loaded.gworlds,
+            loaded.current_gworld,
+            &loaded.screen_clut,
+            &mut loaded.color_manager_clut,
+        ));
+        assert_ne!(
+            ppc_quickdraw_read_pixel(
+                &mut loaded.memory,
+                surface.front_buffer,
+                surface.local_point((70, 70)),
+            ),
+            before
         );
     }
 
