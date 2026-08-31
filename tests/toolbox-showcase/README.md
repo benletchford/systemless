@@ -82,7 +82,7 @@ patterns, and window chrome can vary between compatible OS installations.
 | Graphics | <img src="reference/systemless-68k/01-graphics.png" alt="Graphics page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> |
 | Controls after interaction | <img src="reference/systemless-68k/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> |
 | Windows | <img src="reference/systemless-68k/03-windows.png" alt="Windows page and auxiliary window in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page and auxiliary window in BasiliskII" width="360"> |
-| Graphics after window disposal | <img src="reference/systemless-68k/04-graphics-return.png" alt="Returned Graphics page in Systemless after disposing the 68K auxiliary window" width="360"> | Same visual contract as the initial Graphics page |
+| Graphics after window disposal | <img src="reference/systemless-68k/04-graphics-return.png" alt="Returned Graphics page in Systemless after disposing the 68K auxiliary window" width="360"> | <img src="reference/basiliskii-68k/04-graphics-return.png" alt="Returned Graphics page in BasiliskII after disposing the auxiliary window" width="360"> |
 
 ### PowerPC
 
@@ -91,7 +91,7 @@ patterns, and window chrome can vary between compatible OS installations.
 | Graphics | <img src="reference/systemless-ppc/01-graphics.png" alt="Graphics page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="360"> |
 | Controls after interaction | <img src="reference/systemless-ppc/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/02-controls.png" alt="Interacted Controls page and State menu in SheepShaver" width="360"> |
 | Windows | <img src="reference/systemless-ppc/03-windows.png" alt="Windows page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page and auxiliary window in SheepShaver" width="360"> |
-| Graphics after window disposal | <img src="reference/systemless-ppc/04-graphics-return.png" alt="Returned Graphics page in Systemless after disposing the PowerPC auxiliary window" width="360"> | Same visual contract as the initial Graphics page |
+| Graphics after window disposal | <img src="reference/systemless-ppc/04-graphics-return.png" alt="Returned Graphics page in Systemless after disposing the PowerPC auxiliary window" width="360"> | <img src="reference/sheepshaver-ppc/04-graphics-return.png" alt="Returned Graphics page in SheepShaver after disposing the auxiliary window" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
 state rather than fixed delays, and compares all four rendered frames. To
