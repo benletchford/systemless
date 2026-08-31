@@ -3868,15 +3868,35 @@ impl super::TrapDispatcher {
             screen_height,
         );
         let (wind_top, wind_left, wind_bottom, wind_right) = self.window_bounds;
+        let font_id: i16 = 0;
+        let font_size: i16 = 12;
+        let metrics = get_font_metrics(font_id, font_size);
+        let title_width = self.window_title.chars().fold(0i16, |width, ch| {
+            width.saturating_add(
+                get_glyph(font_id, font_size, ch)
+                    .map(|(glyph, _)| glyph.advance as i16)
+                    .unwrap_or(6),
+            )
+        });
 
         // Title bar area: drawn ABOVE the content rect
         // Clamp to menu bar height — the Window Manager never draws
         // chrome into the menu bar area.
         let menu_bar_height = bus.read_word(crate::memory::globals::addr::MBAR_HEIGHT) as i16;
-        let tb_top = (wind_top - 19).max(menu_bar_height);
-        let tb_bottom = wind_top - 1;
-        let tb_left = wind_left - 1;
-        let tb_right = wind_right + 1;
+        let chrome = crate::window_manager::standard_window_chrome(
+            self.window_bounds,
+            menu_bar_height,
+            title_width,
+            metrics.ascent,
+            metrics.descent,
+            !self.window_title.is_empty(),
+            active,
+            Self::window_is_document_proc(self.window_proc_id),
+            self.window_proc_id == 5,
+            self.go_away_flag,
+        );
+        let (tb_top, tb_left, tb_bottom_exclusive, tb_right) = chrome.background;
+        let tb_bottom = tb_bottom_exclusive.saturating_sub(1);
 
         // Fill title bar with white (exclusive bottom)
         Self::fb_fill_rect(
@@ -3931,23 +3951,10 @@ impl super::TrapDispatcher {
         Self::fb_vline(bus, screen, tb_right - 1, tb_top, tb_bottom + 1, true);
 
         // Calculate title text area if we have a title
-        let font_id: i16 = 0; // Chicago
-        let font_size: i16 = 12;
-        let metrics = get_font_metrics(font_id, font_size);
-        let text_height = metrics.ascent + metrics.descent;
-        let tb_interior_height = tb_bottom - tb_top - 1;
-        let text_y = tb_top + 1 + (tb_interior_height - text_height) / 2 + metrics.ascent;
+        let text_y = chrome.title_baseline.saturating_add(5);
 
         let (title_clear_left, title_clear_right) = if !self.window_title.is_empty() {
-            let mut title_width: i16 = 0;
-            for ch in self.window_title.chars() {
-                if let Some((glyph, _)) = get_glyph(font_id, font_size, ch) {
-                    title_width += glyph.advance as i16;
-                } else {
-                    title_width += 6;
-                }
-            }
-            let text_x = tb_left + (tb_right - tb_left - title_width) / 2;
+            let text_x = chrome.title_h;
             (text_x - 8, text_x + title_width + 8)
         } else {
             (tb_right, tb_right) // No clear area
@@ -4923,7 +4930,7 @@ impl super::TrapDispatcher {
         // visible child in front-to-back order. During the odd phase of the
         // selection flash, suppress only the deepest selected row while the
         // pixels are drawn; the logical tracking state must remain intact.
-        if let Some((active_menu, dropdowns, hidden_depth)) =
+        if let Some((_active_menu, dropdowns, hidden_depth)) =
             self.menu_tracking.as_ref().map(|tracking| {
                 let dropdowns = std::iter::once((tracking.menu_handle, tracking.dropdown_rect()))
                     .chain(
@@ -4949,9 +4956,10 @@ impl super::TrapDispatcher {
                 (tracking.menu_handle, dropdowns, hidden_depth)
             })
         {
-            if let Some(active_menu) = self.menu_index_for_handle(active_menu) {
-                self.highlight_menu_title(bus, active_menu);
-            }
+            // draw_menu_bar_to_fb already rendered the title selected by
+            // TheMenu. Reapplying the classic MBDF highlight here would
+            // invert that title a second time and make an open menu look
+            // inactive. The retained overlay below owns only menu panes.
             let hidden_item = hidden_depth.and_then(|depth| {
                 self.menu_tracking.as_mut().and_then(|tracking| {
                     if depth == 0 {

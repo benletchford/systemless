@@ -1271,12 +1271,9 @@ impl super::TrapDispatcher {
         } else {
             content_rect.0.saturating_sub(19).max(mbar_h)
         };
-        (
-            title_top,
-            content_rect.1.saturating_sub(1),
-            content_rect.2.saturating_add(2),
-            content_rect.3.saturating_add(2),
-        )
+        let mut structure = crate::window_manager::standard_window_structure_bounds(content_rect);
+        structure.0 = title_top;
+        structure
     }
 
     pub(super) fn window_structure_global_rect_for_proc(

@@ -48470,16 +48470,16 @@ fn ppc_window_structure_bounds(
 ) -> (i16, i16, i16, i16) {
     let has_title_bar = ppc_window_proc_has_title_bar(proc_id);
     let border: i16 = if has_title_bar { 1 } else { 6 };
-    (
-        if has_title_bar {
-            content.0.saturating_sub(18)
-        } else {
-            content.0.saturating_sub(border)
-        },
-        content.1.saturating_sub(border),
-        content.2.saturating_add(border),
-        content.3.saturating_add(border),
-    )
+    if has_title_bar {
+        crate::window_manager::standard_window_structure_bounds(content)
+    } else {
+        (
+            content.0.saturating_sub(border),
+            content.1.saturating_sub(border),
+            content.2.saturating_add(border),
+            content.3.saturating_add(border),
+        )
+    }
 }
 
 fn ppc_window_proc_id(memory: &mut PpcSectionMem, window: u32) -> i16 {
@@ -48806,8 +48806,8 @@ fn ppc_draw_standard_window_frame(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
     window: u32,
-    width: i16,
-    height: i16,
+    _width: i16,
+    _height: i16,
     go_away: bool,
 ) {
     // Macintosh Toolbox Essentials (1992), pp. 4-24--4-27: the standard
@@ -48816,64 +48816,13 @@ fn ppc_draw_standard_window_frame(
         .read_u8(window.wrapping_add(PPC_CWINDOW_HILITED_OFFSET))
         .unwrap_or(0)
         != 0;
-    let is_movable_dialog = ppc_window_proc_id(memory, window) == 5;
-    let has_close_box = active && !is_movable_dialog && go_away;
-    let white = PPC_RGB_WHITE;
-    let (global_top, global_left) = memory
+    let proc_id = ppc_window_proc_id(memory, window);
+    let Some(content) = memory
         .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
         .and_then(|region| ppc_read_rgn_bbox(memory, region))
-        .map(|(top, left, _, _)| (top, left))
-        .unwrap_or((0, 0));
-    let global_rect = |(top, left, bottom, right): (i16, i16, i16, i16)| {
-        (
-            global_top.saturating_add(top),
-            global_left.saturating_add(left),
-            global_top.saturating_add(bottom),
-            global_left.saturating_add(right),
-        )
+    else {
+        return;
     };
-    for (rect, color) in [
-        ((-18, 0, 0, width), white),
-        ((-1, -1, 0, width.saturating_add(1)), PPC_RGB_BLACK),
-        ((-18, -1, height.saturating_add(1), 0), PPC_RGB_BLACK),
-        (
-            (
-                -18,
-                width,
-                height.saturating_add(1),
-                width.saturating_add(1),
-            ),
-            PPC_RGB_BLACK,
-        ),
-        (
-            (
-                height,
-                -1,
-                height.saturating_add(1),
-                width.saturating_add(1),
-            ),
-            PPC_RGB_BLACK,
-        ),
-    ] {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            global_rect(rect),
-            color,
-            None,
-        );
-    }
-    if is_movable_dialog {
-        let _ = ppc_paint_rect_bounds(
-            memory,
-            gworlds,
-            PPC_MAIN_GWORLD,
-            global_rect((-18, -1, -17, width.saturating_add(1))),
-            PPC_RGB_BLACK,
-            None,
-        );
-    }
     let title = memory
         .read_u32_be(window + PPC_CWINDOW_TITLE_HANDLE_OFFSET)
         .filter(|handle| *handle != 0)
@@ -48883,87 +48832,30 @@ fn ppc_draw_standard_window_frame(
         .unwrap_or_default();
     let title_width =
         ppc_text_bytes_advance_for_font(&title, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
-    let title_h = width.saturating_sub(title_width) / 2;
-    let (title_clear_left, title_clear_right) = if title.is_empty() {
-        (width, width)
-    } else {
-        (
-            title_h.saturating_sub(6),
-            title_h.saturating_add(title_width).saturating_add(6),
-        )
-    };
-
-    if has_close_box {
-        let close_top = -15;
-        let close_left = 8;
-        for rect in [
-            (close_top, close_left, close_top + 1, close_left + 11),
-            (close_top, close_left, close_top + 11, close_left + 1),
-            (
-                close_top + 2,
-                close_left + 9,
-                close_top + 10,
-                close_left + 10,
-            ),
-            (
-                close_top + 9,
-                close_left + 2,
-                close_top + 10,
-                close_left + 10,
-            ),
-        ] {
-            let _ = ppc_paint_rect_bounds(
-                memory,
-                gworlds,
-                PPC_MAIN_GWORLD,
-                global_rect(rect),
-                PPC_RGB_BLACK,
-                None,
-            );
-        }
-    }
-
-    if active {
-        let stripe_left = 1;
-        let stripe_right = width.saturating_sub(1);
-        let (close_gap_left, close_gap_right) = if has_close_box {
-            (7, 20)
-        } else {
-            (stripe_right, stripe_right)
-        };
-        for top in [-17, -15, -13] {
-            if has_close_box {
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    PPC_MAIN_GWORLD,
-                    global_rect((top, stripe_left, top + 1, close_gap_left)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-            }
-            let left_start = if has_close_box {
-                close_gap_right
-            } else {
-                stripe_left
-            };
-            for (left, right) in [
-                (left_start, title_clear_left),
-                (title_clear_right, stripe_right),
-            ] {
-                if left >= right {
-                    continue;
-                }
-                let _ = ppc_paint_rect_bounds(
-                    memory,
-                    gworlds,
-                    PPC_MAIN_GWORLD,
-                    global_rect((top, left, top + 1, right)),
-                    PPC_RGB_BLACK,
-                    None,
-                );
-            }
-        }
+    let title_metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
+    let menu_bar_height = memory.read_u16_be(PPC_MBAR_HEIGHT_ADDR).unwrap_or(20) as i16;
+    let chrome = crate::window_manager::standard_window_chrome(
+        content,
+        menu_bar_height,
+        title_width,
+        title_metrics.ascent,
+        title_metrics.descent,
+        !title.is_empty(),
+        active,
+        matches!(proc_id, 0 | 4 | 8 | 12),
+        proc_id == 5,
+        go_away,
+    );
+    let _ = ppc_paint_rect_bounds(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        chrome.background,
+        PPC_RGB_WHITE,
+        None,
+    );
+    for rect in chrome.ink {
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 
     if !title.is_empty() {
@@ -48971,10 +48863,7 @@ fn ppc_draw_standard_window_frame(
             memory,
             gworlds,
             PPC_MAIN_GWORLD,
-            (
-                global_left.saturating_add(title_h),
-                global_top.saturating_sub(5),
-            ),
+            (chrome.title_h, chrome.title_baseline),
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             PPC_QD_TEXT_MODE_SRC_OR,
@@ -49130,27 +49019,75 @@ fn ppc_draw_dialog_box_frame(
         WINDOW_GRAY,
         None,
     );
-    let outer_bottom = height.saturating_add(BORDER);
-    let outer_right = width.saturating_add(BORDER);
+    let Some((top, left, bottom, right)) = memory
+        .read_u32_be(window + PPC_CWINDOW_CONTENT_RGN_OFFSET)
+        .and_then(|region| ppc_read_rgn_bbox(memory, region))
+    else {
+        return;
+    };
+    let outer_top = top.saturating_sub(BORDER);
+    let outer_left = left.saturating_sub(BORDER);
+    let outer_bottom = bottom.saturating_add(BORDER);
+    let outer_right = right.saturating_add(BORDER);
     for rect in [
-        (-BORDER, -BORDER, 0, outer_right),
-        (height, -BORDER, outer_bottom, outer_right),
-        (0, -BORDER, height, 0),
-        (0, width, height, outer_right),
+        (outer_top, outer_left, top, outer_right),
+        (bottom, outer_left, outer_bottom, outer_right),
+        (top, outer_left, bottom, left),
+        (top, right, bottom, outer_right),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, WINDOW_GRAY, None);
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, WINDOW_GRAY, None);
     }
     for rect in [
-        (-BORDER, -BORDER, -BORDER + 1, outer_right),
-        (outer_bottom - 1, -BORDER, outer_bottom, outer_right),
-        (-BORDER, -BORDER, outer_bottom, -BORDER + 1),
-        (-BORDER, outer_right - 1, outer_bottom, outer_right),
-        (-1, -1, 0, width + 1),
-        (height, -1, height + 1, width + 1),
-        (-1, -1, height + 1, 0),
-        (-1, width, height + 1, width + 1),
+        (
+            outer_top,
+            outer_left,
+            outer_top.saturating_add(1),
+            outer_right,
+        ),
+        (
+            outer_bottom.saturating_sub(1),
+            outer_left,
+            outer_bottom,
+            outer_right,
+        ),
+        (
+            outer_top,
+            outer_left,
+            outer_bottom,
+            outer_left.saturating_add(1),
+        ),
+        (
+            outer_top,
+            outer_right.saturating_sub(1),
+            outer_bottom,
+            outer_right,
+        ),
+        (
+            top.saturating_sub(1),
+            left.saturating_sub(1),
+            top,
+            right.saturating_add(1),
+        ),
+        (
+            bottom,
+            left.saturating_sub(1),
+            bottom.saturating_add(1),
+            right.saturating_add(1),
+        ),
+        (
+            top.saturating_sub(1),
+            left.saturating_sub(1),
+            bottom.saturating_add(1),
+            left,
+        ),
+        (
+            top.saturating_sub(1),
+            right,
+            bottom.saturating_add(1),
+            right.saturating_add(1),
+        ),
     ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, window, rect, PPC_RGB_BLACK, None);
+        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
 }
 
@@ -69185,7 +69122,7 @@ fn ppc_draw_tracked_menu(
                 .unwrap_or(StandardMenuIconKind::None),
             mark != 0,
             (metrics.ascent, metrics.descent),
-            false,
+            kind == StandardMenuPaneKind::PullDown,
         );
         let text_baseline = layout.text_baseline;
 
@@ -71434,7 +71371,16 @@ fn ppc_draw_menu_bar_with_colors(
     let selected_menu_id = memory.read_u16_be(PPC_THE_MENU_ADDR).unwrap_or(0) as i16;
     let highlighted_menu_id =
         ppc_root_menu_id_for_selection(memory, menu_list_handle, selected_menu_id);
-    let mut highlighted_title_drawn = false;
+    struct PendingTitleHighlight {
+        region: MenuBarTitleRegion,
+        background: u16,
+        foreground: u16,
+        system_menu_mark: bool,
+        title_h: i16,
+        dim_pattern: Option<((i16, i16, i16, i16), u16)>,
+    }
+
+    let mut pending_highlight = None;
     let menu_bar_height = i16::try_from(height).unwrap_or(i16::MAX);
     let title_v = ppc_menu_bar_title_baseline(menu_bar_height);
     let (title_ascent, title_descent) = ppc_menu_bar_title_metrics();
@@ -71517,30 +71463,14 @@ fn ppc_draw_menu_bar_with_colors(
                 &title,
             );
         }
-        let highlighted =
-            !highlighted_title_drawn && highlighted_menu_id != 0 && menu_id == highlighted_menu_id;
-        if highlighted {
-            ppc_reverse_menu_title_cell(
-                memory,
-                front_buffer,
-                region,
-                menu_bar_height,
-                title_background_pixel,
-                title_foreground_pixel,
-            );
-            // Color title artwork is replotted after reversing its cell so
-            // only the transparent background participates in highlighting.
-            // Inside Macintosh Volume V (1986), pp. V-235 and V-244.
-            if system_menu_mark && front_buffer.depth != 1 {
-                ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, title_h);
-            }
-            highlighted_title_drawn = true;
-        }
+        let highlighted = pending_highlight.is_none()
+            && highlighted_menu_id != 0
+            && menu_id == highlighted_menu_id;
         let dim_with_pattern = !menu_enabled
             && (system_menu_mark
                 || dimmed_title_pixel == title_foreground_pixel
                 || dimmed_title_pixel == title_background_pixel);
-        if dim_with_pattern {
+        let dim_pattern = dim_with_pattern.then(|| {
             let dim_top = if system_menu_mark {
                 1
             } else {
@@ -71553,9 +71483,7 @@ fn ppc_draw_menu_bar_with_colors(
                     .saturating_add(title_descent)
                     .min(menu_bar_height.saturating_sub(1))
             };
-            ppc_apply_menu_title_dim_pattern(
-                memory,
-                front_buffer,
+            (
                 (
                     dim_top,
                     title_h,
@@ -71567,7 +71495,40 @@ fn ppc_draw_menu_bar_with_colors(
                 } else {
                     title_background_pixel
                 },
-            );
+            )
+        });
+        if highlighted {
+            pending_highlight = Some(PendingTitleHighlight {
+                region,
+                background: title_background_pixel,
+                foreground: title_foreground_pixel,
+                system_menu_mark,
+                title_h,
+                dim_pattern,
+            });
+        } else if let Some((rect, background)) = dim_pattern {
+            ppc_apply_menu_title_dim_pattern(memory, front_buffer, rect, background);
+        }
+    }
+    if let Some(highlight) = pending_highlight {
+        // Reverse the selected title only after every normal title has been
+        // drawn. Adjacent MBDF cells overlap the three-pixel highlight
+        // overhang, so drawing a later title after this step would erase the
+        // selected title's right edge. Inside Macintosh Volume V (1986),
+        // pp. V-235 and V-244.
+        ppc_reverse_menu_title_cell(
+            memory,
+            front_buffer,
+            highlight.region,
+            menu_bar_height,
+            highlight.background,
+            highlight.foreground,
+        );
+        if highlight.system_menu_mark && front_buffer.depth != 1 {
+            ppc_draw_system_menu_mark(memory, front_buffer, screen_clut, highlight.title_h);
+        }
+        if let Some((rect, background)) = highlight.dim_pattern {
+            ppc_apply_menu_title_dim_pattern(memory, front_buffer, rect, background);
         }
     }
     true
@@ -82065,8 +82026,8 @@ pub(crate) mod tests {
             let menu_bar_bytes = front.row_bytes * 20;
             let normal =
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, menu_bar_bytes).unwrap();
-            let file_cell = (i32::from(regions[0].left - 1), 2);
-            let edit_cell = (i32::from(regions[1].left - 1), 2);
+            let file_cell = (i32::from(regions[0].left.saturating_add(3)), 2);
+            let edit_cell = (i32::from(regions[1].left.saturating_add(3)), 2);
             let bar_point = (200, 5);
             assert_eq!(
                 ppc_quickdraw_read_pixel(&mut loaded.memory, front, file_cell),
@@ -82256,7 +82217,7 @@ pub(crate) mod tests {
                 let metrics = get_font_metrics(PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM);
                 (metrics.ascent, metrics.descent)
             },
-            false,
+            true,
         );
         assert_glyph_color(
             &mut loaded.memory,
@@ -82271,7 +82232,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(1) + 12),
+                i32::from(row_top(1) + 11),
             ),
             '\u{2713}',
             black,
@@ -82280,7 +82241,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25),
-                i32::from(row_top(2) + 12),
+                i32::from(row_top(2) + 11),
             ),
             '\u{2318}',
             black,
@@ -82295,7 +82256,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
-                i32::from(row_top(2) + 12),
+                i32::from(row_top(2) + 11),
             ),
             'C',
             black,
@@ -82304,7 +82265,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 15),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             'D',
             gray,
@@ -82313,7 +82274,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             '\u{2713}',
             gray,
@@ -82322,7 +82283,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25),
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             '\u{2318}',
             gray,
@@ -82331,7 +82292,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + tracking.popup_width - 25) + command_symbol_advance,
-                i32::from(row_top(3) + 12),
+                i32::from(row_top(3) + 11),
             ),
             'C',
             gray,
@@ -82391,7 +82352,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             (
                 i32::from(tracking.popup_left + 3),
-                i32::from(row_top(1) + 12),
+                i32::from(row_top(1) + 11),
             ),
             '\u{2713}',
             white,
@@ -83759,7 +83720,7 @@ pub(crate) mod tests {
             );
             let item_origin = (
                 i32::from(tracking.popup_left.saturating_add(15)),
-                i32::from(tracking.popup_top.saturating_add(12)),
+                i32::from(tracking.popup_top.saturating_add(11)),
             );
             let normal_item_ink = item_glyph_pixels
                 .iter()
@@ -123599,7 +123560,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((2, 9, 261, 331))
+            Some((1, 9, 262, 332))
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, content_rgn),
@@ -123703,12 +123664,12 @@ pub(crate) mod tests {
                 "{depth}bpp document top frame did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
                 Some(white),
                 "{depth}bpp title bar did not draw",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp active title stripes did not draw",
             );
@@ -123770,7 +123731,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(white),
                 "{depth}bpp inactive title retained stripes",
             );
@@ -123783,7 +123744,7 @@ pub(crate) mod tests {
             loaded.cpu.gpr[4] = 1;
             run_test_import(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp reactivated title did not restore stripes",
             );
@@ -123837,7 +123798,7 @@ pub(crate) mod tests {
                 "{depth}bpp new front window was not activated",
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(white),
                 "{depth}bpp previous title was not visibly deactivated",
             );
@@ -123845,7 +123806,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -17)),
+                    second_surface.local_point((30, -16)),
                 ),
                 Some(black),
                 "{depth}bpp new title was not visibly activated",
@@ -123862,7 +123823,7 @@ pub(crate) mod tests {
                 Some(0),
             );
             assert_eq!(
-                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -17)),),
+                ppc_quickdraw_read_pixel(&mut loaded.memory, front, surface.local_point((30, -16)),),
                 Some(black),
                 "{depth}bpp selected title was not visibly activated",
             );
@@ -123870,7 +123831,7 @@ pub(crate) mod tests {
                 ppc_quickdraw_read_pixel(
                     &mut loaded.memory,
                     front,
-                    second_surface.local_point((30, -17)),
+                    second_surface.local_point((30, -16)),
                 ),
                 Some(white),
                 "{depth}bpp prior title was not visibly deactivated by SelectWindow",
@@ -123938,7 +123899,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[8] = u32::MAX;
         loaded.cpu.gpr[9] = 0;
         loaded.cpu.gpr[10] = 0;
-        let dialog_frame_point = (299, 299);
+        let dialog_frame_point = (299, 300);
         let dialog_frame_before =
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, dialog_frame_point);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::NewCWindow);
@@ -124216,7 +124177,7 @@ pub(crate) mod tests {
                     .as_ref()
                     .unwrap()
                     .outline,
-                (112, 129, 231, 331),
+                (111, 129, 232, 332),
             );
             loaded.event_queue.push_back(PpcQueuedEvent {
                 what: 2,
@@ -124384,7 +124345,7 @@ pub(crate) mod tests {
                     .as_ref()
                     .unwrap()
                     .outline,
-                (82, 99, 281, 361),
+                (81, 99, 282, 362),
                 "{depth}bpp held size did not clamp to maximums",
             );
             loaded.event_queue.push_back(PpcQueuedEvent {
@@ -124487,7 +124448,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((22, 29, 281, 351))
+            Some((21, 29, 282, 352))
         );
 
         let mut size_cpu = loaded.cpu.clone();
@@ -124504,7 +124465,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             ppc_read_rgn_bbox(&mut loaded.memory, structure_rgn),
-            Some((22, 29, 141, 231))
+            Some((21, 29, 142, 232))
         );
     }
 
@@ -142992,15 +142953,15 @@ pub(crate) mod tests {
         let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (1, 20)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (0, 21)),
-            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_BLACK)))
+            Some(u16::from(ppc_rgb_color_to_8bpp_index(PPC_RGB_WHITE)))
         );
     }
 
@@ -144371,6 +144332,10 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, clip_ptr, 0, 20, 40, 40).unwrap();
         loaded.quickdraw_fore_indices.insert(PPC_MAIN_GWORLD, 103);
 
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
+        let clipped_pixel_before =
+            ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20));
+
         loaded.cpu.gpr[3] = clip_ptr;
         loaded.run_with_hle_imports(64);
 
@@ -144382,10 +144347,9 @@ pub(crate) mod tests {
         loaded.cpu.gpr[5] = 8;
         loaded.run_with_hle_imports(64);
 
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, PPC_MAIN_GWORLD).unwrap();
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (10, 20)),
-            Some(0),
+            clipped_pixel_before,
             "the rounded rectangle must not draw left of clipRgn"
         );
         assert_eq!(
