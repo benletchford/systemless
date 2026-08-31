@@ -15802,9 +15802,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::DisposePtr => {
-            if let Some(index) = ptrs.iter().position(|record| record.ptr == cpu.gpr[3]) {
-                free_ptr_blocks.push(ptrs.remove(index));
-            }
+            ppc_release_ptr(ptrs, free_ptr_blocks, cpu.gpr[3]);
             *last_mem_error = 0;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -25069,12 +25067,33 @@ fn dispatch_supported_import(
             ppc_close_component(cpu, quicktime),
         ))),
         PpcImportDispatcherTarget::NewRoutineDescriptor => Some(PpcImportAction::Return(
-            ppc_new_routine_descriptor(cpu, memory, heap_cursor, heap_limit, last_mem_error),
+            ppc_new_routine_descriptor(
+                cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                last_mem_error,
+            ),
         )),
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => Some(PpcImportAction::Return(
-            ppc_new_fat_routine_descriptor(cpu, memory, heap_cursor, heap_limit, last_mem_error),
+            ppc_new_fat_routine_descriptor(
+                cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                last_mem_error,
+            ),
         )),
         PpcImportDispatcherTarget::DisposeRoutineDescriptor => {
+            // DisposeRoutineDescriptor(theProcPtr: UniversalProcPtr): void.
+            // PowerPC ABI: r3 carries the descriptor and is preserved on return.
+            // The Mixed Mode Manager releases only creation-allocated heap storage.
+            // Inside Macintosh: PowerPC System Software (1994), pp. 2-21, 2-41.
+            ppc_release_ptr(ptrs, free_ptr_blocks, cpu.gpr[3]);
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -40933,6 +40952,8 @@ fn ppc_new_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     last_mem_error: &mut i16,
 ) -> u32 {
     let proc_ptr = cpu.gpr[3];
@@ -40951,8 +40972,15 @@ fn ppc_new_routine_descriptor(
     let proc_info = cpu.gpr[4];
     let isa = cpu.gpr[5] as u8;
     let descriptor_size = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE;
-    let descriptor =
-        ppc_alloc_routine_descriptor(memory, heap_cursor, heap_limit, descriptor_size, 0);
+    let descriptor = ppc_alloc_routine_descriptor(
+        memory,
+        heap_cursor,
+        heap_limit,
+        ptrs,
+        free_ptr_blocks,
+        descriptor_size,
+        0,
+    );
     if descriptor == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
@@ -40966,6 +40994,7 @@ fn ppc_new_routine_descriptor(
     };
     let ok = ppc_write_routine_record(memory, record, proc_info, isa, flags, proc_ptr);
     if !ok {
+        ppc_release_ptr(ptrs, free_ptr_blocks, descriptor);
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
@@ -40979,6 +41008,8 @@ fn ppc_new_fat_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     last_mem_error: &mut i16,
 ) -> u32 {
     let m68k_proc = cpu.gpr[3];
@@ -40988,8 +41019,15 @@ fn ppc_new_fat_routine_descriptor(
     }
     let proc_info = cpu.gpr[5];
     let descriptor_size = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + (PPC_ROUTINE_RECORD_SIZE * 2);
-    let descriptor =
-        ppc_alloc_routine_descriptor(memory, heap_cursor, heap_limit, descriptor_size, 1);
+    let descriptor = ppc_alloc_routine_descriptor(
+        memory,
+        heap_cursor,
+        heap_limit,
+        ptrs,
+        free_ptr_blocks,
+        descriptor_size,
+        1,
+    );
     if descriptor == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
@@ -41013,6 +41051,7 @@ fn ppc_new_fat_routine_descriptor(
         powerpc_proc,
     );
     if !ok {
+        ppc_release_ptr(ptrs, free_ptr_blocks, descriptor);
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
@@ -41025,10 +41064,20 @@ fn ppc_alloc_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     descriptor_size: u32,
     routine_count: u16,
 ) -> u32 {
-    let descriptor = ppc_heap_alloc(memory, heap_cursor, heap_limit, descriptor_size, true);
+    let descriptor = ppc_alloc_ptr(
+        memory,
+        heap_cursor,
+        heap_limit,
+        ptrs,
+        free_ptr_blocks,
+        descriptor_size,
+        true,
+    );
     if descriptor == 0 {
         return 0;
     }
@@ -41048,6 +41097,7 @@ fn ppc_alloc_routine_descriptor(
     if ok {
         descriptor
     } else {
+        ppc_release_ptr(ptrs, free_ptr_blocks, descriptor);
         0
     }
 }
@@ -79154,6 +79204,18 @@ fn ppc_alloc_ptr(
     ptr
 }
 
+fn ppc_release_ptr(
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    ptr: u32,
+) -> bool {
+    let Some(index) = ptrs.iter().position(|record| record.ptr == ptr) else {
+        return false;
+    };
+    free_ptr_blocks.push(ptrs.remove(index));
+    true
+}
+
 fn ppc_realloc_ptr(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
@@ -92137,6 +92199,14 @@ pub(crate) mod tests {
             }
         );
         let descriptor = loaded.cpu.gpr[3];
+        assert_eq!(
+            loaded
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == descriptor)
+                .map(|record| record.size),
+            Some(PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE)
+        );
         let record = descriptor + PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE;
         assert_eq!(
             loaded
@@ -92178,6 +92248,14 @@ pub(crate) mod tests {
             }
         );
         let descriptor = loaded.cpu.gpr[3];
+        assert_eq!(
+            loaded
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == descriptor)
+                .map(|record| record.size),
+            Some(PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + (PPC_ROUTINE_RECORD_SIZE * 2))
+        );
         assert_eq!(descriptor, PPC_HEAP_BASE);
         assert_eq!(
             loaded.heap_cursor,
@@ -92239,10 +92317,87 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hle_import_runner_disposes_routine_descriptor_as_successful_noop() {
+    fn hle_import_runner_disposes_and_reuses_routine_descriptor_storage() {
+        let pef = synthetic_pef_with_import(b"DisposeRoutineDescriptor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewRoutineDescriptor;
+        loaded.cpu.gpr[3] = 0x00c0_ffee;
+        loaded.cpu.gpr[4] = 0x1234_5678;
+        loaded.cpu.gpr[5] = PPC_ROUTINE_RECORD_M68K_ISA as u32;
+
+        let create_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(create_probe.handled_import_count, 1);
+        assert_eq!(create_probe.unsupported_import_index, None);
+        let descriptor = loaded.cpu.gpr[3];
+        let descriptor_size = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE;
+        assert_eq!(
+            loaded
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == descriptor)
+                .map(|record| record.size),
+            Some(descriptor_size)
+        );
+        let heap_cursor = loaded.heap_cursor;
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target =
+            PpcImportDispatcherTarget::DisposeRoutineDescriptor;
+        loaded.last_mem_error = PPC_MEM_FULL_ERR;
+        loaded.cpu.gpr[3] = descriptor;
+
+        let dispose_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(dispose_probe.handled_import_count, 1);
+        assert_eq!(dispose_probe.unsupported_import_index, None);
+        assert_eq!(
+            dispose_probe.result,
+            PpcRunResult::Halted {
+                pc: PPC_HALT_PC,
+                cycles: 8,
+            }
+        );
+        assert_eq!(loaded.cpu.gpr[3], descriptor);
+        assert_eq!(loaded.heap_cursor, heap_cursor);
+        assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
+        assert!(!loaded.ptrs.iter().any(|record| record.ptr == descriptor));
+        assert!(loaded
+            .free_ptr_blocks
+            .iter()
+            .any(|record| record.ptr == descriptor && record.size == descriptor_size));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::NewRoutineDescriptor;
+        loaded.cpu.gpr[3] = 0x00c0_ffee;
+        loaded.cpu.gpr[4] = 0x1234_5678;
+        loaded.cpu.gpr[5] = PPC_ROUTINE_RECORD_M68K_ISA as u32;
+
+        let recreate_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(recreate_probe.handled_import_count, 1);
+        assert_eq!(recreate_probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], descriptor);
+        assert_eq!(loaded.heap_cursor, heap_cursor);
+        assert!(loaded
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == descriptor && record.size == descriptor_size));
+        assert!(!loaded
+            .free_ptr_blocks
+            .iter()
+            .any(|record| record.ptr == descriptor));
+    }
+
+    #[test]
+    fn hle_import_runner_does_not_dispose_untracked_routine_descriptor() {
         let pef = synthetic_pef_with_import(b"DisposeRoutineDescriptor");
         let mut loaded = load_pef_application(&pef).unwrap();
         let heap_cursor = loaded.heap_cursor;
+        let ptrs = loaded.ptrs.clone();
+        let free_ptr_blocks = loaded.free_ptr_blocks.clone();
         loaded.last_mem_error = PPC_MEM_FULL_ERR;
         loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x40;
 
@@ -92250,15 +92405,10 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(
-            probe.result,
-            PpcRunResult::Halted {
-                pc: PPC_HALT_PC,
-                cycles: 8,
-            }
-        );
         assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x40);
         assert_eq!(loaded.heap_cursor, heap_cursor);
+        assert_eq!(loaded.ptrs, ptrs);
+        assert_eq!(loaded.free_ptr_blocks, free_ptr_blocks);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
     }
 
