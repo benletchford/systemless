@@ -37,6 +37,11 @@ const PARAM_ERR: i16 = -50;
 const MEM_FULL_ERR: i16 = -108;
 const SOUND_DISPATCH_OPERATION_ROUTES: &[SelectorOperationRoute] =
     &include!("generated_sound_dispatch_operations.rs");
+const MIDI_STOP_TIME_OPERATION_ROUTE: SelectorOperationRoute = SelectorOperationRoute::new(
+    0x0064_0004,
+    "selector-operation:_SoundDispatch:0x00640004:d0-long-immediate:32",
+    "MIDIStopTime",
+);
 
 fn sound_dispatch_operation_route(
     trap_word: u16,
@@ -44,6 +49,9 @@ fn sound_dispatch_operation_route(
 ) -> Option<&'static SelectorOperationRoute> {
     if trap_word != 0xA800 {
         return None;
+    }
+    if selector == 0x0064_0004 {
+        return Some(&MIDI_STOP_TIME_OPERATION_ROUTE);
     }
     selector_operation_route(SOUND_DISPATCH_OPERATION_ROUTES, selector)
 }
@@ -76,10 +84,8 @@ fn sound_dispatch_param_bytes(selector: u32) -> u32 {
         0x0018_0008 => 4,  // SndGetSysBeepState(VAR state)
         0x001C_0008 => 2,  // SndSetSysBeepState(state)
         0x0020_0008 => 8,  // SndPlayDoubleBuffer(chan, theParams)
-        // MacroMind Director 3's sound extension uses this private
-        // SoundDispatch procedure with one INTEGER argument. Like the
-        // documented zero-size selectors above, its literal omits the
-        // parameter count even though the Pascal callee consumes a word.
+        // MIDIStopTime(refnum: short) uses family $0004 with routine offset $0064.
+        // Universal Interfaces 3.4 MIDI.h line 610.
         0x0064_0004 => 2,
         _ => 0,
     }
@@ -568,11 +574,11 @@ impl super::TrapDispatcher {
                         selector, routine, param_bytes
                     );
                 }
-                if selector == 0x0064_0004 {
-                    // Private Director 3 procedure. The caller pushes one
-                    // INTEGER and does not reserve a function-result slot, so
-                    // consume only that argument and preserve the return
-                    // address immediately above it.
+                if operation == Some(&MIDI_STOP_TIME_OPERATION_ROUTE) {
+                    // MIDIStopTime
+                    // Stops the current MIDI time for the referenced client.
+                    // void MIDIStopTime(short refnum);
+                    // Universal Interfaces 3.4: MIDI.h, line 610.
                     cpu.write_reg(Register::A7, sp + param_bytes);
                     cpu.write_reg(Register::D0, 0);
                     return Some(Ok(()));
@@ -3084,11 +3090,23 @@ mod tests {
             assert_eq!(route.routine_name, routine_name);
         }
 
+        let midi_stop_time_route = super::sound_dispatch_operation_route(0xA800, 0x0064_0004)
+            .expect("SoundDispatch MIDIStopTime route");
+        assert_eq!(midi_stop_time_route.routine_name, "MIDIStopTime");
+        assert_eq!(
+            midi_stop_time_route.operation_id,
+            "selector-operation:_SoundDispatch:0x00640004:d0-long-immediate:32"
+        );
+
         for (trap_word, selector) in [
             (0xA900, 0x003C_000C),
             (0xA800, 0x003D_000C),
             (0xA800, 0x0010_0008),
-            (0xA800, 0x0064_0004),
+            (0xA900, 0x0064_0004),
+            (0xA800, 0x0060_0004),
+            (0xA800, 0x0068_0004),
+            (0xA800, 0x0064_0008),
+            (0xA800, 0x0065_0004),
             (0xA800, 0x060C_0018),
             (0xA800, 0x0000_203C),
         ] {
@@ -3107,6 +3125,18 @@ mod tests {
         assert_eq!(
             disp.current_selector_operation,
             Some(super::SOUND_DISPATCH_OPERATION_ROUTES[8].operation_id)
+        );
+
+        let sp = TEST_SP + 0x80;
+        bus.write_word(sp, 0x003B);
+        bus.write_long(sp + 2, 0x003B_2E3C);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::D0, 0x0064_0004);
+        let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
+        assert!(result.expect("SoundDispatch arm").is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some(super::MIDI_STOP_TIME_OPERATION_ROUTE.operation_id)
         );
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -4089,22 +4119,33 @@ mod tests {
     }
 
     #[test]
-    fn sounddispatch_director_private_procedure_consumes_its_word_argument() {
-        // Director 3 emits selector $00640004 after pushing one INTEGER.
-        // The selector's encoded parameter-size byte is zero, but this is a
-        // Pascal procedure: no result slot is present above the argument.
+    fn sounddispatch_midi_stop_time_consumes_refnum_argument() {
+        // Universal Interfaces 3.4 MIDI.h line 610:
+        // EXTERN_API( void ) MIDIStopTime(short refnum) FOURWORDINLINE(0x203C, 0x0064, 0x0004, 0xA800);
+        // PROCEDURE MIDIStopTime(refnum: INTEGER);
+        // Consumes one 16-bit refnum argument without a function-result slot.
         let (mut disp, mut cpu, mut bus) = setup();
+        disp.current_trap_word = 0xA800;
         let sp = TEST_SP + 0x80;
-        bus.write_word(sp, 0x003B);
-        bus.write_long(sp + 2, 0x003B_2E3C); // caller's return address
+        let refnum: i16 = 0x003B;
+        let caller_ret_addr: u32 = 0x003B_2E3C;
+        let caller_stack_sentinel: u32 = 0xA5A5_5A5A;
+        bus.write_word(sp, refnum as u16);
+        bus.write_long(sp + 2, caller_ret_addr);
+        bus.write_long(sp + 6, caller_stack_sentinel);
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0064_0004);
 
         let result = disp.dispatch_sound(true, 0x000, &mut cpu, &mut bus);
 
         assert!(result.unwrap().is_ok());
+        assert_eq!(
+            disp.current_selector_operation,
+            Some("selector-operation:_SoundDispatch:0x00640004:d0-long-immediate:32")
+        );
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
-        assert_eq!(bus.read_long(sp + 2), 0x003B_2E3C);
+        assert_eq!(bus.read_long(sp + 2), caller_ret_addr);
+        assert_eq!(bus.read_long(sp + 6), caller_stack_sentinel);
         assert_eq!(cpu.read_reg(Register::D0), 0);
     }
 
