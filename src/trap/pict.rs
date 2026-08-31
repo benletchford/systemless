@@ -6,6 +6,61 @@
 
 use crate::memory::{MacMemoryBus, MemoryBus};
 
+pub(crate) fn recording_push_word(commands: &mut Vec<u8>, value: u16) {
+    commands.extend_from_slice(&value.to_be_bytes());
+}
+
+pub(crate) fn recording_push_rect(commands: &mut Vec<u8>, opcode: u16, rect: (i16, i16, i16, i16)) {
+    recording_push_word(commands, opcode);
+    for value in [rect.0, rect.1, rect.2, rect.3] {
+        recording_push_word(commands, value as u16);
+    }
+}
+
+pub(crate) fn recording_push_round_rect(
+    commands: &mut Vec<u8>,
+    opcode: u16,
+    rect: (i16, i16, i16, i16),
+    oval_width: i16,
+    oval_height: i16,
+) {
+    recording_push_word(commands, 0x000B); // OvSize
+    recording_push_word(commands, oval_height as u16);
+    recording_push_word(commands, oval_width as u16);
+    recording_push_rect(commands, opcode, rect);
+}
+
+pub(crate) fn recording_push_long_text(
+    commands: &mut Vec<u8>,
+    pen_v: i16,
+    pen_h: i16,
+    text: &[u8],
+) {
+    let text = &text[..text.len().min(u8::MAX as usize)];
+    recording_push_word(commands, 0x0028); // LongText
+    recording_push_word(commands, pen_v as u16);
+    recording_push_word(commands, pen_h as u16);
+    commands.push(text.len() as u8);
+    commands.extend_from_slice(text);
+    if !(1 + text.len()).is_multiple_of(2) {
+        commands.push(0);
+    }
+}
+
+pub(crate) fn finish_recording(frame: (i16, i16, i16, i16), commands: Vec<u8>) -> Vec<u8> {
+    let mut picture = Vec::with_capacity(16 + commands.len());
+    recording_push_word(&mut picture, 0); // patched after encoding
+    for value in [frame.0, frame.1, frame.2, frame.3] {
+        recording_push_word(&mut picture, value as u16);
+    }
+    picture.extend_from_slice(&[0x11, 0x02, 0xFF, 0x00]);
+    picture.extend_from_slice(&commands);
+    recording_push_word(&mut picture, 0x00FF); // EndOfPicture
+    let picture_size = u16::try_from(picture.len()).unwrap_or(0);
+    picture[0..2].copy_from_slice(&picture_size.to_be_bytes());
+    picture
+}
+
 pub(crate) type DstClipRect = (i32, i32, i32, i32); // top, left, bottom, right in dst pixels
 
 #[derive(Clone, Debug)]
@@ -470,6 +525,7 @@ pub fn draw_picture(
     // DHDVText. Default to Geneva 12 like most classic Mac UI.
     let mut pict_font_id: i16 = 3;
     let mut pict_font_size: i16 = 12;
+    let mut pict_text_face: u8 = 0;
     // Imaging With QuickDraw (1994), Appendix A, pp. A-7--A-8, defines
     // relative text opcodes in terms of the current text position. Keep it
     // distinct from the graphics pen updated by LineFrom/ShortLineFrom;
@@ -481,6 +537,7 @@ pub fn draw_picture(
     // PnSize(0x07) so frameRect / frameOval / frameArc / frame-variants
     // honor thick pens. Default (1, 1) matches QuickDraw initPort.
     let mut pen_size: (i16, i16) = (1, 1);
+    let mut oval_size: (i16, i16) = (0, 0);
     // PnPat (0x09) + BkPat (0x02) so paintRect uses the pen pattern and
     // eraseRect uses the background pattern. Defaults patBlack / patWhite.
     let mut pn_pat: [u8; 8] = [0xFF; 8];
@@ -552,6 +609,7 @@ pub fn draw_picture(
             }
             0x04 => {
                 // TxFace (1 byte in v1, 2 in v2)
+                pict_text_face = bus.read_byte(pos);
                 pos += if is_v2 { 2 } else { 1 };
             }
             0x05 => {
@@ -585,7 +643,8 @@ pub fn draw_picture(
                 pos += 8;
             }
             0x0B => {
-                // OvSize (4 bytes)
+                // OvSize(v, h): corner oval used by rounded rectangles.
+                oval_size = (bus.read_word(pos) as i16, bus.read_word(pos + 2) as i16);
                 pos += 4;
             }
             0x0C => {
@@ -802,6 +861,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                     dst_top,
                     dst_left,
                     frame_top,
@@ -820,6 +880,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                 ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
@@ -843,6 +904,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                     dst_top,
                     dst_left,
                     frame_top,
@@ -861,6 +923,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                 ));
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
@@ -884,6 +947,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                     dst_top,
                     dst_left,
                     frame_top,
@@ -902,6 +966,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                 ));
                 if is_v2 && !len.is_multiple_of(2) {
                     pos += 1;
@@ -927,6 +992,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                     dst_top,
                     dst_left,
                     frame_top,
@@ -945,6 +1011,7 @@ pub fn draw_picture(
                     len,
                     pict_font_id,
                     pict_font_size,
+                    pict_text_face,
                 ));
                 if is_v2 && !(1 + len).is_multiple_of(2) {
                     pos += 1;
@@ -1028,17 +1095,14 @@ pub fn draw_picture(
                 }
             }
             // Rounded rectangle opcodes ($40-$44, $48-$4C)
-            // Imaging With QuickDraw 1994, Appendix A, A-8
-            // (ovSize state is tracked via opcode 0x0B but rounded
-            // corners are approximated as plain rects here; fine for
-            // games that use frame/paintRRect decoratively.)
+            // Imaging With QuickDraw 1994, Appendix A, A-8.
             0x40..=0x44 => {
                 let (t, l, b, r) = read_shape_rect(bus, pos);
                 pos += 8;
                 last_shape_rect = Some((t, l, b, r));
-                draw_shape_rect(
+                draw_shape_round_rect(
                     bus,
-                    (opcode - 0x40 + 0x30) as u8,
+                    (opcode - 0x40) as u8,
                     t,
                     l,
                     b,
@@ -1052,6 +1116,7 @@ pub fn draw_picture(
                     screen_mode,
                     clip_region.as_ref(),
                     dst_clip,
+                    oval_size,
                     pen_size,
                     pn_pat,
                     bk_pat,
@@ -1062,9 +1127,9 @@ pub fn draw_picture(
             }
             0x48..=0x4C => {
                 if let Some((t, l, b, r)) = last_shape_rect {
-                    draw_shape_rect(
+                    draw_shape_round_rect(
                         bus,
-                        (opcode - 0x48 + 0x30) as u8,
+                        (opcode - 0x48) as u8,
                         t,
                         l,
                         b,
@@ -1078,6 +1143,7 @@ pub fn draw_picture(
                         screen_mode,
                         clip_region.as_ref(),
                         dst_clip,
+                        oval_size,
                         pen_size,
                         pn_pat,
                         bk_pat,
@@ -3283,6 +3349,168 @@ fn invert_dst_rect(
     }
 }
 
+fn rounded_rect_contains(
+    x: f64,
+    y: f64,
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+    oval_height: f64,
+    oval_width: f64,
+) -> bool {
+    if x < left || x >= right || y < top || y >= bottom {
+        return false;
+    }
+    let radius_x = (oval_width.max(0.0).min(right - left) * 0.5).max(0.0);
+    let radius_y = (oval_height.max(0.0).min(bottom - top) * 0.5).max(0.0);
+    if radius_x == 0.0 || radius_y == 0.0 {
+        return true;
+    }
+    let center_x = x.clamp(left + radius_x, right - radius_x);
+    let center_y = y.clamp(top + radius_y, bottom - radius_y);
+    let dx = (x - center_x) / radius_x;
+    let dy = (y - center_y) / radius_y;
+    dx * dx + dy * dy <= 1.0
+}
+
+/// Render a PICT rounded-rectangle opcode using the current OvSize state.
+/// Imaging With QuickDraw (1994), Appendix A, p. A-8.
+#[allow(clippy::too_many_arguments)]
+fn draw_shape_round_rect(
+    bus: &mut MacMemoryBus,
+    kind: u8,
+    src_top: i16,
+    src_left: i16,
+    src_bottom: i16,
+    src_right: i16,
+    dst_top: i16,
+    dst_left: i16,
+    frame_top: i16,
+    frame_left: i16,
+    scale_x: f64,
+    scale_y: f64,
+    screen_mode: (u32, u32, u16, u16, u16),
+    clip_region: Option<&PictureRegion>,
+    dst_clip: Option<&DstClip>,
+    oval_size: (i16, i16),
+    pen_size: (i16, i16),
+    pn_pat: [u8; 8],
+    bk_pat: [u8; 8],
+    fill_pat: [u8; 8],
+    fg_idx: u8,
+    bg_idx: u8,
+) {
+    if src_bottom <= src_top || src_right <= src_left {
+        return;
+    }
+    let (x1, y1, x2, y2) = transform_shape_rect(
+        src_top, src_left, src_bottom, src_right, frame_top, frame_left, dst_top, dst_left,
+        scale_x, scale_y,
+    );
+    let (screen_base, screen_rb, screen_w, screen_h, pixel_size) = screen_mode;
+    let screen_w = i32::from(screen_w);
+    let screen_h = i32::from(screen_h);
+    let (pen_h, pen_w) = (pen_size.0.max(1), pen_size.1.max(1));
+    for y in y1..y2 {
+        for x in x1..x2 {
+            let pic_x =
+                (f64::from(x) + 0.5 - f64::from(dst_left)) / scale_x + f64::from(frame_left);
+            let pic_y = (f64::from(y) + 0.5 - f64::from(dst_top)) / scale_y + f64::from(frame_top);
+            let outside = rounded_rect_contains(
+                pic_x,
+                pic_y,
+                f64::from(src_top),
+                f64::from(src_left),
+                f64::from(src_bottom),
+                f64::from(src_right),
+                f64::from(oval_size.0),
+                f64::from(oval_size.1),
+            );
+            if !outside {
+                continue;
+            }
+            let inside = rounded_rect_contains(
+                pic_x,
+                pic_y,
+                f64::from(src_top.saturating_add(pen_h)),
+                f64::from(src_left.saturating_add(pen_w)),
+                f64::from(src_bottom.saturating_sub(pen_h)),
+                f64::from(src_right.saturating_sub(pen_w)),
+                f64::from(oval_size.0.saturating_sub(pen_h.saturating_mul(2))),
+                f64::from(oval_size.1.saturating_sub(pen_w.saturating_mul(2))),
+            );
+            if kind == 0 && inside {
+                continue;
+            }
+            if kind > 4 || x < 0 || x >= screen_w || y < 0 || y >= screen_h {
+                continue;
+            }
+            if !dst_clip_contains(dst_clip, x, y) {
+                continue;
+            }
+            if clip_region
+                .is_some_and(|region| !region.contains(pic_y.floor() as i32, pic_x.floor() as i32))
+            {
+                continue;
+            }
+            if kind == 3 {
+                if pixel_size == 1 {
+                    let addr = screen_base + (y as u32) * screen_rb + (x as u32) / 8;
+                    let bit = 7 - ((x as u32) % 8);
+                    bus.write_byte(addr, bus.read_byte(addr) ^ (1 << bit));
+                } else {
+                    let addr = screen_base + (y as u32) * screen_rb + x as u32;
+                    bus.write_byte(addr, bus.read_byte(addr) ^ 0xFF);
+                }
+                continue;
+            }
+            let pattern = match kind {
+                1 => pn_pat,
+                2 => bk_pat,
+                4 => fill_pat,
+                _ => [0xFF; 8],
+            };
+            let set = pattern[y.rem_euclid(8) as usize] & (1 << (7 - x.rem_euclid(8))) != 0;
+            let color = match kind {
+                2 => {
+                    if set {
+                        bg_idx
+                    } else {
+                        fg_idx
+                    }
+                }
+                _ => {
+                    if set {
+                        fg_idx
+                    } else {
+                        bg_idx
+                    }
+                }
+            };
+            plot_dst_pixel(
+                bus,
+                screen_base,
+                screen_rb,
+                screen_w,
+                screen_h,
+                pixel_size,
+                x,
+                y,
+                color,
+                frame_top,
+                frame_left,
+                dst_top,
+                dst_left,
+                scale_x,
+                scale_y,
+                clip_region,
+                dst_clip,
+            );
+        }
+    }
+}
+
 /// Render a PICT shape-oval opcode ($50-$54 family).
 /// `kind` = low 4 bits of opcode (0=frame, 1=paint, 2=erase, 3=invert,
 /// 4=fill). Inside Macintosh Volume I, I-193 + Imaging With QuickDraw
@@ -3959,6 +4187,7 @@ fn draw_picture_text(
     len: u32,
     font_id: i16,
     font_size: i16,
+    text_face: u8,
     dst_top: i16,
     dst_left: i16,
     frame_top: i16,
@@ -3990,19 +4219,31 @@ fn draw_picture_text(
                     if idx >= data.len() || data[idx] < 128 {
                         continue;
                     }
-                    let pic_x = gx0 + col as i32;
                     let pic_y = gy0 + row as i32;
-                    if let Some(rgn) = clip_region {
-                        if !rgn.contains(pic_y, pic_x) {
+                    let bold_pixels = if text_face & 0x01 != 0 { 2 } else { 1 };
+                    for bold_offset in 0..bold_pixels {
+                        let pic_x = gx0 + col as i32 + bold_offset;
+                        if clip_region.is_some_and(|rgn| !rgn.contains(pic_y, pic_x)) {
                             continue;
                         }
-                    }
-                    let x =
-                        ((pic_x - i32::from(frame_left)) as f64 * scale_x + dst_left as f64) as i32;
-                    let y =
-                        ((pic_y - i32::from(frame_top)) as f64 * scale_y + dst_top as f64) as i32;
+                        let x_start = (((pic_x - i32::from(frame_left)) as f64 * scale_x)
+                            + dst_left as f64)
+                            .floor() as i32;
+                        let x_end = ((((pic_x + 1 - i32::from(frame_left)) as f64 * scale_x)
+                            + dst_left as f64)
+                            .ceil() as i32)
+                            .max(x_start + 1);
+                        let y_start = (((pic_y - i32::from(frame_top)) as f64 * scale_y)
+                            + dst_top as f64)
+                            .floor() as i32;
+                        let y_end = ((((pic_y + 1 - i32::from(frame_top)) as f64 * scale_y)
+                            + dst_top as f64)
+                            .ceil() as i32)
+                            .max(y_start + 1);
                     let _ = inv_sx;
                     let _ = inv_sy;
+                        for y in y_start..y_end {
+                            for x in x_start..x_end {
                     // Honor TxMode. srcCopy (0) / srcOr (1) overwrite;
                     // srcXor (2) XORs the dst byte with fg_idx; srcBic (3)
                     // clears dst to bg_idx at glyph pixels. Modes >= 32 fall
@@ -4020,12 +4261,8 @@ fn draw_picture_text(
                                 let old = bus.read_byte(addr);
                                 bus.write_byte(addr, old ^ fg_idx);
                             }
-                            3 => {
-                                bus.write_byte(addr, bg_idx);
-                            }
-                            _ => {
-                                bus.write_byte(addr, fg_idx);
-                            }
+                                        3 => bus.write_byte(addr, bg_idx),
+                                        _ => bus.write_byte(addr, fg_idx),
                         }
                     } else {
                         write_pixel_clipped(
@@ -4043,6 +4280,9 @@ fn draw_picture_text(
                     }
                 }
             }
+                    }
+                }
+            }
             cur_h += glyph.advance as i32;
         } else {
             cur_h += 6;
@@ -4051,7 +4291,14 @@ fn draw_picture_text(
 }
 
 /// Compute total glyph advance for a PICT text run without drawing.
-fn text_advance(bus: &MacMemoryBus, text_ptr: u32, len: u32, font_id: i16, font_size: i16) -> i16 {
+fn text_advance(
+    bus: &MacMemoryBus,
+    text_ptr: u32,
+    len: u32,
+    font_id: i16,
+    font_size: i16,
+    text_face: u8,
+) -> i16 {
     let mut w: i32 = 0;
     for i in 0..len {
         let ch = bus.read_byte(text_ptr + i) as char;
@@ -4060,6 +4307,9 @@ fn text_advance(bus: &MacMemoryBus, text_ptr: u32, len: u32, font_id: i16, font_
         } else {
             w += 6;
         }
+    }
+    if text_face & 0x01 != 0 {
+        w += i32::try_from(len).unwrap_or(i32::MAX);
     }
     w.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
@@ -9170,5 +9420,40 @@ mod tests {
         );
 
         assert!(result.0);
+    }
+
+    #[test]
+    fn recorded_round_rect_honors_ovsize_when_scaled() {
+        // Imaging With QuickDraw (1994), Appendix A, p. A-8: OvSize
+        // supplies the corner oval for the rounded-rectangle opcode family.
+        let mut commands = Vec::new();
+        super::recording_push_round_rect(&mut commands, 0x0041, (0, 0, 40, 40), 10, 10);
+        let picture = super::finish_recording((0, 0, 40, 40), commands);
+        let mut bus = MacMemoryBus::new(2 * 1024 * 1024);
+        let pic = 0x10_0000;
+        let screen = 0x08_0000;
+        bus.write_bytes(pic, &picture);
+        bus.fill_zeros(screen, 60 * 60);
+        let mut clut = [[0u16; 3]; 256];
+        clut[0] = [0xFFFF; 3];
+
+        let (drawn, _) = draw_picture(
+            &mut bus,
+            pic,
+            0,
+            0,
+            50,
+            50,
+            (screen, 60, 60, 60, 8),
+            &clut,
+            0,
+            None,
+        );
+
+        assert!(drawn);
+        assert_eq!(bus.read_byte(screen + 25 * 60 + 25), 255);
+        assert_eq!(bus.read_byte(screen), 0);
+        assert_eq!(bus.read_byte(screen + 60 + 1), 0);
+        assert_eq!(bus.read_byte(screen + 6 * 60 + 6), 255);
     }
 }
