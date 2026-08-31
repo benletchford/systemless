@@ -17,6 +17,9 @@
 #[path = "desktop/desktop_save_store.rs"]
 mod desktop_save_store;
 #[cfg(target_os = "macos")]
+#[path = "desktop/host_cursor.rs"]
+mod host_cursor;
+#[cfg(target_os = "macos")]
 #[path = "desktop/metal_present.rs"]
 mod metal_present;
 #[cfg(target_os = "macos")]
@@ -617,6 +620,8 @@ struct App {
     force_gpu_present: bool,
     /// Show the Systemless debug overlay on top of the game framebuffer.
     debug_overlay_visible: bool,
+    #[cfg(target_os = "macos")]
+    host_cursor: host_cursor::HostCursor,
     debug_last_frame_at: Option<std::time::Instant>,
     debug_host_fps: Option<f64>,
     debug_frame_ms: Option<f64>,
@@ -744,6 +749,8 @@ impl App {
             #[cfg(target_os = "macos")]
             force_gpu_present: true,
             debug_overlay_visible: false,
+            #[cfg(target_os = "macos")]
+            host_cursor: host_cursor::HostCursor::new(),
             debug_last_frame_at: None,
             debug_host_fps: None,
             debug_frame_ms: None,
@@ -1276,6 +1283,13 @@ impl App {
         let screen_mode = runner.dispatcher().screen_mode;
         let device_clut = runner.dispatcher().device_clut;
         let device_gamma = runner.dispatcher().device_gamma;
+        #[cfg(target_os = "macos")]
+        let cursor = if self.host_cursor.enabled() {
+            None
+        } else {
+            runner.dispatcher().cursor().cloned()
+        };
+        #[cfg(not(target_os = "macos"))]
         let cursor = runner.dispatcher().cursor().cloned();
         let mouse_pos = runner.dispatcher().mouse_position();
 
@@ -2120,6 +2134,41 @@ fn content_rect_from_copybits(
     })
 }
 
+#[cfg(target_os = "macos")]
+impl App {
+    /// Keep the host pointer in step with the guest cursor image, visibility,
+    /// and the window's guest-to-screen scale.
+    fn sync_host_cursor(&mut self) {
+        let (Some(window), Some(runner)) = (self.window.as_ref(), self.runner.as_ref()) else {
+            return;
+        };
+        // The cursor's guest-pixel scale must match the presentation viewport
+        // (content rectangle + binding axis), not the raw window/guest ratio:
+        // height-constrained windows, learned gameplay crops, and transient
+        // dialog expansion all change it (issue #1049).
+        let (_, _, sw, sh, _) = runner.dispatcher().screen_mode;
+        let (sw, sh) = (u32::from(sw), u32::from(sh));
+        let content = presentation_content_rect(
+            self.content_rect.unwrap_or(ContentRect {
+                left: 0,
+                top: 0,
+                width: sw,
+                height: sh,
+            }),
+            runner
+                .dispatcher()
+                .visible_dialog_structure_bounds(runner.bus()),
+            sw,
+            sh,
+        );
+        let size = window.inner_size();
+        let scale =
+            host_cursor::presentation_scale(content.width, content.height, size.width, size.height);
+        self.host_cursor
+            .sync(window, runner.dispatcher().cursor(), scale);
+    }
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
@@ -2157,6 +2206,13 @@ impl ApplicationHandler for App {
                     .create_window(window_attrs)
                     .expect("Failed to create window"),
             );
+            // The guest cursor is the host pointer on macOS; it is drawn into
+            // the frame elsewhere.
+            #[cfg(target_os = "macos")]
+            if !self.host_cursor.enabled() {
+                window.set_cursor_visible(false);
+            }
+            #[cfg(not(target_os = "macos"))]
             window.set_cursor_visible(false);
 
             #[cfg(target_os = "macos")]
@@ -2185,7 +2241,23 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
 
+            WindowEvent::CursorEntered { .. } => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.host_cursor.set_pointer_inside(true);
+                    self.host_cursor.reassert();
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                #[cfg(target_os = "macos")]
+                self.host_cursor.set_pointer_inside(false);
+            }
             WindowEvent::CursorMoved { position, .. } => {
+                #[cfg(target_os = "macos")]
+                {
+                    self.host_cursor.set_pointer_inside(true);
+                    self.host_cursor.reassert();
+                }
                 self.force_next_render = true;
                 self.mouse_physical = (position.x, position.y);
                 let (v, h) = self.physical_to_mac(position.x, position.y);
@@ -2325,6 +2397,9 @@ impl ApplicationHandler for App {
             return;
         }
         self.sync_save_files(false);
+
+        #[cfg(target_os = "macos")]
+        self.sync_host_cursor();
 
         #[cfg(target_os = "macos")]
         self.sync_native_application_identity();
