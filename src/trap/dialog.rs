@@ -14437,7 +14437,9 @@ impl super::TrapDispatcher {
                     }
                     0x0007 => {
                         // TEStyleInsert ($A83D, selector $0007)
+                        // Inserts styled text before the selection and redraws it as necessary.
                         // PROCEDURE TEStyleInsert(text: Ptr; length: LONGINT; hST: StScrpHandle; hTE: TEHandle);
+                        // Inside Macintosh: Text (1993), pp. 2-102 to 2-103.
                         let te_handle = bus.read_long(sp + 2);
                         let style_scrap = bus.read_long(sp + 6);
                         let length = bus.read_long(sp + 10) as usize;
@@ -14494,13 +14496,6 @@ impl super::TrapDispatcher {
                                 self.te_recalculate_layout(bus, te_handle);
                             }
                             self.draw_te_contents(cpu, bus, te_handle, true);
-                        } else if text_ptr != 0 && bus.read_byte(text_ptr) == 0 {
-                            // The ROM styled-TextEdit path leaves an exhausted
-                            // NUL-terminated insertion with no continuation.
-                            // Marathon keeps that continuation in A3; retaining
-                            // its stale pointer makes the guest retry this
-                            // zero-length insertion forever.
-                            cpu.write_reg(Register::A3, 0);
                         }
                         cpu.write_reg(Register::A7, sp + 18);
                     }
@@ -34620,22 +34615,58 @@ mod tests {
     }
 
     #[test]
-    fn testyleinsert_clears_exhausted_nul_continuation() {
+    fn testyleinsert_zero_length_preserves_pascal_registers_and_text_state() {
         let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
+        disp.initialize_styled_te_record(&mut bus, te_handle, (0, 0, 80, 200), (0, 0, 80, 200));
+        disp.te_set_text_contents(&mut bus, te_handle, b"kept");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 2);
+
         let text_ptr = bus.alloc(1);
         bus.write_byte(text_ptr, 0);
-        cpu.write_reg(Register::A3, text_ptr);
+        let preserved = [
+            (Register::D3, 0xD300_0003),
+            (Register::D4, 0xD400_0004),
+            (Register::D5, 0xD500_0005),
+            (Register::D6, 0xD600_0006),
+            (Register::D7, 0xD700_0007),
+            (Register::A2, 0xA200_0002),
+            (Register::A3, text_ptr),
+            (Register::A4, 0xA400_0004),
+            (Register::A5, 0xA500_0005),
+            (Register::A6, 0xA600_0006),
+        ];
+        for (register, value) in preserved {
+            cpu.write_reg(register, value);
+        }
 
         bus.write_word(TEST_SP, 0x0007);
-        bus.write_long(TEST_SP + 2, 0);
+        bus.write_long(TEST_SP + 2, te_handle);
         bus.write_long(TEST_SP + 6, 0);
         bus.write_long(TEST_SP + 10, 0);
         bus.write_long(TEST_SP + 14, text_ptr);
+        bus.write_long(TEST_SP + 18, 0xCAFE_BABE);
 
         let result = disp.dispatch_dialog(true, 0x03D, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(cpu.read_reg(Register::A3), 0);
+        for (register, value) in preserved {
+            assert_eq!(
+                cpu.read_reg(register),
+                value,
+                "stack-based TEStyleInsert must preserve {register:?}"
+            );
+        }
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 18);
+        assert_eq!(TrapDispatcher::te_text_bytes(&bus, te_handle), b"kept");
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 2);
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_LENGTH_OFFSET), 4);
+        assert_eq!(bus.read_long(TEST_SP + 18), 0xCAFE_BABE);
     }
 
     #[test]
