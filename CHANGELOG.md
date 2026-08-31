@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.0](https://github.com/benletchford/systemless/compare/v0.26.0...v0.27.0) (2026-08-31)
+
+
+### Features
+
+* expand the Toolbox showcase ([#1079](https://github.com/benletchford/systemless/issues/1079)) ([8dfe308](https://github.com/benletchford/systemless/commit/8dfe3082fcb17cfff63e33fda44efcc7294035b9))
+
+
+### Bug Fixes
+
+* preserve and exercise indexed palettes ([#1083](https://github.com/benletchford/systemless/issues/1083)) ([722a3c3](https://github.com/benletchford/systemless/commit/722a3c3ddc8961b6d73d236b494e941f9624b345))
+
 ## [0.26.0](https://github.com/benletchford/systemless/compare/v0.25.0...v0.26.0) (2026-08-31)
 
 
