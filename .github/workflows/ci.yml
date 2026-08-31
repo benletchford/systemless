@@ -54,6 +54,14 @@ jobs:
       - name: Run library tests
         run: cargo test --lib --features test-support
 
+      - name: Run toolbox showcase integration test (68k)
+        run: cargo test --test toolbox_showcase
+
+      - name: Run toolbox showcase integration test (PowerPC)
+        env:
+          SYSTEMLESS_PREFER_POWERPC: 1
+        run: cargo test --test toolbox_showcase
+
   checks:
     name: headless & package
     runs-on: ubuntu-latest
@@ -67,6 +75,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Verify reproducible toolbox showcase archive
+        run: ./tests/toolbox-showcase/build.sh --verify
 
       - name: Headless library build (no default features)
         run: cargo check --no-default-features

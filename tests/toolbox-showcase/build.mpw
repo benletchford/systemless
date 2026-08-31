@@ -1,0 +1,16 @@
+Set Echo 1
+Set Exit 1
+
+# Build the same source for 68K.
+SC -sym off showcase.c -o showcase.68k.o
+Link -d -t 'APPL' -c 'SHWC' showcase.68k.o "{Libraries}"MacRuntime.o "{Libraries}"Interface.o -o showcase.68k
+Rez -append -o showcase.68k showcase.r
+
+# Build the same source as a native PowerPC CFM application.
+MrC -sym off -opt off showcase.c -o showcase.ppc.o
+PPCLink showcase.ppc.o "{SharedLibraries}"InterfaceLib "{SharedLibraries}"StdCLib "{PPCLibraries}"StdCRuntime.o "{PPCLibraries}"PPCCRuntime.o -sym off -o showcase.ppc
+Rez -append -o showcase.ppc -d PowerPC showcase.r
+
+# Keep the PEF data fork and append the 68K CODE resources.
+Duplicate -y showcase.ppc showcase
+Rez -d FAT showcase.r -a -o showcase
