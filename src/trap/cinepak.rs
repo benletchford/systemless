@@ -22,6 +22,11 @@ struct Codebook {
     v: i8,
 }
 
+fn read_u24(data: &[u8], offset: usize) -> Option<usize> {
+    let bytes = data.get(offset..offset.checked_add(3)?)?;
+    Some((usize::from(bytes[0]) << 16) | (usize::from(bytes[1]) << 8) | usize::from(bytes[2]))
+}
+
 /// Persistent Cinepak decoder. Holds the reconstructed RGB frame plus the two
 /// codebooks so inter-coded frames can be applied on top of prior output.
 #[derive(Clone, Debug)]
@@ -65,6 +70,10 @@ impl CinepakDecoder {
             return Err("cinepak: frame header too short");
         }
         // frame header: flags(1) length(3) width(2) height(2) strips(2)
+        let frame_len = read_u24(data, 1).ok_or("cinepak: frame header too short")?;
+        if frame_len < 10 || frame_len > data.len() {
+            return Err("cinepak: invalid frame length");
+        }
         let width = ((data[4] as usize) << 8) | data[5] as usize;
         let height = ((data[6] as usize) << 8) | data[7] as usize;
         let num_strips = ((data[8] as usize) << 8) | data[9] as usize;
@@ -84,17 +93,28 @@ impl CinepakDecoder {
         let mut y_top = 0usize;
 
         for _ in 0..num_strips {
-            if pos + 12 > data.len() {
+            if pos + 12 > frame_len {
                 return Err("cinepak: truncated strip header");
             }
-            // strip header: id(2) size(2) top(2) left(2) bottom(2) right(2)
-            let strip_size = ((data[pos + 2] as usize) << 8) | data[pos + 3] as usize;
+            // strip header: id(1) size(3) top(2) left(2) bottom(2) right(2)
+            if !matches!(data[pos], 0x10 | 0x11) {
+                return Err("cinepak: invalid strip id");
+            }
+            let strip_size = read_u24(data, pos + 1).ok_or("cinepak: truncated strip header")?;
+            if strip_size < 12 {
+                return Err("cinepak: strip size too small");
+            }
+            let strip_end = pos
+                .checked_add(strip_size)
+                .ok_or("cinepak: strip size overflow")?;
+            if strip_end > frame_len {
+                return Err("cinepak: truncated strip");
+            }
             let top = ((data[pos + 4] as usize) << 8) | data[pos + 5] as usize;
             let left = ((data[pos + 6] as usize) << 8) | data[pos + 7] as usize;
             let bottom = ((data[pos + 8] as usize) << 8) | data[pos + 9] as usize;
             let right = ((data[pos + 10] as usize) << 8) | data[pos + 11] as usize;
 
-            let strip_end = (pos + strip_size).min(data.len());
             // Strip vertical extent. `top`/`bottom` are relative to the strip;
             // strips are laid out top-to-bottom, so track a running origin.
             let s_top = y_top;
@@ -128,11 +148,20 @@ impl CinepakDecoder {
         let mut y;
 
         while pos + 4 <= strip_end {
-            let chunk_id = ((data[pos] as usize) << 8) | data[pos + 1] as usize;
-            let chunk_size = ((data[pos + 2] as usize) << 8) | data[pos + 3] as usize;
-            let chunk_end = (pos + chunk_size).max(pos + 4).min(strip_end);
+            let chunk_id = data[pos];
+            let chunk_size =
+                read_u24(data, pos + 1).ok_or("cinepak: truncated chunk header")?;
+            if chunk_size < 4 {
+                return Err("cinepak: chunk size too small");
+            }
+            let chunk_end = pos
+                .checked_add(chunk_size)
+                .ok_or("cinepak: chunk size overflow")?;
+            if chunk_end > strip_end {
+                return Err("cinepak: truncated chunk");
+            }
             let body = pos + 4;
-            let ctype = chunk_id >> 8;
+            let ctype = chunk_id;
 
             match ctype {
                 // V4 codebook: 0x20 full, 0x21 partial, 0x24/0x25 grayscale.
@@ -223,9 +252,6 @@ impl CinepakDecoder {
                 }
             }
 
-            if chunk_size < 4 {
-                break;
-            }
             pos = chunk_end;
         }
         Ok(())
@@ -430,12 +456,16 @@ mod tests {
         v.to_be_bytes()
     }
 
+    fn be24(v: usize) -> [u8; 3] {
+        [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+    }
+
     /// Build a one-strip Cinepak frame from raw chunk bytes.
     fn frame(width: u16, height: u16, chunks: &[u8]) -> Vec<u8> {
         let mut strip = Vec::new();
-        strip.extend_from_slice(&be16(0x1000)); // strip id
+        strip.push(0x10); // strip id
         let strip_size = 12 + chunks.len();
-        strip.extend_from_slice(&be16(strip_size as u16));
+        strip.extend_from_slice(&be24(strip_size));
         strip.extend_from_slice(&be16(0)); // top
         strip.extend_from_slice(&be16(0)); // left
         strip.extend_from_slice(&be16(height)); // bottom
@@ -445,9 +475,7 @@ mod tests {
         let mut f = Vec::new();
         f.push(0x00); // flags: intra
         let total = 10 + strip.len();
-        f.push((total >> 16) as u8);
-        f.push((total >> 8) as u8);
-        f.push(total as u8);
+        f.extend_from_slice(&be24(total));
         f.extend_from_slice(&be16(width));
         f.extend_from_slice(&be16(height));
         f.extend_from_slice(&be16(1)); // num strips
@@ -455,20 +483,20 @@ mod tests {
         f
     }
 
-    fn chunk(id: u16, body: &[u8]) -> Vec<u8> {
+    fn chunk(id: u8, body: &[u8]) -> Vec<u8> {
         let mut c = Vec::new();
-        c.extend_from_slice(&be16(id));
-        c.extend_from_slice(&be16((4 + body.len()) as u16));
+        c.push(id);
+        c.extend_from_slice(&be24(4 + body.len()));
         c.extend_from_slice(body);
         c
     }
 
     #[test]
     fn v1_grayscale_single_block_fills_4x4() {
-        // One V1 grayscale codebook entry [10,20,30,40], then a 0x3200 chunk
+        // One V1 grayscale codebook entry [10,20,30,40], then a 0x32 chunk
         // referencing index 0 for the single 4×4 block.
-        let cb = chunk(0x2600, &[10, 20, 30, 40]);
-        let vec = chunk(0x3200, &[0u8]);
+        let cb = chunk(0x26, &[10, 20, 30, 40]);
+        let vec = chunk(0x32, &[0u8]);
         let mut body = cb;
         body.extend_from_slice(&vec);
         let f = frame(4, 4, &body);
@@ -500,13 +528,13 @@ mod tests {
         cbbody.extend_from_slice(&[110, 110, 110, 110]); // idx1
         cbbody.extend_from_slice(&[120, 120, 120, 120]); // idx2
         cbbody.extend_from_slice(&[130, 130, 130, 130]); // idx3
-        let cb = chunk(0x2400, &cbbody);
+        let cb = chunk(0x24, &cbbody);
 
-        // 0x3000 vectors: one flag word (top bit set => V4), then 4 indices.
+        // 0x30 vectors: one flag word (top bit set => V4), then 4 indices.
         let mut vecbody = Vec::new();
         vecbody.extend_from_slice(&0x8000_0000u32.to_be_bytes());
         vecbody.extend_from_slice(&[0, 1, 2, 3]);
-        let vec = chunk(0x3000, &vecbody);
+        let vec = chunk(0x30, &vecbody);
 
         let mut body = cb;
         body.extend_from_slice(&vec);
@@ -525,8 +553,8 @@ mod tests {
     fn color_vector_reconstructs_via_yuv() {
         // Single color V1 entry: luma 128, u=+20, v=-10.
         let entry = [128u8, 128, 128, 128, 20u8, (-10i8) as u8];
-        let cb = chunk(0x2200, &entry);
-        let vec = chunk(0x3200, &[0u8]);
+        let cb = chunk(0x22, &entry);
+        let vec = chunk(0x32, &[0u8]);
         let mut body = cb;
         body.extend_from_slice(&vec);
         let f = frame(4, 4, &body);
@@ -543,8 +571,8 @@ mod tests {
     #[test]
     fn inter_frame_preserves_unchanged_blocks() {
         // Intra frame: 8×4 (two blocks wide), both blocks luma 50 via V1-only.
-        let cb0 = chunk(0x2600, &[50, 50, 50, 50]);
-        let intra_vec = chunk(0x3200, &[0u8, 0u8]);
+        let cb0 = chunk(0x26, &[50, 50, 50, 50]);
+        let intra_vec = chunk(0x32, &[0u8, 0u8]);
         let mut b0 = cb0;
         b0.extend_from_slice(&intra_vec);
         let f0 = frame(8, 4, &b0);
@@ -558,11 +586,11 @@ mod tests {
         // blocks a "V4?" selector bit. Flag word (MSB-first):
         //   bit31=1 block0 coded, bit30=0 block0 uses V1, bit29=0 block1 skip.
         // => 0x8000_0000. The V1 index byte (0) follows the flag word.
-        let cb1 = chunk(0x2600, &[200, 200, 200, 200]);
+        let cb1 = chunk(0x26, &[200, 200, 200, 200]);
         let mut inter_body = Vec::new();
         inter_body.extend_from_slice(&0x8000_0000u32.to_be_bytes());
         inter_body.push(0u8); // block0 -> v1[0]=200
-        let inter_vec = chunk(0x3100, &inter_body);
+        let inter_vec = chunk(0x31, &inter_body);
         let mut b1 = cb1;
         b1.extend_from_slice(&inter_vec);
         let f1 = frame(8, 4, &b1);
@@ -577,8 +605,8 @@ mod tests {
     #[test]
     fn inter_frame_v4_coded_block_reads_four_indices() {
         // Intra frame: single 4×4 block luma 10 (V1-only).
-        let cb0 = chunk(0x2600, &[10, 10, 10, 10]);
-        let intra = chunk(0x3200, &[0u8]);
+        let cb0 = chunk(0x26, &[10, 10, 10, 10]);
+        let intra = chunk(0x32, &[0u8]);
         let mut b0 = cb0;
         b0.extend_from_slice(&intra);
         let f0 = frame(4, 4, &b0);
@@ -592,11 +620,11 @@ mod tests {
         for luma in [60u8, 70, 80, 90] {
             v4body.extend_from_slice(&[luma, luma, luma, luma]);
         }
-        let v4cb = chunk(0x2400, &v4body);
+        let v4cb = chunk(0x24, &v4body);
         let mut inter_body = Vec::new();
         inter_body.extend_from_slice(&0xC000_0000u32.to_be_bytes());
         inter_body.extend_from_slice(&[0, 1, 2, 3]);
-        let inter = chunk(0x3100, &inter_body);
+        let inter = chunk(0x31, &inter_body);
         let mut b1 = v4cb;
         b1.extend_from_slice(&inter);
         let f1 = frame(4, 4, &b1);
@@ -607,5 +635,112 @@ mod tests {
         assert_eq!(px(2, 0), 70); // TR quadrant -> v4[1]
         assert_eq!(px(0, 2), 80); // BL quadrant -> v4[2]
         assert_eq!(px(2, 2), 90); // BR quadrant -> v4[3]
+    }
+
+    #[test]
+    fn strip_size_exceeding_64k_with_small_chunks_decodes_correct_pixels() {
+        let c1 = chunk(0x00, &vec![0u8; 39996]);
+        let c2 = chunk(0x00, &vec![0u8; 25546]);
+        let cb = chunk(0x26, &[200, 200, 200, 200]);
+        let vec = chunk(0x32, &[0]);
+
+        let mut body = c1;
+        body.extend_from_slice(&c2);
+        body.extend_from_slice(&cb);
+        body.extend_from_slice(&vec);
+
+        let f = frame(4, 4, &body);
+        let mut dec = CinepakDecoder::new(4, 4);
+        let rgb = dec.decode(&f).expect("decode");
+
+        assert_eq!(rgb[0], 200);
+        assert_eq!(rgb[1], 200);
+        assert_eq!(rgb[2], 200);
+    }
+
+    #[test]
+    fn chunk_size_exceeding_64k_decodes_correct_pixels() {
+        let big_c = chunk(0x00, &vec![0u8; 65536]);
+        let cb = chunk(0x26, &[180, 180, 180, 180]);
+        let vec = chunk(0x32, &[0]);
+
+        let mut body = big_c;
+        body.extend_from_slice(&cb);
+        body.extend_from_slice(&vec);
+
+        let f = frame(4, 4, &body);
+        let mut dec = CinepakDecoder::new(4, 4);
+        let rgb = dec.decode(&f).expect("decode");
+
+        assert_eq!(rgb[0], 180);
+        assert_eq!(rgb[1], 180);
+        assert_eq!(rgb[2], 180);
+    }
+
+    #[test]
+    fn malformed_frame_length_rejected() {
+        let mut dec = CinepakDecoder::new(4, 4);
+        assert_eq!(dec.decode(&[0; 5]), Err("cinepak: frame header too short"));
+
+        // Declared frame length < 10
+        let mut f = frame(4, 4, &[]);
+        f[1..4].copy_from_slice(&be24(9));
+        assert_eq!(dec.decode(&f), Err("cinepak: invalid frame length"));
+
+        // Declared frame length > buffer length
+        let mut f = frame(4, 4, &[]);
+        let len = f.len();
+        f[1..4].copy_from_slice(&be24(len + 10));
+        assert_eq!(dec.decode(&f), Err("cinepak: invalid frame length"));
+    }
+
+    #[test]
+    fn malformed_strip_length_rejected() {
+        let mut dec = CinepakDecoder::new(4, 4);
+
+        // Strip ID is a single byte and must identify an intra or inter strip.
+        let mut f = frame(4, 4, &[]);
+        f[10] = 0x12;
+        assert_eq!(dec.decode(&f), Err("cinepak: invalid strip id"));
+
+        // Strip size < 12
+        let mut f = frame(4, 4, &[]);
+        f[11..14].copy_from_slice(&be24(11));
+        assert_eq!(dec.decode(&f), Err("cinepak: strip size too small"));
+
+        // Strip size exceeds declared frame length
+        let mut f = frame(4, 4, &[]);
+        let frame_len = f.len();
+        f[11..14].copy_from_slice(&be24(frame_len + 1));
+        assert_eq!(dec.decode(&f), Err("cinepak: truncated strip"));
+    }
+
+    #[test]
+    fn malformed_chunk_length_rejected() {
+        let mut dec = CinepakDecoder::new(4, 4);
+
+        // Chunk size < 4
+        let bad_chunk = vec![0x00, 0x00, 0x00, 0x03];
+        let f = frame(4, 4, &bad_chunk);
+        assert_eq!(dec.decode(&f), Err("cinepak: chunk size too small"));
+
+        // Chunk size exceeds strip length
+        let bad_chunk = vec![0x00, 0x00, 0x00, 0x20];
+        let f = frame(4, 4, &bad_chunk);
+        assert_eq!(dec.decode(&f), Err("cinepak: truncated chunk"));
+    }
+
+    #[test]
+    fn trailing_strip_alignment_bytes_are_ignored() {
+        let cb = chunk(0x26, &[90, 90, 90, 90]);
+        let vec = chunk(0x32, &[0]);
+        let mut body = cb;
+        body.extend_from_slice(&vec);
+        body.extend_from_slice(&[0; 3]);
+
+        let f = frame(4, 4, &body);
+        let mut dec = CinepakDecoder::new(4, 4);
+        let rgb = dec.decode(&f).expect("decode");
+        assert_eq!(&rgb[..3], &[90, 90, 90]);
     }
 }
