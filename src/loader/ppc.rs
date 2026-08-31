@@ -3363,30 +3363,55 @@ impl PpcQ3ViewportRect {
 struct PpcQ3SoftwareFrontBufferSurface {
     front_buffer: PpcFrontBuffer,
     span: Option<PpcSectionMemSpan>,
+    indexed_clut: Option<[[u16; 3]; 256]>,
 }
 
 impl PpcQ3SoftwareFrontBufferSurface {
-    fn new(memory: &mut PpcSectionMem, front_buffer: PpcFrontBuffer) -> Self {
+    fn new(
+        memory: &mut PpcSectionMem,
+        front_buffer: PpcFrontBuffer,
+        indexed_clut: Option<[[u16; 3]; 256]>,
+    ) -> Self {
         let span = ppc_q3_front_buffer_span_len(front_buffer)
             .and_then(|len| memory.writable_span(front_buffer.base_addr, len));
-        Self { front_buffer, span }
+        Self {
+            front_buffer,
+            span,
+            indexed_clut,
+        }
     }
 
-    fn read_pixel(self, memory: &mut PpcSectionMem, point: (i32, i32)) -> Option<u16> {
+    fn read_pixel(&self, memory: &mut PpcSectionMem, point: (i32, i32)) -> Option<u16> {
+        if self.front_buffer.depth == 8 {
+            let index = usize::from(ppc_quickdraw_read_pixel(memory, self.front_buffer, point)?);
+            let [red, green, blue] = *self.indexed_clut.as_ref()?.get(index)?;
+            return Some(((red >> 11) << 10) | ((green >> 11) << 5) | (blue >> 11));
+        }
         if let (Some(span), Some(offset)) = (self.span, self.pixel_relative_offset(point)) {
             return memory.read_u16_be_in_span(span, offset);
         }
         ppc_q3_read_software_pixel(memory, self.front_buffer, point)
     }
 
-    fn write_pixel(self, memory: &mut PpcSectionMem, point: (i32, i32), color: u16) -> bool {
+    fn write_pixel(&self, memory: &mut PpcSectionMem, point: (i32, i32), color: u16) -> bool {
+        if self.front_buffer.depth == 8 {
+            let Some(clut) = self.indexed_clut.as_ref() else {
+                return false;
+            };
+            return ppc_quickdraw_write_raw_pixel(
+                memory,
+                self.front_buffer,
+                point,
+                u16::from(ppc_rgb555_to_clut_index(color, clut)),
+            );
+        }
         if let (Some(span), Some(offset)) = (self.span, self.pixel_relative_offset(point)) {
             return memory.write_u16_be_in_span(span, offset, color).is_some();
         }
         ppc_q3_write_software_pixel(memory, self.front_buffer, point, color)
     }
 
-    fn pixel_relative_offset(self, point: (i32, i32)) -> Option<usize> {
+    fn pixel_relative_offset(&self, point: (i32, i32)) -> Option<usize> {
         ppc_q3_front_buffer_pixel_relative_offset(self.front_buffer, point)
     }
 }
@@ -5319,7 +5344,7 @@ impl PpcLoadedApp {
         }
     }
 
-    fn q3_render_target(&self, commands: &[PpcQ3SceneCommand]) -> Option<PpcQ3RenderTarget> {
+    fn q3_render_target(&mut self, commands: &[PpcQ3SceneCommand]) -> Option<PpcQ3RenderTarget> {
         commands
             .iter()
             .filter_map(|command| match command {
@@ -5342,13 +5367,14 @@ impl PpcLoadedApp {
     }
 
     #[cfg(test)]
-    fn q3_draw_context_front_buffer(&self, draw_context: u32) -> Option<PpcFrontBuffer> {
+    fn q3_draw_context_front_buffer(&mut self, draw_context: u32) -> Option<PpcFrontBuffer> {
         self.q3_draw_context_render_target(draw_context)
             .map(|target| target.front_buffer)
     }
 
-    fn q3_draw_context_render_target(&self, draw_context: u32) -> Option<PpcQ3RenderTarget> {
-        ppc_q3_draw_context_render_target(
+    fn q3_draw_context_render_target(&mut self, draw_context: u32) -> Option<PpcQ3RenderTarget> {
+        ppc_q3_live_draw_context_render_target(
+            &mut self.memory,
             &self.q3_objects,
             &self.q3_draw_contexts,
             &self.gworlds,
@@ -5754,13 +5780,31 @@ impl PpcLoadedApp {
         let viewport = target
             .viewport
             .unwrap_or_else(|| PpcQ3ViewportRect::full(front_buffer));
-        if front_buffer.depth != 16 || front_buffer.width == 0 || front_buffer.height == 0 {
+        if !matches!(front_buffer.depth, 8 | 16)
+            || front_buffer.width == 0
+            || front_buffer.height == 0
+        {
             return PpcQ3SoftwareRenderStats::default();
         }
 
         let mut stats = PpcQ3SoftwareRenderStats::default();
         stats.record_target(target);
-        let surface = PpcQ3SoftwareFrontBufferSurface::new(&mut self.memory, front_buffer);
+        let indexed_clut = (front_buffer.depth == 8).then(|| {
+            target
+                .gworld
+                .map(|gworld| {
+                    ppc_live_gworld_clut(
+                        &mut self.memory,
+                        &self.gworlds,
+                        gworld,
+                        &self.screen_clut,
+                        &self.color_manager_clut,
+                    )
+                })
+                .unwrap_or(self.color_manager_clut)
+        });
+        let surface =
+            PpcQ3SoftwareFrontBufferSurface::new(&mut self.memory, front_buffer, indexed_clut);
         let mut depth_buffer = PpcQ3SoftwareDepthBuffer::new(front_buffer);
         if let (Some(clear_color), Some((left, top, right, bottom))) =
             (target.clear_color, viewport.inclusive_bounds())
@@ -11464,9 +11508,49 @@ fn ppc_q3_draw_context_render_target(
     }
 }
 
+fn ppc_q3_live_draw_context_render_target(
+    memory: &mut PpcSectionMem,
+    q3_objects: &[PpcQ3ObjectRecord],
+    q3_draw_contexts: &[PpcQ3DrawContextRecord],
+    gworlds: &[PpcGWorldRecord],
+    draw_context: u32,
+) -> Option<PpcQ3RenderTarget> {
+    let mut target =
+        ppc_q3_draw_context_render_target(q3_objects, q3_draw_contexts, gworlds, draw_context)?;
+    if target.source != PpcQ3RenderTargetSource::MacDrawContext {
+        return Some(target);
+    }
+    let port = target.gworld?;
+    let gworld = gworlds.iter().find(|record| record.port == port)?;
+    if gworld.pixmap_handle == 0 && gworld.pixmap == 0 {
+        return Some(target);
+    }
+    let surface = ppc_live_quickdraw_surface(memory, gworlds, port)?;
+    let record = q3_draw_contexts
+        .iter()
+        .find(|record| record.draw_context == draw_context)?;
+    target.front_buffer = surface.front_buffer;
+    target.viewport = ppc_q3_draw_context_viewport_with_origin(
+        record,
+        surface.front_buffer,
+        -i32::from(surface.left),
+        -i32::from(surface.top),
+    );
+    Some(target)
+}
+
 fn ppc_q3_draw_context_viewport(
     record: &PpcQ3DrawContextRecord,
     front_buffer: PpcFrontBuffer,
+) -> Option<PpcQ3ViewportRect> {
+    ppc_q3_draw_context_viewport_with_origin(record, front_buffer, 0, 0)
+}
+
+fn ppc_q3_draw_context_viewport_with_origin(
+    record: &PpcQ3DrawContextRecord,
+    front_buffer: PpcFrontBuffer,
+    origin_x: i32,
+    origin_y: i32,
 ) -> Option<PpcQ3ViewportRect> {
     let pane_state =
         ppc_q3_read_u32_from_slice(&record.data, PPC_Q3_DRAW_CONTEXT_PANE_STATE_OFFSET)
@@ -11479,7 +11563,13 @@ fn ppc_q3_draw_context_viewport(
     let min_y = ppc_q3_read_f32_from_slice(&record.data, pane_start.checked_add(4)?)?;
     let max_x = ppc_q3_read_f32_from_slice(&record.data, pane_start.checked_add(8)?)?;
     let max_y = ppc_q3_read_f32_from_slice(&record.data, pane_start.checked_add(12)?)?;
-    PpcQ3ViewportRect::from_q3_area(front_buffer, min_x, min_y, max_x, max_y)
+    PpcQ3ViewportRect::from_q3_area(
+        front_buffer,
+        min_x + origin_x as f32,
+        min_y + origin_y as f32,
+        max_x + origin_x as f32,
+        max_y + origin_y as f32,
+    )
 }
 
 fn ppc_q3_front_buffer_pixel_addr(front_buffer: PpcFrontBuffer, (x, y): (i32, i32)) -> Option<u32> {
@@ -43564,7 +43654,6 @@ fn ppc_rgb555_to_rgb16(pixel: u16) -> [u16; 3] {
     ]
 }
 
-#[cfg(test)]
 fn ppc_rgb555_to_clut_index(pixel: u16, clut: &[[u16; 3]; 256]) -> u8 {
     let [red, green, blue] = ppc_rgb555_to_rgb16(pixel & 0x7fff);
     pict::closest_clut_index(red, green, blue, clut)
@@ -120277,6 +120366,62 @@ pub(crate) mod tests {
                 assert_ne!(pixel, Some(0x03e0), "green pixel outside pane at {x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn q3_software_surface_maps_rgb555_through_indexed_clut() {
+        let front_base = PPC_HEAP_BASE + 0x1000;
+        let pef = synthetic_pef_with_library_import(b"QuickDraw\xaa 3D", b"Q3TriMesh_Submit");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.memory.add_region(front_base, vec![0; 4]);
+        let front_buffer = PpcFrontBuffer {
+            base_addr: front_base,
+            row_bytes: 2,
+            width: 2,
+            height: 2,
+            depth: 8,
+        };
+        let mut clut = [[0; 3]; 256];
+        clut[42] = [0, u16::MAX, u16::MAX];
+        let surface =
+            PpcQ3SoftwareFrontBufferSurface::new(&mut loaded.memory, front_buffer, Some(clut));
+
+        assert!(surface.write_pixel(&mut loaded.memory, (1, 0), 0x03ff));
+        assert_eq!(loaded.memory.read_u8(front_base + 1), Some(42));
+        assert_eq!(surface.read_pixel(&mut loaded.memory, (1, 0)), Some(0x03ff));
+    }
+
+    #[test]
+    fn q3_mac_draw_context_translates_port_local_pane_to_framebuffer() {
+        let front_buffer = PpcFrontBuffer {
+            base_addr: PPC_MAIN_SCREEN_BASE,
+            row_bytes: 1600,
+            width: 800,
+            height: 600,
+            depth: 16,
+        };
+        let mut data = vec![0; PPC_Q3_MAC_DRAW_CONTEXT_DATA_SIZE as usize];
+        ppc_q3_write_u32_to_slice(&mut data, PPC_Q3_DRAW_CONTEXT_PANE_STATE_OFFSET, 1).unwrap();
+        for (offset, value) in [(0, 30.0f32), (4, 80.0), (8, 125.0), (12, 130.0)] {
+            data[PPC_Q3_DRAW_CONTEXT_PANE_OFFSET as usize + offset
+                ..PPC_Q3_DRAW_CONTEXT_PANE_OFFSET as usize + offset + 4]
+                .copy_from_slice(&value.to_bits().to_be_bytes());
+        }
+        let record = PpcQ3DrawContextRecord {
+            draw_context: PPC_Q3_OBJECT_BASE,
+            draw_context_type: PPC_Q3_DRAW_CONTEXT_TYPE_MACINTOSH,
+            data,
+        };
+
+        assert_eq!(
+            ppc_q3_draw_context_viewport_with_origin(&record, front_buffer, 40, 40),
+            Some(PpcQ3ViewportRect {
+                left: 70,
+                top: 120,
+                right: 165,
+                bottom: 170,
+            })
+        );
     }
 
     #[test]
