@@ -3892,6 +3892,7 @@ impl PpcLoadedApp {
         );
         context.attach_scrap_state(&mut self.scrap.desktop);
         context.attach_control_manager(&mut self.controls);
+        context.attach_list_manager(&mut self.list_manager);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
@@ -21687,11 +21688,7 @@ fn dispatch_supported_import(
             } else {
                 PPC_NO_ERR
             };
-            if let Some(record) = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == list)
-            {
+            if let Some(record) = list_manager.get(&list) {
                 if record.draw_enabled {
                     ppc_list_draw(memory, gworlds, record);
                 }
@@ -21699,12 +21696,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(list))
         }
         PpcImportDispatcherTarget::LDispose => {
-            if let Some(index) = list_manager
-                .lists
-                .iter()
-                .position(|record| record.handle == cpu.gpr[3])
-            {
-                let record = list_manager.lists.remove(index);
+            if let Some(record) = list_manager.remove(&cpu.gpr[3]) {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
                 };
@@ -21731,28 +21723,34 @@ fn dispatch_supported_import(
             let count = cpu.gpr[3] as u16 as i16;
             let requested_row = cpu.gpr[4] as u16 as i16;
             let mut added_row = requested_row;
-            if let Some(record) = list_manager
-                .lists
-                .iter_mut()
-                .find(|record| record.handle == cpu.gpr[5])
-            {
-                let (columns, _) = ppc_list_dimensions(record.data_bounds);
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
                 let row = requested_row.clamp(record.data_bounds.0, record.data_bounds.2);
                 added_row = row;
                 if count > 0 {
-                    let insertion_row = usize::try_from(row - record.data_bounds.0).unwrap_or(0);
-                    let insertion = insertion_row
-                        .saturating_mul(columns)
-                        .min(record.cells.len());
-                    let added_cells = usize::try_from(count).unwrap_or(0).saturating_mul(columns);
-                    record.cells.splice(
-                        insertion..insertion,
-                        std::iter::repeat_n(Vec::new(), added_cells),
-                    );
-                    record.selected.splice(
-                        insertion..insertion,
-                        std::iter::repeat_n(false, added_cells),
-                    );
+                    record.cells = record
+                        .cells
+                        .drain()
+                        .map(|((cell_row, cell_column), bytes)| {
+                            let cell_row = if cell_row >= row {
+                                cell_row.saturating_add(count)
+                            } else {
+                                cell_row
+                            };
+                            ((cell_row, cell_column), bytes)
+                        })
+                        .collect();
+                    record.selected = record
+                        .selected
+                        .iter()
+                        .map(|&(cell_row, cell_column)| {
+                            let cell_row = if cell_row >= row {
+                                cell_row.saturating_add(count)
+                            } else {
+                                cell_row
+                            };
+                            (cell_row, cell_column)
+                        })
+                        .collect();
                     record.data_bounds.2 = record.data_bounds.2.saturating_add(count);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
@@ -21777,12 +21775,8 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::LDelRow => {
             let count = cpu.gpr[3] as u16 as i16;
             let row = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager
-                .lists
-                .iter_mut()
-                .find(|record| record.handle == cpu.gpr[5])
-            {
-                let (columns, rows) = ppc_list_dimensions(record.data_bounds);
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+                let (_, rows) = ppc_list_dimensions(record.data_bounds);
                 if count == 0 || (row >= record.data_bounds.0 && row < record.data_bounds.2) {
                     // More Macintosh Toolbox (1993), p. 4-91: zero removes
                     // every row, independent of the supplied row number.
@@ -21795,12 +21789,40 @@ fn dispatch_supported_import(
                             .min(rows - first_row);
                         (first_row, delete_rows)
                     };
-                    let start = first_row.saturating_mul(columns);
-                    let end = start
-                        .saturating_add(delete_rows.saturating_mul(columns))
-                        .min(record.cells.len());
-                    record.cells.drain(start..end);
-                    record.selected.drain(start..end);
+                    let first_row = record.data_bounds.0.saturating_add(first_row as i16);
+                    let after_rows = first_row.saturating_add(delete_rows as i16);
+                    record.cells = record
+                        .cells
+                        .drain()
+                        .filter_map(|((cell_row, cell_column), bytes)| {
+                            if (first_row..after_rows).contains(&cell_row) {
+                                None
+                            } else {
+                                let cell_row = if cell_row >= after_rows {
+                                    cell_row.saturating_sub(delete_rows as i16)
+                                } else {
+                                    cell_row
+                                };
+                                Some(((cell_row, cell_column), bytes))
+                            }
+                        })
+                        .collect();
+                    record.selected = record
+                        .selected
+                        .iter()
+                        .filter_map(|&(cell_row, cell_column)| {
+                            if (first_row..after_rows).contains(&cell_row) {
+                                None
+                            } else {
+                                let cell_row = if cell_row >= after_rows {
+                                    cell_row.saturating_sub(delete_rows as i16)
+                                } else {
+                                    cell_row
+                                };
+                                Some((cell_row, cell_column))
+                            }
+                        })
+                        .collect();
                     record.data_bounds.2 = record
                         .data_bounds
                         .2
@@ -21829,27 +21851,18 @@ fn dispatch_supported_import(
             let next = cpu.gpr[3] != 0;
             let cell_ptr = cpu.gpr[4];
             let result = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[5])
+                .get(&cpu.gpr[5])
                 .and_then(|record| {
                     let v = memory.read_u16_be(cell_ptr)? as i16;
                     let h = memory.read_u16_be(cell_ptr + 2)? as i16;
-                    let index = ppc_list_cell_index(record, v, h)?;
                     let found = if next {
-                        record.selected[index..]
-                            .iter()
-                            .position(|selected| *selected)
-                            .map(|offset| index + offset)
+                        ppc_list_cell_index(record, v, h)?;
+                        record.selected.range((v, h)..).next().copied()
                     } else {
-                        record
-                            .selected
-                            .get(index)
-                            .copied()
-                            .unwrap_or(false)
-                            .then_some(index)
+                        ppc_list_cell_index(record, v, h)?;
+                        record.selected.contains(&(v, h)).then_some((v, h))
                     }?;
-                    let (v, h) = ppc_list_cell_for_index(record, found)?;
+                    let (v, h) = found;
                     if next {
                         let _ = memory.write_u16_be(cell_ptr, v as u16);
                         let _ = memory.write_u16_be(cell_ptr + 2, h as u16);
@@ -21862,13 +21875,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::LSetSelect => {
             let v = (cpu.gpr[4] >> 16) as u16 as i16;
             let h = cpu.gpr[4] as u16 as i16;
-            if let Some(record) = list_manager
-                .lists
-                .iter_mut()
-                .find(|record| record.handle == cpu.gpr[5])
-            {
-                if let Some(index) = ppc_list_cell_index(record, v, h) {
-                    record.selected[index] = cpu.gpr[3] != 0;
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
+                if ppc_list_cell_index(record, v, h).is_some() {
+                    if cpu.gpr[3] != 0 {
+                        record.selected.insert((v, h));
+                    } else {
+                        record.selected.remove(&(v, h));
+                    }
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -21896,13 +21909,10 @@ fn dispatch_supported_import(
             let h = cpu.gpr[5] as u16 as i16;
             if let (Some(bytes), Some(record)) = (
                 bytes,
-                list_manager
-                    .lists
-                    .iter_mut()
-                    .find(|record| record.handle == cpu.gpr[6]),
+                list_manager.get_mut(&cpu.gpr[6]),
             ) {
-                if let Some(index) = ppc_list_cell_index(record, v, h) {
-                    record.cells[index] = bytes;
+                if ppc_list_cell_index(record, v, h).is_some() {
+                    record.cells.insert((v, h), bytes);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
                     };
@@ -21928,13 +21938,10 @@ fn dispatch_supported_import(
             let requested = usize::from(memory.read_u16_be(length_ptr).unwrap_or(0));
             let v = (cpu.gpr[5] >> 16) as u16 as i16;
             let h = cpu.gpr[5] as u16 as i16;
-            if let Some(bytes) = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[6])
-                .and_then(|record| {
-                    ppc_list_cell_index(record, v, h).map(|index| &record.cells[index])
-                })
+            if let Some(bytes) = list_manager.get(&cpu.gpr[6]).and_then(|record| {
+                ppc_list_cell_index(record, v, h)?;
+                Some(record.cells.get(&(v, h)).map(Vec::as_slice).unwrap_or(&[]))
+            })
             {
                 let copied = requested.min(bytes.len());
                 if copied == 0 || memory.write_bytes(cpu.gpr[3], &bytes[..copied]).is_some() {
@@ -21948,11 +21955,7 @@ fn dispatch_supported_import(
             let h = cpu.gpr[3] as u16 as i16;
             let modifiers = cpu.gpr[4] as u16;
             let mut double_click = false;
-            if let Some(record) = list_manager
-                .lists
-                .iter_mut()
-                .find(|record| record.handle == cpu.gpr[5])
-            {
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[5]) {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let view = ppc_read_rect(memory, list_ptr + PPC_LIST_VIEW_OFFSET)
                         .unwrap_or((0, 0, 0, 0));
@@ -21970,7 +21973,7 @@ fn dispatch_supported_import(
                     let column = visible
                         .1
                         .saturating_add(h.saturating_sub(view.1) / cell_h.max(1));
-                    if let Some(index) = ppc_list_cell_index(record, row, column) {
+                    if ppc_list_cell_index(record, row, column).is_some() {
                         let previous_time = memory
                             .read_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET)
                             .unwrap_or(0);
@@ -21988,13 +21991,17 @@ fn dispatch_supported_import(
                             && previous_h == column
                             && tick_count.wrapping_sub(previous_time) <= double_time;
                         if modifiers & 0x0300 == 0 {
-                            record.selected.fill(false);
-                            record.selected[index] = true;
+                            record.selected.clear();
+                            record.selected.insert((row, column));
                         } else if modifiers & 0x0100 != 0 {
-                            record.selected[index] = !record.selected[index];
+                            if !record.selected.remove(&(row, column)) {
+                                record.selected.insert((row, column));
+                            }
                         } else {
-                            record.selected[index] = true;
+                            record.selected.insert((row, column));
                         }
+                        record.last_click = (row, column);
+                        record.last_click_tick = *tick_count;
                         let _ = memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET, v as u16);
                         let _ =
                             memory.write_u16_be(list_ptr + PPC_LIST_CLICK_LOC_OFFSET + 2, h as u16);
@@ -22029,11 +22036,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(u32::from(double_click)))
         }
         PpcImportDispatcherTarget::LActivate => {
-            if let Some(record) = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[4])
-            {
+            if let Some(record) = list_manager.get(&cpu.gpr[4]) {
                 if let Some(list_ptr) = memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0) {
                     let _ = memory
                         .write_u8(list_ptr + PPC_LIST_ACTIVE_OFFSET, u8::from(cpu.gpr[3] != 0));
@@ -22045,41 +22048,37 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LUpdate => {
-            if let Some(record) = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[4])
-            {
+            if let Some(record) = list_manager.get(&cpu.gpr[4]) {
                 ppc_list_draw(memory, gworlds, record);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::LAutoScroll => {
-            if let Some(record) = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[3])
-            {
-                if let (Some(selected), Some(list_ptr)) = (
-                    record.selected.iter().position(|selected| *selected),
+            if let Some(record) = list_manager.get_mut(&cpu.gpr[3]) {
+                if let (Some(&(row, column)), Some(list_ptr)) = (
+                    record.selected.iter().next(),
                     memory.read_u32_be(record.handle).filter(|ptr| *ptr != 0),
                 ) {
-                    if let Some((row, column)) = ppc_list_cell_for_index(record, selected) {
-                        let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
-                            .unwrap_or(record.data_bounds);
-                        let height = visible.2.saturating_sub(visible.0);
-                        let width = visible.3.saturating_sub(visible.1);
-                        let _ = ppc_write_rect(
-                            memory,
-                            list_ptr + PPC_LIST_VISIBLE_OFFSET,
-                            row,
-                            column,
-                            row.saturating_add(height).min(record.data_bounds.2),
-                            column.saturating_add(width).min(record.data_bounds.3),
-                        );
-                        if record.draw_enabled {
-                            ppc_list_draw(memory, gworlds, record);
-                        }
+                    let visible = ppc_read_rect(memory, list_ptr + PPC_LIST_VISIBLE_OFFSET)
+                        .unwrap_or(record.data_bounds);
+                    let height = visible.2.saturating_sub(visible.0);
+                    let width = visible.3.saturating_sub(visible.1);
+                    record.visible = (
+                        row,
+                        column,
+                        row.saturating_add(height).min(record.data_bounds.2),
+                        column.saturating_add(width).min(record.data_bounds.3),
+                    );
+                    let _ = ppc_write_rect(
+                        memory,
+                        list_ptr + PPC_LIST_VISIBLE_OFFSET,
+                        record.visible.0,
+                        record.visible.1,
+                        record.visible.2,
+                        record.visible.3,
+                    );
+                    if record.draw_enabled {
+                        ppc_list_draw(memory, gworlds, record);
                     }
                 }
             }
@@ -22090,23 +22089,22 @@ fn dispatch_supported_import(
                 .unwrap_or_default();
             let cell_ptr = cpu.gpr[6];
             let result = list_manager
-                .lists
-                .iter()
-                .find(|record| record.handle == cpu.gpr[7])
+                .get(&cpu.gpr[7])
                 .and_then(|record| {
                     let start_v = memory.read_u16_be(cell_ptr)? as i16;
                     let start_h = memory.read_u16_be(cell_ptr + 2)? as i16;
                     let start = ppc_list_cell_index(record, start_v, start_h)?;
-                    record.cells[start..]
-                        .iter()
-                        .position(|cell| {
-                            cell.len() == requested.len()
-                                && cell
-                                    .iter()
-                                    .zip(&requested)
-                                    .all(|(left, right)| left.eq_ignore_ascii_case(right))
-                        })
-                        .and_then(|offset| ppc_list_cell_for_index(record, start + offset))
+                    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
+                    (start..columns.saturating_mul(rows)).find_map(|index| {
+                        let cell = ppc_list_cell_for_index(record, index)?;
+                        let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
+                        (bytes.len() == requested.len()
+                            && bytes
+                                .iter()
+                                .zip(&requested)
+                                .all(|(left, right)| left.eq_ignore_ascii_case(right)))
+                        .then_some(cell)
+                    })
                 });
             if let Some((v, h)) = result {
                 let _ = memory.write_u16_be(cell_ptr, v as u16);
@@ -68194,7 +68192,9 @@ fn ppc_list_sync_guest_storage(
     handles: &mut Vec<PpcHandleRecord>,
     record: &PpcListRecord,
 ) -> i16 {
-    let offsets_size = (record.cells.len() as u32)
+    let (columns, rows) = ppc_list_dimensions(record.data_bounds);
+    let cell_count = columns.saturating_mul(rows);
+    let offsets_size = (cell_count as u32)
         .saturating_add(1)
         .saturating_mul(2);
     let list_size = PPC_LIST_REC_MIN_SIZE.max(PPC_LIST_CELL_ARRAY_OFFSET + offsets_size);
@@ -68211,7 +68211,11 @@ fn ppc_list_sync_guest_storage(
     if result != PPC_NO_ERR {
         return result;
     }
-    let data_size = record.cells.iter().fold(0u32, |size, bytes| {
+    let data_size = (0..cell_count).fold(0u32, |size, index| {
+        let bytes = ppc_list_cell_for_index(record, index)
+            .and_then(|cell| record.cells.get(&cell))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         size.saturating_add(bytes.len().min(0x7fff) as u32)
     });
     if data_size > 32_000 {
@@ -68248,7 +68252,7 @@ fn ppc_list_sync_guest_storage(
         || memory
             .write_u16_be(
                 list_ptr + PPC_LIST_MAX_INDEX_OFFSET,
-                record.cells.len().min(i16::MAX as usize) as u16,
+                cell_count.min(i16::MAX as usize) as u16,
             )
             .is_none()
     {
@@ -68256,8 +68260,11 @@ fn ppc_list_sync_guest_storage(
     }
     let data_ptr = memory.read_u32_be(record.cells_handle).unwrap_or(0);
     let mut offset = 0u16;
-    for (index, bytes) in record.cells.iter().enumerate() {
-        let selection = if record.selected.get(index).copied().unwrap_or(false) {
+    for index in 0..cell_count {
+        let cell = ppc_list_cell_for_index(record, index)
+            .expect("List Manager index is inside dataBounds");
+        let bytes = record.cells.get(&cell).map(Vec::as_slice).unwrap_or(&[]);
+        let selection = if record.selected.contains(&cell) {
             0x8000
         } else {
             0
@@ -68276,7 +68283,7 @@ fn ppc_list_sync_guest_storage(
         offset = offset.saturating_add(bytes.len().min(0x7fff) as u16);
     }
     let _ = memory.write_u16_be(
-        list_ptr + PPC_LIST_CELL_ARRAY_OFFSET + record.cells.len() as u32 * 2,
+        list_ptr + PPC_LIST_CELL_ARRAY_OFFSET + cell_count as u32 * 2,
         offset,
     );
     PPC_NO_ERR
@@ -68418,10 +68425,16 @@ fn ppc_list_new(
     let record = PpcListRecord {
         handle: list_handle,
         cells_handle,
+        view_rect: view,
         data_bounds,
-        cells: vec![Vec::new(); cell_count],
-        selected: vec![false; cell_count],
+        cell_size: (cell_v, cell_h),
+        visible,
+        port: cpu.gpr[7],
         draw_enabled: cpu.gpr[8] != 0,
+        cells: std::collections::HashMap::new(),
+        selected: std::collections::BTreeSet::new(),
+        last_click: (-1, -1),
+        last_click_tick: 0,
     };
     if ppc_list_sync_guest_storage(
         allocator.as_deref_mut(),
@@ -68435,7 +68448,7 @@ fn ppc_list_new(
     {
         return 0;
     }
-    list_manager.lists.push(record);
+    list_manager.insert(list_handle, record);
     list_handle
 }
 
@@ -68470,9 +68483,9 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
     let ascent = face.metrics.ascent.saturating_mul(scale);
     for row in visible.0..visible.2 {
         for column in visible.1..visible.3 {
-            let Some(index) = ppc_list_cell_index(record, row, column) else {
+            if ppc_list_cell_index(record, row, column).is_none() {
                 continue;
-            };
+            }
             let top = view_top.saturating_add(row.saturating_sub(visible.0).saturating_mul(cell_v));
             let left =
                 view_left.saturating_add(column.saturating_sub(visible.1).saturating_mul(cell_h));
@@ -68482,7 +68495,7 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
                 top.saturating_add(cell_v),
                 left.saturating_add(cell_h),
             );
-            let selected = record.selected.get(index).copied().unwrap_or(false);
+            let selected = record.selected.contains(&(row, column));
             let background = if selected {
                 PPC_RGB_BLACK
             } else {
@@ -68504,7 +68517,11 @@ fn ppc_list_draw(memory: &mut PpcSectionMem, gworlds: &[PpcGWorldRecord], record
                 PPC_QD_TEXT_MODE_SRC_OR,
                 foreground,
                 None,
-                &record.cells[index],
+                record
+                    .cells
+                    .get(&(row, column))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
             );
         }
     }
@@ -148015,6 +148032,153 @@ pub(crate) mod tests {
             ppc_read_rect(&mut loaded.memory, list_ptr + PPC_LIST_DATA_BOUNDS_OFFSET),
             Some((0, 0, 3, 2))
         );
+    }
+
+    #[test]
+    fn attached_list_manager_mutations_and_lifetime_cross_isa_immediately() {
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"LNew")).unwrap();
+        let (mut classic, _classic_cpu, _classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let scratch = PPC_DATA_BASE + 0x1800;
+        let view_ptr = scratch;
+        let bounds_ptr = scratch + 8;
+        let size_ptr = scratch + 16;
+        let classic_text_ptr = scratch + 20;
+        let native_text_ptr = scratch + 32;
+        let output_ptr = scratch + 48;
+        let length_ptr = scratch + 64;
+        native.memory.add_region(scratch, vec![0; 80]);
+        ppc_write_rect(&mut native.memory, view_ptr, 10, 20, 50, 220).unwrap();
+        ppc_write_rect(&mut native.memory, bounds_ptr, 0, 0, 2, 2).unwrap();
+        native.memory.write_u16_be(size_ptr, 20).unwrap();
+        native.memory.write_u16_be(size_ptr + 2, 100).unwrap();
+        native.memory.write_bytes(classic_text_ptr, b"Classic").unwrap();
+        native.memory.write_bytes(native_text_ptr, b"Native").unwrap();
+
+        native.cpu.gpr[3] = view_ptr;
+        native.cpu.gpr[4] = bounds_ptr;
+        native.cpu.gpr[5] = size_ptr;
+        native.cpu.gpr[6] = 0;
+        native.cpu.gpr[7] = PPC_MAIN_GWORLD;
+        native.cpu.gpr[8] = 0;
+        native.cpu.gpr[9] = 0;
+        native.cpu.gpr[10] = 0;
+        native
+            .memory
+            .write_u32_be(
+                ppc_parameter_area_slot_addr(native.cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
+                    .unwrap(),
+                0,
+            )
+            .unwrap();
+        native.run_with_hle_imports(128);
+        let first_list = native.cpu.gpr[3];
+        assert!(classic.list_states.contains_key(&first_list));
+
+        let classic_state = classic.list_states.get_mut(&first_list).unwrap();
+        classic_state.cells.insert((1, 1), b"Classic".to_vec());
+        classic_state.selected.insert((1, 1));
+        classic_state.draw_enabled = true;
+
+        native.memory.write_u16_be(length_ptr, 16).unwrap();
+        native.cpu.gpr[3] = output_ptr;
+        native.cpu.gpr[4] = length_ptr;
+        native.cpu.gpr[5] = (1u32 << 16) | 1;
+        native.cpu.gpr[6] = first_list;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LGetCell);
+        assert_eq!(native.memory.read_u16_be(length_ptr), Some(7));
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, output_ptr, 7),
+            Some(b"Classic".to_vec())
+        );
+
+        native.cpu.gpr[3] = native_text_ptr;
+        native.cpu.gpr[4] = 6;
+        native.cpu.gpr[5] = 0;
+        native.cpu.gpr[6] = first_list;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LSetCell);
+        assert_eq!(
+            classic
+                .list_states
+                .get(&first_list)
+                .and_then(|record| record.cells.get(&(0, 0)))
+                .map(Vec::as_slice),
+            Some(b"Native".as_slice())
+        );
+
+        native.cpu.gpr[3] = view_ptr;
+        native.cpu.gpr[4] = bounds_ptr;
+        native.cpu.gpr[5] = size_ptr;
+        native.cpu.gpr[6] = 0;
+        native.cpu.gpr[7] = PPC_MAIN_GWORLD;
+        native.cpu.gpr[8] = 0;
+        native.cpu.gpr[9] = 0;
+        native.cpu.gpr[10] = 0;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LNew);
+        let second_list = native.cpu.gpr[3];
+        assert_ne!(first_list, second_list);
+        assert_eq!(classic.list_states.len(), 2);
+
+        native.cpu.gpr[3] = first_list;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LDispose);
+        assert!(!classic.list_states.contains_key(&first_list));
+        assert!(classic.list_states.contains_key(&second_list));
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_list_manager_state() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        original.list_manager.insert(
+            0x0032_1000,
+            PpcListRecord {
+                handle: 0x0032_1000,
+                cells_handle: 0x0032_2000,
+                view_rect: (0, 0, 40, 100),
+                data_bounds: (0, 0, 2, 1),
+                cell_size: (20, 100),
+                visible: (0, 0, 2, 1),
+                port: PPC_MAIN_GWORLD,
+                draw_enabled: true,
+                cells: [((0, 0), b"Original".to_vec())].into(),
+                selected: [(0, 0)].into(),
+                last_click: (0, 0),
+                last_click_tick: 10,
+            },
+        );
+        let mut detached = original.clone();
+        let detached_record = detached.list_manager.get_mut(&0x0032_1000).unwrap();
+        detached_record.cells.insert((0, 0), b"Detached".to_vec());
+        detached_record.selected.clear();
+        detached.list_manager.insert(
+            0x0032_3000,
+            PpcListRecord {
+                handle: 0x0032_3000,
+                cells_handle: 0x0032_4000,
+                view_rect: (0, 0, 20, 100),
+                data_bounds: (0, 0, 1, 1),
+                cell_size: (20, 100),
+                visible: (0, 0, 1, 1),
+                port: PPC_MAIN_GWORLD,
+                draw_enabled: false,
+                cells: Default::default(),
+                selected: Default::default(),
+                last_click: (-1, -1),
+                last_click_tick: 0,
+            },
+        );
+
+        assert_eq!(
+            original.list_manager[&0x0032_1000].cells[&(0, 0)],
+            b"Original"
+        );
+        assert!(original.list_manager[&0x0032_1000]
+            .selected
+            .contains(&(0, 0)));
+        assert!(!original.list_manager.contains_key(&0x0032_3000));
     }
 
     #[test]

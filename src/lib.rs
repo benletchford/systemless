@@ -61,6 +61,7 @@ mod event_queue;
 pub mod game;
 mod guest_call;
 mod guest_procedure;
+mod list_manager;
 pub mod loader;
 mod mac_roman;
 pub mod machine_profile;

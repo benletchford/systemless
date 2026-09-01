@@ -8,6 +8,7 @@ use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
 use crate::guest_call::SharedGuestCallStack;
+use crate::list_manager::ProcessListRecord;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
@@ -19,14 +20,13 @@ use crate::process_context::{
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
+    SharedProcessListManager, SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
     SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -1016,29 +1016,7 @@ pub(crate) struct AeCoercionHandler {
     pub from_type_is_desc: bool,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct ListState {
-    /// List view rectangle in local coordinates.
-    pub view_rect: (i16, i16, i16, i16),
-    /// Allocated cell bounds as (top, left, bottom, right) in cell coordinates.
-    pub data_bounds: (i16, i16, i16, i16),
-    /// Cell size as (v, h) in pixels.
-    pub cell_size: (i16, i16),
-    /// Visible cell rectangle in cell coordinates.
-    pub visible: (i16, i16, i16, i16),
-    /// Owning window/dialog port.
-    pub port: u32,
-    /// Whether drawing is enabled.
-    pub draw_enabled: bool,
-    /// Raw cell bytes keyed by (row, column).
-    pub cells: HashMap<(i16, i16), Vec<u8>>,
-    /// Selected cells keyed by (row, column).
-    pub selected: BTreeSet<(i16, i16)>,
-    /// Most recently clicked cell in (row, column), or (-1, -1) if none.
-    pub last_click: (i16, i16),
-    /// Tick count of the previous click for double-click detection.
-    pub last_click_tick: u32,
-}
+pub(crate) type ListState = ProcessListRecord;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TextEditState {
@@ -2659,8 +2637,8 @@ pub struct TrapDispatcher {
     /// Saved visRgn for active BeginUpdate/EndUpdate pairs, keyed by window.
     /// Inside Macintosh Volume I, I-292 to I-293
     pub(crate) saved_vis_regions: HashMap<u32, (i16, i16, i16, i16)>,
-    /// Host-side List Manager state keyed by guest ListHandle.
-    pub(crate) list_states: HashMap<u32, ListState>,
+    /// Process-owned List Manager state shared with native execution.
+    pub(crate) list_states: SharedProcessListManager,
     /// Host-side TextEdit feature state keyed by guest TEHandle.
     pub(crate) textedit_states: HashMap<u32, TextEditState>,
     /// Process-owned Control Manager metadata shared with native execution.
@@ -2801,6 +2779,7 @@ impl TrapDispatcher {
         );
         context.attach_scrap_state(&mut self.scrap);
         context.attach_control_manager(&mut self.control_manager);
+        context.attach_list_manager(&mut self.list_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
@@ -4014,7 +3993,7 @@ impl TrapDispatcher {
             pending_modal_button_dispose_dialog: None,
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
-            list_states: HashMap::new(),
+            list_states: SharedProcessListManager::default(),
             textedit_states: HashMap::new(),
             control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,
