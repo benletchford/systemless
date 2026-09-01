@@ -2975,7 +2975,7 @@ fn ppc_diagnostic_vfs(
             file_type,
             finder_flags: metadata.map_or(0, |value| value.finder_flags),
             resource_len: u32::try_from(rsrc_data.len()).unwrap_or(u32::MAX),
-            raw_data: Some(rsrc_data.to_vec()),
+            raw_data: Some(rsrc_data.to_vec().into()),
             map_attrs: parsed_fork.as_ref().map_or(0, ResourceFork::map_attrs),
             dirty: false,
         });
@@ -4288,7 +4288,7 @@ mod tests {
                     file_type: 0,
                     finder_flags: 0,
                     resource_len: rsrc.len() as u32,
-                    raw_data: Some(rsrc),
+                    raw_data: Some(rsrc.into()),
                     map_attrs: 0,
                     dirty: false,
                 });
@@ -4361,7 +4361,7 @@ mod tests {
                 file_type: 0,
                 finder_flags: 0,
                 resource_len: 0,
-                raw_data: Some(make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg)),
+                raw_data: Some(make_single_resource_fork_bytes(*b"cfrg", 0, &cfrg).into()),
                 map_attrs: 0,
                 dirty: false,
             }],

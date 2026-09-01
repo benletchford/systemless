@@ -290,9 +290,108 @@ pub struct ProcessVfsResourceFileRecord {
     pub file_type: u32,
     pub finder_flags: u16,
     pub resource_len: u32,
-    pub raw_data: Option<Vec<u8>>,
+    pub raw_data: Option<ProcessForkBytes>,
     pub map_attrs: u16,
     pub dirty: bool,
+}
+
+/// Native resource-file index backed by the canonical process fork map.
+#[derive(Debug, Default)]
+pub(crate) struct ProcessVfsResourceFileRecords {
+    records: Vec<ProcessVfsResourceFileRecord>,
+    resource_forks: SharedProcessValue<ProcessForkMap>,
+}
+
+impl Clone for ProcessVfsResourceFileRecords {
+    fn clone(&self) -> Self {
+        let mut result = Self::from(self.records.clone());
+        for (path, bytes) in self.resource_forks.iter() {
+            result.update_fork(path, bytes);
+        }
+        result
+    }
+}
+
+impl From<Vec<ProcessVfsResourceFileRecord>> for ProcessVfsResourceFileRecords {
+    fn from(records: Vec<ProcessVfsResourceFileRecord>) -> Self {
+        let mut result = Self::default();
+        for record in records {
+            result.push(record);
+        }
+        result
+    }
+}
+
+impl std::ops::Deref for ProcessVfsResourceFileRecords {
+    type Target = Vec<ProcessVfsResourceFileRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for ProcessVfsResourceFileRecords {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
+}
+
+impl ProcessVfsResourceFileRecords {
+    pub(crate) fn push(&mut self, record: ProcessVfsResourceFileRecord) {
+        if !record.path.is_empty() {
+            if let Some(raw_data) = &record.raw_data {
+                self.resource_forks
+                    .insert_shared(record.path.clone(), raw_data);
+            } else if !self.resource_forks.contains_key(&record.path) {
+                self.resource_forks
+                    .insert(record.path.clone(), Vec::new());
+            }
+        }
+        self.records.push(record);
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsResourceFileRecord) -> bool) {
+        self.records.retain(|record| keep(record));
+        self.resource_forks.retain(|path, _| {
+            self.records
+                .iter()
+                .any(|record| record.path.eq_ignore_ascii_case(path))
+        });
+    }
+
+    pub(crate) fn replace(&mut self, records: Vec<ProcessVfsResourceFileRecord>) {
+        self.records.clear();
+        self.resource_forks.clear();
+        for record in records {
+            self.push(record);
+        }
+    }
+
+    pub(crate) fn update_fork(&mut self, path: &str, bytes: &[u8]) {
+        let key = self
+            .resource_forks
+            .keys()
+            .find(|candidate| candidate.eq_ignore_ascii_case(path))
+            .cloned()
+            .unwrap_or_else(|| path.to_string());
+        if let Some(target) = self.resource_forks.get_mut(&key) {
+            target.clear();
+            target.extend_from_slice(bytes);
+        } else {
+            self.resource_forks.insert(key, bytes.to_vec());
+        }
+    }
+
+    pub(crate) fn fork(&self, path: &str) -> Option<&Vec<u8>> {
+        self.resource_forks.get(path)
+    }
+
+    fn adopt(&mut self, source: &mut Self) {
+        for record in source.records.drain(..) {
+            self.push(record);
+        }
+        source.resource_forks.clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +422,7 @@ pub struct ProcessFileSystemState {
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
     pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
-    pub(crate) vfs_resource_files: Vec<ProcessVfsResourceFileRecord>,
+    pub(crate) vfs_resource_files: ProcessVfsResourceFileRecords,
     pub(crate) vfs_resources: Vec<ProcessVfsResourceRecord>,
     pub(crate) next_file_ref_num: i16,
 }
@@ -336,7 +435,7 @@ impl Default for ProcessFileSystemState {
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
+            vfs_resource_files: ProcessVfsResourceFileRecords::default(),
             vfs_resources: Vec::new(),
             next_file_ref_num: 128,
         }
@@ -482,7 +581,9 @@ impl SharedProcessFileSystem {
                 target.deleted_vfs_file_paths =
                     std::mem::take(&mut source.deleted_vfs_file_paths);
                 target.resource_files = std::mem::take(&mut source.resource_files);
-                target.vfs_resource_files = std::mem::take(&mut source.vfs_resource_files);
+                target
+                    .vfs_resource_files
+                    .adopt(&mut source.vfs_resource_files);
                 target.vfs_resources = std::mem::take(&mut source.vfs_resources);
                 target.next_file_ref_num = source.next_file_ref_num;
             }
@@ -3115,7 +3216,6 @@ pub(crate) struct ProcessContext {
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
-    resource_forks: SharedProcessValue<ProcessForkMap>,
 }
 
 impl ProcessContext {
@@ -3159,7 +3259,10 @@ impl ProcessContext {
             &self.file_system.vfs_files.data_forks,
             ProcessForkMap::is_empty,
         );
-        resource_forks.attach_to(&self.resource_forks, ProcessForkMap::is_empty);
+        resource_forks.attach_to(
+            &self.file_system.vfs_resource_files.resource_forks,
+            ProcessForkMap::is_empty,
+        );
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
@@ -4507,18 +4610,42 @@ mod tests {
             finder_flags: 0,
             dirty: true,
         });
+        native
+            .vfs_resource_files
+            .push(ProcessVfsResourceFileRecord {
+                path: "Created".to_string(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                resource_len: 8,
+                raw_data: Some(b"resource".to_vec().into()),
+                map_attrs: 0,
+                dirty: true,
+            });
 
         second_data
             .get_mut("Existing")
             .unwrap()
             .extend_from_slice(b"-after");
         first_resources.insert("Existing".to_string(), b"resource".to_vec());
+        second_resources
+            .get_mut("Created")
+            .unwrap()
+            .extend_from_slice(b"-classic");
 
         assert!(first_data.ptr_eq(&second_data));
         assert!(first_resources.ptr_eq(&second_resources));
         assert_eq!(first_data.get("Existing").unwrap(), b"before-after");
         assert_eq!(second_data.get("Created").unwrap(), b"native");
         assert_eq!(second_resources.get("Existing").unwrap(), b"resource");
+        assert_eq!(
+            native.vfs_resource_files[0]
+                .raw_data
+                .as_ref()
+                .unwrap()
+                .as_slice(),
+            b"resource-classic"
+        );
         assert_eq!(detached_data.get("Existing").unwrap(), b"before");
         assert!(!detached_data.contains_key("Created"));
         assert!(detached_resources.is_empty());

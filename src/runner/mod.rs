@@ -7900,9 +7900,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher
-                .vfs_rsrc
-                .insert(normalized.clone(), fork.data.clone());
             self.dispatcher.set_vfs_entry_finfo(
                 &normalized,
                 fork.file_type,
@@ -15834,7 +15831,8 @@ mod tests {
                     raw_data: None,
                     map_attrs: 0,
                     dirty: true,
-                }],
+                }]
+                .into(),
                 vfs_resources: vec![PpcVfsResourceRecord {
                     ref_num: 128,
                     path: "System Folder/Preferences/Test App HighScores".to_string(),

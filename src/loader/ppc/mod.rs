@@ -75,8 +75,9 @@ use crate::process_context::{
     ProcessHandleStateRecord, ProcessMemoryManager, ProcessNativeAllocatorState,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessOpenFileRecord, ProcessPtrRecord,
     ProcessResourceFileRecord, ProcessStdioStreamRecord, ProcessVfsFileRecord,
-    ProcessVfsFileRecords, ProcessVfsResourceFileRecord, ProcessVfsResourceRecord,
-    SharedProcessAppleEventHandlers, SharedProcessFileSystem, SharedProcessMemoryManager,
+    ProcessVfsFileRecords, ProcessVfsResourceFileRecord, ProcessVfsResourceFileRecords,
+    ProcessVfsResourceRecord, SharedProcessAppleEventHandlers, SharedProcessFileSystem,
+    SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -7747,6 +7748,17 @@ impl PpcLoadedApp {
                 // observes the result immediately, not at slice teardown.
                 process_memory_manager.set_native_mem_error(last_mem_error);
 
+                // Resource records are the native Resource Manager's parsed
+                // view, while the classic adapter opens the same process fork
+                // through its byte map. Publish every dirty parsed mutation at
+                // the import boundary so a following 68K callback observes it
+                // without waiting for runner teardown or host persistence.
+                ppc_publish_resource_fork_bytes(
+                    &mut vfs_resource_files,
+                    &vfs_resources,
+                    true,
+                );
+
                 default_dir_id = memory
                     .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
                     .unwrap_or(default_dir_id);
@@ -8162,8 +8174,14 @@ impl PpcLoadedApp {
         ppc_register_vfs_resource_fonts(&resources);
         self.vfs_files.replace(files);
         self.deleted_vfs_file_paths.clear();
-        self.vfs_resource_files = resource_files;
+        self.vfs_resource_files.replace(resource_files);
         self.vfs_resources = resources;
+        let file_system = &mut *self.process_file_system;
+        ppc_publish_resource_fork_bytes(
+            &mut file_system.vfs_resource_files,
+            &file_system.vfs_resources,
+            false,
+        );
         self.refresh_apple_event_launch_capability();
     }
 
@@ -8231,7 +8249,7 @@ impl PpcLoadedApp {
                 .iter()
                 .find(|file| file.path.eq_ignore_ascii_case(&path))
                 .and_then(|file| file.raw_data.as_deref())
-                .and_then(ResourceFork::parse)
+                .and_then(|bytes| ResourceFork::parse(bytes))
                 .is_some();
             let mut path_resource_count = 0usize;
             for resource in file_system
@@ -8304,45 +8322,80 @@ impl PpcLoadedApp {
             vfs_resources,
             ..
         } = file_system;
-        for file in vfs_resource_files
-            .iter_mut()
-            .filter(|file| file.dirty && !file.path.is_empty())
-        {
-            let data = if let Some(raw_data) = file.raw_data.as_ref() {
-                Some(raw_data.clone())
-            } else {
-                let entries = vfs_resources
-                    .iter()
-                    .filter(|resource| resource.path.eq_ignore_ascii_case(&file.path))
-                    .map(|resource| {
-                        let (data, attrs) = match (&resource.raw_data, resource.raw_attrs) {
-                            (Some(raw_data), Some(raw_attrs)) => (raw_data.clone(), raw_attrs),
-                            _ => (resource.data.clone(), resource.attrs),
-                        };
-                        ResourceForkEntry {
-                            res_type: resource.res_type.to_be_bytes(),
-                            id: resource.res_id,
-                            name: resource.name.clone(),
-                            data,
-                            attrs: (attrs & 0x00ff) as u8,
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                serialize_resource_fork_with_attrs(&entries, file.map_attrs)
-            };
+        ppc_publish_resource_fork_bytes(vfs_resource_files, vfs_resources, true);
+        let dirty_indices = vfs_resource_files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| {
+                (file.dirty && !file.path.is_empty()).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        for index in dirty_indices {
+            let file = &vfs_resource_files[index];
+            let path = file.path.clone();
+            let data = vfs_resource_files.fork(&path).map(|bytes| bytes.to_vec());
             if let Some(data) = data {
-                file.resource_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
                 exports.push(PpcVfsResourceForkExport {
-                    path: file.path.clone(),
+                    path,
                     data,
                     creator: file.creator,
                     file_type: file.file_type,
                     finder_flags: file.finder_flags,
                 });
-                file.dirty = false;
+                vfs_resource_files[index].dirty = false;
             }
         }
         exports
+    }
+}
+
+fn ppc_serialized_resource_fork(
+    file: &PpcVfsResourceFileRecord,
+    vfs_resources: &[PpcVfsResourceRecord],
+) -> Option<Vec<u8>> {
+    if let Some(raw_data) = file.raw_data.as_ref() {
+        return Some(raw_data.to_vec());
+    }
+    let entries = vfs_resources
+        .iter()
+        .filter(|resource| resource.path.eq_ignore_ascii_case(&file.path))
+        .map(|resource| {
+            let (data, attrs) = match (&resource.raw_data, resource.raw_attrs) {
+                (Some(raw_data), Some(raw_attrs)) => (raw_data.clone(), raw_attrs),
+                _ => (resource.data.clone(), resource.attrs),
+            };
+            ResourceForkEntry {
+                res_type: resource.res_type.to_be_bytes(),
+                id: resource.res_id,
+                name: resource.name.clone(),
+                data,
+                attrs: (attrs & 0x00ff) as u8,
+            }
+        })
+        .collect::<Vec<_>>();
+    serialize_resource_fork_with_attrs(&entries, file.map_attrs)
+}
+
+fn ppc_publish_resource_fork_bytes(
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
+    vfs_resources: &[PpcVfsResourceRecord],
+    dirty_only: bool,
+) {
+    let indices = vfs_resource_files
+        .iter()
+        .enumerate()
+        .filter_map(|(index, file)| {
+            (!file.path.is_empty() && (!dirty_only || file.dirty)).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    for index in indices {
+        let Some(data) = ppc_serialized_resource_fork(&vfs_resource_files[index], vfs_resources)
+        else {
+            continue;
+        };
+        let path = vfs_resource_files[index].path.clone();
+        vfs_resource_files[index].resource_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        vfs_resource_files.update_fork(&path, &data);
     }
 }
 
@@ -14943,7 +14996,7 @@ fn dispatch_supported_import(
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
     deleted_vfs_file_paths: &mut Vec<String>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     next_file_ref_num: &mut i16,
     current_gworld: &mut u32,
@@ -79728,7 +79781,7 @@ fn ppc_materialize_quilt_resources_for_existing_path(
 
 fn ppc_materialize_unique_named_resource_file(
     vfs_files: &[PpcVfsFileRecord],
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     path: &str,
 ) -> bool {
@@ -80728,7 +80781,7 @@ fn ppc_fsp_create_res_file(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     last_resource_error: &mut i16,
 ) {
     let spec_ptr = cpu.gpr[3];
@@ -80773,7 +80826,7 @@ fn ppc_h_create_res_file(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     default_dir_id: u32,
     last_resource_error: &mut i16,
 ) {
@@ -80837,7 +80890,7 @@ fn ppc_fsp_open_res_file(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     next_file_ref_num: &mut i16,
@@ -80942,7 +80995,7 @@ fn ppc_open_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     next_file_ref_num: &mut i16,
@@ -81006,7 +81059,7 @@ fn ppc_h_open_res_file(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     next_file_ref_num: &mut i16,
@@ -81056,7 +81109,7 @@ fn ppc_h_open_res_file(
 #[allow(clippy::too_many_arguments)]
 fn ppc_open_resource_path(
     vfs_files: &mut ProcessVfsFileRecords,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     next_file_ref_num: &mut i16,
@@ -81625,7 +81678,7 @@ fn ppc_fsp_delete(
     vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
 ) -> i16 {
@@ -81654,7 +81707,7 @@ fn ppc_delete_by_name(
     vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     default_dir_id: u32,
@@ -81743,7 +81796,7 @@ fn ppc_delete_vfs_path(
     vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
-    vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
+    vfs_resource_files: &mut ProcessVfsResourceFileRecords,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
 ) -> i16 {
@@ -92516,7 +92569,7 @@ pub(crate) mod tests {
             file_type: 0,
             finder_flags: 0,
             resource_len: 3,
-            raw_data: Some(b"fork".to_vec()),
+            raw_data: Some(b"fork".to_vec().into()),
             map_attrs: 0,
             dirty: false,
         }];
@@ -126710,7 +126763,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"MooV"),
             finder_flags: 0,
             resource_len: u32::try_from(resource_fork.len()).unwrap(),
-            raw_data: Some(resource_fork),
+            raw_data: Some(resource_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -126802,7 +126855,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"MooV"),
             finder_flags: 0,
             resource_len: u32::try_from(resource_fork.len()).unwrap(),
-            raw_data: Some(resource_fork),
+            raw_data: Some(resource_fork.into()),
             map_attrs: 0,
             dirty: false,
         }];
@@ -142417,7 +142470,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142515,7 +142568,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142591,7 +142644,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: bits_fork.len() as u32,
-            raw_data: Some(bits_fork),
+            raw_data: Some(bits_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142601,7 +142654,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"ctrl"),
             finder_flags: 0,
             resource_len: target_fork.len() as u32,
-            raw_data: Some(target_fork),
+            raw_data: Some(target_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142697,7 +142750,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142813,7 +142866,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142884,7 +142937,7 @@ pub(crate) mod tests {
             file_type: 0,
             finder_flags: 0,
             resource_len: ambiguous.len() as u32,
-            raw_data: Some(ambiguous.clone()),
+            raw_data: Some(ambiguous.clone().into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142894,7 +142947,7 @@ pub(crate) mod tests {
             file_type: 0,
             finder_flags: 0,
             resource_len: ambiguous.len() as u32,
-            raw_data: Some(ambiguous),
+            raw_data: Some(ambiguous.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -142923,7 +142976,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -143001,7 +143054,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -143132,7 +143185,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -143210,7 +143263,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
             resource_len: raw_fork.len() as u32,
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -143455,7 +143508,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"SkeP"),
             finder_flags: 0,
             resource_len: u32::try_from(raw_fork.len()).unwrap(),
-            raw_data: Some(raw_fork),
+            raw_data: Some(raw_fork.into()),
             map_attrs: 0,
             dirty: false,
         });
@@ -145029,6 +145082,22 @@ pub(crate) mod tests {
             handle: 0,
         });
 
+        {
+            let file_system = &mut *loaded.process_file_system;
+            ppc_publish_resource_fork_bytes(
+                &mut file_system.vfs_resource_files,
+                &file_system.vfs_resources,
+                true,
+            );
+        }
+        let published = loaded
+            .vfs_resource_files
+            .fork("System Folder/Preferences/Test App HighScores")
+            .expect("dirty parsed resource fork should publish before host export");
+        let published_fork = crate::managers::resource::ResourceFork::parse(published).unwrap();
+        assert_eq!(published_fork.get(*b"pref", 200).unwrap().data, b"score");
+        assert!(loaded.vfs_resource_files[0].dirty);
+
         let exports = loaded.take_dirty_vfs_resource_forks();
 
         assert_eq!(exports.len(), 1);
@@ -145109,7 +145178,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0220,
             resource_len: u32::try_from(raw_fork.len()).unwrap(),
-            raw_data: Some(raw_fork.clone()),
+            raw_data: Some(raw_fork.clone().into()),
             map_attrs: 0x4000,
             dirty: true,
         });
@@ -145157,7 +145226,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
             resource_len: u32::try_from(raw_fork.len()).unwrap(),
-            raw_data: Some(raw_fork.clone()),
+            raw_data: Some(raw_fork.clone().into()),
             map_attrs: 0x4000,
             dirty: false,
         }];
@@ -145245,7 +145314,7 @@ pub(crate) mod tests {
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
             resource_len: u32::try_from(raw_fork.len()).unwrap(),
-            raw_data: Some(raw_fork.clone()),
+            raw_data: Some(raw_fork.clone().into()),
             map_attrs: 0,
             dirty: false,
         });
