@@ -19095,8 +19095,21 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::RGBForeColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
-                quickdraw_fore_indices.remove(current_gworld);
                 *quickdraw_fore_color = color;
+                let main_8bpp = *current_gdevice == PPC_MAIN_GDEVICE
+                    && ppc_current_gdevice_record(memory, *current_gdevice)
+                        .and_then(|gdevice| memory.read_u32_be(gdevice.checked_add(22)?))
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
+                        == Some(8);
+                if main_8bpp {
+                    quickdraw_fore_indices.insert(
+                        *current_gworld,
+                        ppc_color_to_index(memory, *current_gdevice, screen_clut, color) as u8,
+                    );
+                } else {
+                    quickdraw_fore_indices.remove(current_gworld);
+                }
                 let _ = ppc_write_port_rgb_color(
                     memory,
                     *current_gworld,
@@ -19115,10 +19128,23 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::RGBBackColor => {
             if let Some(color) = ppc_read_rgb_color(memory, cpu.gpr[3]) {
-                toolbox_startup
-                    .quickdraw_back_indices
-                    .remove(current_gworld);
                 *quickdraw_back_color = color;
+                let main_8bpp = *current_gdevice == PPC_MAIN_GDEVICE
+                    && ppc_current_gdevice_record(memory, *current_gdevice)
+                        .and_then(|gdevice| memory.read_u32_be(gdevice.checked_add(22)?))
+                        .and_then(|handle| memory.read_u32_be(handle))
+                        .and_then(|pixmap| memory.read_u16_be(pixmap.checked_add(32)?))
+                        == Some(8);
+                if main_8bpp {
+                    toolbox_startup.quickdraw_back_indices.insert(
+                        *current_gworld,
+                        ppc_color_to_index(memory, *current_gdevice, screen_clut, color) as u8,
+                    );
+                } else {
+                    toolbox_startup
+                        .quickdraw_back_indices
+                        .remove(current_gworld);
+                }
                 let _ = ppc_write_port_rgb_color(
                     memory,
                     *current_gworld,
@@ -64141,6 +64167,17 @@ fn ppc_color_to_index(
         .unwrap_or(PPC_MAIN_PIXEL_DEPTH as u16);
     if depth > 8 {
         return u32::from(ppc_rgb_color_to_rgb555(color));
+    }
+
+    if current_gdevice == PPC_MAIN_GDEVICE && depth == 8 {
+        // Match the main screen's cached logical inverse table rather than
+        // scanning the live hardware CLUT, which may be independently faded
+        // or replaced. Inside Macintosh Volume V (1986), pp. V-137..V-143.
+        return u32::from(TrapDispatcher::standard_screen_itable_index([
+            color.red,
+            color.green,
+            color.blue,
+        ]));
     }
 
     let entry_count = 1usize << usize::from(depth.clamp(1, 8));
@@ -131589,7 +131626,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rgb_and_legacy_fore_color_clear_explicit_index() {
+    fn rgb_fore_color_resolves_main_8bpp_index_while_legacy_fore_color_clears_override() {
         for symbol in [b"RGBForeColor".as_slice(), b"ForeColor".as_slice()] {
             let pef = synthetic_pef_with_import(symbol);
             let mut loaded = load_pef_application(&pef).unwrap();
@@ -131606,7 +131643,15 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             assert_eq!(probe.unsupported_import_index, None);
-            assert!(!loaded.quickdraw_fore_indices.contains_key(&PPC_MAIN_GWORLD));
+            if symbol == b"RGBForeColor" {
+                assert_eq!(
+                    loaded.quickdraw_fore_indices.get(&PPC_MAIN_GWORLD),
+                    Some(&0),
+                    "RGBForeColor must retain the resolved main-screen inverse-table pixel"
+                );
+            } else {
+                assert!(!loaded.quickdraw_fore_indices.contains_key(&PPC_MAIN_GWORLD));
+            }
         }
     }
 

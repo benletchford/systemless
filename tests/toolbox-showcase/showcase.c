@@ -1260,7 +1260,56 @@ static void DrawPalettesPage(void)
     DrawSameDeviceIndexedTransfer();
     DrawIndexedPictureTransfer();
 
-    MoveTo(205, 348);
+    /*
+     * A screen GDevice keeps the inverse table used for RGBForeColor
+     * separate from the GDevice ColorTable used to build that lookup. Put an
+     * exact requested color at hardware index 117 and a visibly different
+     * color at the standard inverse-table result (213), then restore those
+     * two logical ColorTable entries without touching the hardware. On an
+     * 8-bit screen the band must display index 213, even though a direct
+     * nearest-color scan would select 117. This is the small, app-independent
+     * form of the loading-bar regression that exposed the distinction.
+     * Inside Macintosh Volume V (1986), pp. V-137 through V-143.
+     */
+    {
+        GDHandle screenDevice;
+        CTabHandle screenColors;
+        CTabHandle standardColors;
+        ColorSpec colors[2];
+        RGBColor requested;
+
+        screenDevice = GetMainDevice();
+        screenColors = (**(**screenDevice).gdPMap).pmTable;
+        standardColors = GetCTable(8);
+        colors[0].value = 117;
+        colors[0].rgb.red = 0x1010;
+        colors[0].rgb.green = 0x0a0a;
+        colors[0].rgb.blue = 0x6969;
+        colors[1].value = 213;
+        colors[1].rgb.red = 0x7b7b;
+        colors[1].rgb.green = 0x7373;
+        colors[1].rgb.blue = 0x8484;
+        SetEntries(-1, 1, colors);
+        if (standardColors != nil) {
+            (**screenColors).ctTable[117] = (**standardColors).ctTable[117];
+            (**screenColors).ctTable[213] = (**standardColors).ctTable[213];
+            CTabChanged(screenColors);
+            DisposeCTable(standardColors);
+        }
+
+        requested.red = 0;
+        requested.green = 0;
+        requested.blue = 0x6666;
+        RGBForeColor(&requested);
+        SetRect(&r, 370, 322, 562, 340);
+        PaintRect(&r);
+        RGBForeColor(&black);
+        FrameRect(&r);
+    }
+    MoveTo(30, 334);
+    DrawString("\pRGBForeColor uses device inverse table");
+
+    MoveTo(245, 361);
     DrawString(gPaletteAnimated ? "\pAnimated CLUT values" : "\pInitial CLUT values");
     DrawControls(gMainWindow);
 }
@@ -1622,7 +1671,7 @@ static void Initialize(void)
                                   pushButProc, 0);
 
     /* Page 7: Palette Manager Control */
-    SetRect(&r, 40, 335, 190, 361);
+    SetRect(&r, 40, 342, 230, 366);
     gPaletteAnimate = NewControl(gMainWindow, &r, "\pAnimate Palette", false, 0, 0, 1,
                                  pushButProc, 0);
 

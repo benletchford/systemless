@@ -4639,6 +4639,19 @@ impl TrapDispatcher {
         })
     }
 
+    /// Resolve an RGB color through the main 8-bit screen GDevice's cached
+    /// inverse table. Exact endpoints retain QuickDraw's conventional white
+    /// and black pixels; all other colors use the four-bit device lookup.
+    pub(crate) fn standard_screen_itable_index(rgb: [u16; 3]) -> u8 {
+        if rgb == [0xFFFF; 3] {
+            0
+        } else if rgb == [0; 3] {
+            255
+        } else {
+            Self::standard_itable_lookup(rgb[0], rgb[1], rgb[2])
+        }
+    }
+
     /// Register loaded segments for LoadSeg trap.
     pub fn register_segments(&mut self, segments: HashMap<i16, u32>) {
         self.segment_map = segments;

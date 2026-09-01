@@ -27,8 +27,10 @@ test protocol. Its Pages menu selects seven interactive views:
    `PmForeColor` and `PmBackColor`, translates an unrelated indexed PICT
    through a canonical offscreen GWorld into the active screen palette,
    preserves positional indexes copied from a same-identity device ColorTable
-   whose RGB entries are transiently black, and animates explicit CLUT entries
-   without redrawing their indexed pixels. The 68K slice records and replays
+   whose RGB entries are transiently black, verifies that `RGBForeColor` uses
+   the screen GDevice inverse table when the logical and hardware CLUTs differ,
+   and animates explicit CLUT entries without redrawing their indexed pixels.
+   The 68K slice records and replays
    the PICT; the PowerPC slice draws the expected color strip because its
    fixture adapter does not record `CopyBits` inside `OpenPicture`.
 
@@ -86,8 +88,10 @@ selects the 68K `CODE` slice, and the second launch selects the native PEF with
 10. Activate the Palettes page, verify the indexed PICT → GWorld → screen
     transfer retains distinct colors across unrelated CTables, verify a
     same-device transfer retains its positional indexes through a transient
-    black device ColorTable, and capture the initial tolerant and
-    animated-explicit color environment.
+    black device ColorTable, verify `RGBForeColor` resolves through the
+    indexed screen GDevice inverse table when the logical and hardware CLUTs
+    differ, and capture the initial tolerant and animated-explicit color
+    environment.
 11. Click Animate Palette and capture the same indexed pixels recolored by
     `AnimateEntry` without repainting the swatches.
 12. Open File, drag across the menu bar to Pages, and capture Graphics

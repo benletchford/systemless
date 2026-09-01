@@ -3164,7 +3164,7 @@ impl super::TrapDispatcher {
                     // its run colors, so resolve each run's RGB value before
                     // drawing without leaking that temporary pixel into the
                     // caller's port state.
-                    self.resolve_current_port_color_pixels(bus, true, false);
+                    self.resolve_current_port_color_pixels(bus, true, false, false);
                 }
                 self.draw_char(cpu, bus, byte as char);
             }
