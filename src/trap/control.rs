@@ -1237,7 +1237,7 @@ impl super::TrapDispatcher {
         bus.write_long(data_ptr, menu_handle);
         bus.write_word(data_ptr + 4, menu_id as u16);
         bus.write_word(data_ptr + 6, 0);
-        self.ptr_to_handle.insert(data_ptr, data_handle);
+        self.track_handle_ptr(data_ptr, data_handle);
         data_handle
     }
 

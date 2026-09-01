@@ -452,25 +452,6 @@ fn mc_entry_matches(bytes: &[u8], menu_id: i16, menu_item: i16) -> bool {
 }
 
 impl super::TrapDispatcher {
-    pub(crate) fn complete_deferred_menu_replacement(
-        &mut self,
-        bus: &MacMemoryBus,
-        menu_handle: u32,
-        old_ptr: u32,
-    ) {
-        let menu_ptr = bus.read_long(menu_handle);
-        self.ptr_to_handle.remove(&old_ptr);
-        if menu_ptr != 0 {
-            self.ptr_to_handle.insert(menu_ptr, menu_handle);
-        }
-        if let Some(menu) = self.menus.iter_mut().find(|m| m.handle == menu_handle) {
-            refresh_menu_from_memory(bus, menu);
-        } else if menu_ptr != 0 {
-            self.menus
-                .push(parse_menu_resource(bus, menu_ptr, menu_handle));
-        }
-    }
-
     fn menu_uses_standard_definition(&self, bus: &MacMemoryBus, menu_ptr: u32) -> bool {
         let handle = bus.read_long(menu_ptr + 6);
         self.loaded_handles
@@ -807,9 +788,7 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        self.ptr_to_handle
-            .get(&candidate)
-            .copied()
+        self.handle_for_ptr(candidate)
             .or_else(|| {
                 self.menus
                     .iter()
@@ -889,7 +868,7 @@ impl super::TrapDispatcher {
         if menu_ptr == 0 {
             menu_ptr = res_ptr;
             bus.write_long(handle, menu_ptr);
-            self.ptr_to_handle.insert(menu_ptr, handle);
+            self.track_handle_ptr(menu_ptr, handle);
         }
         if menu_ptr != 0 {
             if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
@@ -1321,7 +1300,7 @@ impl super::TrapDispatcher {
 
         bus.write_bytes(data_ptr, bytes);
         bus.write_long(handle, data_ptr);
-        self.ptr_to_handle.insert(data_ptr, handle);
+        self.track_handle_ptr(data_ptr, handle);
         handle
     }
 
@@ -1345,7 +1324,7 @@ impl super::TrapDispatcher {
             return 0;
         }
         bus.write_long(handle, menu_ptr);
-        self.ptr_to_handle.insert(menu_ptr, handle);
+        self.track_handle_ptr(menu_ptr, handle);
 
         let menu =
             if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
@@ -1458,12 +1437,12 @@ impl super::TrapDispatcher {
         };
 
         if old_ptr != 0 && old_ptr != new_ptr {
-            self.ptr_to_handle.remove(&old_ptr);
+            self.untrack_handle_ptr(old_ptr);
             bus.free(old_ptr);
         }
         bus.write_long(handle, new_ptr);
         if new_ptr != 0 {
-            self.ptr_to_handle.insert(new_ptr, handle);
+            self.track_handle_ptr(new_ptr, handle);
         }
         true
     }
@@ -1576,18 +1555,17 @@ impl super::TrapDispatcher {
             && bus.is_foreign_ordinary_sparse_address(menu_ptr)
         {
             // Inside Macintosh: Memory (1992), pp. 2-40--2-41.
-            // When a relocatable block allocated in the native process heap grows,
-            // the replacement cannot be allocated from the 68k flat-RAM heap.
-            // Stage the handle replacement on the process context so the native
-            // memory owner can reallocate within its own address space.
-            self.pending_memory_effects.push(
-                crate::process_context::PendingHandleByteReplacement {
-                    handle: menu_handle,
-                    expected_ptr: menu_ptr,
-                    replacement: bytes,
-                },
-            );
-            return true;
+            // A native relocatable block must remain in its process heap. The
+            // attached process Memory Manager updates its master pointer and
+            // allocation record before this 68K trap returns.
+            if !self.replace_process_native_handle_bytes(
+                bus,
+                menu_handle,
+                menu_ptr,
+                &bytes,
+            ) {
+                return false;
+            }
         } else {
             let mut allocation = bytes;
             allocation.resize(allocation.len().max(256), 0);
@@ -1759,7 +1737,7 @@ impl super::TrapDispatcher {
                 let menu_ptr = bus.alloc(menu_record.len().max(256) as u32);
                 let handle = bus.alloc(4);
                 bus.write_long(handle, menu_ptr);
-                self.ptr_to_handle.insert(menu_ptr, handle);
+                self.track_handle_ptr(menu_ptr, handle);
                 bus.write_bytes(menu_ptr, &menu_record);
                 let title = macroman_to_string(&title_bytes);
                 // Track the menu in self.menus immediately so AppendMenu
@@ -2995,14 +2973,14 @@ impl super::TrapDispatcher {
                     let menu_ptr = bus.read_long(menu_handle);
                     if menu_ptr != 0 {
                         bus.free(menu_ptr);
-                        self.ptr_to_handle.remove(&menu_ptr);
+                        self.untrack_handle_ptr(menu_ptr);
                     }
                     self.forget_resource_handle_index_for_handle(menu_handle);
                     self.loaded_handles.remove(&menu_handle);
                     self.detached_handles.remove(&menu_handle);
                     self.resource_handle_files.remove(&menu_handle);
                     self.detached_handle_files.remove(&menu_handle);
-                    self.handle_state_bits.remove(&menu_handle);
+                    self.remove_handle_state_bits(menu_handle);
                     bus.free(menu_handle);
                 }
                 Ok(())

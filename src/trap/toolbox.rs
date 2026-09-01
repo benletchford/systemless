@@ -1682,7 +1682,7 @@ impl super::TrapDispatcher {
         // AEDesc records are copied by value; sibling records may still share
         // this data handle, so keep structured backing until the process exits.
         if data_ptr != 0 {
-            self.ptr_to_handle.remove(&data_ptr);
+            self.untrack_handle_ptr(data_ptr);
         }
         write_null_aedesc(bus, desc_ptr);
     }
@@ -3438,7 +3438,7 @@ impl super::TrapDispatcher {
         if new_size == 0 {
             if old_ptr != 0 {
                 bus.free(old_ptr);
-                self.ptr_to_handle.remove(&old_ptr);
+                self.untrack_handle_ptr(old_ptr);
             }
             if let Some(entry) = self.loaded_handles.get_mut(&handle) {
                 entry.0 = 0;
@@ -3454,7 +3454,7 @@ impl super::TrapDispatcher {
             if old_size == new_size || aligned_new <= aligned_old {
                 bus.set_alloc_size(old_ptr, new_size);
                 bus.write_bytes(old_ptr, bytes);
-                self.ptr_to_handle.insert(old_ptr, handle);
+                self.track_handle_ptr(old_ptr, handle);
                 if let Some(entry) = self.loaded_handles.get_mut(&handle) {
                     entry.0 = old_ptr;
                 }
@@ -3470,10 +3470,10 @@ impl super::TrapDispatcher {
 
         if old_ptr != 0 {
             bus.free(old_ptr);
-            self.ptr_to_handle.remove(&old_ptr);
+            self.untrack_handle_ptr(old_ptr);
         }
         bus.write_long(handle, new_ptr);
-        self.ptr_to_handle.insert(new_ptr, handle);
+        self.track_handle_ptr(new_ptr, handle);
         if let Some(entry) = self.loaded_handles.get_mut(&handle) {
             entry.0 = new_ptr;
         }
@@ -13246,7 +13246,7 @@ impl super::TrapDispatcher {
                             let alias_handle = bus.alloc(4);
                             bus.write_long(alias_handle, alias_data);
                             bus.write_long(alias_ptr, alias_handle);
-                            self.ptr_to_handle.insert(alias_data, alias_handle);
+                            self.track_handle_ptr(alias_data, alias_handle);
                         }
 
                         bus.write_word(sp + 12, 0); // noErr
@@ -13349,7 +13349,7 @@ impl super::TrapDispatcher {
                             let alias_handle = bus.alloc(4);
                             bus.write_long(alias_handle, alias_data);
                             bus.write_long(alias_ptr, alias_handle);
-                            self.ptr_to_handle.insert(alias_data, alias_handle);
+                            self.track_handle_ptr(alias_data, alias_handle);
                         } else if alias_ptr != 0 {
                             bus.write_long(alias_ptr, 0);
                         }
@@ -22334,7 +22334,7 @@ mod tests {
         disp.loaded_handles
             .insert(handle, (data_ptr, *b"PICT", 23002));
         disp.resource_handle_files.insert(handle, refnum);
-        disp.ptr_to_handle.insert(data_ptr, handle);
+        disp.track_handle_ptr(data_ptr, handle);
         bus.write_word(0x0A5A, refnum);
 
         let sp = TEST_SP;
@@ -22350,7 +22350,7 @@ mod tests {
         assert_eq!(bus.get_alloc_size(handle), None);
         assert!(!disp.loaded_handles.contains_key(&handle));
         assert!(!disp.resource_handle_files.contains_key(&handle));
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
+        assert_eq!(disp.handle_for_ptr(data_ptr), None);
         assert!(!disp.resources.as_ref().unwrap().files.contains_key(&refnum));
         assert_eq!(bus.read_word(0x0A60), 0);
     }
@@ -29958,7 +29958,7 @@ mod tests {
         assert_eq!(bus.read_long(table_data + 4), 16);
         assert_eq!(bus.read_long(table_data + 8), 8);
         assert_eq!(bus.read_long(table_data + 12), 8);
-        assert_eq!(disp.ptr_to_handle.get(&table_data), Some(&table_handle));
+        assert_eq!(disp.handle_for_ptr(table_data), Some(table_handle));
 
         bus.write_long(key_ptr, desired_class);
         bus.write_long(key_ptr + 4, container_type);
@@ -30677,7 +30677,7 @@ mod tests {
         assert_ne!(data_handle, 0);
         assert_ne!(data_ptr, 0);
         assert_eq!(bus.read_long(data_ptr), value);
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr), Some(&data_handle));
+        assert_eq!(disp.handle_for_ptr(data_ptr), Some(data_handle));
     }
 
     #[test]
@@ -31163,7 +31163,7 @@ mod tests {
         let data_handle = bus.read_long(token_desc + 4);
         let data_ptr = bus.read_long(data_handle);
         assert!(disp.ae_descriptors.contains_key(&token_desc));
-        assert!(disp.ptr_to_handle.contains_key(&data_ptr));
+        assert!(disp.has_handle_ptr(data_ptr));
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x023A); // AEDisposeToken
@@ -31176,7 +31176,7 @@ mod tests {
         assert_eq!(bus.read_long(token_desc), AE_TYPE_NULL);
         assert_eq!(bus.read_long(token_desc + 4), 0);
         assert!(!disp.ae_descriptors.contains_key(&token_desc));
-        assert!(!disp.ptr_to_handle.contains_key(&data_ptr));
+        assert!(!disp.has_handle_ptr(data_ptr));
     }
 
     #[test]
@@ -31900,8 +31900,8 @@ mod tests {
 
         let updated_ptr = bus.read_long(base_handle);
         assert_ne!(updated_ptr, original_ptr);
-        assert!(!disp.ptr_to_handle.contains_key(&original_ptr));
-        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert!(!disp.has_handle_ptr(original_ptr));
+        assert_eq!(disp.handle_for_ptr(updated_ptr), Some(base_handle));
         assert_eq!(bus.read_word(sp + 16), 2);
         assert_eq!(cpu.read_reg(Register::D0), 2);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
@@ -31925,7 +31925,7 @@ mod tests {
 
         let updated_ptr = bus.read_long(base_handle);
         assert_eq!(updated_ptr, original_ptr);
-        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert_eq!(disp.handle_for_ptr(updated_ptr), Some(base_handle));
         assert_eq!(bus.read_word(sp + 16), 2);
         assert_eq!(bus.get_alloc_size(updated_ptr), Some(2));
         assert_eq!(bus.read_bytes(updated_ptr, 2), b"aa");
@@ -32006,7 +32006,7 @@ mod tests {
         assert_eq!(bus.read_word(sp + 16), 2);
         assert_eq!(bus.read_long(base_handle), 0);
         assert_eq!(bus.get_alloc_size(original_ptr), None);
-        assert!(!disp.ptr_to_handle.contains_key(&original_ptr));
+        assert!(!disp.has_handle_ptr(original_ptr));
     }
 
     // ScriptUtil ($A8B5) encoded selector fallback
@@ -33445,7 +33445,7 @@ mod tests {
         disp.loaded_handles
             .insert(handle, (data_ptr, *b"PICT", 23002));
         disp.resource_handle_files.insert(handle, refnum);
-        disp.ptr_to_handle.insert(data_ptr, handle);
+        disp.track_handle_ptr(data_ptr, handle);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x00D5); // CloseMovieFile
@@ -33463,7 +33463,7 @@ mod tests {
         assert_eq!(bus.get_alloc_size(handle), None);
         assert!(!disp.loaded_handles.contains_key(&handle));
         assert!(!disp.resource_handle_files.contains_key(&handle));
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
+        assert_eq!(disp.handle_for_ptr(data_ptr), None);
     }
 
     // Unhandled trap returns None

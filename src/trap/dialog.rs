@@ -367,12 +367,12 @@ impl super::TrapDispatcher {
         }
 
         if purgeable {
-            *self.handle_state_bits.entry(handle).or_insert(0) |= 0x40;
-        } else if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
-            *bits &= !0x40;
-            if *bits == 0 {
-                self.handle_state_bits.remove(&handle);
-            }
+            self.update_handle_state_bits(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
+        } else {
+            self.update_handle_state_bits(handle, |bits| {
+                let bits = bits.unwrap_or(0) & !0x40;
+                (bits != 0).then_some(bits)
+            });
         }
     }
 
@@ -394,7 +394,7 @@ impl super::TrapDispatcher {
                 self.get_or_create_resource_handle_in_file(bus, res_type, res_id, ptr, refnum);
             if ptr != 0 && bus.read_long(handle) == 0 {
                 bus.write_long(handle, ptr);
-                self.ptr_to_handle.insert(ptr, handle);
+                self.track_handle_ptr(ptr, handle);
             }
             handle
         } else {
@@ -4522,7 +4522,7 @@ impl super::TrapDispatcher {
         self.loaded_handles.remove(&handle);
         self.resource_handle_files.remove(&handle);
         self.detached_handle_files.remove(&handle);
-        self.handle_state_bits.remove(&handle);
+        self.remove_handle_state_bits(handle);
 
         let data_ptr = bus.read_long(handle);
         if resource_backing.is_none() {
@@ -17516,7 +17516,7 @@ mod tests {
             res_id
         );
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            disp.handle_state_bits(handle).unwrap_or(0) & 0x40,
             0,
             "{} {} should be nonpurgeable",
             String::from_utf8_lossy(&res_type),
@@ -17527,7 +17527,7 @@ mod tests {
     fn assert_resource_purgeable(disp: &TrapDispatcher, res_type: [u8; 4], res_id: i16) {
         let handle = loaded_resource_handle_for_test(disp, res_type, res_id);
         assert_ne!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            disp.handle_state_bits(handle).unwrap_or(0) & 0x40,
             0,
             "{} {} should be purgeable",
             String::from_utf8_lossy(&res_type),

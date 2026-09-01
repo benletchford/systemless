@@ -18,7 +18,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::ProcessContext;
+use crate::process_context::{ProcessContext, ProcessMemoryManager};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -97,6 +97,12 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
+/// Process-owned low memory and classic compatibility RAM visible to both
+/// execution engines in a native launch. The native loader reserves exactly
+/// this range for low-memory globals plus 68K callback code/data; the runner
+/// replaces that detached staging copy with its canonical Mac RAM allocation
+/// before either CPU executes.
+const PROCESS_LOW_MEMORY_SIZE: u32 = 0x0010_0000;
 const APP_QD_GLOBALS_RESERVE: u32 = 48 * 1024;
 const APP_LOADER_CLEAR_RESERVE: u32 = 0x40000;
 const APP_HIGH_MEMORY_RESERVE: u32 = 2 * 1024 * 1024;
@@ -1719,10 +1725,12 @@ impl FixtureRunnerConfig {
 
 /// Canonical entry point of the systemless library.
 ///
-/// `FixtureRunner` owns the three pieces of guest state: the [`M68kCpu`]
-/// backend, the [`MacMemoryBus`], and the [`TrapDispatcher`] (Toolbox and OS
-/// trap handlers). It exposes the load, execute, and halt-inspection
-/// surface that drives them.
+/// `FixtureRunner` serializes one Macintosh process: `ProcessContext` owns
+/// state shared across architectures, [`MacMemoryBus`] exposes its flat RAM to
+/// 68K, and CPU-specific adapters execute 68K or PowerPC code against that
+/// state. [`TrapDispatcher`] provides the shared Toolbox and OS boundary. The
+/// runner exposes the load, execute, and halt-inspection surface that drives
+/// them.
 ///
 /// **Lifecycle:**
 /// 1. [`FixtureRunner::new`] — allocate guest RAM + dispatcher.
@@ -1973,6 +1981,7 @@ impl FixtureRunner {
         let mut bus = MacMemoryBus::new(ram_size);
         bus.set_addressing_32_bit(config.addressing_32_bit);
         bus.configure_screen_depth(config.screen_depth);
+        process_context.attach_classic_memory_bus(&mut bus);
         bus.write_word(
             crate::memory::globals::addr::SYS_EVT_MASK,
             crate::memory::globals::DEFAULT_SYS_EVT_MASK,
@@ -3500,7 +3509,7 @@ impl FixtureRunner {
 
         self.bus.write_long(handle, data_ptr);
         if data_ptr != 0 {
-            self.dispatcher.ptr_to_handle.insert(data_ptr, handle);
+            self.dispatcher.track_handle_ptr(data_ptr, handle);
         }
         handle
     }
@@ -4008,6 +4017,24 @@ impl FixtureRunner {
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
         use crate::memory::globals::addr;
 
+        self.adopt_ppc_process_memory_image(&mut ppc_app);
+        // These are process launch defaults, not PEF-loader state. Reapply
+        // them after adopting a sparse construction image so a synthetic
+        // adapter that maps zero-filled low memory cannot erase the process
+        // environment established by `FixtureRunner::new`.
+        self.bus.write_word(
+            addr::SYS_EVT_MASK,
+            crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+        );
+        self.bus.write_word(
+            addr::MENU_FLASH,
+            crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
+        );
+        self.bus
+            .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
+        self.bus.write_byte(addr::MMU32_BIT, 1);
+        self.bus.write_byte(addr::SD_VOLUME, 1);
+        self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
         self.bus.write_long(addr::MEM_TOP, ram_size);
         let launch_ticks = self.launch_ticks_override.unwrap_or(0);
@@ -4022,7 +4049,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::RND_SEED, rnd_seed);
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
-        self.share_ppc_runtime_globals(&mut ppc_app);
+        self.share_ppc_process_memory(&mut ppc_app);
         ppc_app.attach_process_context(&mut self.process_context);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -4075,58 +4102,26 @@ impl FixtureRunner {
         self.ppc_app = Some(ppc_app);
     }
 
-    fn share_ppc_runtime_globals(&mut self, ppc_app: &mut PpcLoadedApp) {
-        use crate::memory::globals::addr;
-
-        // SysEvtMask is the current process's low-level event posting mask
-        // (Macintosh Toolbox Essentials 1992, pp. 2-28--2-29 and 2-99--2-100;
-        // Inside Macintosh Volume III 1985, low-memory globals table).
-        // RndSeed is the system random-number seed (Inside Macintosh Volume I,
-        // I-195). The Vertical Retrace Manager updates Ticks and the one-second
-        // interrupt updates Time (Inside Macintosh Volume II, II-202 and
-        // II-378). MenuFlash controls the selected-item blink count, while the
-        // standard MDEF updates MenuDisable for MenuChoice (Macintosh Toolbox
-        // Essentials 1992, pp. 3-118--3-119 and 3-142). GetMouse, Button, and
-        // GetKeys observe the current device
-        // state, whose KeyMap is one 128-bit value (Inside Macintosh Volume I,
-        // I-259–I-260). These bytes describe one running Macintosh, so native
-        // and 68k callers must observe one backing allocation rather than
-        // values copied at CPU-slice boundaries.
-        for (address, len) in [
-            // A native-to-68k callback executes in this process's writable
-            // Trap Manager topology. Keep line-A and line-F exception vectors
-            // attached to the same cells as the 68k dispatcher so nested
-            // A-lines do not fall through a detached native low-memory copy.
-            (0x28, 8),
-            (
-                crate::trap::dispatch::OS_TRAP_TABLE_BASE,
-                u32::from(crate::trap::dispatch::OS_TRAP_TABLE_SLOTS) * 4,
-            ),
-            (
-                crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
-                u32::from(crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS) * 4,
-            ),
-            (addr::SYS_EVT_MASK, 2),
-            (addr::MENU_FLASH, 2),
-            (addr::MENU_DISABLE, 4),
-            (addr::RND_SEED, 4),
-            (addr::TICKS, 4),
-            (addr::TIME, 4),
-            (addr::MB_STATE, 1),
-            (addr::KEY_MAP_LM, 16),
-            (addr::M_TEMP, 12),
-            (addr::DS_ERR_CODE, 2),
-        ] {
-            let region = self
+    fn share_ppc_process_memory(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let ram_end = self.bus.ram_size();
+        let low_memory_end = PROCESS_LOW_MEMORY_SIZE.min(ram_end);
+        let process_low_memory = self
+            .bus
+            .shared_ram_region(0, low_memory_end)
+            .expect("FixtureRunner owns the complete process low-memory range");
+        self.process_context
+            .attach_memory(0, process_low_memory, &mut ppc_app.memory);
+        for (base, end) in ppc_app
+            .memory
+            .ordinary_mapping_holes(low_memory_end, ram_end)
+        {
+            let len = end - base;
+            let process_memory = self
                 .bus
-                .shared_ram_region(address, len)
-                .expect("FixtureRunner owns stable guest RAM");
-            // SAFETY: both adapters remain private children of this runner;
-            // every execution and presentation entry point requires a mutable
-            // runner borrow, so their access cannot overlap.
-            unsafe {
-                ppc_app.memory.add_shared_region(address, region);
-            }
+                .shared_ram_region(base, len)
+                .expect("FixtureRunner owns every process RAM hole");
+            self.process_context
+                .attach_memory(base, process_memory, &mut ppc_app.memory);
         }
         let Some((base, region)) = self.bus.shared_synthetic_reservation() else {
             return;
@@ -4144,6 +4139,27 @@ impl FixtureRunner {
         // 68k bus for trap gateways and permanent come-from heads.
         unsafe {
             ppc_app.memory.add_shared_readonly_region(base, region);
+        }
+    }
+
+    /// Move the native loader's detached construction image into the one
+    /// process-owned low-memory allocation before either CPU executes.
+    ///
+    /// Production PEF loads map the complete range, while focused Mixed Mode
+    /// tests often map only a callback or descriptor. Preserve every mapped
+    /// byte in either case. Process startup deliberately follows this step so
+    /// canonical clocks, trap tables, and devices replace loader defaults.
+    fn adopt_ppc_process_memory_image(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let mut image = vec![0; PROCESS_LOW_MEMORY_SIZE as usize];
+        if ppc_app.memory.read_bytes_into(0, &mut image).is_some() {
+            self.bus.load(0, &image);
+            return;
+        }
+
+        for address in 0..PROCESS_LOW_MEMORY_SIZE {
+            if let Some(byte) = ppc_app.memory.read_u8(address) {
+                self.bus.write_byte(address, byte);
+            }
         }
     }
 
@@ -5801,11 +5817,13 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let (event_queue, menu_tracking) =
-                        self.process_context.event_queue_and_menu_tracking_mut();
-                    let dispatch_result = self.dispatcher.with_process_state(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager();
+                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
+                        memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -6154,17 +6172,22 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
-        let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-            match (trace_ppc_imports, trace_ppc_fetches) {
-                (true, true) => {
-                    app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
-                }
-                (true, false) => app.run_with_hle_import_trace(ppc_max_steps as u64),
-                (false, true) => app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
-                (false, false) => app.run_with_hle_imports(ppc_max_steps as u64),
-            }
-        });
+        let (event_queue, menu_tracking, memory_manager) = self
+            .process_context
+            .event_queue_menu_tracking_and_memory_manager();
+        let probe = ppc_app.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |app, memory_manager| {
+                app.run_with_process_memory_manager(
+                    ppc_max_steps as u64,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                )
+            },
+        );
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
@@ -6203,20 +6226,26 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probes = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                Self::fire_ppc_tick_callbacks(
-                    app,
-                    ppc_start_tick,
-                    ppc_start_time,
-                    elapsed_ticks,
-                    u64::from(cycles_per_tick),
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
-            probes
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager();
+            ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app, memory_manager| {
+                    Self::fire_ppc_tick_callbacks(
+                        app,
+                        memory_manager,
+                        ppc_start_tick,
+                        ppc_start_time,
+                        elapsed_ticks,
+                        u64::from(cycles_per_tick),
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                    )
+                },
+            )
         };
         if trace_vbl_enabled() {
             for vbl_probe in &vbl_probes {
@@ -6520,21 +6549,19 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let (event_queue, menu_tracking, memory_effects) =
-                        self.process_context.event_queue_menu_tracking_and_memory_effects_mut();
-                    let dispatch_err = self.dispatcher.with_process_state_and_memory_effects(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager();
+                    let dispatch_err = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
-                        memory_effects,
+                        memory_manager,
                         |dispatcher| {
                             dispatcher
                                 .dispatch(opcode, &mut self.cpu, &mut self.bus)
                                 .is_err()
                         },
                     );
-                    if self.process_context.has_pending_memory_effects() {
-                        self.apply_pending_process_memory_effects(ppc_app);
-                    }
                     if dispatch_err {
                         running = false;
                         break;
@@ -6560,46 +6587,6 @@ impl FixtureRunner {
         }
         self.bus.detach_guest_address_space();
         Some((executed, running))
-    }
-
-    fn apply_pending_process_memory_effects(&mut self, ppc_app: &mut PpcLoadedApp) {
-        let effects = self.process_context.take_pending_memory_effects();
-        if effects.is_empty() {
-            return;
-        }
-        self.bus.detach_guest_address_space();
-        let mut successful_menus = Vec::new();
-        for effect in effects {
-            let success = ppc_app.replace_handle_bytes(
-                effect.handle,
-                effect.expected_ptr,
-                &effect.replacement,
-            );
-            if success {
-                self.bus
-                    .write_word(crate::memory::globals::addr::MEM_ERR, 0);
-                successful_menus.push((effect.handle, effect.expected_ptr));
-            } else {
-                let err = if ppc_app.last_mem_error != 0 {
-                    ppc_app.last_mem_error as u16
-                } else {
-                    (-108i16) as u16 // memFullErr
-                };
-                self.bus
-                    .write_word(crate::memory::globals::addr::MEM_ERR, err);
-            }
-        }
-        // SAFETY: `ppc_app` is parked for this whole interval. The address
-        // space remains in place, and all reads and writes are serialized
-        // through this runner until the bus is detached.
-        let shared_memory = unsafe { ppc_app.memory.shared_view() };
-        unsafe {
-            self.bus.attach_guest_address_space(shared_memory);
-        }
-        for (menu_handle, old_ptr) in successful_menus {
-            self.dispatcher
-                .complete_deferred_menu_replacement(&self.bus, menu_handle, old_ptr);
-        }
     }
 
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
@@ -6912,6 +6899,7 @@ impl FixtureRunner {
     #[allow(clippy::too_many_arguments)]
     fn fire_ppc_tick_callbacks(
         ppc_app: &mut PpcLoadedApp,
+        memory_manager: &mut ProcessMemoryManager,
         start_tick: u32,
         start_time: u32,
         elapsed_ticks: u32,
@@ -6935,21 +6923,23 @@ impl FixtureRunner {
             ppc_app.set_tick_count(callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
-            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks(
+            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks_with_process_memory_manager(
                 callback_tick.wrapping_sub(1),
                 1,
                 usize::MAX,
                 max_cycles,
                 trace_imports,
                 trace_fetches,
+                memory_manager,
             ));
-            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks(
+            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks_with_process_memory_manager(
                 callback_tick.wrapping_sub(1),
                 1,
                 usize::MAX,
                 max_cycles,
                 trace_imports,
                 trace_fetches,
+                memory_manager,
             ));
         }
         (vbl_probes, timer_probes)
@@ -7999,16 +7989,23 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                app.run_sound_doubleback_callback(
-                    doubleback,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager();
+            let probe = ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app, memory_manager| {
+                    app.run_sound_doubleback_callback_with_process_memory_manager(
+                        doubleback,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                        memory_manager,
+                    )
+                },
+            );
             let invocation = probe.invocation;
             if trace_sound_runner_enabled() {
                 eprintln!(
@@ -8107,16 +8104,23 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                app.run_sound_completion_callback(
-                    completion,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager();
+            let probe = ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app, memory_manager| {
+                    app.run_sound_completion_callback_with_process_memory_manager(
+                        completion,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                        memory_manager,
+                    )
+                },
+            );
             let invocation = probe.invocation;
             if record_ppc_imports {
                 self.record_ppc_import_trace(&probe.import_trace);
@@ -10853,11 +10857,13 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let (event_queue, menu_tracking) =
-                        self.process_context.event_queue_and_menu_tracking_mut();
-                    let dispatch_result = self.dispatcher.with_process_state(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager();
+                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
+                        memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -12576,8 +12582,17 @@ mod tests {
             ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: task });
         }
 
-        let (vbl, timer) =
-            FixtureRunner::fire_ppc_tick_callbacks(&mut ppc_app, 41, 0x1020_3040, 2, 64, false, false);
+        let mut memory_manager = runner.process_context.memory_manager_mut();
+        let (vbl, timer) = FixtureRunner::fire_ppc_tick_callbacks(
+            &mut ppc_app,
+            &mut memory_manager,
+            41,
+            0x1020_3040,
+            2,
+            64,
+            false,
+            false,
+        );
 
         assert_eq!(vbl.len(), 2);
         assert!(timer.is_empty());
@@ -12636,7 +12651,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_runtime_globals_have_immediate_bidirectional_visibility() {
+    fn ppc_process_low_memory_has_immediate_bidirectional_visibility() {
         use crate::memory::globals::addr;
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -12680,6 +12695,75 @@ mod tests {
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::MENU_DISABLE),
             Some(0x0081_0003),
+        );
+
+        // Addresses outside the old hand-maintained global list belong to the
+        // same process too, including compatibility RAM used by 68K callbacks.
+        for address in [0x0000_5000, 0x000f_0000] {
+            ppc_app.memory.write_u32_be(address, 0x1234_5678).unwrap();
+            assert_eq!(runner.bus.read_long(address), 0x1234_5678);
+            runner.bus.write_long(address, 0x89ab_cdef);
+            assert_eq!(ppc_app.memory.read_u32_be(address), Some(0x89ab_cdef));
+        }
+    }
+
+    #[test]
+    fn ppc_process_memory_holes_share_runner_ram_without_overlaying_pef_mappings() {
+        const FIRST_HOLE: u32 = 0x0018_0000;
+        const PEF_MAPPING: u32 = 0x0020_0000;
+        const SECOND_HOLE: u32 = PEF_MAPPING + 4;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app
+            .memory
+            .add_readonly_region(PEF_MAPPING, 0x1234_5678u32.to_be_bytes().to_vec());
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.bus.write_long(PEF_MAPPING, 0xaabb_ccdd);
+        assert_eq!(
+            runner.process_context.memory_ranges(),
+            vec![
+                (0, PROCESS_LOW_MEMORY_SIZE as usize),
+                (PROCESS_LOW_MEMORY_SIZE, 0x0010_0000),
+                (SECOND_HOLE, (8 * 1024 * 1024 - SECOND_HOLE) as usize),
+            ]
+        );
+
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        ppc_app
+            .memory
+            .write_u32_be(FIRST_HOLE, 0x0102_0304)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(FIRST_HOLE), 0x0102_0304);
+        runner.bus.write_long(SECOND_HOLE, 0x0506_0708);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(SECOND_HOLE),
+            Some(0x0506_0708)
+        );
+
+        assert_eq!(
+            ppc_app.memory.read_u32_be(PEF_MAPPING),
+            Some(0x1234_5678)
+        );
+        // SAFETY: the test parks `ppc_app`, accesses it only through the bus
+        // while attached, and detaches before borrowing its memory again.
+        let shared = unsafe { ppc_app.memory.shared_view() };
+        unsafe {
+            runner.bus.attach_guest_address_space(shared);
+        }
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
+        runner.bus.write_long(PEF_MAPPING, 0);
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
+        runner.bus.detach_guest_address_space();
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0xaabb_ccdd);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(PEF_MAPPING),
+            Some(0x1234_5678)
         );
     }
 
@@ -12800,11 +12884,11 @@ mod tests {
             .memory
             .write_u32_be(addr::THE_ZONE, 0x1122_3344)
             .unwrap();
-        assert_ne!(runner.bus.read_long(addr::THE_ZONE), 0x1122_3344);
+        assert_eq!(runner.bus.read_long(addr::THE_ZONE), 0x1122_3344);
         runner.bus.write_long(addr::THE_ZONE, 0x5566_7788);
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::THE_ZONE),
-            Some(0x1122_3344)
+            Some(0x5566_7788)
         );
     }
 
@@ -13846,12 +13930,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -13866,11 +13944,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -13960,6 +14033,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
     }
@@ -14210,7 +14284,7 @@ mod tests {
         let original_record = fixture.root_record;
         let original_handle_record = fixture
             .app
-            .handles
+            .handles()
             .iter()
             .copied()
             .find(|record| record.handle == root_menu)
@@ -14284,7 +14358,7 @@ mod tests {
             .read_u32_be(root_menu)
             .expect("live native root-menu master pointer");
         let handle_record = native
-            .handles
+            .handles()
             .iter()
             .copied()
             .find(|record| record.handle == root_menu)
@@ -14294,6 +14368,11 @@ mod tests {
         assert_eq!(handle_record.size, handle_record.capacity);
         assert!(handle_record.size > original_handle_record.size);
         assert_ne!(relocated_record, original_record, "the fixture must force relocation");
+        assert_eq!(
+            runner.process_context.handle_for_ptr(relocated_record),
+            Some(root_menu),
+            "the process Memory Manager must publish the relocated native handle"
+        );
         let mut menu_bytes = vec![0; handle_record.size as usize];
         native
             .memory
@@ -14305,8 +14384,7 @@ mod tests {
             items.items.iter().any(|item| item.text == APPENDED_TEXT),
             "native decoding must observe the item appended by the 68k callback"
         );
-        assert_eq!(native.last_mem_error, 0);
-        assert!(!runner.process_context.has_pending_memory_effects());
+        assert_eq!(native.last_mem_error(), 0);
         assert_eq!(runner.bus.read_word(crate::memory::globals::addr::MEM_ERR), 0);
 
         let target_v = root_rect.0 + 24;
@@ -15955,12 +16033,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -15975,11 +16047,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -16104,6 +16171,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -16875,12 +16943,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -16895,11 +16957,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17000,6 +17057,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17040,12 +17098,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17060,11 +17112,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17165,6 +17212,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17437,12 +17485,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE + 8,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17457,11 +17499,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17578,6 +17615,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE + 8, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState {
                 front_buffer_gworld: PPC_DSP_BACK_GWORLD,
                 back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -17728,12 +17766,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_base: PPC_HEAP_BASE,
-            heap_cursor: PPC_HEAP_BASE + 8 * 16,
-            heap_limit: PPC_STACK_BASE,
-            last_mem_error: 0,
-            heap_maximized: false,
-            master_pointer_blocks_requested: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17748,11 +17780,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            ptrs: Vec::new(),
-            free_ptr_blocks: Vec::new(),
-            handles: Vec::new(),
-            free_handle_blocks: Vec::new(),
-            handle_states: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17902,6 +17929,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE + 8 * 16,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -18037,7 +18068,7 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app.memory.add_region(PPC_HEAP_BASE, vec![0; 16]);
-        ppc_app.heap_cursor = PPC_HEAP_BASE + 16;
+        ppc_app.set_heap_cursor(PPC_HEAP_BASE + 16);
         ppc_app.gworlds.push(PpcGWorldRecord {
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
@@ -18153,7 +18184,7 @@ mod tests {
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
             let ppc_app = app.ppc.as_mut().expect("PPC app");
             ppc_app.memory.add_region(PPC_HEAP_BASE, pixels);
-            ppc_app.heap_cursor = PPC_HEAP_BASE + row_bytes * HEIGHT;
+            ppc_app.set_heap_cursor(PPC_HEAP_BASE + row_bytes * HEIGHT);
             ppc_app.gworlds.push(PpcGWorldRecord {
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,

@@ -7187,7 +7187,7 @@ impl super::TrapDispatcher {
                         let pixel_buf = bus.alloc(row_bytes * height);
                         let pixel_buf_handle = bus.alloc(4);
                         bus.write_long(pixel_buf_handle, pixel_buf);
-                        self.ptr_to_handle.insert(pixel_buf, pixel_buf_handle);
+                        self.track_handle_ptr(pixel_buf, pixel_buf_handle);
                         let pixmap = bus.alloc(50);
                         bus.write_long(pixmap, pixel_buf_handle);
                         bus.write_word(pixmap + 4, (row_bytes as u16) | 0x8000);
@@ -7371,9 +7371,7 @@ impl super::TrapDispatcher {
                         let old_base_handle = if stored_base_handle != 0 {
                             stored_base_handle
                         } else {
-                            self.ptr_to_handle
-                                .get(&old_base)
-                                .copied()
+                            self.handle_for_ptr(old_base)
                                 .filter(|&handle| bus.read_long(handle) == old_base)
                                 .unwrap_or(0)
                         };
@@ -7494,9 +7492,9 @@ impl super::TrapDispatcher {
 
                             // Update PixMap fields
                             if old_base_handle != 0 {
-                                self.ptr_to_handle.remove(&old_base);
+                                self.untrack_handle_ptr(old_base);
                                 bus.write_long(old_base_handle, new_base);
-                                self.ptr_to_handle.insert(new_base, old_base_handle);
+                                self.track_handle_ptr(new_base, old_base_handle);
                                 if pixels_were_locked {
                                     bus.write_long(pixmap, new_base);
                                 }
@@ -9298,7 +9296,7 @@ impl super::TrapDispatcher {
                                         0
                                     } else {
                                         bus.write_long(pixel_handle, pixel_ptr);
-                                        self.ptr_to_handle.insert(pixel_ptr, pixel_handle);
+                                        self.track_handle_ptr(pixel_ptr, pixel_handle);
                                         pixel_handle
                                     }
                                 }
@@ -9334,7 +9332,7 @@ impl super::TrapDispatcher {
                                         0
                                     } else {
                                         bus.write_long(ctab_handle, ctab_copy_ptr);
-                                        self.ptr_to_handle.insert(ctab_copy_ptr, ctab_handle);
+                                        self.track_handle_ptr(ctab_copy_ptr, ctab_handle);
                                         ctab_handle
                                     }
                                 }
@@ -9365,7 +9363,7 @@ impl super::TrapDispatcher {
                                     0
                                 } else {
                                     bus.write_long(icon_handle, icon_ptr);
-                                    self.ptr_to_handle.insert(icon_ptr, icon_handle);
+                                    self.track_handle_ptr(icon_ptr, icon_handle);
                                     icon_handle
                                 }
                             }
@@ -9835,7 +9833,7 @@ impl super::TrapDispatcher {
                         bus.write_long(icon_ptr + 78, 0);
                         Self::free_handle_and_target(bus, icon_pm_table_handle);
                         Self::free_handle_and_target(bus, icon_data_handle);
-                        self.ptr_to_handle.remove(&icon_ptr);
+                        self.untrack_handle_ptr(icon_ptr);
                         self.forget_resource_handle_index_for_handle(icon_handle);
                         self.loaded_handles.remove(&icon_handle);
                         self.resource_handle_files.remove(&icon_handle);
@@ -16743,9 +16741,9 @@ impl super::TrapDispatcher {
         bus.free(old_ptr);
         bus.write_long(handle, new_ptr);
 
-        let tracked_handle = self.ptr_to_handle.remove(&old_ptr).is_some();
+        let tracked_handle = self.untrack_handle_ptr(old_ptr).is_some();
         if tracked_handle {
-            self.ptr_to_handle.insert(new_ptr, handle);
+            self.track_handle_ptr(new_ptr, handle);
         }
         if let Some(entry) = self.loaded_handles.get_mut(&handle) {
             entry.0 = new_ptr;
@@ -18523,7 +18521,7 @@ impl super::TrapDispatcher {
             return C_NO_MEM_ERR;
         }
         bus.write_long(pixel_buf_handle, pixel_buf);
-        self.ptr_to_handle.insert(pixel_buf, pixel_buf_handle);
+        self.track_handle_ptr(pixel_buf, pixel_buf_handle);
         let pixmap = bus.alloc(50);
         if pixmap == 0 {
             return C_NO_MEM_ERR;
@@ -18572,14 +18570,12 @@ impl super::TrapDispatcher {
             let pixel_buf_handle = if stored_pixel_buf_handle != 0 {
                 stored_pixel_buf_handle
             } else {
-                self.ptr_to_handle
-                    .get(&pixel_buf)
-                    .copied()
+                self.handle_for_ptr(pixel_buf)
                     .filter(|&handle| bus.read_long(handle) == pixel_buf)
                     .unwrap_or(0)
             };
             if pixel_buf_handle != 0 {
-                self.ptr_to_handle.remove(&pixel_buf);
+                self.untrack_handle_ptr(pixel_buf);
                 Self::free_handle_and_target(bus, pixel_buf_handle);
             } else {
                 if pixel_buf != 0 {
@@ -18705,7 +18701,7 @@ impl super::TrapDispatcher {
                 if base == 0 {
                     return false;
                 }
-                self.ptr_to_handle.insert(base, base_handle);
+                self.track_handle_ptr(base, base_handle);
                 bus.write_long(pm, base);
             }
         }
@@ -18724,10 +18720,7 @@ impl super::TrapDispatcher {
         let pm = bus.read_long(pmh);
         if pm != 0 {
             let base = Self::offscreen_pixmap_base_ptr(bus, pm);
-            let base_handle = self
-                .ptr_to_handle
-                .get(&base)
-                .copied()
+            let base_handle = self.handle_for_ptr(base)
                 .filter(|&handle| bus.read_long(handle) == base)
                 .unwrap_or(0);
             if base_handle != 0 {
@@ -41975,7 +41968,7 @@ mod tests {
         assert_ne!(base_1, 0);
         let pm_1 = bus.read_long(pmh_1);
         let base_handle_1 = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_1);
-        assert_eq!(d.ptr_to_handle.get(&base_1), Some(&base_handle_1));
+        assert_eq!(d.handle_for_ptr(base_1), Some(base_handle_1));
 
         cpu.write_reg(Register::D0, 0x000D);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -43486,8 +43479,8 @@ mod tests {
         let base_handle = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm);
         let flags = cpu.read_reg(Register::D0);
         assert_ne!(new_base, old_base);
-        assert_eq!(d.ptr_to_handle.get(&old_base), None);
-        assert_eq!(d.ptr_to_handle.get(&new_base), Some(&base_handle));
+        assert_eq!(d.handle_for_ptr(old_base), None);
+        assert_eq!(d.handle_for_ptr(new_base), Some(base_handle));
         assert_eq!(flags & (1 << 20), 1 << 20);
         assert_eq!(flags & (1 << 19), 0);
         for i in 0..16 {

@@ -905,7 +905,7 @@ impl super::TrapDispatcher {
                     }
                     if bus.read_long(handle) != 0 && existing_ptr != 0 {
                         self.resident_resources.insert(key);
-                        self.ptr_to_handle.insert(existing_ptr, handle);
+                        self.track_handle_ptr(existing_ptr, handle);
                     }
                     return handle;
                 }
@@ -925,7 +925,7 @@ impl super::TrapDispatcher {
         self.remember_resource_handle_index(handle, key.0, key.1, key.2);
         if materialize && ptr != 0 {
             self.resident_resources.insert(key);
-            self.ptr_to_handle.insert(ptr, handle);
+            self.track_handle_ptr(ptr, handle);
             self.add_resource_materialization_tick_cost(bus, ptr);
         }
         handle
@@ -1139,7 +1139,7 @@ impl super::TrapDispatcher {
     }
 
     fn restore_loaded_resource_handle(&mut self, handle: u32, ptr: u32) {
-        self.ptr_to_handle.insert(ptr, handle);
+        self.track_handle_ptr(ptr, handle);
         if let (Some((_, res_type, res_id)), Some(refnum)) = (
             self.loaded_handles.get(&handle).copied(),
             self.resource_handle_files.get(&handle).copied(),
@@ -1160,6 +1160,37 @@ impl super::TrapDispatcher {
             self.resource_handle_files.get(&handle).copied(),
         ) {
             self.resident_resources.remove(&(refnum, res_type, res_id));
+        }
+    }
+
+    /// Retain a resource handle's identity while marking its data nonresident.
+    ///
+    /// `EmptyHandle` releases the relocatable block and sets the master
+    /// pointer to `NIL`; a later Resource Manager lookup may reload the data
+    /// into the same handle. Inside Macintosh: Memory (1992), pp. 2-51--2-52,
+    /// and More Macintosh Toolbox (1993), pp. 1-79--1-80.
+    pub(crate) fn empty_resource_handle_residency(&mut self, handle: u32) {
+        let Some((_, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
+            return;
+        };
+        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
+            return;
+        };
+        self.resident_resources.remove(&(refnum, res_type, res_id));
+        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+            entry.0 = 0;
+        }
+        if let Some(file) = self
+            .resources
+            .as_mut()
+            .and_then(|resources| resources.files.get_mut(&refnum))
+        {
+            file.loaded.insert((res_type, res_id), 0);
+            for ((named_type, _), (named_id, ptr)) in &mut file.named {
+                if *named_type == res_type && *named_id == res_id {
+                    *ptr = 0;
+                }
+            }
         }
     }
 
@@ -1480,10 +1511,7 @@ impl super::TrapDispatcher {
         res_id: i16,
         ptr: u32,
     ) -> Option<Vec<u8>> {
-        let live_ptr = self
-            .ptr_to_handle
-            .get(&ptr)
-            .copied()
+        let live_ptr = self.handle_for_ptr(ptr)
             .map(|handle| bus.read_long(handle))
             .filter(|handle_ptr| *handle_ptr != 0)
             .unwrap_or(ptr);
@@ -2084,16 +2112,33 @@ impl super::TrapDispatcher {
                             handle, type_str, res_id, ptr
                         );
                     }
-                    // Successful reload must canonicalize the master
-                    // pointer again even if the caller had emptied or
-                    // scribbled over it first.
-                    let was_empty = bus.read_long(handle) == 0;
-                    bus.write_long(handle, ptr);
-                    self.restore_loaded_resource_handle(handle, ptr);
-                    if was_empty {
-                        self.add_resource_materialization_tick_cost(bus, ptr);
+                    let reloaded_ptr = if ptr != 0 {
+                        Some(ptr)
+                    } else {
+                        self.resource_handle_files
+                            .get(&handle)
+                            .copied()
+                            .and_then(|refnum| {
+                                self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
+                            })
+                    };
+                    if let Some(ptr) = reloaded_ptr {
+                        // Successful reload must canonicalize the master
+                        // pointer again even if the caller had emptied or
+                        // scribbled over it first.
+                        let was_empty = bus.read_long(handle) == 0;
+                        bus.write_long(handle, ptr);
+                        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                            entry.0 = ptr;
+                        }
+                        self.restore_loaded_resource_handle(handle, ptr);
+                        if was_empty {
+                            self.add_resource_materialization_tick_cost(bus, ptr);
+                        }
+                        bus.write_word(0x0A60, 0);
+                    } else {
+                        bus.write_word(0x0A60, MEM_FULL_ERR as u16);
                     }
-                    bus.write_word(0x0A60, 0);
                 } else {
                     bus.write_word(0x0A60, 0);
                 }
@@ -2148,11 +2193,11 @@ impl super::TrapDispatcher {
                             }
                         }
                         bus.write_long(handle, 0);
-                        self.ptr_to_handle.remove(&ptr);
+                        self.untrack_handle_ptr(ptr);
                         self.forget_resource_handle_index_for_handle(handle);
                         self.loaded_handles.remove(&handle);
                         self.resource_handle_files.remove(&handle);
-                        self.handle_state_bits.remove(&handle);
+                        self.remove_handle_state_bits(handle);
                         if can_reload {
                             if let Some((refnum, record_type, record_id)) = resource_record {
                                 if let Some(file) = self
@@ -6084,7 +6129,7 @@ impl super::TrapDispatcher {
                                 (0, MEM_FULL_ERR)
                             } else {
                                 bus.write_long(handle, ptr);
-                                self.ptr_to_handle.insert(ptr, handle);
+                                self.track_handle_ptr(ptr, handle);
                                 (handle, NO_ERR)
                             }
                         };
@@ -6105,15 +6150,14 @@ impl super::TrapDispatcher {
                         let handle = bus.read_long(sp + 4);
                         let result_code = temporary_memory_handle_status(bus, handle);
                         if result_code == NO_ERR {
-                            let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                            if selector == 0x001E {
-                                *bits |= 0x80;
-                            } else {
-                                *bits &= !0x80;
-                                if *bits == 0 {
-                                    self.handle_state_bits.remove(&handle);
-                                }
-                            }
+                            self.update_handle_state_bits(handle, |bits| {
+                                let bits = if selector == 0x001E {
+                                    bits.unwrap_or(0) | 0x80
+                                } else {
+                                    bits.unwrap_or(0) & !0x80
+                                };
+                                (bits != 0).then_some(bits)
+                            });
                         }
                         write_temp_memory_result_code(bus, result_code_ptr, result_code);
                         cpu.write_reg(Register::D0, result_code);
@@ -6132,10 +6176,10 @@ impl super::TrapDispatcher {
                             && !self.loaded_handles.contains_key(&handle)
                         {
                             let ptr = bus.read_long(handle);
-                            self.ptr_to_handle.remove(&ptr);
+                            self.untrack_handle_ptr(ptr);
                             bus.free(ptr);
                             bus.free(handle);
-                            self.handle_state_bits.remove(&handle);
+                            self.remove_handle_state_bits(handle);
                             NO_ERR
                         } else {
                             MEM_WZ_ERR
@@ -7829,7 +7873,7 @@ impl super::TrapDispatcher {
         }
         if handle_was_empty {
             bus.write_long(handle, 0);
-            self.ptr_to_handle.remove(&live_ptr);
+            self.untrack_handle_ptr(live_ptr);
         }
         if past_end {
             -189
@@ -7897,28 +7941,15 @@ impl super::TrapDispatcher {
         old_ptr: u32,
         new_size: u32,
     ) -> u32 {
-        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
-        let aligned_old = (old_size + 3) & !3;
-        let aligned_new = (new_size + 3) & !3;
-        if aligned_new <= aligned_old {
-            // Fits in the existing aligned bucket; just retag the
-            // logical size. Mirrors the SetHandleSize fast path.
-            bus.set_alloc_size(old_ptr, new_size);
-            return old_ptr;
-        }
-        let new_ptr = bus.alloc(new_size);
-        if new_ptr == 0 {
+        let resized = {
+            let memory_manager = self.process_memory_manager();
+            let mut memory_manager = memory_manager.borrow_mut();
+            memory_manager.attach_classic_memory_bus(bus);
+            memory_manager.resize_process_resource_handle(bus, handle, old_ptr, new_size)
+        };
+        let Ok((old_ptr, new_ptr)) = resized else {
             return 0;
-        }
-        let copy_len = old_size.min(new_size) as usize;
-        if copy_len > 0 {
-            let bytes = bus.read_bytes(old_ptr, copy_len);
-            bus.write_bytes(new_ptr, &bytes);
-        }
-        bus.free(old_ptr);
-        bus.write_long(handle, new_ptr);
-        self.ptr_to_handle.remove(&old_ptr);
-        self.ptr_to_handle.insert(new_ptr, handle);
+        };
         if let Some(entry) = self.loaded_handles.get_mut(&handle) {
             entry.0 = new_ptr;
         }
@@ -8676,7 +8707,9 @@ mod tests {
     use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
-    use crate::memory::MemoryBus;
+    use crate::memory::{GuestAddressSpace, MemoryBus};
+    use crate::process_context::{ProcessContext, ProcessNativeHeapState};
+    use ppc::PpcMemory;
     use std::collections::HashMap;
 
     use super::super::test_helpers::MockCpu;
@@ -9451,8 +9484,8 @@ mod tests {
             disp.loaded_handles.get(&handle).map(|(ptr, _, _)| *ptr),
             Some(new_ptr)
         );
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr).copied(), None);
-        assert_eq!(disp.ptr_to_handle.get(&new_ptr).copied(), Some(handle));
+        assert_eq!(disp.handle_for_ptr(data_ptr), None);
+        assert_eq!(disp.handle_for_ptr(new_ptr), Some(handle));
 
         let file = disp.resources.as_ref().unwrap().files.get(&0).unwrap();
         assert_eq!(file.loaded.get(&(*b"TEST", 77)).copied(), Some(new_ptr));
@@ -9472,6 +9505,101 @@ mod tests {
             "GetResource should return the resized live handle, not a duplicate"
         );
         assert_eq!(bus.read_long(returned_handle), new_ptr);
+    }
+
+    #[test]
+    fn sethandlesize_resizes_native_resource_through_process_manager() {
+        const NATIVE_HEAP_BASE: u32 = 0x22_0000;
+        const NATIVE_HEAP_LIMIT: u32 = 0x30_0000;
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let shared = bus
+            .shared_ram_region(0, 4 * 1024 * 1024)
+            .expect("test RAM should be shareable");
+        let mut native = GuestAddressSpace::new();
+        context.attach_memory(0, shared, &mut native);
+        let foreign = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(foreign) };
+        disp.attach_process_context(&mut context);
+
+        let memory_manager = disp.process_memory_manager();
+        let handle = {
+            let mut memory_manager = memory_manager.borrow_mut();
+            memory_manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: NATIVE_HEAP_BASE,
+                    heap_cursor: NATIVE_HEAP_BASE,
+                    heap_limit: NATIVE_HEAP_LIMIT,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            let handle = memory_manager
+                .new_native_resource_handle(&mut native, Some(&[1, 2, 3, 4]));
+            assert_ne!(handle, 0);
+            assert_ne!(memory_manager.new_native_ptr(&mut native, 32, true), 0);
+            handle
+        };
+        let original = memory_manager.borrow().native_allocation(handle).unwrap();
+        let detached = memory_manager.borrow().detached_clone();
+        disp.loaded_handles
+            .insert(handle, (original.ptr, *b"TEST", 77));
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 64);
+        let resize = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
+
+        assert!(resize.is_some(), "SetHandleSize should be handled");
+        assert!(resize.unwrap().is_ok(), "SetHandleSize should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let resized = memory_manager.borrow().native_allocation(handle).unwrap();
+        assert_eq!(resized.size, 64);
+        assert_ne!(resized.ptr, original.ptr);
+        assert_eq!(native.read_u32_be(handle), Some(resized.ptr));
+        assert_eq!(
+            (0..4)
+                .map(|offset| native.read_u8(resized.ptr + offset).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(memory_manager.borrow().recover_handle(resized.ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().recover_handle(original.ptr), None);
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(resized.ptr)
+        );
+
+        assert_eq!(
+            memory_manager
+                .borrow_mut()
+                .empty_process_handle(&mut bus, handle),
+            0
+        );
+        disp.empty_resource_handle_residency(handle);
+        assert_eq!(native.read_u32_be(handle), Some(0));
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 16);
+        let refill = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
+        assert!(refill.is_some(), "SetHandleSize should refill an empty handle");
+        assert!(refill.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let refilled = memory_manager.borrow().native_allocation(handle).unwrap();
+        assert_eq!(refilled.size, 16);
+        assert_ne!(refilled.ptr, 0);
+        assert_eq!(native.read_u32_be(handle), Some(refilled.ptr));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x60));
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(refilled.ptr)
+        );
+        assert_eq!(detached.native_allocation(handle), Some(original));
+        assert_ne!(detached.native_allocation(handle), Some(refilled));
     }
 
     #[test]
@@ -9584,7 +9712,7 @@ mod tests {
         assert!(recovered.unwrap().is_ok(), "RecoverHandle should succeed");
         assert_eq!(cpu.read_reg(Register::A0), loaded_handle);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.handle_for_ptr(data_ptr),
             Some(loaded_handle)
         );
     }
@@ -10049,7 +10177,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(handle), data_ptr);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.handle_for_ptr(data_ptr),
             Some(handle),
             "LoadResource should restore RecoverHandle-style ownership"
         );
@@ -10079,6 +10207,24 @@ mod tests {
             0,
             "resource handle should be empty after purge"
         );
+        assert_eq!(
+            bus.get_alloc_size(data_ptr),
+            None,
+            "EmptyHandle should return the resource block to the process heap"
+        );
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(0),
+            "resource identity should remain registered without a resident pointer"
+        );
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .and_then(|resources| resources.files.get(&refnum))
+                .and_then(|file| file.loaded.get(&(*b"DLOG", 202)))
+                .copied(),
+            Some(0)
+        );
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, handle);
@@ -10091,7 +10237,7 @@ mod tests {
             "LoadResource should restore the purged resource's master pointer"
         );
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.handle_for_ptr(data_ptr),
             Some(handle),
             "LoadResource should restore RecoverHandle-style ptr ownership"
         );
@@ -10228,7 +10374,7 @@ mod tests {
             "ReleaseResource should remove the stale resource handle index"
         );
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.handle_for_ptr(data_ptr),
             None,
             "released resource data should not be recoverable until reload"
         );
@@ -10259,7 +10405,7 @@ mod tests {
         );
         assert_eq!(bus.read_long(reloaded_handle), data_ptr);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.handle_for_ptr(data_ptr),
             Some(reloaded_handle),
             "GetResource should restore RecoverHandle ownership through the fresh handle"
         );
@@ -15342,7 +15488,7 @@ mod tests {
         disp.loaded_handles
             .insert(handle, (data_ptr, *b"PICT", 23002));
         disp.resource_handle_files.insert(handle, refnum);
-        disp.ptr_to_handle.insert(data_ptr, handle);
+        disp.track_handle_ptr(data_ptr, handle);
 
         let pb = 0x300000u32;
         cpu.write_reg(Register::A0, pb);
@@ -15358,7 +15504,7 @@ mod tests {
         assert_eq!(bus.get_alloc_size(handle), None);
         assert!(!disp.loaded_handles.contains_key(&handle));
         assert!(!disp.resource_handle_files.contains_key(&handle));
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
+        assert_eq!(disp.handle_for_ptr(data_ptr), None);
     }
 
     // ================================================================
@@ -18295,7 +18441,7 @@ mod tests {
             "TempNewHandle should write noErr to resultCode"
         );
         assert_eq!(bus.get_alloc_size(ptr), Some(64));
-        assert_eq!(disp.ptr_to_handle.get(&ptr).copied(), Some(handle));
+        assert_eq!(disp.handle_for_ptr(ptr), Some(handle));
     }
 
     #[test]
@@ -18316,7 +18462,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(err_ptr), 0, "TempHLock resultCode");
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            disp.handle_state_bits(handle).unwrap_or(0) & 0x80,
             0x80,
             "TempHLock should set the lock bit"
         );
@@ -18331,12 +18477,12 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(err_ptr), 0, "TempHUnlock resultCode");
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            disp.handle_state_bits(handle).unwrap_or(0) & 0x80,
             0,
             "TempHUnlock should clear the lock bit"
         );
 
-        disp.handle_state_bits.insert(handle, 0xC0);
+        disp.set_handle_state_bits(handle, 0xC0);
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(err_ptr, 0x7777);
         bus.write_word(TEST_SP, 0x0020);
@@ -18357,7 +18503,7 @@ mod tests {
             "TempDisposeHandle should release the master pointer"
         );
         assert!(
-            !disp.handle_state_bits.contains_key(&handle),
+            !disp.has_handle_state_bits(handle),
             "TempDisposeHandle should clear tracked state bits"
         );
     }
