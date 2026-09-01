@@ -3670,7 +3670,7 @@ impl PpcLoadedApp {
         }
     }
 
-    fn publish_process_memory_manager(
+    fn initialize_process_memory_manager(
         &self,
         memory_manager: &mut ProcessMemoryManager,
         pointer_records: Option<ProcessNativeAllocatorState>,
@@ -3703,13 +3703,6 @@ impl PpcLoadedApp {
                 .as_ref()
                 .map_or(&[], |allocator| allocator.free_handle_blocks.as_slice()),
         );
-    }
-
-    fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
-        let allocator = memory_manager.native_allocator_update();
-        if let Some(allocator) = allocator {
-            self.apply_process_native_allocator(allocator);
-        }
     }
 
     fn adopt_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
@@ -3881,7 +3874,7 @@ impl PpcLoadedApp {
                     self.adopt_process_memory_manager(&memory_manager);
                 } else {
                     let pointer_records = standalone_memory_manager.native_allocator_snapshot();
-                    self.publish_process_memory_manager(&mut memory_manager, pointer_records);
+                    self.initialize_process_memory_manager(&mut memory_manager, pointer_records);
                 }
             }
             self.process_memory_manager
@@ -3899,8 +3892,8 @@ impl PpcLoadedApp {
         f(self)
     }
 
-    /// Run one native slice while publishing its live relocatable blocks to
-    /// the process Memory Manager before another CPU adapter can execute.
+    /// Run one native operation with the continuously attached process Memory
+    /// Manager as its sole allocator owner.
     pub(crate) fn with_process_memory_manager<R>(
         &mut self,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
@@ -3908,16 +3901,7 @@ impl PpcLoadedApp {
         let memory_manager = self.process_memory_manager.0.clone();
         self.with_process_state(|app| {
             let mut memory_manager = memory_manager.borrow_mut();
-            app.apply_process_memory_manager(&memory_manager);
-            app.publish_process_memory_manager(&mut memory_manager, None);
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                f(app, &mut memory_manager)
-            }));
-            app.publish_process_memory_manager(&mut memory_manager, None);
-            match outcome {
-                Ok(result) => result,
-                Err(payload) => std::panic::resume_unwind(payload),
-            }
+            f(app, &mut memory_manager)
         })
     }
 
@@ -7101,11 +7085,10 @@ impl PpcLoadedApp {
                 .as_ref()
                 .expect("standalone process Memory Manager created")
                 .borrow_mut();
-            if standalone_memory_manager_borrow.has_native_allocator() {
-                self.apply_process_memory_manager(&standalone_memory_manager_borrow);
-            } else {
-                self.publish_process_memory_manager(&mut standalone_memory_manager_borrow, None);
-            }
+            assert!(
+                standalone_memory_manager_borrow.has_native_allocator(),
+                "loaded adapter owns a native allocator before execution"
+            );
             &mut standalone_memory_manager_borrow
         };
         let mut imports = std::mem::take(&mut self.imports);
@@ -90091,7 +90074,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn process_memory_manager_round_trips_native_handle_state_across_cpu_slices() {
+    fn native_operation_uses_canonical_allocator_without_slice_handoff() {
         let pef = synthetic_pef_with_import(b"NewHandle");
         let mut native = load_pef_application(&pef).unwrap();
         native.cpu.gpr[3] = 32;
