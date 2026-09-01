@@ -529,6 +529,82 @@ impl ProcessMemoryManager {
         Self::NO_ERR
     }
 
+    /// Replace a native or classic relocatable block without changing its handle.
+    ///
+    /// The replacement has undefined contents and is left unlocked and
+    /// unpurgeable. If allocation fails, the prior block, master pointer, and
+    /// handle state remain unchanged. Inside Macintosh: Memory (1992),
+    /// pp. 2-52--2-53.
+    pub(crate) fn reallocate_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        size: u32,
+    ) -> Result<(u32, u32), i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        if (size as i32) < 0 {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        }
+
+        let native_record = self.native_allocation(handle);
+        if native_record.is_none() && (handle == 0 || bus.get_alloc_size(handle) != Some(4)) {
+            return Err(Self::MEM_WZ_ERR);
+        }
+
+        let relocated = if let Some(record) = native_record {
+            let Some(required) = Self::native_allocation_size(size) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Err(Self::MEM_FULL_ERR);
+            };
+            let Some(allocator) = self.native_allocator.as_ref() else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Err(Self::MEM_FULL_ERR);
+            };
+            if Self::native_allocation_bounds(
+                allocator.heap.heap_cursor,
+                allocator.heap.heap_limit,
+                required,
+                |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
+            )
+            .is_none()
+            {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Err(Self::MEM_FULL_ERR);
+            }
+            let replacement = usize::try_from(size)
+                .ok()
+                .map(|len| vec![0xA5; len])
+                .ok_or(Self::MEM_FULL_ERR)?;
+            self.replace_native_handle_bytes_with_relocation(
+                bus,
+                handle,
+                record.ptr,
+                &replacement,
+                true,
+            )?
+        } else {
+            let new_ptr = bus.alloc(size);
+            if new_ptr == 0 && size > 0 {
+                return Err(Self::MEM_FULL_ERR);
+            }
+            bus.fill_bytes(new_ptr, size, 0xA5);
+            let old_ptr = bus.read_long(handle);
+            bus.free(old_ptr);
+            bus.write_long(handle, new_ptr);
+            self.ptr_to_handle.remove(&old_ptr);
+            self.ptr_to_handle.insert(new_ptr, handle);
+            (old_ptr, new_ptr)
+        };
+
+        self.handle_state_bits.update(handle, |state| {
+            let state = state.unwrap_or(0) & !0xC0;
+            (state != 0).then_some(state)
+        });
+        self.handle_high_locked.remove(&handle);
+        Ok(relocated)
+    }
+
     pub(crate) fn register_native_handle_records(
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
@@ -1224,6 +1300,17 @@ impl ProcessMemoryManager {
         expected_ptr: u32,
         bytes: &[u8],
     ) -> Result<(u32, u32), i16> {
+        self.replace_native_handle_bytes_with_relocation(bus, handle, expected_ptr, bytes, false)
+    }
+
+    fn replace_native_handle_bytes_with_relocation(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        expected_ptr: u32,
+        bytes: &[u8],
+        force_relocation: bool,
+    ) -> Result<(u32, u32), i16> {
         let Some(record) = self.native_allocation(handle) else {
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return Err(Self::NIL_HANDLE_ERR);
@@ -1249,7 +1336,20 @@ impl ProcessMemoryManager {
         let mut new_ptr = record.ptr;
         let mut new_cursor = allocator.heap.heap_cursor;
         let mut new_capacity = record.capacity;
-        if size > record.capacity {
+        if force_relocation {
+            let Some((ptr, next)) = Self::native_allocation_bounds(
+                allocator.heap.heap_cursor,
+                allocator.heap.heap_limit,
+                new_aligned,
+                |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
+            ) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Err(Self::MEM_FULL_ERR);
+            };
+            new_ptr = ptr;
+            new_cursor = next;
+            new_capacity = size;
+        } else if size > record.capacity {
             let Some(old_aligned) = Self::native_allocation_size(record.capacity) else {
                 self.set_native_mem_error(Self::MEM_FULL_ERR);
                 return Err(Self::MEM_FULL_ERR);
@@ -2058,6 +2158,61 @@ mod tests {
         assert_eq!(bus.read_long(handle), old_ptr);
         assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
         assert_eq!(manager.native_allocation(handle), Some(original));
+        assert_eq!(
+            manager
+                .native_allocator_update()
+                .map(|allocator| allocator.heap.last_mem_error),
+            Some(ProcessMemoryManager::MEM_FULL_ERR)
+        );
+    }
+
+    #[test]
+    fn process_handle_reallocation_failure_preserves_native_process_state() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x100]);
+        native.write_u32_be(handle, old_ptr).unwrap();
+        native.write_bytes(old_ptr, b"original").unwrap();
+
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor,
+                heap_limit: heap_cursor,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let original = ProcessHandleRecord {
+            handle,
+            ptr: old_ptr,
+            size: 8,
+            capacity: 16,
+        };
+        manager.register_native_handle_records([(original, 0xE0)]);
+
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        manager.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(
+            manager.reallocate_process_handle(&mut bus, handle, 32),
+            Err(ProcessMemoryManager::MEM_FULL_ERR)
+        );
+        assert_eq!(bus.read_long(handle), old_ptr);
+        assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
+        assert_eq!(manager.native_allocation(handle), Some(original));
+        assert_eq!(manager.recover_handle(old_ptr), Some(handle));
+        assert_eq!(manager.state_for_handle(handle), Some(0xE0));
         assert_eq!(
             manager
                 .native_allocator_update()

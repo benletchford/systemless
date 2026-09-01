@@ -245,6 +245,7 @@ const BAD_UNIT_ERR: u32 = (-21i32) as u32;
 const PARAM_ERR: u32 = (-50i32) as u32;
 const MEM_FULL_ERR: u32 = (-108i32) as u32;
 const NIL_HANDLE_ERR: u32 = (-109i32) as u32;
+#[cfg(test)]
 const MEM_WZ_ERR: u32 = (-111i32) as u32;
 const DT_QTYPE: u16 = 7;
 const NOT_HELD_ERR: u32 = (-621i32) as u32;
@@ -760,6 +761,20 @@ impl super::TrapDispatcher {
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
         memory_manager.set_process_handle_size(bus, handle, new_size) as i32 as u32
+    }
+
+    fn reallocate_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        size: u32,
+    ) -> std::result::Result<(u32, u32), u32> {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager
+            .reallocate_process_handle(bus, handle, size)
+            .map_err(|error| error as i32 as u32)
     }
 
     pub(crate) fn dispatch_memory<C: CpuOps>(
@@ -1600,65 +1615,33 @@ impl super::TrapDispatcher {
             (false, 0x27) => {
                 let handle = cpu.read_reg(Register::A0);
                 let size = cpu.read_reg(Register::D0);
-
-                // A Handle must still own its four-byte master-pointer slot.
-                // A disposed handle is a free block and reports memWZErr.
-                if handle == 0 || bus.get_alloc_size(handle) != Some(4) {
-                    write_memory_result(cpu, bus, MEM_WZ_ERR);
-                    return Some(Ok(()));
-                }
-                // Size is a signed LONGINT. Reject negative requests before
-                // entering the unsigned allocator, preserving the master
-                // pointer and handle state on this error path.
-                if (size as i32) < 0 {
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                    return Some(Ok(()));
-                }
-
-                // Allocate first so an allocation failure leaves the old
-                // master pointer and block intact, as the documented atomic
-                // error contract requires.
-                let ptr = bus.alloc(size);
-                if ptr == 0 && size > 0 {
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                } else {
-                    scribble_uninitialized_allocation(bus, ptr, size);
-                    let old_ptr = bus.read_long(handle);
-                    let indexed_old_ptr = self
-                        .loaded_handles
-                        .get(&handle)
-                        .map(|entry| entry.0)
-                        .unwrap_or(old_ptr);
-                    if old_ptr != 0 {
-                        self.untrack_handle_ptr(old_ptr);
-                        bus.free(old_ptr);
-                    }
-                    bus.write_long(handle, ptr);
-                    self.track_handle_ptr(ptr, handle);
-                    if let Some(entry) = self.loaded_handles.get_mut(&handle) {
-                        entry.0 = ptr;
-                    }
-                    if let Some(resources) = self.resources.as_mut() {
-                        for file in resources.files.values_mut() {
-                            for loaded_ptr in file.loaded.values_mut() {
-                                if *loaded_ptr == indexed_old_ptr {
-                                    *loaded_ptr = ptr;
+                let indexed_old_ptr = self
+                    .loaded_handles
+                    .get(&handle)
+                    .map(|entry| entry.0)
+                    .unwrap_or_else(|| bus.read_long(handle));
+                match self.reallocate_process_handle(bus, handle, size) {
+                    Ok((_old_ptr, new_ptr)) => {
+                        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                            entry.0 = new_ptr;
+                        }
+                        if let Some(resources) = self.resources.as_mut() {
+                            for file in resources.files.values_mut() {
+                                for loaded_ptr in file.loaded.values_mut() {
+                                    if *loaded_ptr == indexed_old_ptr {
+                                        *loaded_ptr = new_ptr;
+                                    }
                                 }
-                            }
-                            for (_id, named_ptr) in file.named.values_mut() {
-                                if *named_ptr == indexed_old_ptr {
-                                    *named_ptr = ptr;
+                                for (_id, named_ptr) in file.named.values_mut() {
+                                    if *named_ptr == indexed_old_ptr {
+                                        *named_ptr = new_ptr;
+                                    }
                                 }
                             }
                         }
+                        write_memory_result(cpu, bus, NO_ERR);
                     }
-                    // Reallocation resets only the lock and purge flags. Any
-                    // resource marker remains a property of the handle.
-                    self.update_handle_state_bits(handle, |bits| {
-                        let bits = bits.unwrap_or(0) & !0xC0;
-                        (bits != 0).then_some(bits)
-                    });
-                    write_memory_result(cpu, bus, NO_ERR);
+                    Err(error) => write_memory_result(cpu, bus, error),
                 }
                 Ok(())
             }
@@ -4746,6 +4729,85 @@ mod tests {
             memory_manager.borrow().recover_handle(heap_cursor),
             Some(handle)
         );
+    }
+
+    #[test]
+    fn reallocate_handle_trap_replaces_native_process_allocation_immediately() {
+        // Memory (1992), pp. 2-52--2-53: reallocation replaces the data
+        // block, gives it undefined contents, and clears lock/purge state
+        // without changing the stable handle.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x80;
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        bus.write_long(handle, old_ptr);
+        bus.write_bytes(old_ptr, b"original");
+
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(
+                ProcessHandleRecord {
+                    handle,
+                    ptr: old_ptr,
+                    size: 8,
+                    capacity: 64,
+                },
+                0xE0,
+            )]);
+        }
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 17);
+        dispatcher.current_trap_word = 0xA027;
+        dispatcher
+            .dispatch_memory(false, 0x27, &mut cpu, &mut bus)
+            .expect("ReallocateHandle should be handled")
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(handle), heap_cursor);
+        assert_eq!(bus.read_bytes(heap_cursor, 17), vec![0xA5; 17]);
+        assert_eq!(
+            memory_manager.borrow().native_allocation(handle),
+            Some(ProcessHandleRecord {
+                handle,
+                ptr: heap_cursor,
+                size: 17,
+                capacity: 17,
+            })
+        );
+        assert_eq!(memory_manager.borrow().recover_handle(old_ptr), None);
+        assert_eq!(
+            memory_manager.borrow().recover_handle(heap_cursor),
+            Some(handle)
+        );
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
+        assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
     }
 
     #[test]
