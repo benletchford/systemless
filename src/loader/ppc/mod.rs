@@ -3901,11 +3901,11 @@ impl PpcLoadedApp {
 
     /// Run one native slice while publishing its live relocatable blocks to
     /// the process Memory Manager before another CPU adapter can execute.
-    pub(crate) fn with_process_state_and_memory_manager<R>(
+    pub(crate) fn with_process_memory_manager<R>(
         &mut self,
-        memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
     ) -> R {
+        let memory_manager = self.process_memory_manager.0.clone();
         self.with_process_state(|app| {
             let mut memory_manager = memory_manager.borrow_mut();
             app.apply_process_memory_manager(&memory_manager);
@@ -90132,8 +90132,7 @@ pub(crate) mod tests {
             });
         }
 
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |_native, memory_manager| {
                 assert_eq!(
                     memory_manager
@@ -90191,6 +90190,37 @@ pub(crate) mod tests {
                 .copied()
                 .find(|record| record.handle == handle)
         );
+    }
+
+    #[test]
+    fn attached_native_memory_manager_survives_panic_without_runner_handoff() {
+        let pef = synthetic_pef_with_import(b"NewPtr");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let memory_manager = context.memory_manager_handle().clone();
+
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            native.with_process_memory_manager(|native, memory_manager| {
+                native.cpu.gpr[3] = 24;
+                let probe =
+                    native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(probe.handled_import_count, 1);
+                panic!("simulated panic after a native Memory Manager import");
+            });
+        }));
+
+        assert!(panic_result.is_err());
+        let ptr = native.cpu.gpr[3];
+        assert_ne!(ptr, 0);
+        assert!(native.process_memory_manager.ptr_eq(&memory_manager));
+        assert!(memory_manager
+            .borrow()
+            .native_allocator()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == ptr && record.size == 24));
     }
 
     #[test]
@@ -90451,8 +90481,7 @@ pub(crate) mod tests {
         classic.set_handle_state_bits(handle, 0x40);
         let detached = memory_manager.detached_clone();
 
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |native, memory_manager| {
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -90617,10 +90646,7 @@ pub(crate) mod tests {
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let memory_manager = context.memory_manager_handle();
-
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |native, memory_manager| {
                 let prior_ptr = memory_manager.new_native_ptr(&mut native.memory, 24, false);
                 assert_eq!(prior_ptr, PPC_HEAP_BASE);
@@ -90704,10 +90730,7 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let memory_manager = context.memory_manager_handle();
-
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |native, memory_manager| {
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
                 let handle = native.cpu.gpr[3];
@@ -90896,10 +90919,7 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let memory_manager = context.memory_manager_handle();
-
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |native, memory_manager| {
                 let allocator = memory_manager.native_allocator_snapshot().unwrap();
                 let mut heap_cursor = allocator.heap.heap_cursor;
@@ -91048,10 +91068,7 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let memory_manager = context.memory_manager_handle();
-
-        native.with_process_state_and_memory_manager(
-            memory_manager,
+        native.with_process_memory_manager(
             |native, memory_manager| {
                 native.cpu.gpr[3] = source;
                 native.cpu.gpr[4] = output;

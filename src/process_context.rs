@@ -3616,6 +3616,7 @@ impl ProcessContext {
         *self.menu_tracking = state;
     }
 
+    #[cfg(test)]
     pub(crate) fn memory_manager_handle(&self) -> &SharedProcessMemoryManager {
         &self.memory_manager
     }

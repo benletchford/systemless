@@ -5467,9 +5467,7 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let memory_manager = self.process_context.memory_manager_handle();
-                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
-                        memory_manager,
+                    let dispatch_result = self.dispatcher.with_process_state(
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -5816,9 +5814,7 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let memory_manager = self.process_context.memory_manager_handle();
-        let probe = ppc_app.with_process_state_and_memory_manager(
-            memory_manager,
+        let probe = ppc_app.with_process_memory_manager(
             |app, memory_manager| {
                 app.run_with_process_memory_manager(
                     ppc_max_steps as u64,
@@ -5866,9 +5862,7 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            let memory_manager = self.process_context.memory_manager_handle();
-            ppc_app.with_process_state_and_memory_manager(
-                memory_manager,
+            ppc_app.with_process_memory_manager(
                 |app, memory_manager| {
                     Self::fire_ppc_tick_callbacks(
                         app,
@@ -6180,9 +6174,7 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let memory_manager = self.process_context.memory_manager_handle();
-                    let dispatch_err = self.dispatcher.with_process_state_and_memory_manager(
-                        memory_manager,
+                    let dispatch_err = self.dispatcher.with_process_state(
                         |dispatcher| {
                             dispatcher
                                 .dispatch(opcode, &mut self.cpu, &mut self.bus)
@@ -7515,9 +7507,7 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let memory_manager = self.process_context.memory_manager_handle();
-            let probe = ppc_app.with_process_state_and_memory_manager(
-                memory_manager,
+            let probe = ppc_app.with_process_memory_manager(
                 |app, memory_manager| {
                     app.run_sound_doubleback_callback_with_process_memory_manager(
                         doubleback,
@@ -7626,9 +7616,7 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let memory_manager = self.process_context.memory_manager_handle();
-            let probe = ppc_app.with_process_state_and_memory_manager(
-                memory_manager,
+            let probe = ppc_app.with_process_memory_manager(
                 |app, memory_manager| {
                     app.run_sound_completion_callback_with_process_memory_manager(
                         completion,
@@ -10366,9 +10354,7 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let memory_manager = self.process_context.memory_manager_handle();
-                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
-                        memory_manager,
+                    let dispatch_result = self.dispatcher.with_process_state(
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
