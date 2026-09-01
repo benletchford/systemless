@@ -511,11 +511,11 @@ impl super::TrapDispatcher {
     }
 
     fn sync_vbl_links(&mut self, bus: &mut MacMemoryBus) {
-        if self.system_vbl_queue_anchor == 0 {
+        if self.callback_scheduling.system_vbl_queue_anchor == 0 {
             let anchor = bus.alloc_synthetic(14);
             if anchor != 0 {
                 bus.write_word(anchor + 4, 1); // vType
-                self.system_vbl_queue_anchor = anchor;
+                self.callback_scheduling.system_vbl_queue_anchor = anchor;
             }
         }
 
@@ -537,7 +537,7 @@ impl super::TrapDispatcher {
             .filter(|task| task.slot.is_none())
             .map(|task| task.task_ptr);
         let first_task = system_tasks.next().unwrap_or(0);
-        let anchor = self.system_vbl_queue_anchor;
+        let anchor = self.callback_scheduling.system_vbl_queue_anchor;
         if anchor != 0 {
             bus.write_long(anchor, first_task);
         }
@@ -1922,7 +1922,7 @@ impl super::TrapDispatcher {
                     OsRoutineVariant::TimeTaskExtended
                 );
                 if !extended || bus.read_long(task_ptr + 14) == 0 {
-                    self.timer_extended_wakeups.remove(&task_ptr);
+                    self.callback_scheduling.extended_wakeups.remove(&task_ptr);
                 }
                 // Remove any existing task for the same record address
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
@@ -1951,7 +1951,8 @@ impl super::TrapDispatcher {
             (false, 0x59) => {
                 let task_ptr = cpu.read_reg(Register::A0);
                 let current_subtick = self
-                    .timer_current_subtick
+                    .callback_scheduling
+                    .current_subtick
                     .max(bus.read_long(0x016A) as u64 * 1_000_000);
                 let remaining_subticks = self
                     .timer_tasks
@@ -2009,7 +2010,8 @@ impl super::TrapDispatcher {
                     (us * 60).max(1)
                 };
                 let current_subtick = self
-                    .timer_current_subtick
+                    .callback_scheduling
+                    .current_subtick
                     .max(current_ticks as u64 * SUBTICKS_PER_TICK);
                 let task_kind = self
                     .timer_tasks
@@ -2025,12 +2027,12 @@ impl super::TrapDispatcher {
                     let prior_wakeup = if bus.read_long(task_ptr + 14) == 0 {
                         None
                     } else {
-                        self.timer_extended_wakeups.get(&task_ptr).copied()
+                        self.callback_scheduling.extended_wakeups.get(&task_ptr).copied()
                     };
                     let intended_wakeup = prior_wakeup
                         .unwrap_or(current_subtick)
                         .saturating_add(requested_delay_subticks);
-                    self.timer_extended_wakeups
+                    self.callback_scheduling.extended_wakeups
                         .insert(task_ptr, intended_wakeup);
                     // tmWakeUp is explicitly an opaque internal format. Keep
                     // it nonzero so guest code can preserve or reset it, while
@@ -6967,11 +6969,11 @@ mod tests {
         );
         assert_eq!(
             bus.read_long(super::VBL_QUEUE_HEADER + 2),
-            dispatcher.system_vbl_queue_anchor,
+            dispatcher.callback_scheduling.system_vbl_queue_anchor,
             "VInstall should keep the system-owned queue anchor at the head"
         );
         assert_eq!(
-            bus.read_long(dispatcher.system_vbl_queue_anchor),
+            bus.read_long(dispatcher.callback_scheduling.system_vbl_queue_anchor),
             task_ptr,
             "the system-owned queue anchor should link to the application task"
         );
@@ -6998,7 +7000,7 @@ mod tests {
                 .expect("VInstall should return");
         }
 
-        let anchor = dispatcher.system_vbl_queue_anchor;
+        let anchor = dispatcher.callback_scheduling.system_vbl_queue_anchor;
         assert_ne!(anchor, 0);
         assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 2), anchor);
         assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 6), second);
@@ -10624,7 +10626,7 @@ mod tests {
         assert_eq!(dispatcher.timer_tasks[0].fire_at_subtick, 100_600_000);
         assert_ne!(bus.read_long(task_ptr + 14), 0);
 
-        dispatcher.timer_current_subtick = 100_750_000;
+        dispatcher.callback_scheduling.current_subtick = 100_750_000;
         cpu.write_reg(Register::A0, task_ptr);
         dispatcher
             .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
@@ -10650,11 +10652,11 @@ mod tests {
             "callback latency must not shift the extended task's frequency"
         );
         assert_eq!(
-            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            dispatcher.callback_scheduling.extended_wakeups.get(&task_ptr),
             Some(&101_200_000)
         );
 
-        dispatcher.timer_current_subtick = 102_000_000;
+        dispatcher.callback_scheduling.current_subtick = 102_000_000;
         dispatcher.timer_tasks[0].active = false;
         cpu.write_reg(Register::A0, task_ptr);
         cpu.write_reg(Register::D0, 1);
@@ -10667,7 +10669,7 @@ mod tests {
             "an intended expiry in the past must receive an actual zero delay"
         );
         assert_eq!(
-            dispatcher.timer_extended_wakeups.get(&task_ptr),
+            dispatcher.callback_scheduling.extended_wakeups.get(&task_ptr),
             Some(&101_260_000),
             "the past intended expiry remains the drift-free base"
         );
@@ -10773,7 +10775,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        dispatcher.timer_current_subtick = 100_150_000; // 2,500 us elapsed
+        dispatcher.callback_scheduling.current_subtick = 100_150_000; // 2,500 us elapsed
         cpu.write_reg(Register::A0, task_ptr);
         dispatcher
             .dispatch_memory(false, 0x59, &mut cpu, &mut bus)

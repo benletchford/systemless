@@ -2561,23 +2561,14 @@ pub struct TrapDispatcher {
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
     pub(crate) timer_tasks: crate::process_context::SharedProcessTimerTasks,
-    /// Exact scheduled wake-up retained for extended Time Manager records.
-    /// The guest `tmWakeUp` representation is explicitly private to the
-    /// manager; this map preserves its semantic deadline across RmvTime and
-    /// InsXTime without exposing host units. Processes 1994, pp. 3-8--3-9.
-    pub(crate) timer_extended_wakeups: HashMap<u32, u64>,
-    /// Exact Time Manager time while a callback is being delivered.
-    pub(crate) timer_current_subtick: u64,
+    /// Process-owned callback scheduling metadata.
+    pub(crate) callback_scheduling: crate::process_context::SharedProcessCallbackScheduling,
     /// Ordered Power Manager sleep queue. Each entry is a guest SleepQRec;
     /// its first longword remains the guest-visible next link.
     pub(crate) sleep_queue: Vec<u32>,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
     pub(crate) vbl_tasks: crate::process_context::SharedProcessVblTasks,
-    /// Dormant system-owned queue element kept ahead of application VBL tasks.
-    pub(crate) system_vbl_queue_anchor: u32,
-    /// Slot number of the primary video monitor for AttachVBL / VBL cursor routing.
-    pub(crate) primary_vbl_slot: i16,
     /// Active dialog tracking state (non-None while ModalDialog is tracking input)
     pub dialog_tracking: Option<DialogTrackingState>,
     /// Active Standard File Package save dialog tracking state.
@@ -2831,7 +2822,11 @@ impl TrapDispatcher {
         context.attach_file_system(&mut self.process_file_system);
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
-        context.attach_callback_tasks(&mut self.timer_tasks, &mut self.vbl_tasks);
+        context.attach_callback_tasks(
+            &mut self.timer_tasks,
+            &mut self.vbl_tasks,
+            &mut self.callback_scheduling,
+        );
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -4015,12 +4010,9 @@ impl TrapDispatcher {
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
             timer_tasks: Default::default(),
-            timer_extended_wakeups: HashMap::new(),
-            timer_current_subtick: 0,
+            callback_scheduling: Default::default(),
             sleep_queue: Vec::new(),
             vbl_tasks: Default::default(),
-            system_vbl_queue_anchor: 0,
-            primary_vbl_slot: 0,
             dialog_tracking: None,
             standard_file_put_tracking: None,
             standard_file_get_tracking: None,
