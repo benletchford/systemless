@@ -5331,11 +5331,15 @@ impl PpcLoadedApp {
     fn replace_handle_states(&self, handle_states: Vec<PpcHandleStateRecord>) {
         let mut memory_manager = self.process_memory_manager.0.borrow_mut();
         let handles = memory_manager.native_handle_records().to_vec();
-        ppc_synchronize_process_native_handles(
-            &mut memory_manager,
-            &handles,
-            &handle_states,
-        );
+        memory_manager.register_native_handle_records(handles.iter().map(|record| {
+            (
+                *record,
+                ppc_process_handle_state_bits(&handle_states, record.handle),
+            )
+        }));
+        for state in handle_states {
+            memory_manager.set_native_handle_state(state);
+        }
     }
 
     #[cfg(test)]
@@ -16535,15 +16539,12 @@ fn ppc_synchronize_process_native_handles(
     handles: &[PpcHandleRecord],
     handle_states: &[PpcHandleStateRecord],
 ) {
-    memory_manager.register_native_handle_records(handles.iter().map(|record| {
+    memory_manager.refresh_native_handle_records(handles.iter().map(|record| {
         (
             *record,
             ppc_process_handle_state_bits(handle_states, record.handle),
         )
     }));
-    for state in handle_states.iter().copied() {
-        memory_manager.set_native_handle_state(state);
-    }
 }
 
 fn ppc_process_handle_state_bits(
@@ -88259,6 +88260,46 @@ pub(crate) mod tests {
                 .copied()
                 .find(|record| record.handle == handle)
         );
+    }
+
+    #[test]
+    fn stale_native_handle_snapshot_preserves_process_owned_state() {
+        let handle = PPC_HEAP_BASE + 0x20;
+        let record = ProcessHandleRecord {
+            handle,
+            ptr: PPC_HEAP_BASE + 0x40,
+            size: 16,
+            capacity: 16,
+        };
+        let stale_state = PpcHandleStateRecord {
+            handle,
+            locked: false,
+            high_locked: false,
+            no_purge: false,
+            resource: false,
+        };
+        let mut memory_manager = ProcessMemoryManager::default();
+        ppc_synchronize_process_native_handles(
+            &mut memory_manager,
+            &[record],
+            &[stale_state],
+        );
+        let detached = memory_manager.detached_clone();
+
+        memory_manager.lock_process_handle(handle, true);
+        ppc_synchronize_process_native_handles(
+            &mut memory_manager,
+            &[record],
+            &[stale_state],
+        );
+
+        let state = memory_manager.native_handle_state(handle);
+        assert!(state.locked);
+        assert!(state.high_locked);
+        assert!(!state.no_purge);
+        assert!(!state.resource);
+        assert_eq!(detached.state_for_handle(handle), Some(0x40));
+        assert!(!detached.native_handle_state(handle).high_locked);
     }
 
     #[test]
