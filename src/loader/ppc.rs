@@ -21041,6 +21041,10 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(result))
         }
         PpcImportDispatcherTarget::DisposeGWorld => {
+            // DisposeGWorld
+            // Disposes every allocation owned by an offscreen graphics world.
+            // void DisposeGWorld(GWorldPtr offscreenGWorld);
+            // Imaging With QuickDraw (1994), p. 6-25.
             let port = cpu.gpr[3];
             let disposed = gworlds
                 .iter()
@@ -21048,6 +21052,20 @@ fn dispatch_supported_import(
                 .copied();
             gworlds.retain(|gworld| gworld.port == PPC_MAIN_GWORLD || gworld.port != port);
             if let Some(record) = disposed {
+                ppc_synchronize_process_native_allocator(
+                    process_memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    process_memory_manager,
+                    handles,
+                    handle_states,
+                );
                 quickdraw_fore_indices.remove(&port);
                 let allocation = toolbox_startup.gworld_allocations.remove(&port);
                 let saved_ctable = toolbox_startup
@@ -21064,6 +21082,14 @@ fn dispatch_supported_import(
                 } else {
                     live_ctable
                 };
+                let tracked_allocation_ptr = ptrs
+                    .iter()
+                    .find(|allocation| {
+                        ppc_allocation_size(allocation.size)
+                            .and_then(|size| allocation.ptr.checked_add(size))
+                            .is_some_and(|end| allocation.ptr <= port && port < end)
+                    })
+                    .map(|allocation| allocation.ptr);
                 let ctable_reclaim_base = allocation.and_then(|allocation| {
                     handles
                         .iter()
@@ -21082,8 +21108,14 @@ fn dispatch_supported_import(
                         .map(|handle| handle.handle)
                 });
                 if ctable_handle != 0 && ctable_handle != PPC_MAIN_CTABLE_HANDLE {
-                    ppc_recycle_handle(
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
                         memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        ptrs,
+                        free_ptr_blocks,
                         handles,
                         free_handle_blocks,
                         handle_states,
@@ -21103,23 +21135,33 @@ fn dispatch_supported_import(
                         .then_some(record.base_addr)
                     });
                 if let Some(reclaim_base) = reclaim_base {
-                    ptrs.retain(|record| record.ptr != reclaim_base);
-                    if ctable_reclaim_base.is_some() {
-                        if let Some(allocation) = allocation {
-                            ptrs.retain(|record| record.ptr != allocation.origin_base);
+                    let reclaimed_tracked_ptr =
+                        tracked_allocation_ptr.filter(|ptr| *ptr == reclaim_base);
+                    if !process_memory_manager.reclaim_native_heap_tail(
+                        reclaim_base,
+                        reclaimed_tracked_ptr.as_slice(),
+                        ctable_reclaim_base.map(|_| ctable_handle),
+                    ) {
+                        if let Some(ptr) = tracked_allocation_ptr {
+                            let _ = process_memory_manager.dispose_native_ptr(ptr);
                         }
-                        free_handle_blocks.retain(|record| record.handle != ctable_handle);
-                    }
-                    *heap_cursor = reclaim_base;
-                    ppc_update_zone_free_bytes(memory, reclaim_base, heap_limit);
-                } else if let Some(allocation) = allocation {
-                    if let Some(index) = ptrs
-                        .iter()
-                        .position(|record| record.ptr == allocation.origin_base)
+                    } else if let Some(ptr) =
+                        tracked_allocation_ptr.filter(|ptr| *ptr != reclaim_base)
                     {
-                        free_ptr_blocks.push(ptrs.remove(index));
+                        let _ = process_memory_manager.dispose_native_ptr(ptr);
                     }
+                } else if let Some(ptr) = tracked_allocation_ptr {
+                    let _ = process_memory_manager.dispose_native_ptr(ptr);
                 }
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
             }
             if *current_gworld == port {
                 *current_gworld = PPC_MAIN_GWORLD;
@@ -61682,20 +61724,6 @@ fn ppc_release_resource(
     } else {
         *last_resource_error = PPC_RES_NOT_FOUND_ERR;
     }
-}
-
-fn ppc_recycle_handle(
-    memory: &mut PpcSectionMem,
-    handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
-    handle: u32,
-) {
-    if let Some(index) = handles.iter().position(|record| record.handle == handle) {
-        free_handle_blocks.push(handles.remove(index));
-    }
-    ppc_forget_handle_state(handle, handle_states);
-    let _ = memory.write_u32_be(handle, 0);
 }
 
 fn ppc_detach_resource(

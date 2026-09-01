@@ -1403,6 +1403,55 @@ impl ProcessMemoryManager {
         disposed
     }
 
+    /// Reclaim a contiguous tail allocation from the native process heap.
+    ///
+    /// Composite Toolbox objects can own both fixed blocks and relocatable
+    /// blocks allocated immediately before them. Once their guest-visible
+    /// records are disposed, returning the whole contiguous tail prevents
+    /// adapter-local cursor and free-list surgery. `DisposeGWorld` uses this
+    /// for its pixel image, PixMap, port, and owned color table. Imaging With
+    /// QuickDraw (1994), p. 6-25.
+    pub(crate) fn reclaim_native_heap_tail(
+        &mut self,
+        reclaim_base: u32,
+        disposed_ptrs: &[u32],
+        disposed_handle: Option<u32>,
+    ) -> bool {
+        let Some(allocator) = self.native_allocator.as_ref() else {
+            return false;
+        };
+        if reclaim_base < allocator.heap.heap_base
+            || reclaim_base > allocator.heap.heap_cursor
+            || disposed_ptrs
+                .iter()
+                .any(|ptr| !allocator.ptrs.iter().any(|record| record.ptr == *ptr))
+            || disposed_handle.is_some_and(|handle| {
+                !allocator
+                    .free_handle_blocks
+                    .iter()
+                    .any(|record| record.handle == handle)
+            })
+        {
+            return false;
+        }
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator
+            .ptrs
+            .retain(|record| !disposed_ptrs.contains(&record.ptr));
+        if let Some(handle) = disposed_handle {
+            allocator
+                .free_handle_blocks
+                .retain(|record| record.handle != handle);
+        }
+        allocator.heap.heap_cursor = reclaim_base;
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        true
+    }
+
     pub(crate) fn native_ptr_size(&mut self, ptr: u32) -> u32 {
         let size = self
             .native_allocator
@@ -3194,6 +3243,66 @@ mod tests {
             .unwrap()
             .free_ptr_blocks
             .is_empty());
+    }
+
+    #[test]
+    fn process_heap_tail_reclamation_preserves_unrelated_and_detached_allocations() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let retained_ptr = ProcessPtrRecord {
+            ptr: HEAP_BASE + 0x20,
+            size: 16,
+        };
+        let reclaimed_handle = ProcessHandleRecord {
+            handle: HEAP_BASE + 0x60,
+            ptr: HEAP_BASE + 0x70,
+            size: 8,
+            capacity: 16,
+        };
+        let reclaimed_ptr = ProcessPtrRecord {
+            ptr: HEAP_BASE + 0x80,
+            size: 128,
+        };
+        let unrelated_free = ProcessPtrRecord {
+            ptr: HEAP_BASE + 0x10,
+            size: 8,
+        };
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE + 0x100,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: -108,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[retained_ptr, reclaimed_ptr],
+            &[unrelated_free],
+            &[reclaimed_handle],
+        );
+        let detached = manager.detached_clone();
+
+        assert!(manager.reclaim_native_heap_tail(
+            reclaimed_handle.handle,
+            &[reclaimed_ptr.ptr],
+            Some(reclaimed_handle.handle),
+        ));
+
+        let allocator = manager.native_allocator().unwrap();
+        assert_eq!(allocator.heap.heap_cursor, reclaimed_handle.handle);
+        assert_eq!(allocator.heap.last_mem_error, ProcessMemoryManager::NO_ERR);
+        assert_eq!(allocator.ptrs, vec![retained_ptr]);
+        assert_eq!(allocator.free_ptr_blocks, vec![unrelated_free]);
+        assert!(allocator.free_handle_blocks.is_empty());
+
+        let detached_allocator = detached.native_allocator().unwrap();
+        assert_eq!(detached_allocator.heap.heap_cursor, HEAP_BASE + 0x100);
+        assert_eq!(detached_allocator.ptrs, vec![retained_ptr, reclaimed_ptr]);
+        assert_eq!(detached_allocator.free_ptr_blocks, vec![unrelated_free]);
+        assert_eq!(
+            detached_allocator.free_handle_blocks,
+            vec![reclaimed_handle]
+        );
     }
 
     #[test]
