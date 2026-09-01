@@ -3353,6 +3353,7 @@ impl ProcessNativeMemoryManager {
         self.native_allocator_dirty = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn native_allocator_update(&self) -> Option<ProcessNativeAllocatorState> {
         self.native_allocator_dirty
             .then(|| self.native_allocator.clone())
@@ -3367,6 +3368,18 @@ impl ProcessNativeMemoryManager {
         self.native_allocator
             .as_ref()
             .map(|allocator| allocator.heap)
+    }
+
+    pub(crate) fn native_ptr_records(&self) -> &[ProcessPtrRecord] {
+        self.native_allocator
+            .as_ref()
+            .map_or(&[], |allocator| allocator.ptrs.as_slice())
+    }
+
+    pub(crate) fn native_free_ptr_blocks(&self) -> &[ProcessPtrRecord] {
+        self.native_allocator
+            .as_ref()
+            .map_or(&[], |allocator| allocator.free_ptr_blocks.as_slice())
     }
 
     #[cfg(test)]

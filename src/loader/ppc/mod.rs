@@ -7109,10 +7109,9 @@ impl PpcLoadedApp {
         let input = self.current_input_snapshot();
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
-        let native_allocator = process_memory_manager
-            .native_allocator_snapshot()
+        let native_heap = process_memory_manager
+            .native_heap_state()
             .expect("native allocator registered before execution");
-        let native_heap = native_allocator.heap;
         let mut heap_cursor = native_heap.heap_cursor;
         let mut heap_limit = native_heap.heap_limit;
         let mut last_mem_error = native_heap.last_mem_error;
@@ -7130,14 +7129,6 @@ impl PpcLoadedApp {
         let mut cfm_connections = std::mem::take(&mut self.cfm_connections);
         let mut cfm_library_fragments = std::mem::take(&mut self.cfm_library_fragments);
         let mut next_cfm_connection_id = self.next_cfm_connection_id;
-        let mut ptrs = native_allocator.ptrs;
-        let mut free_ptr_blocks = native_allocator.free_ptr_blocks;
-        let mut handles = process_memory_manager.native_handle_records().to_vec();
-        let mut free_handle_blocks = native_allocator.free_handle_blocks;
-        let mut handle_states: Vec<_> = handles
-            .iter()
-            .map(|record| process_memory_manager.native_handle_state(record.handle))
-            .collect();
         let mut controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
@@ -7245,6 +7236,8 @@ impl PpcLoadedApp {
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     if guest_calls.complete_powerpc(cpu) {
+                        let handles =
+                            &mut process_memory_manager.native_handle_records().to_vec();
                         ppc_complete_apple_event_dispatch(
                             &mut apple_events,
                             guest_calls.depth(),
@@ -7252,11 +7245,7 @@ impl PpcLoadedApp {
                             memory,
                             &mut heap_cursor,
                             &mut last_mem_error,
-                            &mut ptrs,
-                            &mut free_ptr_blocks,
-                            &mut handles,
-                            &mut free_handle_blocks,
-                            &mut handle_states,
+                            handles,
                         );
                         return PpcImportAction::Continue;
                     }
@@ -7652,11 +7641,6 @@ impl PpcLoadedApp {
                         &mut imports,
                         &mut import_count,
                         &mut import_binding_indices,
-                        &mut ptrs,
-                        &mut free_ptr_blocks,
-                        &mut handles,
-                        &mut free_handle_blocks,
-                        &mut handle_states,
                         &mut controls,
                         &mut aliases,
                         &mut gworlds,
@@ -12607,17 +12591,10 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         cpu.gpr[3] = PPC_MAIN_GDEVICE;
         cpu.gpr[4] = config.screen_depth;
         let mut last_mem_error = PPC_NO_ERR;
-        let mut free_ptr_blocks = Vec::new();
-        let mut free_handle_blocks = Vec::new();
-        let mut handle_states = Vec::new();
         let shared_memory_manager = process_memory_manager.0.clone();
         let mut memory_manager = shared_memory_manager.borrow_mut();
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: memory_manager.native_mut(),
-            ptrs: None,
-            free_ptr_blocks: &mut free_ptr_blocks,
-            free_handle_blocks: &mut free_handle_blocks,
-            handle_states: &mut handle_states,
         };
         let result = ppc_set_depth(
             &cpu,
@@ -14795,6 +14772,7 @@ fn dispatcher_target_for_import(
     }
 }
 
+#[cfg(test)]
 fn ppc_process_handle_state_bits(handle_states: &[PpcHandleStateRecord], handle: u32) -> u8 {
     let state = handle_states.iter().find(|state| state.handle == handle);
     let mut bits = 0u8;
@@ -14815,19 +14793,13 @@ fn ppc_apply_process_native_allocator(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) {
-    let Some(allocator) = memory_manager.native_allocator_update() else {
+    let Some(heap) = memory_manager.native_heap_state() else {
         return;
     };
-    *heap_cursor = allocator.heap.heap_cursor;
-    *last_mem_error = allocator.heap.last_mem_error;
-    *ptrs = allocator.ptrs;
-    *free_ptr_blocks = allocator.free_ptr_blocks;
-    *free_handle_blocks = allocator.free_handle_blocks;
-    ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
+    *heap_cursor = heap.heap_cursor;
+    *last_mem_error = heap.last_mem_error;
+    ppc_update_zone_free_bytes(memory, *heap_cursor, heap.heap_limit);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -14837,11 +14809,7 @@ fn ppc_dispose_process_native_handle(
     heap_cursor: &mut u32,
     _heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
 ) -> bool {
     let disposed = memory_manager
@@ -14852,13 +14820,9 @@ fn ppc_dispose_process_native_handle(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
     if disposed {
         handles.retain(|record| record.handle != handle);
-        ppc_forget_handle_state(handle, handle_states);
     }
     disposed
 }
@@ -14866,7 +14830,6 @@ fn ppc_dispose_process_native_handle(
 fn ppc_apply_process_native_handle(
     memory_manager: &ProcessNativeMemoryManager,
     handles: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
 ) {
     let Some(updated) = memory_manager.native_allocation(handle) else {
@@ -14877,31 +14840,6 @@ fn ppc_apply_process_native_handle(
     } else {
         handles.push(updated);
     }
-    let state = memory_manager.native_handle_state(handle);
-    if let Some(existing) = handle_states
-        .iter_mut()
-        .find(|existing| existing.handle == handle)
-    {
-        *existing = state;
-    } else {
-        handle_states.push(state);
-    }
-}
-
-fn ppc_apply_process_handle_state(
-    memory_manager: &ProcessNativeMemoryManager,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
-    handle: u32,
-) {
-    let state = memory_manager.native_handle_state(handle);
-    if let Some(existing) = handle_states
-        .iter_mut()
-        .find(|existing| existing.handle == handle)
-    {
-        *existing = state;
-    } else {
-        handle_states.push(state);
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -14910,20 +14848,15 @@ fn ppc_apply_process_native_resource_handle(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
 ) {
-    if let Some(allocator) = memory_manager.native_allocator_snapshot() {
-        *heap_cursor = allocator.heap.heap_cursor;
-        *last_mem_error = allocator.heap.last_mem_error;
-        *free_ptr_blocks = allocator.free_ptr_blocks;
-        *free_handle_blocks = allocator.free_handle_blocks;
-        ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
+    if let Some(heap) = memory_manager.native_heap_state() {
+        *heap_cursor = heap.heap_cursor;
+        *last_mem_error = heap.last_mem_error;
+        ppc_update_zone_free_bytes(memory, *heap_cursor, heap.heap_limit);
     }
-    ppc_apply_process_native_handle(memory_manager, handles, handle_states, handle);
+    ppc_apply_process_native_handle(memory_manager, handles, handle);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -14952,11 +14885,6 @@ fn dispatch_supported_import(
     imports: &mut Vec<PpcImportBinding>,
     import_count: &mut u32,
     import_binding_indices: &mut Vec<Option<usize>>,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
@@ -15033,6 +14961,10 @@ fn dispatch_supported_import(
     event_queue: &mut EventQueue,
     draw_sprocket: &mut PpcDrawSprocketState,
 ) -> Option<PpcImportAction> {
+    // Toolbox helpers use an import-scoped read view for guest ABI decoding.
+    // Allocation ownership remains in the process Memory Manager, and the
+    // next import observes its canonical records immediately.
+    let handles = &mut process_memory_manager.native_handle_records().to_vec();
     if is_quickdraw_3d_library(&binding.library_name)
         && binding.symbol_name != "Q3Error_Get"
         && q3_error_state.clear_on_next_q3_call
@@ -15060,9 +14992,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             if ppc_hle_trace_enabled() {
                 eprintln!(
@@ -15079,9 +15008,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15092,9 +15018,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::Return(size))
         }
@@ -15106,9 +15029,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15120,7 +15040,6 @@ fn dispatch_supported_import(
                 ppc_apply_process_native_handle(
                     process_memory_manager,
                     handles,
-                    handle_states,
                     handle,
                 );
             }
@@ -15154,14 +15073,10 @@ fn dispatch_supported_import(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                 );
                 ppc_apply_process_native_handle(
                     process_memory_manager,
                     handles,
-                    handle_states,
                     handle,
                 );
                 if handle == 0 {
@@ -15207,14 +15122,10 @@ fn dispatch_supported_import(
                                 memory,
                                 heap_cursor,
                                 last_mem_error,
-                                ptrs,
-                                free_ptr_blocks,
-                                free_handle_blocks,
                             );
                             ppc_apply_process_native_handle(
                                 process_memory_manager,
                                 handles,
-                                handle_states,
                                 copy,
                             );
                             if copy == 0 {
@@ -15261,14 +15172,10 @@ fn dispatch_supported_import(
                             memory,
                             heap_cursor,
                             last_mem_error,
-                            ptrs,
-                            free_ptr_blocks,
-                            free_handle_blocks,
                         );
                         ppc_apply_process_native_handle(
                             process_memory_manager,
                             handles,
-                            handle_states,
                             destination_handle,
                         );
                         result
@@ -15292,9 +15199,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             if let Some(record) = process_memory_manager.native_allocation(handle) {
                 handles.push(record);
@@ -15320,9 +15224,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             if let Some(record) = process_memory_manager.native_allocation(handle) {
                 handles.push(record);
@@ -15346,11 +15247,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 handle,
             );
             if disposed {
@@ -15378,18 +15275,14 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
-            ppc_apply_process_native_handle(process_memory_manager, handles, handle_states, handle);
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HLock => {
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {
                 process_memory_manager.lock_process_handle(handle, false);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15397,18 +15290,16 @@ fn dispatch_supported_import(
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {
                 process_memory_manager.lock_process_handle(handle, true);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HGetState => Some(PpcImportAction::Return({
             let handle = cpu.gpr[3];
-            let process_owned = process_memory_manager.state_for_handle(handle).is_some();
             let valid = ppc_is_valid_handle(memory, handles, handle);
             let value = if valid {
                 let mut value = process_memory_manager
                     .state_for_handle(handle)
-                    .unwrap_or_else(|| ppc_process_handle_state_bits(handle_states, handle));
+                    .unwrap_or(0x40);
                 if vfs_resources.iter().any(|record| record.handle == handle) {
                     value |= 0x20;
                 }
@@ -15416,9 +15307,6 @@ fn dispatch_supported_import(
             } else {
                 0
             };
-            if process_owned {
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
-            }
             if ppc_hle_trace_enabled() {
                 let ptr = memory.read_u32_be(handle).unwrap_or(0);
                 eprintln!(
@@ -15438,7 +15326,6 @@ fn dispatch_supported_import(
             let ok = ppc_is_valid_handle(memory, handles, handle);
             if ok {
                 process_memory_manager.restore_process_handle_state(handle, cpu.gpr[4] as u8);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             if ppc_hle_trace_enabled() {
                 let ptr = memory.read_u32_be(handle).unwrap_or(0);
@@ -15458,7 +15345,6 @@ fn dispatch_supported_import(
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {
                 process_memory_manager.unlock_process_handle(handle);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15467,7 +15353,6 @@ fn dispatch_supported_import(
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {
                 process_memory_manager.set_process_handle_purgeable(handle, false);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15475,7 +15360,6 @@ fn dispatch_supported_import(
             let handle = cpu.gpr[3];
             if ppc_is_valid_handle(memory, handles, handle) {
                 process_memory_manager.set_process_handle_purgeable(handle, true);
-                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -15521,15 +15405,11 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             if size.is_some() {
                 ppc_apply_process_native_handle(
                     process_memory_manager,
                     handles,
-                    handle_states,
                     handle,
                 );
             }
@@ -15552,9 +15432,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             if let Some(updated) = process_memory_manager.native_allocation(handle) {
                 if let Some(record) = handles.iter_mut().find(|record| record.handle == handle) {
@@ -15598,8 +15475,13 @@ fn dispatch_supported_import(
             ppc_heap_free_capacity(memory, *heap_cursor, heap_limit).0,
         )),
         PpcImportDispatcherTarget::MaxMem => {
-            let free =
-                ppc_largest_free_ptr_block(memory, *heap_cursor, heap_limit, free_ptr_blocks);
+            let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
+            let free = ppc_largest_free_ptr_block(
+                memory,
+                *heap_cursor,
+                heap_limit,
+                free_ptr_blocks,
+            );
             let grow_ptr = cpu.gpr[3];
             if grow_ptr != 0 {
                 let _ = memory.write_u32_be(grow_ptr, 0);
@@ -15607,8 +15489,13 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(free))
         }
         PpcImportDispatcherTarget::PurgeMem | PpcImportDispatcherTarget::PurgeMemSys => {
-            let free =
-                ppc_largest_free_ptr_block(memory, *heap_cursor, heap_limit, free_ptr_blocks);
+            let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
+            let free = ppc_largest_free_ptr_block(
+                memory,
+                *heap_cursor,
+                heap_limit,
+                free_ptr_blocks,
+            );
             *last_mem_error = if cpu.gpr[3] <= free {
                 PPC_NO_ERR
             } else {
@@ -15635,11 +15522,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 resource_files,
                 vfs_resource_files,
                 vfs_resources,
@@ -15700,9 +15583,6 @@ fn dispatch_supported_import(
                     heap_limit,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     vfs_resources,
                     index,
                     true,
@@ -15722,9 +15602,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
@@ -15747,9 +15624,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 false,
@@ -15774,9 +15648,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 false,
@@ -15801,9 +15672,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 true,
@@ -15825,9 +15693,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 current_only,
@@ -15844,9 +15709,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
@@ -15856,10 +15718,6 @@ fn dispatch_supported_import(
             } else {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: Some(ptrs),
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 ppc_alloc_new_menu(
                     Some(&mut allocator),
@@ -15890,10 +15748,6 @@ fn dispatch_supported_import(
             }
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let _ = allocator.dispose_handle(
                 memory,
@@ -15914,9 +15768,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
@@ -15976,10 +15827,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetMenuItemText => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_set_menu_item_text_with_allocator(
                 cpu,
@@ -15996,10 +15843,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DeleteMenuItem => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_delete_menu_item_with_allocator(
                 Some(&mut allocator),
@@ -16099,10 +15942,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::InsertMenu => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_insert_menu_with_allocator(
                 Some(&mut allocator),
@@ -16121,10 +15960,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DeleteMenu => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_delete_menu_with_allocator(
                 Some(&mut allocator),
@@ -16142,10 +15977,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::AppendMenu => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_insert_menu_items_with_allocator(
                 Some(&mut allocator),
@@ -16164,10 +15995,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::InsertMenuItem => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_insert_menu_items_with_allocator(
                 Some(&mut allocator),
@@ -16195,9 +16022,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 resource_load_enabled,
@@ -16222,9 +16046,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 resource_load_enabled,
@@ -16255,10 +16076,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetMenuBar => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             Some(PpcImportAction::Return(ppc_get_menu_bar_with_allocator(
                 current_menu_list,
@@ -16292,9 +16109,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
@@ -16371,10 +16185,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ClearMenuBar => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             // Macintosh Toolbox Essentials (1992), p. 3-110: ClearMenuBar
             // removes every menu from the current list without disposing the
@@ -16420,10 +16230,6 @@ fn dispatch_supported_import(
             };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let installation =
                 install_menu_list_copy(current_menu_list, &menu_list, |request| match request {
@@ -16879,9 +16685,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 current_only,
@@ -17022,11 +16825,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 last_resource_error,
             );
@@ -17050,9 +16849,6 @@ fn dispatch_supported_import(
                 last_mem_error,
                 last_resource_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
             );
@@ -17067,9 +16863,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 *resource_load_enabled,
@@ -17096,9 +16889,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 false,
@@ -17123,9 +16913,6 @@ fn dispatch_supported_import(
             heap_cursor,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -17149,10 +16936,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::KillPicture => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_kill_picture(
                 cpu,
@@ -17204,9 +16987,6 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -17223,9 +17003,6 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -17238,9 +17015,6 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             *current_resource_refnum,
             last_resource_error,
@@ -17257,11 +17031,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -17603,9 +17373,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     *quickdraw_pen_h,
                     *quickdraw_pen_v,
@@ -17624,9 +17391,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     *quickdraw_pen_h,
                     *quickdraw_pen_v,
@@ -17648,9 +17412,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     *quickdraw_pen_h,
                     *quickdraw_pen_v,
@@ -17661,9 +17422,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     new_h,
                     new_v,
@@ -17697,9 +17455,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     *quickdraw_pen_h,
                     *quickdraw_pen_v,
@@ -17710,9 +17465,6 @@ fn dispatch_supported_import(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     polygon,
                     new_h,
                     new_v,
@@ -18168,10 +17920,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ClipRect => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_clip_rect(
                 cpu,
@@ -18199,10 +17947,6 @@ fn dispatch_supported_import(
             };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_copy_rgn(
                 Some(&mut allocator),
@@ -18304,10 +18048,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::BitMapToRegion => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             Some(PpcImportAction::Return(ppc_i16_result(
                 ppc_bitmap_to_region(
@@ -18327,9 +18067,6 @@ fn dispatch_supported_import(
             heap_cursor,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
         ))),
         PpcImportDispatcherTarget::DisposeRgn => {
             let _ = ppc_dispose_process_native_handle(
@@ -18338,11 +18075,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 cpu.gpr[3],
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -18350,10 +18083,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CopyRgn => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             *last_mem_error = ppc_copy_rgn(
                 Some(&mut allocator),
@@ -18370,10 +18099,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::OpenRgn => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_open_rgn(
                 Some(&mut allocator),
@@ -18391,10 +18116,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CloseRgn => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_close_rgn(
                 Some(&mut allocator),
@@ -18422,10 +18143,6 @@ fn dispatch_supported_import(
             };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             *last_mem_error = ppc_region_boolean_op(
                 Some(&mut allocator),
@@ -18492,9 +18209,6 @@ fn dispatch_supported_import(
             heap_cursor,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             *current_gworld,
         ))),
         PpcImportDispatcherTarget::ClosePoly => {
@@ -18510,10 +18224,6 @@ fn dispatch_supported_import(
             }
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let _ = allocator.dispose_handle(
                 memory,
@@ -18559,10 +18269,6 @@ fn dispatch_supported_import(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let window = ppc_new_window_from_cpu(
                 cpu,
@@ -18584,11 +18290,7 @@ fn dispatch_supported_import(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 quickdraw_fore_indices.remove(&window);
                 *current_gworld = window;
@@ -18624,11 +18326,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 gworlds,
                 *current_gdevice,
                 vfs_resources,
@@ -18644,11 +18342,7 @@ fn dispatch_supported_import(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 quickdraw_fore_indices.remove(&window);
                 *current_gworld = window;
@@ -18704,11 +18398,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -18721,11 +18411,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -18741,11 +18427,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             ppc_transition_front_window_chrome(
                 memory,
@@ -18796,11 +18478,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             let next_front = ppc_front_visible_window(memory, gworlds);
             ppc_transition_front_window_chrome(
@@ -18842,11 +18520,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             ppc_transition_front_window_chrome(
                 memory,
@@ -18919,11 +18593,7 @@ fn dispatch_supported_import(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 ppc_transition_front_window_chrome(
                     memory,
@@ -19053,10 +18723,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::PaintOne => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_paint_one(
                 Some(&mut allocator),
@@ -19074,10 +18740,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::PaintBehind => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_paint_behind(
                 Some(&mut allocator),
@@ -19095,10 +18757,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CalcVisBehind => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_calc_vis_behind(
                 Some(&mut allocator),
@@ -19148,11 +18806,7 @@ fn dispatch_supported_import(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 if previous_front == Some(cpu.gpr[3]) {
                     let _ = ppc_set_window_hilited(memory, cpu.gpr[3], true);
@@ -19454,10 +19108,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetDepth => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             Some(PpcImportAction::Return(ppc_i16_result(ppc_set_depth(
                 cpu,
@@ -19513,10 +19163,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_handle_blocks,
-                handle_states,
-                ptrs,
-                free_ptr_blocks,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 *current_gdevice,
@@ -19535,11 +19181,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 current_gworld,
@@ -19585,7 +19227,8 @@ fn dispatch_supported_import(
                 } else {
                     live_ctable
                 };
-                let fallback_storage_ptr = ptrs
+                let fallback_storage_ptr = process_memory_manager
+                    .native_ptr_records()
                     .iter()
                     .find(|allocation| {
                         ppc_allocation_size(allocation.size)
@@ -19631,11 +19274,7 @@ fn dispatch_supported_import(
                         heap_cursor,
                         heap_limit,
                         last_mem_error,
-                        ptrs,
-                        free_ptr_blocks,
                         handles,
-                        free_handle_blocks,
-                        handle_states,
                         ctable_handle,
                     );
                     toolbox_startup
@@ -19684,9 +19323,6 @@ fn dispatch_supported_import(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                 );
             }
             if *current_gworld == port {
@@ -19717,9 +19353,6 @@ fn dispatch_supported_import(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
             );
@@ -19739,10 +19372,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::MakeITable => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_make_itable(
                 cpu,
@@ -19858,11 +19487,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 ctable_handle,
             );
             toolbox_startup
@@ -19877,9 +19502,6 @@ fn dispatch_supported_import(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             *current_gdevice,
         ))),
         PpcImportDispatcherTarget::DisposePixMap => {
@@ -19890,11 +19512,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 &mut toolbox_startup.indexed_screen_ctables,
             );
             Some(PpcImportAction::ReturnPreserve)
@@ -19951,10 +19569,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::OpenPort => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             if ppc_open_port(
                 cpu,
@@ -19981,10 +19595,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::OpenCPort => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             if ppc_open_cport(
                 cpu,
@@ -20465,9 +20075,6 @@ fn dispatch_supported_import(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 aliases,
             ))))
         }
@@ -20629,10 +20236,6 @@ fn dispatch_supported_import(
             // and report its offset in the ordered desktop scrap.
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             Some(PpcImportAction::Return(ppc_get_scrap(
                 cpu,
@@ -20766,9 +20369,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -20786,9 +20386,6 @@ fn dispatch_supported_import(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                 );
                 PPC_NO_ERR
             } else {
@@ -20970,9 +20567,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 controls,
                 gworlds,
                 *current_gdevice,
@@ -20998,9 +20592,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 gworlds,
                 *current_gdevice,
             );
@@ -21012,9 +20603,6 @@ fn dispatch_supported_import(
                     heap_limit,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     controls,
                     dialog,
                     vfs_resources,
@@ -21048,9 +20636,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 gworlds,
                 *current_gdevice,
             );
@@ -21062,9 +20647,6 @@ fn dispatch_supported_import(
                     heap_limit,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     controls,
                     dialog,
                     vfs_resources,
@@ -21136,10 +20718,6 @@ fn dispatch_supported_import(
             }
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = allocator.resize_handle(
                 memory,
@@ -21259,11 +20837,7 @@ fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             controls,
             gworlds,
             current_gworld,
@@ -21280,10 +20854,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetControlTitle => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_set_control_title(
                 cpu,
@@ -21372,10 +20942,6 @@ fn dispatch_supported_import(
             let _ = memory.write_u16_be(PPC_THE_MENU_ADDR, 0);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             // Inside Macintosh Volume V (1986), pp. V-228--V-230: the first
             // InitMenus call allocates the stable DynamicMenuList whose handle
@@ -21467,10 +21033,6 @@ fn dispatch_supported_import(
             );
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let te_handle = ppc_te_initialize_record(
                 Some(&mut allocator),
@@ -21510,10 +21072,6 @@ fn dispatch_supported_import(
             // text handle, and every auxiliary handle owned by a styled TERec.
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_te_dispose(
                 Some(&mut allocator),
@@ -21562,10 +21120,6 @@ fn dispatch_supported_import(
             let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default();
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_set_text(
                 Some(&mut allocator),
@@ -21583,10 +21137,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::TECalText => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_recalculate_layout(
                 Some(&mut allocator),
@@ -21608,10 +21158,6 @@ fn dispatch_supported_import(
             let bytes = ppc_memory_read_bytes(memory, cpu.gpr[3], cpu.gpr[4]).unwrap_or_default();
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_replace_selection(
                 Some(&mut allocator),
@@ -21640,10 +21186,6 @@ fn dispatch_supported_import(
             // empty byte sequence and does not alter either scrap.
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_replace_selection(
                 Some(&mut allocator),
@@ -21673,10 +21215,6 @@ fn dispatch_supported_import(
             // the preceding character, and moves the insertion point.
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_key(
                 Some(&mut allocator),
@@ -21847,10 +21385,6 @@ fn dispatch_supported_import(
             };
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_copy_or_cut(
                 Some(&mut allocator),
@@ -21886,10 +21420,6 @@ fn dispatch_supported_import(
             let bytes = ppc_te_scrap_bytes(memory, handles, scrap);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = ppc_te_replace_selection(
                 Some(&mut allocator),
@@ -21926,10 +21456,6 @@ fn dispatch_supported_import(
                 if let Some(bytes) = bytes {
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     ppc_te_set_scrap_bytes(
                         Some(&mut allocator),
@@ -21957,10 +21483,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::TEScrapHandle => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let handle = ppc_te_scrap_handle(
                 Some(&mut allocator),
@@ -21989,10 +21511,6 @@ fn dispatch_supported_import(
                     resized.resize((requested as usize).min(i16::MAX as usize), 0);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     ppc_te_set_scrap_bytes(
                         Some(&mut allocator),
@@ -22018,10 +21536,6 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SelectDialogItemText => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_select_dialog_item_text(
                 Some(&mut allocator),
@@ -22072,11 +21586,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 apple_events,
                 toolbox_startup,
                 guest_call_depth,
@@ -22088,10 +21598,6 @@ fn dispatch_supported_import(
             // cell dimensions, and variable cell-offset array.
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let list = ppc_list_new(
                 cpu,
@@ -22128,10 +21634,6 @@ fn dispatch_supported_import(
                 let record = list_manager.lists.remove(index);
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: Some(ptrs),
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 let _ = allocator.dispose_handle(
                     memory,
@@ -22181,10 +21683,6 @@ fn dispatch_supported_import(
                     record.data_bounds.2 = record.data_bounds.2.saturating_add(count);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     let result = ppc_list_sync_guest_storage(
                         Some(&mut allocator),
@@ -22236,10 +21734,6 @@ fn dispatch_supported_import(
                         .saturating_sub(delete_rows.min(i16::MAX as usize) as i16);
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     let result = ppc_list_sync_guest_storage(
                         Some(&mut allocator),
@@ -22304,10 +21798,6 @@ fn dispatch_supported_import(
                     record.selected[index] = cpu.gpr[3] != 0;
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     let result = ppc_list_sync_guest_storage(
                         Some(&mut allocator),
@@ -22342,10 +21832,6 @@ fn dispatch_supported_import(
                     record.cells[index] = bytes;
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     let result = ppc_list_sync_guest_storage(
                         Some(&mut allocator),
@@ -22450,10 +21936,6 @@ fn dispatch_supported_import(
                             memory.write_u32_be(list_ptr + PPC_LIST_CLICK_TIME_OFFSET, *tick_count);
                         let mut allocator = PpcProcessAllocatorView {
                             memory_manager: process_memory_manager,
-                            ptrs: Some(ptrs),
-                            free_ptr_blocks,
-                            free_handle_blocks,
-                            handle_states,
                         };
                         let result = ppc_list_sync_guest_storage(
                             Some(&mut allocator),
@@ -22885,9 +22367,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 false,
@@ -23009,9 +22488,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::Return(ptr))
         }
@@ -23024,9 +22500,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -23041,9 +22514,6 @@ fn dispatch_supported_import(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                 );
                 ptr
             } else {
@@ -23060,9 +22530,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             Some(PpcImportAction::Return(ptr))
         }
@@ -23353,10 +22820,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_handle_blocks,
-                handle_states,
-                ptrs,
-                free_ptr_blocks,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 *current_gdevice,
@@ -23634,9 +23097,6 @@ fn dispatch_supported_import(
                     heap_limit,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     controls,
                     gworlds,
                     *current_gdevice,
@@ -23674,11 +23134,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
                 controls,
                 gworlds,
                 current_gworld,
@@ -23698,10 +23154,6 @@ fn dispatch_supported_import(
                     .unwrap_or(1);
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: Some(ptrs),
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 ppc_dispose_window(
                     &mut allocator,
@@ -26005,9 +25457,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             )))
         }
         PpcImportDispatcherTarget::NewFatRoutineDescriptor => {
@@ -26017,9 +25466,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             )))
         }
         PpcImportDispatcherTarget::DisposeRoutineDescriptor => {
@@ -26033,9 +25479,6 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
             );
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
@@ -26158,12 +25601,12 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::LegacyMemoryUtility => ppc_dispatch_legacy_memory_utility(
             binding,
             cpu,
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
             *application_heap_limit,
             last_mem_error,
-            free_ptr_blocks,
             handles,
         ),
         PpcImportDispatcherTarget::LegacyControl => ppc_dispatch_legacy_control(
@@ -26174,11 +25617,7 @@ fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             controls,
             gworlds,
             screen_clut,
@@ -26194,11 +25633,7 @@ fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             controls,
             gworlds,
             current_gworld,
@@ -26226,11 +25661,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             ))
         }
         PpcImportDispatcherTarget::DialogCompatibility => Some(ppc_dispatch_dialog_compatibility(
@@ -26241,11 +25672,7 @@ fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             controls,
             gworlds,
             screen_clut,
@@ -26265,9 +25692,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
                 gworlds,
@@ -26289,11 +25713,7 @@ fn dispatch_supported_import(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             launched_app_path,
         )),
         PpcImportDispatcherTarget::FileCompatibility => Some(ppc_dispatch_file_compatibility(
@@ -26352,11 +25772,7 @@ fn dispatch_supported_import(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             ))
         }
         PpcImportDispatcherTarget::GlideSstQueryBoards => {
@@ -26408,11 +25824,7 @@ fn ppc_create_process_owned_ae_desc(
     heap_cursor: &mut u32,
     _heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     result: u32,
     descriptor_type: u32,
     bytes: &[u8],
@@ -26436,9 +25848,6 @@ fn ppc_create_process_owned_ae_desc(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         return *last_mem_error;
     }
@@ -26451,9 +25860,6 @@ fn ppc_create_process_owned_ae_desc(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         return PPC_PARAM_ERR;
     }
@@ -26462,11 +25868,8 @@ fn ppc_create_process_owned_ae_desc(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
-    ppc_apply_process_native_handle(process_memory_manager, handles, handle_states, handle);
+    ppc_apply_process_native_handle(process_memory_manager, handles, handle);
     PPC_NO_ERR
 }
 
@@ -26479,11 +25882,7 @@ fn ppc_dispatch_apple_event_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) -> PpcImportAction {
     let result = match binding.symbol_name.as_str() {
         "AECreateDesc" => {
@@ -26502,11 +25901,7 @@ fn ppc_dispatch_apple_event_compatibility(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                     cpu.gpr[6],
                     cpu.gpr[3],
                     &bytes,
@@ -26524,11 +25919,7 @@ fn ppc_dispatch_apple_event_compatibility(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                     result_ptr,
                     u32::from_be_bytes(*b"aevt"),
                     &[],
@@ -26548,11 +25939,7 @@ fn ppc_dispatch_apple_event_compatibility(
                         heap_cursor,
                         heap_limit,
                         last_mem_error,
-                        ptrs,
-                        free_ptr_blocks,
                         handles,
-                        free_handle_blocks,
-                        handle_states,
                         handle,
                     );
                 }
@@ -26651,11 +26038,7 @@ fn ppc_dispatch_dialog_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &[PpcControlRecord],
     gworlds: &mut Vec<PpcGWorldRecord>,
     screen_clut: &[[u16; 3]; 256],
@@ -26796,10 +26179,6 @@ fn ppc_dispatch_dialog_compatibility(
                     }
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: Some(ptrs),
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     let result = ppc_te_key(
                         Some(&mut allocator),
@@ -26919,10 +26298,6 @@ fn ppc_dispatch_dialog_compatibility(
             let size = u32::try_from(combined.len()).unwrap_or(u32::MAX);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result =
                 allocator.resize_handle(memory, heap_cursor, last_mem_error, handles, handle, size);
@@ -26956,10 +26331,6 @@ fn ppc_dispatch_dialog_compatibility(
             bytes[0..2].copy_from_slice(&count_minus_one.to_be_bytes());
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = allocator.resize_handle(
                 memory,
@@ -27022,9 +26393,6 @@ fn ppc_dispatch_quickdraw_compatibility(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     gworlds: &[PpcGWorldRecord],
@@ -27125,9 +26493,6 @@ fn ppc_dispatch_quickdraw_compatibility(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 &bytes,
             );
             *last_mem_error = if handle == 0 {
@@ -27148,10 +26513,7 @@ fn ppc_dispatch_quickdraw_compatibility(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                     handles,
-                    handle_states,
                     handle,
                 );
                 if result == PPC_NO_ERR {
@@ -27246,10 +26608,6 @@ fn ppc_dispatch_quickdraw_compatibility(
                 let size = 16u32.saturating_add(required_entries.saturating_mul(16));
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: None,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 let result = allocator.resize_handle(
                     memory,
@@ -27290,9 +26648,6 @@ fn ppc_dispatch_quickdraw_compatibility(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 byte_count,
                 true,
             );
@@ -27334,9 +26689,6 @@ fn ppc_dispatch_quickdraw_compatibility(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 62,
                 true,
             );
@@ -27360,10 +26712,6 @@ fn ppc_dispatch_quickdraw_compatibility(
                 .retain(|allocation| allocation.gdevice != cpu.gpr[3]);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: None,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let _ = allocator.dispose_handle(
                 memory,
@@ -27392,10 +26740,6 @@ fn ppc_dispatch_quickdraw_compatibility(
             }
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: None,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let _ = allocator.dispose_handle(
                 memory,
@@ -27410,10 +26754,6 @@ fn ppc_dispatch_quickdraw_compatibility(
         "Palette2CTab" => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: None,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_palette_to_ctab(
                 Some(&mut allocator),
@@ -27457,10 +26797,6 @@ fn ppc_dispatch_quickdraw_compatibility(
             let size = 16u32.saturating_add(entry_count.saturating_mul(16));
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: None,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let result = allocator.resize_handle(
                 memory,
@@ -27495,10 +26831,6 @@ fn ppc_dispatch_quickdraw_compatibility(
         "GetNewPalette" => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: None,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let palette = ppc_copy_palette_resource(
                 Some(&mut allocator),
@@ -27917,21 +27249,13 @@ fn ppc_dispatch_system_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     launched_app_path: Option<&str>,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
         "Munger" => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             PpcImportAction::Return(ppc_munger_compatibility(
                 cpu,
@@ -30041,11 +29365,7 @@ fn ppc_dispatch_object_support_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) -> PpcImportAction {
     let result_ptr = cpu.gpr[8];
     if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
@@ -30061,11 +29381,7 @@ fn ppc_dispatch_object_support_compatibility(
         heap_cursor,
         heap_limit,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
         handles,
-        free_handle_blocks,
-        handle_states,
         result_ptr,
         u32::from_be_bytes(*b"obj "),
         &data,
@@ -42519,9 +41835,6 @@ fn ppc_new_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
     let proc_ptr = cpu.gpr[3];
     if ppc_hle_trace_enabled() {
@@ -42544,9 +41857,6 @@ fn ppc_new_routine_descriptor(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
         descriptor_size,
         0,
     );
@@ -42569,9 +41879,6 @@ fn ppc_new_routine_descriptor(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
@@ -42587,9 +41894,6 @@ fn ppc_new_fat_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> u32 {
     let m68k_proc = cpu.gpr[3];
     let powerpc_proc = cpu.gpr[4];
@@ -42603,9 +41907,6 @@ fn ppc_new_fat_routine_descriptor(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
         descriptor_size,
         1,
     );
@@ -42638,9 +41939,6 @@ fn ppc_new_fat_routine_descriptor(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
@@ -42655,9 +41953,6 @@ fn ppc_alloc_routine_descriptor(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
     descriptor_size: u32,
     routine_count: u16,
 ) -> u32 {
@@ -42667,9 +41962,6 @@ fn ppc_alloc_routine_descriptor(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
     if descriptor == 0 {
         return 0;
@@ -42696,9 +41988,6 @@ fn ppc_alloc_routine_descriptor(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         0
     }
@@ -50834,18 +50123,10 @@ fn ppc_recalculate_window_vis_regions(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) {
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
-        ptrs: Some(ptrs),
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
     };
     let front_to_back: Vec<u32> = gworlds
         .iter()
@@ -50965,11 +50246,7 @@ fn ppc_get_new_cwindow(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
     vfs_resources: &[PpcVfsResourceRecord],
@@ -50994,10 +50271,6 @@ fn ppc_get_new_cwindow(
     let bytes = resource.data.clone();
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
-        ptrs: Some(ptrs),
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
     };
     let Some((bounds_ptr, title_ptr)) = ppc_materialize_window_resource_parameters(
         Some(&mut allocator),
@@ -51635,10 +50908,6 @@ fn ppc_new_gworld(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gdevice: u32,
@@ -51842,15 +51111,11 @@ fn ppc_new_gworld(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
     if ctable_handle != 0 {
         ppc_apply_process_native_handle(
             process_memory_manager,
             handles,
-            handle_states,
             ctable_handle,
         );
     }
@@ -51931,11 +51196,7 @@ fn ppc_update_gworld(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     gworlds: &mut [PpcGWorldRecord],
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gworld: &mut u32,
@@ -52539,15 +51800,11 @@ fn ppc_update_gworld(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
     if owned_ctable_handle != 0 {
         ppc_apply_process_native_handle(
             process_memory_manager,
             handles,
-            handle_states,
             owned_ctable_handle,
         );
     }
@@ -57427,10 +56684,6 @@ fn ppc_dsp_alt_buffer_new(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gdevice: u32,
@@ -57486,10 +56739,6 @@ fn ppc_dsp_alt_buffer_new(
         heap_limit,
         last_mem_error,
         handles,
-        free_handle_blocks,
-        handle_states,
-        ptrs,
-        free_ptr_blocks,
         gworlds,
         gworld_allocations,
         current_gdevice,
@@ -59160,9 +58409,6 @@ fn ppc_get_picture(
     last_mem_error: &mut i16,
     last_resource_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> u32 {
@@ -59183,9 +58429,6 @@ fn ppc_get_picture(
                 heap_cursor,
                 last_mem_error,
                 handles,
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
                 &data,
             );
             if handle == 0 {
@@ -59217,9 +58460,6 @@ fn ppc_get_picture(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &minimal_pict_bytes(),
     );
     if handle == 0 {
@@ -59297,9 +58537,6 @@ fn ppc_get_pix_pat(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -59335,9 +58572,6 @@ fn ppc_get_pix_pat(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         data,
     );
     if handle == 0 {
@@ -59846,9 +59080,6 @@ fn ppc_get_resource(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     current_only: bool,
@@ -59887,9 +59118,6 @@ fn ppc_get_resource(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         load_data,
@@ -59923,9 +59151,6 @@ fn ppc_get_icon_suite(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     resource_load_enabled: bool,
@@ -59965,9 +59190,6 @@ fn ppc_get_icon_suite(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             current_resource_refnum,
             false,
@@ -59997,9 +59219,6 @@ fn ppc_get_icon_suite(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &bytes,
     );
     if suite == 0 {
@@ -60048,9 +59267,6 @@ fn ppc_get_named_resource(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     current_only: bool,
@@ -60102,9 +59318,6 @@ fn ppc_get_named_resource(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         load_data,
@@ -60121,9 +59334,6 @@ fn ppc_get_ind_resource(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     current_only: bool,
@@ -60166,9 +59376,6 @@ fn ppc_get_ind_resource(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         load_data,
@@ -60200,9 +59407,6 @@ fn ppc_get_ind_string(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -60228,9 +59432,6 @@ fn ppc_get_ind_string(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         resource_index,
         true,
@@ -60256,9 +59457,6 @@ fn ppc_get_ccursor(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -60282,9 +59480,6 @@ fn ppc_get_ccursor(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         true,
@@ -60300,9 +59495,6 @@ fn ppc_get_cicon(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -60396,9 +59588,6 @@ fn ppc_get_cicon(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         data,
     );
     let color_table_handle = ppc_process_alloc_handle_with_bytes(
@@ -60407,9 +59596,6 @@ fn ppc_get_cicon(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         color_table,
     );
     let pixel_data_handle = ppc_process_alloc_handle_with_bytes(
@@ -60418,18 +59604,11 @@ fn ppc_get_cicon(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         pixel_data,
     );
     if icon_handle == 0 || color_table_handle == 0 || pixel_data_handle == 0 {
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: process_memory_manager,
-            ptrs: None,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
         };
         for handle in [icon_handle, color_table_handle, pixel_data_handle] {
             let _ = allocator.dispose_handle(
@@ -60742,11 +59921,7 @@ fn ppc_dispose_cicon(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) {
     let icon_handle = cpu.gpr[3];
     let icon_ptr = memory.read_u32_be(icon_handle).unwrap_or(0);
@@ -60765,11 +59940,7 @@ fn ppc_dispose_cicon(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             handle,
         );
     }
@@ -60804,9 +59975,6 @@ fn ppc_get_cursor(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -60855,9 +60023,6 @@ fn ppc_get_cursor(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         true,
@@ -60872,9 +60037,6 @@ fn ppc_materialize_vfs_resource_handle(
     _heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     index: usize,
     load_data: bool,
@@ -60891,10 +60053,7 @@ fn ppc_materialize_vfs_resource_handle(
             memory,
             heap_cursor,
             last_mem_error,
-            free_ptr_blocks,
-            free_handle_blocks,
             handles,
-            handle_states,
             handle,
         );
         if handle == 0 {
@@ -60913,10 +60072,7 @@ fn ppc_materialize_vfs_resource_handle(
                 memory,
                 heap_cursor,
                 last_mem_error,
-                free_ptr_blocks,
-                free_handle_blocks,
                 handles,
-                handle_states,
                 handle,
             );
             if result != PPC_NO_ERR {
@@ -60952,7 +60108,6 @@ fn ppc_materialize_vfs_resource_handle(
     let handle = vfs_resources[index].handle;
     process_memory_manager.set_process_handle_purgeable(handle, true);
     process_memory_manager.set_process_handle_resource(handle, true);
-    ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
     *last_mem_error = PPC_NO_ERR;
     *last_resource_error = PPC_NO_ERR;
     handle
@@ -61443,11 +60598,7 @@ fn ppc_process_apple_event(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     apple_events: &mut PpcAppleEventState,
     toolbox_startup: &mut PpcToolboxStartupState,
     resume_guest_call_depth: usize,
@@ -61513,9 +60664,6 @@ fn ppc_process_apple_event(
             memory,
             heap_cursor,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
         );
         return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
     }
@@ -61524,12 +60672,9 @@ fn ppc_process_apple_event(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
-    ppc_apply_process_native_handle(process_memory_manager, handles, handle_states, event_handle);
-    ppc_apply_process_native_handle(process_memory_manager, handles, handle_states, reply_handle);
+    ppc_apply_process_native_handle(process_memory_manager, handles, event_handle);
+    ppc_apply_process_native_handle(process_memory_manager, handles, reply_handle);
     apple_events
         .pending_dispatches
         .push(PpcAppleEventDispatchAllocation {
@@ -61589,15 +60734,10 @@ fn ppc_process_apple_event(
                     memory,
                     heap_cursor,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
-                    free_handle_blocks,
                 );
                 handles.retain(|record| {
                     record.handle != event_handle && record.handle != reply_handle
                 });
-                ppc_forget_handle_state(event_handle, handle_states);
-                ppc_forget_handle_state(reply_handle, handle_states);
                 PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR))
             }
         }
@@ -61612,11 +60752,7 @@ fn ppc_complete_apple_event_dispatch(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) {
     let Some(dispatch) = apple_events
         .pending_dispatches
@@ -61630,7 +60766,6 @@ fn ppc_complete_apple_event_dispatch(
     for handle in [dispatch.event_handle, dispatch.reply_handle] {
         let _ = process_memory_manager.dispose_native_handle(memory, handle);
         handles.retain(|record| record.handle != handle);
-        ppc_forget_handle_state(handle, handle_states);
     }
     let _ = process_memory_manager.dispose_native_ptr(dispatch.descriptors);
     ppc_apply_process_native_allocator(
@@ -61638,9 +60773,6 @@ fn ppc_complete_apple_event_dispatch(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
 }
 
@@ -61785,11 +60917,7 @@ fn ppc_release_resource(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut [PpcVfsResourceRecord],
     last_resource_error: &mut i16,
 ) {
@@ -61814,11 +60942,7 @@ fn ppc_release_resource(
         heap_cursor,
         heap_limit,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
         handles,
-        free_handle_blocks,
-        handle_states,
         handle,
     ) {
         record.handle = 0;
@@ -62088,9 +61212,6 @@ fn ppc_new_alert_dialog(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
@@ -62147,9 +61268,6 @@ fn ppc_new_alert_dialog(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &ditl_bytes,
     );
     if items_handle == 0 {
@@ -62192,9 +61310,6 @@ fn ppc_new_alert_dialog(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         gworlds,
         current_gdevice,
     );
@@ -62207,9 +61322,6 @@ fn ppc_new_alert_dialog(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             controls,
             dialog,
             vfs_resources,
@@ -62240,9 +61352,6 @@ fn ppc_get_new_dialog(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
@@ -62289,9 +61398,6 @@ fn ppc_get_new_dialog(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &ditl_bytes,
     );
     if items_handle == 0 {
@@ -62341,9 +61447,6 @@ fn ppc_get_new_dialog(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         gworlds,
         current_gdevice,
     );
@@ -62356,9 +61459,6 @@ fn ppc_get_new_dialog(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             controls,
             dialog,
             vfs_resources,
@@ -62385,9 +61485,6 @@ fn ppc_new_dialog(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gdevice: u32,
 ) -> u32 {
@@ -62441,10 +61538,6 @@ fn ppc_new_dialog(
     window_cpu.gpr[10] = ref_con;
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
-        ptrs: None,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
     };
     let dialog = ppc_new_cwindow(
         &window_cpu,
@@ -62517,9 +61610,6 @@ fn ppc_initialize_dialog_items(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     dialog: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -62562,10 +61652,6 @@ fn ppc_initialize_dialog_items(
                 };
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: None,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 ppc_new_control_record_values(
                     Some(&mut allocator),
@@ -62608,10 +61694,6 @@ fn ppc_initialize_dialog_items(
                     let title_len = usize::from(bytes[22]).min(bytes.len().saturating_sub(23));
                     let mut allocator = PpcProcessAllocatorView {
                         memory_manager: process_memory_manager,
-                        ptrs: None,
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                     };
                     ppc_new_control_record_values(
                         Some(&mut allocator),
@@ -62644,9 +61726,6 @@ fn ppc_initialize_dialog_items(
                     heap_cursor,
                     last_mem_error,
                     handles,
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                     &item.payload,
                 )
             }
@@ -62676,9 +61755,6 @@ fn ppc_initialize_dialog_items(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        free_ptr_blocks,
-                        free_handle_blocks,
-                        handle_states,
                         vfs_resources,
                         index,
                         true,
@@ -62725,10 +61801,6 @@ fn ppc_initialize_dialog_items(
     if let Some((item_index, item_handle, rect)) = first_edit {
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: process_memory_manager,
-            ptrs: None,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
         };
         let te_handle = ppc_te_create_for_dialog_item(
             Some(&mut allocator),
@@ -64782,9 +63854,6 @@ fn ppc_get_ctable(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> u32 {
@@ -64829,9 +63898,6 @@ fn ppc_get_ctable(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &data,
     );
     *last_mem_error = if handle == 0 {
@@ -64877,9 +63943,6 @@ fn ppc_new_pixmap(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     current_gdevice: u32,
 ) -> u32 {
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-85--4-86:
@@ -64916,9 +63979,6 @@ fn ppc_new_pixmap(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &ctable_bytes,
     );
     let pixmap_handle = ppc_process_alloc_handle(
@@ -64927,9 +63987,6 @@ fn ppc_new_pixmap(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         PPC_PIXMAP_SIZE,
         true,
     );
@@ -64960,11 +64017,7 @@ fn ppc_dispose_pixmap(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     indexed_screen_ctables: &mut HashMap<u32, u32>,
 ) {
     if pixmap_handle == 0 {
@@ -64986,11 +64039,7 @@ fn ppc_dispose_pixmap(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             ctable_handle,
         );
         indexed_screen_ctables.retain(|_, handle| *handle != ctable_handle);
@@ -65002,11 +64051,7 @@ fn ppc_dispose_pixmap(
         heap_cursor,
         heap_limit,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
         handles,
-        free_handle_blocks,
-        handle_states,
         pixmap_handle,
     );
 }
@@ -65826,11 +64871,7 @@ fn ppc_modal_dialog(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &[PpcControlRecord],
     gworlds: &[PpcGWorldRecord],
     current_gworld: &mut u32,
@@ -65958,10 +64999,6 @@ fn ppc_modal_dialog(
                     .unwrap_or(0);
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: Some(ptrs),
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 let result = ppc_te_key(
                     Some(&mut allocator),
@@ -66107,11 +65144,7 @@ fn ppc_dispatch_legacy_control(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &[PpcGWorldRecord],
     _screen_clut: &[[u16; 3]; 256],
@@ -66126,10 +65159,6 @@ fn ppc_dispatch_legacy_control(
                 .unwrap_or(0);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let handle = ppc_new_control_values(
                 Some(&mut allocator),
@@ -66178,10 +65207,6 @@ fn ppc_dispatch_legacy_control(
             let bytes = vfs_resources[index].data.clone();
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let Some((bounds, title_ptr)) = ppc_materialize_control_resource_parameters(
                 Some(&mut allocator),
@@ -66232,10 +65257,6 @@ fn ppc_dispatch_legacy_control(
         "DisposeControl" => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_dispose_control(
                 Some(&mut allocator),
@@ -66255,10 +65276,6 @@ fn ppc_dispatch_legacy_control(
             let control_handles = ppc_window_control_handles(memory, owner);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             for handle in control_handles {
                 ppc_dispose_control(
@@ -67301,11 +66318,7 @@ fn ppc_dispatch_legacy_window(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
     current_gworld: &mut u32,
@@ -67329,10 +66342,6 @@ fn ppc_dispatch_legacy_window(
             let previous_front = ppc_front_visible_window(memory, gworlds);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let window = ppc_new_window_from_cpu(
                 cpu,
@@ -67354,11 +66363,7 @@ fn ppc_dispatch_legacy_window(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 *current_gworld = window;
                 if ppc_front_visible_window(memory, gworlds) != previous_front {
@@ -67392,10 +66397,6 @@ fn ppc_dispatch_legacy_window(
             let bytes = vfs_resources[index].data.clone();
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let Some((bounds, title)) = ppc_materialize_window_resource_parameters(
                 Some(&mut allocator),
@@ -67441,11 +66442,7 @@ fn ppc_dispatch_legacy_window(
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
-                    ptrs,
-                    free_ptr_blocks,
                     handles,
-                    free_handle_blocks,
-                    handle_states,
                 );
                 *current_gworld = window;
                 if ppc_front_visible_window(memory, gworlds) != previous_front {
@@ -67479,10 +66476,6 @@ fn ppc_dispatch_legacy_window(
         "SetWTitle" => {
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             let changed = ppc_set_window_title(
                 Some(&mut allocator),
@@ -67520,10 +66513,6 @@ fn ppc_dispatch_legacy_window(
             let was_current = *current_gworld == window;
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
-                ptrs: Some(ptrs),
-                free_ptr_blocks,
-                free_handle_blocks,
-                handle_states,
             };
             ppc_dispose_window(
                 &mut allocator,
@@ -67545,11 +66534,7 @@ fn ppc_dispatch_legacy_window(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             ppc_transition_front_window_chrome(
                 memory,
@@ -67629,11 +66614,7 @@ fn ppc_dispatch_legacy_window(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             if ppc_front_visible_window(memory, gworlds) != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -67659,11 +66640,7 @@ fn ppc_dispatch_legacy_window(
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                ptrs,
-                free_ptr_blocks,
                 handles,
-                free_handle_blocks,
-                handle_states,
             );
             if ppc_front_visible_window(memory, gworlds) != previous_front {
                 let _ = ppc_activate_front_window_palette(
@@ -67730,10 +66707,6 @@ fn ppc_dispatch_legacy_window(
             if vis_rgn == 0 {
                 let mut allocator = PpcProcessAllocatorView {
                     memory_manager: process_memory_manager,
-                    ptrs: Some(ptrs),
-                    free_ptr_blocks,
-                    free_handle_blocks,
-                    handle_states,
                 };
                 vis_rgn = ppc_allocator_view_new_rgn(
                     Some(&mut allocator),
@@ -68848,18 +67821,12 @@ fn ppc_dm_new_display_mode_list(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
 ) -> i16 {
     ppc_dm_new_display_mode_list_values(
         process_memory_manager,
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
         cpu.gpr[3],
         cpu.gpr[6],
         cpu.gpr[7],
@@ -68871,9 +67838,6 @@ fn ppc_dm_new_display_mode_list_values(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
     display_id: u32,
     count_out: u32,
     list_out: u32,
@@ -68895,9 +67859,6 @@ fn ppc_dm_new_display_mode_list_values(
         memory,
         heap_cursor,
         last_mem_error,
-        ptrs,
-        free_ptr_blocks,
-        free_handle_blocks,
     );
     if list == 0 {
         return PPC_MEM_FULL_ERR;
@@ -71111,9 +70072,6 @@ fn ppc_insert_resource_menu(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     resource_load_enabled: &mut bool,
@@ -71137,9 +70095,6 @@ fn ppc_insert_resource_menu(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             resources,
             index,
             true,
@@ -71159,10 +70114,6 @@ fn ppc_insert_resource_menu(
     }
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
-        ptrs: None,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
     };
     ppc_insert_resource_menu_names_with_allocator(
         Some(&mut allocator),
@@ -74090,9 +73041,6 @@ fn ppc_load_menu_resource(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -74115,9 +73063,6 @@ fn ppc_load_menu_resource(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         true,
@@ -74132,9 +73077,6 @@ fn ppc_load_menu_resource(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             current_resource_refnum,
             last_resource_error,
@@ -74145,10 +73087,6 @@ fn ppc_load_menu_resource(
     if handle != 0 {
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: process_memory_manager,
-            ptrs: None,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
         };
         ppc_load_menu_color_resource_with_allocator(
             menu_id,
@@ -74179,9 +73117,6 @@ fn ppc_menu_definition_handle(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -74222,9 +73157,6 @@ fn ppc_menu_definition_handle(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         index,
         true,
@@ -74244,9 +73176,6 @@ fn ppc_resolve_menu_definition(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -74276,9 +73205,6 @@ fn ppc_resolve_menu_definition(
         heap_limit,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         vfs_resources,
         current_resource_refnum,
         last_resource_error,
@@ -74593,9 +73519,6 @@ fn ppc_get_new_mbar(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
@@ -74622,10 +73545,6 @@ fn ppc_get_new_mbar(
     {
         let mut allocator = PpcProcessAllocatorView {
             memory_manager: process_memory_manager,
-            ptrs: None,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
         };
         ppc_clear_menu_color_table_with_allocator(
             Some(&mut allocator),
@@ -74645,9 +73564,6 @@ fn ppc_get_new_mbar(
             heap_limit,
             last_mem_error,
             handles,
-            free_ptr_blocks,
-            free_handle_blocks,
-            handle_states,
             vfs_resources,
             current_resource_refnum,
             last_resource_error,
@@ -74662,10 +73578,6 @@ fn ppc_get_new_mbar(
     ppc_relayout_menu_list(memory, &mut menu_list);
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
-        ptrs: None,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
     };
     let handle = ppc_alloc_menu_list_definition_handle_with_allocator(
         &menu_list,
@@ -77073,9 +75985,6 @@ fn ppc_process_new_rgn(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) -> u32 {
     let handle = ppc_process_alloc_handle(
         process_memory_manager,
@@ -77083,9 +75992,6 @@ fn ppc_process_new_rgn(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         10,
         true,
     );
@@ -77804,9 +76710,6 @@ fn ppc_open_poly(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     current_gworld: u32,
 ) -> u32 {
     if current_gworld == 0 || ppc_open_polygon(memory, current_gworld).is_some() {
@@ -77819,9 +76722,6 @@ fn ppc_open_poly(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         10,
         true,
     );
@@ -77851,9 +76751,6 @@ fn ppc_record_polygon_point(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
     h: i16,
     v: i16,
@@ -77882,10 +76779,7 @@ fn ppc_record_polygon_point(
         memory,
         heap_cursor,
         last_mem_error,
-        free_ptr_blocks,
-        free_handle_blocks,
         handles,
-        handle_states,
         handle,
     );
     if result != PPC_NO_ERR {
@@ -81691,11 +80585,7 @@ fn ppc_close_res_file(
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resource_files: &mut [PpcVfsResourceFileRecord],
     vfs_resources: &mut [PpcVfsResourceRecord],
@@ -81732,11 +80622,7 @@ fn ppc_close_res_file(
             heap_cursor,
             heap_limit,
             last_mem_error,
-            ptrs,
-            free_ptr_blocks,
             handles,
-            free_handle_blocks,
-            handle_states,
             handle,
         );
     }
@@ -82536,9 +81422,6 @@ fn ppc_new_alias(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
 ) -> i16 {
     let _from_file_ptr = cpu.gpr[3];
@@ -82568,9 +81451,6 @@ fn ppc_new_alias(
         heap_cursor,
         last_mem_error,
         handles,
-        free_ptr_blocks,
-        free_handle_blocks,
-        handle_states,
         &alias_data,
     );
     if handle == 0 {
@@ -83432,9 +82312,6 @@ fn ppc_process_alloc_handle_with_bytes(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     bytes: &[u8],
 ) -> u32 {
     let handle = memory_manager.copy_bytes_to_new_native_handle(memory, bytes);
@@ -83443,10 +82320,7 @@ fn ppc_process_alloc_handle_with_bytes(
         memory,
         heap_cursor,
         last_mem_error,
-        free_ptr_blocks,
-        free_handle_blocks,
         handles,
-        handle_states,
         handle,
     );
     handle
@@ -83459,9 +82333,6 @@ fn ppc_process_alloc_handle(
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
     size: u32,
     clear: bool,
 ) -> u32 {
@@ -83471,10 +82342,7 @@ fn ppc_process_alloc_handle(
         memory,
         heap_cursor,
         last_mem_error,
-        free_ptr_blocks,
-        free_handle_blocks,
         handles,
-        handle_states,
         handle,
     );
     handle
@@ -83482,10 +82350,6 @@ fn ppc_process_alloc_handle(
 
 struct PpcProcessAllocatorView<'a> {
     memory_manager: &'a mut ProcessNativeMemoryManager,
-    ptrs: Option<&'a mut Vec<PpcPtrRecord>>,
-    free_ptr_blocks: &'a mut Vec<PpcPtrRecord>,
-    free_handle_blocks: &'a mut Vec<PpcHandleRecord>,
-    handle_states: &'a mut Vec<PpcHandleStateRecord>,
 }
 
 impl PpcProcessAllocatorView<'_> {
@@ -83514,9 +82378,6 @@ impl PpcProcessAllocatorView<'_> {
             heap_cursor,
             last_mem_error,
             handles,
-            self.free_ptr_blocks,
-            self.free_handle_blocks,
-            self.handle_states,
             size,
             clear,
         )
@@ -83536,9 +82397,6 @@ impl PpcProcessAllocatorView<'_> {
             heap_cursor,
             last_mem_error,
             handles,
-            self.free_ptr_blocks,
-            self.free_handle_blocks,
-            self.handle_states,
             bytes,
         )
     }
@@ -83560,10 +82418,7 @@ impl PpcProcessAllocatorView<'_> {
             memory,
             heap_cursor,
             last_mem_error,
-            self.free_ptr_blocks,
-            self.free_handle_blocks,
             handles,
-            self.handle_states,
             handle,
         );
         result
@@ -83578,37 +82433,15 @@ impl PpcProcessAllocatorView<'_> {
         handles: &mut Vec<PpcHandleRecord>,
         handle: u32,
     ) -> bool {
-        if let Some(ptrs) = self.ptrs.as_deref_mut() {
-            return ppc_dispose_process_native_handle(
-                self.memory_manager,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                ptrs,
-                self.free_ptr_blocks,
-                handles,
-                self.free_handle_blocks,
-                self.handle_states,
-                handle,
-            );
-        }
-        let disposed = self
-            .memory_manager
-            .dispose_native_handle(memory, handle)
-            .is_some();
-        if let Some(allocator) = self.memory_manager.native_allocator_snapshot() {
-            *heap_cursor = allocator.heap.heap_cursor;
-            *last_mem_error = allocator.heap.last_mem_error;
-            *self.free_ptr_blocks = allocator.free_ptr_blocks;
-            *self.free_handle_blocks = allocator.free_handle_blocks;
-            ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
-        }
-        if disposed {
-            handles.retain(|record| record.handle != handle);
-            ppc_forget_handle_state(handle, self.handle_states);
-        }
-        disposed
+        ppc_dispose_process_native_handle(
+            self.memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            handles,
+            handle,
+        )
     }
 }
 
@@ -83875,14 +82708,15 @@ fn ppc_alloc_ptr(
 fn ppc_dispatch_legacy_memory_utility(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
+    process_memory_manager: &ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     application_heap_limit: u32,
     last_mem_error: &mut i16,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &[PpcHandleRecord],
 ) -> Option<PpcImportAction> {
+    let free_ptr_blocks = process_memory_manager.native_free_ptr_blocks();
     // Inside Macintosh: Operating System Utilities (1994), pp. 3-28--3-29,
     // and Memory (1992), pp. 2-42--2-83, define these routines independently
     // of any application. Keeping their implementations in one dispatcher is
@@ -90258,14 +89092,7 @@ pub(crate) mod tests {
         let mut heap_cursor = allocator.heap.heap_cursor;
         let heap_limit = allocator.heap.heap_limit;
         let mut last_mem_error = allocator.heap.last_mem_error;
-        let mut ptrs = allocator.ptrs;
-        let mut free_ptr_blocks = allocator.free_ptr_blocks;
-        let mut free_handle_blocks = allocator.free_handle_blocks;
         let mut handles = memory_manager.native_handle_records().to_vec();
-        let mut handle_states: Vec<_> = handles
-            .iter()
-            .map(|record| memory_manager.native_handle_state(record.handle))
-            .collect();
         let mut resources = [PpcVfsResourceRecord {
             ref_num: 1,
             path: "Test App".to_string(),
@@ -90288,11 +89115,7 @@ pub(crate) mod tests {
             &mut heap_cursor,
             heap_limit,
             &mut last_mem_error,
-            &mut ptrs,
-            &mut free_ptr_blocks,
             &mut handles,
-            &mut free_handle_blocks,
-            &mut handle_states,
             &mut resources,
             &mut last_resource_error,
         );
@@ -90309,7 +89132,6 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.handle == handle));
         assert!(handles.iter().all(|record| record.handle != handle));
-        assert!(handle_states.iter().all(|state| state.handle != handle));
         assert_eq!(
             detached.native_allocation(handle).map(|record| record.ptr),
             Some(ptr)
@@ -90908,10 +89730,7 @@ pub(crate) mod tests {
                 let mut heap_cursor = allocator.heap.heap_cursor;
                 let heap_limit = allocator.heap.heap_limit;
                 let mut last_mem_error = allocator.heap.last_mem_error;
-                let mut free_ptr_blocks = allocator.free_ptr_blocks;
-                let mut free_handle_blocks = allocator.free_handle_blocks;
                 let mut handles = memory_manager.native_handle_records().to_vec();
-                let mut handle_states = Vec::new();
                 let mut resources = vec![PpcVfsResourceRecord {
                     ref_num: 0,
                     path: "Test App".to_string(),
@@ -90940,9 +89759,6 @@ pub(crate) mod tests {
                     heap_limit,
                     &mut last_mem_error,
                     &mut handles,
-                    &mut free_ptr_blocks,
-                    &mut free_handle_blocks,
-                    &mut handle_states,
                     &mut resources,
                     0,
                     false,
@@ -90962,9 +89778,6 @@ pub(crate) mod tests {
                     heap_limit,
                     &mut last_mem_error,
                     &mut handles,
-                    &mut free_ptr_blocks,
-                    &mut free_handle_blocks,
-                    &mut handle_states,
                     &mut resources,
                     0,
                     true,
@@ -91005,9 +89818,6 @@ pub(crate) mod tests {
                     heap_limit,
                     &mut last_mem_error,
                     &mut handles,
-                    &mut free_ptr_blocks,
-                    &mut free_handle_blocks,
-                    &mut handle_states,
                     &mut external_resources,
                     0,
                     true,
@@ -152517,11 +151327,8 @@ pub(crate) mod tests {
         let mut heap_cursor = native.heap_cursor();
         let heap_limit = native.heap_limit();
         let mut last_mem_error = native.last_mem_error();
-        let mut ptrs = native.ptrs();
-        let mut free_ptr_blocks = native.free_ptr_blocks();
         let mut handles = native.handles();
-        let mut free_handle_blocks = native.free_handle_blocks();
-        let mut handle_states = native.handle_states();
+        let handle_states = native.handle_states();
         native.cpu.gpr[3] = event_record;
         let action = {
             let mut manager = context.memory_manager_mut();
@@ -152532,11 +151339,7 @@ pub(crate) mod tests {
                 &mut heap_cursor,
                 heap_limit,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptr_blocks,
                 &mut handles,
-                &mut free_handle_blocks,
-                &mut handle_states,
                 &mut apple_events,
                 &mut native.toolbox_startup,
                 0,
@@ -152591,11 +151394,7 @@ pub(crate) mod tests {
                 &mut native.memory,
                 &mut heap_cursor,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptr_blocks,
                 &mut handles,
-                &mut free_handle_blocks,
-                &mut handle_states,
             );
             assert!(manager.native_allocation(event_handle).is_some());
             assert!(manager.native_allocation(reply_handle).is_some());
@@ -152611,11 +151410,7 @@ pub(crate) mod tests {
                 &mut native.memory,
                 &mut heap_cursor,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptr_blocks,
                 &mut handles,
-                &mut free_handle_blocks,
-                &mut handle_states,
             );
             assert_eq!(manager.native_allocation(event_handle), None);
             assert_eq!(manager.native_allocation(reply_handle), None);
@@ -152840,11 +151635,7 @@ pub(crate) mod tests {
         let mut heap_cursor = native.heap_cursor();
         let heap_limit = native.heap_limit();
         let mut last_mem_error = native.last_mem_error();
-        let mut ptrs = native.ptrs();
-        let mut free_ptr_blocks = native.free_ptr_blocks();
         let mut handles = native.handles();
-        let mut free_handle_blocks = native.free_handle_blocks();
-        let mut handle_states = native.handle_states();
         native.cpu.gpr[3] = event_record;
 
         let action = {
@@ -152856,11 +151647,7 @@ pub(crate) mod tests {
                 &mut heap_cursor,
                 heap_limit,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptr_blocks,
                 &mut handles,
-                &mut free_handle_blocks,
-                &mut handle_states,
                 &mut apple_events,
                 &mut native.toolbox_startup,
                 0,
@@ -152930,11 +151717,7 @@ pub(crate) mod tests {
         let mut heap_cursor = native.heap_cursor();
         let heap_limit = native.heap_limit();
         let mut last_mem_error = native.last_mem_error();
-        let mut ptrs = native.ptrs();
-        let mut free_ptr_blocks = native.free_ptr_blocks();
         let mut handles = native.handles();
-        let mut free_handle_blocks = native.free_handle_blocks();
-        let mut handle_states = native.handle_states();
         native.cpu.gpr[3] = event_record;
 
         let action = {
@@ -152946,11 +151729,7 @@ pub(crate) mod tests {
                 &mut heap_cursor,
                 heap_limit,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptr_blocks,
                 &mut handles,
-                &mut free_handle_blocks,
-                &mut handle_states,
                 &mut native.apple_events,
                 &mut native.toolbox_startup,
                 0,
@@ -162987,11 +161766,7 @@ pub(crate) mod tests {
             &[],
             &[],
         );
-        let mut ptrs = Vec::new();
-        let mut free_ptrs = Vec::new();
         let mut handles = Vec::new();
-        let mut free_handles = Vec::new();
-        let mut handle_states = Vec::new();
         let create = compatibility_binding(
             "InterfaceLib",
             "AECreateDesc",
@@ -163006,11 +161781,7 @@ pub(crate) mod tests {
                 &mut heap_cursor,
                 0x5000,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptrs,
                 &mut handles,
-                &mut free_handles,
-                &mut handle_states,
             ),
             PpcImportAction::Return(0)
         );
@@ -163039,11 +161810,7 @@ pub(crate) mod tests {
                 &mut heap_cursor,
                 0x5000,
                 &mut last_mem_error,
-                &mut ptrs,
-                &mut free_ptrs,
                 &mut handles,
-                &mut free_handles,
-                &mut handle_states,
             ),
             PpcImportAction::Return(0)
         );
