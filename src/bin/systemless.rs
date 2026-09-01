@@ -3431,7 +3431,7 @@ mod tests {
 
         runner
             .dispatcher_mut()
-            .sound_manager
+            .sound_manager_mut()
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
                 callback_addr,
@@ -3481,7 +3481,7 @@ mod tests {
 
         runner
             .dispatcher_mut()
-            .sound_manager
+            .sound_manager_mut()
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
                 callback_addr,
@@ -3753,10 +3753,10 @@ mod tests {
             waiting_for_callback: true,
             pending_callback_buffers: [true, false],
         });
-        runner.dispatcher_mut().sound_manager.channels.push(chan);
+        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
         runner
             .dispatcher_mut()
-            .sound_manager
+            .sound_manager_mut()
             .pending_callbacks
             .push(PendingDoubleBackCallback {
                 callback_addr,
@@ -3867,7 +3867,7 @@ mod tests {
             1,
             8,
         );
-        runner.dispatcher_mut().sound_manager.channels.push(chan);
+        runner.dispatcher_mut().sound_manager_mut().channels.push(chan);
 
         let mut app = App::new(PathBuf::from("dummy"), false, true, false, 8);
         app.runner = Some(runner);

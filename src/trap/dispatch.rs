@@ -2906,6 +2906,16 @@ impl std::ops::DerefMut for TrapDispatcher {
 }
 
 impl TrapDispatcher {
+    /// Access the process-owned Sound Manager state.
+    pub fn sound_manager(&self) -> &crate::sound::SoundManager {
+        &self.sound_manager
+    }
+
+    /// Mutably access the process-owned Sound Manager state.
+    pub fn sound_manager_mut(&mut self) -> &mut crate::sound::SoundManager {
+        &mut self.sound_manager
+    }
+
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_resource_manager(&mut self.process_resource_manager);
