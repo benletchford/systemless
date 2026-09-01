@@ -548,16 +548,24 @@ impl SoundManager {
         channel.play_buffer(samples, sample_rate_fixed, PlaybackKind::File, 0);
     }
 
+    /// Record one architecture-neutral `SndPlayDoubleBuffer` submission.
+    /// Decoding and callback frames remain adapter-specific, while submission
+    /// accounting belongs to the process Sound Manager. Sound 1994,
+    /// pp. 2-138--2-140.
+    pub(crate) fn note_double_buffer_submission(&mut self) {
+        self.debug_double_buffer_count = self.debug_double_buffer_count.saturating_add(1);
+    }
+
     /// Install one decoded double-buffer payload on the process channel.
-    /// The native callback frame remains adapter-specific, but the samples
-    /// and playback cursor are Sound Manager state. Sound 1994, pp. 2-138--2-140.
+    /// The callback frame remains adapter-specific, but channel creation,
+    /// samples, playback cursor, and diagnostics are Sound Manager state.
+    /// Sound 1994, pp. 2-138--2-148.
     pub(crate) fn play_double_buffer_samples(
         &mut self,
         guest_ptr: u32,
         samples: Vec<StereoSample>,
         sample_rate_fixed: u32,
     ) {
-        self.debug_double_buffer_count = self.debug_double_buffer_count.saturating_add(1);
         let channel = self.ensure_channel_mut(guest_ptr);
         let non_silent_frames = samples
             .iter()

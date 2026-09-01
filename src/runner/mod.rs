@@ -7008,11 +7008,9 @@ impl FixtureRunner {
             }
             if !playback.host_initialized {
                 ppc_app.sound.double_buffer_playbacks[index].host_initialized = true;
-                self.dispatcher.sound_manager.debug_double_buffer_count = self
-                    .dispatcher
+                self.dispatcher
                     .sound_manager
-                    .debug_double_buffer_count
-                    .saturating_add(1);
+                    .note_double_buffer_submission();
             }
             if playback.host_buffer_loaded {
                 continue;
@@ -7104,51 +7102,14 @@ impl FixtureRunner {
         playback: PpcSoundDoubleBufferPlaybackRecord,
         decoded: &PpcDecodedDoubleBuffer,
     ) {
-        let channel_index = self
-            .dispatcher
-            .sound_manager
-            .channels
-            .iter()
-            .position(|channel| channel.guest_ptr == playback.channel)
-            .unwrap_or_else(|| {
-                self.dispatcher
-                    .sound_manager
-                    .channels
-                    .push(crate::sound::SndChannel::new(playback.channel, false));
-                self.dispatcher.sound_manager.channels.len() - 1
-            });
-        let host_channel = &mut self.dispatcher.sound_manager.channels[channel_index];
         let non_silent_frames = decoded
             .samples
             .iter()
             .filter(|sample| sample.left != 0x80 || sample.right != 0x80)
             .count();
-        host_channel.debug_double_buffer_loads =
-            host_channel.debug_double_buffer_loads.saturating_add(1);
-        host_channel.debug_double_buffer_frames_loaded = host_channel
-            .debug_double_buffer_frames_loaded
-            .saturating_add(decoded.samples.len() as u64);
-        host_channel.debug_double_buffer_non_silent_frames = host_channel
-            .debug_double_buffer_non_silent_frames
-            .saturating_add(non_silent_frames as u64);
-        if non_silent_frames > 0 {
-            host_channel.debug_double_buffer_non_silent_loads = host_channel
-                .debug_double_buffer_non_silent_loads
-                .saturating_add(1);
-        }
-        let capture_remaining = crate::sound::DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT
-            .saturating_sub(host_channel.debug_double_buffer_captured_samples.len());
-        host_channel.debug_double_buffer_captured_samples.extend(
-            decoded
-                .samples
-                .iter()
-                .take(capture_remaining)
-                .copied()
-                .map(crate::sound::StereoSample::downmix),
-        );
         if trace_sound_runner_enabled() {
             eprintln!(
-                "[PPC-SOUND] host double buffer chan=${:08X} buf=${:08X} index={} frames={} non_silent={} flags=${:08X}",
+                "[PPC-SOUND] process double buffer chan=${:08X} buf=${:08X} index={} frames={} non_silent={} flags=${:08X}",
                 playback.channel,
                 decoded.buffer_ptr,
                 playback.current_buffer_index,
@@ -7157,11 +7118,10 @@ impl FixtureRunner {
                 decoded.flags
             );
         }
-        host_channel.play_stereo_buffer(
+        self.dispatcher.sound_manager.play_double_buffer_samples(
+            playback.channel,
             decoded.samples.clone(),
             playback.sample_rate_fixed,
-            crate::sound::PlaybackKind::Buffer,
-            0,
         );
     }
 
@@ -15914,6 +15874,18 @@ mod tests {
             1
         );
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
+        let channel = runner
+            .dispatcher()
+            .sound_manager
+            .channels
+            .iter()
+            .find(|candidate| candidate.guest_ptr == channel)
+            .expect("process Sound Manager channel");
+        assert_eq!(channel.debug_double_buffer_loads, 2);
+        assert_eq!(channel.debug_double_buffer_non_silent_loads, 2);
+        assert_eq!(channel.debug_double_buffer_frames_loaded, 4);
+        assert_eq!(channel.debug_double_buffer_non_silent_frames, 3);
+        assert_eq!(channel.debug_double_buffer_captured_samples, expected);
         let playback = runner
             .ppc_app
             .as_ref()
