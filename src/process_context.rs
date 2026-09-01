@@ -7,7 +7,7 @@ use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use ppc::PpcMemory;
-use std::cell::{RefCell, RefMut};
+use std::cell::{RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -15,6 +15,184 @@ use std::rc::Rc;
 struct ProcessMemoryRegion {
     base: u32,
     bytes: SharedRamRegion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessVfsFileRecord {
+    pub path: String,
+    pub data: Vec<u8>,
+    pub creator: u32,
+    pub file_type: u32,
+    pub finder_flags: u16,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessOpenFileRecord {
+    pub ref_num: i16,
+    pub path: String,
+    pub position: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessStdioStreamRecord {
+    pub(crate) ref_num: Option<i16>,
+    pub(crate) path: Option<String>,
+    pub(crate) position: u32,
+    pub(crate) standard: bool,
+    pub(crate) readable: bool,
+    pub(crate) writable: bool,
+    pub(crate) append: bool,
+    pub(crate) closed: bool,
+    pub(crate) eof: bool,
+    pub(crate) error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessResourceFileRecord {
+    pub ref_num: i16,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessVfsResourceFileRecord {
+    pub path: String,
+    pub creator: u32,
+    pub file_type: u32,
+    pub finder_flags: u16,
+    pub resource_len: u32,
+    pub raw_data: Option<Vec<u8>>,
+    pub map_attrs: u16,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessVfsResourceRecord {
+    pub ref_num: i16,
+    pub path: String,
+    pub res_type: u32,
+    pub res_id: i16,
+    pub name: Vec<u8>,
+    pub data: Vec<u8>,
+    pub raw_data: Option<Vec<u8>>,
+    pub raw_attrs: Option<u16>,
+    pub attrs: u16,
+    pub handle: u32,
+}
+
+/// Canonical File Manager and Resource Manager storage for one process.
+///
+/// These managers belong to the process, not to the currently executing
+/// instruction set. Keeping their records behind one ownership handle lets
+/// native and classic adapters converge on the same mutations during nested
+/// Mixed Mode calls. Inside Macintosh: Files (1992), pp. 1-7--1-9; Inside
+/// Macintosh Volume I (1985), pp. I-109--I-110.
+#[derive(Debug, Clone)]
+pub struct ProcessFileSystemState {
+    pub(crate) files: Vec<ProcessOpenFileRecord>,
+    pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
+    pub(crate) vfs_files: Vec<ProcessVfsFileRecord>,
+    pub(crate) deleted_vfs_file_paths: Vec<String>,
+    pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
+    pub(crate) vfs_resource_files: Vec<ProcessVfsResourceFileRecord>,
+    pub(crate) vfs_resources: Vec<ProcessVfsResourceRecord>,
+    pub(crate) next_file_ref_num: i16,
+}
+
+impl Default for ProcessFileSystemState {
+    fn default() -> Self {
+        Self {
+            files: Vec::new(),
+            stdio_streams: HashMap::new(),
+            vfs_files: Vec::new(),
+            deleted_vfs_file_paths: Vec::new(),
+            resource_files: Vec::new(),
+            vfs_resource_files: Vec::new(),
+            vfs_resources: Vec::new(),
+            next_file_ref_num: 128,
+        }
+    }
+}
+
+/// Shared attachment handle for process-owned file and resource managers.
+///
+/// A normal clone is deliberately detached so cloning a loaded application
+/// cannot couple two processes. `attach_to` is the only operation that shares
+/// state, and the runner serializes every attached adapter access.
+#[derive(Debug)]
+pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>);
+
+impl Default for SharedProcessFileSystem {
+    fn default() -> Self {
+        Self(Rc::new(UnsafeCell::new(ProcessFileSystemState::default())))
+    }
+}
+
+impl Clone for SharedProcessFileSystem {
+    fn clone(&self) -> Self {
+        Self(Rc::new(UnsafeCell::new((**self).clone())))
+    }
+}
+
+impl std::ops::Deref for SharedProcessFileSystem {
+    type Target = ProcessFileSystemState;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: attached CPU adapters are private children of one runner,
+        // and every execution entry point requires an exclusive mutable
+        // runner borrow. Detached clones receive an independent allocation.
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl std::ops::DerefMut for SharedProcessFileSystem {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: see `Deref`; mutable access is serialized by the runner.
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+impl SharedProcessFileSystem {
+    pub(crate) fn from_state(state: ProcessFileSystemState) -> Self {
+        Self(Rc::new(UnsafeCell::new(state)))
+    }
+
+    pub(crate) fn attach_to(&mut self, process_file_system: &Self) {
+        if Rc::ptr_eq(&self.0, &process_file_system.0) {
+            return;
+        }
+        assert!(
+            (self.vfs_files.is_empty()
+                && self.files.is_empty()
+                && self.resource_files.is_empty()
+                && self.vfs_resource_files.is_empty()
+                && self.vfs_resources.is_empty())
+                || (process_file_system.vfs_files.is_empty()
+                    && process_file_system.files.is_empty()
+                    && process_file_system.resource_files.is_empty()
+                    && process_file_system.vfs_resource_files.is_empty()
+                    && process_file_system.vfs_resources.is_empty()),
+            "cannot attach two populated process filesystems"
+        );
+        if process_file_system.vfs_files.is_empty()
+            && process_file_system.files.is_empty()
+            && process_file_system.resource_files.is_empty()
+            && process_file_system.vfs_resource_files.is_empty()
+            && process_file_system.vfs_resources.is_empty()
+        {
+            // SAFETY: attachment occurs before the native adapter is exposed
+            // through the runner, so no references into either state exist.
+            unsafe {
+                *process_file_system.0.get() = std::mem::take(&mut **self);
+            }
+        }
+        self.0 = Rc::clone(&process_file_system.0);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2635,6 +2813,7 @@ pub(crate) struct ProcessContext {
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
+    file_system: SharedProcessFileSystem,
 }
 
 impl ProcessContext {
@@ -2663,6 +2842,10 @@ impl ProcessContext {
         } else {
             *adapter = Some(self.memory_manager.clone());
         }
+    }
+
+    pub(crate) fn attach_file_system(&self, adapter: &mut SharedProcessFileSystem) {
+        adapter.attach_to(&self.file_system);
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
