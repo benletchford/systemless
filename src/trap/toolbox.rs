@@ -4409,7 +4409,7 @@ impl super::TrapDispatcher {
         self.pn_pat = [0xFF; 8];
         self.pn_size = (1, 1);
         self.sync_current_port_draw_state(bus);
-        self.resolve_current_port_color_pixels(bus, true, true);
+        self.resolve_current_port_color_pixels(bus, true, true, false);
         self.draw_rect(
             cpu,
             bus,
@@ -4435,7 +4435,7 @@ impl super::TrapDispatcher {
             let baseline = rect.0 + (cell_height - text_height).max(0) / 2 + metrics.ascent;
             self.pn_loc = (baseline, rect.1 + 3);
             self.sync_current_port_draw_state(bus);
-            self.resolve_current_port_color_pixels(bus, true, true);
+            self.resolve_current_port_color_pixels(bus, true, true, false);
 
             let max_h = rect.3 - 3;
             for ch in text.chars() {

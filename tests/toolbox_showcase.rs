@@ -792,6 +792,15 @@ fn test_toolbox_showcase() {
             && same_device_left != same_device_right,
         "same-device indexed CopyBits must preserve three distinct positional device indexes"
     );
+    let inverse_table_band = screen_rgb(
+        &mut runner,
+        (win_top + 331) as u16,
+        (win_left + 450) as u16,
+    );
+    assert!(
+        inverse_table_band[0] > 100 && inverse_table_band[1] > 100,
+        "8-bit RGBForeColor must use the screen GDevice inverse-table index when logical and hardware CLUTs differ; got {inverse_table_band:?}"
+    );
     let initial_palette_rgb = screen_rgb(
         &mut runner,
         (win_top + 130) as u16,
@@ -800,8 +809,8 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, powerpc, "10-palette.png");
 
-    // Animate Palette button: local Rect (335, 40, 361, 190).
-    click_point(&mut runner, win_top + 348, win_left + 115);
+    // Animate Palette button: local Rect (342, 40, 366, 230).
+    click_point(&mut runner, win_top + 354, win_left + 135);
     run_ticks(&mut runner, "palette animation to settle", 1);
     let animated_palette_rgb = screen_rgb(
         &mut runner,

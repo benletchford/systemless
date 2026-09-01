@@ -4603,7 +4603,7 @@ impl super::TrapDispatcher {
                 self.fg_color = Self::legacy_qd_color_to_rgb(color);
                 self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
-                self.resolve_current_port_color_pixels(bus, true, false);
+                self.resolve_current_port_color_pixels(bus, true, false, false);
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] ForeColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -4637,7 +4637,7 @@ impl super::TrapDispatcher {
                 self.bg_color = Self::legacy_qd_color_to_rgb(color);
                 self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
-                self.resolve_current_port_color_pixels(bus, false, true);
+                self.resolve_current_port_color_pixels(bus, false, true, false);
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] BackColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
@@ -4675,7 +4675,7 @@ impl super::TrapDispatcher {
                 self.fg_color = (r, g, b);
                 self.pm_fg_color = None;
                 self.sync_current_port_draw_state(bus);
-                self.resolve_current_port_color_pixels(bus, true, false);
+                self.resolve_current_port_color_pixels(bus, true, false, true);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001A); // RGBFgCol
                     for component in [r, g, b] {
@@ -4706,7 +4706,7 @@ impl super::TrapDispatcher {
                 self.bg_color = (r, g, b);
                 self.pm_bg_color = None;
                 self.sync_current_port_draw_state(bus);
-                self.resolve_current_port_color_pixels(bus, false, true);
+                self.resolve_current_port_color_pixels(bus, false, true, true);
                 if let Some((_, _, _, _, _, commands)) = self.recording_picture.as_mut() {
                     Self::push_pict_word(commands, 0x001B); // RGBBkCol
                     for component in [r, g, b] {
@@ -5298,7 +5298,7 @@ impl super::TrapDispatcher {
                             .entry(self.current_port)
                             .or_default() |= 0x01;
                     } else {
-                        self.resolve_current_port_color_pixels(bus, true, false);
+                        self.resolve_current_port_color_pixels(bus, true, false, false);
                     }
                     if trace_qd_colors_enabled() {
                         eprintln!(
@@ -5347,7 +5347,7 @@ impl super::TrapDispatcher {
                             .entry(self.current_port)
                             .or_default() |= 0x02;
                     } else {
-                        self.resolve_current_port_color_pixels(bus, false, true);
+                        self.resolve_current_port_color_pixels(bus, false, true, false);
                     }
                     if trace_qd_colors_enabled() {
                         eprintln!(
@@ -19516,6 +19516,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         foreground: bool,
         background: bool,
+        use_screen_itable: bool,
     ) {
         let port = self.current_port;
         if port == 0
@@ -19537,7 +19538,7 @@ impl super::TrapDispatcher {
         } else {
             0
         };
-        let resolution_clut = if pixmap != 0 {
+        let (resolution_clut, screen_itable) = if pixmap != 0 {
             let base = Self::offscreen_pixmap_base_ptr(bus, pixmap);
             let row_bytes = (bus.read_word(pixmap + 4) & 0x3FFF) as u32;
             let pixel_size = bus.read_word(pixmap + 32);
@@ -19545,27 +19546,36 @@ impl super::TrapDispatcher {
                 && row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
             if screen_backed {
-                self.device_clut
+                (self.device_clut, pixel_size == 8)
             } else {
-                self.read_port_clut(bus, bus.read_long(pixmap + 42))
+                (self.read_port_clut(bus, bus.read_long(pixmap + 42)), false)
             }
         } else {
-            self.device_clut
+            (self.device_clut, self.screen_mode.4 == 8)
         };
 
         if foreground {
-            let pixel = Self::nearest_palette_index(
-                &resolution_clut,
-                [self.fg_color.0, self.fg_color.1, self.fg_color.2],
-            );
+            let rgb = [self.fg_color.0, self.fg_color.1, self.fg_color.2];
+            let pixel = if use_screen_itable && screen_itable {
+                // The screen GDevice's inverse table is a logical color
+                // matcher, not a nearest-color scan of the live video DAC.
+                // Games can replace or fade the hardware CLUT while the
+                // cached screen lookup remains unchanged.
+                // Inside Macintosh Volume V (1986), pp. V-137..V-143.
+                Self::standard_screen_itable_index(rgb)
+            } else {
+                Self::nearest_palette_index(&resolution_clut, rgb)
+            };
             bus.write_long(port + 80, u32::from(pixel));
             *self.resolved_port_color_fields.entry(port).or_default() |= 0x01;
         }
         if background {
-            let pixel = Self::nearest_palette_index(
-                &resolution_clut,
-                [self.bg_color.0, self.bg_color.1, self.bg_color.2],
-            );
+            let rgb = [self.bg_color.0, self.bg_color.1, self.bg_color.2];
+            let pixel = if use_screen_itable && screen_itable {
+                Self::standard_screen_itable_index(rgb)
+            } else {
+                Self::nearest_palette_index(&resolution_clut, rgb)
+            };
             bus.write_long(port + 84, u32::from(pixel));
             *self.resolved_port_color_fields.entry(port).or_default() |= 0x02;
         }
@@ -26814,6 +26824,23 @@ mod tests {
         assert_eq!(
             crate::trap::pict::closest_clut_index(0xFFFF, 0xFFFF, 0xFFFF, &clut),
             0
+        );
+    }
+
+    #[test]
+    fn test_screen_inverse_table_keeps_dark_blue_pixel_stable_across_hardware_clut_changes() {
+        let mut hardware_clut = [[0; 3]; 256];
+        hardware_clut[117] = [0x1010, 0x0A0A, 0x6969];
+        hardware_clut[213] = [0x7B7B, 0x7373, 0x8484];
+
+        let pixel = TrapDispatcher::standard_screen_itable_index([0, 0, 0x6666]);
+
+        assert_eq!(pixel, 213);
+        assert_eq!(hardware_clut[pixel as usize], [0x7B7B, 0x7373, 0x8484]);
+        assert_eq!(
+            TrapDispatcher::nearest_palette_index(&hardware_clut, [0, 0, 0x6666]),
+            117,
+            "a live-hardware nearest-color scan reproduces the regressed saturated-blue pixel"
         );
     }
 
