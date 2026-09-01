@@ -2102,7 +2102,7 @@ impl super::TrapDispatcher {
         // Track valid double-buffer submissions separately from bufferCmd-style
         // single-buffer ones. Both feed mix_frame but through different
         // code paths.
-        self.sound_manager.debug_double_buffer_count += 1;
+        self.sound_manager.note_double_buffer_submission();
 
         // Find or create the channel.
         let chan = if let Some(c) = self.sound_manager.find_channel_mut(chan_ptr) {

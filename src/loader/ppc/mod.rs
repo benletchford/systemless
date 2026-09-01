@@ -43612,11 +43612,12 @@ fn ppc_snd_play_double_buffer(
         host_initialized: false,
         host_buffer_loaded: false,
     };
+    sound.manager.note_double_buffer_submission();
+    playback.host_initialized = true;
     if let Some(samples) = ppc_decode_ready_double_buffer(memory, playback) {
         sound
             .manager
             .play_double_buffer_samples(channel, samples, sample_rate_fixed);
-        playback.host_initialized = true;
         playback.host_buffer_loaded = true;
     }
     sound.double_buffer_playbacks.push(playback);
