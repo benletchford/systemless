@@ -1039,6 +1039,15 @@ pub enum PpcImportDispatcherTarget {
     FracMul,
     FracDiv,
     FixATan2,
+    WideAdd,
+    WideSubtract,
+    WideNegate,
+    WideShift,
+    WideMultiply,
+    WideDivide,
+    WideWideDivide,
+    WideSquareRoot,
+    WideCompare,
     MoveTo,
     Move,
     LineTo,
@@ -15010,6 +15019,15 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FracMul") => PpcImportDispatcherTarget::FracMul,
         ("InterfaceLib", "FracDiv") => PpcImportDispatcherTarget::FracDiv,
         ("InterfaceLib", "FixATan2") => PpcImportDispatcherTarget::FixATan2,
+        ("InterfaceLib", "WideAdd") => PpcImportDispatcherTarget::WideAdd,
+        ("InterfaceLib", "WideSubtract") => PpcImportDispatcherTarget::WideSubtract,
+        ("InterfaceLib", "WideNegate") => PpcImportDispatcherTarget::WideNegate,
+        ("InterfaceLib", "WideShift") => PpcImportDispatcherTarget::WideShift,
+        ("InterfaceLib", "WideMultiply") => PpcImportDispatcherTarget::WideMultiply,
+        ("InterfaceLib", "WideDivide") => PpcImportDispatcherTarget::WideDivide,
+        ("InterfaceLib", "WideWideDivide") => PpcImportDispatcherTarget::WideWideDivide,
+        ("InterfaceLib", "WideSquareRoot") => PpcImportDispatcherTarget::WideSquareRoot,
+        ("InterfaceLib", "WideCompare") => PpcImportDispatcherTarget::WideCompare,
         ("InterfaceLib", "NewMenu") => PpcImportDispatcherTarget::NewMenu,
         ("InterfaceLib", "DisposeMenu") => PpcImportDispatcherTarget::DisposeMenu,
         ("InterfaceLib", "GetMenu") => PpcImportDispatcherTarget::GetMenu,
@@ -17961,24 +17979,59 @@ fn dispatch_supported_import(
             let value = f64::from_bits(cpu.fpr[1]);
             Some(PpcImportAction::Return(ppc_f64_to_frac(value)))
         }
-        PpcImportDispatcherTarget::FracSin => Some(PpcImportAction::Return(
-            ppc_frac_sin(cpu.gpr[3] as i32) as u32,
+        PpcImportDispatcherTarget::FracSin => Some(PpcImportAction::Return(ppc_frac_sin(
+            cpu.gpr[3] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::FracCos => Some(PpcImportAction::Return(ppc_frac_cos(
+            cpu.gpr[3] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::FracSqrt => {
+            Some(PpcImportAction::Return(ppc_frac_sqrt(cpu.gpr[3])))
+        }
+        PpcImportDispatcherTarget::FracMul => Some(PpcImportAction::Return(ppc_frac_mul(
+            cpu.gpr[3] as i32,
+            cpu.gpr[4] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::FracDiv => Some(PpcImportAction::Return(ppc_frac_div(
+            cpu.gpr[3] as i32,
+            cpu.gpr[4] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::FixATan2 => Some(PpcImportAction::Return(ppc_fix_atan2(
+            cpu.gpr[3] as i32,
+            cpu.gpr[4] as i32,
+        ) as u32)),
+        PpcImportDispatcherTarget::WideAdd => Some(PpcImportAction::Return(ppc_wide_add(
+            memory, cpu.gpr[3], cpu.gpr[4],
+        ))),
+        PpcImportDispatcherTarget::WideSubtract => Some(PpcImportAction::Return(
+            ppc_wide_subtract(memory, cpu.gpr[3], cpu.gpr[4]),
         )),
-        PpcImportDispatcherTarget::FracCos => Some(PpcImportAction::Return(
-            ppc_frac_cos(cpu.gpr[3] as i32) as u32,
+        PpcImportDispatcherTarget::WideNegate => {
+            Some(PpcImportAction::Return(ppc_wide_negate(memory, cpu.gpr[3])))
+        }
+        PpcImportDispatcherTarget::WideShift => Some(PpcImportAction::Return(ppc_wide_shift(
+            memory,
+            cpu.gpr[3],
+            cpu.gpr[4] as i32,
+        ))),
+        PpcImportDispatcherTarget::WideMultiply => Some(PpcImportAction::Return(
+            ppc_wide_multiply(memory, cpu.gpr[3] as i32, cpu.gpr[4] as i32, cpu.gpr[5]),
         )),
-        PpcImportDispatcherTarget::FracSqrt => Some(PpcImportAction::Return(
-            ppc_frac_sqrt(cpu.gpr[3]),
+        PpcImportDispatcherTarget::WideDivide => Some(PpcImportAction::Return(ppc_wide_divide(
+            memory,
+            cpu.gpr[3],
+            cpu.gpr[4] as i32,
+            cpu.gpr[5],
+        ) as u32)),
+        PpcImportDispatcherTarget::WideWideDivide => Some(PpcImportAction::Return(
+            ppc_wide_wide_divide(memory, cpu.gpr[3], cpu.gpr[4] as i32, cpu.gpr[5]),
         )),
-        PpcImportDispatcherTarget::FracMul => Some(PpcImportAction::Return(
-            ppc_frac_mul(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
+        PpcImportDispatcherTarget::WideSquareRoot => Some(PpcImportAction::Return(
+            ppc_wide_square_root(memory, cpu.gpr[3]),
         )),
-        PpcImportDispatcherTarget::FracDiv => Some(PpcImportAction::Return(
-            ppc_frac_div(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
-        )),
-        PpcImportDispatcherTarget::FixATan2 => Some(PpcImportAction::Return(
-            ppc_fix_atan2(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
-        )),
+        PpcImportDispatcherTarget::WideCompare => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_wide_compare(memory, cpu.gpr[3], cpu.gpr[4]),
+        ))),
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
@@ -51905,6 +51958,217 @@ fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
 fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
     // Inside Macintosh Volume IV (1986), p. IV-65: arctangent of y/x in radians.
     ppc_radians_to_fixed(f64::from(y).atan2(f64::from(x)))
+}
+
+fn ppc_read_wide(memory: &mut PpcSectionMem, address: u32) -> Option<i64> {
+    let high = memory.read_u32_be(address)? as i32;
+    let low = memory.read_u32_be(address.checked_add(4)?)?;
+    Some((i64::from(high) << 32) | i64::from(low))
+}
+
+fn ppc_write_wide(memory: &mut PpcSectionMem, address: u32, value: i64) -> Option<()> {
+    memory.write_u32_be(address, (value >> 32) as u32)?;
+    memory.write_u32_be(address.checked_add(4)?, value as u32)?;
+    Some(())
+}
+
+fn ppc_wide_add(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-49: add source to
+    // target in place and return the target pointer.
+    if let (Some(target_value), Some(source_value)) =
+        (ppc_read_wide(memory, target), ppc_read_wide(memory, source))
+    {
+        let _ = ppc_write_wide(memory, target, target_value.wrapping_add(source_value));
+    }
+    target
+}
+
+fn ppc_wide_subtract(memory: &mut PpcSectionMem, target: u32, source: u32) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-50: subtract source
+    // from target in place and return the target pointer.
+    if let (Some(target_value), Some(source_value)) =
+        (ppc_read_wide(memory, target), ppc_read_wide(memory, source))
+    {
+        let _ = ppc_write_wide(memory, target, target_value.wrapping_sub(source_value));
+    }
+    target
+}
+
+fn ppc_wide_negate(memory: &mut PpcSectionMem, target: u32) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-50: replace target
+    // with its two's-complement negative and return the target pointer.
+    if let Some(value) = ppc_read_wide(memory, target) {
+        let _ = ppc_write_wide(memory, target, value.wrapping_neg());
+    }
+    target
+}
+
+fn ppc_round_wide_quotient(dividend: i128, divisor: i128) -> i128 {
+    let quotient = dividend / divisor;
+    let remainder = dividend % divisor;
+    let doubled_remainder = remainder.abs() * 2;
+    let divisor_magnitude = divisor.abs();
+    if doubled_remainder > divisor_magnitude
+        || (doubled_remainder == divisor_magnitude && (dividend < 0) == (divisor < 0))
+    {
+        quotient
+            + if (dividend < 0) == (divisor < 0) {
+                1
+            } else {
+                -1
+            }
+    } else {
+        quotient
+    }
+}
+
+fn ppc_wide_shift(memory: &mut PpcSectionMem, target: u32, shift: i32) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-51: positive shifts
+    // move right with rounding; negative shifts move left.
+    if let Some(value) = ppc_read_wide(memory, target) {
+        let shifted = if shift > 0 {
+            if shift >= 64 {
+                0
+            } else {
+                ppc_round_wide_quotient(i128::from(value), 1i128 << shift) as i64
+            }
+        } else if shift < 0 {
+            let magnitude = shift.unsigned_abs();
+            if magnitude >= 64 {
+                0
+            } else {
+                value.wrapping_shl(magnitude)
+            }
+        } else {
+            value
+        };
+        let _ = ppc_write_wide(memory, target, shifted);
+    }
+    target
+}
+
+fn ppc_wide_multiply(
+    memory: &mut PpcSectionMem,
+    multiplicand: i32,
+    multiplier: i32,
+    target: u32,
+) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-51: store the exact
+    // signed 32-by-32-bit product in target and return the target pointer.
+    let product = i64::from(multiplicand) * i64::from(multiplier);
+    let _ = ppc_write_wide(memory, target, product);
+    target
+}
+
+fn ppc_wide_divide(
+    memory: &mut PpcSectionMem,
+    dividend_ptr: u32,
+    divisor: i32,
+    remainder_ptr: u32,
+) -> i32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-52: return a
+    // signed-long quotient, optionally store the remainder, round when the
+    // remainder pointer is nil or -1, and pin overflow to an infinity.
+    let Some(dividend) = ppc_read_wide(memory, dividend_ptr) else {
+        return 0;
+    };
+    let no_remainder = remainder_ptr == 0 || remainder_ptr == u32::MAX;
+    let (quotient, remainder, quotient_is_negative) = if divisor == 0 {
+        (
+            if dividend < 0 { i128::MIN } else { i128::MAX },
+            i32::MIN,
+            dividend < 0,
+        )
+    } else {
+        let dividend = i128::from(dividend);
+        let divisor = i128::from(divisor);
+        let quotient = if no_remainder {
+            ppc_round_wide_quotient(dividend, divisor)
+        } else {
+            dividend / divisor
+        };
+        (
+            quotient,
+            (dividend % divisor) as i32,
+            (dividend < 0) != (divisor < 0),
+        )
+    };
+    let overflow = quotient < i128::from(i32::MIN) || quotient > i128::from(i32::MAX);
+    if overflow {
+        if remainder_ptr != 0 && remainder_ptr != u32::MAX {
+            let _ = memory.write_u32_be(remainder_ptr, i32::MIN as u32);
+        }
+        if remainder_ptr == u32::MAX || quotient_is_negative {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    } else {
+        if remainder_ptr != 0 && remainder_ptr != u32::MAX {
+            let _ = memory.write_u32_be(remainder_ptr, remainder as u32);
+        }
+        quotient as i32
+    }
+}
+
+fn ppc_wide_wide_divide(
+    memory: &mut PpcSectionMem,
+    dividend_ptr: u32,
+    divisor: i32,
+    remainder_ptr: u32,
+) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-52: replace the
+    // dividend with its wide quotient, optionally store the remainder, and
+    // round when the remainder pointer is nil or -1.
+    let Some(dividend) = ppc_read_wide(memory, dividend_ptr) else {
+        return dividend_ptr;
+    };
+    let no_remainder = remainder_ptr == 0 || remainder_ptr == u32::MAX;
+    let (quotient, remainder) = if divisor == 0 {
+        (if dividend < 0 { i64::MIN } else { i64::MAX }, i32::MIN)
+    } else {
+        let dividend = i128::from(dividend);
+        let divisor = i128::from(divisor);
+        let quotient = if no_remainder {
+            ppc_round_wide_quotient(dividend, divisor)
+        } else {
+            dividend / divisor
+        };
+        (quotient as i64, (dividend % divisor) as i32)
+    };
+    let _ = ppc_write_wide(memory, dividend_ptr, quotient);
+    if remainder_ptr != 0 && remainder_ptr != u32::MAX {
+        let _ = memory.write_u32_be(remainder_ptr, remainder as u32);
+    }
+    dividend_ptr
+}
+
+fn ppc_wide_square_root(memory: &mut PpcSectionMem, source: u32) -> u32 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-53: interpret the
+    // complete source as an unsigned wide value and return its square root.
+    let Some(high) = memory.read_u32_be(source) else {
+        return 0;
+    };
+    let Some(low) = source
+        .checked_add(4)
+        .and_then(|address| memory.read_u32_be(address))
+    else {
+        return 0;
+    };
+    ((u64::from(high) << 32) | u64::from(low)).isqrt() as u32
+}
+
+fn ppc_wide_compare(memory: &mut PpcSectionMem, target: u32, source: u32) -> i16 {
+    // QuickDraw GX Environment and Utilities (1994), p. 8-54: return 1, -1,
+    // or 0 according to the ordering of the two wide values.
+    match (ppc_read_wide(memory, target), ppc_read_wide(memory, source)) {
+        (Some(target), Some(source)) => match target.cmp(&source) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        },
+        _ => 0,
+    }
 }
 
 fn ppc_sync_gworld_pen(memory: &mut PpcSectionMem, current_gworld: u32, h: i16, v: i16) {
@@ -88403,6 +88667,163 @@ pub(crate) mod tests {
             }
             if let Some(expected) = expected_f1 {
                 assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), expected, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn ppc_wide_fixmath_helpers_mutate_records_and_apply_documented_results() {
+        // QuickDraw GX Environment and Utilities (1994), pp. 8-49--8-54.
+        const TARGET: u32 = 0x2000;
+        const SOURCE: u32 = 0x2008;
+        const REMAINDER: u32 = 0x2010;
+        let mut memory = PpcSectionMem::new();
+        memory.add_region(TARGET, vec![0; 0x100]);
+
+        ppc_write_wide(&mut memory, TARGET, 0x0000_0001_ffff_ffff).unwrap();
+        ppc_write_wide(&mut memory, SOURCE, 2).unwrap();
+        assert_eq!(ppc_wide_add(&mut memory, TARGET, SOURCE), TARGET);
+        assert_eq!(
+            ppc_read_wide(&mut memory, TARGET),
+            Some(0x0000_0002_0000_0001)
+        );
+        assert_eq!(ppc_wide_subtract(&mut memory, TARGET, SOURCE), TARGET);
+        assert_eq!(
+            ppc_read_wide(&mut memory, TARGET),
+            Some(0x0000_0001_ffff_ffff)
+        );
+        assert_eq!(ppc_wide_negate(&mut memory, TARGET), TARGET);
+        assert_eq!(
+            ppc_read_wide(&mut memory, TARGET),
+            Some(-0x0000_0001_ffff_ffff)
+        );
+
+        ppc_write_wide(&mut memory, TARGET, 7).unwrap();
+        assert_eq!(ppc_wide_shift(&mut memory, TARGET, 1), TARGET);
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(4));
+        ppc_write_wide(&mut memory, TARGET, -7).unwrap();
+        ppc_wide_shift(&mut memory, TARGET, 1);
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-3));
+        ppc_wide_shift(&mut memory, TARGET, -2);
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-12));
+
+        assert_eq!(
+            ppc_wide_multiply(&mut memory, -2_000_000_000, 2, TARGET),
+            TARGET
+        );
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(-4_000_000_000));
+
+        ppc_write_wide(&mut memory, TARGET, 10).unwrap();
+        assert_eq!(ppc_wide_divide(&mut memory, TARGET, 3, REMAINDER), 3);
+        assert_eq!(memory.read_u32_be(REMAINDER), Some(1));
+        ppc_write_wide(&mut memory, TARGET, 11).unwrap();
+        assert_eq!(ppc_wide_divide(&mut memory, TARGET, 2, 0), 6);
+        ppc_write_wide(&mut memory, TARGET, -11).unwrap();
+        assert_eq!(ppc_wide_divide(&mut memory, TARGET, 2, 0), -5);
+        ppc_write_wide(&mut memory, TARGET, i64::MAX).unwrap();
+        assert_eq!(ppc_wide_divide(&mut memory, TARGET, 1, REMAINDER), i32::MAX);
+        assert_eq!(memory.read_u32_be(REMAINDER), Some(i32::MIN as u32));
+        assert_eq!(ppc_wide_divide(&mut memory, TARGET, 1, u32::MAX), i32::MIN);
+
+        ppc_write_wide(&mut memory, TARGET, 11).unwrap();
+        assert_eq!(
+            ppc_wide_wide_divide(&mut memory, TARGET, 2, REMAINDER),
+            TARGET
+        );
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(5));
+        assert_eq!(memory.read_u32_be(REMAINDER), Some(1));
+        ppc_write_wide(&mut memory, TARGET, 11).unwrap();
+        ppc_wide_wide_divide(&mut memory, TARGET, 2, 0);
+        assert_eq!(ppc_read_wide(&mut memory, TARGET), Some(6));
+
+        ppc_write_wide(&mut memory, TARGET, 81).unwrap();
+        assert_eq!(ppc_wide_square_root(&mut memory, TARGET), 9);
+        memory.write_u32_be(TARGET, u32::MAX).unwrap();
+        memory.write_u32_be(TARGET + 4, u32::MAX).unwrap();
+        assert_eq!(ppc_wide_square_root(&mut memory, TARGET), u32::MAX);
+
+        ppc_write_wide(&mut memory, TARGET, -1).unwrap();
+        ppc_write_wide(&mut memory, SOURCE, 1).unwrap();
+        assert_eq!(ppc_wide_compare(&mut memory, TARGET, SOURCE), -1);
+        ppc_write_wide(&mut memory, SOURCE, -1).unwrap();
+        assert_eq!(ppc_wide_compare(&mut memory, TARGET, SOURCE), 0);
+    }
+
+    #[test]
+    fn ppc_wide_fixmath_imports_execute_through_synthetic_pefs() {
+        // Universal Interfaces 3.4 FixMath.h declares these as InterfaceLib
+        // exports; semantics are from QuickDraw GX Environment and Utilities
+        // (1994), pp. 8-49 through 8-54.
+        let cases = [
+            ("WideAdd", PpcImportDispatcherTarget::WideAdd),
+            ("WideSubtract", PpcImportDispatcherTarget::WideSubtract),
+            ("WideNegate", PpcImportDispatcherTarget::WideNegate),
+            ("WideShift", PpcImportDispatcherTarget::WideShift),
+            ("WideMultiply", PpcImportDispatcherTarget::WideMultiply),
+            ("WideDivide", PpcImportDispatcherTarget::WideDivide),
+            ("WideWideDivide", PpcImportDispatcherTarget::WideWideDivide),
+            ("WideSquareRoot", PpcImportDispatcherTarget::WideSquareRoot),
+            ("WideCompare", PpcImportDispatcherTarget::WideCompare),
+        ];
+
+        for (name, target) in cases {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(name.as_bytes()))
+                .expect("synthetic Wide FixMath PEF should load");
+            assert_eq!(loaded.imports[0].dispatcher_target, target, "{name}");
+            let scratch = PPC_DATA_BASE + 0x1000;
+            let source = scratch + 8;
+            let remainder = scratch + 16;
+            loaded.memory.add_region(scratch, vec![0; 0x100]);
+            ppc_write_wide(&mut loaded.memory, scratch, 9).unwrap();
+            ppc_write_wide(&mut loaded.memory, source, 4).unwrap();
+            loaded.cpu.gpr[3] = scratch;
+            loaded.cpu.gpr[4] = source;
+            loaded.cpu.gpr[5] = remainder;
+            match name {
+                "WideShift" => loaded.cpu.gpr[4] = 1,
+                "WideMultiply" => {
+                    loaded.cpu.gpr[3] = (-3i32) as u32;
+                    loaded.cpu.gpr[4] = 7;
+                    loaded.cpu.gpr[5] = scratch;
+                }
+                "WideDivide" | "WideWideDivide" => {
+                    loaded.cpu.gpr[4] = 2;
+                }
+                "WideSquareRoot" => {}
+                _ => {}
+            }
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+
+            let result = loaded.run_with_hle_imports(64);
+
+            assert_eq!(result.handled_import_count, 1, "{name}");
+            match name {
+                "WideAdd" => assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(13)),
+                "WideSubtract" => {
+                    assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(5))
+                }
+                "WideNegate" => {
+                    assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(-9))
+                }
+                "WideShift" => {
+                    assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(5))
+                }
+                "WideMultiply" => {
+                    assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(-21))
+                }
+                "WideDivide" => {
+                    assert_eq!(loaded.cpu.gpr[3], 4);
+                    assert_eq!(loaded.memory.read_u32_be(remainder), Some(1));
+                }
+                "WideWideDivide" => {
+                    assert_eq!(loaded.cpu.gpr[3], scratch);
+                    assert_eq!(ppc_read_wide(&mut loaded.memory, scratch), Some(4));
+                    assert_eq!(loaded.memory.read_u32_be(remainder), Some(1));
+                }
+                "WideSquareRoot" => assert_eq!(loaded.cpu.gpr[3], 3),
+                "WideCompare" => assert_eq!(loaded.cpu.gpr[3], 1),
+                _ => unreachable!(),
             }
         }
     }
