@@ -145648,7 +145648,7 @@ pub(crate) mod tests {
             Some(3)
         );
         assert_eq!(
-            ppc_te_text_bytes(&mut loaded.memory, &loaded.handles, te_handle),
+            ppc_te_text_bytes(&mut loaded.memory, &test_handle_records!(loaded), te_handle),
             Some(b"abZ".to_vec())
         );
 
