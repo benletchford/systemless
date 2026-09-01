@@ -1270,6 +1270,25 @@ impl MacMemoryBus {
         unsafe { foreign.is_ordinary_sparse_mapped(address) }
     }
 
+    /// Return the end of a read-only process mapping that overlaps a proposed
+    /// native heap allocation while the owning PowerPC process is parked.
+    pub(crate) fn foreign_readonly_allocation_overlap_end(
+        &self,
+        address: u32,
+        len: u32,
+    ) -> Option<u32> {
+        let foreign = self.foreign_address_space?;
+        // SAFETY: see `foreign_read_u8`.
+        unsafe { foreign.readonly_allocation_overlap_end(address, len) }
+    }
+
+    /// Write bytes exclusively through the parked process address space.
+    pub(crate) fn write_foreign_bytes(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
+        let foreign = self.foreign_address_space?;
+        // SAFETY: see `foreign_read_u8`.
+        unsafe { foreign.write_bytes(address, bytes) }
+    }
+
     #[inline]
     fn foreign_read_u8(&self, address: u32) -> Option<u8> {
         let memory = self.foreign_address_space?;

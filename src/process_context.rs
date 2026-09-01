@@ -3,7 +3,7 @@
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::memory::bus::SharedRamRegion;
-use crate::memory::GuestAddressSpace;
+use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use std::collections::{HashMap, HashSet};
 
@@ -54,19 +54,6 @@ pub(crate) struct ProcessNativeAllocatorState {
     pub(crate) free_handle_blocks: Vec<ProcessHandleRecord>,
 }
 
-/// A deferred byte replacement for a relocatable guest handle.
-///
-/// This channel lets a serialized 68k execution context request a handle resize
-/// and byte update within the native process address space without giving the
-/// 68k dispatcher direct allocator ownership over the parked PowerPC heap.
-/// Inside Macintosh: Memory (1992), pp. 2-40--2-41.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingHandleByteReplacement {
-    pub(crate) handle: u32,
-    pub(crate) expected_ptr: u32,
-    pub(crate) replacement: Vec<u8>,
-}
-
 /// Architecture-neutral Memory Manager metadata for one Macintosh process.
 ///
 /// Guest addresses, rather than CPU adapter records, identify relocatable
@@ -86,6 +73,11 @@ pub(crate) struct ProcessMemoryManager {
 }
 
 impl ProcessMemoryManager {
+    const NATIVE_HEAP_ALIGNMENT: u32 = 16;
+    const MEM_FULL_ERR: i16 = -108;
+    const NIL_HANDLE_ERR: i16 = -109;
+    const NO_ERR: i16 = 0;
+
     pub(crate) fn merge_metadata(
         &mut self,
         ptr_to_handle: HashMap<u32, u32>,
@@ -116,10 +108,18 @@ impl ProcessMemoryManager {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn metadata_mut(
         &mut self,
     ) -> (&mut HashMap<u32, u32>, &mut HashMap<u32, u8>) {
         (&mut self.ptr_to_handle, &mut self.handle_state_bits)
+    }
+
+    pub(crate) fn take_metadata(&mut self) -> (HashMap<u32, u32>, HashMap<u32, u8>) {
+        (
+            std::mem::take(&mut self.ptr_to_handle),
+            std::mem::take(&mut self.handle_state_bits),
+        )
     }
 
     pub(crate) fn register_native_handle_records(
@@ -151,6 +151,145 @@ impl ProcessMemoryManager {
 
     pub(crate) fn native_allocation(&self, handle: u32) -> Option<ProcessHandleRecord> {
         self.native_allocations.get(&handle).copied()
+    }
+
+    fn native_allocation_size(size: u32) -> Option<u32> {
+        Some(
+            size.checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
+                & !(Self::NATIVE_HEAP_ALIGNMENT - 1),
+        )
+        .map(|size| size.max(Self::NATIVE_HEAP_ALIGNMENT))
+    }
+
+    fn native_allocation_bounds(
+        bus: &MacMemoryBus,
+        heap_cursor: u32,
+        heap_limit: u32,
+        aligned_size: u32,
+    ) -> Option<(u32, u32)> {
+        let mut ptr = heap_cursor
+            .checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
+            & !(Self::NATIVE_HEAP_ALIGNMENT - 1);
+        loop {
+            let next = ptr.checked_add(aligned_size)?;
+            if next >= heap_limit {
+                return None;
+            }
+            let Some(reserved_end) =
+                bus.foreign_readonly_allocation_overlap_end(ptr, aligned_size)
+            else {
+                return Some((ptr, next));
+            };
+            ptr = reserved_end
+                .checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
+                & !(Self::NATIVE_HEAP_ALIGNMENT - 1);
+        }
+    }
+
+    fn set_native_mem_error(&mut self, error: i16) {
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.heap.last_mem_error = error;
+            self.native_allocator_dirty = true;
+        }
+    }
+
+    /// Replace a native relocatable block while its process address space is
+    /// attached to the serialized 68K adapter.
+    ///
+    /// A handle remains stable while its master pointer may change when the
+    /// block grows. Inside Macintosh: Memory (1992), pp. 1-18--1-19 and
+    /// 2-40--2-41.
+    pub(crate) fn replace_native_handle_bytes(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        expected_ptr: u32,
+        bytes: &[u8],
+    ) -> Result<(u32, u32), i16> {
+        let Some(record) = self.native_allocations.get(&handle).copied() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        };
+        let current_ptr = bus.read_long(handle);
+        if current_ptr == 0 || current_ptr != expected_ptr || record.ptr != current_ptr {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+        let Ok(size) = u32::try_from(bytes.len()) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let Some(new_aligned) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Err(Self::MEM_FULL_ERR);
+        };
+        let Some(allocator) = self.native_allocator.as_ref() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        };
+
+        let mut new_ptr = record.ptr;
+        let mut new_cursor = allocator.heap.heap_cursor;
+        let mut new_capacity = record.capacity;
+        if size > record.capacity {
+            let Some(old_aligned) = Self::native_allocation_size(record.capacity) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Err(Self::MEM_FULL_ERR);
+            };
+            let can_extend_last = record.ptr.checked_add(old_aligned)
+                == Some(allocator.heap.heap_cursor)
+                && Self::native_allocation_bounds(
+                    bus,
+                    record.ptr,
+                    allocator.heap.heap_limit,
+                    new_aligned,
+                )
+                .is_some_and(|(ptr, _)| ptr == record.ptr);
+            if can_extend_last {
+                new_cursor = record.ptr + new_aligned;
+            } else {
+                let Some((ptr, next)) = Self::native_allocation_bounds(
+                    bus,
+                    allocator.heap.heap_cursor,
+                    allocator.heap.heap_limit,
+                    new_aligned,
+                ) else {
+                    self.set_native_mem_error(Self::MEM_FULL_ERR);
+                    return Err(Self::MEM_FULL_ERR);
+                };
+                new_ptr = ptr;
+                new_cursor = next;
+            }
+            new_capacity = size;
+        }
+
+        if bus.write_foreign_bytes(new_ptr, bytes).is_none()
+            || (new_ptr != current_ptr
+                && bus
+                    .write_foreign_bytes(handle, &new_ptr.to_be_bytes())
+                    .is_none())
+        {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+
+        let updated = ProcessHandleRecord {
+            handle,
+            ptr: new_ptr,
+            size,
+            capacity: new_capacity,
+        };
+        self.native_allocations.insert(handle, updated);
+        self.native_handle_ptrs.remove(&current_ptr);
+        self.native_handle_ptrs.insert(new_ptr);
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator.heap.heap_cursor = new_cursor;
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        Ok((current_ptr, new_ptr))
     }
 
     pub(crate) fn publish_native_allocator(
@@ -239,7 +378,6 @@ pub(crate) struct ProcessContext {
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
-    pending_memory_effects: Vec<PendingHandleByteReplacement>,
 }
 
 impl ProcessContext {
@@ -342,24 +480,6 @@ impl ProcessContext {
         &mut self.menu_tracking
     }
 
-    #[cfg(test)]
-    pub(crate) fn pending_memory_effects(&self) -> &[PendingHandleByteReplacement] {
-        &self.pending_memory_effects
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pending_memory_effects_mut(&mut self) -> &mut Vec<PendingHandleByteReplacement> {
-        &mut self.pending_memory_effects
-    }
-
-    pub(crate) fn take_pending_memory_effects(&mut self) -> Vec<PendingHandleByteReplacement> {
-        std::mem::take(&mut self.pending_memory_effects)
-    }
-
-    pub(crate) fn has_pending_memory_effects(&self) -> bool {
-        !self.pending_memory_effects.is_empty()
-    }
-
     /// Transfer detached adapter state into the canonical process owner.
     pub(crate) fn adopt_menu_tracking(&mut self, adapter: &mut Option<ProcessMenuTrackingState>) {
         assert!(
@@ -389,22 +509,6 @@ impl ProcessContext {
             &mut self.event_queue,
             &mut self.menu_tracking,
             &mut self.memory_manager,
-        )
-    }
-
-    pub(crate) fn event_queue_menu_tracking_and_memory_effects_mut(
-        &mut self,
-    ) -> (
-        &mut EventQueue,
-        &mut Option<ProcessMenuTrackingState>,
-        &mut ProcessMemoryManager,
-        &mut Vec<PendingHandleByteReplacement>,
-    ) {
-        (
-            &mut self.event_queue,
-            &mut self.menu_tracking,
-            &mut self.memory_manager,
-            &mut self.pending_memory_effects,
         )
     }
 
@@ -608,45 +712,117 @@ mod tests {
     }
 
     #[test]
-    fn process_context_owns_canonical_pending_memory_effects() {
-        let mut context = ProcessContext::default();
-        assert!(!context.has_pending_memory_effects());
-        assert!(context.pending_memory_effects().is_empty());
+    fn process_memory_manager_relocates_native_handle_immediately_through_68k_bus() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        native.write_u32_be(handle, old_ptr).unwrap();
+        native.write_bytes(old_ptr, b"original").unwrap();
 
-        context.pending_memory_effects_mut().push(PendingHandleByteReplacement {
-            handle: 0x1000,
-            expected_ptr: 0x2000,
-            replacement: vec![1, 2, 3, 4],
-        });
-        assert!(context.has_pending_memory_effects());
-        assert_eq!(context.pending_memory_effects().len(), 1);
-        assert_eq!(context.pending_memory_effects()[0].handle, 0x1000);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        manager.register_native_handle_records([(
+            ProcessHandleRecord {
+                handle,
+                ptr: old_ptr,
+                size: 8,
+                capacity: 16,
+            },
+            0,
+        )]);
 
-        let taken = context.take_pending_memory_effects();
-        assert_eq!(taken.len(), 1);
-        assert_eq!(taken[0].handle, 0x1000);
-        assert_eq!(taken[0].expected_ptr, 0x2000);
-        assert_eq!(taken[0].replacement, vec![1, 2, 3, 4]);
-        assert!(!context.has_pending_memory_effects());
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        let replacement = vec![0x5a; 48];
+        let relocated = manager
+            .replace_native_handle_bytes(&mut bus, handle, old_ptr, &replacement)
+            .unwrap();
 
-        let (queue, menu, _memory_manager, effects) =
-            context.event_queue_menu_tracking_and_memory_effects_mut();
-        queue.push_back(QueuedEvent {
-            what: 1,
-            message: 0x1234,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        });
-        *menu = Some(crate::menu_manager::test_process_menu_tracking(0x3000));
-        effects.push(PendingHandleByteReplacement {
-            handle: 0x4000,
-            expected_ptr: 0x5000,
-            replacement: vec![9, 8, 7],
-        });
-        assert_eq!(context.event_queue().len(), 1);
-        assert!(context.menu_tracking().is_some());
-        assert_eq!(context.pending_memory_effects().len(), 1);
+        assert_eq!(relocated, (old_ptr, heap_cursor));
+        assert_eq!(bus.read_long(handle), heap_cursor);
+        assert_eq!(bus.read_bytes(heap_cursor, replacement.len()), replacement);
+        assert_eq!(
+            manager.native_allocation(handle),
+            Some(ProcessHandleRecord {
+                handle,
+                ptr: heap_cursor,
+                size: 48,
+                capacity: 48,
+            })
+        );
+        assert_eq!(
+            manager
+                .native_allocator_update()
+                .map(|allocator| allocator.heap.heap_cursor),
+            Some(heap_cursor + 48)
+        );
+    }
+
+    #[test]
+    fn process_memory_manager_preserves_native_handle_when_growth_exhausts_heap() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x100]);
+        native.write_u32_be(handle, old_ptr).unwrap();
+        native.write_bytes(old_ptr, b"original").unwrap();
+
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor,
+                heap_limit: heap_cursor,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let original = ProcessHandleRecord {
+            handle,
+            ptr: old_ptr,
+            size: 8,
+            capacity: 16,
+        };
+        manager.register_native_handle_records([(original, 0)]);
+
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        assert_eq!(
+            manager.replace_native_handle_bytes(&mut bus, handle, old_ptr, &[0x5a; 48]),
+            Err(ProcessMemoryManager::MEM_FULL_ERR)
+        );
+        assert_eq!(bus.read_long(handle), old_ptr);
+        assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
+        assert_eq!(manager.native_allocation(handle), Some(original));
+        assert_eq!(
+            manager
+                .native_allocator_update()
+                .map(|allocator| allocator.heap.last_mem_error),
+            Some(ProcessMemoryManager::MEM_FULL_ERR)
+        );
     }
 
     #[test]

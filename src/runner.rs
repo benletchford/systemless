@@ -6548,22 +6548,19 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let (event_queue, menu_tracking, memory_manager, memory_effects) =
-                        self.process_context.event_queue_menu_tracking_and_memory_effects_mut();
-                    let dispatch_err = self.dispatcher.with_process_state_and_memory_effects(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager_mut();
+                    let dispatch_err = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
                         memory_manager,
-                        memory_effects,
                         |dispatcher| {
                             dispatcher
                                 .dispatch(opcode, &mut self.cpu, &mut self.bus)
                                 .is_err()
                         },
                     );
-                    if self.process_context.has_pending_memory_effects() {
-                        self.apply_pending_process_memory_effects(ppc_app);
-                    }
                     if dispatch_err {
                         running = false;
                         break;
@@ -6589,46 +6586,6 @@ impl FixtureRunner {
         }
         self.bus.detach_guest_address_space();
         Some((executed, running))
-    }
-
-    fn apply_pending_process_memory_effects(&mut self, ppc_app: &mut PpcLoadedApp) {
-        let effects = self.process_context.take_pending_memory_effects();
-        if effects.is_empty() {
-            return;
-        }
-        self.bus.detach_guest_address_space();
-        let mut successful_menus = Vec::new();
-        for effect in effects {
-            let success = ppc_app.replace_handle_bytes(
-                effect.handle,
-                effect.expected_ptr,
-                &effect.replacement,
-            );
-            if success {
-                self.bus
-                    .write_word(crate::memory::globals::addr::MEM_ERR, 0);
-                successful_menus.push((effect.handle, effect.expected_ptr));
-            } else {
-                let err = if ppc_app.last_mem_error != 0 {
-                    ppc_app.last_mem_error as u16
-                } else {
-                    (-108i16) as u16 // memFullErr
-                };
-                self.bus
-                    .write_word(crate::memory::globals::addr::MEM_ERR, err);
-            }
-        }
-        // SAFETY: `ppc_app` is parked for this whole interval. The address
-        // space remains in place, and all reads and writes are serialized
-        // through this runner until the bus is detached.
-        let shared_memory = unsafe { ppc_app.memory.shared_view() };
-        unsafe {
-            self.bus.attach_guest_address_space(shared_memory);
-        }
-        for (menu_handle, old_ptr) in successful_menus {
-            self.dispatcher
-                .complete_deferred_menu_replacement(&self.bus, menu_handle, old_ptr);
-        }
     }
 
     fn resume_m68k_after_powerpc(&mut self, ppc_app: &mut PpcLoadedApp) -> bool {
@@ -14423,7 +14380,6 @@ mod tests {
             "native decoding must observe the item appended by the 68k callback"
         );
         assert_eq!(native.last_mem_error, 0);
-        assert!(!runner.process_context.has_pending_memory_effects());
         assert_eq!(runner.bus.read_word(crate::memory::globals::addr::MEM_ERR), 0);
 
         let target_v = root_rect.0 + 24;

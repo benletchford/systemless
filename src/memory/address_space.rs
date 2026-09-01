@@ -108,6 +108,34 @@ impl SharedGuestAddressSpace {
         }
         space.regions.read_u8(address).is_some()
     }
+
+    /// Return the end of the highest read-only runtime reservation overlapping
+    /// a candidate native heap allocation.
+    #[inline]
+    pub(crate) unsafe fn readonly_allocation_overlap_end(
+        self,
+        address: u32,
+        len: u32,
+    ) -> Option<u32> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe {
+            self.0
+                .as_ptr()
+                .as_ref()?
+                .readonly_allocation_overlap_end(address, len)
+        }
+    }
+
+    /// Write bytes only through the attached guest address space.
+    #[inline]
+    pub(crate) unsafe fn write_bytes(self, address: u32, bytes: &[u8]) -> Option<()> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        let space = unsafe { self.0.as_ptr().as_mut()? };
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            PpcMemory::write_u8(space, address.checked_add(offset as u32)?, byte)?;
+        }
+        Some(())
+    }
 }
 
 impl Clone for GuestAddressSpace {
