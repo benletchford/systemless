@@ -6,6 +6,7 @@ use crate::guest_procedure::GuestProcedure;
 use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
+use crate::sound::SoundManager;
 use ppc::PpcMemory;
 use std::cell::{RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet};
@@ -561,6 +562,7 @@ pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>
 pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
+pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
@@ -3341,6 +3343,7 @@ pub(crate) struct ProcessContext {
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
+    sound_manager: SharedProcessSoundManager,
 }
 
 impl ProcessContext {
@@ -3377,6 +3380,10 @@ impl ProcessContext {
 
     pub(crate) fn attach_resource_manager(&self, adapter: &mut SharedProcessResourceManager) {
         adapter.attach_resource_manager_to(&self.file_system.resource_manager);
+    }
+
+    pub(crate) fn attach_sound_manager(&self, adapter: &mut SharedProcessSoundManager) {
+        adapter.attach_to(&self.sound_manager, SoundManager::is_pristine);
     }
 
     pub(crate) fn attach_classic_file_system(
@@ -4835,5 +4842,31 @@ mod tests {
         );
         assert!(detached.resident_resources.is_empty());
         assert!(detached.vfs_resources.is_empty());
+    }
+
+    #[test]
+    fn attached_sound_managers_share_channels_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessSoundManager::default();
+        classic
+            .channels
+            .push(crate::sound::SndChannel::new(0x2000, false));
+        let mut native = SharedProcessSoundManager::default();
+
+        context.attach_sound_manager(&mut classic);
+        context.attach_sound_manager(&mut native);
+        let detached = native.clone();
+
+        native.set_sys_beep_volume(0x0080_0040);
+        classic
+            .channels
+            .push(crate::sound::SndChannel::new(0x3000, false));
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(native.channels.len(), 2);
+        assert_eq!(native.channels[0].guest_ptr, 0x2000);
+        assert_eq!(classic.sys_beep_volume(), 0x0080_0040);
+        assert_eq!(detached.channels.len(), 1);
+        assert_eq!(detached.sys_beep_volume(), 0x0100_0100);
     }
 }

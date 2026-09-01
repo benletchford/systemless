@@ -13709,7 +13709,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -13748,6 +13747,50 @@ mod tests {
         assert_eq!(ppc_app.guest_calls.len(), 1);
         assert!(ppc_app.guest_calls.complete_m68k(0x2002, 0x3000));
         assert!(runner.dispatcher.guest_calls.is_empty());
+    }
+
+    #[test]
+    fn ppc_initialization_attaches_both_cpu_adapters_to_one_sound_manager() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        {
+            let ppc_app = runner.ppc_app.as_mut().expect("PPC app");
+            assert!(ppc_app
+                .sound
+                .manager
+                .ptr_eq(&runner.dispatcher.sound_manager));
+            ppc_app
+                .sound
+                .manager
+                .register_channel(0x0050_1000, false, 0x0012_3456);
+            ppc_app
+                .sound
+                .manager
+                .set_default_output_volume(0x0000_8000);
+        }
+
+        let classic_channel = runner
+            .dispatcher
+            .sound_manager
+            .channels
+            .iter_mut()
+            .find(|channel| channel.guest_ptr == 0x0050_1000)
+            .expect("native channel visible to classic adapter");
+        assert_eq!(classic_channel.callback_addr, 0x0012_3456);
+        classic_channel.set_volume(0x0000_4000);
+        runner.dispatcher.sound_manager.set_sys_beep_volume(0x0000_2000);
+
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app");
+        assert_eq!(ppc_app.sound.manager.default_output_volume(), 0x0000_8000);
+        assert_eq!(ppc_app.sound.manager.sys_beep_volume(), 0x0000_2000);
+        assert!(ppc_app
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|channel| channel.guest_ptr == 0x0050_1000));
     }
 
     #[test]
@@ -15899,7 +15942,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -16180,6 +16222,7 @@ mod tests {
         let mut preview = [0; 16];
         preview[..samples.len()].copy_from_slice(&samples);
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
             decoded_buffer_commands: Vec::new(),
@@ -16325,6 +16368,7 @@ mod tests {
         let mut preview = [0; 16];
         preview[..samples.len()].copy_from_slice(&samples);
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
             decoded_buffer_commands: Vec::new(),
@@ -16462,6 +16506,7 @@ mod tests {
         let mut preview = [0; 16];
         preview[..samples.len()].copy_from_slice(&samples);
         let mut app = halted_ppc_app_with_sound(PpcSoundState {
+            manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
             decoded_buffer_commands: Vec::new(),
@@ -16791,7 +16836,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -16942,7 +16986,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -17352,7 +17395,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),
@@ -17662,7 +17704,6 @@ mod tests {
             next_vfs_dir_id: 18,
             default_dir_id: 2,
             launched_app_path: None,
-            default_output_volume: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             scrap: Default::default(),
             list_manager: Default::default(),

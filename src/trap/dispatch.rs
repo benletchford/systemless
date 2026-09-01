@@ -16,7 +16,7 @@ use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
     ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
-    SharedProcessResourceManager, SharedProcessValue,
+    SharedProcessResourceManager, SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2275,7 +2275,7 @@ pub struct TrapDispatcher {
     /// may set it while leaving `fullscreen_locked` to model guest state.
     pub menu_bar_hidden: bool,
     /// Sound Manager state (channels, playback buffers).
-    pub sound_manager: crate::sound::SoundManager,
+    pub(crate) sound_manager: SharedProcessSoundManager,
     /// Menus loaded from MENU resources, in order of insertion
     pub(crate) menus: Vec<super::menu::Menu>,
     /// Active menu tracking state (non-None while MenuSelect is tracking the mouse)
@@ -2909,6 +2909,7 @@ impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_resource_manager(&mut self.process_resource_manager);
+        context.attach_sound_manager(&mut self.sound_manager);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.adopt_menu_tracking(&mut self.menu_tracking);
         let mut memory_manager = None;
@@ -3999,7 +4000,7 @@ impl TrapDispatcher {
             menu_bar_policy: crate::runner::MenuBarPolicy::GuestControlled,
             initial_kiosk_guest_hide_observed: false,
             menu_bar_hidden: false,
-            sound_manager: crate::sound::SoundManager::new(),
+            sound_manager: SharedProcessSoundManager::default(),
             menus: Vec::new(),
             menu_tracking: None,
             guest_calls: SharedGuestCallStack::default(),

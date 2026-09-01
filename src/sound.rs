@@ -389,7 +389,7 @@ impl SndChannel {
     }
 }
 
-/// Top-level sound manager state, owned by TrapDispatcher.
+/// Top-level process-owned sound manager state shared by CPU adapters.
 #[derive(Clone, Debug)]
 pub struct SoundManager {
     pub channels: Vec<SndChannel>,
@@ -455,10 +455,103 @@ impl SoundManager {
         }
     }
 
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.channels.is_empty()
+            && self.pending_callbacks.is_empty()
+            && self.pending_sound_callbacks.is_empty()
+            && self.debug_cmd_count == 0
+            && self.debug_buffer_cmd_count == 0
+            && self.debug_double_buffer_count == 0
+            && self.debug_samples_mixed == 0
+            && self.debug_unhandled_cmds.is_empty()
+            && self.debug_cmd_codes_seen.is_empty()
+            && self.debug_file_play_count == 0
+            && self.sys_beep_volume == FULL_STEREO_VOLUME
+            // Classic construction uses packed full stereo volume, while a
+            // freshly loaded native process uses the Sound Manager's unity
+            // 16.16 device default. Both are unattached launch defaults.
+            && matches!(self.default_output_volume, FULL_STEREO_VOLUME | 0x0001_0000)
+    }
+
     pub(crate) fn has_playback_gated_callback(&self) -> bool {
         self.channels
             .iter()
             .any(SndChannel::has_playback_gated_callback)
+    }
+
+    /// Register a guest-visible channel in the canonical process manager.
+    ///
+    /// `SndNewChannel` creates the channel and its FIFO command queue in the
+    /// application's heap. Inside Macintosh: Sound (1994), pp. 2-19--2-21.
+    pub(crate) fn register_channel(
+        &mut self,
+        guest_ptr: u32,
+        allocated: bool,
+        callback_addr: u32,
+    ) {
+        self.remove_channel(guest_ptr);
+        let mut channel = SndChannel::new(guest_ptr, allocated);
+        channel.callback_addr = callback_addr;
+        self.channels.push(channel);
+    }
+
+    fn ensure_channel_mut(&mut self, guest_ptr: u32) -> &mut SndChannel {
+        if let Some(index) = self
+            .channels
+            .iter()
+            .position(|channel| channel.guest_ptr == guest_ptr)
+        {
+            return &mut self.channels[index];
+        }
+        self.channels.push(SndChannel::new(guest_ptr, false));
+        self.channels.last_mut().unwrap()
+    }
+
+    fn record_command(&mut self, command: u16) {
+        self.debug_cmd_count = self.debug_cmd_count.saturating_add(1);
+        if !self.debug_cmd_codes_seen.contains(&command) {
+            self.debug_cmd_codes_seen.push(command);
+        }
+    }
+
+    /// Submit decoded `bufferCmd` samples directly to the process channel.
+    /// Sound commands belong to the channel managed by the Sound Manager,
+    /// irrespective of the ISA that submitted them. Sound 1994, pp. 2-92--2-97.
+    pub(crate) fn play_buffer_command(
+        &mut self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+    ) {
+        self.record_command(cmd::BUFFER);
+        self.debug_buffer_cmd_count = self.debug_buffer_cmd_count.saturating_add(1);
+        self.ensure_channel_mut(guest_ptr).play_buffer(
+            samples,
+            sample_rate_fixed,
+            PlaybackKind::Buffer,
+            0,
+        );
+    }
+
+    /// Apply a native immediate command to the canonical process channel.
+    /// `SndDoImmediate` bypasses the FIFO while leaving queued commands in
+    /// place. Sound 1994, pp. 2-93 and 2-128--2-130.
+    pub(crate) fn execute_immediate_command(&mut self, guest_ptr: u32, command: SndCommand) {
+        self.record_command(command.cmd);
+        let channel = self.ensure_channel_mut(guest_ptr);
+        match command.cmd {
+            cmd::QUIET => channel.quiet(),
+            cmd::FLUSH => channel.flush(),
+            cmd::VOLUME => channel.set_volume(command.param2),
+            cmd::RATE => channel.set_rate(command.param2),
+            _ => {}
+        }
+    }
+
+    /// Queue a native command on the canonical process channel FIFO.
+    pub(crate) fn enqueue_command(&mut self, guest_ptr: u32, command: SndCommand) -> bool {
+        self.record_command(command.cmd);
+        self.ensure_channel_mut(guest_ptr).enqueue(command)
     }
 
     pub fn sys_beep_volume(&self) -> u32 {
