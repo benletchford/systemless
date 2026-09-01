@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::OnceLock;
 
 use super::globals::LowMemGlobals;
-use super::SharedGuestAddressSpace;
+use super::{GuestAddressSpace, SharedGuestAddressSpace};
 
 const LEGACY_SOUND_BUFFER_WORDS: u32 = 370;
 const LEGACY_SOUND_BUFFER_BYTES: u32 = LEGACY_SOUND_BUFFER_WORDS * 2;
@@ -1336,6 +1336,21 @@ impl MacMemoryBus {
         let foreign = self.foreign_address_space?;
         // SAFETY: see `foreign_read_u8`.
         unsafe { foreign.write_bytes(address, bytes) }
+    }
+
+    /// Exclusively operate on the parked process address space.
+    ///
+    /// The attachment contract serializes the native adapter while the 68K
+    /// bus is active, and the mutable bus borrow prevents overlapping access
+    /// through this adapter.
+    pub(crate) fn with_foreign_address_space<R>(
+        &mut self,
+        f: impl FnOnce(&mut GuestAddressSpace) -> R,
+    ) -> Option<R> {
+        let foreign = self.foreign_address_space?;
+        // SAFETY: `attach_guest_address_space` requires an exclusive,
+        // serialized interval and `self` is mutably borrowed for the closure.
+        unsafe { foreign.with_mut(f) }
     }
 
     #[inline]

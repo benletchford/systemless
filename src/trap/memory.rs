@@ -787,6 +787,70 @@ impl super::TrapDispatcher {
         memory_manager.empty_process_handle(bus, handle) as i32 as u32
     }
 
+    fn copy_bytes_to_new_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bytes: &[u8],
+    ) -> std::result::Result<u32, u32> {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager
+            .copy_bytes_to_new_classic_handle(bus, bytes)
+            .map(|(handle, _)| handle)
+            .map_err(|error| error as i32 as u32)
+    }
+
+    fn copy_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+    ) -> std::result::Result<u32, u32> {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager
+            .copy_process_handle(bus, handle)
+            .map(|(handle, _)| handle)
+            .map_err(|error| error as i32 as u32)
+    }
+
+    fn replace_process_handle_bytes(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        bytes: &[u8],
+    ) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.replace_process_handle_bytes(bus, handle, bytes) as i32 as u32
+    }
+
+    fn append_bytes_to_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        bytes: &[u8],
+    ) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.append_bytes_to_process_handle(bus, handle, bytes) as i32 as u32
+    }
+
+    fn append_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        source: u32,
+        destination: u32,
+    ) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.append_process_handle(bus, source, destination) as i32 as u32
+    }
+
     pub(crate) fn dispatch_memory<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -1654,191 +1718,100 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // HandToHand ($A9E1 = toolbox 0x1E1) - register-based calling convention
-            // Duplicates a handle: allocates a new relocatable block of the same
-            // size and copies the data.
+            // HandToHand ($A9E1)
+            // Copies a relocatable block into a new unlocked, unpurgeable handle
+            // in the source block's heap zone.
             // FUNCTION HandToHand (VAR theHndl: Handle): OSErr;
-            // On entry: A0 = handle to duplicate
-            // On exit:  A0 = new handle (copy), D0 = result code
-            // Inside Macintosh Volume II, II-374; Memory 1992, 2-62
-            // HandToHand ($A9E1): Duplicates handle: A0=src handle in, A0=new handle out, D0=result
+            // Inside Macintosh: Memory (1992), pp. 2-62--2-63.
             (true, 0x1E1) => {
                 let src_handle = cpu.read_reg(Register::A0);
-                if src_handle == 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                    return Some(Ok(()));
+                match self.copy_process_handle(bus, src_handle) {
+                    Ok(handle) => {
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, NO_ERR);
+                    }
+                    Err(error) => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, error);
+                    }
                 }
-                let src_ptr = bus.read_long(src_handle);
-                if src_ptr == 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                    return Some(Ok(()));
-                }
-                let size = bus.get_alloc_size(src_ptr).unwrap_or(0);
-                let new_ptr = bus.alloc(size);
-                if new_ptr == 0 && size > 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
-                    return Some(Ok(()));
-                }
-                let bytes = bus.read_bytes(src_ptr, size as usize);
-                bus.write_bytes(new_ptr, &bytes);
-                let new_handle = bus.alloc(4);
-                bus.write_long(new_handle, new_ptr);
-                cpu.write_reg(Register::A0, new_handle);
-                cpu.write_reg(Register::D0, 0); // noErr
                 Ok(())
             }
 
-            // PtrToXHand ($A9E2 = toolbox 0x1E2) - register-based calling convention
-            // Copies data from a pointer into an existing relocatable block.
-            // On entry: A0 = source pointer, A1 = destination handle, D0 = size
-            // On exit:  A0 = destination handle, D0 = result code
-            // Inside Macintosh Volume III, III-38; Memory 1992, 2-61
-            // PtrToXHand ($A9E2): Copies ptr data into existing handle: A0=src ptr, A1=dst handle, D0=size
+            // PtrToXHand ($A9E2)
+            // Makes an existing handle refer to a copy of the requested bytes.
+            // FUNCTION PtrToXHand (srcPtr: Ptr; dstHndl: Handle; size: LongInt): OSErr;
+            // Inside Macintosh: Memory (1992), pp. 2-61--2-62.
             (true, 0x1E2) => {
                 let src_ptr = cpu.read_reg(Register::A0);
                 let dst_handle = cpu.read_reg(Register::A1);
                 let size = cpu.read_reg(Register::D0);
                 cpu.write_reg(Register::A0, dst_handle);
-                if dst_handle == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
+                if (size as i32) < 0 {
+                    cpu.write_reg(Register::D0, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                // Resize destination handle to fit the data
-                let dst_ptr = bus.read_long(dst_handle);
-                let old_size = bus.get_alloc_size(dst_ptr).unwrap_or(0);
-                let final_ptr = if (old_size + 3) & !3 != (size + 3) & !3 {
-                    let new_ptr = bus.alloc(size);
-                    if new_ptr == 0 && size > 0 {
-                        cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
-                        return Some(Ok(()));
-                    }
-                    if dst_ptr != 0 {
-                        bus.free(dst_ptr);
-                    }
-                    bus.write_long(dst_handle, new_ptr);
-                    new_ptr
-                } else {
-                    // PtrToXHand's contract is about the handle's logical
-                    // size, not just its aligned backing bucket. When the
-                    // resize stays within the same 4-byte bucket (for
-                    // example 3 -> 4 or 4 -> 1), update the recorded size
-                    // so subsequent GetHandleSize observes the exact byte
-                    // count the caller requested.
-                    if dst_ptr != 0 {
-                        bus.set_alloc_size(dst_ptr, size);
-                    }
-                    dst_ptr
-                };
                 let bytes = bus.read_bytes(src_ptr, size as usize);
-                bus.write_bytes(final_ptr, &bytes);
-                cpu.write_reg(Register::D0, 0); // noErr
+                let result = self.replace_process_handle_bytes(bus, dst_handle, &bytes);
+                cpu.write_reg(Register::D0, result);
                 Ok(())
             }
 
-            // PtrToHand ($A9E3 = toolbox 0x1E3) - register-based calling convention
-            // Copies data from a pointer into a new relocatable block.
-            // On entry: A0 = source pointer, D0 = size
-            // On exit:  A0 = new handle, D0 = result code
-            // Inside Macintosh Volume III, III-38; Memory 1992, 2-60
-            // PtrToHand ($A9E3): Copies ptr data into new handle: A0=src ptr, D0=size, A0=new handle out
+            // PtrToHand ($A9E3)
+            // Copies bytes referenced by a pointer into a new relocatable block.
+            // FUNCTION PtrToHand (srcPtr: Ptr; VAR dstHndl: Handle; size: LongInt): OSErr;
+            // Inside Macintosh: Memory (1992), pp. 2-60--2-61.
             (true, 0x1E3) => {
                 let src_ptr = cpu.read_reg(Register::A0);
                 let size = cpu.read_reg(Register::D0);
-                let ptr = bus.alloc(size);
-                if ptr == 0 && size > 0 {
+                if (size as i32) < 0 {
                     cpu.write_reg(Register::A0, 0);
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
+                    cpu.write_reg(Register::D0, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
                 let bytes = bus.read_bytes(src_ptr, size as usize);
-                bus.write_bytes(ptr, &bytes);
-                let handle = bus.alloc(4);
-                bus.write_long(handle, ptr);
-                cpu.write_reg(Register::A0, handle);
-                cpu.write_reg(Register::D0, 0); // noErr
+                match self.copy_bytes_to_new_process_handle(bus, &bytes) {
+                    Ok(handle) => {
+                        cpu.write_reg(Register::A0, handle);
+                        cpu.write_reg(Register::D0, NO_ERR);
+                    }
+                    Err(error) => {
+                        cpu.write_reg(Register::A0, 0);
+                        cpu.write_reg(Register::D0, error);
+                    }
+                }
                 Ok(())
             }
 
-            // HandAndHand ($A9E4 = toolbox 0x1E4) - register-based calling convention
-            // Concatenates the data from one handle onto the end of another.
-            // FUNCTION HandAndHand(hand1, hand2: Handle): OSErr;
-            // On entry: A0 = source handle (hand1), A1 = destination handle (hand2)
-            // On exit:  A0 = destination handle (hand2), D0 = result code
-            // Inside Macintosh Volume II, II-374; Memory 1992, 2-63
-            // HandAndHand ($A9E4): Appends source handle data to destination handle: A0=src handle, A1=dst handle, D0=result; per IM:II II-374
+            // HandAndHand ($A9E4)
+            // Appends one relocatable block to another without changing the source.
+            // FUNCTION HandAndHand (aHndl, bHndl: Handle): OSErr;
+            // Inside Macintosh: Memory (1992), pp. 2-64--2-65.
             (true, 0x1E4) => {
                 let src_handle = cpu.read_reg(Register::A0);
                 let dst_handle = cpu.read_reg(Register::A1);
                 cpu.write_reg(Register::A0, dst_handle);
-                if src_handle == 0 || dst_handle == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                    return Some(Ok(()));
-                }
-                let src_ptr = bus.read_long(src_handle);
-                let dst_ptr = bus.read_long(dst_handle);
-                if src_ptr == 0 || dst_ptr == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                    return Some(Ok(()));
-                }
-                let src_size = bus.get_alloc_size(src_ptr).unwrap_or(0);
-                let dst_size = bus.get_alloc_size(dst_ptr).unwrap_or(0);
-                let new_size = dst_size + src_size;
-                // Allocate new block for combined data
-                let new_ptr = bus.alloc(new_size);
-                if new_ptr == 0 && new_size > 0 {
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
-                    return Some(Ok(()));
-                }
-                // Copy existing dst data, then append src data.
-                let dst_bytes = bus.read_bytes(dst_ptr, dst_size as usize);
-                bus.write_bytes(new_ptr, &dst_bytes);
-                let src_bytes = bus.read_bytes(src_ptr, src_size as usize);
-                bus.write_bytes(new_ptr.wrapping_add(dst_size), &src_bytes);
-                bus.free(dst_ptr);
-                bus.write_long(dst_handle, new_ptr);
-                cpu.write_reg(Register::D0, 0); // noErr
+                let result = self.append_process_handle(bus, src_handle, dst_handle);
+                cpu.write_reg(Register::D0, result);
                 Ok(())
             }
 
-            // PtrAndHand ($A9EF = toolbox 0x1EF) - register-based calling convention
-            // Concatenates data referenced by a pointer onto the end of a handle.
-            // FUNCTION PtrAndHand(ptr1: Ptr; hand2: Handle; size: LongInt): OSErr;
-            // On entry: A0 = source pointer (ptr1), A1 = destination handle (hand2), D0 = size
-            // On exit:  A0 = destination handle (hand2), D0 = result code
-            // Inside Macintosh Volume II, II-375; Memory 1992, 2-64
-            // PtrAndHand ($A9EF): Appends ptr data to destination handle: A0=src ptr, A1=dst handle, D0=size in/result out; per IM:II II-375
+            // PtrAndHand ($A9EF)
+            // Appends bytes referenced by a pointer to a relocatable block.
+            // FUNCTION PtrAndHand (pntr: Ptr; hndl: Handle; size: LongInt): OSErr;
+            // Inside Macintosh: Memory (1992), pp. 2-65--2-66.
             (true, 0x1EF) => {
                 let src_ptr = cpu.read_reg(Register::A0);
                 let dst_handle = cpu.read_reg(Register::A1);
                 let append_size = cpu.read_reg(Register::D0);
                 cpu.write_reg(Register::A0, dst_handle);
-                if dst_handle == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
+                if (append_size as i32) < 0 {
+                    cpu.write_reg(Register::D0, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                let dst_ptr = bus.read_long(dst_handle);
-                if dst_ptr == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                    return Some(Ok(()));
-                }
-                let dst_size = bus.get_alloc_size(dst_ptr).unwrap_or(0);
-                let new_size = dst_size + append_size;
-                let new_ptr = bus.alloc(new_size);
-                if new_ptr == 0 && new_size > 0 {
-                    cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
-                    return Some(Ok(()));
-                }
-                // Copy existing dst data, then append source data.
-                let dst_bytes = bus.read_bytes(dst_ptr, dst_size as usize);
-                bus.write_bytes(new_ptr, &dst_bytes);
-                let src_bytes = bus.read_bytes(src_ptr, append_size as usize);
-                bus.write_bytes(new_ptr.wrapping_add(dst_size), &src_bytes);
-                bus.free(dst_ptr);
-                bus.write_long(dst_handle, new_ptr);
-                cpu.write_reg(Register::D0, 0); // noErr
+                let bytes = bus.read_bytes(src_ptr, append_size as usize);
+                let result = self.append_bytes_to_process_handle(bus, dst_handle, &bytes);
+                cpu.write_reg(Register::D0, result);
                 Ok(())
             }
 
@@ -4957,6 +4930,118 @@ mod tests {
                 .copied(),
             Some(record)
         );
+    }
+
+    #[test]
+    fn handle_copy_traps_update_native_process_allocations_immediately() {
+        // Inside Macintosh: Memory (1992), pp. 2-60--2-66: the handle-copy
+        // routines preserve stable destination handles, and HandToHand creates
+        // its copy in the source block's heap zone.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        const SOURCE_HANDLE: u32 = HEAP_BASE;
+        const SOURCE_PTR: u32 = HEAP_BASE + 0x20;
+        const REPLACEMENT_PTR: u32 = 0x0030_0000;
+        const APPEND_PTR: u32 = REPLACEMENT_PTR + 0x40;
+        let source_record = ProcessHandleRecord {
+            handle: SOURCE_HANDLE,
+            ptr: SOURCE_PTR,
+            size: 6,
+            capacity: 16,
+        };
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x2000]);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        bus.write_long(SOURCE_HANDLE, SOURCE_PTR);
+        bus.write_bytes(SOURCE_PTR, b"native");
+
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor: HEAP_BASE + 0x100,
+                    heap_limit: HEAP_BASE + 0x2000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(source_record, 0xE0)]);
+        }
+        let detached = memory_manager.detached_clone();
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::A0, SOURCE_HANDLE);
+        dispatcher
+            .dispatch_memory(true, 0x1E1, &mut cpu, &mut bus)
+            .expect("HandToHand should be handled")
+            .unwrap();
+        let copy_handle = cpu.read_reg(Register::A0);
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_ne!(copy_handle, SOURCE_HANDLE);
+        let copied = memory_manager
+            .borrow()
+            .native_allocation(copy_handle)
+            .expect("HandToHand should publish the native copy immediately");
+        assert_eq!(bus.read_bytes(copied.ptr, copied.size as usize), b"native");
+        assert_eq!(memory_manager.borrow().state_for_handle(copy_handle), Some(0));
+
+        bus.write_bytes(REPLACEMENT_PTR, b"process-owned-bytes");
+        cpu.write_reg(Register::A0, REPLACEMENT_PTR);
+        cpu.write_reg(Register::A1, copy_handle);
+        cpu.write_reg(Register::D0, 19);
+        dispatcher
+            .dispatch_memory(true, 0x1E2, &mut cpu, &mut bus)
+            .expect("PtrToXHand should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        bus.write_bytes(APPEND_PTR, b"++");
+        cpu.write_reg(Register::A0, APPEND_PTR);
+        cpu.write_reg(Register::A1, copy_handle);
+        cpu.write_reg(Register::D0, 2);
+        dispatcher
+            .dispatch_memory(true, 0x1EF, &mut cpu, &mut bus)
+            .expect("PtrAndHand should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+
+        cpu.write_reg(Register::A0, SOURCE_HANDLE);
+        cpu.write_reg(Register::A1, copy_handle);
+        dispatcher
+            .dispatch_memory(true, 0x1E4, &mut cpu, &mut bus)
+            .expect("HandAndHand should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let appended = memory_manager
+            .borrow()
+            .native_allocation(copy_handle)
+            .expect("concatenation should retain the native allocation record");
+        assert_eq!(appended.size, 27);
+        assert_eq!(bus.read_long(copy_handle), appended.ptr);
+        assert_eq!(
+            bus.read_bytes(appended.ptr, appended.size as usize),
+            b"process-owned-bytes++native"
+        );
+        assert_eq!(
+            memory_manager.borrow().recover_handle(appended.ptr),
+            Some(copy_handle)
+        );
+
+        let detached = detached.borrow();
+        assert_eq!(detached.native_allocation(SOURCE_HANDLE), Some(source_record));
+        assert_eq!(detached.native_allocation(copy_handle), None);
     }
 
     #[test]
@@ -13361,6 +13446,14 @@ mod tests {
                 b
             );
         }
+        assert_eq!(
+            dispatcher
+                .process_memory_manager()
+                .borrow()
+                .recover_handle(ptr),
+            Some(handle),
+            "PtrToHand should publish the reverse handle index immediately"
+        );
     }
 
     #[test]

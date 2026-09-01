@@ -16589,6 +16589,7 @@ fn ppc_apply_process_native_allocator(
 fn ppc_apply_process_native_handle(
     memory_manager: &ProcessMemoryManager,
     handles: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
 ) {
     let Some(updated) = memory_manager.native_allocation(handle) else {
@@ -16601,6 +16602,15 @@ fn ppc_apply_process_native_handle(
         *record = updated;
     } else {
         handles.push(updated);
+    }
+    let state = memory_manager.native_handle_state(handle);
+    if let Some(existing) = handle_states
+        .iter_mut()
+        .find(|existing| existing.handle == handle)
+    {
+        *existing = state;
+    } else {
+        handle_states.push(state);
     }
 }
 
@@ -16889,7 +16899,12 @@ fn dispatch_supported_import(
                     free_ptr_blocks,
                     free_handle_blocks,
                 );
-                ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+                ppc_apply_process_native_handle(
+                    process_memory_manager,
+                    handles,
+                    handle_states,
+                    handle,
+                );
                 if handle == 0 {
                     let _ = memory.write_u32_be(destination_handle_ptr, 0);
                     *last_mem_error
@@ -16953,6 +16968,7 @@ fn dispatch_supported_import(
                             ppc_apply_process_native_handle(
                                 process_memory_manager,
                                 handles,
+                                handle_states,
                                 copy,
                             );
                             if copy == 0 {
@@ -17020,6 +17036,7 @@ fn dispatch_supported_import(
                         ppc_apply_process_native_handle(
                             process_memory_manager,
                             handles,
+                            handle_states,
                             destination_handle,
                         );
                         result
@@ -17190,7 +17207,12 @@ fn dispatch_supported_import(
                 free_ptr_blocks,
                 free_handle_blocks,
             );
-            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
+            ppc_apply_process_native_handle(
+                process_memory_manager,
+                handles,
+                handle_states,
+                handle,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HLock => {
@@ -88808,6 +88830,7 @@ pub(crate) mod tests {
                 let destination = native.memory.read_u32_be(output).unwrap();
                 let original = memory_manager.native_allocation(destination).unwrap();
                 assert_eq!(classic_bus.read_bytes(original.ptr, 6), b"native");
+                assert_eq!(memory_manager.state_for_handle(destination), Some(0));
 
                 native
                     .memory
@@ -88823,6 +88846,7 @@ pub(crate) mod tests {
                 assert_ne!(source_copy, destination);
                 let copy = memory_manager.native_allocation(source_copy).unwrap();
                 assert_eq!(classic_bus.read_bytes(copy.ptr, 6), b"native");
+                assert_eq!(memory_manager.state_for_handle(source_copy), Some(0));
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;

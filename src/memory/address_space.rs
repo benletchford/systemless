@@ -136,6 +136,20 @@ impl SharedGuestAddressSpace {
         }
         Some(())
     }
+
+    /// Exclusively borrow the parked process address space for one operation.
+    ///
+    /// # Safety
+    ///
+    /// The source address space must remain alive and unmoved, and no other
+    /// access may overlap the closure.
+    pub(crate) unsafe fn with_mut<R>(
+        self,
+        f: impl FnOnce(&mut GuestAddressSpace) -> R,
+    ) -> Option<R> {
+        // SAFETY: upheld by `new` and the caller's serialized interval.
+        unsafe { self.0.as_ptr().as_mut().map(f) }
+    }
 }
 
 impl Clone for GuestAddressSpace {

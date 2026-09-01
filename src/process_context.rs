@@ -365,6 +365,145 @@ impl ProcessMemoryManager {
         Ok((handle, ptr))
     }
 
+    /// Allocate a current-heap handle containing a copy of `bytes`.
+    ///
+    /// `PtrToHand` creates a new relocatable block in the current heap and
+    /// copies the requested bytes into it. Inside Macintosh: Memory (1992),
+    /// pp. 2-60--2-61.
+    pub(crate) fn copy_bytes_to_new_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        bytes: &[u8],
+    ) -> Result<(u32, u32), i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        let size = u32::try_from(bytes.len()).map_err(|_| Self::MEM_FULL_ERR)?;
+        let (handle, ptr) = self.new_classic_handle(bus, size)?;
+        bus.write_bytes(ptr, bytes);
+        Ok((handle, ptr))
+    }
+
+    fn process_handle_bytes(&self, bus: &MacMemoryBus, handle: u32) -> Result<Vec<u8>, i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        if handle == 0 {
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+        let ptr = bus.read_long(handle);
+        if ptr == 0 {
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+        if let Some(record) = self.native_allocation(handle) {
+            if record.ptr != ptr {
+                return Err(Self::NIL_HANDLE_ERR);
+            }
+            return Ok(bus.read_bytes(ptr, record.size as usize));
+        }
+        if bus.get_alloc_size(handle) != Some(4) {
+            return Err(Self::MEM_WZ_ERR);
+        }
+        let Some(size) = bus.get_alloc_size(ptr) else {
+            return Err(Self::MEM_WZ_ERR);
+        };
+        Ok(bus.read_bytes(ptr, size as usize))
+    }
+
+    /// Copy a relocatable block into a new handle in the source heap zone.
+    ///
+    /// The copy is unlocked, unpurgeable, and not a resource. Inside
+    /// Macintosh: Memory (1992), pp. 2-62--2-63.
+    pub(crate) fn copy_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+    ) -> Result<(u32, u32), i16> {
+        let bytes = self.process_handle_bytes(bus, handle)?;
+        if self.native_allocation(handle).is_some() {
+            let copy = bus
+                .with_foreign_address_space(|memory| {
+                    self.copy_bytes_to_new_native_handle(memory, &bytes)
+                })
+                .ok_or(Self::PARAM_ERR)?;
+            if copy == 0 {
+                return Err(self
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error)
+                    .unwrap_or(Self::MEM_FULL_ERR));
+            }
+            return Ok((copy, bus.read_long(copy)));
+        }
+        self.copy_bytes_to_new_classic_handle(bus, &bytes)
+    }
+
+    /// Replace a native or classic relocatable block with copied bytes.
+    ///
+    /// `PtrToXHand` preserves the stable handle while changing its logical
+    /// size and contents. Inside Macintosh: Memory (1992), pp. 2-61--2-62.
+    pub(crate) fn replace_process_handle_bytes(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        bytes: &[u8],
+    ) -> i16 {
+        self.assert_classic_memory_bus_attached(bus);
+        if handle == 0 {
+            return Self::NIL_HANDLE_ERR;
+        }
+        if let Some(record) = self.native_allocation(handle) {
+            return self
+                .replace_native_handle_bytes(bus, handle, record.ptr, bytes)
+                .map_or_else(|error| error, |_| Self::NO_ERR);
+        }
+        if bus.get_alloc_size(handle) != Some(4) {
+            return Self::MEM_WZ_ERR;
+        }
+        let Ok(size) = u32::try_from(bytes.len()) else {
+            return Self::MEM_FULL_ERR;
+        };
+        let result = self.set_process_handle_size(bus, handle, size);
+        if result != Self::NO_ERR {
+            return result;
+        }
+        let ptr = bus.read_long(handle);
+        bus.write_bytes(ptr, bytes);
+        Self::NO_ERR
+    }
+
+    /// Append bytes to a native or classic relocatable block.
+    ///
+    /// `HandAndHand` and `PtrAndHand` leave their source unchanged while the
+    /// destination handle remains stable. Inside Macintosh: Memory (1992),
+    /// pp. 2-64--2-66.
+    pub(crate) fn append_bytes_to_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        bytes: &[u8],
+    ) -> i16 {
+        let mut combined = match self.process_handle_bytes(bus, handle) {
+            Ok(bytes) => bytes,
+            Err(error) => return error,
+        };
+        if combined.len().checked_add(bytes.len()).is_none() {
+            return Self::MEM_FULL_ERR;
+        }
+        combined.extend_from_slice(bytes);
+        self.replace_process_handle_bytes(bus, handle, &combined)
+    }
+
+    /// Append one relocatable block to another without changing the source.
+    /// Inside Macintosh: Memory (1992), pp. 2-64--2-65.
+    pub(crate) fn append_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        source: u32,
+        destination: u32,
+    ) -> i16 {
+        let source_bytes = match self.process_handle_bytes(bus, source) {
+            Ok(bytes) => bytes,
+            Err(error) => return error,
+        };
+        self.append_bytes_to_process_handle(bus, destination, &source_bytes)
+    }
+
     /// Allocate a classic master pointer whose relocatable block is empty.
     ///
     /// `NewEmptyHandle` returns a handle containing `NIL`. Inside Macintosh:
@@ -1311,6 +1450,7 @@ impl ProcessMemoryManager {
             self.set_native_mem_error(Self::PARAM_ERR);
             return 0;
         }
+        self.set_state_for_handle(handle, 0);
         handle
     }
 
