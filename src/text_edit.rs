@@ -3,7 +3,59 @@
 //! The 68K trap and PowerPC import layers translate guest ABI and memory into
 //! this model, then serialize the result back into their respective `TERec`.
 
+use std::collections::HashMap;
 use std::ops::Range;
+
+/// Private feature flags associated with one guest `TERec`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessTextEditState {
+    pub(crate) feature_bits: u16,
+}
+
+/// Canonical host-only TextEdit metadata for one Macintosh process.
+///
+/// Edit records and the private TextEdit scrap remain canonical guest memory.
+/// This manager retains only feature bits that are not represented in a
+/// `TERec`. Inside Macintosh: Text (1993), pp. 2-90--2-92.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessTextEditManagerState {
+    records: HashMap<u32, ProcessTextEditState>,
+}
+
+impl ProcessTextEditManagerState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub(crate) fn feature_bit(&self, handle: u32, feature: u16) -> bool {
+        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
+        self.records
+            .get(&handle)
+            .is_some_and(|state| state.feature_bits & mask != 0)
+    }
+
+    pub(crate) fn set_feature_bit(&mut self, handle: u32, feature: u16, enabled: bool) {
+        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
+        if mask == 0 {
+            return;
+        }
+        if enabled {
+            self.records.entry(handle).or_default().feature_bits |= mask;
+            return;
+        }
+
+        if let Some(state) = self.records.get_mut(&handle) {
+            state.feature_bits &= !mask;
+            if state.feature_bits == 0 {
+                self.records.remove(&handle);
+            }
+        }
+    }
+
+    pub(crate) fn remove(&mut self, handle: &u32) {
+        self.records.remove(handle);
+    }
+}
 
 /// Mutable text and normalized selection state for one TextEdit operation.
 #[derive(Clone, Debug, Eq, PartialEq)]

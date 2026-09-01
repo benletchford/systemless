@@ -3335,11 +3335,7 @@ impl super::TrapDispatcher {
     }
 
     fn te_feature_bit(&self, te_handle: u32, feature: u16) -> bool {
-        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
-        self.textedit_states
-            .get(&te_handle)
-            .map(|state| (state.feature_bits & mask) != 0)
-            .unwrap_or(false)
+        self.textedit_states.feature_bit(te_handle, feature)
     }
 
     /// Whether auto-scroll is enabled on the TextEdit record at
@@ -3352,13 +3348,8 @@ impl super::TrapDispatcher {
     }
 
     fn set_te_feature_bit(&mut self, te_handle: u32, feature: u16, enabled: bool) {
-        let mask = 1u16.checked_shl(feature as u32).unwrap_or(0);
-        let state = self.textedit_states.entry(te_handle).or_default();
-        if enabled {
-            state.feature_bits |= mask;
-        } else {
-            state.feature_bits &= !mask;
-        }
+        self.textedit_states
+            .set_feature_bit(te_handle, feature, enabled);
     }
 
     fn initialize_dialog_item_handles(
