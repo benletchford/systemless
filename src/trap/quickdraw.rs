@@ -3504,26 +3504,26 @@ impl super::TrapDispatcher {
                 // destination-device indices.
                 // Imaging With QuickDraw 1994, 3-71.
                 // references/executor/src/quickdraw/qStdBits.cpp
-                // A full-table Palette Manager fade leaves the logical
-                // GDevice table as the inverse-table baseline while the
-                // physical CLUT is transiently rewritten. Same-depth pixels
-                // already authored for that fade retain their device indices;
-                // translating them through the retained logical table would
-                // change the image during the fade. The state is set only by
-                // a full-table SetEntries fade, so unrelated device/CM
-                // differences still take the normal color-matching path.
                 // A device ColorTable (ctFlags high bit set) explicitly
-                // describes positional device indices; a pixMap ColorTable
-                // describes RGB values associated with source pixels and
-                // must be matched. Inside Macintosh Volume V (1986),
-                // pp. V-57..V-58.
+                // describes positional device indices. Preserve those
+                // indices when its seed identifies the destination screen's
+                // table, even if SetEntries has temporarily changed the
+                // device RGB entries without changing the logical inverse-
+                // table baseline. During a recognized full-table fade, the
+                // same preservation applies while the hardware CLUT is being
+                // rewritten. A pixMap ColorTable instead associates RGB
+                // values with source pixels and must be matched. Inside
+                // Macintosh Volume V (1986), pp. V-57..V-58, V-138,
+                // V-143..V-145.
                 let source_ctab_ptr = Self::color_table_ptr(bus, src_info.ctab_handle);
                 let source_uses_device_ctab =
                     source_ctab_ptr != 0 && bus.read_word(source_ctab_ptr + 4) & 0x8000 != 0;
-                let skip_active_fade_to_screen = src_info.pixel_size == 8
+                let source_is_destination_device = src_ctab_seed.is_some()
+                    && src_ctab_seed == dst_ctab_seed;
+                let skip_device_translation_to_screen = src_info.pixel_size == 8
                     && dst_ctab_handle == 0
-                    && self.screen_palette_fade_active
-                    && source_uses_device_ctab;
+                    && source_uses_device_ctab
+                    && (source_is_destination_device || self.screen_palette_fade_active);
                 // An all-explicit palette assigns stable device indices, so
                 // same-depth copies preserve those indices. Packed 2/4-bit
                 // sources copied into an 8-bit destination cannot preserve
@@ -3545,7 +3545,7 @@ impl super::TrapDispatcher {
                     && matches!(dst_info.pixel_size, 2 | 4 | 8)
                     && src_info.ctab_handle != dst_info.ctab_handle
                     && (src_info.pixel_size != dst_info.pixel_size || indexed_tables_differ)
-                    && !skip_active_fade_to_screen
+                    && !skip_device_translation_to_screen
                     && !skip_explicit_palette_translation
                 {
                     match (src_clut.as_ref(), dst_clut.as_ref()) {
@@ -36408,6 +36408,54 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(bus.read_byte(screen_base), 7);
+    }
+
+    #[test]
+    fn test_copy_bits_screen_blit_preserves_same_device_indices_after_set_entries() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let gdh = d.ensure_main_gdevice(&mut bus);
+        let gd = bus.read_long(gdh);
+        let screen_pm_handle = bus.read_long(gd + 22);
+        let screen_pm = bus.read_long(screen_pm_handle);
+        let screen_base = bus.read_long(screen_pm);
+        let screen_row_bytes = (bus.read_word(screen_pm + 4) & 0x3FFF) as u32;
+        d.screen_mode = (screen_base, screen_row_bytes, 800, 600, 8);
+
+        let src_pixmap = 0x31A300u32;
+        let src_base = 0x31B300u32;
+        let src_ctab_handle = 0x31C300u32;
+        let src_rect = 0x31D300u32;
+        let dst_rect = 0x31D310u32;
+        let screen_ctab_handle = TrapDispatcher::gdevice_ctab_handle(&bus, gdh);
+        let screen_seed = TrapDispatcher::ctab_seed(&bus, screen_ctab_handle).unwrap();
+
+        // Model a positional device table transiently rewritten to black by
+        // SetEntries while retaining the screen table's identity. Matching
+        // black through the logical table would turn every pixel into index
+        // 255; the source pixel already contains the intended device index.
+        write_color_table(
+            &mut bus,
+            src_ctab_handle,
+            screen_seed,
+            &[(42, 0, 0, 0)],
+        );
+        bus.write_word(bus.read_long(src_ctab_handle) + 4, 0x8000);
+        write_pixmap_8(&mut bus, src_pixmap, src_base, 1, 1, src_ctab_handle);
+        bus.write_byte(src_base, 42);
+        bus.write_byte(screen_base, 0);
+        write_rect(&mut bus, src_rect, 0, 0, 1, 1);
+        write_rect(&mut bus, dst_rect, 0, 0, 1, 1);
+
+        bus.write_long(TEST_SP, 0);
+        bus.write_word(TEST_SP + 4, 0u16);
+        bus.write_long(TEST_SP + 6, dst_rect);
+        bus.write_long(TEST_SP + 10, src_rect);
+        bus.write_long(TEST_SP + 14, screen_pm);
+        bus.write_long(TEST_SP + 18, src_pixmap);
+
+        let result = d.dispatch_quickdraw(true, 0x0EC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_byte(screen_base), 42);
     }
 
     #[test]
