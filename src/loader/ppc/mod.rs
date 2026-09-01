@@ -7109,12 +7109,6 @@ impl PpcLoadedApp {
         let input = self.current_input_snapshot();
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
-        let native_heap = process_memory_manager
-            .native_heap_state()
-            .expect("native allocator registered before execution");
-        let mut heap_cursor = native_heap.heap_cursor;
-        let mut heap_limit = native_heap.heap_limit;
-        let mut last_mem_error = native_heap.last_mem_error;
         let tick_count = self.tick_count;
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
@@ -7236,6 +7230,11 @@ impl PpcLoadedApp {
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     if guest_calls.complete_powerpc(cpu) {
+                        let native_heap = process_memory_manager
+                            .native_heap_state()
+                            .expect("native allocator registered during execution");
+                        let mut heap_cursor = native_heap.heap_cursor;
+                        let mut last_mem_error = native_heap.last_mem_error;
                         let handles =
                             &mut process_memory_manager.native_handle_records().to_vec();
                         ppc_complete_apple_event_dispatch(
@@ -7247,6 +7246,7 @@ impl PpcLoadedApp {
                             &mut last_mem_error,
                             handles,
                         );
+                        process_memory_manager.set_native_mem_error(last_mem_error);
                         return PpcImportAction::Continue;
                     }
                     if guest_calls.complete_powerpc_for_m68k(cpu) {
@@ -7554,6 +7554,12 @@ impl PpcLoadedApp {
                     None
                 };
 
+                let native_heap = process_memory_manager
+                    .native_heap_state()
+                    .expect("native allocator registered during execution");
+                let mut heap_cursor = native_heap.heap_cursor;
+                let mut heap_limit = native_heap.heap_limit;
+                let mut last_mem_error = native_heap.last_mem_error;
                 let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
                     Some(dispatch_getkeys_import(
                         cpu,
@@ -7723,6 +7729,7 @@ impl PpcLoadedApp {
                 // Toolbox helper reports it through the native ABI cache.
                 // Publish at the import boundary so a following 68K callback
                 // observes the result immediately, not at slice teardown.
+                process_memory_manager.set_native_heap_limit(heap_limit);
                 process_memory_manager.set_native_mem_error(last_mem_error);
 
                 // Resource records are the native Resource Manager's parsed
@@ -99605,6 +99612,22 @@ pub(crate) mod tests {
         assert!(loaded.heap_maximized());
         assert_eq!(loaded.master_pointer_blocks_requested(), 0);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
+    }
+
+    #[test]
+    fn native_import_heap_limit_remains_process_owned_between_slices() {
+        let pef = synthetic_pef_with_import(b"SetApplLimit");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let requested = loaded.heap_cursor() + 0x1000;
+        assert!(requested < loaded.heap_limit());
+
+        loaded.cpu.gpr[3] = requested;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::SetApplLimit);
+        assert_eq!(loaded.heap_limit(), requested);
+
+        loaded.cpu.gpr[3] = 0;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::GetApplLimit);
+        assert_eq!(loaded.cpu.gpr[3], requested);
     }
 
     #[test]
