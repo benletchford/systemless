@@ -3710,6 +3710,10 @@ mod tests {
             context.memory_manager.borrow().classic_allocation_size(ptr),
             None
         );
+
+        let recycled = primary.alloc(21);
+        assert_eq!(recycled, ptr);
+        assert_eq!(second_adapter.get_alloc_size(recycled), Some(21));
     }
 
     #[test]
@@ -3732,7 +3736,9 @@ mod tests {
             None
         );
         assert_eq!(detached.get_alloc_size(detached_ptr), Some(24));
-        assert_eq!(detached.heap_bump_ptr(), 0x20_0000 + 24);
+        assert_eq!(attached.alloc(16), attached_ptr);
+        assert_eq!(detached.alloc(16), detached_ptr + 24);
+        assert_eq!(detached.heap_bump_ptr(), 0x20_0000 + 40);
     }
 
     #[test]

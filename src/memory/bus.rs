@@ -513,6 +513,168 @@ impl SharedClassicHeapAllocator {
     pub(crate) fn allocation_size(&self, address: u32) -> Option<u32> {
         self.0.borrow().alloc_sizes.get(&address).copied()
     }
+
+    fn allocation_bucket_size(size: u32) -> u32 {
+        ((size + 3) & !3).max(4)
+    }
+
+    fn can_reuse_bucket_for_request(bucket: u32, requested: u32) -> bool {
+        let max_bucket = if requested <= 1024 {
+            4096
+        } else {
+            requested.saturating_mul(2).saturating_add(4096)
+        };
+        bucket <= max_bucket
+    }
+
+    fn reserve_until(&self, end_addr: u32) {
+        let aligned = (end_addr + 3) & !3;
+        let mut state = self.0.borrow_mut();
+        state.heap_ptr = state.heap_ptr.max(aligned);
+    }
+
+    fn reserve_range(&self, start_addr: u32, end_addr: u32) {
+        let start = start_addr & !3;
+        let end = (end_addr.saturating_add(3)) & !3;
+        if start >= end {
+            return;
+        }
+        let mut state = self.0.borrow_mut();
+        state.reserved_heap_ranges.push((start, end));
+        state.reserved_heap_ranges.sort_unstable();
+    }
+
+    fn bump_allocation_address(
+        state: &ClassicHeapAllocatorState,
+        size: u32,
+        alignment: u32,
+    ) -> Option<(u32, u32)> {
+        let mut ptr = (state.heap_ptr + alignment - 1) & !(alignment - 1);
+        loop {
+            let new_ptr = ptr.checked_add(size)?;
+            let overlap = state
+                .reserved_heap_ranges
+                .iter()
+                .find(|&&(start, end)| ptr < end && new_ptr > start);
+            if let Some(&(_, end)) = overlap {
+                ptr = (end + alignment - 1) & !(alignment - 1);
+                continue;
+            }
+            return Some((ptr, new_ptr));
+        }
+    }
+
+    fn allocate(&self, size: u32, alignment: u32, heap_limit: u32) -> u32 {
+        let alignment = if alignment > 4 && alignment.is_power_of_two() {
+            alignment
+        } else {
+            4
+        };
+        let aligned_size = Self::allocation_bucket_size(size);
+        let mut state = self.0.borrow_mut();
+
+        if let Some(blocks) = state.free_blocks.get_mut(&aligned_size) {
+            let index = if alignment == 4 {
+                blocks.len().checked_sub(1)
+            } else {
+                blocks.iter().position(|addr| addr % alignment == 0)
+            };
+            if let Some(index) = index {
+                let addr = blocks.swap_remove(index);
+                state.alloc_sizes.insert(addr, size);
+                let event = if alignment == 4 {
+                    "reuse-exact"
+                } else {
+                    "reuse-exact-aligned"
+                };
+                trace_alloc_event(event, addr, size, aligned_size);
+                return addr;
+            }
+        }
+
+        let best = state
+            .free_blocks
+            .iter()
+            .filter(|(&bucket, blocks)| {
+                bucket > aligned_size
+                    && !blocks.is_empty()
+                    && Self::can_reuse_bucket_for_request(bucket, aligned_size)
+                    && (alignment == 4 || blocks.iter().any(|addr| addr % alignment == 0))
+            })
+            .map(|(&bucket, _)| bucket)
+            .min();
+        if let Some(bucket) = best {
+            let blocks = state
+                .free_blocks
+                .get_mut(&bucket)
+                .expect("free bucket exists");
+            let index = if alignment == 4 {
+                blocks.len() - 1
+            } else {
+                blocks
+                    .iter()
+                    .position(|addr| addr % alignment == 0)
+                    .expect("aligned free block exists")
+            };
+            let addr = blocks.swap_remove(index);
+            state.alloc_sizes.insert(addr, size);
+            state.alloc_bucket_sizes.insert(addr, bucket);
+            let event = if alignment == 4 {
+                "reuse-best"
+            } else {
+                "reuse-best-aligned"
+            };
+            trace_alloc_event(event, addr, size, bucket);
+            return addr;
+        }
+
+        let Some((ptr, new_ptr)) = Self::bump_allocation_address(&state, aligned_size, alignment)
+        else {
+            return 0;
+        };
+        if new_ptr >= heap_limit {
+            eprintln!(
+                "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
+                size, alignment, ptr, heap_limit
+            );
+            return 0;
+        }
+        state.heap_ptr = new_ptr;
+        state.alloc_sizes.insert(ptr, size);
+        let event = if alignment == 4 {
+            "bump"
+        } else {
+            "bump-aligned"
+        };
+        trace_alloc_event(event, ptr, size, aligned_size);
+        ptr
+    }
+
+    fn heap_bump_ptr(&self) -> u32 {
+        self.0.borrow().heap_ptr
+    }
+
+    fn set_allocation_size(&self, address: u32, size: u32) {
+        let mut state = self.0.borrow_mut();
+        if state.alloc_sizes.contains_key(&address) {
+            state.alloc_sizes.insert(address, size);
+        }
+    }
+
+    fn free(&self, address: u32) {
+        if address == 0 {
+            return;
+        }
+        let mut state = self.0.borrow_mut();
+        if let Some(size) = state.alloc_sizes.remove(&address) {
+            let bucket = state
+                .alloc_bucket_sizes
+                .remove(&address)
+                .unwrap_or_else(|| Self::allocation_bucket_size(size));
+            state.free_blocks.entry(bucket).or_default().push(address);
+            trace_alloc_event("free", address, size, bucket);
+        }
+    }
 }
 
 /// Flat guest RAM with low-memory globals, a process heap adapter, and diagnostics.
@@ -1050,7 +1212,7 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
-        ((size + 3) & !3).max(4)
+        SharedClassicHeapAllocator::allocation_bucket_size(size)
     }
 
     pub(crate) fn shared_classic_heap_allocator(&self) -> SharedClassicHeapAllocator {
@@ -1069,15 +1231,6 @@ impl MacMemoryBus {
             "cannot discard active classic heap state while attaching a process allocator"
         );
         self.heap_allocator = allocator;
-    }
-
-    fn can_reuse_bucket_for_request(bucket: u32, requested: u32) -> bool {
-        let max_bucket = if requested <= 1024 {
-            4096
-        } else {
-            requested.saturating_mul(2).saturating_add(4096)
-        };
-        bucket <= max_bucket
     }
 
     fn legacy_sound_base_address(ram_size: usize, screen_base: u32, screen_bytes: u32) -> u32 {
@@ -1567,107 +1720,17 @@ impl MacMemoryBus {
     /// the Memory Manager shim, so the runner uses this before materializing
     /// Toolbox heap objects that must not overlap the loaded application image.
     pub fn reserve_heap_until(&mut self, end_addr: u32) {
-        let aligned = (end_addr + 3) & !3;
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-        allocator.heap_ptr = allocator.heap_ptr.max(aligned);
+        self.heap_allocator.reserve_until(end_addr);
     }
 
     /// Prevent heap allocations from overlapping a direct-loaded guest range
     /// while preserving usable partition space before it.
     pub(crate) fn reserve_heap_range(&mut self, start_addr: u32, end_addr: u32) {
-        let start = start_addr & !3;
-        let end = (end_addr.saturating_add(3)) & !3;
-        if start >= end {
-            return;
-        }
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-        allocator.reserved_heap_ranges.push((start, end));
-        allocator.reserved_heap_ranges.sort_unstable();
-    }
-
-    fn bump_allocation_address(
-        allocator: &ClassicHeapAllocatorState,
-        size: u32,
-        alignment: u32,
-    ) -> Option<(u32, u32)> {
-        let mut ptr = (allocator.heap_ptr + alignment - 1) & !(alignment - 1);
-        loop {
-            let new_ptr = ptr.checked_add(size)?;
-            let overlap = allocator
-                .reserved_heap_ranges
-                .iter()
-                .find(|&&(start, end)| ptr < end && new_ptr > start);
-            if let Some(&(_, end)) = overlap {
-                ptr = (end + alignment - 1) & !(alignment - 1);
-                continue;
-            }
-            return Some((ptr, new_ptr));
-        }
+        self.heap_allocator.reserve_range(start_addr, end_addr);
     }
 
     pub fn alloc(&mut self, size: u32) -> u32 {
-        let aligned = Self::allocation_bucket_size(size); // 4-byte align, unique zero-size blocks
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-
-        // Fast path: exact-size bucket.
-        let exact = allocator
-            .free_blocks
-            .get_mut(&aligned)
-            .and_then(|blocks| blocks.pop());
-        if let Some(addr) = exact {
-            allocator.alloc_sizes.insert(addr, size);
-            trace_alloc_event("reuse-exact", addr, size, aligned);
-            return addr;
-        }
-
-        // Best-fit fallback: find the smallest free bucket whose size
-        // is >= the request. Without this, repeated alloc/free cycles
-        // with mixed sizes (typical for resource loaders that load
-        // large variable-size assets) fragment the heap into per-size
-        // buckets that never recycle for differently-sized requests,
-        // even when several megabytes of capacity sit idle. Resource-
-        // heavy games (Bonkheads, Marathon) hit this limit fast.
-        let best = allocator
-            .free_blocks
-            .iter()
-            .filter(|(&k, v)| {
-                k > aligned && !v.is_empty() && Self::can_reuse_bucket_for_request(k, aligned)
-            })
-            .map(|(&k, _)| k)
-            .min();
-        if let Some(bucket) = best {
-            let recycled = allocator
-                .free_blocks
-                .get_mut(&bucket)
-                .and_then(|blocks| blocks.pop());
-            if let Some(addr) = recycled {
-                // Record the *requested* size, not the bucket size,
-                // so GetPtrSize/GetHandleSize return the user-visible
-                // size. The full bucket capacity is recovered on free.
-                allocator.alloc_sizes.insert(addr, size);
-                allocator.alloc_bucket_sizes.insert(addr, bucket);
-                trace_alloc_event("reuse-best", addr, size, bucket);
-                return addr;
-            }
-        }
-
-        // Bump allocate
-        let Some((ptr, new_ptr)) = Self::bump_allocation_address(&allocator, aligned, 4) else {
-            return 0;
-        };
-
-        if new_ptr >= self.synthetic_floor {
-            eprintln!(
-                "[ALLOC] Out of memory: requesting {} bytes, heap at ${:08X}, limit ${:08X}",
-                size, ptr, self.synthetic_floor
-            );
-            return 0; // Return NULL; callers must check and set memFullErr
-        }
-
-        allocator.heap_ptr = new_ptr;
-        allocator.alloc_sizes.insert(ptr, size);
-        trace_alloc_event("bump", ptr, size, aligned);
-        ptr
+        self.heap_allocator.allocate(size, 4, self.synthetic_floor)
     }
 
     /// Allocate Systemless-owned memory without consuming or perturbing the
@@ -1730,67 +1793,8 @@ impl MacMemoryBus {
     /// [`Self::alloc`], but lets Toolbox managers request stable record
     /// placement without making every heap allocation pay that cost.
     pub fn alloc_aligned(&mut self, size: u32, alignment: u32) -> u32 {
-        if alignment <= 4 || !alignment.is_power_of_two() {
-            return self.alloc(size);
-        }
-
-        let aligned = Self::allocation_bucket_size(size);
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-
-        if let Some(blocks) = allocator.free_blocks.get_mut(&aligned) {
-            if let Some(index) = blocks.iter().position(|addr| addr % alignment == 0) {
-                let addr = blocks.swap_remove(index);
-                allocator.alloc_sizes.insert(addr, size);
-                trace_alloc_event("reuse-exact-aligned", addr, size, aligned);
-                return addr;
-            }
-        }
-
-        let best = allocator
-            .free_blocks
-            .iter()
-            .filter(|(&k, v)| {
-                k > aligned
-                    && !v.is_empty()
-                    && Self::can_reuse_bucket_for_request(k, aligned)
-                    && v.iter().any(|addr| addr % alignment == 0)
-            })
-            .map(|(&k, _)| k)
-            .min();
-        if let Some(bucket) = best {
-            let blocks = allocator
-                .free_blocks
-                .get_mut(&bucket)
-                .expect("free bucket exists");
-            let index = blocks
-                .iter()
-                .position(|addr| addr % alignment == 0)
-                .expect("aligned free block exists");
-            let addr = blocks.swap_remove(index);
-            allocator.alloc_sizes.insert(addr, size);
-            allocator.alloc_bucket_sizes.insert(addr, bucket);
-            trace_alloc_event("reuse-best-aligned", addr, size, bucket);
-            return addr;
-        }
-
-        let Some((ptr, new_ptr)) =
-            Self::bump_allocation_address(&allocator, aligned, alignment)
-        else {
-            return 0;
-        };
-
-        if new_ptr >= self.synthetic_floor {
-            eprintln!(
-                "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
-                size, alignment, allocator.heap_ptr, self.synthetic_floor
-            );
-            return 0;
-        }
-
-        allocator.heap_ptr = new_ptr;
-        allocator.alloc_sizes.insert(ptr, size);
-        trace_alloc_event("bump-aligned", ptr, size, aligned);
-        ptr
+        self.heap_allocator
+            .allocate(size, alignment, self.synthetic_floor)
     }
 
     /// Return the allocated size for a given address, or None if unknown.
@@ -1799,7 +1803,7 @@ impl MacMemoryBus {
     }
 
     pub(crate) fn heap_bump_ptr(&self) -> u32 {
-        self.heap_allocator.0.borrow().heap_ptr
+        self.heap_allocator.heap_bump_ptr()
     }
 
     /// Update the logical size of an existing allocation. Used by
@@ -1809,30 +1813,13 @@ impl MacMemoryBus {
     ///
     /// No-op for unknown addresses.
     pub fn set_alloc_size(&mut self, addr: u32, new_size: u32) {
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-        if allocator.alloc_sizes.contains_key(&addr) {
-            allocator.alloc_sizes.insert(addr, new_size);
-        }
+        self.heap_allocator.set_allocation_size(addr, new_size);
     }
 
     /// Return a previously allocated block to the free list for reuse.
     /// Does nothing for null pointers or unknown addresses.
     pub fn free(&mut self, addr: u32) {
-        if addr == 0 {
-            return;
-        }
-        let mut allocator = self.heap_allocator.0.borrow_mut();
-        if let Some(size) = allocator.alloc_sizes.remove(&addr) {
-            // For best-fit-recycled blocks, the bucket capacity exceeds
-            // the user-visible size; return to the original bucket so
-            // the full capacity stays available for the next alloc.
-            let bucket = allocator
-                .alloc_bucket_sizes
-                .remove(&addr)
-                .unwrap_or_else(|| Self::allocation_bucket_size(size));
-            allocator.free_blocks.entry(bucket).or_default().push(addr);
-            trace_alloc_event("free", addr, size, bucket);
-        }
+        self.heap_allocator.free(addr);
     }
 
     /// Return a read-only slice of contiguous RAM.
