@@ -3891,6 +3891,7 @@ impl PpcLoadedApp {
             &mut self.callback_scheduling,
         );
         context.attach_scrap_state(&mut self.scrap.desktop);
+        context.attach_text_edit_manager(&mut self.scrap.text_edit);
         context.attach_control_manager(&mut self.controls);
         context.attach_list_manager(&mut self.list_manager);
         context.attach_dialog_text(&mut self.param_text);
@@ -21092,6 +21093,22 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::TEInit => {
             toolbox_startup.text_edit_initialized = true;
+            let mut allocator = PpcProcessAllocatorView {
+                memory_manager: process_memory_manager,
+            };
+            let handle = ppc_te_scrap_handle(
+                Some(&mut allocator),
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                handles,
+            );
+            *last_mem_error = if handle == 0 {
+                PPC_MEM_FULL_ERR
+            } else {
+                PPC_NO_ERR
+            };
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TENew | PpcImportDispatcherTarget::TEStyleNew => {
@@ -21154,6 +21171,7 @@ fn dispatch_supported_import(
                 handles,
                 cpu.gpr[3],
             );
+            scrap.text_edit.remove(&cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TEActivate { active } => {
@@ -21441,9 +21459,10 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::TEAutoView => {
             // Inside Macintosh: Text (1993), pp. 2-90--2-91: TEAutoView
-            // changes only whether a later TESelView may scroll. TESelView is
-            // not needed by the native title set, so no public TERec field is
-            // altered by this private feature toggle.
+            // changes private feature state rather than a public TERec field.
+            scrap
+                .text_edit
+                .set_feature_bit(cpu.gpr[4], 0, cpu.gpr[3] != 0);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TECopy { cut, dialog } => {
@@ -21464,7 +21483,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                scrap,
                 te_handle,
                 cut,
             );
@@ -21488,7 +21506,7 @@ fn dispatch_supported_import(
             } else {
                 cpu.gpr[3]
             };
-            let bytes = ppc_te_scrap_bytes(memory, handles, scrap);
+            let bytes = ppc_te_scrap_bytes(memory);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -21536,14 +21554,13 @@ fn dispatch_supported_import(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        scrap,
                         &bytes,
                     )
                 } else {
                     PPC_NO_TYPE_ERR
                 }
             } else {
-                let bytes = ppc_te_scrap_bytes(memory, handles, scrap);
+                let bytes = ppc_te_scrap_bytes(memory);
                 scrap.desktop.initialized = true;
                 scrap
                     .desktop
@@ -21565,7 +21582,6 @@ fn dispatch_supported_import(
                 heap_limit,
                 last_mem_error,
                 handles,
-                scrap,
             );
             *last_mem_error = if handle == 0 {
                 PPC_MEM_FULL_ERR
@@ -21577,7 +21593,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::TEScrapLength { set } => {
             if set {
                 let requested = cpu.gpr[3] as i32;
-                let existing = ppc_te_scrap_bytes(memory, handles, scrap);
+                let existing = ppc_te_scrap_bytes(memory);
                 *last_mem_error = if requested < 0 {
                     PPC_PARAM_ERR
                 } else {
@@ -21593,18 +21609,15 @@ fn dispatch_supported_import(
                         heap_limit,
                         last_mem_error,
                         handles,
-                        scrap,
                         &resized,
                     )
                 };
                 Some(PpcImportAction::ReturnPreserve)
             } else {
-                let length = handles
-                    .iter()
-                    .find(|record| record.handle == scrap.private_text_handle)
-                    .map(|record| record.size)
+                let length = memory
+                    .read_u16_be(crate::memory::globals::addr::TE_SCRP_LENGTH)
                     .unwrap_or(0);
-                Some(PpcImportAction::Return(length))
+                Some(PpcImportAction::Return(u32::from(length)))
             }
         }
         PpcImportDispatcherTarget::SelectDialogItemText => {
@@ -69368,16 +69381,14 @@ fn ppc_te_scrap_handle(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    scrap: &mut PpcScrapState,
 ) -> u32 {
-    if scrap.private_text_handle != 0
-        && handles
-            .iter()
-            .any(|record| record.handle == scrap.private_text_handle)
-    {
-        return scrap.private_text_handle;
+    let existing = memory
+        .read_u32_be(crate::memory::globals::addr::TE_SCRP_HANDLE)
+        .unwrap_or(0);
+    if existing != 0 && memory.read_u32_be(existing).is_some() {
+        return existing;
     }
-    scrap.private_text_handle = ppc_allocator_view_allocate_handle(
+    let handle = ppc_allocator_view_allocate_handle(
         allocator,
         memory,
         heap_cursor,
@@ -69387,15 +69398,29 @@ fn ppc_te_scrap_handle(
         0,
         true,
     );
-    scrap.private_text_handle
+    if handle != 0 {
+        let _ = memory.write_u32_be(crate::memory::globals::addr::TE_SCRP_HANDLE, handle);
+        let _ = memory.write_u16_be(crate::memory::globals::addr::TE_SCRP_LENGTH, 0);
+    }
+    handle
 }
 
-fn ppc_te_scrap_bytes(
-    memory: &mut PpcSectionMem,
-    handles: &[PpcHandleRecord],
-    scrap: &PpcScrapState,
-) -> Vec<u8> {
-    ppc_handle_bytes(memory, handles, scrap.private_text_handle).unwrap_or_default()
+fn ppc_te_scrap_bytes(memory: &mut PpcSectionMem) -> Vec<u8> {
+    let handle = memory
+        .read_u32_be(crate::memory::globals::addr::TE_SCRP_HANDLE)
+        .unwrap_or(0);
+    let length = usize::from(
+        memory
+            .read_u16_be(crate::memory::globals::addr::TE_SCRP_LENGTH)
+            .unwrap_or(0),
+    );
+    let Some(ptr) = memory.read_u32_be(handle).filter(|ptr| *ptr != 0) else {
+        return Vec::new();
+    };
+    u32::try_from(length)
+        .ok()
+        .and_then(|length| ppc_memory_read_bytes(memory, ptr, length))
+        .unwrap_or_default()
 }
 
 fn ppc_te_set_scrap_bytes(
@@ -69405,7 +69430,6 @@ fn ppc_te_set_scrap_bytes(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    scrap: &mut PpcScrapState,
     bytes: &[u8],
 ) -> i16 {
     let handle = ppc_te_scrap_handle(
@@ -69415,7 +69439,6 @@ fn ppc_te_set_scrap_bytes(
         heap_limit,
         last_mem_error,
         handles,
-        scrap,
     );
     if handle == 0 {
         return PPC_MEM_FULL_ERR;
@@ -69442,6 +69465,10 @@ fn ppc_te_set_scrap_bytes(
             return PPC_PARAM_ERR;
         }
     }
+    let _ = memory.write_u16_be(
+        crate::memory::globals::addr::TE_SCRP_LENGTH,
+        length as u16,
+    );
     PPC_NO_ERR
 }
 
@@ -69465,7 +69492,6 @@ fn ppc_te_copy_or_cut(
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
-    scrap: &mut PpcScrapState,
     te_handle: u32,
     cut: bool,
 ) -> i16 {
@@ -69482,7 +69508,6 @@ fn ppc_te_copy_or_cut(
         heap_limit,
         last_mem_error,
         handles,
-        scrap,
         &selected,
     );
     if result != PPC_NO_ERR || !cut {
@@ -147879,11 +147904,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = te_handle;
         loaded.run_with_hle_imports(64);
         assert_eq!(
-            ppc_te_scrap_bytes(
-                &mut loaded.memory,
-                &test_handle_records!(loaded),
-                &loaded.scrap
-            ),
+            ppc_te_scrap_bytes(&mut loaded.memory),
             b"Pilot"
         );
 
@@ -149263,6 +149284,135 @@ pub(crate) mod tests {
         assert_eq!(native.cpu.gpr[3], 13);
         assert_eq!(native.memory.read_u32_be(native_offset), Some(0));
         assert_eq!(native.scrap.desktop.count, 2);
+    }
+
+    #[test]
+    fn attached_textedit_features_cross_isa_immediately() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let te_handle = 0x0033_1000;
+
+        classic_bus.write_long(TEST_SP, te_handle);
+        classic_bus.write_byte(TEST_SP + 4, 1);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_dialog(true, 0x013, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert!(native.scrap.text_edit.feature_bit(te_handle, 0));
+
+        native.cpu.gpr[3] = 0;
+        native.cpu.gpr[4] = te_handle;
+        run_test_import(&mut native, PpcImportDispatcherTarget::TEAutoView);
+        assert!(!classic.te_auto_scroll_enabled(te_handle));
+
+        native.cpu.gpr[3] = 1;
+        native.cpu.gpr[4] = te_handle;
+        run_test_import(&mut native, PpcImportDispatcherTarget::TEAutoView);
+        assert!(classic.te_auto_scroll_enabled(te_handle));
+
+        native.cpu.gpr[3] = te_handle;
+        run_test_import(&mut native, PpcImportDispatcherTarget::TEDispose);
+        assert!(!classic.te_auto_scroll_enabled(te_handle));
+    }
+
+    #[test]
+    fn attached_textedit_scrap_uses_canonical_low_memory_globals() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        let ram_end = classic_bus.ram_size();
+        for (base, end) in native
+            .memory
+            .ordinary_mapping_holes(0x0010_0000, ram_end)
+        {
+            let memory = classic_bus
+                .shared_ram_region(base, end - base)
+                .expect("classic adapter owns the native mapping hole");
+            context.attach_memory(base, memory, &mut native.memory);
+        }
+        let shared = native.memory.shared_view();
+        classic_bus.attach_guest_address_space(shared);
+        context.attach_classic_memory_bus(&mut classic_bus);
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::TEInit);
+        let native_handle = native
+            .memory
+            .read_u32_be(crate::memory::globals::addr::TE_SCRP_HANDLE)
+            .unwrap();
+        assert_ne!(native_handle, 0);
+        assert_eq!(
+            classic_bus.read_long(crate::memory::globals::addr::TE_SCRP_HANDLE),
+            native_handle
+        );
+        assert_eq!(
+            classic_bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            0
+        );
+
+        native.scrap.desktop.entries = vec![(*b"TEXT", b"Native".to_vec())];
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::TETransferScrap { from_desktop: true },
+        );
+        let native_ptr = classic_bus.read_long(native_handle);
+        assert_eq!(
+            classic_bus.read_word(crate::memory::globals::addr::TE_SCRP_LENGTH),
+            6
+        );
+        assert_eq!(classic_bus.read_bytes(native_ptr, 6), b"Native");
+
+        let (classic_handle, classic_ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 7)
+            .unwrap();
+        classic_bus.write_bytes(classic_ptr, b"Classic");
+        classic_bus.write_long(
+            crate::memory::globals::addr::TE_SCRP_HANDLE,
+            classic_handle,
+        );
+        classic_bus.write_word(crate::memory::globals::addr::TE_SCRP_LENGTH, 7);
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::TEScrapHandle);
+        assert_eq!(native.cpu.gpr[3], classic_handle);
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::TEScrapLength { set: false },
+        );
+        assert_eq!(native.cpu.gpr[3], 7);
+        assert_eq!(ppc_te_scrap_bytes(&mut native.memory), b"Classic");
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_textedit_feature_state() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        original.scrap.text_edit.set_feature_bit(0x0033_1000, 0, true);
+        let mut detached = original.clone();
+
+        detached
+            .scrap
+            .text_edit
+            .set_feature_bit(0x0033_1000, 0, false);
+        detached
+            .scrap
+            .text_edit
+            .set_feature_bit(0x0033_2000, 2, true);
+
+        assert!(original.scrap.text_edit.feature_bit(0x0033_1000, 0));
+        assert!(!original.scrap.text_edit.feature_bit(0x0033_2000, 2));
+        assert!(!detached.scrap.text_edit.feature_bit(0x0033_1000, 0));
     }
 
     #[test]

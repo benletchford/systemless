@@ -21,7 +21,7 @@ use crate::process_context::{
     SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     SharedProcessListManager, SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
-    SharedProcessSoundManager, SharedProcessValue,
+    SharedProcessSoundManager, SharedProcessTextEditManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1017,12 +1017,6 @@ pub(crate) struct AeCoercionHandler {
 }
 
 pub(crate) type ListState = ProcessListRecord;
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct TextEditState {
-    /// Feature bits toggled through TEFeatureFlag / TEAutoView.
-    pub feature_bits: u16,
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ControlAuxRecordState {
@@ -2639,8 +2633,8 @@ pub struct TrapDispatcher {
     pub(crate) saved_vis_regions: HashMap<u32, (i16, i16, i16, i16)>,
     /// Process-owned List Manager state shared with native execution.
     pub(crate) list_states: SharedProcessListManager,
-    /// Host-side TextEdit feature state keyed by guest TEHandle.
-    pub(crate) textedit_states: HashMap<u32, TextEditState>,
+    /// Process-owned TextEdit feature state shared with native execution.
+    pub(crate) textedit_states: SharedProcessTextEditManager,
     /// Process-owned Control Manager metadata shared with native execution.
     pub(crate) control_manager: SharedProcessControlManager,
     /// The menu ID of the most recently inserted menu (via InsertMenu).
@@ -2780,6 +2774,7 @@ impl TrapDispatcher {
         context.attach_scrap_state(&mut self.scrap);
         context.attach_control_manager(&mut self.control_manager);
         context.attach_list_manager(&mut self.list_states);
+        context.attach_text_edit_manager(&mut self.textedit_states);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
@@ -3994,7 +3989,7 @@ impl TrapDispatcher {
             window_stack: Vec::new(),
             saved_vis_regions: HashMap::new(),
             list_states: SharedProcessListManager::default(),
-            textedit_states: HashMap::new(),
+            textedit_states: SharedProcessTextEditManager::default(),
             control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,
             pending_dialog_popup_menu: None,
