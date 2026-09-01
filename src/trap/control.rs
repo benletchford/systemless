@@ -81,7 +81,7 @@ impl super::TrapDispatcher {
         let right = bus.read_word(ctrl_ptr + 14) as i16;
         let vis = bus.read_byte(ctrl_ptr + 16);
         let hilite = bus.read_byte(ctrl_ptr + 17);
-        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
         format!(
             "control_handle={} control_ptr={} rect=({top},{left},{bottom},{right}) visible={} hilite={} proc_id={proc_id}",
             Self::control_trace_nonzero(ctrl_handle),
@@ -296,7 +296,7 @@ impl super::TrapDispatcher {
     }
 
     fn control_uses_application_def_proc(&self, bus: &MacMemoryBus, ctrl_ptr: u32) -> bool {
-        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
         let proc_addr = Self::control_def_proc_addr(bus, ctrl_ptr);
         let callable = Self::control_def_entry_looks_callable(bus, proc_addr);
         if trace_controls_enabled() && !matches!(proc_id, 0 | 1 | 2 | 16) {
@@ -391,7 +391,7 @@ impl super::TrapDispatcher {
                 if ctrl_ptr == 0 || !self.control_uses_application_def_proc(bus, ctrl_ptr) {
                     return None;
                 }
-                let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                let proc_id = self.control_manager.proc_id(ctrl_ptr);
                 Some((
                     ctrl_handle,
                     message,
@@ -656,12 +656,12 @@ impl super::TrapDispatcher {
 
     fn control_aux_reserved_value(&self, bus: &MacMemoryBus, ctrl_handle: u32) -> u32 {
         let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
-        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
         u32::from((proc_id & 0xF) as u16) << 24
     }
 
     fn standard_testcontrol_part_code(&self, ctrl_ptr: u32) -> u16 {
-        match self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0) {
+        match self.control_manager.proc_id(ctrl_ptr) {
             1 | 2 => 11, // inCheckBox for checkbox and radio-button variants
             _ => 10,     // inButton for push buttons and the current fallback path
         }
@@ -1127,7 +1127,7 @@ impl super::TrapDispatcher {
             // created. The standard CDEF then publishes the menu item count
             // in contrlMax, so retain the pixel width as private CDEF state.
             // Macintosh Toolbox Essentials 1992, pp. 5-25 to 5-27.
-            self.popup_control_title_widths.insert(ctrl_ptr, max);
+            self.control_manager.set_popup_title_width(ctrl_ptr, max);
             let data = self.create_popup_control_private_data(bus, min);
             let item_count = self
                 .menus
@@ -1145,7 +1145,7 @@ impl super::TrapDispatcher {
         bus.write_long(ctrl_ptr + 32, 0); // contrlAction
         bus.write_long(ctrl_ptr + 36, ref_con);
         Self::set_control_title_bytes(bus, ctrl_ptr, title);
-        self.control_proc_ids.insert(ctrl_ptr, proc_id);
+        self.control_manager.set_proc_id(ctrl_ptr, proc_id);
     }
 
     pub(crate) fn create_control_record(
@@ -1169,6 +1169,16 @@ impl super::TrapDispatcher {
         bus.write_long(handle, ctrl_ptr);
         self.initialize_control_record(
             bus, ctrl_ptr, window_ptr, bounds, title, visible, value, min, max, proc_id, ref_con,
+        );
+        self.control_manager.register(
+            handle,
+            ctrl_ptr,
+            proc_id,
+            if Self::is_popup_menu_proc_id(proc_id) {
+                min
+            } else {
+                0
+            },
         );
         self.ensure_control_aux_record(bus, handle);
         if window_ptr != 0 {
@@ -1211,8 +1221,7 @@ impl super::TrapDispatcher {
                 }
             }
             self.release_control_aux_record(bus, ctrl_handle);
-            self.control_proc_ids.remove(&ctrl_ptr);
-            self.popup_control_title_widths.remove(&ctrl_ptr);
+            self.control_manager.remove_pointer(ctrl_ptr);
             bus.free(ctrl_ptr);
         }
         bus.free(ctrl_handle);
@@ -1267,10 +1276,8 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn popup_control_title_width(&self, ctrl_ptr: u32, fallback: i16) -> i16 {
-        self.popup_control_title_widths
-            .get(&ctrl_ptr)
-            .copied()
-            .unwrap_or(fallback)
+        self.control_manager
+            .popup_title_width(ctrl_ptr, fallback)
     }
 
     /// Draw a single control based on its procID, using QuickDraw primitives
@@ -1314,7 +1321,7 @@ impl super::TrapDispatcher {
         let title_bytes = Self::control_title_bytes(bus, ctrl_ptr);
         let title = decode_mac_roman_for_render(&title_bytes);
 
-        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
 
         // Save pen state, set to defaults (PenNormal)
         let saved_pn_size = self.pn_size;
@@ -2698,7 +2705,7 @@ impl super::TrapDispatcher {
                         }
                         let next = bus.read_long(ctrl_ptr);
                         self.release_control_aux_record(bus, ctrl_handle);
-                        self.control_proc_ids.remove(&ctrl_ptr);
+                        self.control_manager.remove_pointer(ctrl_ptr);
                         bus.free(ctrl_ptr);
                         bus.free(ctrl_handle);
                         ctrl_handle = next;
@@ -3022,7 +3029,7 @@ impl super::TrapDispatcher {
                 }
                 let min = bus.read_word(ctrl_ptr + 20) as i16;
                 let max = bus.read_word(ctrl_ptr + 22) as i16;
-                let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                let proc_id = self.control_manager.proc_id(ctrl_ptr);
                 // If min > max the control is degenerate — IM doesn't
                 // define the behaviour. Be conservative: take the
                 // requested value unchanged in that case.
@@ -3103,7 +3110,7 @@ impl super::TrapDispatcher {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
                 if ctrl_ptr != 0 {
                     bus.write_word(ctrl_ptr + 20, min as u16);
-                    let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                    let proc_id = self.control_manager.proc_id(ctrl_ptr);
                     let value = bus.read_word(ctrl_ptr + 18) as i16;
                     if !Self::is_popup_menu_proc_id(proc_id) && value < min {
                         bus.write_word(ctrl_ptr + 18, min as u16);
@@ -3150,7 +3157,7 @@ impl super::TrapDispatcher {
                 let ctrl_ptr = Self::control_record_ptr(bus, ctrl_handle);
                 if ctrl_ptr != 0 {
                     bus.write_word(ctrl_ptr + 22, max as u16);
-                    let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                    let proc_id = self.control_manager.proc_id(ctrl_ptr);
                     let value = bus.read_word(ctrl_ptr + 18) as i16;
                     if !Self::is_popup_menu_proc_id(proc_id) && value > max {
                         bus.write_word(ctrl_ptr + 18, max as u16);
@@ -3193,8 +3200,7 @@ impl super::TrapDispatcher {
                         let r_bottom = bus.read_word(ctrl_ptr + 12) as i16;
                         let r_right = bus.read_word(ctrl_ptr + 14) as i16;
                         if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right {
-                            part = match self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0)
-                            {
+                            part = match self.control_manager.proc_id(ctrl_ptr) {
                                 16 => self.standard_scrollbar_testcontrol_part_code(
                                     bus, ctrl_ptr, pt_v, pt_h,
                                 ),
@@ -3411,8 +3417,7 @@ impl super::TrapDispatcher {
                             outcome = "outside_control";
                             if pt_v >= r_top && pt_v < r_bottom && pt_h >= r_left && pt_h < r_right
                             {
-                                let proc_id =
-                                    self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                                let proc_id = self.control_manager.proc_id(ctrl_ptr);
                                 if proc_id == 16 {
                                     part = self.standard_scrollbar_testcontrol_part_code(
                                         bus, ctrl_ptr, pt_v, pt_h,
@@ -3642,7 +3647,7 @@ impl super::TrapDispatcher {
                             }
                             continue;
                         }
-                        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                        let proc_id = self.control_manager.proc_id(ctrl_ptr);
                         if Self::is_popup_menu_proc_id(proc_id) {
                             // popupMenuProc needs special MENU resource lookup
                             let vis = bus.read_byte(ctrl_ptr + 16);
@@ -3885,6 +3890,7 @@ impl super::TrapDispatcher {
                     proc_id,
                     ref_con,
                 );
+                self.control_manager.associate_handle(handle, ctrl_ptr);
                 self.ensure_control_aux_record(bus, handle);
                 if trace_controls_enabled() {
                     eprintln!(
@@ -4106,12 +4112,11 @@ impl super::TrapDispatcher {
             // handle; for future compatibility, use the GetCVariant routine
             // to access this value."
             //
-            // Systemless's NewControl / GetNewControl (toolbox.rs:1144 and
-            // :1972) record the original procID in the side-table
-            // `control_proc_ids: HashMap<ctrl_ptr, i16>`, indexed by the
-            // dereferenced ControlPtr (i.e. *theControl). GetCVariant
-            // recovers the variation code by reading procID from that side
-            // table and masking the low 4 bits — the canonical IM:I I-323
+            // NewControl and GetNewControl retain the original procID in the
+            // process-owned Control Manager registry, indexed by the
+            // dereferenced ControlPtr (i.e. *theControl). GetCVariant recovers
+            // the variation code by reading procID from that registry and
+            // masking the low 4 bits — the canonical IM:I I-323
             // definition. Same formula independent of CDEF resource ID:
             //   pushButProc=0   → variant 0
             //   checkBoxProc=1  → variant 1
@@ -4132,7 +4137,7 @@ impl super::TrapDispatcher {
                 let ctrl_handle = bus.read_long(sp);
                 let variant: i16 = if ctrl_handle != 0 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
-                    let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                    let proc_id = self.control_manager.proc_id(ctrl_ptr);
                     proc_id & 0xF
                 } else {
                     0
@@ -4238,7 +4243,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 18, value as u16);
         bus.write_word(ctrl_ptr + 20, min as u16);
         bus.write_word(ctrl_ptr + 22, max as u16);
-        disp.control_proc_ids.insert(ctrl_ptr, 16);
+        disp.control_manager.set_proc_id(ctrl_ptr, 16);
         (ctrl_handle, ctrl_ptr)
     }
 
@@ -5184,7 +5189,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 22, 0);
         let handle = bus.alloc(4);
         bus.write_long(handle, ctrl_ptr);
-        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.control_manager.set_proc_id(ctrl_ptr, 1009);
         bus.write_word(sp, 3);
         bus.write_long(sp + 2, handle);
 
@@ -5281,7 +5286,7 @@ mod tests {
         clear_1bpp_screen(&mut bus, screen_base, row_bytes, 342);
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 0, 0);
         bus.write_long(ctrl_ptr + 4, window);
-        disp.control_proc_ids.insert(ctrl_ptr, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 0);
         let before: Vec<u8> = (0..row_bytes * 342)
             .map(|offset| bus.read_byte(screen_base + offset))
             .collect();
@@ -5316,7 +5321,7 @@ mod tests {
         bus.write_long(cdef_handle, cdef_proc);
         bus.write_long(ctrl_ptr + 4, owner);
         bus.write_long(ctrl_ptr + 24, cdef_handle);
-        disp.control_proc_ids.insert(ctrl_ptr, (160 << 4) | 5);
+        disp.control_manager.set_proc_id(ctrl_ptr, (160 << 4) | 5);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::PC, return_pc);
@@ -5975,7 +5980,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 18, 1);
         bus.write_word(ctrl_ptr + 20, 902);
         bus.write_word(ctrl_ptr + 22, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.control_manager.set_proc_id(ctrl_ptr, 1009);
         disp.menus.push(Menu {
             id: 902,
             title: "Mode".to_string(),
@@ -6081,7 +6086,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 18, 1);
         bus.write_word(ctrl_ptr + 20, 900); // popupMenuProc stores MENU id in min
         bus.write_word(ctrl_ptr + 22, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.control_manager.set_proc_id(ctrl_ptr, 1009);
         disp.menus.push(Menu {
             id: 900,
             title: "Squadies".to_string(),
@@ -6189,7 +6194,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 18, 1);
         bus.write_word(ctrl_ptr + 20, 901);
         bus.write_word(ctrl_ptr + 22, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 1009);
+        disp.control_manager.set_proc_id(ctrl_ptr, 1009);
         disp.menus.push(Menu {
             id: 901,
             title: "Formation".to_string(),
@@ -6545,7 +6550,7 @@ mod tests {
         let sp = 0x300000u32;
 
         let (button_handle, button_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
-        disp.control_proc_ids.insert(button_ptr, 0);
+        disp.control_manager.set_proc_id(button_ptr, 0);
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 15);
         bus.write_word(sp + 2, 25);
@@ -6559,7 +6564,7 @@ mod tests {
 
         let (checkbox_handle, checkbox_ptr) =
             alloc_control_handle(&mut bus, (40, 50, 80, 120), 255, 0);
-        disp.control_proc_ids.insert(checkbox_ptr, 1);
+        disp.control_manager.set_proc_id(checkbox_ptr, 1);
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 60);
         bus.write_word(sp + 2, 70);
@@ -6572,7 +6577,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), sp + 8);
 
         let (radio_handle, radio_ptr) = alloc_control_handle(&mut bus, (90, 30, 120, 100), 255, 0);
-        disp.control_proc_ids.insert(radio_ptr, 2);
+        disp.control_manager.set_proc_id(radio_ptr, 2);
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 100);
         bus.write_word(sp + 2, 40);
@@ -6591,7 +6596,7 @@ mod tests {
         let sp = 0x300000u32;
 
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 0);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 5);
@@ -6633,7 +6638,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = 0x300000u32;
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 0);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 15);
@@ -6719,20 +6724,20 @@ mod tests {
         let mut results = Vec::new();
 
         let (button_handle, button_ptr) = alloc_control_handle(&mut bus, (10, 20, 30, 60), 255, 0);
-        disp.control_proc_ids.insert(button_ptr, 0);
+        disp.control_manager.set_proc_id(button_ptr, 0);
         let (part, stack, tail) =
             dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, button_handle, (15, 25));
         results.push(("button", part, stack, tail));
 
         let (checkbox_handle, checkbox_ptr) =
             alloc_control_handle(&mut bus, (40, 50, 80, 120), 255, 0);
-        disp.control_proc_ids.insert(checkbox_ptr, 1);
+        disp.control_manager.set_proc_id(checkbox_ptr, 1);
         let (part, stack, tail) =
             dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, checkbox_handle, (60, 70));
         results.push(("checkbox", part, stack, tail));
 
         let (radio_handle, radio_ptr) = alloc_control_handle(&mut bus, (90, 30, 120, 100), 255, 0);
-        disp.control_proc_ids.insert(radio_ptr, 2);
+        disp.control_manager.set_proc_id(radio_ptr, 2);
         let (part, stack, tail) =
             dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, radio_handle, (100, 40));
         results.push(("radio", part, stack, tail));
@@ -6753,14 +6758,14 @@ mod tests {
 
         let (outside_handle, outside_ptr) =
             alloc_control_handle(&mut bus, (130, 20, 160, 80), 255, 0);
-        disp.control_proc_ids.insert(outside_ptr, 0);
+        disp.control_manager.set_proc_id(outside_ptr, 0);
         let (part, stack, tail) =
             dispatch_testcontrol_part(&mut disp, &mut cpu, &mut bus, sp, outside_handle, (120, 15));
         results.push(("outside", part, stack, tail));
 
         let (inactive_handle, inactive_ptr) =
             alloc_control_handle(&mut bus, (170, 20, 200, 80), 255, 255);
-        disp.control_proc_ids.insert(inactive_ptr, 0);
+        disp.control_manager.set_proc_id(inactive_ptr, 0);
         let (part, stack, tail) = dispatch_testcontrol_part(
             &mut disp,
             &mut cpu,
@@ -6773,7 +6778,7 @@ mod tests {
 
         let (invisible_handle, invisible_ptr) =
             alloc_control_handle(&mut bus, (210, 20, 240, 80), 0, 0);
-        disp.control_proc_ids.insert(invisible_ptr, 0);
+        disp.control_manager.set_proc_id(invisible_ptr, 0);
         let (part, stack, tail) = dispatch_testcontrol_part(
             &mut disp,
             &mut cpu,
@@ -6956,7 +6961,7 @@ mod tests {
 
         let (ctrl_handle, ctrl_ptr) =
             alloc_button_control(&mut disp, &mut bus, window, (20, 20, 40, 100));
-        disp.control_proc_ids.insert(ctrl_ptr, 3216);
+        disp.control_manager.set_proc_id(ctrl_ptr, 3216);
         bus.write_byte(ctrl_ptr + 40, 4);
         bus.write_word(ctrl_ptr + 41, 4096);
         bus.write_word(ctrl_ptr + 43, 4097);
@@ -7011,7 +7016,7 @@ mod tests {
         let (titled_handle, titled_ptr) =
             alloc_button_control(&mut disp, &mut bus, window, (60, 20, 80, 140));
         for ptr in [blank_ptr, titled_ptr] {
-            disp.control_proc_ids.insert(ptr, 3216);
+            disp.control_manager.set_proc_id(ptr, 3216);
         }
         bus.write_byte(titled_ptr + 40, 4);
         bus.write_bytes(titled_ptr + 41, b"PLAY");
@@ -7066,7 +7071,7 @@ mod tests {
         let gdevice_before = *disp.current_gdevice;
         let (ctrl_handle, ctrl_ptr) =
             alloc_button_control(&mut disp, &mut bus, window_ptr, (20, 20, 260, 60));
-        disp.control_proc_ids.insert(ctrl_ptr, 1008);
+        disp.control_manager.set_proc_id(ctrl_ptr, 1008);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, ctrl_handle);
@@ -7176,7 +7181,7 @@ mod tests {
         clear_1bpp_screen(&mut classic_bus, classic_base, classic_row_bytes, 342);
         let (classic_handle, classic_ptr) =
             alloc_button_control(&mut classic, &mut classic_bus, classic_window, bounds);
-        classic.control_proc_ids.insert(classic_ptr, 1008);
+        classic.control_manager.set_proc_id(classic_ptr, 1008);
         classic_cpu.write_reg(Register::A7, sp);
         classic_bus.write_long(sp, classic_handle);
         classic
@@ -7193,7 +7198,7 @@ mod tests {
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
         let (themed_handle, themed_ptr) =
             alloc_button_control(&mut themed, &mut themed_bus, themed_window, bounds);
-        themed.control_proc_ids.insert(themed_ptr, 1008);
+        themed.control_manager.set_proc_id(themed_ptr, 1008);
         themed_cpu.write_reg(Register::A7, sp);
         themed_bus.write_long(sp, themed_handle);
         themed
@@ -7257,7 +7262,7 @@ mod tests {
             (84, 20, 104, 120),
         );
         for ptr in [normal_ptr, pressed_ptr, inactive_ptr] {
-            themed.control_proc_ids.insert(ptr, 1008);
+            themed.control_manager.set_proc_id(ptr, 1008);
         }
         themed_bus.write_byte(pressed_ptr + 17, 1);
         themed_bus.write_byte(inactive_ptr + 17, 255);
@@ -7428,7 +7433,7 @@ mod tests {
             classic_window,
             (20, 20, 40, 120),
         );
-        classic.control_proc_ids.insert(classic_checkbox_ptr, 1);
+        classic.control_manager.set_proc_id(classic_checkbox_ptr, 1);
         classic_bus.write_word(classic_checkbox_ptr + 18, 1);
         let (classic_radio_handle, classic_radio_ptr) = alloc_button_control(
             &mut classic,
@@ -7436,7 +7441,7 @@ mod tests {
             classic_window,
             (50, 20, 70, 120),
         );
-        classic.control_proc_ids.insert(classic_radio_ptr, 2);
+        classic.control_manager.set_proc_id(classic_radio_ptr, 2);
         classic_bus.write_word(classic_radio_ptr + 18, 1);
         for handle in [classic_checkbox_handle, classic_radio_handle] {
             classic_cpu.write_reg(Register::A7, sp);
@@ -7459,7 +7464,7 @@ mod tests {
             themed_window,
             (20, 20, 40, 120),
         );
-        themed.control_proc_ids.insert(themed_checkbox_ptr, 1);
+        themed.control_manager.set_proc_id(themed_checkbox_ptr, 1);
         themed_bus.write_word(themed_checkbox_ptr + 18, 1);
         let (themed_radio_handle, themed_radio_ptr) = alloc_button_control(
             &mut themed,
@@ -7467,7 +7472,7 @@ mod tests {
             themed_window,
             (50, 20, 70, 120),
         );
-        themed.control_proc_ids.insert(themed_radio_ptr, 2);
+        themed.control_manager.set_proc_id(themed_radio_ptr, 2);
         themed_bus.write_word(themed_radio_ptr + 18, 1);
         for handle in [themed_checkbox_handle, themed_radio_handle] {
             themed_cpu.write_reg(Register::A7, sp);
@@ -7544,7 +7549,7 @@ mod tests {
             checkbox_pressed_ptr,
             checkbox_inactive_ptr,
         ] {
-            themed.control_proc_ids.insert(ptr, 1);
+            themed.control_manager.set_proc_id(ptr, 1);
         }
         bus.write_byte(checkbox_pressed_ptr + 17, 1);
         bus.write_byte(checkbox_inactive_ptr + 17, 255);
@@ -7556,7 +7561,7 @@ mod tests {
         let (radio_inactive_handle, radio_inactive_ptr) =
             alloc_button_control(&mut themed, &mut bus, window, (84, 140, 104, 220));
         for ptr in [radio_enabled_ptr, radio_pressed_ptr, radio_inactive_ptr] {
-            themed.control_proc_ids.insert(ptr, 2);
+            themed.control_manager.set_proc_id(ptr, 2);
         }
         bus.write_byte(radio_pressed_ptr + 17, 1);
         bus.write_byte(radio_inactive_ptr + 17, 255);
@@ -7628,7 +7633,7 @@ mod tests {
         clear_1bpp_screen(&mut classic_bus, classic_base, classic_row_bytes, 342);
         let (_classic_handle, classic_ptr) =
             alloc_button_control(&mut classic, &mut classic_bus, classic_window, bounds);
-        classic.control_proc_ids.insert(classic_ptr, 16);
+        classic.control_manager.set_proc_id(classic_ptr, 16);
         classic_bus.write_word(classic_ptr + 18, 40);
         classic_bus.write_word(classic_ptr + 20, 0);
         classic_bus.write_word(classic_ptr + 22, 100);
@@ -7656,7 +7661,7 @@ mod tests {
         clear_1bpp_screen(&mut themed_bus, themed_base, themed_row_bytes, 342);
         let (themed_handle, themed_ptr) =
             alloc_button_control(&mut themed, &mut themed_bus, themed_window, bounds);
-        themed.control_proc_ids.insert(themed_ptr, 16);
+        themed.control_manager.set_proc_id(themed_ptr, 16);
         themed_bus.write_word(themed_ptr + 18, 40);
         themed_bus.write_word(themed_ptr + 20, 0);
         themed_bus.write_word(themed_ptr + 22, 100);
@@ -7936,7 +7941,7 @@ mod tests {
         bus.write_long(ctrl_ptr + 32, 0);
         bus.write_long(ctrl_ptr + 36, 0);
         bus.write_byte(ctrl_ptr + 40, 0);
-        disp.control_proc_ids.insert(ctrl_ptr, 0);
+        disp.control_manager.set_proc_id(ctrl_ptr, 0);
         (ctrl_handle, ctrl_ptr)
     }
 
@@ -8123,7 +8128,7 @@ mod tests {
         let ctrl_ptr = bus.alloc(296);
         let ctrl_handle = bus.alloc(4);
         bus.write_long(ctrl_handle, ctrl_ptr);
-        disp.control_proc_ids.insert(ctrl_ptr, proc_id);
+        disp.control_manager.set_proc_id(ctrl_ptr, proc_id);
         ctrl_handle
     }
 

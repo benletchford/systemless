@@ -1,5 +1,6 @@
 //! PowerPC graphics, GWorld, and color representation records.
 
+pub(crate) use crate::control_manager::ProcessControlRecord as PpcControlRecord;
 use crate::menu_manager::MenuTrackingSurface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,13 +116,6 @@ impl PpcQuickDrawSurface {
             right.wrapping_sub(self.left),
         )
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcControlRecord {
-    pub handle: u32,
-    pub proc_id: i16,
-    pub popup_menu_id: i16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

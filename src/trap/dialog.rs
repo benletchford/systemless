@@ -3445,6 +3445,7 @@ impl super::TrapDispatcher {
                             proc_id,
                             ref_con,
                         );
+                        self.control_manager.associate_handle(handle, ctrl_ptr);
                         self.ensure_control_aux_record(bus, handle);
                         let old_head = bus.read_long(dialog_ptr + 140);
                         bus.write_long(ctrl_ptr, old_head);
@@ -3508,6 +3509,7 @@ impl super::TrapDispatcher {
             proc_id,
             0,
         );
+        self.control_manager.associate_handle(handle, ctrl_ptr);
         self.ensure_control_aux_record(bus, handle);
 
         let old_head = bus.read_long(dialog_ptr + 140);
@@ -4584,7 +4586,7 @@ impl super::TrapDispatcher {
                 }
             }
             self.release_control_aux_record(bus, ctrl_handle);
-            self.control_proc_ids.remove(&ctrl_ptr);
+            self.control_manager.remove_pointer(ctrl_ptr);
             bus.free(ctrl_ptr);
         }
         bus.free(ctrl_handle);
@@ -6502,7 +6504,7 @@ impl super::TrapDispatcher {
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
                         let proc_id_ctrl =
-                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                            self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
                             .get(&(dialog_ptr, item_num))
@@ -6636,7 +6638,7 @@ impl super::TrapDispatcher {
                 if let Some(ctrl_handle) = self.dialog_control_handle_for_item(dialog_ptr, item_num)
                 {
                     let ctrl_ptr = bus.read_long(ctrl_handle);
-                    let proc_id_ctrl = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                    let proc_id_ctrl = self.control_manager.proc_id(ctrl_ptr);
                     eprintln!(
                         "[DLG]     item={} control handle=${:08X} ptr=${:08X} visible={} hilite={} value={} min={} max={} proc_id={}",
                         item_num,
@@ -6714,7 +6716,7 @@ impl super::TrapDispatcher {
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
                         let proc_id_ctrl =
-                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                            self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
                             .get(&(dialog_ptr, item_num))
@@ -6909,7 +6911,7 @@ impl super::TrapDispatcher {
                     {
                         let ctrl_ptr = bus.read_long(ctrl_handle);
                         let proc_id_ctrl =
-                            self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+                            self.control_manager.proc_id(ctrl_ptr);
                         let value = self
                             .dialog_control_values
                             .get(&(dialog_ptr, item_num))
@@ -10264,7 +10266,7 @@ impl super::TrapDispatcher {
         if ctrl_ptr == 0 {
             return false;
         }
-        let proc_id = self.control_proc_ids.get(&ctrl_ptr).copied().unwrap_or(0);
+        let proc_id = self.control_manager.proc_id(ctrl_ptr);
         if !Self::is_popup_menu_proc_id(proc_id) {
             return false;
         }
@@ -11610,9 +11612,10 @@ impl super::TrapDispatcher {
                                 6 => 2, // radCtrl → radioButProc
                                 _ => 0,
                             };
-                            self.control_proc_ids.insert(ctrl_rec, proc_id);
+                            self.control_manager.set_proc_id(ctrl_rec, proc_id);
                             let handle = bus.alloc(4);
                             bus.write_long(handle, ctrl_rec);
+                            self.control_manager.associate_handle(handle, ctrl_rec);
                             bus.write_long(item_handle_ptr, handle);
                             self.dialog_control_handles
                                 .insert(handle, (dialog_ptr, item_no));
@@ -25324,7 +25327,7 @@ mod tests {
         bus.write_word(ctrl_ptr + 18, 0);
         bus.write_word(ctrl_ptr + 20, 0);
         bus.write_word(ctrl_ptr + 22, 1);
-        disp.control_proc_ids.insert(ctrl_ptr, 2);
+        disp.control_manager.set_proc_id(ctrl_ptr, 2);
         disp.dialog_control_handles
             .insert(ctrl_handle, (dialog_ptr, 1));
 
@@ -27702,7 +27705,7 @@ mod tests {
             disp.dialog_control_handles.get(&control_handle),
             Some(&(dialog_ptr, 1))
         );
-        assert!(disp.control_proc_ids.contains_key(&control_ptr));
+        assert!(disp.control_manager.contains_pointer(control_ptr));
         let aux_handle = disp.ensure_control_aux_record(&mut bus, control_handle);
         let aux_ptr = bus.read_long(aux_handle);
         assert_ne!(aux_handle, 0);
@@ -27720,7 +27723,7 @@ mod tests {
         assert_eq!(bus.get_alloc_size(aux_handle), None);
         assert!(disp.control_aux_state(control_handle).is_none());
         assert!(!disp.dialog_control_handles.contains_key(&control_handle));
-        assert!(!disp.control_proc_ids.contains_key(&control_ptr));
+        assert!(!disp.control_manager.contains_pointer(control_ptr));
     }
 
     #[test]
@@ -29790,7 +29793,7 @@ mod tests {
             Some(&(dialog_ptr, 1))
         );
         assert_eq!(disp.dialog_control_values.get(&(dialog_ptr, 1)), Some(&0));
-        assert_eq!(disp.control_proc_ids.get(&control_ptr), Some(&1));
+        assert_eq!(disp.control_manager.proc_id(control_ptr), 1);
     }
 
     #[test]
@@ -29846,7 +29849,7 @@ mod tests {
         assert_eq!(bus.read_word(ctrl_ptr + 18) as i16, 2);
         assert_eq!(bus.read_word(ctrl_ptr + 20) as i16, 1);
         assert_eq!(bus.read_word(ctrl_ptr + 22) as i16, 0);
-        assert_eq!(disp.control_proc_ids.get(&ctrl_ptr), Some(&1009));
+        assert_eq!(disp.control_manager.proc_id(ctrl_ptr), 1009);
         assert_eq!(
             disp.dialog_control_handles.get(&handle),
             Some(&(dialog_ptr, 1))

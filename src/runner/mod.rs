@@ -13368,7 +13368,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -15619,7 +15619,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -16638,7 +16638,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -16791,7 +16791,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -17176,7 +17176,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -17455,7 +17455,7 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            controls: Vec::new(),
+            controls: Default::default(),
             screen_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -22321,7 +22321,7 @@ mod tests {
         runner.bus.write_word(ctrl_ptr + 18, 40);
         runner.bus.write_word(ctrl_ptr + 20, 0);
         runner.bus.write_word(ctrl_ptr + 22, 100);
-        runner.dispatcher.control_proc_ids.insert(ctrl_ptr, 16);
+        runner.dispatcher.control_manager.set_proc_id(ctrl_ptr, 16);
         runner.dispatcher.input_state.mouse_button = true;
         runner.dispatcher.input_state.mouse_pos = (210, 248);
 

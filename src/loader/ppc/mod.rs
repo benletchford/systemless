@@ -77,7 +77,7 @@ use crate::process_context::{
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
-    SharedProcessEventQueue,
+    SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     SharedProcessMenuTracking, SharedProcessTimerTasks, SharedProcessValue,
     SharedProcessVblTasks,
@@ -3334,7 +3334,7 @@ pub struct PpcLoadedApp {
     pub cfm_connections: Vec<PpcCfmConnection>,
     pub cfm_library_fragments: Vec<PpcCfmLibraryFragment>,
     pub next_cfm_connection_id: u32,
-    pub controls: Vec<PpcControlRecord>,
+    pub(crate) controls: SharedProcessControlManager,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
     pub q3_objects: Vec<PpcQ3ObjectRecord>,
@@ -3891,6 +3891,7 @@ impl PpcLoadedApp {
             &mut self.callback_scheduling,
         );
         context.attach_scrap_state(&mut self.scrap.desktop);
+        context.attach_control_manager(&mut self.controls);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
@@ -12704,7 +12705,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         cfm_connections,
         cfm_library_fragments: Vec::new(),
         next_cfm_connection_id,
-        controls: Vec::new(),
+        controls: SharedProcessControlManager::default(),
         aliases: Vec::new(),
         gworlds,
         q3_objects: Vec::new(),
@@ -65752,15 +65753,14 @@ fn ppc_new_control_record_values(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
+    let popup = (1008..=1023).contains(&(proc_id & 0x0fff));
     controls.retain(|record| record.handle != handle);
     controls.push(PpcControlRecord {
         handle,
+        pointer: control,
         proc_id,
-        popup_menu_id: if (1008..=1023).contains(&(proc_id & 0x0fff)) {
-            min
-        } else {
-            0
-        },
+        popup_menu_id: if popup { min } else { 0 },
+        popup_title_width: popup.then_some(max),
     });
     *last_mem_error = PPC_NO_ERR;
     handle
@@ -93324,11 +93324,13 @@ pub(crate) mod tests {
             Some(b"Launch".to_vec())
         );
         assert_eq!(
-            loaded.controls,
-            vec![PpcControlRecord {
+            &**loaded.controls,
+            &vec![PpcControlRecord {
                 handle,
+                pointer: control,
                 proc_id: 16,
                 popup_menu_id: 0,
+                popup_title_width: None,
             }]
         );
     }
@@ -146182,11 +146184,13 @@ pub(crate) mod tests {
             Some(b"OK".to_vec())
         );
         assert_eq!(
-            loaded.controls,
-            vec![PpcControlRecord {
+            &**loaded.controls,
+            &vec![PpcControlRecord {
                 handle: control_handle,
+                pointer: control,
                 proc_id: 0,
                 popup_menu_id: 0,
+                popup_title_width: None,
             }]
         );
     }
@@ -149063,6 +149067,73 @@ pub(crate) mod tests {
         assert_eq!(original.scrap.desktop.count, 1);
         assert_eq!(detached.scrap.desktop.entries, vec![(*b"TEXT", b"detached".to_vec())]);
         assert_eq!(detached.scrap.desktop.count, 1);
+    }
+
+    #[test]
+    fn attached_control_manager_metadata_crosses_isa_immediately() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let window = classic_bus.alloc(180);
+        let (classic_handle, classic_pointer) = classic.create_control_record(
+            &mut classic_bus,
+            window,
+            (10, 20, 30, 140),
+            b"Mode",
+            true,
+            1,
+            300,
+            96,
+            1009,
+            0,
+        );
+        let classic_record = native
+            .controls
+            .iter()
+            .find(|record| record.handle == classic_handle)
+            .copied()
+            .unwrap();
+        assert_eq!(classic_record.pointer, classic_pointer);
+        assert_eq!(classic_record.proc_id, 1009);
+        assert_eq!(classic_record.popup_menu_id, 300);
+        assert_eq!(classic_record.popup_title_width, Some(96));
+
+        native.controls.register(0x0030_1000, 0x0030_2000, 16, 0);
+        assert_eq!(classic.control_manager.proc_id(0x0030_2000), 16);
+
+        classic.dispose_control_handle(&mut classic_bus, classic_handle);
+        assert!(!native
+            .controls
+            .iter()
+            .any(|record| record.handle == classic_handle));
+        native.controls.remove_handle(0x0030_1000);
+        assert!(!classic.control_manager.contains_pointer(0x0030_2000));
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_control_manager_metadata() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        original
+            .controls
+            .register(0x0031_1000, 0x0031_2000, 1, 0);
+        let mut detached = original.clone();
+
+        detached.controls.set_proc_id(0x0031_2000, 2);
+        detached
+            .controls
+            .register(0x0031_3000, 0x0031_4000, 16, 0);
+
+        assert_eq!(original.controls.proc_id(0x0031_2000), 1);
+        assert_eq!(detached.controls.proc_id(0x0031_2000), 2);
+        assert!(!original
+            .controls
+            .iter()
+            .any(|record| record.handle == 0x0031_3000));
     }
 
     #[test]
