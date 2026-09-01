@@ -6171,17 +6171,22 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
-        let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-            match (trace_ppc_imports, trace_ppc_fetches) {
+        let (event_queue, menu_tracking, memory_manager) = self
+            .process_context
+            .event_queue_menu_tracking_and_memory_manager_mut();
+        let probe = ppc_app.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |app| match (trace_ppc_imports, trace_ppc_fetches) {
                 (true, true) => {
                     app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
                 }
                 (true, false) => app.run_with_hle_import_trace(ppc_max_steps as u64),
                 (false, true) => app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
                 (false, false) => app.run_with_hle_imports(ppc_max_steps as u64),
-            }
-        });
+            },
+        );
         let profile_run_us = elapsed_profile_micros(profile_run_start);
         let ppc_cycles = ppc_run_result_cycles(probe.result);
         let resumed_m68k = self.resume_m68k_after_powerpc(&mut ppc_app);
@@ -6220,19 +6225,25 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probes = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                Self::fire_ppc_tick_callbacks(
-                    app,
-                    ppc_start_tick,
-                    ppc_start_time,
-                    elapsed_ticks,
-                    u64::from(cycles_per_tick),
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager_mut();
+            let probes = ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app| {
+                    Self::fire_ppc_tick_callbacks(
+                        app,
+                        ppc_start_tick,
+                        ppc_start_time,
+                        elapsed_ticks,
+                        u64::from(cycles_per_tick),
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                    )
+                },
+            );
             probes
         };
         if trace_vbl_enabled() {
@@ -8017,16 +8028,22 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                app.run_sound_doubleback_callback(
-                    doubleback,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager_mut();
+            let probe = ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app| {
+                    app.run_sound_doubleback_callback(
+                        doubleback,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                    )
+                },
+            );
             let invocation = probe.invocation;
             if trace_sound_runner_enabled() {
                 eprintln!(
@@ -8125,16 +8142,22 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let (event_queue, menu_tracking) =
-                self.process_context.event_queue_and_menu_tracking_mut();
-            let probe = ppc_app.with_process_state(event_queue, menu_tracking, |app| {
-                app.run_sound_completion_callback(
-                    completion,
-                    PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
-                    trace_ppc_imports,
-                    trace_ppc_fetches,
-                )
-            });
+            let (event_queue, menu_tracking, memory_manager) = self
+                .process_context
+                .event_queue_menu_tracking_and_memory_manager_mut();
+            let probe = ppc_app.with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |app| {
+                    app.run_sound_completion_callback(
+                        completion,
+                        PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
+                        trace_ppc_imports,
+                        trace_ppc_fetches,
+                    )
+                },
+            );
             let invocation = probe.invocation;
             if record_ppc_imports {
                 self.record_ppc_import_trace(&probe.import_trace);
@@ -14383,6 +14406,11 @@ mod tests {
         assert_eq!(handle_record.size, handle_record.capacity);
         assert!(handle_record.size > original_handle_record.size);
         assert_ne!(relocated_record, original_record, "the fixture must force relocation");
+        assert_eq!(
+            runner.process_context.handle_for_ptr(relocated_record),
+            Some(root_menu),
+            "the process Memory Manager must publish the relocated native handle"
+        );
         let mut menu_bytes = vec![0; handle_record.size as usize];
         native
             .memory

@@ -5284,6 +5284,11 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
+        context.register_native_handles(
+            self.handles
+                .iter()
+                .map(|record| (record.handle, record.ptr)),
+        );
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -5332,6 +5337,34 @@ impl PpcLoadedApp {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.with_event_queue(event_queue, |app| app.with_menu_tracking(menu_tracking, f))
+    }
+
+    /// Run one native slice while publishing its live relocatable blocks to
+    /// the process Memory Manager before another CPU adapter can execute.
+    pub(crate) fn with_process_state_and_memory_manager<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_process_state(event_queue, menu_tracking, |app| {
+            memory_manager.register_native_handles(
+                app.handles
+                    .iter()
+                    .map(|record| (record.handle, record.ptr)),
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(app)));
+            memory_manager.register_native_handles(
+                app.handles
+                    .iter()
+                    .map(|record| (record.handle, record.ptr)),
+            );
+            match outcome {
+                Ok(result) => result,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        })
     }
 
     /// Park the current native context and enter a PowerPC routine selected by

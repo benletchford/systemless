@@ -5,7 +5,7 @@ use crate::guest_call::SharedGuestCallStack;
 use crate::memory::bus::SharedRamRegion;
 use crate::memory::GuestAddressSpace;
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 struct ProcessMemoryRegion {
@@ -37,6 +37,7 @@ pub(crate) struct PendingHandleByteReplacement {
 pub(crate) struct ProcessMemoryManager {
     ptr_to_handle: HashMap<u32, u32>,
     handle_state_bits: HashMap<u32, u8>,
+    native_ptrs: HashSet<u32>,
 }
 
 impl ProcessMemoryManager {
@@ -76,6 +77,21 @@ impl ProcessMemoryManager {
         (&mut self.ptr_to_handle, &mut self.handle_state_bits)
     }
 
+    pub(crate) fn register_native_handles(
+        &mut self,
+        handles: impl IntoIterator<Item = (u32, u32)>,
+    ) {
+        for ptr in self.native_ptrs.drain() {
+            self.ptr_to_handle.remove(&ptr);
+        }
+        for (handle, ptr) in handles {
+            if handle != 0 && ptr != 0 {
+                self.ptr_to_handle.insert(ptr, handle);
+                self.native_ptrs.insert(ptr);
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
         self.ptr_to_handle.get(&ptr).copied()
@@ -104,6 +120,18 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
+    #[cfg(test)]
+    pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
+        self.memory_manager.handle_for_ptr(ptr)
+    }
+
+    pub(crate) fn register_native_handles(
+        &mut self,
+        handles: impl IntoIterator<Item = (u32, u32)>,
+    ) {
+        self.memory_manager.register_native_handles(handles);
+    }
+
     pub(crate) fn adopt_memory_manager_metadata(
         &mut self,
         ptr_to_handle: &mut HashMap<u32, u32>,
@@ -499,5 +527,22 @@ mod tests {
         assert_eq!(context.event_queue().len(), 1);
         assert!(context.menu_tracking().is_some());
         assert_eq!(context.pending_memory_effects().len(), 1);
+    }
+
+    #[test]
+    fn native_handle_registration_tracks_relocation_without_discarding_classic_handles() {
+        let mut manager = ProcessMemoryManager::default();
+        manager.merge_metadata(HashMap::from([(0x2200, 0x1100)]), HashMap::new());
+
+        manager.register_native_handles([(0x3300, 0x4400), (0x5500, 0x6600)]);
+        assert_eq!(manager.handle_for_ptr(0x2200), Some(0x1100));
+        assert_eq!(manager.handle_for_ptr(0x4400), Some(0x3300));
+        assert_eq!(manager.handle_for_ptr(0x6600), Some(0x5500));
+
+        manager.register_native_handles([(0x3300, 0x7700)]);
+        assert_eq!(manager.handle_for_ptr(0x2200), Some(0x1100));
+        assert_eq!(manager.handle_for_ptr(0x4400), None);
+        assert_eq!(manager.handle_for_ptr(0x6600), None);
+        assert_eq!(manager.handle_for_ptr(0x7700), Some(0x3300));
     }
 }
