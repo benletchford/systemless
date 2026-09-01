@@ -670,19 +670,17 @@ impl super::TrapDispatcher {
     }
 
     fn new_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            return bus.alloc(size);
-        };
+        let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
         memory_manager.new_classic_ptr(bus, size)
     }
 
     fn dispose_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            bus.free(ptr);
-            return;
-        };
-        memory_manager.borrow_mut().dispose_classic_ptr(bus, ptr);
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.dispose_classic_ptr(bus, ptr);
     }
 
     fn new_process_classic_handle(
@@ -690,21 +688,9 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         size: u32,
     ) -> std::result::Result<(u32, u32), u32> {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            let ptr = bus.alloc(size);
-            if ptr == 0 && size > 0 {
-                return Err(MEM_FULL_ERR);
-            }
-            let handle = bus.alloc(4);
-            if handle == 0 {
-                bus.free(ptr);
-                return Err(MEM_FULL_ERR);
-            }
-            bus.write_long(handle, ptr);
-            self.ptr_to_handle.insert(ptr, handle);
-            return Ok((handle, ptr));
-        };
+        let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
         memory_manager
             .new_classic_handle(bus, size)
             .map_err(|error| error as i32 as u32)
@@ -714,15 +700,9 @@ impl super::TrapDispatcher {
         &mut self,
         bus: &mut MacMemoryBus,
     ) -> std::result::Result<u32, u32> {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            let handle = bus.alloc(4);
-            if handle == 0 {
-                return Err(MEM_FULL_ERR);
-            }
-            bus.write_long(handle, 0);
-            return Ok(handle);
-        };
+        let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
         memory_manager
             .new_empty_classic_handle(bus)
             .map_err(|error| error as i32 as u32)
@@ -734,24 +714,15 @@ impl super::TrapDispatcher {
         handle: u32,
         dispose_data: bool,
     ) {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            if handle != 0 {
-                if dispose_data {
-                    bus.free(bus.read_long(handle));
-                }
-                bus.free(handle);
-            }
-            return;
-        };
-        memory_manager
-            .borrow_mut()
-            .dispose_classic_handle(bus, handle, dispose_data);
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.dispose_classic_handle(bus, handle, dispose_data);
     }
 
-    fn process_ptr_size(&self, bus: &MacMemoryBus, ptr: u32) -> Option<u32> {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            return bus.get_alloc_size(ptr);
-        };
+    fn process_ptr_size(&self, bus: &mut MacMemoryBus, ptr: u32) -> Option<u32> {
+        let memory_manager = self.process_memory_manager();
+        memory_manager.borrow_mut().attach_classic_memory_bus(bus);
         let memory_manager = memory_manager.borrow();
         memory_manager.process_ptr_size(bus, ptr)
     }
@@ -762,36 +733,19 @@ impl super::TrapDispatcher {
         ptr: u32,
         new_size: u32,
     ) -> u32 {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            if ptr == 0 {
-                return NIL_HANDLE_ERR;
-            }
-            let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
-            if MacMemoryBus::allocation_bucket_size(new_size)
-                > MacMemoryBus::allocation_bucket_size(old_size)
-            {
-                return MEM_FULL_ERR;
-            }
-            if new_size < old_size {
-                bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
-            }
-            bus.set_alloc_size(ptr, new_size);
-            return NO_ERR;
-        };
+        let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
         memory_manager.set_process_ptr_size(bus, ptr, new_size) as i32 as u32
     }
 
     fn process_handle_size(
         &self,
-        bus: &MacMemoryBus,
+        bus: &mut MacMemoryBus,
         handle: u32,
     ) -> Option<u32> {
-        let Some(memory_manager) = self.process_memory_manager() else {
-            return (handle != 0)
-                .then(|| bus.read_long(handle))
-                .and_then(|ptr| bus.get_alloc_size(ptr));
-        };
+        let memory_manager = self.process_memory_manager();
+        memory_manager.borrow_mut().attach_classic_memory_bus(bus);
         let memory_manager = memory_manager.borrow();
         memory_manager.process_handle_size(bus, handle)
     }
@@ -4600,6 +4554,29 @@ mod tests {
         bus: &mut crate::memory::MacMemoryBus,
     ) -> crate::Result<()> {
         dispatcher.dispatch(trap_word, cpu, bus)
+    }
+
+    #[test]
+    fn standalone_classic_traps_retain_the_process_memory_manager() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let memory_manager = dispatcher.process_memory_manager();
+
+        cpu.write_reg(Register::D0, 24);
+        dispatcher.current_trap_word = 0xA11E;
+        dispatcher
+            .dispatch_memory(false, 0x1E, &mut cpu, &mut bus)
+            .expect("NewPtr should be handled")
+            .unwrap();
+        let ptr = cpu.read_reg(Register::A0);
+
+        assert_ne!(ptr, 0);
+        assert_eq!(
+            memory_manager.borrow().classic_allocation_size(ptr),
+            Some(24)
+        );
+        assert!(dispatcher
+            .process_memory_manager()
+            .ptr_eq(&memory_manager));
     }
 
     #[test]

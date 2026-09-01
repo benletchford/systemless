@@ -1801,6 +1801,9 @@ pub struct TrapDispatcher {
     pub(crate) ptr_to_handle: SharedProcessMap<u32>,
     /// Safely shared process Memory Manager used by both CPU adapters.
     process_memory_manager: Option<SharedProcessMemoryManager>,
+    /// Process Memory Manager retained by a standalone 68K adapter until it
+    /// attaches to the runner-owned process context.
+    standalone_memory_manager: SharedProcessMemoryManager,
     /// Detached resource handles that should no longer be treated as resource-backed.
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
     /// Resource-file refnum for each resource-backed handle.
@@ -2955,8 +2958,11 @@ impl TrapDispatcher {
         context.attach_guest_calls(&mut self.guest_calls);
     }
 
-    pub(crate) fn process_memory_manager(&self) -> Option<SharedProcessMemoryManager> {
-        self.process_memory_manager.clone()
+    pub(crate) fn process_memory_manager(&self) -> SharedProcessMemoryManager {
+        self.process_memory_manager
+            .as_ref()
+            .unwrap_or(&self.standalone_memory_manager)
+            .clone()
     }
 
     /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
@@ -3023,9 +3029,7 @@ impl TrapDispatcher {
         expected_ptr: u32,
         bytes: &[u8],
     ) -> bool {
-        let Some(memory_manager) = self.process_memory_manager.clone() else {
-            return false;
-        };
+        let memory_manager = self.process_memory_manager();
         let result = memory_manager
             .borrow_mut()
             .replace_native_handle_bytes(bus, handle, expected_ptr, bytes);
@@ -3844,6 +3848,7 @@ impl TrapDispatcher {
             data_cache_enabled: true,
             ptr_to_handle: SharedProcessMap::default(),
             process_memory_manager: None,
+            standalone_memory_manager: SharedProcessMemoryManager::default(),
             detached_handles: HashMap::new(),
             resource_handle_files: HashMap::new(),
             detached_handle_files: HashMap::new(),
@@ -4181,6 +4186,13 @@ impl TrapDispatcher {
             res_load: true,
             res_purge: false,
         };
+        let standalone_memory_manager = dispatcher.standalone_memory_manager.clone();
+        standalone_memory_manager
+            .borrow_mut()
+            .attach_metadata_adapters(
+                &mut dispatcher.ptr_to_handle,
+                &mut dispatcher.handle_state_bits,
+            );
         dispatcher.ensure_vfs_directory("System Folder");
         dispatcher.ensure_vfs_directory("System Folder/Preferences");
         dispatcher
