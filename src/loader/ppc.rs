@@ -3287,6 +3287,8 @@ pub struct PpcGWorldRecord {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PpcGWorldAllocationRecord {
+    storage_ptr: u32,
+    pixel_ptr: u32,
     origin_base: u32,
     pixel_capacity: u32,
     ctable_handle: u32,
@@ -21016,13 +21018,32 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::UpdateGWorld => {
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            ppc_synchronize_process_native_handles(
+                process_memory_manager,
+                handles,
+                handle_states,
+            );
             let result = ppc_update_gworld(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
+                free_handle_blocks,
+                handle_states,
                 gworlds,
                 &mut toolbox_startup.gworld_allocations,
                 current_gworld,
@@ -21082,7 +21103,7 @@ fn dispatch_supported_import(
                 } else {
                     live_ctable
                 };
-                let tracked_allocation_ptr = ptrs
+                let fallback_storage_ptr = ptrs
                     .iter()
                     .find(|allocation| {
                         ppc_allocation_size(allocation.size)
@@ -21090,6 +21111,20 @@ fn dispatch_supported_import(
                             .is_some_and(|end| allocation.ptr <= port && port < end)
                     })
                     .map(|allocation| allocation.ptr);
+                let mut owned_ptrs = Vec::with_capacity(2);
+                if let Some(ptr) = allocation
+                    .map(|allocation| allocation.storage_ptr)
+                    .filter(|ptr| *ptr != 0)
+                    .or(fallback_storage_ptr)
+                {
+                    owned_ptrs.push(ptr);
+                }
+                if let Some(pixel_ptr) = allocation
+                    .map(|allocation| allocation.pixel_ptr)
+                    .filter(|ptr| *ptr != 0 && !owned_ptrs.contains(ptr))
+                {
+                    owned_ptrs.push(pixel_ptr);
+                }
                 let ctable_reclaim_base = allocation.and_then(|allocation| {
                     handles
                         .iter()
@@ -21135,23 +21170,32 @@ fn dispatch_supported_import(
                         .then_some(record.base_addr)
                     });
                 if let Some(reclaim_base) = reclaim_base {
-                    let reclaimed_tracked_ptr =
-                        tracked_allocation_ptr.filter(|ptr| *ptr == reclaim_base);
+                    let reclaimed_ptrs = owned_ptrs
+                        .iter()
+                        .copied()
+                        .filter(|ptr| *ptr >= reclaim_base)
+                        .collect::<Vec<_>>();
                     if !process_memory_manager.reclaim_native_heap_tail(
                         reclaim_base,
-                        reclaimed_tracked_ptr.as_slice(),
-                        ctable_reclaim_base.map(|_| ctable_handle),
+                        &reclaimed_ptrs,
+                        (ctable_handle != 0 && ctable_handle != PPC_MAIN_CTABLE_HANDLE)
+                            .then_some(ctable_handle),
                     ) {
-                        if let Some(ptr) = tracked_allocation_ptr {
+                        for ptr in owned_ptrs {
                             let _ = process_memory_manager.dispose_native_ptr(ptr);
                         }
-                    } else if let Some(ptr) =
-                        tracked_allocation_ptr.filter(|ptr| *ptr != reclaim_base)
-                    {
+                    } else {
+                        for ptr in owned_ptrs
+                            .into_iter()
+                            .filter(|ptr| !reclaimed_ptrs.contains(ptr))
+                        {
+                            let _ = process_memory_manager.dispose_native_ptr(ptr);
+                        }
+                    }
+                } else {
+                    for ptr in owned_ptrs {
                         let _ = process_memory_manager.dispose_native_ptr(ptr);
                     }
-                } else if let Some(ptr) = tracked_allocation_ptr {
-                    let _ = process_memory_manager.dispose_native_ptr(ptr);
                 }
                 ppc_apply_process_native_allocator(
                     process_memory_manager,
@@ -52233,6 +52277,8 @@ fn ppc_new_gworld(
     gworld_allocations.insert(
         port,
         PpcGWorldAllocationRecord {
+            storage_ptr: base_addr,
+            pixel_ptr: base_addr,
             origin_base: base_addr,
             pixel_capacity: ppc_allocation_size(pixel_allocation_size)
                 .unwrap_or(pixel_allocation_size),
@@ -52278,11 +52324,16 @@ fn ppc_new_gworld(
 #[allow(clippy::too_many_arguments)]
 fn ppc_update_gworld(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     gworlds: &mut [PpcGWorldRecord],
     gworld_allocations: &mut HashMap<u32, PpcGWorldAllocationRecord>,
     current_gworld: &mut u32,
@@ -52695,18 +52746,15 @@ fn ppc_update_gworld(
     // the host, and the world's private ColorTable keeps one stable handle;
     // rollback restores both if an already-preflighted guest write fails.
     let heap_cursor_before = *heap_cursor;
-    let handles_before = handles.clone();
+    let native_manager_before = process_memory_manager.detached_clone();
     let mut allocation_error = PPC_NO_ERR;
     let mut owned_ctable_handle = stable_ctable_handle.unwrap_or(0);
     let new_ctab = if depth > 8 {
         0
     } else if replaces_ctable {
         if let Some(record) = stable_ctable_record {
-            let result = ppc_set_handle_size(
+            let result = process_memory_manager.set_native_handle_size(
                 memory,
-                heap_cursor,
-                heap_limit,
-                handles,
                 record.handle,
                 desired_ctable_size,
             );
@@ -52732,15 +52780,24 @@ fn ppc_update_gworld(
                 0
             }
         } else {
-            let handle = ppc_alloc_handle_with_bytes(
+            let handle = process_memory_manager.new_native_handle(
                 memory,
-                heap_cursor,
-                heap_limit,
-                handles,
-                desired_ctable_bytes.as_deref().unwrap_or_default(),
+                desired_ctable_size,
+                false,
             );
             if handle == 0 {
                 allocation_error = PPC_MEM_FULL_ERR;
+            } else if process_memory_manager
+                .native_allocation(handle)
+                .and_then(|record| {
+                    memory.write_bytes(
+                        record.ptr,
+                        desired_ctable_bytes.as_deref().unwrap_or_default(),
+                    )
+                })
+                .is_none()
+            {
+                allocation_error = PPC_PARAM_ERR;
             } else {
                 owned_ctable_handle = handle;
             }
@@ -52753,12 +52810,11 @@ fn ppc_update_gworld(
         old.base_addr
     } else if reuses_pixel_storage {
         if grows_pixel_storage_in_place {
-            let growth = required_pixel_capacity - old_pixel_capacity;
-            let expected_extension = old.base_addr.checked_add(old_pixel_capacity);
-            let extension = ppc_heap_alloc(memory, heap_cursor, heap_limit, growth, true);
-            if extension == 0 || Some(extension) != expected_extension {
-                allocation_error = PPC_MEM_FULL_ERR;
-            }
+            allocation_error = process_memory_manager.set_native_ptr_size(
+                memory,
+                old.base_addr,
+                pixel_allocation_size,
+            );
         }
         if allocation_error == PPC_NO_ERR
             && memory
@@ -52769,7 +52825,7 @@ fn ppc_update_gworld(
         }
         old.base_addr
     } else {
-        let base = ppc_heap_alloc(memory, heap_cursor, heap_limit, pixel_allocation_size, true);
+        let base = process_memory_manager.new_native_ptr(memory, pixel_allocation_size, true);
         if base == 0 {
             allocation_error = PPC_MEM_FULL_ERR;
         } else if memory
@@ -52788,8 +52844,8 @@ fn ppc_update_gworld(
             let _ = memory.write_u32_be(record.handle, *master);
             let _ = memory.write_bytes(record.ptr, bytes);
         }
+        process_memory_manager.restore_native_snapshot(native_manager_before);
         *heap_cursor = heap_cursor_before;
-        *handles = handles_before;
         ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = allocation_error;
         return GW_FLAG_ERR;
@@ -52865,11 +52921,36 @@ fn ppc_update_gworld(
             let _ = memory.write_u32_be(record.handle, *master);
             let _ = memory.write_bytes(record.ptr, bytes);
         }
+        process_memory_manager.restore_native_snapshot(native_manager_before);
         *heap_cursor = heap_cursor_before;
-        *handles = handles_before;
         ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = PPC_PARAM_ERR;
         return GW_FLAG_ERR;
+    }
+
+    if allocates_pixel_storage {
+        if let Some(previous) = allocation_before.filter(|previous| {
+            previous.pixel_ptr != 0 && previous.pixel_ptr != previous.storage_ptr
+        }) {
+            let _ = process_memory_manager.dispose_native_ptr(previous.pixel_ptr);
+        }
+    }
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    if owned_ctable_handle != 0 {
+        ppc_apply_process_native_handle(
+            process_memory_manager,
+            handles,
+            handle_states,
+            owned_ctable_handle,
+        );
     }
 
     gworlds[record_index] = PpcGWorldRecord {
@@ -52890,6 +52971,8 @@ fn ppc_update_gworld(
     let allocation_after = if let Some(previous) = allocation_before {
         if heap_grew {
             PpcGWorldAllocationRecord {
+                storage_ptr: previous.storage_ptr,
+                pixel_ptr: new_base,
                 origin_base: if previous.allocation_end == heap_cursor_before {
                     previous.origin_base
                 } else {
@@ -52901,6 +52984,7 @@ fn ppc_update_gworld(
             }
         } else {
             PpcGWorldAllocationRecord {
+                pixel_ptr: new_base,
                 pixel_capacity,
                 ctable_handle: owned_ctable_handle,
                 ..previous
@@ -52908,6 +52992,8 @@ fn ppc_update_gworld(
         }
     } else {
         PpcGWorldAllocationRecord {
+            storage_ptr: 0,
+            pixel_ptr: new_base,
             origin_base: if heap_grew { heap_cursor_before } else { 0 },
             pixel_capacity,
             ctable_handle: owned_ctable_handle,
@@ -134006,6 +134092,77 @@ pub(crate) mod tests {
                 assert_eq!(ctable, 0, "{depth}bpp direct PixMap retained a pmTable");
             }
         }
+    }
+
+    #[test]
+    fn update_gworld_allocations_are_immediately_process_owned_and_cross_isa_visible() {
+        let pef = synthetic_pef_with_import(b"NewGWorld");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr = scratch;
+        let gworld_out_ptr = scratch + 8;
+        native.memory.add_region(scratch, vec![0; 16]);
+        ppc_write_rect(&mut native.memory, bounds_ptr, 0, 0, 2, 2).unwrap();
+        native.cpu.gpr[3] = gworld_out_ptr;
+        native.cpu.gpr[4] = 8;
+        native.cpu.gpr[5] = bounds_ptr;
+        native.cpu.gpr[6] = 0;
+        native.cpu.gpr[7] = 0;
+        native.cpu.gpr[8] = 0;
+        run_test_import(&mut native, PpcImportDispatcherTarget::NewGWorld);
+        let gworld = native.memory.read_u32_be(gworld_out_ptr).unwrap();
+        let original = *native
+            .gworlds
+            .iter()
+            .find(|record| record.port == gworld)
+            .unwrap();
+        let detached = context.memory_manager_mut().detached_clone();
+
+        ppc_write_rect(&mut native.memory, bounds_ptr, 0, 0, 96, 96).unwrap();
+        native.cpu.gpr[3] = gworld_out_ptr;
+        native.cpu.gpr[4] = 32;
+        native.cpu.gpr[5] = bounds_ptr;
+        native.cpu.gpr[6] = 0;
+        native.cpu.gpr[7] = 0;
+        native.cpu.gpr[8] = 1 << 28;
+        run_test_import(&mut native, PpcImportDispatcherTarget::UpdateGWorld);
+
+        assert_eq!(native.cpu.gpr[3] & (1 << 31), 0);
+        let updated = *native
+            .gworlds
+            .iter()
+            .find(|record| record.port == gworld)
+            .unwrap();
+        assert_ne!(updated.base_addr, original.base_addr);
+        let allocator = context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap();
+        assert!(allocator
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == original.base_addr));
+        assert!(allocator
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == updated.base_addr));
+        assert!(!detached
+            .native_allocator()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == updated.base_addr));
+
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        classic_bus.write_byte(updated.base_addr, 0xa5);
+        assert_eq!(native.memory.read_u8(updated.base_addr), Some(0xa5));
+        native.memory.write_u8(updated.base_addr + 1, 0x5a).unwrap();
+        assert_eq!(classic_bus.read_byte(updated.base_addr + 1), 0x5a);
     }
 
     #[test]

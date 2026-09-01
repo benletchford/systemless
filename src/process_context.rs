@@ -104,6 +104,10 @@ impl<V: Copy> SharedProcessMap<V> {
         self.0.borrow_mut().drain().collect()
     }
 
+    fn replace_from(&self, source: &Self) {
+        *self.0.borrow_mut() = source.0.borrow().clone();
+    }
+
     pub(crate) fn update(&self, key: u32, update: impl FnOnce(Option<V>) -> Option<V>) {
         let mut entries = self.0.borrow_mut();
         let value = update(entries.get(&key).copied());
@@ -272,6 +276,21 @@ impl ProcessMemoryManager {
             native_allocator: self.native_allocator.clone(),
             native_allocator_dirty: self.native_allocator_dirty,
         }
+    }
+
+    /// Restore native Memory Manager metadata from an isolated transaction
+    /// snapshot while preserving the shared indexes held by CPU adapters.
+    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
+        self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
+        self.handle_state_bits
+            .replace_from(&snapshot.handle_state_bits);
+        self.handle_high_locked
+            .replace_from(&snapshot.handle_high_locked);
+        self.native_handle_ptrs = snapshot.native_handle_ptrs;
+        self.native_handles = snapshot.native_handles;
+        self.native_allocations = snapshot.native_allocations;
+        self.native_allocator = snapshot.native_allocator;
+        self.native_allocator_dirty = snapshot.native_allocator_dirty;
     }
 
     pub(crate) fn has_native_allocator(&self) -> bool {
@@ -1420,11 +1439,31 @@ impl ProcessMemoryManager {
         let Some(allocator) = self.native_allocator.as_ref() else {
             return false;
         };
+        let allocation_crosses_base = |ptr: u32, size: u32| {
+            ptr < reclaim_base
+                && Self::native_allocation_size(size)
+                    .and_then(|size| ptr.checked_add(size))
+                    .is_some_and(|end| end > reclaim_base)
+        };
         if reclaim_base < allocator.heap.heap_base
             || reclaim_base > allocator.heap.heap_cursor
             || disposed_ptrs
                 .iter()
                 .any(|ptr| !allocator.ptrs.iter().any(|record| record.ptr == *ptr))
+            || allocator.ptrs.iter().any(|record| {
+                (record.ptr >= reclaim_base && !disposed_ptrs.contains(&record.ptr))
+                    || allocation_crosses_base(record.ptr, record.size)
+            })
+            || allocator
+                .free_ptr_blocks
+                .iter()
+                .any(|record| allocation_crosses_base(record.ptr, record.size))
+            || self.native_allocations.iter().any(|record| {
+                record.handle >= reclaim_base
+                    || record.ptr >= reclaim_base
+                    || allocation_crosses_base(record.handle, 4)
+                    || allocation_crosses_base(record.ptr, record.capacity)
+            })
             || disposed_handle.is_some_and(|handle| {
                 !allocator
                     .free_handle_blocks
@@ -1441,11 +1480,21 @@ impl ProcessMemoryManager {
         allocator
             .ptrs
             .retain(|record| !disposed_ptrs.contains(&record.ptr));
-        if let Some(handle) = disposed_handle {
-            allocator
-                .free_handle_blocks
-                .retain(|record| record.handle != handle);
-        }
+        allocator
+            .free_ptr_blocks
+            .retain(|record| record.ptr < reclaim_base);
+        allocator.free_handle_blocks.retain_mut(|record| {
+            if record.handle >= reclaim_base {
+                false
+            } else {
+                if record.ptr >= reclaim_base {
+                    record.ptr = 0;
+                    record.size = 0;
+                    record.capacity = 0;
+                }
+                true
+            }
+        });
         allocator.heap.heap_cursor = reclaim_base;
         allocator.heap.last_mem_error = Self::NO_ERR;
         self.native_allocator_dirty = true;
@@ -3266,6 +3315,10 @@ mod tests {
             ptr: HEAP_BASE + 0x10,
             size: 8,
         };
+        let reclaimed_free = ProcessPtrRecord {
+            ptr: HEAP_BASE + 0xf0,
+            size: 8,
+        };
         let mut manager = ProcessMemoryManager::default();
         manager.publish_native_allocator(
             ProcessNativeHeapState {
@@ -3277,7 +3330,7 @@ mod tests {
                 master_pointer_blocks_requested: 0,
             },
             &[retained_ptr, reclaimed_ptr],
-            &[unrelated_free],
+            &[unrelated_free, reclaimed_free],
             &[reclaimed_handle],
         );
         let detached = manager.detached_clone();
@@ -3298,11 +3351,60 @@ mod tests {
         let detached_allocator = detached.native_allocator().unwrap();
         assert_eq!(detached_allocator.heap.heap_cursor, HEAP_BASE + 0x100);
         assert_eq!(detached_allocator.ptrs, vec![retained_ptr, reclaimed_ptr]);
-        assert_eq!(detached_allocator.free_ptr_blocks, vec![unrelated_free]);
+        assert_eq!(
+            detached_allocator.free_ptr_blocks,
+            vec![unrelated_free, reclaimed_free]
+        );
         assert_eq!(
             detached_allocator.free_handle_blocks,
             vec![reclaimed_handle]
         );
+    }
+
+    #[test]
+    fn native_transaction_restore_preserves_shared_indexes() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let ptr = ProcessPtrRecord {
+            ptr: HEAP_BASE + 0x20,
+            size: 24,
+        };
+        let handle = ProcessHandleRecord {
+            handle: HEAP_BASE + 0x40,
+            ptr: HEAP_BASE + 0x50,
+            size: 16,
+            capacity: 16,
+        };
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE + 0x80,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[ptr],
+            &[],
+            &[],
+        );
+        manager.register_native_handle_records([(handle, 0x40)]);
+        let shared_reverse_index = manager.ptr_to_handle.clone();
+        let shared_state_index = manager.handle_state_bits.clone();
+        let snapshot = manager.detached_clone();
+
+        manager.dispose_native_ptr(ptr.ptr);
+        manager.set_state_for_handle(handle.handle, 0x80);
+        manager.restore_native_snapshot(snapshot);
+
+        assert_eq!(shared_reverse_index.get(&handle.ptr), Some(handle.handle));
+        assert_eq!(shared_state_index.get(&handle.handle), Some(0x40));
+        assert_eq!(manager.native_allocator().unwrap().ptrs, vec![ptr]);
+        assert!(manager
+            .native_allocator()
+            .unwrap()
+            .free_ptr_blocks
+            .is_empty());
     }
 
     #[test]
