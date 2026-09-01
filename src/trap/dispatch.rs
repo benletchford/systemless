@@ -15,8 +15,9 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
-    ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
-    SharedProcessResourceManager, SharedProcessSoundManager, SharedProcessValue,
+    ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessCursorState,
+    SharedProcessMemoryManager, SharedProcessResourceManager, SharedProcessSoundManager,
+    SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2447,14 +2448,8 @@ pub struct TrapDispatcher {
     /// the runner drains these one-at-a-time via advance_guest_tick().
     /// Inside Macintosh Volume II, II-384
     pub pending_delay_ticks: u32,
-    /// Custom cursor image installed by SetCursor / SetCCursor.
-    pub(crate) cursor_data: Option<CursorImage>,
-    /// Cursor level per IM:I I-167..I-168. `0` means visible; negative
-    /// values mean hidden by one or more HideCursor/ShieldCursor calls.
-    pub(crate) cursor_level: i16,
-    /// Cached cursor visibility for host rendering fast-paths.
-    /// Kept in sync with `cursor_level` by cursor traps.
-    pub(crate) cursor_visible: bool,
+    /// Process-owned cursor image and signed visibility level.
+    pub(crate) cursor_state: SharedProcessCursorState,
     /// Total number of A-line trap dispatches since emulator start.
     pub trap_count: u64,
     /// A-line traps dispatched from game code only (PC < 0x800000).
@@ -2920,6 +2915,7 @@ impl TrapDispatcher {
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
+        context.attach_cursor_state(&mut self.cursor_state);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.adopt_menu_tracking(&mut self.menu_tracking);
         let mut memory_manager = None;
@@ -4082,9 +4078,7 @@ impl TrapDispatcher {
             pending_hle_tick_cost: 0,
             yield_for_ui: false,
             pending_delay_ticks: 0,
-            cursor_data: Some(Self::default_arrow_cursor_image()),
-            cursor_level: 0,
-            cursor_visible: true,
+            cursor_state: SharedProcessCursorState::default(),
             trap_count: 0,
             game_trap_count: 0,
             trap_histogram: Box::new([0u64; 4096]),
@@ -5601,52 +5595,7 @@ impl TrapDispatcher {
 
     /// Classic Macintosh arrow cursor (from ROM).
     pub(crate) fn default_arrow_cursor() -> ([u8; 32], [u8; 32], i16, i16) {
-        // Arrow cursor data (16x16, 1 bit/pixel, 2 bytes per row = 32 bytes)
-        #[rustfmt::skip]
-        let data: [u8; 32] = [
-            0x00, 0x00, // ................
-            0x40, 0x00, // .X..............
-            0x60, 0x00, // .XX.............
-            0x70, 0x00, // .XXX............
-            0x78, 0x00, // .XXXX...........
-            0x7C, 0x00, // .XXXXX..........
-            0x7E, 0x00, // .XXXXXX.........
-            0x7F, 0x00, // .XXXXXXX........
-            0x7F, 0x80, // .XXXXXXXX.......
-            0x7C, 0x00, // .XXXXX..........
-            0x6C, 0x00, // .XX.XX..........
-            0x46, 0x00, // .X...XX.........
-            0x06, 0x00, // .....XX.........
-            0x03, 0x00, // ......XX........
-            0x03, 0x00, // ......XX........
-            0x00, 0x00, // ................
-        ];
-        // Arrow cursor mask
-        #[rustfmt::skip]
-        let mask: [u8; 32] = [
-            0xC0, 0x00, // XX..............
-            0xE0, 0x00, // XXX.............
-            0xF0, 0x00, // XXXX............
-            0xF8, 0x00, // XXXXX...........
-            0xFC, 0x00, // XXXXXX..........
-            0xFE, 0x00, // XXXXXXX.........
-            0xFF, 0x00, // XXXXXXXX........
-            0xFF, 0x80, // XXXXXXXXX.......
-            0xFF, 0xC0, // XXXXXXXXXX......
-            0xFF, 0xE0, // XXXXXXXXXXX.....
-            0xFE, 0x00, // XXXXXXX.........
-            0xEF, 0x00, // XXX.XXXX........
-            0xCF, 0x00, // XX..XXXX........
-            0x07, 0x80, // .....XXXX.......
-            0x07, 0x80, // .....XXXX.......
-            0x03, 0x80, // ......XXX.......
-        ];
-        (data, mask, 1, 1) // hotspot at (1, 1)
-    }
-
-    pub(crate) fn default_arrow_cursor_image() -> CursorImage {
-        let (data, mask, hot_v, hot_h) = Self::default_arrow_cursor();
-        CursorImage::mono(data, mask, hot_v, hot_h)
+        crate::display::default_arrow_cursor()
     }
 
     /// Get a built-in system cursor by ID.
@@ -5944,8 +5893,8 @@ impl TrapDispatcher {
 
     /// Get the current cursor data for rendering overlay.
     pub fn cursor(&self) -> Option<&CursorImage> {
-        if self.cursor_visible {
-            self.cursor_data.as_ref()
+        if self.cursor_state.visible() {
+            self.cursor_state.image.as_ref()
         } else {
             None
         }
@@ -5953,24 +5902,24 @@ impl TrapDispatcher {
 
     /// Show the cursor (called by GUI on mouse move to undo ObscureCursor).
     pub fn show_cursor(&mut self) {
-        // Respect HideCursor/ShowCursor balancing: mouse motion should not
-        // force-show a cursor hidden via cursor level semantics.
-        self.cursor_visible = self.cursor_level == 0;
+        // ObscureCursor is modeled as a transient no-op, while HideCursor
+        // remains balanced exclusively by ShowCursor. Inside Macintosh
+        // Volume I (1985), p. I-168.
     }
 
     /// Check if cursor is visible (for debug logging).
     pub fn cursor_visible(&self) -> bool {
-        self.cursor_visible
+        self.cursor_state.visible()
     }
 
     /// Current cursor hide/show nesting level.
     pub fn cursor_level(&self) -> i16 {
-        self.cursor_level
+        self.cursor_state.level
     }
 
     /// Whether a cursor image is installed, independent of visibility.
     pub fn cursor_data_present(&self) -> bool {
-        self.cursor_data.is_some()
+        self.cursor_state.image.is_some()
     }
 
     /// Explicit screen-space transform for frontends that need to map host
@@ -5983,7 +5932,7 @@ impl TrapDispatcher {
     /// crosshair-driven games. Visible Mac cursor UI, including menu bars and
     /// title screens, keeps normal screen coordinates.
     pub fn fullscreen_input_transform(&self) -> Option<ScreenCopyBitsRect> {
-        if !self.fullscreen_locked || self.cursor_visible {
+        if !self.fullscreen_locked || self.cursor_state.visible() {
             return None;
         }
         let rect = self.last_screen_copybits_rect?;
@@ -6014,7 +5963,7 @@ impl TrapDispatcher {
     /// `TrapDispatcher::new()` seeds the default arrow). Used by
     /// tests to observe SetCursor's bitmap-storage effect.
     pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
-        self.cursor_data.as_ref().map(|cursor| cursor.mono_parts())
+        self.cursor_state.image.as_ref().map(CursorImage::mono_parts)
     }
 
     /// Get the current mouse position.
@@ -10580,14 +10529,14 @@ mod tests {
         disp.last_screen_copybits_rect = Some(centered_playfield_rect());
 
         disp.fullscreen_locked = false;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         assert_eq!(disp.fullscreen_input_transform(), None);
 
         disp.fullscreen_locked = true;
-        disp.cursor_visible = true;
+        disp.cursor_state.level = 0;
         assert_eq!(disp.fullscreen_input_transform(), None);
 
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         assert_eq!(
             disp.fullscreen_input_transform(),
             Some(centered_playfield_rect())
@@ -10599,7 +10548,7 @@ mod tests {
         let mut disp = TrapDispatcher::new();
         disp.screen_mode = (0, 1000, 800, 600, 8);
         disp.fullscreen_locked = true;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,
@@ -10619,7 +10568,7 @@ mod tests {
         let mut disp = TrapDispatcher::new();
         disp.screen_mode = (0, 1000, 800, 600, 8);
         disp.fullscreen_locked = true;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
             src_left: 0,

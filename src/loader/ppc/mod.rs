@@ -70,11 +70,12 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState, ProcessHandleRecord,
-    ProcessHandleStateRecord, ProcessMemoryManager, ProcessNativeAllocatorState,
-    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
-    ProcessResourceManagerState, ProcessVfsFileRecords, ProcessVfsResourceFileRecords,
-    SharedProcessAppleEventHandlers, SharedProcessFileSystem, SharedProcessMemoryManager,
+    ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
+    ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
+    ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
+    ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
+    ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
+    SharedProcessFileSystem, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -2893,11 +2894,6 @@ pub struct PpcToolboxStartupState {
     pub menus_initialized: bool,
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
-    pub cursor_installed: bool,
-    pub cursor_data: [u8; 32],
-    pub cursor_mask: [u8; 32],
-    pub cursor_hot_v: i16,
-    pub cursor_hot_h: i16,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
     pub(crate) menu_tracking: Option<ProcessMenuTrackingState>,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
@@ -2968,11 +2964,6 @@ impl Default for PpcToolboxStartupState {
             menus_initialized: false,
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
-            cursor_installed: false,
-            cursor_data: [0; 32],
-            cursor_mask: [0; 32],
-            cursor_hot_v: 0,
-            cursor_hot_h: 0,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             menu_tracking: None,
             menu_definition_tracking: None,
@@ -3390,7 +3381,7 @@ pub struct PpcLoadedApp {
     pub quickdraw_pen_v: i16,
     pub quickdraw_text_mode: i16,
     pub quickdraw_text_size: i16,
-    pub quickdraw_cursor_level: i16,
+    pub(crate) cursor_state: SharedProcessCursorState,
     pub vfs_volumes: Vec<PpcVfsVolumeRecord>,
     pub vfs_directories: Vec<PpcVfsDirectory>,
     pub next_vfs_dir_id: u32,
@@ -3841,9 +3832,18 @@ impl PpcLoadedApp {
         &self.event_queue
     }
 
+    pub fn cursor_level(&self) -> i16 {
+        self.cursor_state.level
+    }
+
+    pub fn cursor_data(&self) -> Option<([u8; 32], [u8; 32], i16, i16)> {
+        Some(self.cursor_state.image.as_ref()?.mono_parts())
+    }
+
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_file_system(&mut self.process_file_system);
         context.attach_sound_manager(&mut self.sound.manager);
+        context.attach_cursor_state(&mut self.cursor_state);
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
@@ -7240,7 +7240,7 @@ impl PpcLoadedApp {
         let mut quickdraw_pen_v = self.quickdraw_pen_v;
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
-        let mut quickdraw_cursor_level = self.quickdraw_cursor_level;
+        let mut cursor_state = std::mem::take(&mut self.cursor_state);
         let vfs_volumes = std::mem::take(&mut self.vfs_volumes);
         let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
         let mut next_vfs_dir_id = self.next_vfs_dir_id;
@@ -7756,7 +7756,7 @@ impl PpcLoadedApp {
                         &mut quickdraw_pen_v,
                         &mut quickdraw_text_mode,
                         &mut quickdraw_text_size,
-                        &mut quickdraw_cursor_level,
+                        &mut cursor_state,
                         &vfs_volumes,
                         &mut vfs_directories,
                         &mut next_vfs_dir_id,
@@ -8121,7 +8121,7 @@ impl PpcLoadedApp {
         self.quickdraw_pen_v = quickdraw_pen_v;
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
-        self.quickdraw_cursor_level = quickdraw_cursor_level;
+        self.cursor_state = cursor_state;
         self.vfs_volumes = vfs_volumes;
         self.vfs_directories = vfs_directories;
         self.next_vfs_dir_id = next_vfs_dir_id;
@@ -12760,7 +12760,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         quickdraw_pen_v: 0,
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-        quickdraw_cursor_level: 0,
+        cursor_state: SharedProcessCursorState::default(),
         vfs_volumes: Vec::new(),
         vfs_directories: initial_ppc_vfs_directories(),
         next_vfs_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
@@ -15055,7 +15055,7 @@ fn dispatch_supported_import(
     quickdraw_pen_v: &mut i16,
     quickdraw_text_mode: &mut i16,
     quickdraw_text_size: &mut i16,
-    quickdraw_cursor_level: &mut i16,
+    cursor_state: &mut ProcessCursorState,
     vfs_volumes: &[PpcVfsVolumeRecord],
     vfs_directories: &mut Vec<PpcVfsDirectory>,
     next_vfs_dir_id: &mut u32,
@@ -17201,18 +17201,15 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::InitCursor => {
-            *quickdraw_cursor_level = 0;
-            toolbox_startup.cursor_installed = false;
+            cursor_state.init();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HideCursor => {
-            *quickdraw_cursor_level = quickdraw_cursor_level.saturating_sub(1);
+            cursor_state.hide();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ShowCursor => {
-            if *quickdraw_cursor_level < 0 {
-                *quickdraw_cursor_level += 1;
-            }
+            cursor_state.show();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::ShieldCursor => {
@@ -17220,7 +17217,7 @@ fn dispatch_supported_import(
             // ShowCursor. The mouse driver decides whether the shield rectangle
             // currently requires erasing the cursor.
             // Imaging With QuickDraw (1994), p. 8-29.
-            *quickdraw_cursor_level = quickdraw_cursor_level.saturating_sub(1);
+            cursor_state.hide();
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CrsrDevNextDevice => {
@@ -17250,7 +17247,7 @@ fn dispatch_supported_import(
             last_resource_error,
         ))),
         PpcImportDispatcherTarget::SetCursor => {
-            ppc_set_cursor(memory, cpu.gpr[3], toolbox_startup);
+            ppc_set_cursor(memory, cpu.gpr[3], cursor_state);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetCCursor => Some(PpcImportAction::Return(ppc_get_ccursor(
@@ -26332,7 +26329,6 @@ fn dispatch_supported_import(
             handles,
             free_handle_blocks,
             handle_states,
-            quickdraw_cursor_level,
             launched_app_path,
         )),
         PpcImportDispatcherTarget::FileCompatibility => Some(ppc_dispatch_file_compatibility(
@@ -27961,7 +27957,6 @@ fn ppc_dispatch_system_compatibility(
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
-    quickdraw_cursor_level: &mut i16,
     launched_app_path: Option<&str>,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
@@ -27990,10 +27985,11 @@ fn ppc_dispatch_system_compatibility(
         "Dequeue" => PpcImportAction::Return(ppc_i16_result(ppc_dequeue_compatibility(
             memory, cpu.gpr[3], cpu.gpr[4],
         ))),
-        "ObscureCursor" => {
-            *quickdraw_cursor_level = quickdraw_cursor_level.saturating_sub(1);
-            PpcImportAction::ReturnPreserve
-        }
+        // ObscureCursor has no effect on the cursor level. It hides the cursor
+        // only until the user moves the mouse, which the host injects each frame.
+        // PROCEDURE ObscureCursor;
+        // Inside Macintosh Volume I, I-168.
+        "ObscureCursor" => PpcImportAction::ReturnPreserve,
         "UpperString" => {
             if let Some(bytes) = ppc_read_pstring_bytes(memory, cpu.gpr[3]) {
                 let upper = bytes
@@ -60817,7 +60813,7 @@ fn ppc_dispose_cicon(
 fn ppc_set_cursor(
     memory: &mut PpcSectionMem,
     cursor_ptr: u32,
-    toolbox_startup: &mut PpcToolboxStartupState,
+    cursor_state: &mut ProcessCursorState,
 ) -> Option<()> {
     // SetCursor(crsr: Cursor) installs the 16-by-16 data and mask bitmaps plus
     // the Point hotspot stored at byte offset 64 in the 68-byte Cursor record.
@@ -60829,11 +60825,9 @@ fn ppc_set_cursor(
     let hot_v = memory.read_u16_be(cursor_ptr.checked_add(64)?)? as i16;
     let hot_h = memory.read_u16_be(cursor_ptr.checked_add(66)?)? as i16;
 
-    toolbox_startup.cursor_data = data;
-    toolbox_startup.cursor_mask = mask;
-    toolbox_startup.cursor_hot_v = hot_v;
-    toolbox_startup.cursor_hot_h = hot_h;
-    toolbox_startup.cursor_installed = true;
+    cursor_state.install(crate::display::CursorImage::mono(
+        data, mask, hot_v, hot_h,
+    ));
     Some(())
 }
 
@@ -149442,7 +149436,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0x1234_5678);
-        assert_eq!(loaded.quickdraw_cursor_level, -1);
+        assert_eq!(loaded.cursor_level(), -1);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -149451,7 +149445,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.quickdraw_cursor_level, -2);
+        assert_eq!(loaded.cursor_level(), -2);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -149460,7 +149454,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.quickdraw_cursor_level, -1);
+        assert_eq!(loaded.cursor_level(), -1);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -149469,7 +149463,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.quickdraw_cursor_level, 0);
+        assert_eq!(loaded.cursor_level(), 0);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -149478,9 +149472,9 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.quickdraw_cursor_level, 0);
+        assert_eq!(loaded.cursor_level(), 0);
 
-        loaded.quickdraw_cursor_level = -3;
+        loaded.cursor_state.level = -3;
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::InitCursor;
@@ -149488,7 +149482,20 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.quickdraw_cursor_level, 0);
+        assert_eq!(loaded.cursor_level(), 0);
+    }
+
+    #[test]
+    fn hle_import_runner_obscure_cursor_preserves_cursor_level() {
+        let pef = synthetic_pef_with_import(b"ObscureCursor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        loaded.cursor_state.level = -2;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(loaded.cursor_level(), -2);
     }
 
     #[test]
@@ -149498,7 +149505,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = 12;
         loaded.cpu.gpr[4] = 34;
         loaded.cpu.gpr[5] = PPC_HEAP_BASE + 0x40;
-        loaded.quickdraw_cursor_level = -2;
+        loaded.cursor_state.level = -2;
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -149507,7 +149514,100 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], 12);
         assert_eq!(loaded.cpu.gpr[4], 34);
         assert_eq!(loaded.cpu.gpr[5], PPC_HEAP_BASE + 0x40);
-        assert_eq!(loaded.quickdraw_cursor_level, -3);
+        assert_eq!(loaded.cursor_level(), -3);
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_process_cursor_state() {
+        let loaded = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut detached = loaded.clone();
+        let mut data = [0; 32];
+        data[0] = 0x80;
+        let mut mask = [0; 32];
+        mask[0] = 0xc0;
+
+        detached.cursor_state.hide();
+        detached
+            .cursor_state
+            .install(crate::display::CursorImage::mono(data, mask, 3, 4));
+
+        assert_eq!(loaded.cursor_level(), 0);
+        assert_eq!(loaded.cursor_data(), Some(TrapDispatcher::default_arrow_cursor()));
+        assert_eq!(detached.cursor_level(), -1);
+        assert_eq!(detached.cursor_data(), Some((data, mask, 3, 4)));
+    }
+
+    #[test]
+    fn attached_cursor_visibility_mutations_cross_isa_immediately() {
+        let pef = synthetic_pef_with_import(b"HideCursor");
+        let mut native = load_pef_application(&pef).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let probe = native.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(classic.cursor_level(), -1);
+        assert!(!classic.cursor_visible());
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_dialog(true, 0x053, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(native.cursor_level(), 0);
+    }
+
+    #[test]
+    fn attached_cursor_image_mutations_cross_isa_immediately() {
+        let pef = synthetic_pef_with_import(b"SetCursor");
+        let mut native = load_pef_application(&pef).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let native_cursor = PPC_DATA_BASE + 0x1000;
+        let mut native_data = [0; 32];
+        native_data[0] = 0x80;
+        let mut native_mask = [0; 32];
+        native_mask[0] = 0xc0;
+        let mut cursor = vec![0; 68];
+        cursor[..32].copy_from_slice(&native_data);
+        cursor[32..64].copy_from_slice(&native_mask);
+        cursor[64..66].copy_from_slice(&3u16.to_be_bytes());
+        cursor[66..68].copy_from_slice(&4u16.to_be_bytes());
+        native.memory.add_region(native_cursor, cursor);
+        native.cpu.gpr[3] = native_cursor;
+
+        let probe = native.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(classic.cursor_data(), Some((native_data, native_mask, 3, 4)));
+
+        let classic_cursor = 0x0002_0000;
+        let mut classic_data = [0; 32];
+        classic_data[0] = 0x40;
+        let mut classic_mask = [0; 32];
+        classic_mask[0] = 0xe0;
+        for (index, byte) in classic_data.iter().enumerate() {
+            classic_bus.write_byte(classic_cursor + index as u32, *byte);
+        }
+        for (index, byte) in classic_mask.iter().enumerate() {
+            classic_bus.write_byte(classic_cursor + 32 + index as u32, *byte);
+        }
+        classic_bus.write_word(classic_cursor + 64, 5);
+        classic_bus.write_word(classic_cursor + 66, 6);
+        classic_bus.write_long(TEST_SP, classic_cursor);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_dialog(true, 0x051, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(native.cursor_data(), Some((classic_data, classic_mask, 5, 6)));
     }
 
     #[test]
@@ -149738,11 +149838,11 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], cursor_ptr);
-        assert!(loaded.toolbox_startup.cursor_installed);
-        assert_eq!(loaded.toolbox_startup.cursor_data[0], 0x80);
-        assert_eq!(loaded.toolbox_startup.cursor_mask[0], 0xc0);
-        assert_eq!(loaded.toolbox_startup.cursor_hot_v, 3);
-        assert_eq!(loaded.toolbox_startup.cursor_hot_h, 4);
+        let (data, mask, hot_v, hot_h) = loaded.cursor_data().expect("installed cursor");
+        assert_eq!(data[0], 0x80);
+        assert_eq!(mask[0], 0xc0);
+        assert_eq!(hot_v, 3);
+        assert_eq!(hot_h, 4);
     }
 
     #[test]
