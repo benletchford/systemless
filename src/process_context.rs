@@ -581,6 +581,10 @@ pub(crate) struct ProcessLoadedResources {
 /// Process-owned Resource Manager bookkeeping used by CPU adapters.
 #[derive(Clone, Debug, Default)]
 pub struct ProcessResourceManagerState {
+    /// Current resource file for the process, shared by every CPU adapter.
+    /// `ProcessLoadedResources::current_file` remains the classic file-chain
+    /// cursor, while this is the architecture-neutral `CurResFile` value.
+    pub(crate) current_resource_file: SharedProcessValue<i16>,
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
     pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
@@ -609,6 +613,19 @@ fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerSta
 }
 
 impl ProcessResourceManagerState {
+    fn publish_classic_current_file(&mut self) {
+        if *self.current_resource_file != 0 {
+            return;
+        }
+        let classic_selection = self
+            .resources
+            .as_ref()
+            .map_or(0, |resources| resources.current_file as i16);
+        if classic_selection != 0 {
+            *self.current_resource_file = classic_selection;
+        }
+    }
+
     fn merge_from(&mut self, source: &mut Self) {
         let source_runtime_is_empty = process_resource_manager_runtime_is_empty(source);
         let target_runtime_is_empty = process_resource_manager_runtime_is_empty(self);
@@ -616,6 +633,11 @@ impl ProcessResourceManagerState {
             source_runtime_is_empty || target_runtime_is_empty,
             "cannot attach two active process Resource Managers"
         );
+        self.publish_classic_current_file();
+        source.publish_classic_current_file();
+        source
+            .current_resource_file
+            .attach_copy_to(&self.current_resource_file, |refnum| *refnum == 0);
 
         self.vfs_resource_files
             .merge_from(&mut source.vfs_resource_files);
@@ -5955,6 +5977,7 @@ mod tests {
         let context = ProcessContext::default();
         let mut native = SharedProcessFileSystem::default();
         let mut first = SharedProcessResourceManager::default();
+        *first.current_resource_file = 7;
         first
             .resource_backing_data
             .insert((7, *b"TEST", 128), b"before".to_vec());
@@ -5964,6 +5987,8 @@ mod tests {
         context.attach_resource_manager(&mut second);
         context.attach_file_system(&mut native);
         let detached = second.clone();
+        assert_eq!(*second.current_resource_file, 7);
+        *second.current_resource_file = 9;
         second
             .resource_backing_data
             .get_mut(&(7, *b"TEST", 128))
@@ -5984,6 +6009,8 @@ mod tests {
         });
 
         assert!(first.ptr_eq(&second));
+        assert_eq!(*first.current_resource_file, 9);
+        assert_eq!(*native.current_resource_file, 9);
         assert_eq!(
             first
                 .resource_backing_data
@@ -6002,6 +6029,7 @@ mod tests {
         );
         assert!(detached.resident_resources.is_empty());
         assert!(detached.vfs_resources.is_empty());
+        assert_eq!(*detached.current_resource_file, 7);
     }
 
     #[test]

@@ -6238,6 +6238,7 @@ impl TrapDispatcher {
         let Some(resources) = self.resources.as_ref() else {
             return Vec::new();
         };
+        let current_file = self.current_resource_refnum();
 
         // The Resource Manager searches the current file and only the files
         // opened before it, in reverse open order.
@@ -6245,20 +6246,24 @@ impl TrapDispatcher {
         let mut order = Vec::new();
         let mut include = false;
         for refnum in resources.search_order.iter().rev().copied() {
-            if refnum == resources.current_file {
+            if refnum == current_file {
                 include = true;
             }
             if include && resources.files.contains_key(&refnum) {
                 order.push(refnum);
             }
         }
-        if order.is_empty() && resources.files.contains_key(&resources.current_file) {
-            order.push(resources.current_file);
+        if order.is_empty() && resources.files.contains_key(&current_file) {
+            order.push(current_file);
         }
         order
     }
 
     pub(crate) fn current_resource_refnum(&self) -> u16 {
+        let process_current = (*self.current_resource_file).max(0) as u16;
+        if process_current != 0 {
+            return process_current;
+        }
         self.resources.as_ref().map_or(0, |resources| {
             if resources.files.contains_key(&resources.current_file) {
                 resources.current_file
@@ -6269,13 +6274,16 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn set_current_resource_refnum(&mut self, bus: &mut MacMemoryBus, refnum: u16) {
+        let mut selected = 0;
         if let Some(resources) = self.resources.as_mut() {
             resources.current_file = if resources.files.contains_key(&refnum) {
                 refnum
             } else {
                 0
             };
+            selected = resources.current_file;
         }
+        *self.current_resource_file = selected as i16;
         bus.write_word(0x0A5A, self.current_resource_refnum());
     }
 
@@ -6335,7 +6343,9 @@ impl TrapDispatcher {
         let mut externally_referenced_ptrs: HashSet<u32> = HashSet::new();
         let mut closed_name: Option<String> = None;
         let mut closed = false;
+        let closing_current = self.current_resource_refnum() == refnum;
 
+        let mut surviving_classic_current = 0;
         if let Some(resources) = self.resources.as_mut() {
             if !resources.files.contains_key(&refnum) {
                 return false;
@@ -6375,7 +6385,11 @@ impl TrapDispatcher {
                 .retain(|&candidate| candidate != refnum);
             resources.files.remove(&refnum);
             closed_name = resources.names.remove(&refnum);
+            surviving_classic_current = resources.current_file;
             closed = true;
+        }
+        if closing_current {
+            *self.current_resource_file = surviving_classic_current as i16;
         }
         self.clear_resource_file_backing_data(refnum);
         self.resource_file_order.remove(&refnum);
