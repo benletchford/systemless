@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.1](https://github.com/benletchford/systemless/compare/v0.28.0...v0.28.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* **quickdraw:** preserve same-device indexed blits ([#1144](https://github.com/benletchford/systemless/issues/1144)) ([1ece4cf](https://github.com/benletchford/systemless/commit/1ece4cfbd22e5dfada82f8c71c0f6dc380f97c08))
+
 ## [0.28.0](https://github.com/benletchford/systemless/compare/v0.27.16...v0.28.0) (2026-09-01)
 
 
