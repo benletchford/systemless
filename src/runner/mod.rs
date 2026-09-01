@@ -5582,6 +5582,7 @@ impl FixtureRunner {
             .active_interrupt_callback
             .map(|callback| is_sound_interrupt_source(callback.source))
             .unwrap_or(false);
+        let mut watch_buf = Vec::with_capacity(4);
 
         while count < max_steps && !self.halted && !tick_cap_reached {
             if sound_work_only
@@ -5935,11 +5936,6 @@ impl FixtureRunner {
             }
             let batch_max = if per_instruction_diagnostics_active() {
                 1
-            } else if self.dispatcher.has_pending_native_trap_call() {
-                // A patched trap handler can return with an ordinary RTS.
-                // Keep execution on exact instruction boundaries until its
-                // synthesized PC/SP continuation is observed and retired.
-                1
             } else {
                 let mut n = (max_steps - count).min(BATCH_CHUNK);
                 if charging && self.active_interrupt_callback.is_none() {
@@ -5952,15 +5948,18 @@ impl FixtureRunner {
             // must halt before low memory gets executed as code. While an
             // interrupt callback is active (including one fired by the
             // pre-charge above), its resume PC is watched so the resume
-            // PC+SP check above fires at the exact boundary.
-            let mut watch_buf = [0u32; 2];
-            let watch: &[u32] = if let Some(callback) = self.active_interrupt_callback {
-                watch_buf[1] = callback.resume_pc;
-                &watch_buf
-            } else {
-                &watch_buf[..1]
-            };
-            let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, watch);
+            // PC+SP check above fires at the exact boundary. Native trap
+            // return PCs are watched for the same reason: ordinary RTS
+            // returns can then be retired exactly without globally reducing
+            // the batch size to one instruction.
+            watch_buf.clear();
+            watch_buf.push(0);
+            if let Some(callback) = self.active_interrupt_callback {
+                watch_buf.push(callback.resume_pc);
+            }
+            self.dispatcher
+                .append_pending_native_trap_return_pcs(&mut watch_buf);
+            let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
             // Trap exits consumed their opcode word too; count it like the
@@ -6808,6 +6807,7 @@ impl FixtureRunner {
 
         let mut executed = 0usize;
         let mut running = true;
+        let mut watch_buf = Vec::with_capacity(4);
         while executed < max_steps {
             if self.m68k.cpu.read_reg(Register::PC) == pending.return_pc {
                 running =
@@ -6815,15 +6815,12 @@ impl FixtureRunner {
                         .complete_pending(&mut ppc_app.memory, &mut ppc_app.cpu, pending);
                 break;
             }
-            let batch_max = if self.dispatcher.has_pending_native_trap_call() {
-                1
-            } else {
-                u32::try_from(max_steps - executed).unwrap_or(u32::MAX)
-            };
-            let batch = self
-                .m68k
-                .cpu
-                .run_batch(&mut self.bus, batch_max, &[pending.return_pc]);
+            let batch_max = u32::try_from(max_steps - executed).unwrap_or(u32::MAX);
+            watch_buf.clear();
+            watch_buf.push(pending.return_pc);
+            self.dispatcher
+                .append_pending_native_trap_return_pcs(&mut watch_buf);
+            let batch = self.m68k.cpu.run_batch(&mut self.bus, batch_max, &watch_buf);
             self.dispatcher
                 .retire_returned_native_trap_call(&mut self.m68k.cpu);
             let retired = batch.instructions as usize
