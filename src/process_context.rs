@@ -566,6 +566,7 @@ pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourc
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
+pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
 
 /// Canonical QuickDraw cursor state for one Macintosh process.
 ///
@@ -624,6 +625,28 @@ impl<T: Default> Default for SharedProcessValue<T> {
 impl<T: Clone> Clone for SharedProcessValue<T> {
     fn clone(&self) -> Self {
         Self(Rc::new(UnsafeCell::new((**self).clone())))
+    }
+}
+
+impl<T: PartialEq> PartialEq for SharedProcessValue<T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl<T: Eq> Eq for SharedProcessValue<T> {}
+
+impl<T: PartialEq> PartialEq<Option<T>> for SharedProcessValue<Option<T>> {
+    fn eq(&self, other: &Option<T>) -> bool {
+        **self == *other
+    }
+}
+
+#[cfg(test)]
+impl<T: Clone> SharedProcessValue<T> {
+    /// Copy a detached process snapshot for value-oriented assertions.
+    pub(crate) fn snapshot(&self) -> T {
+        (**self).clone()
     }
 }
 
@@ -3389,7 +3412,7 @@ pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
     memory_manager: SharedProcessMemoryManager,
     event_queue: SharedProcessEventQueue,
-    menu_tracking: Option<ProcessMenuTrackingState>,
+    menu_tracking: SharedProcessMenuTracking,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
@@ -3448,6 +3471,22 @@ impl ProcessContext {
         // EventAvail observes it in place. Inside Macintosh Volume I (1985),
         // pp. I-244--I-245 and I-257--I-259; Processes (1994), pp. 2-15--2-16.
         adapter.attach_to(&self.event_queue, EventQueue::is_pristine);
+    }
+
+    pub(crate) fn attach_menu_tracking(&self, adapter: &mut SharedProcessMenuTracking) {
+        // MenuSelect owns one retained selection and pane hierarchy until the
+        // mouse is released and any MenuFlash phases complete. Both ISA
+        // gateways therefore attach to the same process continuation. Inside
+        // Macintosh Volume I (1985), pp. I-354--I-366; Macintosh Toolbox
+        // Essentials (1992), pp. 3-87--3-92 and 3-140--3-142.
+        if Rc::ptr_eq(&adapter.0, &self.menu_tracking.0) {
+            return;
+        }
+        assert!(
+            adapter.is_none() || self.menu_tracking.is_none(),
+            "cannot attach two active Menu Manager continuations"
+        );
+        adapter.attach_to(&self.menu_tracking, Option::is_none);
     }
 
     pub(crate) fn attach_classic_file_system(
@@ -3541,31 +3580,11 @@ impl ProcessContext {
 
     #[cfg(test)]
     pub(crate) fn set_menu_tracking(&mut self, state: Option<ProcessMenuTrackingState>) {
-        self.menu_tracking = state;
+        *self.menu_tracking = state;
     }
 
-    pub(crate) fn menu_tracking_slot_mut(&mut self) -> &mut Option<ProcessMenuTrackingState> {
-        &mut self.menu_tracking
-    }
-
-    /// Transfer detached adapter state into the canonical process owner.
-    pub(crate) fn adopt_menu_tracking(&mut self, adapter: &mut Option<ProcessMenuTrackingState>) {
-        assert!(
-            adapter.is_none() || self.menu_tracking.is_none(),
-            "cannot attach two active Menu Manager continuations"
-        );
-        if self.menu_tracking.is_none() {
-            self.menu_tracking = adapter.take();
-        }
-    }
-
-    pub(crate) fn menu_tracking_and_memory_manager(
-        &mut self,
-    ) -> (
-        &mut Option<ProcessMenuTrackingState>,
-        &SharedProcessMemoryManager,
-    ) {
-        (&mut self.menu_tracking, &self.memory_manager)
+    pub(crate) fn memory_manager_handle(&self) -> &SharedProcessMemoryManager {
+        &self.memory_manager
     }
 
     pub(crate) fn attach_native_menu_selection(&self, adapter: &mut SharedNativeMenuSelection) {
@@ -3736,8 +3755,9 @@ mod tests {
             where_h: 0,
             modifiers: 0,
         });
-        *context.menu_tracking_slot_mut() =
-            Some(crate::menu_manager::test_process_menu_tracking(0x0065_4321));
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x0065_4321,
+        )));
         assert_eq!(context.event_queue().len(), 1);
         assert_eq!(
             context.menu_tracking().map(|t| t.menu_handle),
@@ -3782,8 +3802,9 @@ mod tests {
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
             0x1000,
         )));
-        let mut second = Some(crate::menu_manager::test_process_menu_tracking(0x2000));
-        context.adopt_menu_tracking(&mut second);
+        let mut second = SharedProcessMenuTracking::default();
+        *second = Some(crate::menu_manager::test_process_menu_tracking(0x2000));
+        context.attach_menu_tracking(&mut second);
     }
 
     #[test]
@@ -4954,6 +4975,27 @@ mod tests {
         assert_eq!(detached.len(), 1);
         assert_eq!(detached.front().unwrap().message, 0x1111);
         assert!(!detached.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_menu_tracking_is_immediate_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessMenuTracking::default();
+        *classic = Some(crate::menu_manager::test_process_menu_tracking(0x1234));
+        let mut native = SharedProcessMenuTracking::default();
+
+        context.attach_menu_tracking(&mut classic);
+        context.attach_menu_tracking(&mut native);
+        let detached = native.clone();
+
+        classic.as_mut().unwrap().highlighted_item = 4;
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(native.as_ref().unwrap().highlighted_item, 4);
+        assert_eq!(detached.as_ref().unwrap().highlighted_item, 1);
+        assert_eq!(native.take().unwrap().menu_handle, 0x1234);
+        assert!(classic.is_none());
+        assert_eq!(detached.as_ref().unwrap().menu_handle, 0x1234);
     }
 
     #[test]

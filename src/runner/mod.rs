@@ -2336,9 +2336,8 @@ impl FixtureRunner {
     }
 
     fn redraw_chrome(&mut self) {
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |dispatcher| {
+            .with_process_state(|dispatcher| {
                 dispatcher.redraw_chrome(&mut self.bus);
             });
     }
@@ -2460,9 +2459,8 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_down(&mut self, v: i16, h: i16) {
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |d| d.push_mouse_down(v, h));
+            .with_process_state(|d| d.push_mouse_down(v, h));
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2502,9 +2500,8 @@ impl FixtureRunner {
     }
 
     fn push_canonical_mouse_up(&mut self, v: i16, h: i16) {
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |d| d.push_mouse_up(v, h));
+            .with_process_state(|d| d.push_mouse_up(v, h));
         self.sync_mouse_lowmem();
         self.wake_pending_wait_next_event_if_input_available();
         self.wake_foreground_after_input();
@@ -2552,9 +2549,8 @@ impl FixtureRunner {
     /// Inject a key-down event, applying arrow→numpad remapping if configured.
     pub fn push_key_down(&mut self, mac_key: u8, char_code: u8) {
         let (key, char_code) = self.remap_key(mac_key, char_code);
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |d| {
+            .with_process_state(|d| {
                 d.push_key_down(key, char_code);
             });
         self.sync_key_map_lowmem();
@@ -2568,9 +2564,8 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |d| {
+            .with_process_state(|d| {
                 d.push_key_up_with_system_event_mask(sys_evt_mask, key, char_code);
             });
         self.sync_key_map_lowmem();
@@ -5472,10 +5467,8 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let (menu_tracking, memory_manager) =
-                        self.process_context.menu_tracking_and_memory_manager();
+                    let memory_manager = self.process_context.memory_manager_handle();
                     let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
-                        menu_tracking,
                         memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
@@ -5825,10 +5818,8 @@ impl FixtureRunner {
         let trace_ppc_imports = record_ppc_imports || trace_ppc_import_hist;
         let trace_ppc_fetches = trace_ppc_fetch_counts_enabled();
         let profile_run_start = profile_ppc.then(Instant::now);
-        let (menu_tracking, memory_manager) =
-            self.process_context.menu_tracking_and_memory_manager();
+        let memory_manager = self.process_context.memory_manager_handle();
         let probe = ppc_app.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |app, memory_manager| {
                 app.run_with_process_memory_manager(
@@ -5877,10 +5868,8 @@ impl FixtureRunner {
         } else {
             self.advance_ticks_for_ppc_cycles(cycles, tick_cap);
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
-            let (menu_tracking, memory_manager) =
-                self.process_context.menu_tracking_and_memory_manager();
+            let memory_manager = self.process_context.memory_manager_handle();
             ppc_app.with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |app, memory_manager| {
                     Self::fire_ppc_tick_callbacks(
@@ -6193,10 +6182,8 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let (menu_tracking, memory_manager) =
-                        self.process_context.menu_tracking_and_memory_manager();
+                    let memory_manager = self.process_context.memory_manager_handle();
                     let dispatch_err = self.dispatcher.with_process_state_and_memory_manager(
-                        menu_tracking,
                         memory_manager,
                         |dispatcher| {
                             dispatcher
@@ -7530,10 +7517,8 @@ impl FixtureRunner {
         while !ppc_app.sound.pending_doublebacks.is_empty() && fired_count < 16 {
             let doubleback = ppc_app.sound.pending_doublebacks.remove(0);
             let resume_pc = ppc_app.cpu.pc;
-            let (menu_tracking, memory_manager) =
-                self.process_context.menu_tracking_and_memory_manager();
+            let memory_manager = self.process_context.memory_manager_handle();
             let probe = ppc_app.with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |app, memory_manager| {
                     app.run_sound_doubleback_callback_with_process_memory_manager(
@@ -7643,10 +7628,8 @@ impl FixtureRunner {
         let mut fired_count = 0usize;
         while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
             let completion = ppc_app.sound.pending_completions.remove(0);
-            let (menu_tracking, memory_manager) =
-                self.process_context.menu_tracking_and_memory_manager();
+            let memory_manager = self.process_context.memory_manager_handle();
             let probe = ppc_app.with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |app, memory_manager| {
                     app.run_sound_completion_callback_with_process_memory_manager(
@@ -8477,9 +8460,8 @@ impl FixtureRunner {
         let sys_evt_mask = self
             .bus
             .read_word(crate::memory::globals::addr::SYS_EVT_MASK);
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         self.dispatcher
-            .with_process_state(menu_tracking, |d| {
+            .with_process_state(|d| {
                 d.post_auto_key_if_due(sys_evt_mask);
             });
 
@@ -8496,10 +8478,9 @@ impl FixtureRunner {
         // to 0x80 even when no GetNextEvent ever drains the queue —
         // critical for polling-only games (Bonkheads-Deluxe class titles)
         // that would otherwise see the button as "held forever".
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         let has_pending_unmatched_down =
             self.dispatcher
-                .with_process_state(menu_tracking, |d| {
+                .with_process_state(|d| {
                     d.has_unmatched_queued_mouse_down()
                 });
         let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
@@ -8565,10 +8546,9 @@ impl FixtureRunner {
             }
         }
 
-        let menu_tracking = self.process_context.menu_tracking_slot_mut();
         let (mut what, mut message, mut where_v, mut where_h, mut modifiers, mut has_event) = self
             .dispatcher
-            .with_process_state(menu_tracking, |dispatcher| {
+            .with_process_state(|dispatcher| {
                 dispatcher.dequeue_toolbox_event(&mut self.cpu, &mut self.bus, pending.event_mask)
             });
         if !has_event {
@@ -10388,10 +10368,8 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let (menu_tracking, memory_manager) =
-                        self.process_context.menu_tracking_and_memory_manager();
+                    let memory_manager = self.process_context.memory_manager_handle();
                     let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
-                        menu_tracking,
                         memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );

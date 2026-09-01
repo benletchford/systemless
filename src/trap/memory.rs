@@ -4519,10 +4519,9 @@ mod tests {
         dispatcher.attach_process_context(&mut context);
 
         cpu.write_reg(Register::D0, 24);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         dispatcher
             .with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA11E;
@@ -4540,10 +4539,9 @@ mod tests {
         );
 
         cpu.write_reg(Register::D0, 13);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         dispatcher
             .with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA022;
@@ -4584,10 +4582,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 13);
 
         cpu.write_reg(Register::A0, ptr);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         dispatcher
             .with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA01F;
@@ -4600,10 +4597,9 @@ mod tests {
         assert_eq!(memory_manager.borrow().classic_allocation_size(ptr), None);
 
         cpu.write_reg(Register::A0, handle);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         dispatcher
             .with_process_state_and_memory_manager(
-                menu_tracking,
                 memory_manager,
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA023;
@@ -4633,10 +4629,7 @@ mod tests {
 
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        let memory_manager = context
-            .menu_tracking_and_memory_manager()
-            .1
-            .clone();
+        let memory_manager = context.memory_manager_handle().clone();
         {
             let mut manager = memory_manager.borrow_mut();
             manager.publish_native_allocator(
@@ -4709,10 +4702,7 @@ mod tests {
 
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        let memory_manager = context
-            .menu_tracking_and_memory_manager()
-            .1
-            .clone();
+        let memory_manager = context.memory_manager_handle().clone();
         {
             let mut manager = memory_manager.borrow_mut();
             manager.publish_native_allocator(
@@ -4787,10 +4777,7 @@ mod tests {
 
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        let memory_manager = context
-            .menu_tracking_and_memory_manager()
-            .1
-            .clone();
+        let memory_manager = context.memory_manager_handle().clone();
         {
             let mut manager = memory_manager.borrow_mut();
             manager.publish_native_allocator(
@@ -4874,10 +4861,7 @@ mod tests {
 
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        let memory_manager = context
-            .menu_tracking_and_memory_manager()
-            .1
-            .clone();
+        let memory_manager = context.memory_manager_handle().clone();
         {
             let mut manager = memory_manager.borrow_mut();
             manager.publish_native_allocator(
@@ -4945,10 +4929,7 @@ mod tests {
 
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
-        let memory_manager = context
-            .menu_tracking_and_memory_manager()
-            .1
-            .clone();
+        let memory_manager = context.memory_manager_handle().clone();
         {
             let mut manager = memory_manager.borrow_mut();
             manager.publish_native_allocator(
