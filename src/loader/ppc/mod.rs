@@ -44074,9 +44074,6 @@ fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     {
         playback.samples.clear();
     }
-    sound
-        .decoded_buffer_commands
-        .retain(|record| record.channel != channel);
     for playback in sound
         .double_buffer_playbacks
         .iter_mut()
@@ -44120,21 +44117,25 @@ fn ppc_snd_play(
         playback.paused = false;
     }
     let summary = decoded.summary;
+    let samples = decoded.samples;
     if ppc_sound_trace_enabled() {
         eprintln!(
             "[PPC-SOUND] SndPlay chan=${channel:08X} handle=${sound_handle:08X} async={} samples={} rate=${:08X}",
             async_play,
-            decoded.samples.len(),
+            samples.len(),
             summary.sample_rate_fixed
         );
     }
+    sound
+        .manager
+        .play_file_buffer(channel, samples.clone(), summary.sample_rate_fixed);
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
             file_playback_index,
             channel,
             sample_rate_fixed: summary.sample_rate_fixed,
-            samples: decoded.samples,
+            samples,
         });
     sound.file_playbacks.push(PpcSoundFilePlaybackRecord {
         channel,
@@ -44339,28 +44340,75 @@ fn ppc_snd_play_double_buffer(
         playback.active = false;
         playback.host_buffer_loaded = false;
     }
-    sound
-        .double_buffer_playbacks
-        .push(PpcSoundDoubleBufferPlaybackRecord {
-            channel,
-            header,
-            buffers: [buffer0, buffer1],
-            callback,
-            sample_rate_fixed,
-            num_channels,
-            sample_size,
-            compression_id,
-            packet_size,
-            current_buffer_index: 0,
-            callback_pending_mask: 0,
-            active: true,
-            host_initialized: false,
-            host_buffer_loaded: false,
-        });
+    let mut playback = PpcSoundDoubleBufferPlaybackRecord {
+        channel,
+        header,
+        buffers: [buffer0, buffer1],
+        callback,
+        sample_rate_fixed,
+        num_channels,
+        sample_size,
+        compression_id,
+        packet_size,
+        current_buffer_index: 0,
+        callback_pending_mask: 0,
+        active: true,
+        host_initialized: false,
+        host_buffer_loaded: false,
+    };
+    if let Some(samples) = ppc_decode_ready_double_buffer(memory, playback) {
+        sound
+            .manager
+            .play_double_buffer_samples(channel, samples, sample_rate_fixed);
+        playback.host_initialized = true;
+        playback.host_buffer_loaded = true;
+    }
+    sound.double_buffer_playbacks.push(playback);
     sound.double_buffer_play_count = sound.double_buffer_play_count.saturating_add(1);
     sound.last_double_buffer_channel = channel;
     sound.last_double_buffer_header = header;
     PPC_NO_ERR
+}
+
+fn ppc_decode_ready_double_buffer(
+    memory: &mut PpcSectionMem,
+    playback: PpcSoundDoubleBufferPlaybackRecord,
+) -> Option<Vec<crate::sound::StereoSample>> {
+    const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+    if playback.compression_id != 0 {
+        return None;
+    }
+    let buffer_ptr = playback.buffers[usize::from(playback.current_buffer_index & 1)];
+    if buffer_ptr == 0 {
+        return None;
+    }
+    let num_frames = usize::try_from(memory.read_u32_be(buffer_ptr)?).ok()?;
+    let flags = memory.read_u32_be(buffer_ptr.checked_add(4)?)?;
+    if flags & 0x01 == 0 || num_frames == 0 {
+        return None;
+    }
+    let num_channels = usize::from(playback.num_channels);
+    let sample_size = usize::from(playback.sample_size);
+    let bytes_per_sample = match sample_size {
+        8 => 1usize,
+        16 => 2usize,
+        _ => return None,
+    };
+    let byte_count = num_frames
+        .checked_mul(num_channels)?
+        .checked_mul(bytes_per_sample)?;
+    if byte_count > MAX_RETAINED_SAMPLE_BYTES {
+        return None;
+    }
+    let mut raw = vec![0; byte_count];
+    memory.read_bytes_into(buffer_ptr.checked_add(16)?, &mut raw)?;
+    crate::trap::decode_interleaved_stereo_samples(
+        &raw,
+        num_frames,
+        num_channels,
+        sample_size,
+    )
 }
 
 fn ppc_read_snd_command(memory: &mut PpcSectionMem, cmd_ptr: u32) -> Option<PpcSndCommandRecord> {
@@ -44428,6 +44476,11 @@ fn ppc_snd_start_file_play(
         }
     }
     if let (Some(file_playback_index), Some(decoded_sound)) = (file_playback_index, decoded_sound) {
+        sound.manager.play_file_buffer(
+            channel,
+            decoded_sound.samples.clone(),
+            decoded_sound.summary.sample_rate_fixed,
+        );
         sound
             .decoded_file_playbacks
             .push(PpcDecodedAiffPlaybackRecord {
@@ -44770,6 +44823,7 @@ fn ppc_snd_pause_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
         .find(|record| record.channel == channel && record.active)
     {
         playback.paused = !playback.paused;
+        sound.manager.set_file_paused(channel, playback.paused);
         return PPC_NO_ERR;
     }
     PPC_NO_ERR
@@ -44788,6 +44842,7 @@ fn ppc_snd_stop_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
         playback.paused = false;
         playback.quiet_now = quiet_now;
     }
+    sound.manager.quiet_channel(channel);
     PPC_NO_ERR
 }
 
@@ -159490,6 +159545,23 @@ pub(crate) mod tests {
             .memory
             .add_region(channel, vec![0xdd; PPC_GUEST_SND_CHANNEL_SIZE as usize]);
         loaded.memory.add_region(header, vec![0; 24]);
+        loaded.memory.add_region(PPC_DATA_BASE + 0x3000, vec![0; 24]);
+        loaded.memory.add_region(PPC_DATA_BASE + 0x4000, vec![0; 24]);
+        loaded
+            .memory
+            .write_u32_be(PPC_DATA_BASE + 0x3000, 2)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(PPC_DATA_BASE + 0x3004, 1)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(
+                PPC_DATA_BASE + 0x3010,
+                &[0x00, 0x00, 0x00, 0x00, 0x7f, 0xff, 0x7f, 0xff],
+            )
+            .unwrap();
         loaded.memory.write_u16_be(header, 2).unwrap();
         loaded.memory.write_u16_be(header + 2, 16).unwrap();
         loaded
@@ -159534,10 +159606,17 @@ pub(crate) mod tests {
                 current_buffer_index: 0,
                 callback_pending_mask: 0,
                 active: true,
-                host_initialized: false,
-                host_buffer_loaded: false,
+                host_initialized: true,
+                host_buffer_loaded: true,
             }]
         );
+        assert_eq!(loaded.sound.manager.debug_double_buffer_count, 1);
+        assert!(loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
         assert!(loaded.sound.pending_doublebacks.is_empty());
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -159835,7 +159914,6 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert!(loaded.sound.decoded_buffer_commands.is_empty());
         assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
         assert!(loaded
             .sound
@@ -160246,6 +160324,13 @@ pub(crate) mod tests {
                 preview: expected_preview,
             })
         );
+        assert_eq!(loaded.sound.manager.debug_file_play_count, 1);
+        assert!(loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
     }
 
     #[test]

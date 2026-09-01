@@ -533,6 +533,71 @@ impl SoundManager {
         );
     }
 
+    /// Start decoded file playback on the canonical process channel.
+    /// `SndStartFilePlay` submits file data to the same channel state used by
+    /// ordinary commands. Inside Macintosh: Sound (1994), pp. 2-134--2-137.
+    pub(crate) fn play_file_buffer(
+        &mut self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+    ) {
+        self.debug_file_play_count = self.debug_file_play_count.saturating_add(1);
+        let channel = self.ensure_channel_mut(guest_ptr);
+        channel.quiet();
+        channel.play_buffer(samples, sample_rate_fixed, PlaybackKind::File, 0);
+    }
+
+    /// Install one decoded double-buffer payload on the process channel.
+    /// The native callback frame remains adapter-specific, but the samples
+    /// and playback cursor are Sound Manager state. Sound 1994, pp. 2-138--2-140.
+    pub(crate) fn play_double_buffer_samples(
+        &mut self,
+        guest_ptr: u32,
+        samples: Vec<StereoSample>,
+        sample_rate_fixed: u32,
+    ) {
+        self.debug_double_buffer_count = self.debug_double_buffer_count.saturating_add(1);
+        let channel = self.ensure_channel_mut(guest_ptr);
+        let non_silent_frames = samples
+            .iter()
+            .filter(|sample| sample.left != 0x80 || sample.right != 0x80)
+            .count();
+        channel.debug_double_buffer_loads = channel.debug_double_buffer_loads.saturating_add(1);
+        channel.debug_double_buffer_frames_loaded = channel
+            .debug_double_buffer_frames_loaded
+            .saturating_add(samples.len() as u64);
+        channel.debug_double_buffer_non_silent_frames = channel
+            .debug_double_buffer_non_silent_frames
+            .saturating_add(non_silent_frames as u64);
+        if non_silent_frames > 0 {
+            channel.debug_double_buffer_non_silent_loads =
+                channel.debug_double_buffer_non_silent_loads.saturating_add(1);
+        }
+        let capture_remaining = DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT
+            .saturating_sub(channel.debug_double_buffer_captured_samples.len());
+        channel.debug_double_buffer_captured_samples.extend(
+            samples
+                .iter()
+                .take(capture_remaining)
+                .copied()
+                .map(StereoSample::downmix),
+        );
+        channel.play_stereo_buffer(samples, sample_rate_fixed, PlaybackKind::Buffer, 0);
+    }
+
+    pub(crate) fn set_file_paused(&mut self, guest_ptr: u32, paused: bool) {
+        if let Some(channel) = self.find_channel_mut(guest_ptr) {
+            channel.set_file_paused(paused);
+        }
+    }
+
+    pub(crate) fn quiet_channel(&mut self, guest_ptr: u32) {
+        if let Some(channel) = self.find_channel_mut(guest_ptr) {
+            channel.quiet();
+        }
+    }
+
     /// Apply a native immediate command to the canonical process channel.
     /// `SndDoImmediate` bypasses the FIFO while leaving queued commands in
     /// place. Sound 1994, pp. 2-93 and 2-128--2-130.

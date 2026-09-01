@@ -145,7 +145,6 @@ pub struct PpcSoundState {
     pub(crate) manager: SharedProcessSoundManager,
     pub queued_commands: Vec<PpcSndCommandRecord>,
     pub immediate_commands: Vec<PpcSndCommandRecord>,
-    pub decoded_buffer_commands: Vec<PpcDecodedBufferCommandRecord>,
     pub double_buffer_playbacks: Vec<PpcSoundDoubleBufferPlaybackRecord>,
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
     pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
@@ -166,7 +165,6 @@ impl PartialEq for PpcSoundState {
     fn eq(&self, other: &Self) -> bool {
         self.queued_commands == other.queued_commands
             && self.immediate_commands == other.immediate_commands
-            && self.decoded_buffer_commands == other.decoded_buffer_commands
             && self.double_buffer_playbacks == other.double_buffer_playbacks
             && self.file_playbacks == other.file_playbacks
             && self.decoded_file_playbacks == other.decoded_file_playbacks

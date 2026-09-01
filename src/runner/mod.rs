@@ -4,7 +4,7 @@ use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::display::CursorImage;
 use crate::loader::ppc::{
-    PpcDecodedAiffPlaybackRecord, PpcDecodedBufferCommandRecord, PpcDrawSprocketTraceEntry,
+    PpcDecodedAiffPlaybackRecord, PpcDrawSprocketTraceEntry,
     PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding,
     PpcImportDispatcherTarget, PpcInputSnapshot, PpcInputSprocketSimpleStateTraceEntry,
     PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay, PpcQ3SoftwareRenderStats, PpcRgbColor,
@@ -6014,7 +6014,7 @@ impl FixtureRunner {
             self.sync_ppc_front_buffer_to_host(&mut ppc_app);
             self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         }
-        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.service_ppc_sound_adapter(&mut ppc_app);
         sync_ppc_cursor_state(
             &mut self.dispatcher,
             ppc_app.quickdraw_cursor_level,
@@ -7020,11 +7020,7 @@ impl FixtureRunner {
         )
     }
 
-    fn sync_ppc_sound_to_dispatcher(&mut self, ppc_app: &mut PpcLoadedApp) {
-        let decoded_buffer_commands = std::mem::take(&mut ppc_app.sound.decoded_buffer_commands);
-        for decoded in decoded_buffer_commands {
-            self.play_ppc_decoded_buffer_command(decoded);
-        }
+    fn service_ppc_sound_adapter(&mut self, ppc_app: &mut PpcLoadedApp) {
         self.sync_ppc_double_buffer_playbacks(ppc_app);
 
         let start = self
@@ -7058,61 +7054,17 @@ impl FixtureRunner {
                 );
             }
             self.ensure_ppc_sound_playback_timing(ppc_app, index, &decoded);
-            let chan_index = self
-                .dispatcher
-                .sound_manager
-                .channels
-                .iter()
-                .position(|chan| chan.guest_ptr == channel)
-                .unwrap_or_else(|| {
-                    self.dispatcher
-                        .sound_manager
-                        .channels
-                        .push(crate::sound::SndChannel::new(channel, false));
-                    self.dispatcher.sound_manager.channels.len() - 1
-                });
-            let chan = &mut self.dispatcher.sound_manager.channels[chan_index];
-            chan.quiet();
-            chan.play_buffer(
-                decoded.samples.clone(),
-                decoded.sample_rate_fixed,
-                crate::sound::PlaybackKind::File,
-                0,
-            );
             self.ppc_sound_host_playbacks
                 .retain(|record| record.file_playback_index != index);
             self.ppc_sound_host_playbacks.push(PpcHostSoundPlayback {
                 file_playback_index: index,
                 channel,
             });
-            self.dispatcher.sound_manager.debug_file_play_count = self
-                .dispatcher
-                .sound_manager
-                .debug_file_play_count
-                .saturating_add(1);
         }
 
         self.ppc_sound_synced_file_playback_count = ppc_app.sound.file_playbacks.len();
         self.adjust_ppc_sound_pause_timing(ppc_app);
 
-        let mut seen_channels = Vec::new();
-        for playback in ppc_app.sound.file_playbacks.iter().rev() {
-            if seen_channels.contains(&playback.channel) {
-                continue;
-            }
-            seen_channels.push(playback.channel);
-            if let Some(chan) = self
-                .dispatcher
-                .sound_manager
-                .find_channel_mut(playback.channel)
-            {
-                if !playback.active || playback.quiet_now {
-                    chan.quiet();
-                } else {
-                    chan.set_file_paused(playback.paused);
-                }
-            }
-        }
         self.ppc_sound_host_playbacks.retain(|record| {
             ppc_app
                 .sound
@@ -7120,63 +7072,6 @@ impl FixtureRunner {
                 .get(record.file_playback_index)
                 .is_some_and(|playback| playback.active && !playback.quiet_now)
         });
-    }
-
-    fn play_ppc_decoded_buffer_command(&mut self, decoded: PpcDecodedBufferCommandRecord) {
-        let channel = decoded.channel;
-        if trace_sound_runner_enabled() {
-            let non_silent = decoded
-                .samples
-                .iter()
-                .filter(|sample| **sample != 0x80)
-                .count();
-            eprintln!(
-                "[PPC-SOUND] host bufferCmd chan=${channel:08X} rate=${:08X} samples={} non_silent={}",
-                decoded.sample_rate_fixed,
-                decoded.samples.len(),
-                non_silent
-            );
-        }
-        let chan_index = self
-            .dispatcher
-            .sound_manager
-            .channels
-            .iter()
-            .position(|chan| chan.guest_ptr == channel)
-            .unwrap_or_else(|| {
-                self.dispatcher
-                    .sound_manager
-                    .channels
-                    .push(crate::sound::SndChannel::new(channel, false));
-                self.dispatcher.sound_manager.channels.len() - 1
-            });
-        self.dispatcher.sound_manager.channels[chan_index].play_buffer(
-            decoded.samples,
-            decoded.sample_rate_fixed,
-            crate::sound::PlaybackKind::Buffer,
-            0,
-        );
-        self.dispatcher.sound_manager.debug_cmd_count = self
-            .dispatcher
-            .sound_manager
-            .debug_cmd_count
-            .saturating_add(1);
-        self.dispatcher.sound_manager.debug_buffer_cmd_count = self
-            .dispatcher
-            .sound_manager
-            .debug_buffer_cmd_count
-            .saturating_add(1);
-        if !self
-            .dispatcher
-            .sound_manager
-            .debug_cmd_codes_seen
-            .contains(&crate::sound::cmd::BUFFER)
-        {
-            self.dispatcher
-                .sound_manager
-                .debug_cmd_codes_seen
-                .push(crate::sound::cmd::BUFFER);
-        }
     }
 
     fn sync_ppc_double_buffer_playbacks(&mut self, ppc_app: &mut PpcLoadedApp) {
@@ -7763,7 +7658,7 @@ impl FixtureRunner {
             }
         }
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
-        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.service_ppc_sound_adapter(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
     }
 
@@ -7850,7 +7745,7 @@ impl FixtureRunner {
             }
         }
         self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
-        self.sync_ppc_sound_to_dispatcher(&mut ppc_app);
+        self.service_ppc_sound_adapter(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
     }
 
@@ -16183,14 +16078,12 @@ mod tests {
     fn ppc_decoded_buffer_command_feeds_host_audio_buffer() {
         let channel = 0x0500_1000;
         let samples = vec![0x80, 0x90, 0x70, 0xa0];
-        let sound = PpcSoundState {
-            decoded_buffer_commands: vec![PpcDecodedBufferCommandRecord {
-                channel,
-                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-                samples: samples.clone(),
-            }],
-            ..PpcSoundState::default()
-        };
+        let mut sound = PpcSoundState::default();
+        sound.manager.play_buffer_command(
+            channel,
+            samples.clone(),
+            crate::sound::OUTPUT_RATE << 16,
+        );
         let app = halted_ppc_app_with_sound(sound);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
@@ -16203,13 +16096,6 @@ mod tests {
         assert_eq!(runner.dispatcher().sound_manager.debug_cmd_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_buffer_cmd_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
-        assert!(runner
-            .ppc_app
-            .as_ref()
-            .expect("PPC app should stay loaded")
-            .sound
-            .decoded_buffer_commands
-            .is_empty());
     }
 
     #[test]
@@ -16225,7 +16111,6 @@ mod tests {
             manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
-            decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
                 channel,
@@ -16276,6 +16161,11 @@ mod tests {
         });
         {
             let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app.sound.manager.play_file_buffer(
+                channel,
+                samples.clone(),
+                crate::sound::OUTPUT_RATE << 16,
+            );
             let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
             let mut callback_bytes = Vec::new();
             callback_bytes.extend_from_slice(&stw_r3_0_r2.to_be_bytes());
@@ -16371,7 +16261,6 @@ mod tests {
             manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
-            decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
                 channel,
@@ -16406,7 +16295,7 @@ mod tests {
                 file_playback_index: 0,
                 channel,
                 sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-                samples,
+                samples: samples.clone(),
             }],
             pending_completions: Vec::new(),
             pending_doublebacks: Vec::new(),
@@ -16422,6 +16311,11 @@ mod tests {
         });
         {
             let ppc_app = app.ppc.as_mut().expect("PPC app");
+            ppc_app.sound.manager.play_file_buffer(
+                channel,
+                samples.clone(),
+                crate::sound::OUTPUT_RATE << 16,
+            );
             ppc_app
                 .memory
                 .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
@@ -16509,7 +16403,6 @@ mod tests {
             manager: Default::default(),
             queued_commands: Vec::new(),
             immediate_commands: Vec::new(),
-            decoded_buffer_commands: Vec::new(),
             double_buffer_playbacks: Vec::new(),
             file_playbacks: vec![PpcSoundFilePlaybackRecord {
                 channel,
