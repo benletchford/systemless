@@ -72,9 +72,12 @@ builds enable m68k's Cranelift JIT for eligible hot traces, while WebAssembly
 uses its portable trace executor.
 
 68K and PowerPC are execution formats, not separate Macintosh platforms. The
-architectural direction is one logical Macintosh process, with one guest address
-space and one canonical set of Toolbox, event, window, menu, file, resource,
-and callback state, served by architecture-specific CPU adapters. Mixed Mode
+runtime invariant is one logical Macintosh process, with one guest address space
+and one canonical guest-visible set of Toolbox, event, window, menu, file,
+resource, and callback state, served by architecture-specific CPU adapters. The
+fat-application Toolbox showcase enforces that invariant by running the same
+interaction sequence through both slices and requiring identical semantic state
+and rendered checkpoints. Mixed Mode
 transitions should switch execution engines without copying or synchronizing
 process-visible state, just as original software expects.
 

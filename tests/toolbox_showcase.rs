@@ -142,14 +142,10 @@ fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
     [rgba[offset], rgba[offset + 1], rgba[offset + 2]]
 }
 
-fn reference_path(powerpc: bool, filename: &str) -> PathBuf {
+fn reference_path(filename: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/toolbox-showcase/reference")
-        .join(if powerpc {
-            "systemless-ppc"
-        } else {
-            "systemless-68k"
-        })
+        .join("systemless")
         .join(filename)
 }
 
@@ -185,9 +181,9 @@ fn write_rgb(path: &Path, width: u32, height: u32, rgb: Vec<u8>) {
         .unwrap_or_else(|error| panic!("failed to write {}: {error}", path.display()));
 }
 
-fn assert_reference_frame(runner: &mut FixtureRunner, powerpc: bool, filename: &str) {
+fn assert_reference_frame(runner: &mut FixtureRunner, filename: &str) {
     let (width, height, actual) = rendered_rgb(runner);
-    let reference = reference_path(powerpc, filename);
+    let reference = reference_path(filename);
 
     if update_references() {
         write_rgb(&reference, width, height, actual);
@@ -216,7 +212,7 @@ fn assert_reference_frame(runner: &mut FixtureRunner, powerpc: bool, filename: &
         .count();
     let actual_path = std::env::temp_dir().join(format!(
         "systemless-toolbox-showcase-{}-{filename}",
-        if powerpc { "ppc" } else { "68k" }
+        if runner.is_powerpc_app() { "ppc" } else { "68k" }
     ));
     write_rgb(&actual_path, width, height, actual);
     panic!(
@@ -310,10 +306,8 @@ fn test_toolbox_showcase() {
         let snapshot = r.guest_menu_snapshot();
         let has_pages_menu = snapshot.menus.iter().any(|m| m.id == MENU_PAGES);
         let has_options_menu = snapshot.menus.iter().any(|m| m.id == MENU_OPTIONS);
-        // Native PowerPC Window Manager state is owned by the PPC adapter;
-        // the public dispatcher window probes currently describe only 68K.
-        let has_window = powerpc || r.dispatcher().window_count() >= 1;
-        let has_bounds = powerpc || r.dispatcher().window_bounds() != (0, 0, 0, 0);
+        let has_window = r.window_count() >= 1;
+        let has_bounds = r.window_bounds() != (0, 0, 0, 0);
         let graphics_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
         has_pages_menu && has_options_menu && has_window && has_bounds && graphics_checked
     });
@@ -423,20 +417,14 @@ fn test_toolbox_showcase() {
         "QD3D Bevels renderer must be checked initially"
     );
 
-    if !powerpc {
-        assert_eq!(
-            runner.dispatcher().window_count(),
-            1,
-            "initial window count must be 1"
-        );
-    }
+    assert_eq!(runner.window_count(), 1, "initial window count must be 1");
     assert!(
         !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
         "Auxiliary window state must be false initially"
     );
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "01-graphics.png");
+    assert_reference_frame(&mut runner, "01-graphics.png");
 
     // 2. Switch to Controls and exercise every control.
     assert!(
@@ -455,23 +443,14 @@ fn test_toolbox_showcase() {
     ));
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_CONTROLS));
     assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS));
-    if !powerpc {
-        assert_eq!(runner.dispatcher().window_count(), 1);
-    }
+    assert_eq!(runner.window_count(), 1);
     assert!(!menu_item_checked(
         &snapshot,
         MENU_STATE,
         ITEM_STATE_AUX_WINDOW
     ));
 
-    let (win_top, win_left) = if powerpc {
-        // Fixed WIND 128 content origin from showcase.r. The PPC adapter does
-        // not yet project its window bounds through TrapDispatcher.
-        (50, 40)
-    } else {
-        let (top, left, _bottom, _right) = runner.dispatcher().window_bounds();
-        (top, left)
-    };
+    let (win_top, win_left, _win_bottom, _win_right) = runner.window_bounds();
 
     // Button: Rect (top=255, left=40, bottom=279, right=150)
     let button_v = win_top + (255 + 279) / 2;
@@ -520,7 +499,7 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(10, 108);
     runner.push_mouse_down(10, 108);
     run_ticks(&mut runner, "State menu to open", 4);
-    assert_reference_frame(&mut runner, powerpc, "02-controls.png");
+    assert_reference_frame(&mut runner, "02-controls.png");
     runner.push_mouse_up(10, 108);
     run_ticks(&mut runner, "State menu to close", 1);
 
@@ -536,7 +515,7 @@ fn test_toolbox_showcase() {
             let snapshot = r.guest_menu_snapshot();
             let page_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS);
             let aux_state = menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
-            let two_windows = powerpc || r.dispatcher().window_count() == 2;
+            let two_windows = r.window_count() == 2;
             page_checked && aux_state && two_windows
         },
     );
@@ -552,20 +531,18 @@ fn test_toolbox_showcase() {
         ITEM_PAGE_CONTROLS
     ));
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_WINDOWS));
-    if !powerpc {
-        assert_eq!(
-            runner.dispatcher().window_count(),
-            2,
-            "auxiliary window must increase window count to 2"
-        );
-    }
+    assert_eq!(
+        runner.window_count(),
+        2,
+        "auxiliary window must increase window count to 2"
+    );
     assert!(
         menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
         "Auxiliary window state checkmark must be set"
     );
     run_ticks(&mut runner, "Windows page to settle", 1);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "03-windows.png");
+    assert_reference_frame(&mut runner, "03-windows.png");
 
     // 4. Switch to Drawing & 3D Bevels page (disposing auxiliary window).
     assert!(
@@ -576,7 +553,7 @@ fn test_toolbox_showcase() {
         let snapshot = r.guest_menu_snapshot();
         let page_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING);
         let aux_cleared = !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
-        let one_window = powerpc || r.dispatcher().window_count() == 1;
+        let one_window = r.window_count() == 1;
         page_checked && aux_cleared && one_window
     });
     step_until(&mut runner, "QuickDraw 3D page to finish rendering", |r| {
@@ -586,7 +563,7 @@ fn test_toolbox_showcase() {
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_DRAWING));
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "04-drawing.png");
+    assert_reference_frame(&mut runner, "04-drawing.png");
     assert_drawing_page_rendered(&mut runner, win_top, win_left);
 
     // 5. Switch to Game Preferences and test bidirectional control & submenu synchronization.
@@ -674,7 +651,7 @@ fn test_toolbox_showcase() {
     click_point(&mut runner, win_top + 203, win_left + 207);
     run_ticks(&mut runner, "Preferences page to settle", 1);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "05-preferences.png");
+    assert_reference_frame(&mut runner, "05-preferences.png");
 
     // 6. Hold open the nested File > Game Options parent so the hierarchical
     // indicator is part of the visual baseline, then exercise a leaf command.
@@ -683,7 +660,7 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "File menu to open", 2);
     runner.set_mouse_position(49, 170);
     run_ticks(&mut runner, "Game Options parent to highlight", 4);
-    assert_reference_frame(&mut runner, powerpc, "06-nested-menus.png");
+    assert_reference_frame(&mut runner, "06-nested-menus.png");
     runner.push_mouse_up(49, 170);
     run_ticks(&mut runner, "File menu to close", 1);
     assert!(runner.select_guest_menu_item(MENU_RENDERER, ITEM_RENDERER_CONTRAST));
@@ -714,7 +691,7 @@ fn test_toolbox_showcase() {
     // 6a. Open Modal Preferences Dialog via button: local (317, 130)
     click_point(&mut runner, win_top + 317, win_left + 130);
     run_ticks(&mut runner, "Modal preferences dialog to open", 2);
-    assert_reference_frame(&mut runner, powerpc, "07-modal-dialog.png");
+    assert_reference_frame(&mut runner, "07-modal-dialog.png");
     // Dialog bounds: {100, 130, 290, 470}
     // Click Checkbox item 4 (Enable 3D): global (155, 300)
     click_point(&mut runner, 155, 300);
@@ -725,14 +702,14 @@ fn test_toolbox_showcase() {
     // 6b. Display About Alert via button: local (317, 325)
     click_point(&mut runner, win_top + 317, win_left + 325);
     run_ticks(&mut runner, "About alert to open", 2);
-    assert_reference_frame(&mut runner, powerpc, "08-alert.png");
+    assert_reference_frame(&mut runner, "08-alert.png");
     // Alert bounds: {130, 150, 260, 450}
     // Click OK button item 1: global (230, 395)
     click_point(&mut runner, 230, 395);
     run_ticks(&mut runner, "Alert to close", 2);
 
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "09-dialogs.png");
+    assert_reference_frame(&mut runner, "09-dialogs.png");
 
     // 10. Activate a mixed-usage palette, draw with palette entries, then
     // animate three explicit device indexes without redrawing the swatches.
@@ -807,7 +784,7 @@ fn test_toolbox_showcase() {
         (win_left + 100) as u16,
     );
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "10-palette.png");
+    assert_reference_frame(&mut runner, "10-palette.png");
 
     // Animate Palette button: local Rect (342, 40, 366, 230).
     click_point(&mut runner, win_top + 354, win_left + 135);
@@ -822,7 +799,7 @@ fn test_toolbox_showcase() {
         "AnimateEntry must recolor an already-indexed swatch without a redraw"
     );
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "11-palette-animated.png");
+    assert_reference_frame(&mut runner, "11-palette-animated.png");
 
     // 12. Menu-bar hover selection: press mouse down in File, hover/drag
     // to Pages menu, and release over the Graphics item to select it.
@@ -835,14 +812,14 @@ fn test_toolbox_showcase() {
 
     runner.set_mouse_position(28, 56); // Hover down to Graphics item
     run_ticks(&mut runner, "Menu tracking hover to Graphics item", 2);
-    assert_reference_frame(&mut runner, powerpc, "12-menu-hover.png");
+    assert_reference_frame(&mut runner, "12-menu-hover.png");
     runner.push_mouse_up(28, 56); // Release mouse to trigger selection
 
     step_until(&mut runner, "hover-select switch to Graphics page", |r| {
         let snapshot = r.guest_menu_snapshot();
         let graphics_checked = menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS);
         let aux_cleared = !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW);
-        let one_window = powerpc || r.dispatcher().window_count() == 1;
+        let one_window = r.window_count() == 1;
         graphics_checked && aux_cleared && one_window
     });
 
@@ -866,13 +843,11 @@ fn test_toolbox_showcase() {
         MENU_PAGES,
         ITEM_PAGE_PALETTES
     ));
-    if !powerpc {
-        assert_eq!(
-            runner.dispatcher().window_count(),
-            1,
-            "window count must remain 1 after returning to Graphics"
-        );
-    }
+    assert_eq!(
+        runner.window_count(),
+        1,
+        "window count must remain 1 after returning to Graphics"
+    );
     assert!(
         !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_AUX_WINDOW),
         "Auxiliary window state checkmark must remain cleared"
@@ -880,5 +855,5 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "returned Graphics page to settle", 1);
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, powerpc, "13-graphics-return.png");
+    assert_reference_frame(&mut runner, "13-graphics-return.png");
 }

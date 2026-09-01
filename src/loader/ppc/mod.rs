@@ -76,7 +76,9 @@ use crate::process_context::{
     ProcessResourceManagerState, ProcessVfsFileRecords, ProcessVfsResourceFileRecords,
     SharedProcessAppleEventHandlers, SharedProcessFileSystem, SharedProcessMemoryManager,
 };
-use crate::quickdraw::fonts::heuristics::get_italic_slant;
+use crate::quickdraw::fonts::heuristics::{
+    get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
+};
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
 };
@@ -1092,6 +1094,7 @@ pub enum PpcImportDispatcherTarget {
     InvertRgn,
     FillCRect,
     FrameRoundRect,
+    PaintRoundRect,
     InvalRect,
     ValidRect,
     BeginUpdate,
@@ -4020,6 +4023,30 @@ impl PpcLoadedApp {
         } else {
             ppc_front_buffer_for_gworld(&self.gworlds, PPC_MAIN_GWORLD)
         }
+    }
+
+    /// Number of live Window Manager records, excluding screen and offscreen
+    /// graphics worlds.
+    pub fn window_count(&mut self) -> usize {
+        self.gworlds
+            .iter()
+            .filter(|record| {
+                !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
+                    && self
+                        .memory
+                        .read_u16_be(record.port.wrapping_add(PPC_CWINDOW_WINDOW_KIND_OFFSET))
+                        .is_some_and(|kind| kind != 0)
+            })
+            .count()
+    }
+
+    /// Global content bounds of the frontmost visible Window Manager record.
+    pub fn window_bounds(&mut self) -> (i16, i16, i16, i16) {
+        ppc_front_visible_window(&mut self.memory, &self.gworlds)
+            .and_then(|window| {
+                ppc_window_global_content_bounds(&mut self.memory, &self.gworlds, window)
+            })
+            .unwrap_or((0, 0, 0, 0))
     }
 
     fn q3_render_target(&mut self, commands: &[PpcQ3SceneCommand]) -> Option<PpcQ3RenderTarget> {
@@ -14049,6 +14076,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "InvertRgn") => PpcImportDispatcherTarget::InvertRgn,
         ("InterfaceLib", "FillCRect") => PpcImportDispatcherTarget::FillCRect,
         ("InterfaceLib", "FrameRoundRect") => PpcImportDispatcherTarget::FrameRoundRect,
+        ("InterfaceLib", "PaintRoundRect") => PpcImportDispatcherTarget::PaintRoundRect,
         ("InterfaceLib", "InvalRect") => PpcImportDispatcherTarget::InvalRect,
         ("InterfaceLib", "ValidRect") => PpcImportDispatcherTarget::ValidRect,
         ("InterfaceLib", "BeginUpdate") => PpcImportDispatcherTarget::BeginUpdate,
@@ -18101,14 +18129,18 @@ fn dispatch_supported_import(
             let _ = ppc_invert_region(memory, gworlds, *current_gworld, cpu.gpr[3]);
             Some(PpcImportAction::ReturnPreserve)
         }
-        PpcImportDispatcherTarget::FrameRoundRect => {
+        PpcImportDispatcherTarget::FrameRoundRect | PpcImportDispatcherTarget::PaintRoundRect => {
+            let paint = matches!(
+                binding.dispatcher_target,
+                PpcImportDispatcherTarget::PaintRoundRect
+            );
             if let (Some(commands), Some(rect)) = (
                 ppc_open_picture_commands(toolbox_startup, *current_gworld),
                 ppc_read_rect(memory, cpu.gpr[3]),
             ) {
                 pict::recording_push_round_rect(
                     commands,
-                    0x0040,
+                    if paint { 0x0041 } else { 0x0040 },
                     rect,
                     cpu.gpr[4] as u16 as i16,
                     cpu.gpr[5] as u16 as i16,
@@ -18132,14 +18164,26 @@ fn dispatch_supported_import(
                     ppc_open_region_include_rows(toolbox_startup, top, rows);
                 }
             } else {
-                let _ = ppc_frame_round_rect(
-                    cpu,
-                    memory,
-                    gworlds,
-                    *current_gworld,
-                    *quickdraw_fore_color,
-                    quickdraw_fore_indices.get(current_gworld).copied(),
-                );
+                let explicit_index = quickdraw_fore_indices.get(current_gworld).copied();
+                if paint {
+                    let _ = ppc_paint_round_rect(
+                        cpu,
+                        memory,
+                        gworlds,
+                        *current_gworld,
+                        *quickdraw_fore_color,
+                        explicit_index,
+                    );
+                } else {
+                    let _ = ppc_frame_round_rect(
+                        cpu,
+                        memory,
+                        gworlds,
+                        *current_gworld,
+                        *quickdraw_fore_color,
+                        explicit_index,
+                    );
+                }
             }
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -18271,6 +18315,11 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CopyBits => {
+            if let Some((_, picture_gworld, _, commands)) = toolbox_startup.open_picture.as_mut() {
+                if *picture_gworld == *current_gworld {
+                    let _ = ppc_record_copy_bits(cpu, memory, gworlds, commands);
+                }
+            }
             let _ = ppc_copy_bits(
                 cpu,
                 memory,
@@ -27023,7 +27072,7 @@ fn ppc_dispatch_quickdraw_compatibility(
     color_manager_clut: &mut [[u16; 3]; 256],
     fore_color: PpcRgbColor,
     fore_index: Option<u8>,
-    back_color: PpcRgbColor,
+    _back_color: PpcRgbColor,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
@@ -27168,23 +27217,23 @@ fn ppc_dispatch_quickdraw_compatibility(
                 let height = (rect.2 - rect.0).max(0);
                 let fore_pixel =
                     ppc_quickdraw_surface_fore_pixel(memory, surface, fore_color, fore_index);
-                let back_pixel = ppc_quickdraw_surface_color_pixel(memory, surface, back_color);
-                if let (true, Some(fore_pixel), Some(back_pixel)) = (
+                if let (true, Some(fore_pixel)) = (
                     icon.len() >= 128 && width > 0 && height > 0,
                     fore_pixel,
-                    back_pixel,
                 ) {
                     for y in 0..height {
                         for x in 0..width {
                             let sx = (x * 32 / width).clamp(0, 31) as usize;
                             let sy = (y * 32 / height).clamp(0, 31) as usize;
                             let bit = icon[sy * 4 + sx / 8] & (0x80 >> (sx & 7)) != 0;
-                            let _ = ppc_quickdraw_write_raw_pixel(
-                                memory,
-                                front,
-                                (rect.1 + x, rect.0 + y),
-                                if bit { fore_pixel } else { back_pixel },
-                            );
+                            if bit {
+                                let _ = ppc_quickdraw_write_raw_pixel(
+                                    memory,
+                                    front,
+                                    (rect.1 + x, rect.0 + y),
+                                    fore_pixel,
+                                );
+                            }
                         }
                     }
                 }
@@ -50714,9 +50763,13 @@ fn ppc_transition_front_window_chrome(
     if previous_front == next_front {
         return;
     }
+    let preserve_previous_chrome = next_front
+        .is_some_and(|window| ppc_window_proc_id(memory, window) == 1);
     if let Some(previous) = previous_front {
-        let _ = ppc_set_window_hilited(memory, previous, false);
-        ppc_redraw_visible_window_frame(memory, gworlds, previous, host_menu_bar_hidden);
+        if !preserve_previous_chrome {
+            let _ = ppc_set_window_hilited(memory, previous, false);
+            ppc_redraw_visible_window_frame(memory, gworlds, previous, host_menu_bar_hidden);
+        }
     }
     if let Some(next) = next_front {
         let _ = ppc_set_window_hilited(memory, next, true);
@@ -50813,18 +50866,12 @@ fn ppc_draw_dialog_box_frame(
     // Macintosh Toolbox Essentials (1992), pp. 4-24--4-26: dBoxProc owns a
     // gray dialog surface and a structure region outside the content rectangle.
     // Initialize both before the application draws its dialog items.
-    const BORDER: i16 = 6;
-    const WINDOW_GRAY: PpcRgbColor = PpcRgbColor {
-        red: 0xcccc,
-        green: 0xcccc,
-        blue: 0xcccc,
-    };
     let _ = ppc_paint_rect_bounds(
         memory,
         gworlds,
         window,
         (0, 0, height, width),
-        WINDOW_GRAY,
+        PPC_RGB_WHITE,
         None,
     );
     let Some((top, left, bottom, right)) = memory
@@ -50833,67 +50880,29 @@ fn ppc_draw_dialog_box_frame(
     else {
         return;
     };
-    let outer_top = top.saturating_sub(BORDER);
-    let outer_left = left.saturating_sub(BORDER);
-    let outer_bottom = bottom.saturating_add(BORDER);
-    let outer_right = right.saturating_add(BORDER);
+    let outer_top = top.saturating_sub(8);
+    let outer_left = left.saturating_sub(8);
+    let outer_bottom = bottom.saturating_add(8);
+    let outer_right = right.saturating_add(8);
+    let _ = ppc_paint_rect_bounds(
+        memory,
+        gworlds,
+        PPC_MAIN_GWORLD,
+        (outer_top, outer_left, outer_bottom, outer_right),
+        PPC_RGB_WHITE,
+        None,
+    );
     for rect in [
-        (outer_top, outer_left, top, outer_right),
-        (bottom, outer_left, outer_bottom, outer_right),
-        (top, outer_left, bottom, left),
-        (top, right, bottom, outer_right),
-    ] {
-        let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, WINDOW_GRAY, None);
-    }
-    for rect in [
-        (
-            outer_top,
-            outer_left,
-            outer_top.saturating_add(1),
-            outer_right,
-        ),
-        (
-            outer_bottom.saturating_sub(1),
-            outer_left,
-            outer_bottom,
-            outer_right,
-        ),
-        (
-            outer_top,
-            outer_left,
-            outer_bottom,
-            outer_left.saturating_add(1),
-        ),
-        (
-            outer_top,
-            outer_right.saturating_sub(1),
-            outer_bottom,
-            outer_right,
-        ),
-        (
-            top.saturating_sub(1),
-            left.saturating_sub(1),
-            top,
-            right.saturating_add(1),
-        ),
-        (
-            bottom,
-            left.saturating_sub(1),
-            bottom.saturating_add(1),
-            right.saturating_add(1),
-        ),
-        (
-            top.saturating_sub(1),
-            left.saturating_sub(1),
-            bottom.saturating_add(1),
-            left,
-        ),
-        (
-            top.saturating_sub(1),
-            right,
-            bottom.saturating_add(1),
-            right.saturating_add(1),
-        ),
+        (top - 8, left - 8, top - 7, right + 8),
+        (top - 8, left - 8, bottom + 8, left - 7),
+        (top - 8, right + 6, bottom + 8, right + 8),
+        (bottom + 6, left - 8, bottom + 8, right + 8),
+        (top - 5, left - 5, top - 4, right + 5),
+        (top - 4, left - 5, top - 3, right + 4),
+        (top - 5, left - 5, bottom + 5, left - 4),
+        (top - 5, left - 4, bottom + 4, left - 3),
+        (top - 5, right + 3, bottom + 4, right + 4),
+        (bottom + 3, left - 5, bottom + 4, right + 4),
     ] {
         let _ = ppc_paint_rect_bounds(memory, gworlds, PPC_MAIN_GWORLD, rect, PPC_RGB_BLACK, None);
     }
@@ -53513,36 +53522,78 @@ fn ppc_line_to(
         .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
         .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
 
-    let (mut x0, mut y0) = surface.local_point((i32::from(from.0), i32::from(from.1)));
+    let (x0, y0) = surface.local_point((i32::from(from.0), i32::from(from.1)));
     let (x1, y1) = surface.local_point((i32::from(to.0), i32::from(to.1)));
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
+    let pen_height = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET))
+            .unwrap_or(1),
+    );
+    let pen_width = i32::from(
+        memory
+            .read_u16_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2))
+            .unwrap_or(1),
+    );
     let mut wrote = false;
+    let mut paint_pen = |x: i32, y: i32| {
+        for py in y..y.saturating_add(pen_height) {
+            for px in x..x.saturating_add(pen_width) {
+                if ppc_local_point_in_port_regions(
+                    surface,
+                    (px, py),
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                ) {
+                    wrote |= ppc_quickdraw_write_raw_pixel(
+                        memory,
+                        front_buffer,
+                        (px, py),
+                        color_pixel,
+                    );
+                }
+            }
+        }
+    };
 
-    loop {
-        let inside_regions = ppc_local_point_in_port_regions(
-            surface,
-            (x0, y0),
-            vis_storage.as_deref(),
-            clip_storage.as_deref(),
-        );
-        if inside_regions {
-            wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x0, y0), color_pixel);
+    if x0 == x1 {
+        let (top, bottom) = if y0 <= y1 { (y0, y1) } else { (y1, y0) };
+        for y in top..=bottom {
+            paint_pen(x0, y);
         }
-        if x0 == x1 && y0 == y1 {
-            break;
+    } else if y0 == y1 {
+        let (left, right) = if x0 <= x1 { (x0, x1) } else { (x1, x0) };
+        for x in left..=right {
+            paint_pen(x, y0);
         }
-        let e2 = err.saturating_mul(2);
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
+    } else {
+        let (sx, sy, ex, ey) = if y0 <= y1 {
+            (x0, y0, x1, y1)
+        } else {
+            (x1, y1, x0, y0)
+        };
+        let dh = (ex - sx).abs();
+        let dv = ey - sy;
+        let x_dir = if ex > sx { 1 } else { -1 };
+        if dv >= dh {
+            let slope = (((i64::from(ex - sx)) << 16) + i64::from(dv) / 2)
+                / i64::from(dv);
+            let mut x_fixed = ((i64::from(sx)) << 16) | 0x8000;
+            x_fixed += slope >> 1;
+            for y in sy..=ey {
+                paint_pen((x_fixed >> 16) as i32, y);
+                x_fixed += slope;
+            }
+        } else {
+            let slope = (((i64::from(dv)) << 16) + i64::from(dh) / 2)
+                / i64::from(dh);
+            let mut y_fixed = ((i64::from(sy)) << 16) | 0x8000;
+            y_fixed += slope >> 1;
+            let mut x = sx;
+            for _ in 0..=dh {
+                paint_pen(x, (y_fixed >> 16) as i32);
+                x += x_dir;
+                y_fixed += slope;
+            }
         }
     }
 
@@ -53627,29 +53678,47 @@ fn ppc_draw_oval_bounds(
             .unwrap_or(1),
     )
     .max(1);
-    let center_x2 = left * 2 + width;
-    let center_y2 = top * 2 + height;
-    let radius_x2 = width;
-    let radius_y2 = height;
-    let inner_radius_x2 = (width - 2 * pen_width).max(0);
-    let inner_radius_y2 = (height - 2 * pen_height).max(0);
+    let spans = TrapDispatcher::compute_oval_spans(width as i16, height as i16);
+    let inner_left = left + pen_width;
+    let inner_top = top + pen_height;
+    let inner_width = width - 2 * pen_width;
+    let inner_height = height - 2 * pen_height;
+    let inner_spans = TrapDispatcher::compute_oval_spans(
+        inner_width.max(0) as i16,
+        inner_height.max(0) as i16,
+    );
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
     let mut wrote = false;
     for y in top.max(0)..bottom.min(front_buffer.height as i32) {
-        for x in left.max(0)..right.min(front_buffer.width as i32) {
-            let dx2 = 2 * x + 1 - center_x2;
-            let dy2 = 2 * y + 1 - center_y2;
-            let outer = i64::from(dx2) * i64::from(dx2) * i64::from(radius_y2).pow(2)
-                + i64::from(dy2) * i64::from(dy2) * i64::from(radius_x2).pow(2)
-                <= i64::from(radius_x2).pow(2) * i64::from(radius_y2).pow(2);
-            if !outer {
-                continue;
-            }
-            let inner = inner_radius_x2 > 0
-                && inner_radius_y2 > 0
-                && i64::from(dx2) * i64::from(dx2) * i64::from(inner_radius_y2).pow(2)
-                    + i64::from(dy2) * i64::from(dy2) * i64::from(inner_radius_x2).pow(2)
-                    <= i64::from(inner_radius_x2).pow(2) * i64::from(inner_radius_y2).pow(2);
-            if !frame_only || !inner {
+        let row = (y - top) as usize;
+        let Some(&(span_left, span_right)) = spans.get(row) else {
+            continue;
+        };
+        let outer_left = left + i32::from(span_left);
+        let outer_right = left + i32::from(span_right);
+        for x in outer_left.max(0)..outer_right.min(front_buffer.width as i32) {
+            let inner = if frame_only && y >= inner_top && y < inner_top + inner_height {
+                let inner_row = (y - inner_top) as usize;
+                inner_spans.get(inner_row).is_some_and(|&(span_left, span_right)| {
+                    x >= inner_left + i32::from(span_left)
+                        && x < inner_left + i32::from(span_right)
+                })
+            } else {
+                false
+            };
+            if (!frame_only || !inner)
+                && ppc_local_point_in_port_regions(
+                    surface,
+                    (x, y),
+                    vis_storage.as_deref(),
+                    clip_storage.as_deref(),
+                )
+            {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -53831,10 +53900,12 @@ fn ppc_frame_region(
         for interval in endpoints.chunks_exact(2) {
             for h in interval[0]..interval[1] {
                 let x = i32::from(h) - i32::from(surface.left);
-                let inside_inset = row_contains(row_idx as i32, h.saturating_add(pen_width as i16))
-                    && row_contains(row_idx as i32, h.saturating_sub(pen_width as i16))
-                    && row_contains(row_idx as i32 - pen_height, h)
-                    && row_contains(row_idx as i32 + pen_height, h);
+                let inside_inset = (row_idx as i32 - pen_height
+                    ..=row_idx as i32 + pen_height)
+                    .all(|source_row| {
+                        row_contains(source_row, h.saturating_sub(pen_width as i16))
+                            && row_contains(source_row, h.saturating_add(pen_width as i16))
+                    });
                 if !inside_inset {
                     wrote |=
                         ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
@@ -54081,6 +54152,7 @@ fn ppc_draw_text_bytes_styled(
             color,
             explicit_index,
             style,
+            base_advance,
             bytes.iter().map(|byte| char::from(*byte)),
         );
     }
@@ -54213,6 +54285,7 @@ fn ppc_draw_text_chars_styled(
     color: PpcRgbColor,
     explicit_index: Option<u8>,
     style: QuickDrawTextStyle,
+    line_advance: i32,
     chars: impl IntoIterator<Item = char>,
 ) {
     let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
@@ -54252,7 +54325,6 @@ fn ppc_draw_text_chars_styled(
             source_advance = source_advance.saturating_add(6);
             continue;
         };
-        let glyph_y_offset = style.glyph_y_offset();
         let mut base_pixels = HashSet::new();
         for row in 0..glyph.height as usize {
             for col in 0..glyph.width as usize {
@@ -54260,7 +54332,7 @@ fn ppc_draw_text_chars_styled(
                 if index >= data.len() || data[index] < 128 {
                     continue;
                 }
-                let source_y = i32::from(glyph.origin_y) + row as i32 + glyph_y_offset;
+                let source_y = i32::from(glyph.origin_y) + row as i32;
                 let slant = synthetic_italic.then(|| {
                     get_italic_slant(
                         text_font,
@@ -54278,6 +54350,36 @@ fn ppc_draw_text_chars_styled(
                 if style.bold() {
                     base_pixels.insert((source_x + 1, source_y));
                 }
+            }
+        }
+
+        if style.underline() && style.smear_max().is_some() && line_advance > 0 {
+            let underline_offset: i32 = if style.shadow() { -1 } else { 0 };
+            let synthetic_italic = style.italic()
+                && get_glyph_italic(text_font, face.size, 'A').is_none();
+            let underline_left = if synthetic_italic {
+                get_italic_underline_extend_left(
+                    text_font,
+                    face.size,
+                    style.bold(),
+                    false,
+                )
+            } else {
+                0
+            };
+            let underline_right = if synthetic_italic {
+                get_italic_end_extend(text_font, face.size, &metrics)
+            } else {
+                0
+            };
+            let final_effect_advance = style.glyph_advance(0);
+            for source_x in underline_offset.saturating_sub(i32::from(underline_left))
+                ..line_advance
+                    .saturating_sub(final_effect_advance)
+                    .saturating_add(underline_offset)
+                    .saturating_add(i32::from(underline_right))
+            {
+                base_pixels.insert((source_x, 1));
             }
         }
 
@@ -54345,7 +54447,7 @@ fn ppc_draw_text_chars_styled(
             source_advance.saturating_add(style.glyph_advance(i32::from(glyph.advance)));
     }
 
-    if style.underline() && source_advance > 0 {
+    if style.underline() && style.smear_max().is_none() && source_advance > 0 {
         let thickness = get_underline_thickness(text_font, face.size).max(1);
         for dy in 1..=i32::from(thickness) {
             for source_x in 0..source_advance {
@@ -54699,6 +54801,70 @@ fn ppc_frame_round_rect(
                     clip_storage.as_deref(),
                 )
             {
+                wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
+            }
+        }
+    }
+    wrote
+}
+
+fn ppc_paint_round_rect(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    current_gworld: u32,
+    color: PpcRgbColor,
+    explicit_index: Option<u8>,
+) -> bool {
+    let Some(rect) = ppc_read_rect(memory, cpu.gpr[3]) else {
+        return false;
+    };
+    let Some(surface) = ppc_live_quickdraw_surface(memory, gworlds, current_gworld) else {
+        return false;
+    };
+    let front_buffer = surface.front_buffer;
+    if !matches!(front_buffer.depth, 1 | 2 | 4 | 8 | 16) {
+        return false;
+    }
+    let (top, left, bottom, right) = surface.local_rect(rect);
+    let left = left.max(0).min(front_buffer.width as i32);
+    let top = top.max(0).min(front_buffer.height as i32);
+    let right = right.max(0).min(front_buffer.width as i32);
+    let bottom = bottom.max(0).min(front_buffer.height as i32);
+    if left >= right || top >= bottom {
+        return false;
+    }
+    let oval_width = (cpu.gpr[4] as u16 as i16).max(0) as i32;
+    let oval_height = (cpu.gpr[5] as u16 as i16).max(0) as i32;
+    let Some(color_pixel) =
+        ppc_quickdraw_surface_fore_pixel(memory, surface, color, explicit_index)
+    else {
+        return false;
+    };
+    let clip_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_CLIP_RGN_OFFSET))
+        .and_then(|clip_rgn| ppc_region_storage(memory, clip_rgn));
+    let vis_storage = memory
+        .read_u32_be(current_gworld.wrapping_add(PPC_CGRAF_PORT_VIS_RGN_OFFSET))
+        .and_then(|vis_rgn| ppc_region_storage(memory, vis_rgn));
+    let mut wrote = false;
+    for y in top..bottom {
+        for x in left..right {
+            if ppc_point_in_rounded_rect(
+                x,
+                y,
+                left,
+                top,
+                right,
+                bottom,
+                oval_width,
+                oval_height,
+            ) && ppc_local_point_in_port_regions(
+                surface,
+                (x, y),
+                vis_storage.as_deref(),
+                clip_storage.as_deref(),
+            ) {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -55279,6 +55445,99 @@ fn ppc_copy_bits_linked_palette_clut(
         *color = [rgb.red, rgb.green, rgb.blue];
     }
     Some(clut)
+}
+
+fn ppc_record_copy_bits(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    commands: &mut Vec<u8>,
+) -> bool {
+    let src_bits_ptr = cpu.gpr[3];
+    let Some(src_bits) = ppc_resolve_pixmap_bits(memory, gworlds, src_bits_ptr) else {
+        return false;
+    };
+    if src_bits.depth != 8 || cpu.gpr[8] != 0 || cpu.gpr[7] as u16 & 0x3f != 0 {
+        return false;
+    }
+    let Some(src_rect) = ppc_read_rect(memory, cpu.gpr[5]) else {
+        return false;
+    };
+    let Some(dst_rect) = ppc_read_rect(memory, cpu.gpr[6]) else {
+        return false;
+    };
+    let width = src_rect.3.saturating_sub(src_rect.1);
+    let height = src_rect.2.saturating_sub(src_rect.0);
+    if width <= 0 || height <= 0 || width > 0x3fff {
+        return false;
+    }
+    let Some(ctable_handle) = ppc_resolve_pixmap_ctable_handle(memory, gworlds, src_bits_ptr) else {
+        return false;
+    };
+    let Some(ctable) = memory.read_u32_be(ctable_handle).filter(|ptr| *ptr != 0) else {
+        return false;
+    };
+    let Some(ct_seed) = memory.read_u32_be(ctable) else {
+        return false;
+    };
+    let Some(ct_flags) = memory.read_u16_be(ctable + 4) else {
+        return false;
+    };
+    let Some(ct_size) = memory.read_u16_be(ctable + 6) else {
+        return false;
+    };
+    let entry_count = usize::from(ct_size).saturating_add(1).min(256);
+
+    // Assemble the complete opcode before appending it so a malformed source
+    // PixMap cannot leave a partial command in an otherwise valid picture.
+    let mut recording = Vec::new();
+    pict::recording_push_word(&mut recording, 0x0090); // BitsRect with indexed PixMap
+    pict::recording_push_word(&mut recording, 0x8000 | width as u16);
+    for value in [src_rect.0, src_rect.1, src_rect.2, src_rect.3] {
+        pict::recording_push_word(&mut recording, value as u16);
+    }
+    pict::recording_push_word(&mut recording, 0); // pmVersion
+    pict::recording_push_word(&mut recording, 1); // packType: unpacked
+    recording.extend_from_slice(&0u32.to_be_bytes()); // packSize
+    recording.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // hRes
+    recording.extend_from_slice(&0x0048_0000u32.to_be_bytes()); // vRes
+    pict::recording_push_word(&mut recording, 0); // indexed pixelType
+    pict::recording_push_word(&mut recording, 8); // pixelSize
+    pict::recording_push_word(&mut recording, 1); // cmpCount
+    pict::recording_push_word(&mut recording, 8); // cmpSize
+    recording.extend_from_slice(&0u32.to_be_bytes()); // planeBytes
+    recording.extend_from_slice(&0u32.to_be_bytes()); // pmTable is not serialized
+    recording.extend_from_slice(&0u32.to_be_bytes()); // pmReserved
+    recording.extend_from_slice(&ct_seed.to_be_bytes());
+    pict::recording_push_word(&mut recording, ct_flags);
+    pict::recording_push_word(&mut recording, entry_count.saturating_sub(1) as u16);
+    for entry in 0..entry_count {
+        let spec = ctable + 8 + entry as u32 * 8;
+        let Some(bytes) = ppc_memory_read_bytes(memory, spec, 8) else {
+            return false;
+        };
+        recording.extend_from_slice(&bytes);
+    }
+    for rect in [src_rect, dst_rect] {
+        for value in [rect.0, rect.1, rect.2, rect.3] {
+            pict::recording_push_word(&mut recording, value as u16);
+        }
+    }
+    pict::recording_push_word(&mut recording, cpu.gpr[7] as u16);
+    for y in src_rect.0..src_rect.2 {
+        for x in src_rect.1..src_rect.3 {
+            let Some(pixel) = ppc_read_pixmap_raw_pixel(memory, src_bits, i32::from(x), i32::from(y))
+            else {
+                return false;
+            };
+            recording.push(pixel as u8);
+        }
+    }
+    if !recording.len().is_multiple_of(2) {
+        recording.push(0);
+    }
+    commands.extend(recording);
+    true
 }
 
 fn ppc_copy_bits(
@@ -63360,8 +63619,8 @@ fn ppc_activate_window_palette(
     current_gdevice: u32,
     screen_clut: &mut [[u16; 3]; 256],
     color_manager_clut: &mut [[u16; 3]; 256],
-    device_gamma: &mut crate::display::DisplayGamma,
-    device_gamma_explicit: bool,
+    _device_gamma: &mut crate::display::DisplayGamma,
+    _device_gamma_explicit: bool,
     toolbox_startup: &mut PpcToolboxStartupState,
 ) -> bool {
     ppc_register_gdevice(toolbox_startup, gdevice);
@@ -63411,9 +63670,6 @@ fn ppc_activate_window_palette(
             *color_manager_clut = device_clut;
         }
         toolbox_startup.active_device_palettes.remove(&gdevice);
-        if gdevice == current_gdevice && !device_gamma_explicit {
-            *device_gamma = crate::display::linear_display_gamma();
-        }
         ppc_write_device_color_table(memory, gdevice, &device_clut, toolbox_startup);
         return true;
     }
@@ -63437,9 +63693,6 @@ fn ppc_activate_window_palette(
             if device_clut[index] != previous_device_clut[index] {
                 color_manager_clut[index] = device_clut[index];
             }
-        }
-        if !device_gamma_explicit {
-            *device_gamma = crate::display::linear_display_gamma();
         }
     }
     ppc_write_device_color_table(memory, gdevice, &device_clut, toolbox_startup);
@@ -65102,6 +65355,64 @@ fn ppc_frame_front_rect(
     wrote
 }
 
+fn ppc_frame_front_round_rect(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    rect: (i16, i16, i16, i16),
+    oval: i16,
+    thickness: i16,
+    color: PpcRgbColor,
+) -> bool {
+    let outer = Rect {
+        top: rect.0,
+        left: rect.1,
+        bottom: rect.2,
+        right: rect.3,
+    };
+    let inner = Rect {
+        top: rect.0.saturating_add(thickness),
+        left: rect.1.saturating_add(thickness),
+        bottom: rect.2.saturating_sub(thickness),
+        right: rect.3.saturating_sub(thickness),
+    };
+    let outer_spans = TrapDispatcher::compute_rrect_spans(&outer, oval, oval);
+    let inner_spans = TrapDispatcher::compute_rrect_spans(
+        &inner,
+        oval.saturating_sub(thickness.saturating_mul(2)),
+        oval.saturating_sub(thickness.saturating_mul(2)),
+    );
+    let mut wrote = false;
+    for y in rect.0..rect.2 {
+        let Some(&(outer_left, outer_right)) = outer_spans.get((y - rect.0) as usize) else {
+            continue;
+        };
+        let inner_span = if y >= inner.top && y < inner.bottom {
+            inner_spans.get((y - inner.top) as usize).copied()
+        } else {
+            None
+        };
+        let (inner_left, inner_right) = inner_span.unwrap_or((outer_right, outer_left));
+        wrote |= ppc_fill_front_rect(
+            memory,
+            front,
+            (y, outer_left, y.saturating_add(1), inner_left.min(outer_right)),
+            color,
+        );
+        wrote |= ppc_fill_front_rect(
+            memory,
+            front,
+            (
+                y,
+                inner_right.max(outer_left),
+                y.saturating_add(1),
+                outer_right,
+            ),
+            color,
+        );
+    }
+    wrote
+}
+
 fn ppc_dialog_text_lines(bytes: &[u8], max_width: i16) -> Vec<Vec<u8>> {
     crate::quickdraw::text::wrap_classic_text(bytes, max_width, |_, byte| {
         ppc_text_byte_advance_for_font(byte, PPC_QD_TEXT_FONT_DEFAULT, PPC_QD_TEXT_SIZE_SYSTEM)
@@ -65116,6 +65427,7 @@ fn ppc_draw_dialog_text(
     gworlds: &[PpcGWorldRecord],
     rect: (i16, i16, i16, i16),
     bytes: &[u8],
+    color: PpcRgbColor,
 ) {
     let max_width = rect.3.saturating_sub(rect.1).max(1);
     let lines = ppc_dialog_text_lines(bytes, max_width);
@@ -65123,7 +65435,7 @@ fn ppc_draw_dialog_text(
         let baseline = rect
             .0
             .saturating_add(12)
-            .saturating_add(i16::try_from(index).unwrap_or(i16::MAX).saturating_mul(13));
+            .saturating_add(i16::try_from(index).unwrap_or(i16::MAX).saturating_mul(16));
         if baseline >= rect.2 {
             break;
         }
@@ -65135,7 +65447,7 @@ fn ppc_draw_dialog_text(
             PPC_QD_TEXT_FONT_DEFAULT,
             PPC_QD_TEXT_SIZE_SYSTEM,
             PPC_QD_TEXT_MODE_SRC_OR,
-            PPC_RGB_BLACK,
+            color,
             None,
             line,
         );
@@ -65188,7 +65500,9 @@ fn ppc_draw_dialog(
     let game_managed = ppc_dialog_is_game_managed(bounds, &items);
     if !game_managed {
         let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
-        let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+        if ppc_window_proc_id(memory, dialog) != 1 {
+            let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+        }
     }
     let default_item = memory
         .read_u16_be(dialog.wrapping_add(PPC_DIALOG_DEFAULT_ITEM_OFFSET))
@@ -65216,20 +65530,82 @@ fn ppc_draw_dialog(
                     && index + 1 == default_item
                 {
                     let outer = (
-                        rect.0.saturating_sub(3),
-                        rect.1.saturating_sub(3),
-                        rect.2.saturating_add(3),
-                        rect.3.saturating_add(3),
+                        rect.0.saturating_sub(4),
+                        rect.1.saturating_sub(4),
+                        rect.2.saturating_add(4),
+                        rect.3.saturating_add(4),
                     );
-                    let _ = ppc_frame_front_rect(memory, front, outer, PPC_RGB_BLACK, 2);
+                    let oval = (outer.2.saturating_sub(outer.0) / 2 - 4).max(4);
+                    let _ = ppc_frame_front_round_rect(
+                        memory,
+                        front,
+                        outer,
+                        oval,
+                        3,
+                        PPC_RGB_BLACK,
+                    );
                 }
             }
             PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
                 let text = ppc_dialog_item_title(memory, handles, item);
                 if (item.item_type & !PPC_DIALOG_ITEM_DISABLED) == PPC_DIALOG_ITEM_EDIT_TEXT {
-                    let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+                    let outer = (
+                        rect.0.saturating_sub(3),
+                        rect.1.saturating_sub(3),
+                        rect.2.saturating_add(3),
+                        rect.3.saturating_add(3),
+                    );
+                    let _ = ppc_frame_front_rect(memory, front, outer, PPC_RGB_BLACK, 1);
                 }
-                ppc_draw_dialog_text(memory, gworlds, rect, &text);
+                let selected = if (item.item_type & !PPC_DIALOG_ITEM_DISABLED)
+                    == PPC_DIALOG_ITEM_EDIT_TEXT
+                    && memory
+                        .read_u16_be(dialog + PPC_DIALOG_EDIT_FIELD_OFFSET)
+                        .is_some_and(|field| usize::from(field) == index)
+                {
+                    memory
+                        .read_u32_be(dialog + PPC_DIALOG_TEXT_HANDLE_OFFSET)
+                        .and_then(|handle| ppc_te_record_ptr(memory, handle))
+                        .is_some_and(|te_ptr| {
+                            memory
+                                .read_u16_be(te_ptr + PPC_TE_ACTIVE_OFFSET)
+                                .unwrap_or(0)
+                                != 0
+                                && memory
+                                    .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
+                                    .unwrap_or(0)
+                                    < memory
+                                        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
+                                        .unwrap_or(0)
+                        })
+                } else {
+                    false
+                };
+                if selected {
+                    let interior = (
+                        rect.0,
+                        rect.1,
+                        rect.0.saturating_add(16).min(rect.2),
+                        rect.3,
+                    );
+                    let _ = ppc_fill_front_rect(memory, front, interior, PPC_RGB_BLACK);
+                }
+                let text_rect = if matches!(
+                    item.item_type & !PPC_DIALOG_ITEM_DISABLED,
+                    PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT
+                )
+                {
+                    (rect.0, rect.1.saturating_add(1), rect.2, rect.3)
+                } else {
+                    rect
+                };
+                ppc_draw_dialog_text(
+                    memory,
+                    gworlds,
+                    text_rect,
+                    &text,
+                    if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+                );
             }
             PPC_DIALOG_ITEM_PICTURE => {
                 if let Some(bytes) = ppc_handle_bytes(memory, handles, item.handle) {
@@ -66555,7 +66931,15 @@ fn ppc_draw_control_inner(
                 crate::control_manager::standard_checkbox_layout((top, left, bottom, right));
             let (box_top, box_left, box_bottom, box_right) = layout.indicator;
             let indicator_size = box_bottom.saturating_sub(box_top);
-            let mut wrote = ppc_line_to(
+            let mut wrote = ppc_paint_rect_bounds(
+                memory,
+                gworlds,
+                owner,
+                layout.indicator,
+                PPC_RGB_WHITE,
+                None,
+            );
+            wrote |= ppc_line_to(
                 memory,
                 gworlds,
                 owner,
@@ -66619,10 +67003,24 @@ fn ppc_draw_control_inner(
             let layout =
                 crate::control_manager::standard_radio_button_layout((top, left, bottom, right));
             let indicator = layout.indicator;
-            let mut wrote =
-                ppc_paint_rect_bounds(memory, gworlds, owner, indicator, PPC_RGB_WHITE, None);
-            wrote |=
-                ppc_draw_oval_bounds(memory, gworlds, owner, indicator, PPC_RGB_BLACK, None, true);
+            let mut wrote = ppc_draw_oval_bounds(
+                memory,
+                gworlds,
+                owner,
+                indicator,
+                PPC_RGB_WHITE,
+                None,
+                false,
+            );
+            wrote |= ppc_draw_oval_bounds(
+                memory,
+                gworlds,
+                owner,
+                indicator,
+                PPC_RGB_BLACK,
+                None,
+                true,
+            );
             if memory
                 .read_u16_be(control + PPC_CONTROL_VALUE_OFFSET)
                 .unwrap_or(0)
@@ -66795,6 +67193,16 @@ fn ppc_draw_control_inner(
     let title =
         ppc_read_pstring_bytes(memory, control + PPC_CONTROL_TITLE_OFFSET).unwrap_or_default();
     if !title.is_empty() {
+        let title = title
+            .into_iter()
+            .flat_map(|byte| {
+                if byte == 0xc9 {
+                    vec![b'.', b'.', b'.']
+                } else {
+                    vec![byte]
+                }
+            })
+            .collect::<Vec<_>>();
         let advance = ppc_text_bytes_advance_for_font(
             &title,
             PPC_QD_TEXT_FONT_DEFAULT,
@@ -72365,7 +72773,7 @@ fn ppc_draw_tracked_menu(
 
         if is_separator {
             let separator_y = layout.separator_y;
-            for x in 4..state.popup_width().saturating_sub(4) {
+            for x in 1..state.popup_width().saturating_sub(1) {
                 if front.depth == 1
                     && !standard_menu_gray_pattern_is_ink(
                         state.popup_left().saturating_add(x),
@@ -77514,20 +77922,25 @@ fn ppc_paint_polygon(
     let mut wrote = false;
     for y in top..bottom {
         for x in left..right {
-            let sample_x = x as f64 + 0.5;
-            let sample_y = y as f64 + 0.5;
-            let mut inside = false;
+            let mut crossings = 0u32;
             for index in 0..points.len() {
                 let (x1, y1) = points[index];
                 let (x2, y2) = points[(index + 1) % points.len()];
                 let (x1, y1, x2, y2) = (f64::from(x1), f64::from(y1), f64::from(x2), f64::from(y2));
-                if (y1 > sample_y) != (y2 > sample_y)
-                    && sample_x < (x2 - x1) * (sample_y - y1) / (y2 - y1) + x1
-                {
-                    inside = !inside;
+                let (y_min, y_max, x_at_min, x_at_max) = if y1 < y2 {
+                    (y1, y2, x1, x2)
+                } else {
+                    (y2, y1, x2, x1)
+                };
+                if y1 != y2 && f64::from(y) >= y_min && f64::from(y) < y_max {
+                    let intersection = x_at_min
+                        + (f64::from(y) - y_min) * (x_at_max - x_at_min) / (y_max - y_min);
+                    if intersection <= f64::from(x) {
+                        crossings += 1;
+                    }
                 }
             }
-            if inside {
+            if crossings & 1 != 0 {
                 wrote |= ppc_quickdraw_write_raw_pixel(memory, front_buffer, (x, y), color_pixel);
             }
         }
@@ -130734,27 +131147,23 @@ pub(crate) mod tests {
             ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, window).unwrap();
         let black =
             ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_BLACK).unwrap();
-        let gray = ppc_quickdraw_surface_color_pixel(
-            &mut loaded.memory,
-            surface,
-            PpcRgbColor {
-                red: 0xcccc,
-                green: 0xcccc,
-                blue: 0xcccc,
-            },
-        )
-        .unwrap();
+        let white =
+            ppc_quickdraw_surface_color_pixel(&mut loaded.memory, surface, PPC_RGB_WHITE).unwrap();
         assert_eq!(
-            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (94, 94)),
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (92, 92)),
             Some(black)
         );
         assert_ne!(
+            ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (94, 94)),
+            Some(black)
+        );
+        assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (95, 95)),
             Some(black)
         );
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, surface.front_buffer, (150, 150)),
-            Some(gray)
+            Some(white)
         );
     }
 
@@ -132321,7 +132730,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
-        assert_eq!(loaded.device_gamma, crate::display::linear_display_gamma());
+        assert_eq!(loaded.device_gamma, crate::display::default_display_gamma());
         assert!(loaded
             .event_queue
             .iter()
@@ -132731,7 +133140,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.screen_clut[1], [0x1234, 0x5678, 0x9abc]);
         assert_eq!(loaded.screen_clut[2], [0xdef0, 0x1357, 0x2468]);
-        assert_eq!(loaded.device_gamma, crate::display::linear_display_gamma());
+        assert_eq!(loaded.device_gamma, crate::display::default_display_gamma());
         let device_ctable = loaded.memory.read_u32_be(PPC_MAIN_CTABLE_HANDLE).unwrap();
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 18), Some(0x1234));
         assert_eq!(loaded.memory.read_u16_be(device_ctable + 20), Some(0x5678));
@@ -149664,7 +150073,9 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = color;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::RGBForeColor);
         loaded.cpu.gpr[3] = frame;
-        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRect);
+        loaded.cpu.gpr[4] = 10;
+        loaded.cpu.gpr[5] = 10;
+        run_test_import(&mut loaded, PpcImportDispatcherTarget::PaintRoundRect);
         loaded.cpu.gpr[3] = frame;
         loaded.cpu.gpr[4] = 10;
         loaded.cpu.gpr[5] = 10;
@@ -149697,7 +150108,7 @@ pub(crate) mod tests {
         );
         let picture =
             ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle).unwrap();
-        for opcode in [[0x00, 0x31], [0x00, 0x40], [0x00, 0x28]] {
+        for opcode in [[0x00, 0x41], [0x00, 0x40], [0x00, 0x28]] {
             assert!(picture.windows(2).any(|word| word == opcode));
         }
         loaded.cpu.gpr[3] = handle;

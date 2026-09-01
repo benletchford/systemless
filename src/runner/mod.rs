@@ -1816,11 +1816,13 @@ impl FixtureRunner {
     }
 
     pub fn debug_overlay_snapshot(
-        &self,
+        &mut self,
         frame_stats: DebugOverlayFrameStats,
     ) -> DebugOverlaySnapshot {
         use crate::memory::globals::addr;
 
+        let window_bounds = self.window_bounds();
+        let window_count = self.window_count();
         let dispatcher = &self.dispatcher;
         let (_, _, screen_width, screen_height, pixel_size) = dispatcher.screen_mode;
         let cursor_image = dispatcher.cursor_data();
@@ -1850,8 +1852,8 @@ impl FixtureRunner {
             screen_height,
             pixel_size,
             front_window: dispatcher.front_window(),
-            window_bounds: dispatcher.window_bounds(),
-            window_count: dispatcher.window_count(),
+            window_bounds,
+            window_count,
             menu_count: dispatcher.menu_count(),
             halted: self.halted,
             halted_trap: self.halted_trap,
@@ -1881,6 +1883,21 @@ impl FixtureRunner {
 
     pub fn dispatcher_mut(&mut self) -> &mut crate::trap::dispatch::TrapDispatcher {
         &mut self.dispatcher
+    }
+
+    /// Global content bounds of the frontmost visible guest window.
+    pub fn window_bounds(&mut self) -> (i16, i16, i16, i16) {
+        self.ppc_app.as_mut().map_or_else(
+            || self.dispatcher.window_bounds(),
+            PpcLoadedApp::window_bounds,
+        )
+    }
+
+    /// Number of live guest windows, independent of the active CPU adapter.
+    pub fn window_count(&mut self) -> usize {
+        self.ppc_app
+            .as_mut()
+            .map_or_else(|| self.dispatcher.window_count(), PpcLoadedApp::window_count)
     }
 
     /// Returns the selected UI theme provider. `classic-system7` is the
