@@ -2,7 +2,7 @@
 
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
-use crate::memory::bus::SharedRamRegion;
+use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use ppc::PpcMemory;
@@ -64,6 +64,7 @@ pub(crate) struct ProcessNativeAllocatorState {
 /// (1992), pp. 2-12, 2-40--2-41.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessMemoryManager {
+    classic_allocator: Option<SharedClassicHeapAllocator>,
     ptr_to_handle: HashMap<u32, u32>,
     handle_state_bits: HashMap<u32, u8>,
     native_handle_ptrs: HashSet<u32>,
@@ -79,6 +80,26 @@ impl ProcessMemoryManager {
     const NIL_HANDLE_ERR: i16 = -109;
     const NO_ERR: i16 = 0;
     const PARAM_ERR: i16 = -50;
+
+    /// Adopt the classic heap used by the process's 68K memory-bus adapter.
+    ///
+    /// The first attached bus contributes its live launch-time allocator;
+    /// later adapters attach to that same process-owned state. Inside
+    /// Macintosh: Memory (1992), pp. 2-19--2-21.
+    pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
+        if let Some(allocator) = &self.classic_allocator {
+            bus.attach_classic_heap_allocator(allocator.clone());
+        } else {
+            self.classic_allocator = Some(bus.shared_classic_heap_allocator());
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn classic_allocation_size(&self, address: u32) -> Option<u32> {
+        self.classic_allocator
+            .as_ref()
+            .and_then(|allocator| allocator.allocation_size(address))
+    }
 
     pub(crate) fn merge_metadata(
         &mut self,
@@ -830,6 +851,10 @@ impl ProcessContext {
         &mut self.memory_manager
     }
 
+    pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
+        self.memory_manager.attach_classic_memory_bus(bus);
+    }
+
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
         self.memory_manager.handle_for_ptr(ptr)
@@ -989,6 +1014,44 @@ mod tests {
         assert_eq!(native.read_u32_be(0x100), Some(0x1234_5678));
         native.write_u32_be(0x100, 0x89ab_cdef).unwrap();
         assert_eq!(bus.read_long(0x100), 0x89ab_cdef);
+    }
+
+    #[test]
+    fn process_context_owns_the_classic_heap_allocator() {
+        let mut context = ProcessContext::default();
+        let mut primary = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut primary);
+
+        let ptr = primary.alloc(37);
+        assert_ne!(ptr, 0);
+        assert_eq!(
+            context.memory_manager.classic_allocation_size(ptr),
+            Some(37)
+        );
+
+        let mut second_adapter = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut second_adapter);
+        assert_eq!(second_adapter.get_alloc_size(ptr), Some(37));
+        second_adapter.free(ptr);
+        assert_eq!(primary.get_alloc_size(ptr), None);
+        assert_eq!(context.memory_manager.classic_allocation_size(ptr), None);
+    }
+
+    #[test]
+    fn detached_classic_heap_allocators_remain_independent() {
+        let mut attached = MacMemoryBus::new(8 * 1024 * 1024);
+        let mut detached = MacMemoryBus::new(8 * 1024 * 1024);
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut attached);
+
+        let attached_ptr = attached.alloc(24);
+        let detached_ptr = detached.alloc(24);
+        assert_eq!(attached_ptr, detached_ptr);
+        attached.free(attached_ptr);
+
+        assert_eq!(context.memory_manager.classic_allocation_size(attached_ptr), None);
+        assert_eq!(detached.get_alloc_size(detached_ptr), Some(24));
+        assert_eq!(detached.heap_bump_ptr(), 0x20_0000 + 24);
     }
 
     #[test]

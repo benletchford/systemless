@@ -4584,6 +4584,7 @@ mod tests {
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
+    use crate::process_context::ProcessContext;
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use std::collections::HashMap;
 
@@ -4596,6 +4597,95 @@ mod tests {
         bus: &mut crate::memory::MacMemoryBus,
     ) -> crate::Result<()> {
         dispatcher.dispatch(trap_word, cpu, bus)
+    }
+
+    #[test]
+    fn classic_allocation_traps_mutate_the_process_owned_heap() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::D0, 24);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+        dispatcher
+            .with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |dispatcher| {
+                    dispatcher.current_trap_word = 0xA11E;
+                    dispatcher
+                        .dispatch_memory(false, 0x1E, &mut cpu, &mut bus)
+                        .expect("NewPtr should be handled")
+                },
+            )
+            .unwrap();
+        let ptr = cpu.read_reg(Register::A0);
+        assert_ne!(ptr, 0);
+        assert_eq!(memory_manager.classic_allocation_size(ptr), Some(24));
+
+        cpu.write_reg(Register::D0, 13);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+        dispatcher
+            .with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |dispatcher| {
+                    dispatcher.current_trap_word = 0xA022;
+                    dispatcher
+                        .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+                        .expect("NewHandle should be handled")
+                },
+            )
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        let data_ptr = bus.read_long(handle);
+        assert_ne!(handle, 0);
+        assert_ne!(data_ptr, 0);
+        assert_eq!(memory_manager.classic_allocation_size(handle), Some(4));
+        assert_eq!(memory_manager.classic_allocation_size(data_ptr), Some(13));
+        assert_eq!(memory_manager.handle_for_ptr(data_ptr), Some(handle));
+
+        cpu.write_reg(Register::A0, ptr);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+        dispatcher
+            .with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |dispatcher| {
+                    dispatcher.current_trap_word = 0xA01F;
+                    dispatcher
+                        .dispatch_memory(false, 0x1F, &mut cpu, &mut bus)
+                        .expect("DisposePtr should be handled")
+                },
+            )
+            .unwrap();
+        assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+
+        cpu.write_reg(Register::A0, handle);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+        dispatcher
+            .with_process_state_and_memory_manager(
+                event_queue,
+                menu_tracking,
+                memory_manager,
+                |dispatcher| {
+                    dispatcher.current_trap_word = 0xA023;
+                    dispatcher
+                        .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+                        .expect("DisposeHandle should be handled")
+                },
+            )
+            .unwrap();
+        assert_eq!(memory_manager.classic_allocation_size(handle), None);
+        assert_eq!(memory_manager.classic_allocation_size(data_ptr), None);
     }
 
     #[test]

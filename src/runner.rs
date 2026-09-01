@@ -1981,6 +1981,7 @@ impl FixtureRunner {
         let mut bus = MacMemoryBus::new(ram_size);
         bus.set_addressing_32_bit(config.addressing_32_bit);
         bus.configure_screen_depth(config.screen_depth);
+        process_context.attach_classic_memory_bus(&mut bus);
         bus.write_word(
             crate::memory::globals::addr::SYS_EVT_MASK,
             crate::memory::globals::DEFAULT_SYS_EVT_MASK,
