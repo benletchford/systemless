@@ -16879,16 +16879,18 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::RecoverHandle => {
-            ppc_synchronize_process_native_handles(
-                process_memory_manager,
-                handles,
-                handle_states,
-            );
-            Some(PpcImportAction::Return(
-                process_memory_manager
-                    .recover_handle(cpu.gpr[3])
-                    .unwrap_or(0),
-            ))
+            let handle = process_memory_manager
+                .recover_handle(cpu.gpr[3])
+                .unwrap_or(0);
+            if handle != 0 {
+                ppc_apply_process_native_handle(
+                    process_memory_manager,
+                    handles,
+                    handle_states,
+                    handle,
+                );
+            }
+            Some(PpcImportAction::Return(handle))
         }
         PpcImportDispatcherTarget::BlockMove => {
             if ppc_hle_trace_enabled()
@@ -17271,7 +17273,9 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::HGetState => Some(PpcImportAction::Return({
             let handle = cpu.gpr[3];
-            let value = if ppc_is_valid_handle(memory, handles, handle) {
+            let process_owned = process_memory_manager.state_for_handle(handle).is_some();
+            let valid = ppc_is_valid_handle(memory, handles, handle);
+            let value = if valid {
                 let mut value = process_memory_manager
                     .state_for_handle(handle)
                     .unwrap_or_else(|| ppc_process_handle_state_bits(handle_states, handle));
@@ -17282,6 +17286,9 @@ fn dispatch_supported_import(
             } else {
                 0
             };
+            if process_owned {
+                ppc_apply_process_handle_state(process_memory_manager, handle_states, handle);
+            }
             if ppc_hle_trace_enabled() {
                 let ptr = memory.read_u32_be(handle).unwrap_or(0);
                 eprintln!(
@@ -17372,22 +17379,9 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetHandleSize => {
             let handle = cpu.gpr[3];
-            ppc_synchronize_process_native_allocator(
-                process_memory_manager,
-                *heap_cursor,
-                heap_limit,
-                *last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
-            );
-            ppc_synchronize_process_native_handles(
-                process_memory_manager,
-                handles,
-                handle_states,
-            );
+            let ptr = memory.read_u32_be(handle).unwrap_or(0);
             let size = process_memory_manager
-                .native_handle_size(handle)
+                .process_handle_size_from_master_pointer(handle, ptr)
                 .or_else(|| ppc_system_handle_record(memory, handle).map(|record| record.size));
             if size.is_some() {
                 process_memory_manager.set_native_mem_error(PPC_NO_ERR);
@@ -17401,6 +17395,14 @@ fn dispatch_supported_import(
                 free_ptr_blocks,
                 free_handle_blocks,
             );
+            if size.is_some() {
+                ppc_apply_process_native_handle(
+                    process_memory_manager,
+                    handles,
+                    handle_states,
+                    handle,
+                );
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] GetHandleSize handle=${handle:08X} lr=${:08X} -> {} err={}",
@@ -88380,6 +88382,97 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ppc_handle_state_imports_preserve_process_owned_classic_handles() {
+        let pef = synthetic_pef_with_import(b"HLock");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let (handle, ptr) = context
+            .memory_manager_mut()
+            .new_classic_handle(&mut classic_bus, 19)
+            .unwrap();
+        classic_bus.write_byte(ptr, 0x5a);
+        native.memory.add_region(ptr & !0x0fff, vec![0; 0x1000]);
+        native.memory.write_u32_be(handle, ptr).unwrap();
+        native.memory.write_u8(ptr, 0x5a).unwrap();
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager();
+        // HLock and HGetState operate on the live relocatable block while the
+        // stable handle continues to identify its master pointer. Inside
+        // Macintosh: Memory (1992), pp. 1-18--1-19 and 2-45--2-49.
+        classic.set_handle_state_bits(handle, 0x40);
+        let detached = memory_manager.detached_clone();
+
+        native.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |native, memory_manager| {
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HGetState;
+                native.cpu.gpr[3] = handle;
+                let probe = native.run_with_process_memory_manager(
+                    64,
+                    false,
+                    false,
+                    memory_manager,
+                );
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(probe.unsupported_import_index, None);
+                assert_eq!(native.cpu.gpr[3], 0x40);
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetHandleSize;
+                native.cpu.gpr[3] = handle;
+                let probe = native.run_with_process_memory_manager(
+                    64,
+                    false,
+                    false,
+                    memory_manager,
+                );
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(native.cpu.gpr[3], 19);
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
+                native.cpu.gpr[3] = handle;
+                let probe = native.run_with_process_memory_manager(
+                    64,
+                    false,
+                    false,
+                    memory_manager,
+                );
+                assert_eq!(probe.handled_import_count, 1);
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HGetState;
+                native.cpu.gpr[3] = handle;
+                let probe = native.run_with_process_memory_manager(
+                    64,
+                    false,
+                    false,
+                    memory_manager,
+                );
+                assert_eq!(probe.handled_import_count, 1);
+                assert_eq!(native.cpu.gpr[3], 0xc0);
+            },
+        );
+
+        assert_eq!(classic.handle_state_bits(handle), Some(0xc0));
+        assert_eq!(detached.borrow().state_for_handle(handle), Some(0x40));
+    }
+
+    #[test]
     fn attaching_and_cloning_native_adapters_preserves_process_ownership() {
         let pef = synthetic_pef_with_import(b"NewHandleClear");
         let mut native = load_pef_application(&pef).unwrap();
@@ -99010,6 +99103,10 @@ pub(crate) mod tests {
             size: 123,
             capacity: 123,
         });
+        loaded
+            .memory
+            .write_u32_be(PPC_HEAP_BASE, PPC_HEAP_BASE + 4)
+            .unwrap();
         loaded.cpu.gpr[3] = PPC_HEAP_BASE;
 
         let probe = loaded.run_with_hle_imports(64);

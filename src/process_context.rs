@@ -674,6 +674,42 @@ impl ProcessMemoryManager {
             })
     }
 
+    /// Return a relocatable block's logical size from process-owned allocator
+    /// metadata and its current master pointer.
+    ///
+    /// Native imports can therefore inspect classic allocations without an
+    /// architecture-specific bus adapter. Inside Macintosh: Memory (1992),
+    /// pp. 2-39--2-40.
+    pub(crate) fn process_handle_size_from_master_pointer(
+        &mut self,
+        handle: u32,
+        ptr: u32,
+    ) -> Option<u32> {
+        let size = if handle == 0 || ptr == 0 {
+            None
+        } else {
+            self.native_allocations
+                .iter()
+                .find(|record| record.handle == handle && record.ptr == ptr)
+                .map(|record| record.size)
+                .or_else(|| {
+                    self.classic_allocator.as_ref().and_then(|allocator| {
+                        if allocator.allocation_size(handle) == Some(4) {
+                            allocator.allocation_size(ptr)
+                        } else {
+                            None
+                        }
+                    })
+                })
+        };
+        self.set_native_mem_error(if size.is_some() {
+            Self::NO_ERR
+        } else {
+            Self::NIL_HANDLE_ERR
+        });
+        size
+    }
+
     /// Change the logical size of a native or classic relocatable block.
     ///
     /// The handle remains stable while the Memory Manager may move its data
@@ -1779,20 +1815,6 @@ impl ProcessMemoryManager {
         }
         self.commit_dispose_native_handle(index, record);
         Some(record)
-    }
-
-    pub(crate) fn native_handle_size(&mut self, handle: u32) -> Option<u32> {
-        let size = self
-            .native_allocations
-            .iter()
-            .find(|record| record.handle == handle)
-            .map(|record| record.size);
-        self.set_native_mem_error(if size.is_some() {
-            Self::NO_ERR
-        } else {
-            Self::NIL_HANDLE_ERR
-        });
-        size
     }
 
     pub(crate) fn set_native_handle_size(
