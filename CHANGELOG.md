@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.3](https://github.com/benletchford/systemless/compare/v0.28.2...v0.28.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* **quickdraw:** resolve screen RGB colors through the device inverse table ([#1152](https://github.com/benletchford/systemless/issues/1152)) ([94c5f8f](https://github.com/benletchford/systemless/commit/94c5f8fba364638e939c4aaafcde66182e9daa1e))
+
+
+### Code Refactoring
+
+* **apple-events:** share handler dispatch across CPU adapters ([#1150](https://github.com/benletchford/systemless/issues/1150)) ([39e4ca1](https://github.com/benletchford/systemless/commit/39e4ca14136ffa5ea17b96a8bf48312c7e408993))
+
 ## [0.28.2](https://github.com/benletchford/systemless/compare/v0.28.1...v0.28.2) (2026-09-01)
 
 
