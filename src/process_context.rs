@@ -1514,11 +1514,9 @@ impl ProcessNativeMemoryManager {
         clear: bool,
     ) -> u32 {
         let Some(required) = Self::native_allocation_size(size) else {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
         let Some(heap) = self.native_heap_state() else {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
         let Some((ptr, next)) = Self::native_allocation_bounds(
@@ -1527,11 +1525,9 @@ impl ProcessNativeMemoryManager {
             required,
             |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
         ) else {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         };
         if !Self::prepare_native_allocation(memory, ptr, required, clear) {
-            self.set_native_mem_error(Self::MEM_FULL_ERR);
             return 0;
         }
         let allocator = self
@@ -1539,7 +1535,6 @@ impl ProcessNativeMemoryManager {
             .as_mut()
             .expect("native allocator remains registered");
         allocator.heap.heap_cursor = next;
-        allocator.heap.last_mem_error = Self::NO_ERR;
         self.native_allocator_dirty = true;
         ptr
     }

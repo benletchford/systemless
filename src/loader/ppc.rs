@@ -22489,6 +22489,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::NewDialog => {
             let dialog = ppc_new_dialog(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -22535,6 +22536,7 @@ fn dispatch_supported_import(
             // reads it; Systemless renders the standard non-themed dialog.
             let dialog = ppc_new_dialog(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -57918,7 +57920,13 @@ fn ppc_dsp_alt_buffer_new(
         return PPC_PARAM_ERR;
     }
 
-    let rect_ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, 8, true);
+    let rect_ptr = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        8,
+        true,
+    );
     if rect_ptr == 0
         || ppc_write_rect(memory, rect_ptr, 0, 0, height as i16, width as i16).is_none()
     {
@@ -61354,7 +61362,13 @@ fn ppc_materialize_vfs_resource_handle(
             // mapping. Keep that mapping authoritative while allocating its
             // resource data from the shared process heap.
             let size = u32::try_from(data.len()).unwrap_or(u32::MAX);
-            let ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, size, false);
+            let ptr = ppc_process_heap_alloc(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                size,
+                false,
+            );
             if ptr == 0
                 || data.iter().copied().enumerate().any(|(offset, byte)| {
                     memory.write_u8(ptr + offset as u32, byte).is_none()
@@ -62593,14 +62607,29 @@ fn ppc_new_alert_dialog(
         *last_resource_error = PPC_PARAM_ERR;
         return 0;
     }
-    let items_handle =
-        ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &ditl_bytes);
+    let items_handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        &ditl_bytes,
+    );
     if items_handle == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
     let bounds = ppc_position_dialog_bounds(bounds, position, gworlds);
-    let scratch = ppc_heap_alloc(memory, heap_cursor, heap_limit, 9, true);
+    let scratch = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        9,
+        true,
+    );
     let Some(items_slot) = ppc_parameter_area_slot_addr(cpu.gpr[1], PPC_NATIVE_PARAMETER_GPR_COUNT)
     else {
         *last_mem_error = PPC_PARAM_ERR;
@@ -62629,6 +62658,7 @@ fn ppc_new_alert_dialog(
     dialog_cpu.gpr[10] = alert_id as u16 as u32;
     let dialog = ppc_new_dialog(
         &dialog_cpu,
+        process_memory_manager,
         memory,
         heap_cursor,
         heap_limit,
@@ -62723,15 +62753,30 @@ fn ppc_get_new_dialog(
     // GetNewDialog copies the DITL into an application-owned handle. Item
     // handles are then installed in that copy, so GetDialogItem and guest
     // mutations observe the same live list rather than the resource bytes.
-    let items_handle =
-        ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &ditl_bytes);
+    let items_handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        &ditl_bytes,
+    );
     if items_handle == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
     let bounds = ppc_position_dialog_bounds(template.bounds, template.position, gworlds);
     let scratch_size = 8u32.saturating_add(1 + template.title.len().min(255) as u32);
-    let scratch = ppc_heap_alloc(memory, heap_cursor, heap_limit, scratch_size, true);
+    let scratch = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        scratch_size,
+        true,
+    );
     if scratch == 0
         || ppc_write_rect(memory, scratch, bounds.0, bounds.1, bounds.2, bounds.3).is_none()
         || !ppc_write_pstring_bytes(memory, scratch + 8, &template.title)
@@ -62760,6 +62805,7 @@ fn ppc_get_new_dialog(
     new_cpu.gpr[10] = template.ref_con;
     let dialog = ppc_new_dialog(
         &new_cpu,
+        process_memory_manager,
         memory,
         heap_cursor,
         heap_limit,
@@ -62800,6 +62846,7 @@ fn ppc_get_new_dialog(
 #[allow(clippy::too_many_arguments)]
 fn ppc_new_dialog(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -62825,10 +62872,10 @@ fn ppc_new_dialog(
     }
 
     let storage = if requested_storage == 0 {
-        ppc_heap_alloc(
+        ppc_process_heap_alloc(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             PPC_DIALOG_RECORD_SIZE,
             true,
         )
@@ -63026,7 +63073,17 @@ fn ppc_initialize_dialog_items(
                 }
             }
             PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
-                ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &item.payload)
+                ppc_process_alloc_handle_with_bytes(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                    handle_states,
+                    &item.payload,
+                )
             }
             PPC_DIALOG_ITEM_ICON | PPC_DIALOG_ITEM_PICTURE => {
                 let resource_id = item
@@ -82604,6 +82661,33 @@ fn ppc_process_heap_alloc(
         ppc_update_zone_free_bytes(memory, heap.heap_cursor, heap.heap_limit);
     }
     ptr
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_process_alloc_handle_with_bytes(
+    memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    bytes: &[u8],
+) -> u32 {
+    let handle = memory_manager.copy_bytes_to_new_native_handle(memory, bytes);
+    ppc_apply_process_native_resource_handle(
+        memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handles,
+        handle_states,
+        handle,
+    );
+    handle
 }
 
 fn ppc_heap_allocation_bounds(
