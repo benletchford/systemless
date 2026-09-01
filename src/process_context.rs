@@ -2,7 +2,15 @@
 
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
+use crate::memory::bus::SharedRamRegion;
+use crate::memory::GuestAddressSpace;
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
+
+#[derive(Debug)]
+struct ProcessMemoryRegion {
+    base: u32,
+    bytes: SharedRamRegion,
+}
 
 /// A deferred byte replacement for a relocatable guest handle.
 ///
@@ -24,6 +32,7 @@ pub(crate) struct PendingHandleByteReplacement {
 /// its mutable borrow.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessContext {
+    memory: Option<ProcessMemoryRegion>,
     event_queue: EventQueue,
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
@@ -32,6 +41,47 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
+    /// Install the canonical process-memory allocation and attach a CPU
+    /// address-space adapter to it.
+    ///
+    /// Repeated attachment is allowed for another adapter (or a relaunched
+    /// native fragment), but it must describe the same allocation range.
+    pub(crate) fn attach_memory(
+        &mut self,
+        base: u32,
+        bytes: SharedRamRegion,
+        adapter: &mut GuestAddressSpace,
+    ) {
+        if let Some(memory) = &self.memory {
+            assert_eq!(memory.base, base, "cannot replace process memory base");
+            assert_eq!(
+                memory.bytes.len(),
+                bytes.len(),
+                "cannot replace process memory size"
+            );
+        } else {
+            self.memory = Some(ProcessMemoryRegion { base, bytes });
+        }
+
+        let memory = self
+            .memory
+            .as_ref()
+            .expect("process memory was just installed");
+        // SAFETY: `ProcessContext` and all attached CPU adapters are private
+        // children of one runner. Every execution entry point requires an
+        // exclusive mutable runner borrow, so adapter access is serialized.
+        unsafe {
+            adapter.add_shared_region(memory.base, memory.bytes.clone());
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn memory_range(&self) -> Option<(u32, usize)> {
+        self.memory
+            .as_ref()
+            .map(|memory| (memory.base, memory.bytes.len()))
+    }
+
     pub(crate) fn event_queue(&self) -> &EventQueue {
         &self.event_queue
     }
@@ -129,6 +179,24 @@ mod tests {
     use crate::event_queue::QueuedEvent;
     use crate::guest_call::GuestCallTarget;
     use crate::guest_procedure::GuestIsa;
+    use crate::memory::{MacMemoryBus, MemoryBus};
+    use ppc::PpcMemory;
+
+    #[test]
+    fn process_context_owns_the_memory_mapping_for_cpu_adapters() {
+        let mut context = ProcessContext::default();
+        let mut bus = MacMemoryBus::new(0x2000);
+        bus.write_long(0x100, 0x1234_5678);
+        let region = bus.shared_ram_region(0, 0x1000).unwrap();
+        let mut native = GuestAddressSpace::new();
+
+        context.attach_memory(0, region, &mut native);
+
+        assert_eq!(context.memory_range(), Some((0, 0x1000)));
+        assert_eq!(native.read_u32_be(0x100), Some(0x1234_5678));
+        native.write_u32_be(0x100, 0x89ab_cdef).unwrap();
+        assert_eq!(bus.read_long(0x100), 0x89ab_cdef);
+    }
 
     #[test]
     fn process_context_owns_canonical_event_queue() {

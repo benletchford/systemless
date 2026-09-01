@@ -97,6 +97,12 @@ const APP_HEAP_FLOOR: u32 = 0x0020_0000;
 const APP_ZONE_HEADER_SIZE: u32 = 64;
 const APP_STACK_SAFETY_MARGIN: u32 = 0x2000;
 const DEFAULT_LOAD_ADDRESS: u32 = 0x0001_0000;
+/// Process-owned low memory and classic compatibility RAM visible to both
+/// execution engines in a native launch. The native loader reserves exactly
+/// this range for low-memory globals plus 68K callback code/data; the runner
+/// replaces that detached staging copy with its canonical Mac RAM allocation
+/// before either CPU executes.
+const PROCESS_LOW_MEMORY_SIZE: u32 = 0x0010_0000;
 const APP_QD_GLOBALS_RESERVE: u32 = 48 * 1024;
 const APP_LOADER_CLEAR_RESERVE: u32 = 0x40000;
 const APP_HIGH_MEMORY_RESERVE: u32 = 2 * 1024 * 1024;
@@ -1719,10 +1725,12 @@ impl FixtureRunnerConfig {
 
 /// Canonical entry point of the systemless library.
 ///
-/// `FixtureRunner` owns the three pieces of guest state: the [`M68kCpu`]
-/// backend, the [`MacMemoryBus`], and the [`TrapDispatcher`] (Toolbox and OS
-/// trap handlers). It exposes the load, execute, and halt-inspection
-/// surface that drives them.
+/// `FixtureRunner` serializes one Macintosh process: [`ProcessContext`] owns
+/// state shared across architectures, [`MacMemoryBus`] exposes its flat RAM to
+/// 68K, and CPU-specific adapters execute 68K or PowerPC code against that
+/// state. [`TrapDispatcher`] provides the shared Toolbox and OS boundary. The
+/// runner exposes the load, execute, and halt-inspection surface that drives
+/// them.
 ///
 /// **Lifecycle:**
 /// 1. [`FixtureRunner::new`] — allocate guest RAM + dispatcher.
@@ -4008,6 +4016,24 @@ impl FixtureRunner {
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
         use crate::memory::globals::addr;
 
+        self.adopt_ppc_process_memory_image(&mut ppc_app);
+        // These are process launch defaults, not PEF-loader state. Reapply
+        // them after adopting a sparse construction image so a synthetic
+        // adapter that maps zero-filled low memory cannot erase the process
+        // environment established by `FixtureRunner::new`.
+        self.bus.write_word(
+            addr::SYS_EVT_MASK,
+            crate::memory::globals::DEFAULT_SYS_EVT_MASK,
+        );
+        self.bus.write_word(
+            addr::MENU_FLASH,
+            crate::memory::globals::DEFAULT_MENU_FLASH_COUNT,
+        );
+        self.bus
+            .write_long(addr::DOUBLE_TIME, DEFAULT_DOUBLE_TIME_TICKS);
+        self.bus.write_byte(addr::MMU32_BIT, 1);
+        self.bus.write_byte(addr::SD_VOLUME, 1);
+        self.bus.write_word(0x09dc, 1); // PaintWhite
         let ram_size = self.bus.ram_size();
         self.bus.write_long(addr::MEM_TOP, ram_size);
         let launch_ticks = self.launch_ticks_override.unwrap_or(0);
@@ -4022,7 +4048,7 @@ impl FixtureRunner {
         self.bus.write_long(addr::RND_SEED, rnd_seed);
         self.dispatcher
             .materialize_trap_tables(&mut self.bus, TrapTableProfile::PowerPc604);
-        self.share_ppc_runtime_globals(&mut ppc_app);
+        self.share_ppc_process_memory(&mut ppc_app);
         ppc_app.attach_process_context(&mut self.process_context);
         if let Some(time_base) = self.launch_ppc_time_base_override {
             ppc_app.cpu.set_time_base(time_base);
@@ -4075,59 +4101,13 @@ impl FixtureRunner {
         self.ppc_app = Some(ppc_app);
     }
 
-    fn share_ppc_runtime_globals(&mut self, ppc_app: &mut PpcLoadedApp) {
-        use crate::memory::globals::addr;
-
-        // SysEvtMask is the current process's low-level event posting mask
-        // (Macintosh Toolbox Essentials 1992, pp. 2-28--2-29 and 2-99--2-100;
-        // Inside Macintosh Volume III 1985, low-memory globals table).
-        // RndSeed is the system random-number seed (Inside Macintosh Volume I,
-        // I-195). The Vertical Retrace Manager updates Ticks and the one-second
-        // interrupt updates Time (Inside Macintosh Volume II, II-202 and
-        // II-378). MenuFlash controls the selected-item blink count, while the
-        // standard MDEF updates MenuDisable for MenuChoice (Macintosh Toolbox
-        // Essentials 1992, pp. 3-118--3-119 and 3-142). GetMouse, Button, and
-        // GetKeys observe the current device
-        // state, whose KeyMap is one 128-bit value (Inside Macintosh Volume I,
-        // I-259–I-260). These bytes describe one running Macintosh, so native
-        // and 68k callers must observe one backing allocation rather than
-        // values copied at CPU-slice boundaries.
-        for (address, len) in [
-            // A native-to-68k callback executes in this process's writable
-            // Trap Manager topology. Keep line-A and line-F exception vectors
-            // attached to the same cells as the 68k dispatcher so nested
-            // A-lines do not fall through a detached native low-memory copy.
-            (0x28, 8),
-            (
-                crate::trap::dispatch::OS_TRAP_TABLE_BASE,
-                u32::from(crate::trap::dispatch::OS_TRAP_TABLE_SLOTS) * 4,
-            ),
-            (
-                crate::trap::dispatch::TOOLBOX_TRAP_TABLE_BASE,
-                u32::from(crate::trap::dispatch::TOOLBOX_TRAP_TABLE_SLOTS) * 4,
-            ),
-            (addr::SYS_EVT_MASK, 2),
-            (addr::MENU_FLASH, 2),
-            (addr::MENU_DISABLE, 4),
-            (addr::RND_SEED, 4),
-            (addr::TICKS, 4),
-            (addr::TIME, 4),
-            (addr::MB_STATE, 1),
-            (addr::KEY_MAP_LM, 16),
-            (addr::M_TEMP, 12),
-            (addr::DS_ERR_CODE, 2),
-        ] {
-            let region = self
-                .bus
-                .shared_ram_region(address, len)
-                .expect("FixtureRunner owns stable guest RAM");
-            // SAFETY: both adapters remain private children of this runner;
-            // every execution and presentation entry point requires a mutable
-            // runner borrow, so their access cannot overlap.
-            unsafe {
-                ppc_app.memory.add_shared_region(address, region);
-            }
-        }
+    fn share_ppc_process_memory(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let process_low_memory = self
+            .bus
+            .shared_ram_region(0, PROCESS_LOW_MEMORY_SIZE)
+            .expect("FixtureRunner owns the complete process low-memory range");
+        self.process_context
+            .attach_memory(0, process_low_memory, &mut ppc_app.memory);
         let Some((base, region)) = self.bus.shared_synthetic_reservation() else {
             return;
         };
@@ -4144,6 +4124,27 @@ impl FixtureRunner {
         // 68k bus for trap gateways and permanent come-from heads.
         unsafe {
             ppc_app.memory.add_shared_readonly_region(base, region);
+        }
+    }
+
+    /// Move the native loader's detached construction image into the one
+    /// process-owned low-memory allocation before either CPU executes.
+    ///
+    /// Production PEF loads map the complete range, while focused Mixed Mode
+    /// tests often map only a callback or descriptor. Preserve every mapped
+    /// byte in either case. Process startup deliberately follows this step so
+    /// canonical clocks, trap tables, and devices replace loader defaults.
+    fn adopt_ppc_process_memory_image(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let mut image = vec![0; PROCESS_LOW_MEMORY_SIZE as usize];
+        if ppc_app.memory.read_bytes_into(0, &mut image).is_some() {
+            self.bus.load(0, &image);
+            return;
+        }
+
+        for address in 0..PROCESS_LOW_MEMORY_SIZE {
+            if let Some(byte) = ppc_app.memory.read_u8(address) {
+                self.bus.write_byte(address, byte);
+            }
         }
     }
 
@@ -12636,7 +12637,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_runtime_globals_have_immediate_bidirectional_visibility() {
+    fn ppc_process_low_memory_has_immediate_bidirectional_visibility() {
         use crate::memory::globals::addr;
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -12681,6 +12682,15 @@ mod tests {
             ppc_app.memory.read_u32_be(addr::MENU_DISABLE),
             Some(0x0081_0003),
         );
+
+        // Addresses outside the old hand-maintained global list belong to the
+        // same process too, including compatibility RAM used by 68K callbacks.
+        for address in [0x0000_5000, 0x000f_0000] {
+            ppc_app.memory.write_u32_be(address, 0x1234_5678).unwrap();
+            assert_eq!(runner.bus.read_long(address), 0x1234_5678);
+            runner.bus.write_long(address, 0x89ab_cdef);
+            assert_eq!(ppc_app.memory.read_u32_be(address), Some(0x89ab_cdef));
+        }
     }
 
     #[test]
@@ -12800,11 +12810,11 @@ mod tests {
             .memory
             .write_u32_be(addr::THE_ZONE, 0x1122_3344)
             .unwrap();
-        assert_ne!(runner.bus.read_long(addr::THE_ZONE), 0x1122_3344);
+        assert_eq!(runner.bus.read_long(addr::THE_ZONE), 0x1122_3344);
         runner.bus.write_long(addr::THE_ZONE, 0x5566_7788);
         assert_eq!(
             ppc_app.memory.read_u32_be(addr::THE_ZONE),
-            Some(0x1122_3344)
+            Some(0x5566_7788)
         );
     }
 
