@@ -2937,7 +2937,7 @@ pub struct PpcToolboxStartupState {
     pub last_disposed_dialog: u32,
     pub delay_deadline: Option<u32>,
     pub next_ct_seed: u32,
-    pub last_quickdraw_error: i16,
+    pub(crate) last_quickdraw_error: SharedProcessValue<i16>,
     pub open_region_port: u32,
     pub open_region_save_handle: u32,
     pub open_region_bounds: Option<(i16, i16, i16, i16)>,
@@ -2998,7 +2998,7 @@ impl Default for PpcToolboxStartupState {
             last_disposed_dialog: 0,
             delay_deadline: None,
             next_ct_seed: 0,
-            last_quickdraw_error: PPC_NO_ERR,
+            last_quickdraw_error: SharedProcessValue::from_value(PPC_NO_ERR),
             open_region_port: 0,
             open_region_save_handle: 0,
             open_region_bounds: None,
@@ -3913,6 +3913,7 @@ impl PpcLoadedApp {
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         self.process_quickdraw_port_state_attached = true;
+        context.attach_quickdraw_error(&mut self.toolbox_startup.last_quickdraw_error);
         context.attach_display_color_state(
             &mut self.screen_clut,
             &mut self.color_manager_clut,
@@ -19274,7 +19275,7 @@ fn dispatch_supported_import(
             // Imaging With QuickDraw (1994), pp. 6-20 and 6-24: QDError
             // reports NewGWorld and UpdateGWorld failures, and a successful
             // call clears the previous QuickDraw error.
-            toolbox_startup.last_quickdraw_error = result;
+            *toolbox_startup.last_quickdraw_error = result;
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::UpdateGWorld => {
@@ -19293,7 +19294,7 @@ fn dispatch_supported_import(
             );
             // Imaging With QuickDraw (1994), p. 6-24: after gwFlagErr the
             // caller uses QDError to obtain the reason UpdateGWorld failed.
-            toolbox_startup.last_quickdraw_error = if result & (1 << 31) != 0 {
+            *toolbox_startup.last_quickdraw_error = if result & (1 << 31) != 0 {
                 *last_mem_error
             } else {
                 PPC_NO_ERR
@@ -19492,7 +19493,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::QDError => Some(PpcImportAction::Return(ppc_i16_result(
-            toolbox_startup.last_quickdraw_error,
+            *toolbox_startup.last_quickdraw_error,
         ))),
         PpcImportDispatcherTarget::CTabChanged => {
             let color_table_handle = cpu.gpr[3];
@@ -63450,7 +63451,7 @@ fn ppc_make_itable(
         requested_resolution
     };
     if !(3..=5).contains(&resolution) {
-        toolbox_startup.last_quickdraw_error = PPC_C_RES_ERR;
+        *toolbox_startup.last_quickdraw_error = PPC_C_RES_ERR;
         return;
     }
 
@@ -63466,7 +63467,7 @@ fn ppc_make_itable(
         screen_clut,
         &ppc_device_clut_reserved(toolbox_startup, current_gdevice),
     ) else {
-        toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
         return;
     };
     let table = ppc_inverse_table_bytes(&colors, resolution);
@@ -63474,7 +63475,7 @@ fn ppc_make_itable(
         .ok()
         .and_then(|size| size.checked_add(6))
     else {
-        toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+        *toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
         return;
     };
 
@@ -63482,7 +63483,7 @@ fn ppc_make_itable(
     let mut itable_handle = explicit_itable_handle;
     if itable_handle == 0 {
         let Some(gdevice) = gdevice else {
-            toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+            *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
             return;
         };
         itable_handle = memory.read_u32_be(gdevice + 6).unwrap_or(0);
@@ -63498,7 +63499,7 @@ fn ppc_make_itable(
                 true,
             );
             if itable_handle == 0 || memory.write_u32_be(gdevice + 6, itable_handle).is_none() {
-                toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+                *toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
                 return;
             }
         }
@@ -63515,20 +63516,20 @@ fn ppc_make_itable(
         record_size,
     );
     if resize_result != PPC_NO_ERR {
-        toolbox_startup.last_quickdraw_error = resize_result;
+        *toolbox_startup.last_quickdraw_error = resize_result;
         return;
     }
     let Some(itable) = memory
         .read_u32_be(itable_handle)
         .filter(|itable| *itable != 0)
     else {
-        toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        *toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
         return;
     };
     let wrote_record = memory.write_u32_be(itable, seed).is_some()
         && memory.write_u16_be(itable + 4, resolution).is_some()
         && memory.write_bytes(itable + 6, &table).is_some();
-    toolbox_startup.last_quickdraw_error = if wrote_record {
+    *toolbox_startup.last_quickdraw_error = if wrote_record {
         PPC_NO_ERR
     } else {
         PPC_PARAM_ERR
@@ -89320,6 +89321,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn attached_quickdraw_error_crosses_isa_and_detaches_with_clone() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let mut detached = native.clone();
+
+        assert!(classic
+            .quickdraw_error
+            .ptr_eq(&native.toolbox_startup.last_quickdraw_error));
+        assert!(!classic
+            .quickdraw_error
+            .ptr_eq(&detached.toolbox_startup.last_quickdraw_error));
+
+        *native.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        classic_bus.write_word(TEST_SP, 0);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x240, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP) as i16, PPC_PARAM_ERR);
+
+        *classic.quickdraw_error = PPC_C_RES_ERR;
+        run_test_import(&mut native, PpcImportDispatcherTarget::QDError);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_C_RES_ERR));
+
+        run_test_import(&mut detached, PpcImportDispatcherTarget::QDError);
+        assert_eq!(detached.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        *detached.toolbox_startup.last_quickdraw_error = PPC_MEM_FULL_ERR;
+        assert_eq!(*classic.quickdraw_error, PPC_C_RES_ERR);
+        assert_eq!(*native.toolbox_startup.last_quickdraw_error, PPC_C_RES_ERR);
+    }
+
+    #[test]
     fn attached_ppc_event_queue_remains_shared_through_panic() {
         let pef = synthetic_pef_with_import(b"InvalMenuBar");
         let mut native = load_pef_application(&pef).unwrap();
@@ -92822,7 +92860,7 @@ pub(crate) mod tests {
             &mut startup,
         );
 
-        assert_eq!(startup.last_quickdraw_error, PPC_NO_ERR);
+        assert_eq!(*startup.last_quickdraw_error, PPC_NO_ERR);
         let record = handles
             .iter()
             .find(|record| record.handle == itable_handle)
@@ -92871,7 +92909,7 @@ pub(crate) mod tests {
             &mut startup,
         );
 
-        assert_eq!(startup.last_quickdraw_error, PPC_C_RES_ERR);
+        assert_eq!(*startup.last_quickdraw_error, PPC_C_RES_ERR);
         let itable = memory.read_u32_be(itable_handle).unwrap();
         assert_eq!(
             ppc_memory_read_bytes(&mut memory, itable, 9),
@@ -135365,7 +135403,7 @@ pub(crate) mod tests {
 
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_C_DEPTH_ERR));
             assert_eq!(loaded.last_mem_error(), PPC_C_DEPTH_ERR);
-            assert_eq!(loaded.toolbox_startup.last_quickdraw_error, PPC_C_DEPTH_ERR);
+            assert_eq!(*loaded.toolbox_startup.last_quickdraw_error, PPC_C_DEPTH_ERR);
             run_test_import(&mut loaded, PpcImportDispatcherTarget::QDError);
             assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_C_DEPTH_ERR));
             assert_eq!(loaded.memory.read_u32_be(gworld_out_ptr), Some(0xdead_beef));
@@ -135793,7 +135831,7 @@ pub(crate) mod tests {
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 6, 8, 10).unwrap();
         *loaded.current_gworld = gworld;
         *loaded.current_gdevice = PPC_MAIN_GDEVICE;
-        loaded.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
+        *loaded.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = u32::from(u16::MAX); // ignored when aGDevice is non-NIL
         loaded.cpu.gpr[5] = bounds_ptr;
@@ -135803,7 +135841,7 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateGWorld);
 
         assert_eq!(loaded.cpu.gpr[3] & (1 << 31), 0);
-        assert_eq!(loaded.toolbox_startup.last_quickdraw_error, PPC_NO_ERR);
+        assert_eq!(*loaded.toolbox_startup.last_quickdraw_error, PPC_NO_ERR);
         let updated = loaded
             .gworlds
             .iter()
@@ -136402,7 +136440,7 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateGWorld);
         assert_eq!(loaded.cpu.gpr[3], GW_FLAG_ERR);
         assert_eq!(loaded.last_mem_error(), PPC_PARAM_ERR);
-        assert_eq!(loaded.toolbox_startup.last_quickdraw_error, PPC_PARAM_ERR);
+        assert_eq!(*loaded.toolbox_startup.last_quickdraw_error, PPC_PARAM_ERR);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::QDError);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_PARAM_ERR));
 
@@ -136457,7 +136495,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[8] = (1 << 3) | (1 << 28); // keepLocal + clipPix
         run_test_import(&mut loaded, PpcImportDispatcherTarget::UpdateGWorld);
         assert_eq!(loaded.cpu.gpr[3] & GW_FLAG_ERR, 0);
-        assert_eq!(loaded.toolbox_startup.last_quickdraw_error, PPC_NO_ERR);
+        assert_eq!(*loaded.toolbox_startup.last_quickdraw_error, PPC_NO_ERR);
 
         assert_eq!(loaded.heap_cursor(), heap_cursor_before);
         assert_eq!(test_handle_records!(loaded), handles_before);
@@ -137062,7 +137100,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[8] = 0;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::NewGWorld);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_C_DEPTH_ERR));
-        assert_eq!(loaded.toolbox_startup.last_quickdraw_error, PPC_C_DEPTH_ERR);
+        assert_eq!(*loaded.toolbox_startup.last_quickdraw_error, PPC_C_DEPTH_ERR);
         assert_eq!(loaded.memory.read_u32_be(gworld_out_ptr), Some(0xdead_beef));
         assert_eq!(loaded.heap_cursor(), heap_cursor_before);
         assert_eq!(test_handle_records!(loaded), handles_before);

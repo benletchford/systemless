@@ -4217,6 +4217,7 @@ pub(crate) struct ProcessContext {
     cursor_state: SharedProcessCursorState,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
+    quickdraw_error: SharedProcessValue<i16>,
     device_clut: SharedProcessValue<[[u16; 3]; 256]>,
     color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     device_gamma: SharedProcessValue<DisplayGamma>,
@@ -4247,6 +4248,7 @@ impl Default for ProcessContext {
             cursor_state: SharedProcessCursorState::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
+            quickdraw_error: SharedProcessValue::from_value(0),
             device_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
             color_manager_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(default_display_gamma()),
@@ -4367,6 +4369,14 @@ impl ProcessContext {
     ) {
         current_port.activate_copy_to(&self.current_graphics_port);
         current_device.activate_copy_to(&self.current_graphics_device);
+    }
+
+    /// Attach the error from the last applicable Color QuickDraw or Color
+    /// Manager operation. QDError exposes one process result regardless of
+    /// which CPU ABI performed the operation. Imaging With QuickDraw (1994),
+    /// pp. 4-94--4-95.
+    pub(crate) fn attach_quickdraw_error(&self, error: &mut SharedProcessValue<i16>) {
+        error.attach_copy_to(&self.quickdraw_error, |value| *value == 0);
     }
 
     pub(crate) fn attach_display_color_state(
