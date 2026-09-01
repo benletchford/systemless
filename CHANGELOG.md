@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.4](https://github.com/benletchford/systemless/compare/v0.28.3...v0.28.4) (2026-09-01)
+
+
+### Code Refactoring
+
+* **memory:** unify process memory management ([4b71f95](https://github.com/benletchford/systemless/commit/4b71f954b85e9c2a59fd432bdadf4ab6f3caf0f0))
+
 ## [0.28.3](https://github.com/benletchford/systemless/compare/v0.28.2...v0.28.3) (2026-09-01)
 
 
