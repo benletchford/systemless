@@ -393,6 +393,57 @@ impl ProcessMemoryManager {
         self.handle_high_locked.remove(&handle);
     }
 
+    fn commit_dispose_native_handle(&mut self, index: usize, record: ProcessHandleRecord) {
+        self.native_allocations.remove(index);
+        if record.ptr != 0 {
+            self.ptr_to_handle.remove(&record.ptr);
+            self.native_handle_ptrs.remove(&record.ptr);
+        }
+        self.handle_state_bits.remove(&record.handle);
+        self.handle_high_locked.remove(&record.handle);
+        self.native_handles.remove(&record.handle);
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.free_handle_blocks.push(record);
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+    }
+
+    /// Release a native or classic relocatable block and its master pointer.
+    ///
+    /// A native block is returned to the native allocator even when disposal
+    /// originates in an attached 68K callback. Classic resource callers may
+    /// retain their separately owned data block while still releasing the
+    /// handle. Inside Macintosh: Memory (1992), pp. 2-34--2-35.
+    pub(crate) fn dispose_process_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        dispose_classic_data: bool,
+    ) -> Result<Option<ProcessHandleRecord>, i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        let Some((index, record)) = self
+            .native_allocations
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, record)| record.handle == handle)
+        else {
+            self.dispose_classic_handle(bus, handle, dispose_classic_data);
+            return Ok(None);
+        };
+        if bus.read_long(handle) != record.ptr
+            || bus
+                .write_foreign_bytes(handle, &0u32.to_be_bytes())
+                .is_none()
+        {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+        self.commit_dispose_native_handle(index, record);
+        Ok(Some(record))
+    }
+
     /// Return the logical size of a native or classic nonrelocatable block.
     /// Inside Macintosh: Memory (1992), pp. 2-41--2-42.
     pub(crate) fn process_ptr_size(&self, bus: &MacMemoryBus, ptr: u32) -> Option<u32> {
@@ -1290,30 +1341,21 @@ impl ProcessMemoryManager {
         memory: &mut GuestAddressSpace,
         handle: u32,
     ) -> Option<ProcessHandleRecord> {
-        let Some(index) = self
+        let Some((index, record)) = self
             .native_allocations
             .iter()
-            .position(|record| record.handle == handle)
+            .copied()
+            .enumerate()
+            .find(|(_, record)| record.handle == handle)
         else {
             self.set_native_mem_error(Self::NO_ERR);
             return None;
         };
-        let record = self.native_allocations.remove(index);
         if PpcMemory::write_u32_be(memory, handle, 0).is_none() {
-            self.native_allocations.insert(index, record);
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return None;
         }
-        self.ptr_to_handle.remove(&record.ptr);
-        self.native_handle_ptrs.remove(&record.ptr);
-        self.handle_state_bits.remove(&handle);
-        self.handle_high_locked.remove(&handle);
-        self.native_handles.remove(&handle);
-        if let Some(allocator) = &mut self.native_allocator {
-            allocator.free_handle_blocks.push(record);
-            allocator.heap.last_mem_error = Self::NO_ERR;
-            self.native_allocator_dirty = true;
-        }
+        self.commit_dispose_native_handle(index, record);
         Some(record)
     }
 
@@ -2280,6 +2322,61 @@ mod tests {
         );
         assert_eq!(manager.recover_handle(heap_cursor), Some(handle));
         assert_eq!(manager.recover_handle(old_ptr), None);
+    }
+
+    #[test]
+    fn process_handle_disposal_is_atomic_when_native_master_pointer_is_readonly() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let ptr = HEAP_BASE + 0x20;
+        let record = ProcessHandleRecord {
+            handle,
+            ptr,
+            size: 8,
+            capacity: 16,
+        };
+        let mut native = GuestAddressSpace::new();
+        native.add_readonly_region(handle, ptr.to_be_bytes().to_vec());
+        native.add_region(ptr, b"original".to_vec());
+
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE + 0x100,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        manager.register_native_handle_records([(record, 0xE0)]);
+
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        manager.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(
+            manager.dispose_process_handle(&mut bus, handle, true),
+            Err(ProcessMemoryManager::NIL_HANDLE_ERR)
+        );
+        assert_eq!(bus.read_long(handle), ptr);
+        assert_eq!(manager.native_allocation(handle), Some(record));
+        assert_eq!(manager.recover_handle(ptr), Some(handle));
+        assert_eq!(manager.state_for_handle(handle), Some(0xE0));
+        assert!(manager
+            .native_allocator()
+            .is_some_and(|allocator| allocator.free_handle_blocks.is_empty()));
+        assert_eq!(
+            manager
+                .native_allocator_update()
+                .map(|allocator| allocator.heap.last_mem_error),
+            Some(ProcessMemoryManager::NIL_HANDLE_ERR)
+        );
     }
 
     #[test]

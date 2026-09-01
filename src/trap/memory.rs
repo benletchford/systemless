@@ -709,16 +709,19 @@ impl super::TrapDispatcher {
             .map_err(|error| error as i32 as u32)
     }
 
-    fn dispose_process_classic_handle(
+    fn dispose_process_handle(
         &mut self,
         bus: &mut MacMemoryBus,
         handle: u32,
-        dispose_data: bool,
-    ) {
+        dispose_classic_data: bool,
+    ) -> std::result::Result<(), u32> {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
-        memory_manager.dispose_classic_handle(bus, handle, dispose_data);
+        memory_manager
+            .dispose_process_handle(bus, handle, dispose_classic_data)
+            .map(|_| ())
+            .map_err(|error| error as i32 as u32)
     }
 
     fn process_ptr_size(&self, bus: &mut MacMemoryBus, ptr: u32) -> Option<u32> {
@@ -909,7 +912,7 @@ impl super::TrapDispatcher {
             // DisposeHandle ($A023)
             // Releases the relocatable block and frees the master pointer for other uses.
             // PROCEDURE DisposeHandle (h: Handle);
-            // Inside Macintosh: Memory 1992, 2-34..2-35
+            // Inside Macintosh: Memory (1992), pp. 2-34--2-35.
             (false, 0x23) => {
                 let handle = cpu.read_reg(Register::A0);
                 let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
@@ -922,13 +925,6 @@ impl super::TrapDispatcher {
                         );
                     }
                 }
-                self.detached_handles.remove(&handle);
-                self.forget_resource_residency_for_handle(handle);
-                self.forget_resource_handle_index_for_handle(handle);
-                self.loaded_handles.remove(&handle);
-                self.resource_handle_files.remove(&handle);
-                self.detached_handle_files.remove(&handle);
-                self.remove_handle_state_bits(handle);
                 if handle != 0 {
                     let data_ptr = bus.read_long(handle);
                     if trace_memory_site(trap_site) {
@@ -937,20 +933,25 @@ impl super::TrapDispatcher {
                             trap_site, handle, data_ptr
                         );
                     }
-                    // Do NOT remove data_ptr from ptr_to_handle here. On real
-                    // Mac OS, DisposeHandle frees the master pointer but does
-                    // not zero it; the freed slot still holds the old data
-                    // address. RecoverHandle scans all master pointer slots
-                    // (including freed ones), so it returns the stale handle
-                    // rather than nil. We replicate this by leaving the stale
-                    // entry in ptr_to_handle; NewHandle will overwrite it if
-                    // the address is ever reused. (IM:V V-579)
-                    self.dispose_process_classic_handle(
+                    // Classic disposal retains the stale reverse index until
+                    // the freed master-pointer slot is reused, matching the
+                    // RecoverHandle scan described in IM:V V-579.
+                    let disposal = self.dispose_process_handle(
                         bus,
                         handle,
                         resource_backing.is_none(),
                     );
+                    if let Err(error) = disposal {
+                        write_memory_result(cpu, bus, error);
+                        return Some(Ok(()));
+                    }
                 }
+                self.detached_handles.remove(&handle);
+                self.forget_resource_residency_for_handle(handle);
+                self.forget_resource_handle_index_for_handle(handle);
+                self.loaded_handles.remove(&handle);
+                self.resource_handle_files.remove(&handle);
+                self.detached_handle_files.remove(&handle);
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
@@ -4887,6 +4888,74 @@ mod tests {
                 ptr: old_ptr,
                 size: 32,
             })
+        );
+    }
+
+    #[test]
+    fn dispose_handle_trap_releases_native_process_allocation_immediately() {
+        // Memory (1992), pp. 2-34--2-35: DisposeHandle releases both the
+        // relocatable block and its master pointer for reuse.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let ptr = HEAP_BASE + 0x20;
+        let record = ProcessHandleRecord {
+            handle,
+            ptr,
+            size: 8,
+            capacity: 32,
+        };
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        bus.write_long(handle, ptr);
+        bus.write_bytes(ptr, b"original");
+
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor: HEAP_BASE + 0x100,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(record, 0xE0)]);
+        }
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher.current_trap_word = 0xA023;
+        dispatcher
+            .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .expect("DisposeHandle should be handled")
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(handle), 0);
+        assert_eq!(memory_manager.borrow().native_allocation(handle), None);
+        assert_eq!(memory_manager.borrow().recover_handle(ptr), None);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), None);
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_allocator()
+                .and_then(|allocator| allocator.free_handle_blocks.last())
+                .copied(),
+            Some(record)
         );
     }
 
