@@ -4987,8 +4987,6 @@ pub struct PpcLoadedApp {
     pub cfm_connections: Vec<PpcCfmConnection>,
     pub cfm_library_fragments: Vec<PpcCfmLibraryFragment>,
     pub next_cfm_connection_id: u32,
-    pub ptrs: Vec<PpcPtrRecord>,
-    pub free_ptr_blocks: Vec<PpcPtrRecord>,
     pub handles: Vec<PpcHandleRecord>,
     pub free_handle_blocks: Vec<PpcHandleRecord>,
     pub controls: Vec<PpcControlRecord>,
@@ -5152,6 +5150,24 @@ impl PpcLoadedApp {
             .collect()
     }
 
+    /// Return the process-owned native pointer allocation records.
+    pub fn ptrs(&self) -> Vec<PpcPtrRecord> {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_allocator_snapshot()
+            .map_or_else(Vec::new, |allocator| allocator.ptrs)
+    }
+
+    /// Return the process-owned native pointer free list.
+    pub fn free_ptr_blocks(&self) -> Vec<PpcPtrRecord> {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_allocator_snapshot()
+            .map_or_else(Vec::new, |allocator| allocator.free_ptr_blocks)
+    }
+
     #[cfg(test)]
     fn replace_handle_states(&self, handle_states: Vec<PpcHandleStateRecord>) {
         let mut memory_manager = self.process_memory_manager.0.borrow_mut();
@@ -5162,8 +5178,58 @@ impl PpcLoadedApp {
         );
     }
 
-    fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
+    #[cfg(test)]
+    fn replace_ptr_allocator_records(
+        &self,
+        ptrs: Vec<PpcPtrRecord>,
+        free_ptr_blocks: Vec<PpcPtrRecord>,
+    ) {
+        let mut memory_manager = self.process_memory_manager.0.borrow_mut();
+        if memory_manager.has_native_allocator() {
+            memory_manager.mutate_native_allocator(|allocator| {
+                allocator.heap.heap_cursor = self.heap_cursor;
+                allocator.heap.heap_limit = self.heap_limit;
+                allocator.heap.last_mem_error = self.last_mem_error;
+                allocator.ptrs = ptrs;
+                allocator.free_ptr_blocks = free_ptr_blocks;
+            });
+        } else {
+            memory_manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: PPC_HEAP_BASE,
+                    heap_cursor: self.heap_cursor,
+                    heap_limit: self.heap_limit,
+                    last_mem_error: self.last_mem_error,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &ptrs,
+                &free_ptr_blocks,
+                &self.free_handle_blocks,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn with_ptr_allocator_records<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, &mut Vec<PpcPtrRecord>, &mut Vec<PpcPtrRecord>) -> R,
+    ) -> R {
+        let mut ptrs = self.ptrs();
+        let mut free_ptr_blocks = self.free_ptr_blocks();
+        let result = f(self, &mut ptrs, &mut free_ptr_blocks);
+        self.replace_ptr_allocator_records(ptrs, free_ptr_blocks);
+        result
+    }
+
+    fn publish_process_memory_manager(
+        &self,
+        memory_manager: &mut ProcessMemoryManager,
+        pointer_records: Option<ProcessNativeAllocatorState>,
+    ) {
         let existing_heap = memory_manager.native_heap_state();
+        let pointer_records =
+            pointer_records.or_else(|| memory_manager.native_allocator_snapshot());
         memory_manager.publish_native_allocator(
             ProcessNativeHeapState {
                 heap_base: existing_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_base),
@@ -5174,8 +5240,12 @@ impl PpcLoadedApp {
                 master_pointer_blocks_requested: existing_heap
                     .map_or(0, |heap| heap.master_pointer_blocks_requested),
             },
-            &self.ptrs,
-            &self.free_ptr_blocks,
+            pointer_records
+                .as_ref()
+                .map_or(&[], |allocator| allocator.ptrs.as_slice()),
+            pointer_records
+                .as_ref()
+                .map_or(&[], |allocator| allocator.free_ptr_blocks.as_slice()),
             &self.free_handle_blocks,
         );
         let handle_states: Vec<_> = self
@@ -5206,8 +5276,6 @@ impl PpcLoadedApp {
         self.heap_cursor = allocator.heap.heap_cursor;
         self.heap_limit = allocator.heap.heap_limit;
         self.last_mem_error = allocator.heap.last_mem_error;
-        self.ptrs = allocator.ptrs;
-        self.free_ptr_blocks = allocator.free_ptr_blocks;
         self.free_handle_blocks = allocator.free_handle_blocks;
         ppc_update_zone_free_bytes(&mut self.memory, self.heap_cursor, self.heap_limit);
     }
@@ -5359,7 +5427,8 @@ impl PpcLoadedApp {
                 if memory_manager.has_native_allocator() {
                     self.adopt_process_memory_manager(&memory_manager);
                 } else {
-                    self.publish_process_memory_manager(&mut memory_manager);
+                    let pointer_records = standalone_memory_manager.native_allocator_snapshot();
+                    self.publish_process_memory_manager(&mut memory_manager, pointer_records);
                 }
             }
             self.process_memory_manager
@@ -5427,11 +5496,11 @@ impl PpcLoadedApp {
         self.with_process_state(event_queue, menu_tracking, |app| {
             let mut memory_manager = memory_manager.borrow_mut();
             app.apply_process_memory_manager(&memory_manager);
-            app.publish_process_memory_manager(&mut memory_manager);
+            app.publish_process_memory_manager(&mut memory_manager, None);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 f(app, &mut memory_manager)
             }));
-            app.publish_process_memory_manager(&mut memory_manager);
+            app.publish_process_memory_manager(&mut memory_manager, None);
             match outcome {
                 Ok(result) => result,
                 Err(payload) => std::panic::resume_unwind(payload),
@@ -8598,7 +8667,7 @@ impl PpcLoadedApp {
             if standalone_memory_manager_borrow.has_native_allocator() {
                 self.apply_process_memory_manager(&standalone_memory_manager_borrow);
             } else {
-                self.publish_process_memory_manager(&mut standalone_memory_manager_borrow);
+                self.publish_process_memory_manager(&mut standalone_memory_manager_borrow, None);
             }
             &mut standalone_memory_manager_borrow
         };
@@ -8622,9 +8691,10 @@ impl PpcLoadedApp {
         let mut heap_cursor = self.heap_cursor;
         let mut heap_limit = self.heap_limit;
         let mut last_mem_error = self.last_mem_error;
-        let native_heap = process_memory_manager
-            .native_heap_state()
+        let native_allocator = process_memory_manager
+            .native_allocator_snapshot()
             .expect("native allocator registered before execution");
+        let native_heap = native_allocator.heap;
         let mut heap_maximized = native_heap.heap_maximized;
         let mut master_pointer_blocks_requested = native_heap.master_pointer_blocks_requested;
         let tick_count = self.tick_count;
@@ -8641,8 +8711,8 @@ impl PpcLoadedApp {
         let mut cfm_connections = std::mem::take(&mut self.cfm_connections);
         let mut cfm_library_fragments = std::mem::take(&mut self.cfm_library_fragments);
         let mut next_cfm_connection_id = self.next_cfm_connection_id;
-        let mut ptrs = std::mem::take(&mut self.ptrs);
-        let mut free_ptr_blocks = std::mem::take(&mut self.free_ptr_blocks);
+        let mut ptrs = native_allocator.ptrs;
+        let mut free_ptr_blocks = native_allocator.free_ptr_blocks;
         let mut handles = std::mem::take(&mut self.handles);
         let mut free_handle_blocks = std::mem::take(&mut self.free_handle_blocks);
         let mut handle_states: Vec<_> = handles
@@ -9510,8 +9580,6 @@ impl PpcLoadedApp {
         self.next_cfm_connection_id = next_cfm_connection_id;
         self.imports = imports;
         self.import_count = import_count;
-        self.ptrs = ptrs;
-        self.free_ptr_blocks = free_ptr_blocks;
         self.handles = handles;
         self.free_handle_blocks = free_handle_blocks;
         self.controls = controls;
@@ -9595,8 +9663,8 @@ impl PpcLoadedApp {
             self.last_mem_error,
             heap_maximized,
             master_pointer_blocks_requested,
-            &self.ptrs,
-            &self.free_ptr_blocks,
+            &ptrs,
+            &free_ptr_blocks,
             &self.free_handle_blocks,
         );
         ppc_synchronize_process_native_handles(
@@ -14100,8 +14168,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         cfm_connections,
         cfm_library_fragments: Vec::new(),
         next_cfm_connection_id,
-        ptrs: Vec::new(),
-        free_ptr_blocks: Vec::new(),
         handles,
         free_handle_blocks: Vec::new(),
         controls: Vec::new(),
@@ -87880,9 +87946,13 @@ pub(crate) mod tests {
             memory_manager,
             |native, memory_manager| {
                 assert_eq!(native.heap_cursor, expected_cursor);
-                assert_eq!(native.ptrs.last().map(|record| record.size), Some(8));
+                let allocator = memory_manager.native_allocator().unwrap();
+                assert_eq!(allocator.ptrs.last().map(|record| record.size), Some(8));
                 assert_eq!(
-                    native.free_ptr_blocks.last().map(|record| record.size),
+                    allocator
+                        .free_ptr_blocks
+                        .last()
+                        .map(|record| record.size),
                     Some(4)
                 );
                 assert_eq!(
@@ -87954,7 +88024,7 @@ pub(crate) mod tests {
         );
         let ptr = standalone.cpu.gpr[3];
         assert_eq!(attached.cpu.gpr[3], ptr);
-        assert_eq!(standalone.ptrs, attached.ptrs);
+        assert_eq!(standalone.ptrs(), attached.ptrs());
         assert_eq!(standalone.heap_cursor, attached.heap_cursor);
         assert_eq!(
             ppc_memory_read_bytes(&mut standalone.memory, ptr, 24),
@@ -88090,11 +88160,29 @@ pub(crate) mod tests {
             .mutate_native_allocator(|allocator| {
                 allocator.heap.heap_maximized = true;
                 allocator.heap.master_pointer_blocks_requested = 7;
+                allocator.ptrs.push(ProcessPtrRecord {
+                    ptr: PPC_HEAP_BASE + 0x100,
+                    size: 16,
+                });
+                allocator.free_ptr_blocks.push(ProcessPtrRecord {
+                    ptr: PPC_HEAP_BASE + 0x200,
+                    size: 32,
+                });
             });
         assert!(native.heap_maximized());
         assert_eq!(native.master_pointer_blocks_requested(), 7);
         assert!(!detached.heap_maximized());
         assert_eq!(detached.master_pointer_blocks_requested(), 0);
+        assert_eq!(native.ptrs().last().map(|record| record.size), Some(16));
+        assert_eq!(
+            native
+                .free_ptr_blocks()
+                .last()
+                .map(|record| record.size),
+            Some(32)
+        );
+        assert!(detached.ptrs().is_empty());
+        assert!(detached.free_ptr_blocks().is_empty());
         assert!(native.handle_states()[0].high_locked);
         assert!(!detached.handle_states()[0].high_locked);
         native.cpu.gpr[3] = handle;
@@ -88129,14 +88217,28 @@ pub(crate) mod tests {
             menu_tracking,
             memory_manager,
             |native, memory_manager| {
+                let allocator = memory_manager.native_allocator_snapshot().unwrap();
+                let mut ptrs = allocator.ptrs;
+                let mut free_ptr_blocks = allocator.free_ptr_blocks;
                 let prior_ptr = ppc_alloc_ptr(
                     &mut native.memory,
                     &mut native.heap_cursor,
                     native.heap_limit,
-                    &mut native.ptrs,
-                    &mut native.free_ptr_blocks,
+                    &mut ptrs,
+                    &mut free_ptr_blocks,
                     24,
                     false,
+                );
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    native.heap_cursor,
+                    native.heap_limit,
+                    native.last_mem_error,
+                    allocator.heap.heap_maximized,
+                    allocator.heap.master_pointer_blocks_requested,
+                    &ptrs,
+                    &free_ptr_blocks,
+                    &native.free_handle_blocks,
                 );
                 assert_eq!(prior_ptr, PPC_HEAP_BASE);
                 let probe = native.run_with_process_memory_manager(
@@ -88253,14 +88355,28 @@ pub(crate) mod tests {
                     .write_bytes(original.ptr, b"process-owned")
                     .unwrap();
 
+                let allocator = memory_manager.native_allocator_snapshot().unwrap();
+                let mut ptrs = allocator.ptrs;
+                let mut free_ptr_blocks = allocator.free_ptr_blocks;
                 let blocking_ptr = ppc_alloc_ptr(
                     &mut native.memory,
                     &mut native.heap_cursor,
                     native.heap_limit,
-                    &mut native.ptrs,
-                    &mut native.free_ptr_blocks,
+                    &mut ptrs,
+                    &mut free_ptr_blocks,
                     16,
                     false,
+                );
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    native.heap_cursor,
+                    native.heap_limit,
+                    native.last_mem_error,
+                    allocator.heap.heap_maximized,
+                    allocator.heap.master_pointer_blocks_requested,
+                    &ptrs,
+                    &free_ptr_blocks,
+                    &native.free_handle_blocks,
                 );
                 assert_ne!(blocking_ptr, 0);
                 native.cpu.pc = native.entry_pc;
@@ -94888,7 +95004,7 @@ pub(crate) mod tests {
             assert_eq!(loaded.memory.read_u8(PPC_HEAP_BASE + offset), Some(0));
         }
         assert_eq!(
-            loaded.ptrs,
+            loaded.ptrs(),
             vec![PpcPtrRecord {
                 ptr: PPC_HEAP_BASE,
                 size: 24
@@ -94916,9 +95032,9 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert!(loaded.ptrs.is_empty());
+        assert!(loaded.ptrs().is_empty());
         assert_eq!(
-            loaded.free_ptr_blocks,
+            loaded.free_ptr_blocks(),
             vec![PpcPtrRecord {
                 ptr: PPC_HEAP_BASE,
                 size: 24
@@ -94937,8 +95053,8 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
         assert_eq!(loaded.heap_cursor, heap_cursor);
-        assert!(loaded.free_ptr_blocks.is_empty());
-        assert_eq!(loaded.ptrs[0].size, 12);
+        assert!(loaded.free_ptr_blocks().is_empty());
+        assert_eq!(loaded.ptrs()[0].size, 12);
     }
 
     #[test]
@@ -95713,7 +95829,7 @@ pub(crate) mod tests {
         let descriptor = loaded.cpu.gpr[3];
         assert_eq!(
             loaded
-                .ptrs
+                .ptrs()
                 .iter()
                 .find(|record| record.ptr == descriptor)
                 .map(|record| record.size),
@@ -95762,7 +95878,7 @@ pub(crate) mod tests {
         let descriptor = loaded.cpu.gpr[3];
         assert_eq!(
             loaded
-                .ptrs
+                .ptrs()
                 .iter()
                 .find(|record| record.ptr == descriptor)
                 .map(|record| record.size),
@@ -95845,7 +95961,7 @@ pub(crate) mod tests {
         let descriptor_size = PPC_ROUTINE_DESCRIPTOR_HEADER_SIZE + PPC_ROUTINE_RECORD_SIZE;
         assert_eq!(
             loaded
-                .ptrs
+                .ptrs()
                 .iter()
                 .find(|record| record.ptr == descriptor)
                 .map(|record| record.size),
@@ -95874,9 +95990,9 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], descriptor);
         assert_eq!(loaded.heap_cursor, heap_cursor);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
-        assert!(!loaded.ptrs.iter().any(|record| record.ptr == descriptor));
+        assert!(!loaded.ptrs().iter().any(|record| record.ptr == descriptor));
         assert!(loaded
-            .free_ptr_blocks
+            .free_ptr_blocks()
             .iter()
             .any(|record| record.ptr == descriptor && record.size == descriptor_size));
 
@@ -95894,11 +96010,11 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[3], descriptor);
         assert_eq!(loaded.heap_cursor, heap_cursor);
         assert!(loaded
-            .ptrs
+            .ptrs()
             .iter()
             .any(|record| record.ptr == descriptor && record.size == descriptor_size));
         assert!(!loaded
-            .free_ptr_blocks
+            .free_ptr_blocks()
             .iter()
             .any(|record| record.ptr == descriptor));
     }
@@ -95908,8 +96024,8 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"DisposeRoutineDescriptor");
         let mut loaded = load_pef_application(&pef).unwrap();
         let heap_cursor = loaded.heap_cursor;
-        let ptrs = loaded.ptrs.clone();
-        let free_ptr_blocks = loaded.free_ptr_blocks.clone();
+        let ptrs = loaded.ptrs().clone();
+        let free_ptr_blocks = loaded.free_ptr_blocks().clone();
         loaded.last_mem_error = PPC_MEM_FULL_ERR;
         loaded.cpu.gpr[3] = PPC_HEAP_BASE + 0x40;
 
@@ -95919,8 +96035,8 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE + 0x40);
         assert_eq!(loaded.heap_cursor, heap_cursor);
-        assert_eq!(loaded.ptrs, ptrs);
-        assert_eq!(loaded.free_ptr_blocks, free_ptr_blocks);
+        assert_eq!(loaded.ptrs(), ptrs);
+        assert_eq!(loaded.free_ptr_blocks(), free_ptr_blocks);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
     }
 
@@ -133921,15 +134037,17 @@ pub(crate) mod tests {
             .unwrap()
             .base_addr;
 
-        let retained = ppc_alloc_ptr(
-            &mut loaded.memory,
-            &mut loaded.heap_cursor,
-            loaded.heap_limit,
-            &mut loaded.ptrs,
-            &mut loaded.free_ptr_blocks,
-            4096,
-            true,
-        );
+        let retained = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
+            ppc_alloc_ptr(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                4096,
+                true,
+            )
+        });
         assert_ne!(retained, 0);
         let heap_cursor_with_retained_data = loaded.heap_cursor;
 
@@ -133938,7 +134056,7 @@ pub(crate) mod tests {
 
         assert_eq!(loaded.heap_cursor, heap_cursor_with_retained_data);
         assert!(loaded
-            .free_ptr_blocks
+            .free_ptr_blocks()
             .iter()
             .any(|record| record.ptr == first_base));
 
@@ -157509,70 +157627,78 @@ pub(crate) mod tests {
         }
 
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"malloc")).unwrap();
-        let first = ppc_alloc_ptr(
-            &mut loaded.memory,
-            &mut loaded.heap_cursor,
-            loaded.heap_limit,
-            &mut loaded.ptrs,
-            &mut loaded.free_ptr_blocks,
-            8,
-            false,
-        );
+        let first = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
+            ppc_alloc_ptr(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                8,
+                false,
+            )
+        });
         assert_ne!(first, 0);
         loaded.memory.write_bytes(first, b"payload!").unwrap();
-        let second = ppc_realloc_ptr(
-            &mut loaded.memory,
-            &mut loaded.heap_cursor,
-            loaded.heap_limit,
-            &mut loaded.ptrs,
-            &mut loaded.free_ptr_blocks,
-            first,
-            16,
-        );
+        let second = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
+            ppc_realloc_ptr(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                first,
+                16,
+            )
+        });
         assert_ne!(second, 0);
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, second, 8),
             Some(b"payload!".to_vec())
         );
         assert!(loaded
-            .free_ptr_blocks
+            .free_ptr_blocks()
             .iter()
             .any(|record| record.ptr == first));
-        let zeroed = ppc_alloc_ptr(
-            &mut loaded.memory,
-            &mut loaded.heap_cursor,
-            loaded.heap_limit,
-            &mut loaded.ptrs,
-            &mut loaded.free_ptr_blocks,
-            12,
-            true,
-        );
+        let zeroed = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
+            ppc_alloc_ptr(
+                &mut loaded.memory,
+                &mut loaded.heap_cursor,
+                loaded.heap_limit,
+                ptrs,
+                free_ptr_blocks,
+                12,
+                true,
+            )
+        });
         assert!(ppc_memory_read_bytes(&mut loaded.memory, zeroed, 12)
             .unwrap()
             .iter()
             .all(|byte| *byte == 0));
-        assert_eq!(
+        let allocated = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
             ppc_realloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
-                &mut loaded.ptrs,
-                &mut loaded.free_ptr_blocks,
+                ptrs,
+                free_ptr_blocks,
                 0,
-                4
-            ),
-            loaded.ptrs.last().unwrap().ptr
-        );
+                4,
+            )
+        });
+        assert_eq!(allocated, loaded.ptrs().last().unwrap().ptr);
         assert_eq!(
-            ppc_realloc_ptr(
-                &mut loaded.memory,
-                &mut loaded.heap_cursor,
-                loaded.heap_limit,
-                &mut loaded.ptrs,
-                &mut loaded.free_ptr_blocks,
-                second,
-                0
-            ),
+            loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
+                ppc_realloc_ptr(
+                    &mut loaded.memory,
+                    &mut loaded.heap_cursor,
+                    loaded.heap_limit,
+                    ptrs,
+                    free_ptr_blocks,
+                    second,
+                    0,
+                )
+            }),
             0
         );
 
