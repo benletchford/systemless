@@ -16587,6 +16587,47 @@ fn ppc_apply_process_native_allocator(
     ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispose_process_native_handle(
+    memory_manager: &mut ProcessMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    handle: u32,
+) -> bool {
+    ppc_synchronize_process_native_allocator(
+        memory_manager,
+        *heap_cursor,
+        heap_limit,
+        *last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_synchronize_process_native_handles(memory_manager, handles, handle_states);
+    let disposed = memory_manager.dispose_native_handle(memory, handle).is_some();
+    ppc_apply_process_native_allocator(
+        memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    if disposed {
+        handles.retain(|record| record.handle != handle);
+        ppc_forget_handle_state(handle, handle_states);
+    }
+    disposed
+}
+
 fn ppc_apply_process_native_handle(
     memory_manager: &ProcessMemoryManager,
     handles: &mut Vec<PpcHandleRecord>,
@@ -17177,35 +17218,20 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::DisposeHandle => {
             let handle = cpu.gpr[3];
-            ppc_synchronize_process_native_allocator(
-                process_memory_manager,
-                *heap_cursor,
-                heap_limit,
-                *last_mem_error,
-                ptrs,
-                free_ptr_blocks,
-                free_handle_blocks,
-            );
-            ppc_synchronize_process_native_handles(
-                process_memory_manager,
-                handles,
-                handle_states,
-            );
-            let disposed = process_memory_manager.dispose_native_handle(memory, handle);
-            ppc_apply_process_native_allocator(
+            let disposed = ppc_dispose_process_native_handle(
                 process_memory_manager,
                 memory,
                 heap_cursor,
+                heap_limit,
                 last_mem_error,
                 ptrs,
                 free_ptr_blocks,
+                handles,
                 free_handle_blocks,
+                handle_states,
+                handle,
             );
-            if disposed.is_some() {
-                handles.retain(|record| record.handle != handle);
-            }
-            if disposed.is_some() {
-                ppc_forget_handle_state(handle, handle_states);
+            if disposed {
                 toolbox_startup
                     .indexed_screen_ctables
                     .retain(|pixmap_handle, ctable_handle| {
@@ -17519,7 +17545,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::CloseResFile => {
             ppc_close_res_file(
                 cpu,
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
                 free_handle_blocks,
                 handle_states,
@@ -18767,7 +18799,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ReleaseResource => {
             ppc_release_resource(
                 cpu,
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
                 free_handle_blocks,
                 handle_states,
@@ -18974,7 +19012,19 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::DisposeCIcon => {
-            ppc_dispose_cicon(cpu, memory, handles, free_handle_blocks, handle_states);
+            ppc_dispose_cicon(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                handles,
+                free_handle_blocks,
+                handle_states,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SetCCursor | PpcImportDispatcherTarget::DisposeCCursor => {
@@ -60639,26 +60689,16 @@ fn ppc_plot_cicon(
     drew
 }
 
-fn ppc_recycle_tracked_handle(
-    handle: u32,
-    memory: &mut PpcSectionMem,
-    handles: &mut Vec<PpcHandleRecord>,
-    free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    handle_states: &mut Vec<PpcHandleStateRecord>,
-) -> bool {
-    let Some(index) = handles.iter().position(|record| record.handle == handle) else {
-        return false;
-    };
-    let record = handles.remove(index);
-    let _ = memory.write_u32_be(record.handle, 0);
-    ppc_forget_handle_state(handle, handle_states);
-    free_handle_blocks.push(record);
-    true
-}
-
+#[allow(clippy::too_many_arguments)]
 fn ppc_dispose_cicon(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
@@ -60673,27 +60713,21 @@ fn ppc_dispose_cicon(
             memory.read_u32_be(icon_ptr + 78).unwrap_or(0),
         )
     };
-    let _ = ppc_recycle_tracked_handle(
-        color_table_handle,
-        memory,
-        handles,
-        free_handle_blocks,
-        handle_states,
-    );
-    let _ = ppc_recycle_tracked_handle(
-        pixel_data_handle,
-        memory,
-        handles,
-        free_handle_blocks,
-        handle_states,
-    );
-    let _ = ppc_recycle_tracked_handle(
-        icon_handle,
-        memory,
-        handles,
-        free_handle_blocks,
-        handle_states,
-    );
+    for handle in [color_table_handle, pixel_data_handle, icon_handle] {
+        let _ = ppc_dispose_process_native_handle(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            handle,
+        );
+    }
 }
 
 fn ppc_set_cursor(
@@ -61602,7 +61636,13 @@ fn ppc_remove_resource(
 
 fn ppc_release_resource(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
@@ -61624,9 +61664,24 @@ fn ppc_release_resource(
     // More Macintosh Toolbox Essentials (1993), pp. 1-22 and 1-107:
     // ReleaseResource frees the resource data and invalidates its handle so
     // the application heap can satisfy later allocations from that storage.
-    ppc_recycle_handle(memory, handles, free_handle_blocks, handle_states, handle);
-    record.handle = 0;
-    *last_resource_error = PPC_NO_ERR;
+    if ppc_dispose_process_native_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        handles,
+        free_handle_blocks,
+        handle_states,
+        handle,
+    ) {
+        record.handle = 0;
+        *last_resource_error = PPC_NO_ERR;
+    } else {
+        *last_resource_error = PPC_RES_NOT_FOUND_ERR;
+    }
 }
 
 fn ppc_recycle_handle(
@@ -80232,7 +80287,13 @@ fn ppc_open_resource_path(
 
 fn ppc_close_res_file(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
@@ -80266,7 +80327,19 @@ fn ppc_close_res_file(
         .map(|resource| resource.handle)
         .collect();
     for handle in resource_handles {
-        ppc_recycle_handle(memory, handles, free_handle_blocks, handle_states, handle);
+        let _ = ppc_dispose_process_native_handle(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            handle,
+        );
     }
     resource_files.retain(|file| file.ref_num != ref_num);
     for resource in vfs_resources
@@ -88300,6 +88373,80 @@ pub(crate) mod tests {
         assert!(!state.resource);
         assert_eq!(detached.state_for_handle(handle), Some(0x40));
         assert!(!detached.native_handle_state(handle).high_locked);
+    }
+
+    #[test]
+    fn resource_disposal_is_immediately_process_owned() {
+        let pef = synthetic_pef_with_import(b"NewHandle");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 24;
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::NewHandle { clear: false },
+        );
+        let handle = native.cpu.gpr[3];
+        let ptr = native.memory.read_u32_be(handle).unwrap();
+        let shared_manager = native.process_memory_manager.0.clone();
+        let mut memory_manager = shared_manager.borrow_mut();
+        let detached = memory_manager.detached_clone();
+        let allocator = memory_manager.native_allocator_snapshot().unwrap();
+        let mut heap_cursor = allocator.heap.heap_cursor;
+        let heap_limit = allocator.heap.heap_limit;
+        let mut last_mem_error = allocator.heap.last_mem_error;
+        let mut ptrs = allocator.ptrs;
+        let mut free_ptr_blocks = allocator.free_ptr_blocks;
+        let mut free_handle_blocks = allocator.free_handle_blocks;
+        let mut handles = memory_manager.native_handle_records().to_vec();
+        let mut handle_states: Vec<_> = handles
+            .iter()
+            .map(|record| memory_manager.native_handle_state(record.handle))
+            .collect();
+        let mut resources = [PpcVfsResourceRecord {
+            ref_num: 1,
+            path: "Test App".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 128,
+            name: b"owned".to_vec(),
+            data: vec![0; 24],
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle,
+        }];
+        let mut last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        native.cpu.gpr[3] = handle;
+
+        ppc_release_resource(
+            &mut native.cpu,
+            &mut memory_manager,
+            &mut native.memory,
+            &mut heap_cursor,
+            heap_limit,
+            &mut last_mem_error,
+            &mut ptrs,
+            &mut free_ptr_blocks,
+            &mut handles,
+            &mut free_handle_blocks,
+            &mut handle_states,
+            &mut resources,
+            &mut last_resource_error,
+        );
+
+        assert_eq!(last_resource_error, PPC_NO_ERR);
+        assert_eq!(resources[0].handle, 0);
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        assert_eq!(memory_manager.native_allocation(handle), None);
+        assert_eq!(memory_manager.recover_handle(ptr), None);
+        assert!(memory_manager
+            .native_allocator()
+            .unwrap()
+            .free_handle_blocks
+            .iter()
+            .any(|record| record.handle == handle));
+        assert!(handles.iter().all(|record| record.handle != handle));
+        assert!(handle_states.iter().all(|state| state.handle != handle));
+        assert_eq!(detached.native_allocation(handle).map(|record| record.ptr), Some(ptr));
+        assert_eq!(detached.recover_handle(ptr), Some(handle));
     }
 
     #[test]
