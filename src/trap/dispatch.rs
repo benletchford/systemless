@@ -971,6 +971,11 @@ pub(crate) struct AeCallState {
     /// OSErr; AESend reports delivery status, so same-process sends use
     /// noErr here while the handler result remains a reply-event concern.
     pub result_override: Option<i16>,
+    /// Descriptor records created by the Apple Event Manager solely for this
+    /// handler invocation. The manager disposes these application-heap
+    /// objects after the handler returns. Interapplication Communication
+    /// (1993), pp. 4-33 and 4-39.
+    pub(crate) owned_descriptors: Option<(u32, u32)>,
     /// Optional Object Support Library continuation. When AEResolve calls a
     /// guest object accessor, the accessor returns through the same Pack8
     /// trampoline as AE handlers; this state tells the trampoline whether to

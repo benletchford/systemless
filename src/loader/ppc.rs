@@ -150881,6 +150881,87 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn classic_apple_event_handler_bundle_is_process_owned_cross_isa_and_disposed() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let ram_end = classic_bus.ram_size();
+        let low_memory_end = 0x0010_0000.min(ram_end);
+        let low_memory = classic_bus
+            .shared_ram_region(0, low_memory_end)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        for (base, end) in native
+            .memory
+            .ordinary_mapping_holes(low_memory_end, ram_end)
+        {
+            let memory = classic_bus
+                .shared_ram_region(base, end - base)
+                .expect("classic adapter owns the native mapping hole");
+            context.attach_memory(base, memory, &mut native.memory);
+        }
+
+        let sp = TEST_SP;
+        let event_class = u32::from_be_bytes(*b"aevt");
+        let event_id = u32::from_be_bytes(*b"oapp");
+        let handler = 0x0040_8000;
+        classic_cpu.write_reg(Register::D0, 0x091F);
+        classic_bus.write_word(sp, 0);
+        classic_bus.write_long(sp + 2, 0xfeed_beef);
+        classic_bus.write_long(sp + 6, handler);
+        classic_bus.write_long(sp + 10, event_id);
+        classic_bus.write_long(sp + 14, event_class);
+        classic_bus.write_word(sp + 18, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_cpu.write_reg(Register::PC, 0x00f0_1234);
+        classic_cpu.write_reg(Register::D0, 0x021B);
+        classic_bus.write_long(sp, 0x0032_0000);
+        classic_bus.write_word(sp + 4, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+
+        let state = classic
+            .ae_call_state
+            .clone()
+            .expect("classic AppleEvent handler is in flight");
+        let (event_desc, reply_desc) = state
+            .owned_descriptors
+            .expect("classic AppleEvent callback descriptors are process-owned");
+        let event_handle = classic_bus.read_long(event_desc + 4);
+        let event_data = classic_bus.read_long(event_handle);
+        assert_eq!(native.memory.read_u32_be(event_desc), Some(event_class));
+        assert_eq!(native.memory.read_u32_be(event_desc + 4), Some(event_handle));
+        assert_eq!(native.memory.read_u32_be(event_handle), Some(event_data));
+        classic_bus.write_byte(event_data, b'C');
+        assert_eq!(native.memory.read_u8(event_data), Some(b'C'));
+        native.memory.write_u8(event_data + 7, b'!').unwrap();
+        assert_eq!(classic_bus.read_byte(event_data + 7), b'!');
+
+        classic_bus.write_word(state.expected_sp_after_rtd, 0);
+        classic_cpu.write_reg(Register::A7, state.expected_sp_after_rtd);
+        classic_cpu.write_reg(Register::D0, 0xFEFE);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.get_alloc_size(event_desc), None);
+        assert_eq!(classic_bus.get_alloc_size(reply_desc), None);
+        assert_eq!(classic_bus.get_alloc_size(event_handle), None);
+        assert_eq!(classic_bus.get_alloc_size(event_data), None);
+        assert!(classic.ae_call_state.is_none());
+    }
+
+    #[test]
     fn apple_event_handler_bundle_allocation_failure_is_atomic() {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         native.set_heap_cursor(native.heap_limit().saturating_sub(8));
