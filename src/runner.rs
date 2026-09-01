@@ -1725,7 +1725,7 @@ impl FixtureRunnerConfig {
 
 /// Canonical entry point of the systemless library.
 ///
-/// `FixtureRunner` serializes one Macintosh process: [`ProcessContext`] owns
+/// `FixtureRunner` serializes one Macintosh process: `ProcessContext` owns
 /// state shared across architectures, [`MacMemoryBus`] exposes its flat RAM to
 /// 68K, and CPU-specific adapters execute 68K or PowerPC code against that
 /// state. [`TrapDispatcher`] provides the shared Toolbox and OS boundary. The
