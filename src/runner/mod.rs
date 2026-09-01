@@ -1398,8 +1398,6 @@ pub struct FixtureRunner {
     /// the process guest-call stack's 68k-to-PowerPC nesting depth.
     parked_m68k_cpus: Vec<M68kCpu>,
     ppc_app: Option<PpcLoadedApp>,
-    ppc_sound_synced_file_playback_count: usize,
-    ppc_sound_host_playbacks: Vec<PpcHostSoundPlayback>,
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     /// Canonical owner for state shared by this process's CPU ABI adapters.
@@ -1663,8 +1661,6 @@ impl FixtureRunner {
             cpu: M68kCpu::new(),
             parked_m68k_cpus: Vec::new(),
             ppc_app: None,
-            ppc_sound_synced_file_playback_count: 0,
-            ppc_sound_host_playbacks: Vec::new(),
             bus,
             dispatcher,
             process_context,
@@ -3264,8 +3260,6 @@ impl FixtureRunner {
 
         self.bus.detach_guest_address_space();
         self.ppc_app = None;
-        self.ppc_sound_synced_file_playback_count = 0;
-        self.ppc_sound_host_playbacks.clear();
 
         use crate::memory::globals::addr;
         let ram_size = self.bus.ram_size();
@@ -3735,8 +3729,6 @@ impl FixtureRunner {
         self.halted_sp = None;
         self.halted_d0 = None;
         self.cpu.write_reg(Register::PC, 0);
-        self.ppc_sound_synced_file_playback_count = 0;
-        self.ppc_sound_host_playbacks.clear();
         self.bus
             .attach_guest_address_space(ppc_app.memory.shared_view());
         self.ppc_app = Some(ppc_app);
@@ -6945,24 +6937,25 @@ impl FixtureRunner {
     fn service_ppc_sound_adapter(&mut self, ppc_app: &mut PpcLoadedApp) {
         self.sync_ppc_double_buffer_playbacks(ppc_app);
 
-        let start = self
-            .ppc_sound_synced_file_playback_count
-            .min(ppc_app.sound.file_playbacks.len());
-        for index in start..ppc_app.sound.file_playbacks.len() {
-            let playback = &ppc_app.sound.file_playbacks[index];
-            if !playback.active || playback.paused {
-                continue;
-            }
-            let Some(decoded) = ppc_app
-                .sound
-                .decoded_file_playbacks
-                .iter()
-                .find(|decoded| decoded.file_playback_index as usize == index)
-                .cloned()
-            else {
-                continue;
-            };
-            let channel = playback.channel;
+        let pending_timing = ppc_app
+            .sound
+            .file_playbacks
+            .iter()
+            .enumerate()
+            .filter(|(_, playback)| {
+                playback.active && !playback.paused && !playback.quiet_now && !playback.timing_valid
+            })
+            .filter_map(|(index, _)| {
+                ppc_app
+                    .sound
+                    .decoded_file_playbacks
+                    .iter()
+                    .find(|decoded| decoded.file_playback_index as usize == index)
+                    .cloned()
+                    .map(|decoded| (index, decoded))
+            })
+            .collect::<Vec<_>>();
+        for (index, decoded) in pending_timing {
             if trace_sound_runner_enabled() {
                 let non_silent = decoded
                     .samples
@@ -6970,30 +6963,16 @@ impl FixtureRunner {
                     .filter(|sample| **sample != 0x80)
                     .count();
                 eprintln!(
-                    "[PPC-SOUND] host file play index={index} chan=${channel:08X} rate=${:08X} samples={} non_silent={non_silent}",
+                    "[PPC-SOUND] process file play index={index} chan=${:08X} rate=${:08X} samples={} non_silent={non_silent}",
+                    decoded.channel,
                     decoded.sample_rate_fixed,
                     decoded.samples.len()
                 );
             }
             self.ensure_ppc_sound_playback_timing(ppc_app, index, &decoded);
-            self.ppc_sound_host_playbacks
-                .retain(|record| record.file_playback_index != index);
-            self.ppc_sound_host_playbacks.push(PpcHostSoundPlayback {
-                file_playback_index: index,
-                channel,
-            });
         }
 
-        self.ppc_sound_synced_file_playback_count = ppc_app.sound.file_playbacks.len();
         self.adjust_ppc_sound_pause_timing(ppc_app);
-
-        self.ppc_sound_host_playbacks.retain(|record| {
-            ppc_app
-                .sound
-                .file_playbacks
-                .get(record.file_playback_index)
-                .is_some_and(|playback| playback.active && !playback.quiet_now)
-        });
     }
 
     fn sync_ppc_double_buffer_playbacks(&mut self, ppc_app: &mut PpcLoadedApp) {
@@ -7326,37 +7305,36 @@ impl FixtureRunner {
                 chan.quiet();
             }
         }
-        self.ppc_sound_host_playbacks.retain(|record| {
-            !completed
-                .iter()
-                .any(|(index, _)| *index == record.file_playback_index)
-        });
         self.fire_pending_ppc_sound_completions();
     }
 
     fn sync_ppc_sound_completions_from_dispatcher(&mut self) {
-        if self.ppc_app.is_none() || self.ppc_sound_host_playbacks.is_empty() {
+        let Some(ppc_app) = self.ppc_app.as_ref() else {
             self.fire_pending_ppc_sound_completions();
             return;
-        }
+        };
 
-        let mut remaining = Vec::with_capacity(self.ppc_sound_host_playbacks.len());
-        let mut completed = Vec::new();
-        for record in self.ppc_sound_host_playbacks.drain(..) {
-            let still_active = self
-                .dispatcher
-                .sound_manager
-                .channels
-                .iter()
-                .find(|channel| channel.guest_ptr == record.channel)
-                .is_some_and(|channel| channel.has_active_playback());
-            if still_active {
-                remaining.push(record);
-            } else {
-                completed.push(record);
-            }
-        }
-        self.ppc_sound_host_playbacks = remaining;
+        // The process Sound Manager owns playback and its cursor. Native
+        // records retain only callback metadata; observe the canonical
+        // channel to decide when its completion routine is due. Sound 1994,
+        // pp. 2-134--2-151.
+        let completed = ppc_app
+            .sound
+            .file_playbacks
+            .iter()
+            .enumerate()
+            .filter(|(_, playback)| playback.active && !playback.quiet_now && playback.timing_valid)
+            .filter_map(|(index, playback)| {
+                let still_active = self
+                    .dispatcher
+                    .sound_manager
+                    .channels
+                    .iter()
+                    .find(|channel| channel.guest_ptr == playback.channel)
+                    .is_some_and(|channel| channel.has_active_playback());
+                (!still_active).then_some((index, playback.channel))
+            })
+            .collect::<Vec<_>>();
         if completed.is_empty() {
             self.fire_pending_ppc_sound_completions();
             return;
@@ -7366,12 +7344,8 @@ impl FixtureRunner {
             let Some(ppc_app) = self.ppc_app.as_mut() else {
                 return;
             };
-            for record in completed {
-                let Some(playback) = ppc_app
-                    .sound
-                    .file_playbacks
-                    .get_mut(record.file_playback_index)
-                else {
+            for (index, channel) in completed {
+                let Some(playback) = ppc_app.sound.file_playbacks.get_mut(index) else {
                     continue;
                 };
                 if !playback.active || playback.quiet_now {
@@ -7394,9 +7368,8 @@ impl FixtureRunner {
                         .sound
                         .pending_completions
                         .push(PpcSoundCompletionRecord {
-                            file_playback_index: u32::try_from(record.file_playback_index)
-                                .unwrap_or(u32::MAX),
-                            channel: record.channel,
+                            file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
+                            channel,
                             completion: playback.completion,
                             command: playback.completion_command,
                             tick: self.dispatcher.tick_count,
@@ -15974,6 +15947,59 @@ mod tests {
         assert_eq!(runner.dispatcher().sound_manager.debug_cmd_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_buffer_cmd_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
+    }
+
+    #[test]
+    fn ppc_file_playback_timing_follows_late_process_playback_data() {
+        let playback = |channel| PpcSoundFilePlaybackRecord {
+            channel,
+            ref_num: 128,
+            resource_id: -1,
+            buffer_size: 20_480,
+            buffer: 0,
+            selection: 0,
+            completion: 0,
+            completion_command: None,
+            async_play: true,
+            paused: false,
+            active: true,
+            quiet_now: false,
+            timing_valid: false,
+            start_tick: 0,
+            start_instruction_count: 0,
+            due_tick: 0,
+            due_instruction_count: 0,
+            pause_timing_valid: false,
+            pause_started_tick: 0,
+            pause_started_instruction_count: 0,
+            aiff: None,
+            decoded_aiff: None,
+        };
+        let decoded = |file_playback_index, channel| PpcDecodedAiffPlaybackRecord {
+            file_playback_index,
+            channel,
+            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+            samples: vec![0x80, 0x90, 0x70, 0x80],
+        };
+        let mut sound = PpcSoundState::default();
+        sound.file_playbacks = vec![playback(0x0500_1000), playback(0x0500_2000)];
+        sound.decoded_file_playbacks = vec![decoded(1, 0x0500_2000)];
+        let app = halted_ppc_app_with_sound(sound);
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app should be loaded");
+        runner.service_ppc_sound_adapter(&mut ppc_app);
+        assert!(!ppc_app.sound.file_playbacks[0].timing_valid);
+        assert!(ppc_app.sound.file_playbacks[1].timing_valid);
+
+        ppc_app
+            .sound
+            .decoded_file_playbacks
+            .push(decoded(0, 0x0500_1000));
+        runner.service_ppc_sound_adapter(&mut ppc_app);
+        assert!(ppc_app.sound.file_playbacks[0].timing_valid);
+        assert!(ppc_app.sound.file_playbacks[1].timing_valid);
     }
 
     #[test]

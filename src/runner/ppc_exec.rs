@@ -36,12 +36,6 @@ pub(crate) struct PpcGWorldDumpState {
     pub(crate) swap_count: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PpcHostSoundPlayback {
-    pub(crate) file_playback_index: usize,
-    pub(crate) channel: u32,
-}
-
 pub(crate) struct PpcDecodedDoubleBuffer {
     pub(crate) buffer_ptr: u32,
     pub(crate) flags: u32,
