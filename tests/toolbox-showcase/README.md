@@ -24,8 +24,12 @@ test protocol. Its Pages menu selects seven interactive views:
 6. Dialogs & Alerts exercises resource-backed modal dialogs, controls,
    editable text, and a system alert.
 7. Palettes activates a resource-backed mixed-usage palette, draws through
-   `PmForeColor` and `PmBackColor`, and animates explicit CLUT entries without
-   redrawing their indexed pixels.
+   `PmForeColor` and `PmBackColor`, translates an unrelated indexed PICT
+   through a canonical offscreen GWorld into the active screen palette, and
+   animates explicit CLUT entries without redrawing their indexed pixels. The
+   68K slice records and replays the PICT; the PowerPC slice draws the expected
+   color strip because its fixture adapter does not record `CopyBits` inside
+   `OpenPicture`.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -78,8 +82,9 @@ selects the 68K `CODE` slice, and the second launch selects the native PEF with
 8. Invoke the system alert, capturing its live modal state on implementations
    that block for a response, then dismiss it or record its return.
 9. Verify the final dialog status after both modal sessions.
-10. Activate the Palettes page and capture its initial tolerant and
-    animated-explicit color environment.
+10. Activate the Palettes page, verify the indexed PICT → GWorld → screen
+    transfer retains distinct colors across unrelated CTables, and capture its
+    initial tolerant and animated-explicit color environment.
 11. Click Animate Palette and capture the same indexed pixels recolored by
     `AnimateEntry` without repainting the swatches.
 12. Open File, drag across the menu bar to Pages, and capture Graphics

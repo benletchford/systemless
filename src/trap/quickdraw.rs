@@ -3504,19 +3504,6 @@ impl super::TrapDispatcher {
                 // destination-device indices.
                 // Imaging With QuickDraw 1994, 3-71.
                 // references/executor/src/quickdraw/qStdBits.cpp
-                // During a seeded palette window the screen's cm holds
-                // the title palette while offscreen buffers retain the
-                // canonical system CLUT. Remapping canonical indices
-                // through the title palette produces permanently wrong
-                // pixels. Skip translation when the source is canonical
-                // and the destination is the screen cm (ctab_handle 0)
-                // — the raw indices will display correctly once the
-                // palette fade completes.
-                let skip_canonical_to_screen = src_info.pixel_size == 8
-                    && dst_ctab_handle == 0
-                    && src_clut
-                        .as_ref()
-                        .is_some_and(Self::uses_canonical_system_8bpp_clut);
                 // A full-table Palette Manager fade leaves the logical
                 // GDevice table as the inverse-table baseline while the
                 // physical CLUT is transiently rewritten. Same-depth pixels
@@ -3558,7 +3545,6 @@ impl super::TrapDispatcher {
                     && matches!(dst_info.pixel_size, 2 | 4 | 8)
                     && src_info.ctab_handle != dst_info.ctab_handle
                     && (src_info.pixel_size != dst_info.pixel_size || indexed_tables_differ)
-                    && !skip_canonical_to_screen
                     && !skip_active_fade_to_screen
                     && !skip_explicit_palette_translation
                 {
@@ -8526,6 +8512,21 @@ impl super::TrapDispatcher {
                                         &port_clut,
                                         &self.color_manager_clut,
                                     ) {
+                                        if port_ctab_handle != 0 {
+                                            let ctab_ptr = bus.read_long(port_ctab_handle);
+                                            let ct_flags = if ctab_ptr != 0 {
+                                                bus.read_word(ctab_ptr + 4)
+                                            } else {
+                                                0x8000
+                                            };
+                                            let logical_screen_clut = self.color_manager_clut;
+                                            let _ = self.overwrite_color_table_handle_with_clut(
+                                                bus,
+                                                port_ctab_handle,
+                                                &logical_screen_clut,
+                                                ct_flags,
+                                            );
+                                        }
                                         preseeded_draw_clut = Some(raw_pict_array);
                                         preseeded_offscreen_from_pict = true;
                                     } else if Self::should_seed_screen_palette_from_pict(
@@ -8748,6 +8749,21 @@ impl super::TrapDispatcher {
                                     &port_clut,
                                     &self.color_manager_clut,
                                 ) {
+                                    if port_ctab_handle != 0 {
+                                        let ctab_ptr = bus.read_long(port_ctab_handle);
+                                        let ct_flags = if ctab_ptr != 0 {
+                                            bus.read_word(ctab_ptr + 4)
+                                        } else {
+                                            0x8000
+                                        };
+                                        let logical_screen_clut = self.color_manager_clut;
+                                        let _ = self.overwrite_color_table_handle_with_clut(
+                                            bus,
+                                            port_ctab_handle,
+                                            &logical_screen_clut,
+                                            ct_flags,
+                                        );
+                                    }
                                     let device_ct_seed =
                                         Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
                                             .unwrap_or(0);
@@ -17601,14 +17617,12 @@ impl super::TrapDispatcher {
         // installing the palette that belongs to that picture, then blit the
         // raw 8-bit indices after SetEntries. Matching the PICT's colors
         // against the currently-active stale port CTab bakes the wrong index
-        // values into the offscreen buffer. Preserve authored indices only for
-        // substantial, non-grayscale PICT CTabs; sparse helper pictures and
-        // dense grayscale fades still use normal color matching.
-        //
-        // Do not preserve when the logical screen is still the system palette
-        // (possibly mid-fade). A canonical offscreen CTab paired with a custom
-        // logical screen is exactly the stale-table case that needs authored
-        // indices preserved for the later screen blit.
+        // values into the offscreen buffer. Raw indices are valid only when
+        // every populated PICT entry already names the same visible color at
+        // that index in the logical screen palette. Otherwise ordinary Color
+        // Manager translation is required; preserving unrelated PICT indices
+        // corrupts sprite colors. Indexed hardware exposes the high byte of
+        // each RGB component. Imaging With QuickDraw (1994), pp. 4-13, 7-14.
         if Self::uses_canonical_system_8bpp_clut(logical_screen_clut)
             || Self::uses_scaled_canonical_system_8bpp_clut(logical_screen_clut)
         {
@@ -17623,6 +17637,16 @@ impl super::TrapDispatcher {
         }
         !Self::pict_clut_is_dense_grayscale(pict_clut)
             && Self::pict_clut_populated_count(pict_clut) >= 64
+            && pict_clut
+                .iter()
+                .zip(logical_screen_clut)
+                .filter(|(picture, _)| **picture != [0, 0, 0])
+                .all(|(picture, screen)| {
+                    picture
+                        .iter()
+                        .zip(screen)
+                        .all(|(p, s)| p >> 8 == s >> 8)
+                })
     }
 
     fn scale_clut(clut: &[[u16; 3]; 256], scale: f64) -> [[u16; 3]; 256] {
@@ -44563,13 +44587,11 @@ mod tests {
         current[42] = [0x1234, 0x5678, 0x9ABC];
         let mut logical = current;
         logical[43] = [0x2222, 0x3333, 0x4444];
-        let mut pict = [[0u16; 3]; 256];
-        for (index, rgb) in pict.iter_mut().enumerate().take(128) {
-            *rgb = [
-                ((index as u16) << 8) | index as u16,
-                0x8000u16.saturating_sub((index as u16) << 6),
-                0x1000u16.saturating_add((index as u16) << 5),
-            ];
+        let mut pict = logical;
+        for rgb in &mut pict {
+            for component in rgb {
+                *component = (*component & 0xFF00) | 0x005A;
+            }
         }
 
         assert!(
@@ -44584,6 +44606,25 @@ mod tests {
         let current = TrapDispatcher::standard_mac_8bpp_clut();
         let mut logical = current;
         logical[42] = [0x1234, 0x5678, 0x9ABC];
+        let mut pict = logical;
+        for rgb in &mut pict {
+            for component in rgb {
+                *component = (*component & 0xFF00) | 0x003C;
+            }
+        }
+
+        assert!(
+            TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+                &pict, &current, &logical
+            )
+        );
+    }
+
+    #[test]
+    fn test_offscreen_pict_indices_not_preserved_for_unrelated_custom_screen_palette() {
+        let current = TrapDispatcher::standard_mac_8bpp_clut();
+        let mut logical = current;
+        logical[42] = [0x1234, 0x5678, 0x9ABC];
         let mut pict = [[0u16; 3]; 256];
         for (index, rgb) in pict.iter_mut().enumerate().take(128) {
             *rgb = [
@@ -44594,7 +44635,7 @@ mod tests {
         }
 
         assert!(
-            TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
+            !TrapDispatcher::should_preserve_offscreen_picture_indices_from_pict(
                 &pict, &current, &logical
             )
         );
