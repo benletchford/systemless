@@ -176,26 +176,6 @@ static void DrawIndexedPictureTransfer(void)
     short x;
     short y;
     short i;
-#ifdef SHOWCASE_TARGET_PPC
-    RGBColor fallbackColor;
-    Rect fallbackBand;
-
-    /* The PPC fixture adapter does not record CopyBits inside OpenPicture. */
-    for (i = 0; i < 6; i++) {
-        fallbackColor.red = (unsigned short)(0x2200 + i * 0x2400);
-        fallbackColor.green = (unsigned short)(0xee00 - i * 0x2200);
-        fallbackColor.blue = (unsigned short)(0x3300 + i * 0x1600);
-        RGBForeColor(&fallbackColor);
-        SetRect(&fallbackBand, 330 + i * 32, 272, 362 + i * 32, 290);
-        PaintRect(&fallbackBand);
-    }
-    fallbackColor.red = fallbackColor.green = fallbackColor.blue = 0;
-    RGBForeColor(&fallbackColor);
-    SetRect(&fallbackBand, 330, 272, 522, 290);
-    FrameRect(&fallbackBand);
-    return;
-#endif
-
     sourceWorld = nil;
     replayWorld = nil;
     picture = nil;
@@ -720,49 +700,16 @@ static void DrawDrawingPage(void)
     darkGray.red = darkGray.green = darkGray.blue = 0x5555;
     black.red = black.green = black.blue = 0x0000;
 
-    /* Section 1: QuickDraw 3D Native PowerPC vs 68K Beveled Treatment */
+    /* Section 1: architecture-neutral result after the native QD3D submission. */
     SetRect(&r, 20, 48, 270, 165);
     DrawBeveledBox(&r, false);
 
 #ifdef SHOWCASE_TARGET_PPC
-    TextFont(systemFont);
-    TextSize(9);
-    TextFace(bold);
-    MoveTo(28, 62);
-    DrawString("\pNative PowerPC QuickDraw 3D");
-    TextFace(0);
-    MoveTo(28, 74);
-    DrawString("\p(Interactive 3D Pipeline & TriMesh)");
-
-    /* Sunken 3D Viewport Frame */
-    SetRect(&subRect, 29, 79, 126, 131);
-    DrawBeveledBox(&subRect, true);
-
-    /* Real QuickDraw 3D Render Pass into Bounded Viewport Pane */
+    /* Exercise the native pipeline before painting the shared visible result. */
     RenderQD3DScene(gMainWindow);
+    DrawBeveledBox(&r, false);
+#endif
 
-    /* Sunken 3D Gauge Well beside 3D viewport */
-    SetRect(&subRect, 135, 95, 260, 125);
-    DrawBeveledBox(&subRect, true);
-    color.red = 0x2222; color.green = 0x8888; color.blue = 0x3333;
-    RGBForeColor(&color);
-    SetRect(&arcRect, 138, 98, 215, 122);
-    PaintRect(&arcRect);
-    RGBForeColor(&black);
-    TextFont(applFont);
-    TextSize(9);
-    MoveTo(145, 113);
-    DrawString("\pGauge: 65%");
-
-    /* Inset status bar */
-    SetRect(&subRect, 30, 136, 260, 157);
-    DrawBeveledBox(&subRect, true);
-    TextFont(3);
-    TextSize(9);
-    MoveTo(38, 150);
-    DrawString("\pQ3 View / Camera / Lights / TriMesh");
-
-#else
     TextFont(systemFont);
     TextSize(9);
     TextFace(bold);
@@ -810,7 +757,6 @@ static void DrawDrawingPage(void)
     TextSize(9);
     MoveTo(38, 148);
     DrawString("\pBeveled Facet Lighting (White / Gray)");
-#endif
 
     /* Section 2: Polygons & Arcs */
     SetRect(&r, 280, 48, 535, 165);
@@ -921,11 +867,7 @@ static void DrawDrawingPage(void)
     pic = OpenPicture(&picFrame);
     color.red = 0xeeee; color.green = 0x7777; color.blue = 0x1111;
     RGBForeColor(&color);
-#ifdef SHOWCASE_TARGET_PPC
-    PaintRect(&picFrame);
-#else
     PaintRoundRect(&picFrame, 10, 10);
-#endif
     RGBForeColor(&black);
     FrameRoundRect(&picFrame, 10, 10);
     TextFont(applFont);
@@ -1659,12 +1601,12 @@ static void Initialize(void)
     gPrefBtnReset = NewControl(gMainWindow, &r, "\pReset Defaults", false, 0, 0, 1,
                                pushButProc, 0);
     SetRect(&r, 285, 315, 425, 339);
-    gPrefBtnModal = NewControl(gMainWindow, &r, "\pModal Dialog…", false, 0, 0, 1,
+    gPrefBtnModal = NewControl(gMainWindow, &r, "\pModal Dialog\311", false, 0, 0, 1,
                                pushButProc, 0);
 
     /* Page 6: Dialogs Controls */
     SetRect(&r, 40, 305, 220, 329);
-    gDlgBtnOpenPrefs = NewControl(gMainWindow, &r, "\pOpen Modal Dialog…", false, 0, 0, 1,
+    gDlgBtnOpenPrefs = NewControl(gMainWindow, &r, "\pOpen Modal Dialog\311", false, 0, 0, 1,
                                   pushButProc, 0);
     SetRect(&r, 240, 305, 410, 329);
     gDlgBtnOpenAlert = NewControl(gMainWindow, &r, "\pDisplay About Alert…", false, 0, 0, 1,
