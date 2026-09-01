@@ -1217,38 +1217,14 @@ impl ProcessNativeMemoryManager {
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
     ) {
-        self.replace_native_handle_records(handles, false);
+        self.replace_native_handle_records(handles);
     }
 
-    /// Refresh native allocation records without allowing an adapter snapshot
-    /// to replace canonical state changed by another CPU during the same run.
-    pub(crate) fn refresh_native_handle_records(
-        &mut self,
-        handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
-    ) {
-        self.replace_native_handle_records(handles, true);
-    }
-
+    #[cfg(test)]
     fn replace_native_handle_records(
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
-        retain_process_state: bool,
     ) {
-        let mut retained_states = HashMap::new();
-        let mut retained_high_locks = HashSet::new();
-        if retain_process_state {
-            retained_states.extend(self.native_handles.iter().filter_map(|handle| {
-                self.handle_state_bits
-                    .get(handle)
-                    .map(|state| (*handle, state))
-            }));
-            retained_high_locks.extend(
-                self.native_handles
-                    .iter()
-                    .filter(|handle| self.handle_high_locked.get(handle).unwrap_or(false))
-                    .copied(),
-            );
-        }
         for ptr in self.native_handle_ptrs.drain() {
             self.ptr_to_handle.remove(&ptr);
         }
@@ -1260,18 +1236,11 @@ impl ProcessNativeMemoryManager {
         for (record, adapter_state) in handles {
             let ProcessHandleRecord { handle, ptr, .. } = record;
             if handle != 0 {
-                // Existing handles already have canonical process state. A CPU
-                // adapter's end-of-slice snapshot may predate a nested callback,
-                // so only use adapter state when admitting a new native handle.
-                let state = retained_states.remove(&handle).unwrap_or(adapter_state);
                 if ptr != 0 {
                     self.ptr_to_handle.insert(ptr, handle);
                     self.native_handle_ptrs.insert(ptr);
                 }
-                self.handle_state_bits.insert(handle, state);
-                if state & 0x80 != 0 && retained_high_locks.contains(&handle) {
-                    self.handle_high_locked.insert(handle, true);
-                }
+                self.handle_state_bits.insert(handle, adapter_state);
                 self.native_handles.insert(handle);
                 self.native_allocations.push(record);
             }
@@ -2575,37 +2544,6 @@ impl ProcessNativeMemoryManager {
         self.native_allocator_dirty = false;
     }
 
-    pub(crate) fn synchronize_native_allocator(
-        &mut self,
-        heap_cursor: u32,
-        heap_limit: u32,
-        last_mem_error: i16,
-        ptrs: &[ProcessPtrRecord],
-        free_ptr_blocks: &[ProcessPtrRecord],
-        free_handle_blocks: &[ProcessHandleRecord],
-    ) {
-        let Some(heap) = self
-            .native_allocator
-            .as_ref()
-            .map(|allocator| allocator.heap)
-        else {
-            return;
-        };
-        self.publish_native_allocator(
-            ProcessNativeHeapState {
-                heap_base: heap.heap_base,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                heap_maximized: heap.heap_maximized,
-                master_pointer_blocks_requested: heap.master_pointer_blocks_requested,
-            },
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
-        );
-    }
-
     pub(crate) fn native_allocator_update(&self) -> Option<ProcessNativeAllocatorState> {
         self.native_allocator_dirty
             .then(|| self.native_allocator.clone())
@@ -3095,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn native_allocator_synchronization_preserves_process_heap_operations() {
+    fn native_heap_operations_update_canonical_state_directly() {
         const HEAP_BASE: u32 = 0x0300_0000;
         let mut manager = ProcessMemoryManager::default();
         manager.publish_native_allocator(
@@ -3114,14 +3052,10 @@ mod tests {
 
         manager.maximize_native_heap();
         manager.request_native_master_pointers();
-        manager.synchronize_native_allocator(
-            HEAP_BASE + 0x20,
-            HEAP_BASE + 0x1000,
-            ProcessMemoryManager::PARAM_ERR,
-            &[],
-            &[],
-            &[],
-        );
+        manager.set_native_mem_error(ProcessMemoryManager::PARAM_ERR);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(HEAP_BASE, vec![0; 0x1000]);
+        assert_eq!(manager.reserve_native_bytes(&mut memory, 0x20, true), HEAP_BASE);
 
         let heap = manager.native_heap_state().unwrap();
         assert_eq!(heap.heap_cursor, HEAP_BASE + 0x20);
