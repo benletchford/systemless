@@ -2762,13 +2762,13 @@ impl FixtureRunner {
                 .dispatcher
                 .vfs
                 .get(&normalized)
-                .cloned()
+                .map(|bytes| bytes.to_vec())
                 .unwrap_or_default(),
             resource_fork: self
                 .dispatcher
                 .vfs_rsrc
                 .get(&normalized)
-                .cloned()
+                .map(|bytes| bytes.to_vec())
                 .unwrap_or_default(),
             file_type: metadata.file_type,
             creator: metadata.creator,
@@ -2873,13 +2873,13 @@ impl FixtureRunner {
             .dispatcher
             .vfs
             .get(path)
-            .map(Vec::as_slice)
+            .map(|bytes| bytes.as_slice())
             .unwrap_or(&[]);
         let resource_fork = self
             .dispatcher
             .vfs_rsrc
             .get(path)
-            .map(Vec::as_slice)
+            .map(|bytes| bytes.as_slice())
             .unwrap_or(&[]);
         Some(VfsFileSummary {
             path: stat.path,
@@ -2897,12 +2897,12 @@ impl FixtureRunner {
 
     fn vfs_file_stat_for_path(&mut self, path: &str) -> Option<VfsFileStat> {
         let metadata = self.dispatcher.vfs_file_metadata(path)?;
-        let data_len = self.dispatcher.vfs.get(path).map(Vec::len).unwrap_or(0);
+        let data_len = self.dispatcher.vfs.get(path).map(|bytes| bytes.len()).unwrap_or(0);
         let resource_len = self
             .dispatcher
             .vfs_rsrc
             .get(path)
-            .map(Vec::len)
+            .map(|bytes| bytes.len())
             .unwrap_or(0);
         Some(VfsFileStat {
             path: path.to_string(),
@@ -7879,9 +7879,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher
-                .vfs
-                .insert(normalized.clone(), file.data.clone());
             self.dispatcher.set_vfs_entry_finfo(
                 &normalized,
                 file.file_type,
@@ -7903,9 +7900,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher
-                .vfs_rsrc
-                .insert(normalized.clone(), fork.data.clone());
             self.dispatcher.set_vfs_entry_finfo(
                 &normalized,
                 fork.file_type,
@@ -11195,6 +11189,7 @@ mod tests {
     use crate::loader::ppc::*;
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::menu_manager::TrackedMenuPaneView;
+    use crate::process_context::{ProcessFileSystemState, SharedProcessFileSystem};
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
@@ -13673,14 +13668,7 @@ mod tests {
             sound,
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: Vec::new(),
-            deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
-            vfs_resources: Vec::new(),
-            next_file_ref_num: 128,
+            process_file_system: ppc_initial_process_file_system(),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
@@ -15818,41 +15806,51 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: vec![PpcVfsFileRecord {
-                path: "System Folder/Preferences/Test App Prefs".to_string(),
-                data: b"prefs".to_vec(),
-                creator: u32::from_be_bytes(*b"Nano"),
-                file_type: u32::from_be_bytes(*b"pref"),
-                finder_flags: 0x0200,
-                dirty: true,
-            }],
-            deleted_vfs_file_paths: vec!["System Folder/Preferences/Old Prefs".to_string()],
-            resource_files: Vec::new(),
-            vfs_resource_files: vec![PpcVfsResourceFileRecord {
-                path: "System Folder/Preferences/Test App HighScores".to_string(),
-                creator: u32::from_be_bytes(*b"Nano"),
-                file_type: u32::from_be_bytes(*b"pref"),
-                finder_flags: 0x0400,
-                resource_len: 0,
-                raw_data: None,
-                map_attrs: 0,
-                dirty: true,
-            }],
-            vfs_resources: vec![PpcVfsResourceRecord {
-                ref_num: 128,
-                path: "System Folder/Preferences/Test App HighScores".to_string(),
-                res_type: u32::from_be_bytes(*b"pref"),
-                res_id: 200,
-                name: b"Scores".to_vec(),
-                data: b"score".to_vec(),
-                raw_data: None,
-                raw_attrs: None,
-                attrs: 0,
-                handle: 0,
-            }],
-            next_file_ref_num: 128,
+            process_file_system: SharedProcessFileSystem::from_state(
+                ProcessFileSystemState {
+                files: Vec::new(),
+                stdio_streams: ppc_initial_stdio_streams(),
+                vfs_files: vec![PpcVfsFileRecord {
+                    path: "System Folder/Preferences/Test App Prefs".to_string(),
+                    data: (b"prefs".to_vec()).into(),
+                    creator: u32::from_be_bytes(*b"Nano"),
+                    file_type: u32::from_be_bytes(*b"pref"),
+                    finder_flags: 0x0200,
+                    dirty: true,
+                }]
+                .into(),
+                deleted_vfs_file_paths: vec![
+                    "System Folder/Preferences/Old Prefs".to_string(),
+                ],
+                resource_manager: Default::default(),
+                next_file_ref_num: 128,
+            }
+            .with_resources(
+                Vec::new(),
+                vec![PpcVfsResourceFileRecord {
+                    path: "System Folder/Preferences/Test App HighScores".to_string(),
+                    creator: u32::from_be_bytes(*b"Nano"),
+                    file_type: u32::from_be_bytes(*b"pref"),
+                    finder_flags: 0x0400,
+                    resource_len: 0,
+                    raw_data: None,
+                    map_attrs: 0,
+                    dirty: true,
+                }],
+                vec![PpcVfsResourceRecord {
+                    ref_num: 128,
+                    path: "System Folder/Preferences/Test App HighScores".to_string(),
+                    res_type: u32::from_be_bytes(*b"pref"),
+                    res_id: 200,
+                    name: b"Scores".to_vec(),
+                    data: b"score".to_vec(),
+                    raw_data: None,
+                    raw_attrs: None,
+                    attrs: 0,
+                    handle: 0,
+                }],
+            ),
+            ),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
@@ -16032,6 +16030,27 @@ mod tests {
             .deleted_vfs_file_paths
             .is_empty());
         assert!(!runner.ppc_app.as_ref().unwrap().vfs_resource_files[0].dirty);
+
+        let prefs_path = "System Folder/Preferences/Test App Prefs";
+        runner.ppc_app.as_mut().unwrap().vfs_files[0]
+            .data
+            .extend_from_slice(b"-native");
+        assert_eq!(
+            runner.dispatcher().vfs.get(prefs_path).unwrap(),
+            b"prefs-native",
+            "classic File Manager view must observe native writes before another runner sync"
+        );
+
+        runner
+            .dispatcher_mut()
+            .vfs
+            .get_mut(prefs_path)
+            .unwrap()
+            .extend_from_slice(b"-classic");
+        let native_file = &runner.ppc_app.as_ref().unwrap().vfs_files[0];
+        let classic_file = runner.dispatcher().vfs.get_shared(prefs_path).unwrap();
+        assert!(native_file.data.ptr_eq(classic_file));
+        assert_eq!(native_file.data.as_slice(), b"prefs-native-classic");
     }
 
     #[test]
@@ -16731,14 +16750,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: Vec::new(),
-            deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
-            vfs_resources: Vec::new(),
-            next_file_ref_num: 128,
+            process_file_system: ppc_initial_process_file_system(),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
@@ -16889,14 +16901,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: Vec::new(),
-            deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
-            vfs_resources: Vec::new(),
-            next_file_ref_num: 128,
+            process_file_system: ppc_initial_process_file_system(),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
@@ -17306,14 +17311,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: Vec::new(),
-            deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
-            vfs_resources: Vec::new(),
-            next_file_ref_num: 128,
+            process_file_system: ppc_initial_process_file_system(),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
@@ -17623,14 +17621,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            files: Vec::new(),
-            stdio_streams: ppc_initial_stdio_streams(),
-            vfs_files: Vec::new(),
-            deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: Vec::new(),
-            vfs_resources: Vec::new(),
-            next_file_ref_num: 128,
+            process_file_system: ppc_initial_process_file_system(),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {

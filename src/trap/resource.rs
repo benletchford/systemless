@@ -1375,11 +1375,6 @@ impl super::TrapDispatcher {
         file.loaded.insert((res_type, new_id), ptr);
         file.attrs.insert((res_type, new_id), attrs);
         file.map_attrs |= Self::RES_MAP_CHANGED_ATTR;
-        self.resource_file_order
-            .entry(current_refnum)
-            .or_default()
-            .push((res_type, new_id));
-
         if name_ptr != 0 {
             let name_bytes = bus.read_pstring(name_ptr);
             if let Ok(name) = String::from_utf8(name_bytes) {
@@ -1389,6 +1384,10 @@ impl super::TrapDispatcher {
                 }
             }
         }
+        self.resource_file_order
+            .entry(current_refnum)
+            .or_default()
+            .push((res_type, new_id));
 
         if let Some(size) = bus.get_alloc_size(ptr) {
             self.remember_resource_backing_data(
@@ -3166,14 +3165,12 @@ impl super::TrapDispatcher {
                     self.resource_handle_files.insert(handle, refnum);
                     self.remember_resource_handle_index(handle, refnum, res_type, res_id);
 
+                    let mut added_to_file = false;
                     if let Some(resources) = self.resources.as_mut() {
                         if let Some(file) = resources.files.get_mut(&refnum) {
                             // Add to loaded map
                             file.loaded.insert((res_type, res_id), ptr);
-                            self.resource_file_order
-                                .entry(refnum)
-                                .or_default()
-                                .push((res_type, res_id));
+                            added_to_file = true;
                             // Set resChanged attribute
                             let entry = file.attrs.entry((res_type, res_id)).or_insert(0);
                             *entry |= Self::RES_CHANGED_ATTR as u8;
@@ -3191,6 +3188,12 @@ impl super::TrapDispatcher {
                                 }
                             }
                         }
+                    }
+                    if added_to_file {
+                        self.resource_file_order
+                            .entry(refnum)
+                            .or_default()
+                            .push((res_type, res_id));
                     }
                     if ptr != 0 {
                         if let Some(size) = bus.get_alloc_size(ptr) {
@@ -6675,7 +6678,9 @@ impl super::TrapDispatcher {
 
                         let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
                         let rsrc_key = format!("__rsrc__{vfs_key}");
-                        self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data);
+                        self.vfs
+                            .entry(rsrc_key.clone())
+                            .or_insert(rsrc_data.into());
                         let refnum = self.next_refnum;
                         self.next_refnum += 1;
                         self.open_files.insert(refnum, rsrc_key.clone());
@@ -17629,7 +17634,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         disp.vfs
-            .insert("Game/Data 1".to_string(), (0u8..12).collect());
+            .insert("Game/Data 1".to_string(), (0u8..12).collect::<Vec<_>>());
         disp.set_vfs_entry_metadata("Game/Data 1", *b"DATA", *b"TST!", 0);
         let metadata = disp.vfs_file_metadata("Game/Data 1").unwrap();
         disp.open_files.insert(123, "Game/Data 1".to_string());
