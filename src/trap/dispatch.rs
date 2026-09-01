@@ -16,10 +16,10 @@ use crate::process_context::{
     ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
-    SharedProcessCursorState, SharedProcessEventQueue, SharedProcessInputState,
-    SharedProcessFileSystem, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessResourceManager, SharedProcessScrapState, SharedProcessSoundManager,
-    SharedProcessValue,
+    SharedProcessCursorState, SharedProcessDialogText, SharedProcessEventQueue,
+    SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
+    SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
+    SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1967,7 +1967,7 @@ pub struct TrapDispatcher {
     /// 0..3 correspond to `^0`..`^3` placeholders in any subsequently
     /// drawn dialog/alert static-text item. Inside Macintosh Volume I,
     /// I-422 (ParamText).
-    pub(crate) param_text: [Vec<u8>; 4],
+    pub(crate) param_text: SharedProcessDialogText,
     /// Selected UI rendering provider. The default preserves the legacy
     /// System 7 renderer; explicit non-classic providers are allowed to change
     /// chrome pixels without changing guest-visible Toolbox behavior.
@@ -2805,6 +2805,7 @@ impl TrapDispatcher {
             &mut self.callback_scheduling,
         );
         context.attach_scrap_state(&mut self.scrap);
+        context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -3773,7 +3774,7 @@ impl TrapDispatcher {
             os_trap_trampolines: HashMap::new(),
             tool_trap_trampolines: HashMap::new(),
             std_pix_gateway: 0,
-            param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            param_text: SharedProcessDialogText::default(),
             ui_theme_id: UiThemeId::ClassicSystem7,
             vfs: SharedProcessValue::default(),
             vfs_rsrc: SharedProcessValue::default(),
