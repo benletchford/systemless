@@ -127,6 +127,7 @@ pub(crate) struct ProcessMemoryManager {
     classic_allocator: Option<SharedClassicHeapAllocator>,
     ptr_to_handle: SharedProcessMap<u32>,
     handle_state_bits: SharedProcessMap<u8>,
+    handle_high_locked: SharedProcessMap<bool>,
     native_handle_ptrs: HashSet<u32>,
     native_handles: HashSet<u32>,
     native_allocations: HashMap<u32, ProcessHandleRecord>,
@@ -148,6 +149,10 @@ pub(crate) struct SharedProcessMemoryManager {
     /// Guest-visible lock, purge, and resource bits indexed by master pointer.
     /// Inside Macintosh: Memory (1992), pp. 2-46--2-49.
     handle_state_bits: SharedProcessMap<u8>,
+    /// Native `HLockHi` placement state, kept separately from the master
+    /// pointer's lock, purge, and resource bits. Inside Macintosh: Memory
+    /// (1992), pp. 2-46--2-49, 2-58--2-59.
+    handle_high_locked: SharedProcessMap<bool>,
 }
 
 impl Default for SharedProcessMemoryManager {
@@ -160,10 +165,12 @@ impl SharedProcessMemoryManager {
     fn from_manager(manager: ProcessMemoryManager) -> Self {
         let ptr_to_handle = manager.ptr_to_handle.clone();
         let handle_state_bits = manager.handle_state_bits.clone();
+        let handle_high_locked = manager.handle_high_locked.clone();
         Self {
             manager: Rc::new(RefCell::new(manager)),
             ptr_to_handle,
             handle_state_bits,
+            handle_high_locked,
         }
     }
 
@@ -199,10 +206,14 @@ impl SharedProcessMemoryManager {
     pub(crate) fn set_handle_state(&self, handle: u32, state: u8) {
         if handle != 0 {
             self.handle_state_bits.insert(handle, state);
+            if state & 0x80 == 0 {
+                self.handle_high_locked.remove(&handle);
+            }
         }
     }
 
     pub(crate) fn remove_handle_state(&self, handle: u32) -> Option<u8> {
+        self.handle_high_locked.remove(&handle);
         self.handle_state_bits.remove(&handle)
     }
 
@@ -215,7 +226,14 @@ impl SharedProcessMemoryManager {
         handle: u32,
         update: impl FnOnce(Option<u8>) -> Option<u8>,
     ) {
-        self.handle_state_bits.update(handle, update);
+        let mut updated = None;
+        self.handle_state_bits.update(handle, |state| {
+            updated = update(state);
+            updated
+        });
+        if updated.is_none_or(|state| state & 0x80 == 0) {
+            self.handle_high_locked.remove(&handle);
+        }
     }
 
     #[cfg(test)]
@@ -244,6 +262,7 @@ impl ProcessMemoryManager {
             classic_allocator: None,
             ptr_to_handle: self.ptr_to_handle.detached_clone(),
             handle_state_bits: self.handle_state_bits.detached_clone(),
+            handle_high_locked: self.handle_high_locked.detached_clone(),
             native_handle_ptrs: self.native_handle_ptrs.clone(),
             native_handles: self.native_handles.clone(),
             native_allocations: self.native_allocations.clone(),
@@ -369,6 +388,7 @@ impl ProcessMemoryManager {
         }
         bus.free(handle);
         self.handle_state_bits.remove(&handle);
+        self.handle_high_locked.remove(&handle);
     }
 
     /// Return the logical size of a native or classic nonrelocatable block.
@@ -455,6 +475,7 @@ impl ProcessMemoryManager {
         }
         for handle in self.native_handles.drain() {
             self.handle_state_bits.remove(&handle);
+            self.handle_high_locked.remove(&handle);
         }
         self.native_allocations.clear();
         for (record, state) in handles {
@@ -478,6 +499,38 @@ impl ProcessMemoryManager {
     pub(crate) fn set_state_for_handle(&mut self, handle: u32, state: u8) {
         if handle != 0 {
             self.handle_state_bits.insert(handle, state);
+            if state & 0x80 == 0 {
+                self.handle_high_locked.remove(&handle);
+            }
+        }
+    }
+
+    pub(crate) fn native_handle_state(&self, handle: u32) -> ProcessHandleStateRecord {
+        let bits = self.state_for_handle(handle).unwrap_or(0x40);
+        let locked = bits & 0x80 != 0;
+        ProcessHandleStateRecord {
+            handle,
+            locked,
+            high_locked: locked && self.handle_high_locked.get(&handle).unwrap_or(false),
+            no_purge: bits & 0x40 == 0,
+            resource: bits & 0x20 != 0,
+        }
+    }
+
+    pub(crate) fn set_native_handle_state(&mut self, state: ProcessHandleStateRecord) {
+        let mut bits = 0u8;
+        if state.locked {
+            bits |= 0x80;
+        }
+        if !state.no_purge {
+            bits |= 0x40;
+        }
+        if state.resource {
+            bits |= 0x20;
+        }
+        self.set_state_for_handle(state.handle, bits);
+        if state.locked && state.high_locked {
+            self.handle_high_locked.insert(state.handle, true);
         }
     }
 
@@ -817,6 +870,7 @@ impl ProcessMemoryManager {
         self.ptr_to_handle.remove(&record.ptr);
         self.native_handle_ptrs.remove(&record.ptr);
         self.handle_state_bits.remove(&handle);
+        self.handle_high_locked.remove(&handle);
         self.native_handles.remove(&handle);
         if let Some(allocator) = &mut self.native_allocator {
             allocator.free_handle_blocks.push(record);
@@ -1152,12 +1206,15 @@ impl ProcessMemoryManager {
     pub(crate) fn adopt_handle_metadata(&mut self, source: &mut Self) {
         if self.ptr_to_handle.ptr_eq(&source.ptr_to_handle)
             && self.handle_state_bits.ptr_eq(&source.handle_state_bits)
+            && self.handle_high_locked.ptr_eq(&source.handle_high_locked)
         {
             return;
         }
         self.ptr_to_handle.extend(source.ptr_to_handle.take_entries());
         self.handle_state_bits
             .extend(source.handle_state_bits.take_entries());
+        self.handle_high_locked
+            .extend(source.handle_high_locked.take_entries());
     }
 
     #[cfg(test)]

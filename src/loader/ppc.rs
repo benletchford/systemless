@@ -4991,7 +4991,6 @@ pub struct PpcLoadedApp {
     pub free_ptr_blocks: Vec<PpcPtrRecord>,
     pub handles: Vec<PpcHandleRecord>,
     pub free_handle_blocks: Vec<PpcHandleRecord>,
-    pub handle_states: Vec<PpcHandleStateRecord>,
     pub controls: Vec<PpcControlRecord>,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
@@ -5144,8 +5143,23 @@ impl PpcLoadedApp {
             .map_or(0, |heap| heap.master_pointer_blocks_requested)
     }
 
-    fn process_handle_state_bits(&self, handle: u32) -> u8 {
-        ppc_process_handle_state_bits(&self.handle_states, handle)
+    /// Return the process-owned native handle states for this adapter's handles.
+    pub fn handle_states(&self) -> Vec<PpcHandleStateRecord> {
+        let memory_manager = self.process_memory_manager.0.borrow();
+        self.handles
+            .iter()
+            .map(|record| memory_manager.native_handle_state(record.handle))
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn replace_handle_states(&self, handle_states: Vec<PpcHandleStateRecord>) {
+        let mut memory_manager = self.process_memory_manager.0.borrow_mut();
+        ppc_synchronize_process_native_handles(
+            &mut memory_manager,
+            &self.handles,
+            &handle_states,
+        );
     }
 
     fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
@@ -5164,12 +5178,12 @@ impl PpcLoadedApp {
             &self.free_ptr_blocks,
             &self.free_handle_blocks,
         );
-        memory_manager.register_native_handle_records(self.handles.iter().map(|record| {
-            (
-                *record,
-                self.process_handle_state_bits(record.handle),
-            )
-        }));
+        let handle_states: Vec<_> = self
+            .handles
+            .iter()
+            .map(|record| memory_manager.native_handle_state(record.handle))
+            .collect();
+        ppc_synchronize_process_native_handles(memory_manager, &self.handles, &handle_states);
     }
 
     fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
@@ -5212,19 +5226,6 @@ impl PpcLoadedApp {
                     }
                 }
             }
-        }
-        let handles: Vec<u32> = self.handles.iter().map(|record| record.handle).collect();
-        for handle in handles {
-            let Some(bits) = memory_manager.state_for_handle(handle) else {
-                continue;
-            };
-            let state = ppc_handle_state_mut(&mut self.handle_states, handle);
-            state.locked = bits & 0x80 != 0;
-            if !state.locked {
-                state.high_locked = false;
-            }
-            state.no_purge = bits & 0x40 == 0;
-            state.resource = bits & 0x20 != 0;
         }
     }
 
@@ -5351,7 +5352,10 @@ impl PpcLoadedApp {
             attached_memory_manager.expect("process context supplies a Memory Manager");
         if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
             {
+                let standalone_memory_manager = self.process_memory_manager.0.clone();
+                let mut standalone_memory_manager = standalone_memory_manager.borrow_mut();
                 let mut memory_manager = attached_memory_manager.borrow_mut();
+                memory_manager.adopt_handle_metadata(&mut standalone_memory_manager);
                 if memory_manager.has_native_allocator() {
                     self.adopt_process_memory_manager(&memory_manager);
                 } else {
@@ -8641,7 +8645,10 @@ impl PpcLoadedApp {
         let mut free_ptr_blocks = std::mem::take(&mut self.free_ptr_blocks);
         let mut handles = std::mem::take(&mut self.handles);
         let mut free_handle_blocks = std::mem::take(&mut self.free_handle_blocks);
-        let mut handle_states = std::mem::take(&mut self.handle_states);
+        let mut handle_states: Vec<_> = handles
+            .iter()
+            .map(|record| process_memory_manager.native_handle_state(record.handle))
+            .collect();
         let mut controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
@@ -9507,7 +9514,6 @@ impl PpcLoadedApp {
         self.free_ptr_blocks = free_ptr_blocks;
         self.handles = handles;
         self.free_handle_blocks = free_handle_blocks;
-        self.handle_states = handle_states;
         self.controls = controls;
         self.aliases = aliases;
         self.gworlds = gworlds;
@@ -9596,7 +9602,7 @@ impl PpcLoadedApp {
         ppc_synchronize_process_native_handles(
             process_memory_manager,
             &self.handles,
-            &self.handle_states,
+            &handle_states,
         );
 
         if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
@@ -14098,7 +14104,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         free_ptr_blocks: Vec::new(),
         handles,
         free_handle_blocks: Vec::new(),
-        handle_states: Vec::new(),
         controls: Vec::new(),
         aliases: Vec::new(),
         gworlds,
@@ -16265,6 +16270,9 @@ fn ppc_synchronize_process_native_handles(
             ppc_process_handle_state_bits(handle_states, record.handle),
         )
     }));
+    for state in handle_states.iter().copied() {
+        memory_manager.set_native_handle_state(state);
+    }
 }
 
 fn ppc_process_handle_state_bits(
@@ -87870,7 +87878,7 @@ pub(crate) mod tests {
             event_queue,
             menu_tracking,
             memory_manager,
-            |native, _memory_manager| {
+            |native, memory_manager| {
                 assert_eq!(native.heap_cursor, expected_cursor);
                 assert_eq!(native.ptrs.last().map(|record| record.size), Some(8));
                 assert_eq!(
@@ -87891,11 +87899,7 @@ pub(crate) mod tests {
                     .find(|record| record.handle == handle)
                     .expect("canonical allocation materialized for native handle");
                 assert_eq!((allocation.size, allocation.capacity), (24, 40));
-                let state = native
-                    .handle_states
-                    .iter_mut()
-                    .find(|record| record.handle == handle)
-                    .expect("canonical process state materialized for native handle");
+                let mut state = memory_manager.native_handle_state(handle);
                 assert!(state.locked);
                 assert!(state.no_purge);
                 assert!(state.resource);
@@ -87903,6 +87907,7 @@ pub(crate) mod tests {
                 state.high_locked = false;
                 state.no_purge = false;
                 state.resource = false;
+                memory_manager.set_native_handle_state(state);
             },
         );
 
@@ -87991,7 +87996,7 @@ pub(crate) mod tests {
             PpcImportDispatcherTarget::HLock,
             &memory_manager,
         );
-        assert_eq!(standalone.handle_states, attached.handle_states);
+        assert_eq!(standalone.handle_states(), attached.handle_states());
         assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0xc0));
 
         standalone.cpu.gpr[3] = handle;
@@ -88073,7 +88078,13 @@ pub(crate) mod tests {
 
         process_memory_manager
             .borrow_mut()
-            .set_state_for_handle(handle, 0xa0);
+            .set_native_handle_state(PpcHandleStateRecord {
+                handle,
+                locked: true,
+                high_locked: true,
+                no_purge: true,
+                resource: true,
+            });
         process_memory_manager
             .borrow_mut()
             .mutate_native_allocator(|allocator| {
@@ -88084,6 +88095,8 @@ pub(crate) mod tests {
         assert_eq!(native.master_pointer_blocks_requested(), 7);
         assert!(!detached.heap_maximized());
         assert_eq!(detached.master_pointer_blocks_requested(), 0);
+        assert!(native.handle_states()[0].high_locked);
+        assert!(!detached.handle_states()[0].high_locked);
         native.cpu.gpr[3] = handle;
         run_test_import(&mut native, PpcImportDispatcherTarget::HGetState);
         assert_eq!(native.cpu.gpr[3], 0xa0);
@@ -98502,7 +98515,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], handle);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98522,7 +98535,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98542,7 +98555,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98562,7 +98575,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: false,
@@ -98582,7 +98595,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98602,7 +98615,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98622,7 +98635,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98643,7 +98656,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], handle);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -98675,7 +98688,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: false,
@@ -98693,7 +98706,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.handle_states.len(), 1);
+        assert_eq!(loaded.handle_states().len(), 1);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -98704,7 +98717,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert!(loaded.handle_states.is_empty());
+        assert!(loaded.handle_states().is_empty());
         assert!(loaded.handles.iter().all(|record| record.handle != handle));
         assert_eq!(loaded.memory.read_u32_be(handle), Some(0));
     }
@@ -142238,7 +142251,7 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.handle == resource_handle));
         assert!(!loaded
-            .handle_states
+            .handle_states()
             .iter()
             .any(|record| record.handle == resource_handle));
 
@@ -142282,13 +142295,13 @@ pub(crate) mod tests {
         assert_ne!(released_handle, 0);
         assert_eq!(loaded.vfs_resources[0].handle, released_handle);
         assert_eq!(loaded.handles.len(), 1);
-        loaded.handle_states.push(PpcHandleStateRecord {
+        loaded.replace_handle_states(vec![PpcHandleStateRecord {
             handle: released_handle,
             locked: true,
             high_locked: true,
             no_purge: true,
             resource: false,
-        });
+        }]);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::ReleaseResource;
@@ -142305,7 +142318,7 @@ pub(crate) mod tests {
             .handles
             .iter()
             .all(|record| record.handle != released_handle));
-        assert!(loaded.handle_states.is_empty());
+        assert!(loaded.handle_states().is_empty());
         assert_eq!(loaded.memory.read_u32_be(released_handle), Some(0));
         assert_eq!(loaded.free_handle_blocks.len(), 1);
 
@@ -142322,7 +142335,7 @@ pub(crate) mod tests {
         assert_ne!(new_handle, 0);
         assert_eq!(new_handle, released_handle);
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle: new_handle,
                 locked: false,
@@ -142355,13 +142368,13 @@ pub(crate) mod tests {
         );
         assert_ne!(handle, 0);
         let ptr = loaded.memory.read_u32_be(handle).unwrap();
-        loaded.handle_states.push(PpcHandleStateRecord {
+        loaded.replace_handle_states(vec![PpcHandleStateRecord {
             handle,
             locked: true,
             high_locked: true,
             no_purge: true,
             resource: false,
-        });
+        }]);
         loaded.vfs_resources.push(PpcVfsResourceRecord {
             ref_num: 0,
             path: "Test App".to_string(),
@@ -142385,7 +142398,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
         assert!(loaded.handles.iter().any(|record| record.handle == handle));
         assert_eq!(
-            loaded.handle_states,
+            loaded.handle_states(),
             vec![PpcHandleStateRecord {
                 handle,
                 locked: true,
@@ -146866,6 +146879,7 @@ pub(crate) mod tests {
         );
         assert_ne!(destination, 0);
 
+        let mut handle_states = loaded.handle_states();
         ppc_open_rgn(
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
@@ -146873,9 +146887,10 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
         assert_ne!(loaded.toolbox_startup.open_region_save_handle, 0);
         assert_eq!(
             loaded
@@ -146893,6 +146908,7 @@ pub(crate) mod tests {
             ppc_open_region_include_point(&mut loaded.toolbox_startup, h, v);
         }
 
+        let mut handle_states = loaded.handle_states();
         ppc_close_rgn(
             &mut loaded.memory,
             destination,
@@ -146900,9 +146916,10 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
 
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
         assert_eq!(
@@ -146940,6 +146957,7 @@ pub(crate) mod tests {
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
+        let mut handle_states = loaded.handle_states();
         ppc_open_rgn(
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
@@ -146947,11 +146965,13 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
         loaded.cpu.gpr[3] = scratch;
         loaded.run_with_hle_imports(64);
+        let mut handle_states = loaded.handle_states();
         ppc_close_rgn(
             &mut loaded.memory,
             oval,
@@ -146959,9 +146979,10 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
         assert!(ppc_point_in_region(&mut loaded.memory, oval, 20, 20));
         assert!(!ppc_point_in_region(&mut loaded.memory, oval, 10, 10));
         assert!(
@@ -146980,6 +147001,7 @@ pub(crate) mod tests {
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
+        let mut handle_states = loaded.handle_states();
         ppc_open_rgn(
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
@@ -146987,9 +147009,10 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FrameRoundRect;
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -146997,6 +147020,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[4] = 12;
         loaded.cpu.gpr[5] = 12;
         loaded.run_with_hle_imports(64);
+        let mut handle_states = loaded.handle_states();
         ppc_close_rgn(
             &mut loaded.memory,
             rounded,
@@ -147004,9 +147028,10 @@ pub(crate) mod tests {
             loaded.heap_limit,
             &mut loaded.last_mem_error,
             &mut loaded.handles,
-            &mut loaded.handle_states,
+            &mut handle_states,
             &mut loaded.toolbox_startup,
         );
+        loaded.replace_handle_states(handle_states);
         assert!(ppc_point_in_region(&mut loaded.memory, rounded, 50, 10));
         assert!(!ppc_point_in_region(&mut loaded.memory, rounded, 40, 10));
         assert!(
