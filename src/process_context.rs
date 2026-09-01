@@ -71,6 +71,10 @@ impl<V> Default for SharedProcessMap<V> {
 }
 
 impl<V: Copy> SharedProcessMap<V> {
+    fn detached_clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
@@ -153,6 +157,14 @@ impl SharedProcessMemoryManager {
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
+
+    /// Copy process Memory Manager metadata without retaining adapter sharing.
+    ///
+    /// A cloned CPU adapter represents a detached execution snapshot, so its
+    /// allocation records and handle metadata must evolve independently.
+    pub(crate) fn detached_clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().detached_clone())))
+    }
 }
 
 impl ProcessMemoryManager {
@@ -161,6 +173,23 @@ impl ProcessMemoryManager {
     const NIL_HANDLE_ERR: i16 = -109;
     const NO_ERR: i16 = 0;
     const PARAM_ERR: i16 = -50;
+
+    fn detached_clone(&self) -> Self {
+        Self {
+            classic_allocator: None,
+            ptr_to_handle: self.ptr_to_handle.detached_clone(),
+            handle_state_bits: self.handle_state_bits.detached_clone(),
+            native_handle_ptrs: self.native_handle_ptrs.clone(),
+            native_handles: self.native_handles.clone(),
+            native_allocations: self.native_allocations.clone(),
+            native_allocator: self.native_allocator.clone(),
+            native_allocator_dirty: self.native_allocator_dirty,
+        }
+    }
+
+    pub(crate) fn has_native_allocator(&self) -> bool {
+        self.native_allocator.is_some()
+    }
 
     /// Adopt the classic heap used by the process's 68K memory-bus adapter.
     ///
@@ -1041,6 +1070,10 @@ impl ProcessMemoryManager {
             .flatten()
     }
 
+    pub(crate) fn native_allocator_snapshot(&self) -> Option<ProcessNativeAllocatorState> {
+        self.native_allocator.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn native_allocator(&self) -> Option<&ProcessNativeAllocatorState> {
         self.native_allocator.as_ref()
@@ -1091,6 +1124,7 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
+    #[cfg(test)]
     pub(crate) fn memory_manager_mut(&self) -> RefMut<'_, ProcessMemoryManager> {
         self.memory_manager.borrow_mut()
     }

@@ -14044,6 +14044,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
     }
@@ -16192,6 +16193,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17088,6 +17090,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17253,6 +17256,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17666,6 +17670,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState {
                 front_buffer_gworld: PPC_DSP_BACK_GWORLD,
                 back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -17990,6 +17995,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
+            process_memory_manager: Default::default(),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());

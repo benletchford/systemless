@@ -71,7 +71,8 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
-    ProcessNativeHeapState, ProcessPtrRecord, SharedProcessMemoryManager,
+    ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessPtrRecord,
+    SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -4940,6 +4941,25 @@ pub struct PpcListManagerState {
     lists: Vec<PpcListRecord>,
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct PpcProcessMemoryManager(SharedProcessMemoryManager);
+
+impl Clone for PpcProcessMemoryManager {
+    fn clone(&self) -> Self {
+        Self(self.0.detached_clone())
+    }
+}
+
+impl PpcProcessMemoryManager {
+    fn attach_to(&mut self, memory_manager: SharedProcessMemoryManager) {
+        self.0 = memory_manager;
+    }
+
+    fn ptr_eq(&self, memory_manager: &SharedProcessMemoryManager) -> bool {
+        self.0.ptr_eq(memory_manager)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PpcLoadedApp {
     pub cpu: PpcCpu,
@@ -5056,6 +5076,7 @@ pub struct PpcLoadedApp {
     pub input: PpcInputSnapshot,
     pub(crate) event_queue: EventQueue,
     pub(crate) guest_calls: SharedGuestCallStack,
+    pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
 }
 
@@ -5126,24 +5147,46 @@ impl PpcLoadedApp {
     }
 
     fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
-        if let Some(allocator) = memory_manager.native_allocator_update() {
-            self.heap_base = allocator.heap.heap_base;
-            self.heap_cursor = allocator.heap.heap_cursor;
-            self.heap_limit = allocator.heap.heap_limit;
-            self.last_mem_error = allocator.heap.last_mem_error;
-            self.heap_maximized = allocator.heap.heap_maximized;
-            self.master_pointer_blocks_requested =
-                allocator.heap.master_pointer_blocks_requested;
-            self.ptrs = allocator.ptrs;
-            self.free_ptr_blocks = allocator.free_ptr_blocks;
-            self.free_handle_blocks = allocator.free_handle_blocks;
-            ppc_update_zone_free_bytes(&mut self.memory, self.heap_cursor, self.heap_limit);
+        let allocator = memory_manager.native_allocator_update();
+        let apply_allocations = allocator.is_some();
+        if let Some(allocator) = allocator {
+            self.apply_process_native_allocator(allocator);
         }
-        for record in &mut self.handles {
-            if let Some(canonical) = memory_manager.native_allocation(record.handle) {
-                let live_ptr = self.memory.read_u32_be(record.handle);
-                if live_ptr == Some(canonical.ptr) || canonical.ptr == record.ptr {
-                    *record = canonical;
+        self.apply_process_handle_metadata(memory_manager, apply_allocations);
+    }
+
+    fn adopt_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
+        if let Some(allocator) = memory_manager.native_allocator_snapshot() {
+            self.apply_process_native_allocator(allocator);
+        }
+        self.apply_process_handle_metadata(memory_manager, true);
+    }
+
+    fn apply_process_native_allocator(&mut self, allocator: ProcessNativeAllocatorState) {
+        self.heap_base = allocator.heap.heap_base;
+        self.heap_cursor = allocator.heap.heap_cursor;
+        self.heap_limit = allocator.heap.heap_limit;
+        self.last_mem_error = allocator.heap.last_mem_error;
+        self.heap_maximized = allocator.heap.heap_maximized;
+        self.master_pointer_blocks_requested = allocator.heap.master_pointer_blocks_requested;
+        self.ptrs = allocator.ptrs;
+        self.free_ptr_blocks = allocator.free_ptr_blocks;
+        self.free_handle_blocks = allocator.free_handle_blocks;
+        ppc_update_zone_free_bytes(&mut self.memory, self.heap_cursor, self.heap_limit);
+    }
+
+    fn apply_process_handle_metadata(
+        &mut self,
+        memory_manager: &ProcessMemoryManager,
+        apply_allocations: bool,
+    ) {
+        if apply_allocations {
+            for record in &mut self.handles {
+                if let Some(canonical) = memory_manager.native_allocation(record.handle) {
+                    let live_ptr = self.memory.read_u32_be(record.handle);
+                    if live_ptr == Some(canonical.ptr) || canonical.ptr == record.ptr {
+                        *record = canonical;
+                    }
                 }
             }
         }
@@ -5279,8 +5322,22 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
-        let mut memory_manager = context.memory_manager_mut();
-        self.publish_process_memory_manager(&mut memory_manager);
+        let mut attached_memory_manager = None;
+        context.attach_memory_manager(&mut attached_memory_manager);
+        let attached_memory_manager =
+            attached_memory_manager.expect("process context supplies a Memory Manager");
+        if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
+            {
+                let mut memory_manager = attached_memory_manager.borrow_mut();
+                if memory_manager.has_native_allocator() {
+                    self.adopt_process_memory_manager(&memory_manager);
+                } else {
+                    self.publish_process_memory_manager(&mut memory_manager);
+                }
+            }
+            self.process_memory_manager
+                .attach_to(attached_memory_manager);
+        }
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -8500,16 +8557,23 @@ impl PpcLoadedApp {
         trace_fetches: bool,
         process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcHleRunProbe {
-        let mut standalone_memory_manager;
+        let standalone_memory_manager = process_memory_manager
+            .is_none()
+            .then(|| self.process_memory_manager.0.clone());
+        let mut standalone_memory_manager_borrow;
         let process_memory_manager = if let Some(memory_manager) = process_memory_manager {
             memory_manager
         } else {
-            // A standalone adapter still represents one Macintosh process.
-            // Seed the same process-level implementation used by the runner
-            // instead of selecting a second set of allocator algorithms.
-            standalone_memory_manager = ProcessMemoryManager::default();
-            self.publish_process_memory_manager(&mut standalone_memory_manager);
-            &mut standalone_memory_manager
+            standalone_memory_manager_borrow = standalone_memory_manager
+                .as_ref()
+                .expect("standalone process Memory Manager created")
+                .borrow_mut();
+            if standalone_memory_manager_borrow.has_native_allocator() {
+                self.apply_process_memory_manager(&standalone_memory_manager_borrow);
+            } else {
+                self.publish_process_memory_manager(&mut standalone_memory_manager_borrow);
+            }
+            &mut standalone_memory_manager_borrow
         };
         let mut imports = std::mem::take(&mut self.imports);
         let mut import_count = self.import_count;
@@ -9494,6 +9558,7 @@ impl PpcLoadedApp {
         self.list_manager = list_manager;
         self.event_queue = event_queue;
         self.draw_sprocket = draw_sprocket;
+        self.publish_process_memory_manager(process_memory_manager);
 
         if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
             let indirect = self.cpu.gpr[12];
@@ -14079,6 +14144,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         input: PpcInputSnapshot::default(),
         event_queue: EventQueue::default(),
         guest_calls: SharedGuestCallStack::default(),
+        process_memory_manager: PpcProcessMemoryManager::default(),
         draw_sprocket: PpcDrawSprocketState::default(),
     })
 }
@@ -87918,6 +87984,75 @@ pub(crate) mod tests {
         assert_eq!(standalone.free_handle_blocks, attached.free_handle_blocks);
         assert_eq!(standalone.memory.read_u32_be(handle), Some(0));
         assert_eq!(attached.memory.read_u32_be(handle), Some(0));
+    }
+
+    #[test]
+    fn standalone_native_runs_retain_the_process_memory_manager() {
+        let pef = synthetic_pef_with_import(b"NewHandleClear");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 24;
+
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::NewHandle { clear: true },
+        );
+        let handle = native.cpu.gpr[3];
+        let retained = native.process_memory_manager.0.clone();
+        assert_eq!(retained.borrow().state_for_handle(handle), Some(0x40));
+
+        retained.borrow_mut().set_state_for_handle(handle, 0xa0);
+        native.cpu.gpr[3] = handle;
+        run_test_import(&mut native, PpcImportDispatcherTarget::HGetState);
+
+        assert_eq!(native.cpu.gpr[3], 0xa0);
+        assert!(native.process_memory_manager.0.ptr_eq(&retained));
+    }
+
+    #[test]
+    fn attaching_and_cloning_native_adapters_preserves_process_ownership() {
+        let pef = synthetic_pef_with_import(b"NewHandleClear");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 24;
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::NewHandle { clear: true },
+        );
+        let handle = native.cpu.gpr[3];
+
+        let mut detached = native.clone();
+        assert!(!detached
+            .process_memory_manager
+            .0
+            .ptr_eq(&native.process_memory_manager.0));
+
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let process_memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        assert!(native
+            .process_memory_manager
+            .ptr_eq(&process_memory_manager));
+
+        process_memory_manager
+            .borrow_mut()
+            .set_state_for_handle(handle, 0xa0);
+        native.cpu.gpr[3] = handle;
+        run_test_import(&mut native, PpcImportDispatcherTarget::HGetState);
+        assert_eq!(native.cpu.gpr[3], 0xa0);
+
+        assert_eq!(
+            detached
+                .process_memory_manager
+                .0
+                .borrow()
+                .state_for_handle(handle),
+            Some(0x40)
+        );
+        detached.cpu.gpr[3] = handle;
+        run_test_import(&mut detached, PpcImportDispatcherTarget::HGetState);
+        assert_eq!(detached.cpu.gpr[3], 0x40);
     }
 
     #[test]
