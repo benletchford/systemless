@@ -2842,11 +2842,20 @@ struct PpcAppleEventHandlerRecord {
     is_system_handler: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcAppleEventDispatchAllocation {
+    resume_guest_call_depth: usize,
+    descriptors: u32,
+    event_handle: u32,
+    reply_handle: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PpcAppleEventState {
     application_high_level_event_aware: bool,
     sent_open_application_event: bool,
     handlers: Vec<PpcAppleEventHandlerRecord>,
+    pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -9047,6 +9056,19 @@ impl PpcLoadedApp {
             let mut handle_import = |elapsed, index, cpu: &mut PpcCpu, memory: &mut Mem| {
                 if index == PPC_GUEST_CALL_RETURN_IMPORT_INDEX {
                     if guest_calls.complete_powerpc(cpu) {
+                        ppc_complete_apple_event_dispatch(
+                            &mut apple_events,
+                            guest_calls.depth(),
+                            &mut *process_memory_manager,
+                            memory,
+                            &mut heap_cursor,
+                            &mut last_mem_error,
+                            &mut ptrs,
+                            &mut free_ptr_blocks,
+                            &mut handles,
+                            &mut free_handle_blocks,
+                            &mut handle_states,
+                        );
                         return PpcImportAction::Continue;
                     }
                     if guest_calls.complete_powerpc_for_m68k(cpu) {
@@ -23309,6 +23331,7 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::AEProcessAppleEvent => Some(ppc_process_apple_event(
             cpu,
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
@@ -23317,7 +23340,9 @@ fn dispatch_supported_import(
             free_ptr_blocks,
             handles,
             free_handle_blocks,
+            handle_states,
             apple_events,
+            toolbox_startup.guest_calls.depth(),
         )),
         PpcImportDispatcherTarget::LNew => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 4-70--4-72:
@@ -61733,6 +61758,7 @@ fn ppc_install_apple_event_handler(
 #[allow(clippy::too_many_arguments)]
 fn ppc_process_apple_event(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61741,7 +61767,9 @@ fn ppc_process_apple_event(
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
-    apple_events: &PpcAppleEventState,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    apple_events: &mut PpcAppleEventState,
+    resume_guest_call_depth: usize,
 ) -> PpcImportAction {
     // AEProcessAppleEvent receives the EventRecord returned by the Event
     // Manager and invokes the matching application handler with an AppleEvent
@@ -61778,34 +61806,30 @@ fn ppc_process_apple_event(
         return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED));
     };
 
-    let descriptors = ppc_alloc_ptr(
-        memory,
-        heap_cursor,
+    ppc_synchronize_process_native_allocator(
+        process_memory_manager,
+        *heap_cursor,
         heap_limit,
+        *last_mem_error,
         ptrs,
         free_ptr_blocks,
-        16,
-        true,
+        free_handle_blocks,
     );
+    ppc_synchronize_process_native_handles(process_memory_manager, handles, handle_states);
+    let snapshot = process_memory_manager.detached_clone();
+    // Interapplication Communication (1993), pp. 4-33 and 4-39: the server's
+    // event and reply descriptors live in its application heap and the Apple
+    // Event Manager disposes both after the installed handler returns.
+    let descriptors = process_memory_manager.new_native_ptr(memory, 16, true);
     let mut event_data = Vec::with_capacity(8);
     event_data.extend_from_slice(&event_class.to_be_bytes());
     event_data.extend_from_slice(&event_id.to_be_bytes());
-    let event_handle = ppc_alloc_recyclable_handle_with_bytes(
-        memory,
-        heap_cursor,
-        heap_limit,
-        handles,
-        free_handle_blocks,
-        &event_data,
-    );
-    let reply_handle = ppc_alloc_recyclable_handle_with_bytes(
-        memory,
-        heap_cursor,
-        heap_limit,
-        handles,
-        free_handle_blocks,
-        &[],
-    );
+    let event_handle = (descriptors != 0)
+        .then(|| process_memory_manager.copy_bytes_to_new_native_handle(memory, &event_data))
+        .unwrap_or(0);
+    let reply_handle = (event_handle != 0)
+        .then(|| process_memory_manager.copy_bytes_to_new_native_handle(memory, &[]))
+        .unwrap_or(0);
     if descriptors == 0
         || event_handle == 0
         || reply_handle == 0
@@ -61818,10 +61842,54 @@ fn ppc_process_apple_event(
         )
         .is_none()
     {
-        *last_mem_error = PPC_MEM_FULL_ERR;
+        if event_handle != 0 {
+            let _ = memory.write_u32_be(event_handle, 0);
+        }
+        if reply_handle != 0 {
+            let _ = memory.write_u32_be(reply_handle, 0);
+        }
+        process_memory_manager.restore_native_snapshot(snapshot);
+        process_memory_manager.set_native_mem_error(PPC_MEM_FULL_ERR);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            free_handle_blocks,
+        );
         return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
     }
-    *last_mem_error = PPC_NO_ERR;
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_apply_process_native_handle(
+        process_memory_manager,
+        handles,
+        handle_states,
+        event_handle,
+    );
+    ppc_apply_process_native_handle(
+        process_memory_manager,
+        handles,
+        handle_states,
+        reply_handle,
+    );
+    apple_events
+        .pending_dispatches
+        .push(PpcAppleEventDispatchAllocation {
+            resume_guest_call_depth,
+            descriptors,
+            event_handle,
+            reply_handle,
+        });
     PpcImportAction::CallNative {
         entry: handler.callback.entry,
         rtoc: handler.callback.rtoc,
@@ -61830,6 +61898,46 @@ fn ppc_process_apple_event(
         restore_rtoc: cpu.gpr[2],
         return_gpr3: PpcNativeReturnGpr3::Preserve,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_complete_apple_event_dispatch(
+    apple_events: &mut PpcAppleEventState,
+    guest_call_depth: usize,
+    process_memory_manager: &mut ProcessMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+) {
+    let Some(dispatch) = apple_events
+        .pending_dispatches
+        .last()
+        .filter(|dispatch| dispatch.resume_guest_call_depth == guest_call_depth)
+        .copied()
+    else {
+        return;
+    };
+    apple_events.pending_dispatches.pop();
+    for handle in [dispatch.event_handle, dispatch.reply_handle] {
+        let _ = process_memory_manager.dispose_native_handle(memory, handle);
+        handles.retain(|record| record.handle != handle);
+        ppc_forget_handle_state(handle, handle_states);
+    }
+    let _ = process_memory_manager.dispose_native_ptr(dispatch.descriptors);
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
 }
 
 fn ppc_add_resource(
@@ -150598,12 +150706,275 @@ pub(crate) mod tests {
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::AEProcessAppleEvent;
         loaded.cpu.gpr[3] = event_record;
+        let handles_before_dispatch = loaded.handles();
+        let ptrs_before_dispatch = loaded.ptrs();
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0x1234);
         assert_eq!(loaded.cpu.gpr[2], loaded.rtoc);
+        assert!(loaded.apple_events.pending_dispatches.is_empty());
+        assert_eq!(loaded.handles(), handles_before_dispatch);
+        assert_eq!(loaded.ptrs(), ptrs_before_dispatch);
+    }
+
+    #[test]
+    fn apple_event_handler_bundle_is_process_owned_cross_isa_and_depth_disposed() {
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        let event_record = PPC_DATA_BASE + 0x2600;
+        native.memory.add_region(event_record, vec![0; 16]);
+        native
+            .memory
+            .write_u16_be(event_record, PPC_HIGH_LEVEL_EVENT)
+            .unwrap();
+        native
+            .memory
+            .write_u32_be(event_record + 2, PPC_CORE_EVENT_CLASS)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 10, (PPC_OPEN_APPLICATION_EVENT >> 16) as u16)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
+            .unwrap();
+        let mut apple_events = PpcAppleEventState {
+            handlers: vec![PpcAppleEventHandlerRecord {
+                event_class: PPC_CORE_EVENT_CLASS,
+                event_id: PPC_OPEN_APPLICATION_EVENT,
+                callback: PpcCallbackTarget {
+                    entry: PPC_CODE_BASE,
+                    rtoc: PPC_DATA_BASE,
+                    proc_info: 0,
+                    routine_flags: 0,
+                },
+                refcon: 0xfeed_beef,
+                is_system_handler: false,
+            }],
+            ..PpcAppleEventState::default()
+        };
+        let mut heap_cursor = native.heap_cursor();
+        let heap_limit = native.heap_limit();
+        let mut last_mem_error = native.last_mem_error();
+        let mut ptrs = native.ptrs();
+        let mut free_ptr_blocks = native.free_ptr_blocks();
+        let mut handles = native.handles();
+        let mut free_handle_blocks = native.free_handle_blocks();
+        let mut handle_states = native.handle_states();
+        native.cpu.gpr[3] = event_record;
+        let action = {
+            let mut manager = context.memory_manager_mut();
+            ppc_process_apple_event(
+                &mut native.cpu,
+                &mut manager,
+                &mut native.memory,
+                &mut heap_cursor,
+                heap_limit,
+                &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptr_blocks,
+                &mut handles,
+                &mut free_handle_blocks,
+                &mut handle_states,
+                &mut apple_events,
+                0,
+            )
+        };
+
+        assert!(matches!(action, PpcImportAction::CallNative { .. }));
+        assert_eq!(apple_events.pending_dispatches.len(), 1);
+        let descriptors = native.cpu.gpr[3];
+        assert_eq!(native.cpu.gpr[4], descriptors + 8);
+        assert_eq!(native.cpu.gpr[5], 0xfeed_beef);
+        let event_handle = native.memory.read_u32_be(descriptors + 4).unwrap();
+        let reply_handle = native.memory.read_u32_be(descriptors + 12).unwrap();
+        let (event_allocation, reply_allocation) = {
+            let manager = context.memory_manager_mut();
+            (
+                manager.native_allocation(event_handle).unwrap(),
+                manager.native_allocation(reply_handle).unwrap(),
+            )
+        };
+        assert_eq!(event_allocation.size, 8);
+        assert_eq!(reply_allocation.size, 0);
+        assert_eq!(detached.native_allocation(event_handle), None);
+        assert_eq!(detached.native_allocation(reply_handle), None);
+
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        assert_eq!(
+            classic_bus.read_bytes(event_allocation.ptr, 8),
+            [
+                PPC_CORE_EVENT_CLASS.to_be_bytes(),
+                PPC_OPEN_APPLICATION_EVENT.to_be_bytes(),
+            ]
+            .concat()
+        );
+        classic_bus.write_byte(event_allocation.ptr, b'P');
+        assert_eq!(native.memory.read_u8(event_allocation.ptr), Some(b'P'));
+        native
+            .memory
+            .write_u8(event_allocation.ptr + 7, b'!')
+            .unwrap();
+        assert_eq!(classic_bus.read_byte(event_allocation.ptr + 7), b'!');
+
+        {
+            let mut manager = context.memory_manager_mut();
+            ppc_complete_apple_event_dispatch(
+                &mut apple_events,
+                1,
+                &mut manager,
+                &mut native.memory,
+                &mut heap_cursor,
+                &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptr_blocks,
+                &mut handles,
+                &mut free_handle_blocks,
+                &mut handle_states,
+            );
+            assert!(manager.native_allocation(event_handle).is_some());
+            assert!(manager.native_allocation(reply_handle).is_some());
+        }
+        assert_eq!(apple_events.pending_dispatches.len(), 1);
+
+        {
+            let mut manager = context.memory_manager_mut();
+            ppc_complete_apple_event_dispatch(
+                &mut apple_events,
+                0,
+                &mut manager,
+                &mut native.memory,
+                &mut heap_cursor,
+                &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptr_blocks,
+                &mut handles,
+                &mut free_handle_blocks,
+                &mut handle_states,
+            );
+            assert_eq!(manager.native_allocation(event_handle), None);
+            assert_eq!(manager.native_allocation(reply_handle), None);
+            assert!(!manager
+                .native_allocator_snapshot()
+                .unwrap()
+                .ptrs
+                .iter()
+                .any(|record| record.ptr == descriptors));
+        }
+        assert!(apple_events.pending_dispatches.is_empty());
+        assert_eq!(native.memory.read_u32_be(event_handle), Some(0));
+        assert_eq!(native.memory.read_u32_be(reply_handle), Some(0));
+        assert!(handles.iter().all(|record| {
+            record.handle != event_handle && record.handle != reply_handle
+        }));
+        assert!(handle_states.iter().all(|record| {
+            record.handle != event_handle && record.handle != reply_handle
+        }));
+    }
+
+    #[test]
+    fn apple_event_handler_bundle_allocation_failure_is_atomic() {
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        native.set_heap_cursor(native.heap_limit().saturating_sub(8));
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let event_record = PPC_DATA_BASE + 0x2700;
+        native.memory.add_region(event_record, vec![0; 16]);
+        native
+            .memory
+            .write_u16_be(event_record, PPC_HIGH_LEVEL_EVENT)
+            .unwrap();
+        native
+            .memory
+            .write_u32_be(event_record + 2, PPC_CORE_EVENT_CLASS)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 10, (PPC_OPEN_APPLICATION_EVENT >> 16) as u16)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
+            .unwrap();
+        let mut apple_events = PpcAppleEventState {
+            handlers: vec![PpcAppleEventHandlerRecord {
+                event_class: PPC_CORE_EVENT_CLASS,
+                event_id: PPC_OPEN_APPLICATION_EVENT,
+                callback: PpcCallbackTarget {
+                    entry: PPC_CODE_BASE,
+                    rtoc: PPC_DATA_BASE,
+                    proc_info: 0,
+                    routine_flags: 0,
+                },
+                refcon: 0,
+                is_system_handler: false,
+            }],
+            ..PpcAppleEventState::default()
+        };
+        let before_allocator = context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap();
+        let before_handles = context
+            .memory_manager_mut()
+            .native_handle_records()
+            .to_vec();
+        let mut heap_cursor = native.heap_cursor();
+        let heap_limit = native.heap_limit();
+        let mut last_mem_error = native.last_mem_error();
+        let mut ptrs = native.ptrs();
+        let mut free_ptr_blocks = native.free_ptr_blocks();
+        let mut handles = native.handles();
+        let mut free_handle_blocks = native.free_handle_blocks();
+        let mut handle_states = native.handle_states();
+        native.cpu.gpr[3] = event_record;
+
+        let action = {
+            let mut manager = context.memory_manager_mut();
+            ppc_process_apple_event(
+                &mut native.cpu,
+                &mut manager,
+                &mut native.memory,
+                &mut heap_cursor,
+                heap_limit,
+                &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptr_blocks,
+                &mut handles,
+                &mut free_handle_blocks,
+                &mut handle_states,
+                &mut apple_events,
+                0,
+            )
+        };
+
+        assert_eq!(
+            action,
+            PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR))
+        );
+        assert!(apple_events.pending_dispatches.is_empty());
+        let manager = context.memory_manager_mut();
+        let after_allocator = manager.native_allocator_snapshot().unwrap();
+        assert_eq!(after_allocator.heap.heap_cursor, before_allocator.heap.heap_cursor);
+        assert_eq!(after_allocator.heap.heap_limit, before_allocator.heap.heap_limit);
+        assert_eq!(after_allocator.ptrs, before_allocator.ptrs);
+        assert_eq!(
+            after_allocator.free_ptr_blocks,
+            before_allocator.free_ptr_blocks
+        );
+        assert_eq!(
+            after_allocator.free_handle_blocks,
+            before_allocator.free_handle_blocks
+        );
+        assert_eq!(manager.native_handle_records(), before_handles);
     }
 
     #[test]

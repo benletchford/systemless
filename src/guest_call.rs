@@ -217,9 +217,13 @@ impl SharedGuestCallStack {
         self.0.borrow().is_empty()
     }
 
+    pub(crate) fn depth(&self) -> usize {
+        self.0.borrow().len()
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.0.borrow().len()
+        self.depth()
     }
 
     pub(crate) fn begin_m68k(&self, target: GuestCallTarget, return_pc: u32, final_sp: u32) {
