@@ -2987,8 +2987,10 @@ impl TrapDispatcher {
         self.process_memory_manager().has_handle_ptr(ptr)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_handle_state_bits(&self, handle: u32, state: u8) {
-        self.process_memory_manager().set_handle_state(handle, state);
+        self.process_memory_manager()
+            .set_handle_state(handle, state);
     }
 
     pub(crate) fn remove_handle_state_bits(&self, handle: u32) -> Option<u8> {

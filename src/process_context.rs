@@ -203,6 +203,7 @@ impl SharedProcessMemoryManager {
         self.ptr_to_handle.contains_key(&ptr)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_handle_state(&self, handle: u32, state: u8) {
         if handle != 0 {
             self.handle_state_bits.insert(handle, state);
@@ -259,7 +260,7 @@ impl ProcessMemoryManager {
     const NO_ERR: i16 = 0;
     const PARAM_ERR: i16 = -50;
 
-    fn detached_clone(&self) -> Self {
+    pub(crate) fn detached_clone(&self) -> Self {
         Self {
             classic_allocator: None,
             ptr_to_handle: self.ptr_to_handle.detached_clone(),
@@ -945,6 +946,74 @@ impl ProcessMemoryManager {
                 self.handle_high_locked.remove(&handle);
             }
         }
+    }
+
+    /// Lock a relocatable block, optionally requesting high-heap placement.
+    ///
+    /// The master pointer remains stable; `HLockHi` records its placement
+    /// request separately from the guest-visible state byte. Inside Macintosh:
+    /// Memory (1992), pp. 2-46--2-49 and 2-58--2-59.
+    pub(crate) fn lock_process_handle(&mut self, handle: u32, high: bool) {
+        if handle == 0 {
+            return;
+        }
+        let state = self.state_for_handle(handle).unwrap_or(0) | 0x80;
+        self.set_state_for_handle(handle, state);
+        if high {
+            self.handle_high_locked.insert(handle, true);
+        }
+    }
+
+    /// Unlock a relocatable block and clear any high-heap placement request.
+    /// Inside Macintosh: Memory (1992), pp. 2-46--2-49.
+    pub(crate) fn unlock_process_handle(&mut self, handle: u32) {
+        if handle == 0 {
+            return;
+        }
+        let state = self.state_for_handle(handle).unwrap_or(0) & !0x80;
+        self.set_state_for_handle(handle, state);
+    }
+
+    /// Change whether a relocatable block may be purged while preserving its
+    /// lock and resource properties. Inside Macintosh: Memory (1992),
+    /// pp. 2-46--2-48.
+    pub(crate) fn set_process_handle_purgeable(&mut self, handle: u32, purgeable: bool) {
+        if handle == 0 {
+            return;
+        }
+        let state = self.state_for_handle(handle).unwrap_or(0);
+        let state = if purgeable {
+            state | 0x40
+        } else {
+            state & !0x40
+        };
+        self.set_state_for_handle(handle, state);
+    }
+
+    /// Restore the lock and purge properties of a relocatable block without
+    /// changing its resource bit. Inside Macintosh: Memory (1992), p. 2-49.
+    pub(crate) fn restore_process_handle_state(&mut self, handle: u32, state: u8) {
+        if handle == 0 {
+            return;
+        }
+        let resource = self.state_for_handle(handle).unwrap_or(0) & 0x20;
+        self.set_state_for_handle(handle, resource | (state & 0xC0));
+    }
+
+    /// Change the resource property of a relocatable block while preserving
+    /// its lock and purge properties. Inside Macintosh: Memory (1992),
+    /// pp. 2-49--2-51.
+    pub(crate) fn set_process_handle_resource(&mut self, handle: u32, resource: bool) {
+        if handle == 0 {
+            return;
+        }
+        let state = self.state_for_handle(handle).unwrap_or(0);
+        let state = if resource {
+            state | 0x20
+        } else {
+            state & !0x20
+        };
+        self.set_state_for_handle(handle, state);
     }
 
     pub(crate) fn native_handle_state(&self, handle: u32) -> ProcessHandleStateRecord {

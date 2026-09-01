@@ -1126,14 +1126,14 @@ impl super::TrapDispatcher {
                     }
                     match trap_num {
                         0x29 => {
-                            self.update_handle_state_bits(handle, |bits| {
-                                Some(bits.unwrap_or(0) | 0x80)
-                            });
+                            self.process_memory_manager()
+                                .borrow_mut()
+                                .lock_process_handle(handle, false);
                         }
                         0x2A => {
-                            self.update_handle_state_bits(handle, |bits| {
-                                Some(bits.unwrap_or(0) & !0x80)
-                            });
+                            self.process_memory_manager()
+                                .borrow_mut()
+                                .unlock_process_handle(handle);
                         }
                         _ => {
                             if self.res_purge {
@@ -2108,9 +2108,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), pp. 2-46--2-48.
             (false, 0x49) => {
                 let handle = cpu.read_reg(Register::A0);
-                if handle != 0 {
-                    self.update_handle_state_bits(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
-                }
+                self.process_memory_manager()
+                    .borrow_mut()
+                    .set_process_handle_purgeable(handle, true);
                 Ok(())
             }
 
@@ -2120,10 +2120,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), p. 2-48.
             (false, 0x4A) => {
                 let handle = cpu.read_reg(Register::A0);
-                self.update_handle_state_bits(handle, |bits| {
-                    let bits = bits.unwrap_or(0) & !0x40;
-                    (bits != 0).then_some(bits)
-                });
+                self.process_memory_manager()
+                    .borrow_mut()
+                    .set_process_handle_purgeable(handle, false);
                 Ok(())
             }
 
@@ -2147,14 +2146,9 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), p. 2-49.
             (false, 0x6A) => {
                 let handle = cpu.read_reg(Register::A0);
-                if handle != 0 {
-                    let bits = (cpu.read_reg(Register::D0) as u8) & 0xC0;
-                    if bits == 0 {
-                        self.remove_handle_state_bits(handle);
-                    } else {
-                        self.set_handle_state_bits(handle, bits);
-                    }
-                }
+                self.process_memory_manager()
+                    .borrow_mut()
+                    .restore_process_handle_state(handle, cpu.read_reg(Register::D0) as u8);
                 Ok(())
             }
 
@@ -3957,7 +3951,9 @@ impl super::TrapDispatcher {
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    self.update_handle_state_bits(handle, |bits| Some(bits.unwrap_or(0) | 0x20));
+                    self.process_memory_manager()
+                        .borrow_mut()
+                        .set_process_handle_resource(handle, true);
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
                 Ok(())
@@ -3972,10 +3968,9 @@ impl super::TrapDispatcher {
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    self.update_handle_state_bits(handle, |bits| {
-                        let bits = bits.unwrap_or(0) & !0x20;
-                        (bits != 0).then_some(bits)
-                    });
+                    self.process_memory_manager()
+                        .borrow_mut()
+                        .set_process_handle_resource(handle, false);
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
                 Ok(())
@@ -5605,6 +5600,45 @@ mod tests {
         assert!(result.is_some(), "HUnlock should be handled");
         assert!(result.unwrap().is_ok(), "HUnlock should succeed");
         assert_eq!(cpu.read_reg(Register::D0), 0, "HUnlock should set D0 to 0");
+    }
+
+    #[test]
+    fn classic_handle_state_traps_mutate_process_manager_immediately() {
+        // Memory (1992), pp. 2-46--2-51: handle state belongs to the process,
+        // and HSetState changes lock/purge properties without clearing the
+        // Resource Manager's ownership bit.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 16);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        let memory_manager = dispatcher.process_memory_manager();
+        let detached = memory_manager.detached_clone();
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x67, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        dispatcher
+            .dispatch_memory(false, 0x29, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        dispatcher
+            .dispatch_memory(false, 0x49, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0xE0));
+
+        cpu.write_reg(Register::D0, 0);
+        dispatcher
+            .dispatch_memory(false, 0x6A, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
+        assert_eq!(detached.borrow().state_for_handle(handle), None);
     }
 
     #[test]
