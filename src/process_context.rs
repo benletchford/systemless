@@ -1110,6 +1110,12 @@ impl ProcessMemoryManager {
         self.native_allocator.clone()
     }
 
+    pub(crate) fn native_heap_state(&self) -> Option<ProcessNativeHeapState> {
+        self.native_allocator
+            .as_ref()
+            .map(|allocator| allocator.heap)
+    }
+
     #[cfg(test)]
     pub(crate) fn native_allocator(&self) -> Option<&ProcessNativeAllocatorState> {
         self.native_allocator.as_ref()

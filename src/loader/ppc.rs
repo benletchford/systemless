@@ -4970,12 +4970,9 @@ pub struct PpcLoadedApp {
     pub stack_base: u32,
     pub stack_size: u32,
     pub stack_pointer: u32,
-    pub heap_base: u32,
     pub heap_cursor: u32,
     pub heap_limit: u32,
     pub last_mem_error: i16,
-    pub heap_maximized: bool,
-    pub master_pointer_blocks_requested: u32,
     pub tick_count: u32,
     pub clock_cycles_per_tick: u32,
     pub clock_cycle_phase: u32,
@@ -5120,19 +5117,48 @@ fn push_ppc_hle_import_trace_entry(
 }
 
 impl PpcLoadedApp {
+    /// Return the fixed base of the process-owned native heap.
+    pub fn heap_base(&self) -> u32 {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_heap_state()
+            .map_or(PPC_HEAP_BASE, |heap| heap.heap_base)
+    }
+
+    /// Report whether `MaxApplZone` has expanded the process-owned native heap.
+    pub fn heap_maximized(&self) -> bool {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_heap_state()
+            .is_some_and(|heap| heap.heap_maximized)
+    }
+
+    /// Return the number of process-owned master-pointer growth requests.
+    pub fn master_pointer_blocks_requested(&self) -> u32 {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_heap_state()
+            .map_or(0, |heap| heap.master_pointer_blocks_requested)
+    }
+
     fn process_handle_state_bits(&self, handle: u32) -> u8 {
         ppc_process_handle_state_bits(&self.handle_states, handle)
     }
 
     fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
+        let existing_heap = memory_manager.native_heap_state();
         memory_manager.publish_native_allocator(
             ProcessNativeHeapState {
-                heap_base: self.heap_base,
+                heap_base: existing_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_base),
                 heap_cursor: self.heap_cursor,
                 heap_limit: self.heap_limit,
                 last_mem_error: self.last_mem_error,
-                heap_maximized: self.heap_maximized,
-                master_pointer_blocks_requested: self.master_pointer_blocks_requested,
+                heap_maximized: existing_heap.is_some_and(|heap| heap.heap_maximized),
+                master_pointer_blocks_requested: existing_heap
+                    .map_or(0, |heap| heap.master_pointer_blocks_requested),
             },
             &self.ptrs,
             &self.free_ptr_blocks,
@@ -5163,12 +5189,9 @@ impl PpcLoadedApp {
     }
 
     fn apply_process_native_allocator(&mut self, allocator: ProcessNativeAllocatorState) {
-        self.heap_base = allocator.heap.heap_base;
         self.heap_cursor = allocator.heap.heap_cursor;
         self.heap_limit = allocator.heap.heap_limit;
         self.last_mem_error = allocator.heap.last_mem_error;
-        self.heap_maximized = allocator.heap.heap_maximized;
-        self.master_pointer_blocks_requested = allocator.heap.master_pointer_blocks_requested;
         self.ptrs = allocator.ptrs;
         self.free_ptr_blocks = allocator.free_ptr_blocks;
         self.free_handle_blocks = allocator.free_handle_blocks;
@@ -8595,8 +8618,11 @@ impl PpcLoadedApp {
         let mut heap_cursor = self.heap_cursor;
         let mut heap_limit = self.heap_limit;
         let mut last_mem_error = self.last_mem_error;
-        let mut heap_maximized = self.heap_maximized;
-        let mut master_pointer_blocks_requested = self.master_pointer_blocks_requested;
+        let native_heap = process_memory_manager
+            .native_heap_state()
+            .expect("native allocator registered before execution");
+        let mut heap_maximized = native_heap.heap_maximized;
+        let mut master_pointer_blocks_requested = native_heap.master_pointer_blocks_requested;
         let tick_count = self.tick_count;
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
@@ -9463,8 +9489,6 @@ impl PpcLoadedApp {
         self.heap_cursor = heap_cursor;
         self.heap_limit = heap_limit;
         self.last_mem_error = last_mem_error;
-        self.heap_maximized = heap_maximized;
-        self.master_pointer_blocks_requested = master_pointer_blocks_requested;
         self.tick_count = tick_count;
         self.current_resource_refnum = current_resource_refnum;
         self.last_resource_error = last_resource_error;
@@ -9558,7 +9582,22 @@ impl PpcLoadedApp {
         self.list_manager = list_manager;
         self.event_queue = event_queue;
         self.draw_sprocket = draw_sprocket;
-        self.publish_process_memory_manager(process_memory_manager);
+        ppc_synchronize_process_native_allocator(
+            process_memory_manager,
+            self.heap_cursor,
+            self.heap_limit,
+            self.last_mem_error,
+            heap_maximized,
+            master_pointer_blocks_requested,
+            &self.ptrs,
+            &self.free_ptr_blocks,
+            &self.free_handle_blocks,
+        );
+        ppc_synchronize_process_native_handles(
+            process_memory_manager,
+            &self.handles,
+            &self.handle_states,
+        );
 
         if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
             let indirect = self.cpu.gpr[12];
@@ -14038,12 +14077,9 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stack_base,
         stack_size,
         stack_pointer,
-        heap_base: PPC_HEAP_BASE,
         heap_cursor,
         heap_limit: stack_base,
         last_mem_error: 0,
-        heap_maximized: false,
-        master_pointer_blocks_requested: 0,
         tick_count: 0,
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,
@@ -88038,6 +88074,16 @@ pub(crate) mod tests {
         process_memory_manager
             .borrow_mut()
             .set_state_for_handle(handle, 0xa0);
+        process_memory_manager
+            .borrow_mut()
+            .mutate_native_allocator(|allocator| {
+                allocator.heap.heap_maximized = true;
+                allocator.heap.master_pointer_blocks_requested = 7;
+            });
+        assert!(native.heap_maximized());
+        assert_eq!(native.master_pointer_blocks_requested(), 7);
+        assert!(!detached.heap_maximized());
+        assert_eq!(detached.master_pointer_blocks_requested(), 0);
         native.cpu.gpr[3] = handle;
         run_test_import(&mut native, PpcImportDispatcherTarget::HGetState);
         assert_eq!(native.cpu.gpr[3], 0xa0);
@@ -90952,7 +90998,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.gpr[1], PPC_STACK_TOP - 64);
         assert_eq!(loaded.stack_base, PPC_STACK_BASE);
         assert_eq!(loaded.stack_size, PPC_DEFAULT_STACK_SIZE);
-        assert_eq!(loaded.heap_base, PPC_HEAP_BASE);
+        assert_eq!(loaded.heap_base(), PPC_HEAP_BASE);
         assert_eq!(loaded.heap_cursor, PPC_HEAP_BASE);
         assert_eq!(loaded.heap_limit, PPC_STACK_BASE);
         assert_eq!(loaded.last_mem_error, 0);
@@ -97911,7 +97957,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
-            Some(loaded.heap_limit - loaded.heap_base)
+            Some(loaded.heap_limit - loaded.heap_base())
         );
     }
 
@@ -97962,8 +98008,8 @@ pub(crate) mod tests {
         );
         assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
         assert_eq!(loaded.heap_cursor, PPC_HEAP_BASE);
-        assert!(loaded.heap_maximized);
-        assert_eq!(loaded.master_pointer_blocks_requested, 0);
+        assert!(loaded.heap_maximized());
+        assert_eq!(loaded.master_pointer_blocks_requested(), 0);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
     }
 
@@ -98145,8 +98191,8 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0xfeed_face);
         assert_eq!(loaded.heap_cursor, heap_cursor);
-        assert!(!loaded.heap_maximized);
-        assert_eq!(loaded.master_pointer_blocks_requested, 1);
+        assert!(!loaded.heap_maximized());
+        assert_eq!(loaded.master_pointer_blocks_requested(), 1);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -98159,7 +98205,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0xface_feed);
         assert_eq!(loaded.heap_cursor, heap_cursor);
-        assert_eq!(loaded.master_pointer_blocks_requested, 2);
+        assert_eq!(loaded.master_pointer_blocks_requested(), 2);
         assert_eq!(loaded.last_mem_error, PPC_NO_ERR);
     }
 
