@@ -16241,7 +16241,9 @@ impl super::TrapDispatcher {
         bus.write_long(gd_handle, gd);
 
         self.main_gdevice_handle = gd_handle;
-        *self.current_gdevice = gd_handle;
+        if *self.current_gdevice == 0 {
+            *self.current_gdevice = gd_handle;
+        }
 
         gd_handle
     }

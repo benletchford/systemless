@@ -88776,7 +88776,7 @@ pub(crate) mod tests {
 
     #[test]
     fn attached_68k_and_powerpc_adapters_share_quickdraw_selection_without_runner_copy() {
-        let (mut classic, _, _) = setup_with_port();
+        let (mut classic, _, mut classic_bus) = setup_with_port();
         let pef = synthetic_pef_with_import(b"GetGWorld");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
@@ -88790,6 +88790,11 @@ pub(crate) mod tests {
             .current_gdevice
             .ptr_eq(&native.current_gdevice));
         assert_eq!(*classic.current_port, PPC_MAIN_GWORLD);
+        assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
+
+        classic.main_gdevice_handle = 0;
+        let classic_main_gdevice = classic.ensure_main_gdevice(&mut classic_bus);
+        assert_ne!(classic_main_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
 
         *native.current_gworld = 0x0030_0000;

@@ -3708,7 +3708,8 @@ impl FixtureRunner {
 
         let gdh = self.dispatcher.ensure_main_gdevice(&mut self.bus);
         self.bus.write_long(0x8A4, gdh);
-        self.bus.write_long(0xCC8, gdh);
+        self.bus
+            .write_long(0xCC8, *self.dispatcher.current_gdevice);
         self.bus.write_long(0x8A8, gdh);
         if let Some(front_buffer) = ppc_app.presented_front_buffer() {
             self.ensure_ppc_host_screen_mode(front_buffer);
