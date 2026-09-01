@@ -22,6 +22,7 @@
 #include <Menus.h>
 #include <OSUtils.h>
 #include <Palettes.h>
+#include <QDOffscreen.h>
 #include <Quickdraw.h>
 #include <Resources.h>
 #include <ToolUtils.h>
@@ -148,6 +149,106 @@ static ControlHandle gPaletteAnimate;
 static PaletteHandle gShowcasePalette;
 static PaletteHandle gOriginalPalette;
 static Boolean gPaletteAnimated = false;
+
+/*
+ * Record an indexed PixMap into a PICT, replay it through a canonical
+ * offscreen GWorld, then copy those pixels into the active screen palette.
+ * The picture's 64 populated colors deliberately do not share device indexes
+ * with the destination. DrawPicture must color-match them instead of treating
+ * the PICT's raw indexes as screen indexes. Imaging With QuickDraw (1994),
+ * pp. 4-13 and 7-14; CopyBits palette translation, pp. 7-24..7-28.
+ */
+static void DrawIndexedPictureTransfer(void)
+{
+    GWorldPtr sourceWorld;
+    GWorldPtr replayWorld;
+    GWorldPtr savedWorld;
+    GDHandle savedDevice;
+    PixMapHandle sourcePixels;
+    PixMapHandle replayPixels;
+    PixMapHandle windowPixels;
+    CTabHandle sourceColors;
+    PicHandle picture;
+    Rect localRect;
+    Rect displayRect;
+    Ptr base;
+    long rowBytes;
+    short x;
+    short y;
+    short i;
+#ifdef SHOWCASE_TARGET_PPC
+    RGBColor fallbackColor;
+    Rect fallbackBand;
+
+    /* The PPC fixture adapter does not record CopyBits inside OpenPicture. */
+    for (i = 0; i < 6; i++) {
+        fallbackColor.red = (unsigned short)(0x2200 + i * 0x2400);
+        fallbackColor.green = (unsigned short)(0xee00 - i * 0x2200);
+        fallbackColor.blue = (unsigned short)(0x3300 + i * 0x1600);
+        RGBForeColor(&fallbackColor);
+        SetRect(&fallbackBand, 330 + i * 32, 272, 362 + i * 32, 290);
+        PaintRect(&fallbackBand);
+    }
+    fallbackColor.red = fallbackColor.green = fallbackColor.blue = 0;
+    RGBForeColor(&fallbackColor);
+    SetRect(&fallbackBand, 330, 272, 522, 290);
+    FrameRect(&fallbackBand);
+    return;
+#endif
+
+    sourceWorld = nil;
+    replayWorld = nil;
+    picture = nil;
+    sourceColors = nil;
+    SetRect(&localRect, 0, 0, 192, 18);
+
+    GetGWorld(&savedWorld, &savedDevice);
+    if (NewGWorld(&sourceWorld, 8, &localRect, nil, nil, 0) != noErr) goto cleanup;
+    if (NewGWorld(&replayWorld, 8, &localRect, nil, nil, 0) != noErr) goto cleanup;
+
+    sourcePixels = GetGWorldPixMap(sourceWorld);
+    replayPixels = GetGWorldPixMap(replayWorld);
+    windowPixels = GetGWorldPixMap((GWorldPtr)gMainWindow);
+    if (windowPixels == nil) goto cleanup;
+    sourceColors = (**sourcePixels).pmTable;
+    if (sourceColors == nil) goto cleanup;
+    for (i = 0; i < 64; i++) {
+        (**sourceColors).ctTable[i].value = i;
+        (**sourceColors).ctTable[i].rgb.red = (unsigned short)(0x2200 + i * 0x02c0);
+        (**sourceColors).ctTable[i].rgb.green = (unsigned short)(0xee00 - i * 0x0240);
+        (**sourceColors).ctTable[i].rgb.blue = (unsigned short)(0x3300 + i * 0x0180);
+    }
+    CTabChanged(sourceColors);
+    if (!LockPixels(sourcePixels) || !LockPixels(replayPixels)) goto cleanup;
+
+    base = GetPixBaseAddr(sourcePixels);
+    rowBytes = (**sourcePixels).rowBytes & 0x3fff;
+    for (y = 0; y < 18; y++) {
+        for (x = 0; x < 192; x++) {
+            base[y * rowBytes + x] = (char)(1 + (x / 3));
+        }
+    }
+
+    SetGWorld(replayWorld, nil);
+    picture = OpenPicture(&localRect);
+    CopyBits((BitMap *)*sourcePixels, (BitMap *)*replayPixels,
+             &localRect, &localRect, srcCopy, nil);
+    ClosePicture();
+
+    DrawPicture(picture, &localRect);
+
+    SetGWorld((GWorldPtr)gMainWindow, savedDevice);
+    SetRect(&displayRect, 330, 272, 522, 290);
+    CopyBits((BitMap *)*replayPixels, (BitMap *)*windowPixels,
+             &localRect, &displayRect, srcCopy, nil);
+    FrameRect(&displayRect);
+
+cleanup:
+    SetGWorld(savedWorld, savedDevice);
+    if (picture != nil) KillPicture(picture);
+    if (sourceWorld != nil) DisposeGWorld(sourceWorld);
+    if (replayWorld != nil) DisposeGWorld(replayWorld);
+}
 
 /* State variables */
 static short gPage = pageGraphics;
@@ -1055,17 +1156,23 @@ static void DrawPalettesPage(void)
     MoveTo(246, 186); DrawString("\pEntry 3");
     MoveTo(422, 186); DrawString("\pEntry 4");
 
-    SetRect(&r, 30, 205, 530, 264);
+    SetRect(&r, 30, 205, 530, 254);
     FrameRect(&r);
     InsetRect(&r, 2, 2);
     PmBackColor(5);
     EraseRect(&r);
     RGBBackColor(&white);
     RGBForeColor(&black);
-    MoveTo(48, 239);
+    MoveTo(48, 235);
     DrawString("\pTolerant background entry allocated by the Palette Manager");
 
-    MoveTo(205, 292);
+    RGBBackColor(&white);
+    RGBForeColor(&black);
+    MoveTo(30, 284);
+    DrawString("\pIndexed PICT -> GWorld -> screen");
+    DrawIndexedPictureTransfer();
+
+    MoveTo(205, 304);
     DrawString(gPaletteAnimated ? "\pAnimated CLUT values" : "\pInitial CLUT values");
     DrawControls(gMainWindow);
 }
