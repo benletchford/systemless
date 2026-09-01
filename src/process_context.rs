@@ -2227,6 +2227,15 @@ impl ProcessNativeMemoryManager {
         }
     }
 
+    /// Set the expandable application-heap boundary for subsequent native
+    /// allocations. The caller has already enforced the guest stack ceiling.
+    pub(crate) fn set_native_heap_limit(&mut self, heap_limit: u32) {
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.heap.heap_limit = heap_limit;
+            self.native_allocator_dirty = true;
+        }
+    }
+
     /// Record that the process application heap has been expanded to its limit.
     ///
     /// `MaxApplZone` grows the application heap as far as possible. Inside
