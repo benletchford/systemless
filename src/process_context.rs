@@ -130,7 +130,7 @@ pub(crate) struct ProcessMemoryManager {
     handle_high_locked: SharedProcessMap<bool>,
     native_handle_ptrs: HashSet<u32>,
     native_handles: HashSet<u32>,
-    native_allocations: HashMap<u32, ProcessHandleRecord>,
+    native_allocations: Vec<ProcessHandleRecord>,
     native_allocator: Option<ProcessNativeAllocatorState>,
     native_allocator_dirty: bool,
 }
@@ -457,7 +457,8 @@ impl ProcessMemoryManager {
     ) -> Option<u32> {
         self.assert_classic_memory_bus_attached(bus);
         self.native_allocations
-            .get(&handle)
+            .iter()
+            .find(|record| record.handle == handle)
             .map(|record| record.size)
             .or_else(|| {
                 (handle != 0)
@@ -480,12 +481,14 @@ impl ProcessMemoryManager {
         self.native_allocations.clear();
         for (record, state) in handles {
             let ProcessHandleRecord { handle, ptr, .. } = record;
-            if handle != 0 && ptr != 0 {
-                self.ptr_to_handle.insert(ptr, handle);
-                self.native_handle_ptrs.insert(ptr);
+            if handle != 0 {
+                if ptr != 0 {
+                    self.ptr_to_handle.insert(ptr, handle);
+                    self.native_handle_ptrs.insert(ptr);
+                }
                 self.handle_state_bits.insert(handle, state);
                 self.native_handles.insert(handle);
-                self.native_allocations.insert(handle, record);
+                self.native_allocations.push(record);
             }
         }
     }
@@ -535,7 +538,26 @@ impl ProcessMemoryManager {
     }
 
     pub(crate) fn native_allocation(&self, handle: u32) -> Option<ProcessHandleRecord> {
-        self.native_allocations.get(&handle).copied()
+        self.native_allocations
+            .iter()
+            .find(|record| record.handle == handle)
+            .copied()
+    }
+
+    pub(crate) fn native_handle_records(&self) -> &[ProcessHandleRecord] {
+        &self.native_allocations
+    }
+
+    fn set_native_allocation_record(&mut self, record: ProcessHandleRecord) {
+        if let Some(existing) = self
+            .native_allocations
+            .iter_mut()
+            .find(|existing| existing.handle == record.handle)
+        {
+            *existing = record;
+        } else {
+            self.native_allocations.push(record);
+        }
     }
 
     fn native_allocation_size(size: u32) -> Option<u32> {
@@ -776,7 +798,7 @@ impl ProcessMemoryManager {
             allocator.heap.heap_cursor = next_cursor;
         }
         allocator.heap.last_mem_error = Self::NO_ERR;
-        self.native_allocations.insert(record.handle, record);
+        self.set_native_allocation_record(record);
         self.ptr_to_handle.insert(record.ptr, record.handle);
         self.native_handle_ptrs.insert(record.ptr);
         self.handle_state_bits.insert(record.handle, 0x40);
@@ -858,12 +880,17 @@ impl ProcessMemoryManager {
         memory: &mut GuestAddressSpace,
         handle: u32,
     ) -> Option<ProcessHandleRecord> {
-        let Some(record) = self.native_allocations.remove(&handle) else {
+        let Some(index) = self
+            .native_allocations
+            .iter()
+            .position(|record| record.handle == handle)
+        else {
             self.set_native_mem_error(Self::NO_ERR);
             return None;
         };
+        let record = self.native_allocations.remove(index);
         if PpcMemory::write_u32_be(memory, handle, 0).is_none() {
-            self.native_allocations.insert(handle, record);
+            self.native_allocations.insert(index, record);
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return None;
         }
@@ -883,7 +910,8 @@ impl ProcessMemoryManager {
     pub(crate) fn native_handle_size(&mut self, handle: u32) -> Option<u32> {
         let size = self
             .native_allocations
-            .get(&handle)
+            .iter()
+            .find(|record| record.handle == handle)
             .map(|record| record.size);
         self.set_native_mem_error(if size.is_some() {
             Self::NO_ERR
@@ -899,7 +927,7 @@ impl ProcessMemoryManager {
         handle: u32,
         size: u32,
     ) -> i16 {
-        let Some(mut record) = self.native_allocations.get(&handle).copied() else {
+        let Some(mut record) = self.native_allocation(handle) else {
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return Self::NIL_HANDLE_ERR;
         };
@@ -909,7 +937,7 @@ impl ProcessMemoryManager {
         }
         if size <= record.capacity {
             record.size = size;
-            self.native_allocations.insert(handle, record);
+            self.set_native_allocation_record(record);
             self.set_native_mem_error(Self::NO_ERR);
             return Self::NO_ERR;
         }
@@ -975,7 +1003,7 @@ impl ProcessMemoryManager {
         record.ptr = new_ptr;
         record.size = size;
         record.capacity = size;
-        self.native_allocations.insert(handle, record);
+        self.set_native_allocation_record(record);
         self.ptr_to_handle.insert(new_ptr, handle);
         self.native_handle_ptrs.insert(new_ptr);
         let allocator = self
@@ -1001,7 +1029,7 @@ impl ProcessMemoryManager {
         expected_ptr: u32,
         bytes: &[u8],
     ) -> Result<(u32, u32), i16> {
-        let Some(record) = self.native_allocations.get(&handle).copied() else {
+        let Some(record) = self.native_allocation(handle) else {
             self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return Err(Self::NIL_HANDLE_ERR);
         };
@@ -1074,7 +1102,7 @@ impl ProcessMemoryManager {
             size,
             capacity: new_capacity,
         };
-        self.native_allocations.insert(handle, updated);
+        self.set_native_allocation_record(updated);
         self.native_handle_ptrs.remove(&current_ptr);
         self.native_handle_ptrs.insert(new_ptr);
         let allocator = self
@@ -1177,7 +1205,7 @@ impl ProcessMemoryManager {
 
     #[cfg(test)]
     pub(crate) fn set_native_allocation(&mut self, record: ProcessHandleRecord) {
-        self.native_allocations.insert(record.handle, record);
+        self.set_native_allocation_record(record);
     }
 
     #[cfg(test)]
@@ -1215,6 +1243,12 @@ impl ProcessMemoryManager {
             .extend(source.handle_state_bits.take_entries());
         self.handle_high_locked
             .extend(source.handle_high_locked.take_entries());
+        if self.native_allocations.is_empty() {
+            self.native_allocations.append(&mut source.native_allocations);
+            self.native_handle_ptrs
+                .extend(source.native_handle_ptrs.drain());
+            self.native_handles.extend(source.native_handles.drain());
+        }
     }
 
     #[cfg(test)]
@@ -1896,6 +1930,15 @@ mod tests {
                 },
                 0x40,
             ),
+            (
+                ProcessHandleRecord {
+                    handle: 0x8800,
+                    ptr: 0,
+                    size: 0,
+                    capacity: 0,
+                },
+                0x40,
+            ),
         ]);
         assert_eq!(manager.handle_for_ptr(0x2200), Some(0x1100));
         assert_eq!(manager.handle_for_ptr(0x4400), Some(0x3300));
@@ -1903,6 +1946,8 @@ mod tests {
         assert_eq!(manager.handle_state(0x3300), 0x80);
         assert_eq!(manager.handle_state(0x5500), 0x40);
         assert_eq!(manager.native_allocation(0x3300).unwrap().size, 16);
+        assert_eq!(manager.native_allocation(0x8800).unwrap().ptr, 0);
+        assert_eq!(manager.handle_state(0x8800), 0x40);
 
         manager.register_native_handle_records([(
             ProcessHandleRecord {

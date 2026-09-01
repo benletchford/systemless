@@ -13944,7 +13944,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -14285,7 +14284,7 @@ mod tests {
         let original_record = fixture.root_record;
         let original_handle_record = fixture
             .app
-            .handles
+            .handles()
             .iter()
             .copied()
             .find(|record| record.handle == root_menu)
@@ -14359,7 +14358,7 @@ mod tests {
             .read_u32_be(root_menu)
             .expect("live native root-menu master pointer");
         let handle_record = native
-            .handles
+            .handles()
             .iter()
             .copied()
             .find(|record| record.handle == root_menu)
@@ -16048,7 +16047,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -16959,7 +16957,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17115,7 +17112,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17503,7 +17499,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
@@ -17785,7 +17780,6 @@ mod tests {
             cfm_connections: Vec::new(),
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
-            handles: Vec::new(),
             controls: Vec::new(),
             screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
             device_gamma: crate::display::default_display_gamma(),
