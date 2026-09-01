@@ -18,7 +18,8 @@ use crate::process_context::{
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessCursorState, SharedProcessEventQueue, SharedProcessInputState,
     SharedProcessFileSystem, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessResourceManager, SharedProcessSoundManager, SharedProcessValue,
+    SharedProcessResourceManager, SharedProcessScrapState, SharedProcessSoundManager,
+    SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2687,35 +2688,11 @@ pub struct TrapDispatcher {
     /// ProcPtr install. Some apps query a full-width userItem, shrink it to a
     /// small arrow hit rect with SetDItem, and draw the menu title separately.
     pub(crate) dialog_popup_candidate_items: HashSet<(u32, i16)>,
-    /// Desk scrap contents: list of (type_code, data) entries.
-    /// Each entry stores a 4-byte ResType and the raw data bytes.
-    /// Inside Macintosh Volume I, I-453
-    pub scrap_entries: Vec<([u8; 4], Vec<u8>)>,
-    /// Scrap change counter, incremented by ZeroScrap.
-    /// Inside Macintosh Volume I, I-458
-    pub scrap_count: i16,
-    /// True when the desk scrap is resident in memory.
-    /// False means InfoScrap reports the scrap on disk and hides the handle
-    /// until LoadScrap/ZeroScrap brings it back into memory.
-    pub scrap_in_memory: bool,
-    /// Whether the desk scrap can be persisted to a writable clipboard file.
-    /// False keeps UnloadScrap on the observable error path when the scrap is
-    /// resident and a disk write would be required.
-    pub(crate) scrap_clipboard_writable: bool,
+    /// Process-owned desk scrap shared by classic and native gateways.
+    pub(crate) scrap: SharedProcessScrapState,
     /// Most recent pack ID passed to InitPack.
     /// Kept as lightweight bookkeeping for future pack-specific heuristics.
     pub last_init_pack_id: Option<i16>,
-    /// Guest address of the master pointer for the in-memory desk scrap.
-    /// Lazily allocated on first InfoScrap call.
-    /// Inside Macintosh Volume I, I-457
-    pub scrap_handle: Option<u32>,
-    /// True when the serialized desk scrap handle needs rebuilding from
-    /// `scrap_entries` before the next InfoScrap observation.
-    pub scrap_handle_dirty: bool,
-    /// Guest address of the ScrapStuff record returned by InfoScrap.
-    /// Lazily allocated on first InfoScrap call.
-    /// Inside Macintosh Volume I, I-457
-    pub scrap_stuff_ptr: Option<u32>,
     /// Whether SetResLoad(TRUE) is active (default: true).
     /// When false, resource-retrieval functions return empty handles.
     /// Inside Macintosh Volume I, I-118
@@ -2827,6 +2804,7 @@ impl TrapDispatcher {
             &mut self.vbl_tasks,
             &mut self.callback_scheduling,
         );
+        context.attach_scrap_state(&mut self.scrap);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -4048,14 +4026,8 @@ impl TrapDispatcher {
             dialog_item_popup_menus: HashMap::new(),
             dialog_popup_original_rects: HashMap::new(),
             dialog_popup_candidate_items: HashSet::new(),
-            scrap_entries: Vec::new(),
-            scrap_count: 0,
-            scrap_in_memory: true,
-            scrap_clipboard_writable: false,
+            scrap: SharedProcessScrapState::default(),
             last_init_pack_id: None,
-            scrap_handle: None,
-            scrap_handle_dirty: false,
-            scrap_stuff_ptr: None,
             res_load: true,
             res_purge: false,
         };

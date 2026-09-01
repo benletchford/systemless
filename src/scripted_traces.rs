@@ -855,7 +855,7 @@ pub fn scripted_modaldialog_preferences_checkbox_input_trace() -> Result<String,
 
 fn scripted_menu_setup() -> (TrapDispatcher, M68kCpu, MacMemoryBus) {
     let mut dispatcher = TrapDispatcher::new();
-    dispatcher.scrap_clipboard_writable = true;
+    dispatcher.scrap.clipboard_writable = true;
     let mut cpu = M68kCpu::new();
     let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
 

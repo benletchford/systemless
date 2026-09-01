@@ -1227,6 +1227,46 @@ pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
+pub(crate) type SharedProcessScrapState = SharedProcessValue<ProcessScrapState>;
+
+/// Canonical desktop scrap for one Macintosh process.
+///
+/// The Scrap Manager exposes one ordered collection of typed flavors to every
+/// execution architecture in the process. TextEdit's private scrap remains a
+/// separate adapter detail. Inside Macintosh Volume I (1985), pp. I-453 and
+/// I-457--I-459.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessScrapState {
+    pub(crate) entries: Vec<([u8; 4], Vec<u8>)>,
+    pub(crate) count: i16,
+    pub(crate) initialized: bool,
+    pub(crate) in_memory: bool,
+    pub(crate) clipboard_writable: bool,
+    pub(crate) handle: Option<u32>,
+    pub(crate) handle_dirty: bool,
+    pub(crate) stuff_ptr: Option<u32>,
+}
+
+impl Default for ProcessScrapState {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            count: 0,
+            initialized: false,
+            in_memory: true,
+            clipboard_writable: false,
+            handle: None,
+            handle_dirty: false,
+            stuff_ptr: None,
+        }
+    }
+}
+
+impl ProcessScrapState {
+    fn is_pristine(&self) -> bool {
+        self == &Self::default()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessKeyRepeatState {
@@ -4139,6 +4179,7 @@ pub(crate) struct ProcessContext {
     timer_tasks: SharedProcessTimerTasks,
     vbl_tasks: SharedProcessVblTasks,
     callback_scheduling: SharedProcessCallbackScheduling,
+    scrap_state: SharedProcessScrapState,
     cursor_state: SharedProcessCursorState,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
@@ -4164,6 +4205,7 @@ impl Default for ProcessContext {
             timer_tasks: SharedProcessTimerTasks::default(),
             vbl_tasks: SharedProcessVblTasks::default(),
             callback_scheduling: SharedProcessCallbackScheduling::default(),
+            scrap_state: SharedProcessScrapState::default(),
             cursor_state: SharedProcessCursorState::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
@@ -4234,7 +4276,13 @@ impl ProcessContext {
     ) {
         timer_tasks.attach_to(&self.timer_tasks, Vec::is_empty);
         vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
-        scheduling.attach_to(&self.callback_scheduling, |state| state == &Default::default());
+        scheduling.attach_to(&self.callback_scheduling, |state| {
+            state == &Default::default()
+        });
+    }
+
+    pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
+        adapter.attach_to(&self.scrap_state, ProcessScrapState::is_pristine);
     }
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {

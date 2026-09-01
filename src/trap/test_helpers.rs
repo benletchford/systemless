@@ -80,7 +80,7 @@ pub const TEST_SP: u32 = 0x100000;
 /// - screenBits set up at $0824/$0828
 pub fn setup() -> (TrapDispatcher, MockCpu, MacMemoryBus) {
     let mut dispatcher = TrapDispatcher::new();
-    dispatcher.scrap_clipboard_writable = true;
+    dispatcher.scrap.clipboard_writable = true;
     let mut cpu = MockCpu::new();
     let mut bus = MacMemoryBus::new(4 * 1024 * 1024);
 

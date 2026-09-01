@@ -3889,6 +3889,7 @@ impl PpcLoadedApp {
             &mut self.vbl_tasks,
             &mut self.callback_scheduling,
         );
+        context.attach_scrap_state(&mut self.scrap.desktop);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -20308,12 +20309,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::PutScrap => {
             // More Macintosh Toolbox (1993), pp. 2-35--2-37: successive calls
             // add ordered flavors; a repeated type remains a later occurrence.
-            let result = if !scrap.desktop_initialized {
+            let result = if !scrap.desktop.initialized {
                 PPC_NO_SCRAP_ERR
             } else if (cpu.gpr[3] as i32) < 0 {
                 PPC_PARAM_ERR
             } else if let Some(bytes) = ppc_memory_read_bytes(memory, cpu.gpr[5], cpu.gpr[3]) {
-                scrap.desktop_flavors.push((cpu.gpr[4], bytes));
+                scrap.desktop.entries.push((cpu.gpr[4].to_be_bytes(), bytes));
+                scrap.desktop.handle_dirty = true;
                 PPC_NO_ERR
             } else {
                 PPC_PARAM_ERR
@@ -20321,14 +20323,21 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return((i32::from(result)) as u32))
         }
         PpcImportDispatcherTarget::ZeroScrap => {
-            scrap.desktop_initialized = true;
-            scrap.desktop_flavors.clear();
+            scrap.desktop.initialized = true;
+            scrap.desktop.entries.clear();
+            scrap.desktop.count = scrap.desktop.count.wrapping_add(1);
+            scrap.desktop.in_memory = true;
+            scrap.desktop.handle_dirty = true;
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::LoadScrap => {
             // The process-owned desktop scrap remains resident in HLE, so an
             // explicit disk-to-memory synchronization is already satisfied.
-            scrap.desktop_initialized = true;
+            scrap.desktop.initialized = true;
+            if !scrap.desktop.in_memory {
+                scrap.desktop.in_memory = true;
+                scrap.desktop.handle_dirty = true;
+            }
             Some(PpcImportAction::Return(0))
         }
         PpcImportDispatcherTarget::FSpOpenDF => {
@@ -21506,9 +21515,10 @@ fn dispatch_supported_import(
             // Scrap Manager's desktop scrap and return an OSErr.
             let result = if from_desktop {
                 let bytes = scrap
-                    .desktop_flavors
+                    .desktop
+                    .entries
                     .iter()
-                    .find(|(flavor, _)| *flavor == u32::from_be_bytes(*b"TEXT"))
+                    .find(|(flavor, _)| *flavor == *b"TEXT")
                     .map(|(_, bytes)| bytes.clone());
                 if let Some(bytes) = bytes {
                     let mut allocator = PpcProcessAllocatorView {
@@ -21529,10 +21539,12 @@ fn dispatch_supported_import(
                 }
             } else {
                 let bytes = ppc_te_scrap_bytes(memory, handles, scrap);
-                scrap.desktop_initialized = true;
+                scrap.desktop.initialized = true;
                 scrap
-                    .desktop_flavors
-                    .push((u32::from_be_bytes(*b"TEXT"), bytes));
+                    .desktop
+                    .entries
+                    .push((*b"TEXT", bytes));
+                scrap.desktop.handle_dirty = true;
                 PPC_NO_ERR
             };
             Some(PpcImportAction::Return(ppc_i16_result(result)))
@@ -69469,7 +69481,8 @@ fn ppc_te_copy_or_cut(
 
 fn ppc_scrap_flavor_offset(scrap: &PpcScrapState, flavor_index: usize) -> u32 {
     scrap
-        .desktop_flavors
+        .desktop
+        .entries
         .iter()
         .take(flavor_index)
         .fold(0u32, |offset, (_, bytes)| {
@@ -69488,10 +69501,11 @@ fn ppc_get_scrap(
     scrap: &PpcScrapState,
 ) -> u32 {
     let Some((index, (_, bytes))) = scrap
-        .desktop_flavors
+        .desktop
+        .entries
         .iter()
         .enumerate()
-        .find(|(_, (flavor, _))| *flavor == cpu.gpr[4])
+        .find(|(_, (flavor, _))| *flavor == cpu.gpr[4].to_be_bytes())
     else {
         if cpu.gpr[5] != 0 {
             let _ = memory.write_u32_be(cpu.gpr[5], 0);
@@ -148968,6 +148982,85 @@ pub(crate) mod tests {
             .is_ok());
 
         assert_eq!(native.cursor_data(), Some((classic_data, classic_mask, 5, 6)));
+    }
+
+    #[test]
+    fn attached_desktop_scrap_mutations_cross_isa_immediately() {
+        let pef = synthetic_pef_with_import(b"TestImport");
+        let mut native = load_pef_application(&pef).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::ZeroScrap);
+        let native_source = PPC_DATA_BASE + 0x2600;
+        native.memory.add_region(native_source, b"native scrap".to_vec());
+        native.cpu.gpr[3] = 12;
+        native.cpu.gpr[4] = u32::from_be_bytes(*b"TEXT");
+        native.cpu.gpr[5] = native_source;
+        run_test_import(&mut native, PpcImportDispatcherTarget::PutScrap);
+        assert_eq!(native.cpu.gpr[3], 0);
+
+        let classic_offset = 0x0002_7000;
+        classic_bus.write_long(TEST_SP, classic_offset);
+        classic_bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"TEXT"));
+        classic_bus.write_long(TEST_SP + 8, 0);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_toolbox(true, 0x1FD, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_long(TEST_SP + 12), 12);
+        assert_eq!(classic_bus.read_long(classic_offset), 8);
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_toolbox(true, 0x1FC, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        let classic_source = 0x0002_7100;
+        for (offset, byte) in b"classic scrap".iter().copied().enumerate() {
+            classic_bus.write_byte(classic_source + offset as u32, byte);
+        }
+        classic_bus.write_long(TEST_SP, classic_source);
+        classic_bus.write_long(TEST_SP + 4, u32::from_be_bytes(*b"PICT"));
+        classic_bus.write_long(TEST_SP + 8, 13);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_toolbox(true, 0x1FE, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_long(TEST_SP + 12), 0);
+
+        let native_offset = PPC_DATA_BASE + 0x2680;
+        native.memory.add_region(native_offset, vec![0; 4]);
+        native.cpu.gpr[3] = 0;
+        native.cpu.gpr[4] = u32::from_be_bytes(*b"PICT");
+        native.cpu.gpr[5] = native_offset;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetScrap);
+        assert_eq!(native.cpu.gpr[3], 13);
+        assert_eq!(native.memory.read_u32_be(native_offset), Some(0));
+        assert_eq!(native.scrap.desktop.count, 2);
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_desktop_scrap() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        run_test_import(&mut original, PpcImportDispatcherTarget::ZeroScrap);
+        let mut detached = original.clone();
+        let source = PPC_DATA_BASE + 0x2600;
+        detached.memory.add_region(source, b"detached".to_vec());
+        detached.cpu.gpr[3] = 8;
+        detached.cpu.gpr[4] = u32::from_be_bytes(*b"TEXT");
+        detached.cpu.gpr[5] = source;
+        run_test_import(&mut detached, PpcImportDispatcherTarget::PutScrap);
+
+        assert!(original.scrap.desktop.entries.is_empty());
+        assert_eq!(original.scrap.desktop.count, 1);
+        assert_eq!(detached.scrap.desktop.entries, vec![(*b"TEXT", b"detached".to_vec())]);
+        assert_eq!(detached.scrap.desktop.count, 1);
     }
 
     #[test]
