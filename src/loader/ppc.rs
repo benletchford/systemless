@@ -108,6 +108,30 @@ const PPC_IMPORT_STD_FLT_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x440;
 const PPC_IMPORT_STD_ERRNO: u32 = PPC_IMPORT_DATA_BASE + 0x444;
 const PPC_IMPORT_STD_MAC_OS_ERR: u32 = PPC_IMPORT_DATA_BASE + 0x448;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
+// Universal Interfaces 3.4 ctype.h defines these C-locale table flags.
+const PPC_CTYPE_UPP: u8 = 0x01;
+const PPC_CTYPE_LOW: u8 = 0x02;
+const PPC_CTYPE_DIG: u8 = 0x04;
+const PPC_CTYPE_WSP: u8 = 0x08;
+const PPC_CTYPE_PUN: u8 = 0x10;
+const PPC_CTYPE_CTL: u8 = 0x20;
+const PPC_CTYPE_BLA: u8 = 0x40;
+const PPC_CTYPE_HEX: u8 = 0x80;
+
+const fn ppc_ctype_entry(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => PPC_CTYPE_DIG | PPC_CTYPE_HEX,
+        b'A'..=b'F' => PPC_CTYPE_UPP | PPC_CTYPE_HEX,
+        b'G'..=b'Z' => PPC_CTYPE_UPP,
+        b'a'..=b'f' => PPC_CTYPE_LOW | PPC_CTYPE_HEX,
+        b'g'..=b'z' => PPC_CTYPE_LOW,
+        b' ' => PPC_CTYPE_BLA | PPC_CTYPE_WSP,
+        b'\t' | b'\n' | 0x0b | 0x0c | b'\r' => PPC_CTYPE_CTL | PPC_CTYPE_WSP,
+        0x00..=0x08 | 0x0e..=0x1f | 0x7f => PPC_CTYPE_CTL,
+        b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => PPC_CTYPE_PUN,
+        _ => 0,
+    }
+}
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
 // for stdin, stdout, and stderr. Keep this zero-initialized storage in the
@@ -1472,6 +1496,19 @@ pub enum PpcImportDispatcherTarget {
     StdAbs,
     StdToupper,
     StdTolower,
+    StdIsalnum,
+    StdIsalpha,
+    StdIsascii,
+    StdIscntrl,
+    StdIsdigit,
+    StdIsgraph,
+    StdIslower,
+    StdIsprint,
+    StdIspunct,
+    StdIsspace,
+    StdIsupper,
+    StdIsxdigit,
+    StdToascii,
     StdSrand,
     StdRand,
     P2CStr,
@@ -14690,6 +14727,20 @@ fn dispatcher_target_for_import(
         ("StdCLib", "abs") => PpcImportDispatcherTarget::StdAbs,
         ("StdCLib", "toupper") => PpcImportDispatcherTarget::StdToupper,
         ("StdCLib", "tolower") => PpcImportDispatcherTarget::StdTolower,
+        // Universal Interfaces 3.4 ctype.h declares these StdCLib exports.
+        ("StdCLib", "isalnum") => PpcImportDispatcherTarget::StdIsalnum,
+        ("StdCLib", "isalpha") => PpcImportDispatcherTarget::StdIsalpha,
+        ("StdCLib", "isascii") => PpcImportDispatcherTarget::StdIsascii,
+        ("StdCLib", "iscntrl") => PpcImportDispatcherTarget::StdIscntrl,
+        ("StdCLib", "isdigit") => PpcImportDispatcherTarget::StdIsdigit,
+        ("StdCLib", "isgraph") => PpcImportDispatcherTarget::StdIsgraph,
+        ("StdCLib", "islower") => PpcImportDispatcherTarget::StdIslower,
+        ("StdCLib", "isprint") => PpcImportDispatcherTarget::StdIsprint,
+        ("StdCLib", "ispunct") => PpcImportDispatcherTarget::StdIspunct,
+        ("StdCLib", "isspace") => PpcImportDispatcherTarget::StdIsspace,
+        ("StdCLib", "isupper") => PpcImportDispatcherTarget::StdIsupper,
+        ("StdCLib", "isxdigit") => PpcImportDispatcherTarget::StdIsxdigit,
+        ("StdCLib", "toascii") => PpcImportDispatcherTarget::StdToascii,
         ("StdCLib", "srand") => PpcImportDispatcherTarget::StdSrand,
         ("StdCLib", "rand") => PpcImportDispatcherTarget::StdRand,
         (
@@ -22738,6 +22789,74 @@ fn dispatch_supported_import(
                 value
             };
             Some(PpcImportAction::Return(result as u32))
+        }
+        // Universal Interfaces 3.4 ctype.h specifies byte-table masks for the
+        // C-locale classifiers and unsigned-int/unsigned-char conversion rules.
+        PpcImportDispatcherTarget::StdIsalnum => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG);
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsalpha => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & (PPC_CTYPE_UPP | PPC_CTYPE_LOW);
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsascii => {
+            let result = u32::from(cpu.gpr[3] <= 0x7f);
+            Some(PpcImportAction::Return(result))
+        }
+        PpcImportDispatcherTarget::StdIscntrl => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_CTL;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsdigit => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_DIG;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsgraph => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte)
+                & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG | PPC_CTYPE_PUN);
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIslower => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_LOW;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsprint => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte)
+                & (PPC_CTYPE_UPP | PPC_CTYPE_LOW | PPC_CTYPE_DIG | PPC_CTYPE_PUN | PPC_CTYPE_BLA);
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIspunct => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_PUN;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsspace => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_WSP;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsupper => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_UPP;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdIsxdigit => {
+            let byte = cpu.gpr[3] as u8;
+            let result = ppc_ctype_entry(byte) & PPC_CTYPE_HEX;
+            Some(PpcImportAction::Return(u32::from(result)))
+        }
+        PpcImportDispatcherTarget::StdToascii => {
+            let byte = cpu.gpr[3] as u8;
+            let result = byte & 0x7f;
+            Some(PpcImportAction::Return(u32::from(result)))
         }
         PpcImportDispatcherTarget::StdSrand => {
             let seed = if cpu.gpr[3] == 0 { 1 } else { cpu.gpr[3] };
@@ -81142,33 +81261,10 @@ fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
         &vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize],
     );
     for byte in 0u16..=255 {
-        let value = byte as u8;
-        let mut flags = 0u16;
-        if value.is_ascii_uppercase() {
-            flags |= 0x0001;
-        }
-        if value.is_ascii_lowercase() {
-            flags |= 0x0002;
-        }
-        if value.is_ascii_digit() {
-            flags |= 0x0004;
-        }
-        if value.is_ascii_whitespace() {
-            flags |= 0x0008;
-        }
-        if value.is_ascii_punctuation() {
-            flags |= 0x0010;
-        }
-        if value.is_ascii_control() {
-            flags |= 0x0020;
-        }
-        if value == b' ' {
-            flags |= 0x0040;
-        }
-        if value.is_ascii_hexdigit() {
-            flags |= 0x0080;
-        }
-        let _ = memory.write_u16_be(PPC_IMPORT_CTYPE_TABLE + u32::from(byte) * 2, flags);
+        let _ = memory.write_u8(
+            PPC_IMPORT_CTYPE_TABLE + u32::from(byte),
+            ppc_ctype_entry(byte as u8),
+        );
     }
 }
 
@@ -155740,6 +155836,250 @@ pub(crate) mod tests {
                 ),
                 PpcImportAction::Return(0)
             );
+        }
+    }
+
+    #[test]
+    fn stdclib_ctype_classification_and_conversion_conforms_to_universal_interfaces() {
+        // Universal Interfaces 3.4 ctype.h routes.
+        let expected_targets = [
+            ("isalnum", PpcImportDispatcherTarget::StdIsalnum),
+            ("isalpha", PpcImportDispatcherTarget::StdIsalpha),
+            ("isascii", PpcImportDispatcherTarget::StdIsascii),
+            ("iscntrl", PpcImportDispatcherTarget::StdIscntrl),
+            ("isdigit", PpcImportDispatcherTarget::StdIsdigit),
+            ("isgraph", PpcImportDispatcherTarget::StdIsgraph),
+            ("islower", PpcImportDispatcherTarget::StdIslower),
+            ("isprint", PpcImportDispatcherTarget::StdIsprint),
+            ("ispunct", PpcImportDispatcherTarget::StdIspunct),
+            ("isspace", PpcImportDispatcherTarget::StdIsspace),
+            ("isupper", PpcImportDispatcherTarget::StdIsupper),
+            ("isxdigit", PpcImportDispatcherTarget::StdIsxdigit),
+            ("toascii", PpcImportDispatcherTarget::StdToascii),
+        ];
+
+        for (name, target) in &expected_targets {
+            assert_eq!(
+                dispatcher_target_for_import("StdCLib", name),
+                *target,
+                "Import StdCLib::{name} should map to expected dispatcher target"
+            );
+        }
+
+        // Verify character classification flags across the complete byte domain.
+        for byte in 0u8..=255 {
+            let entry = ppc_ctype_entry(byte);
+            let is_upp = (b'A'..=b'Z').contains(&byte);
+            let is_low = (b'a'..=b'z').contains(&byte);
+            let is_dig = (b'0'..=b'9').contains(&byte);
+            let is_wsp = matches!(byte, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r');
+            let is_pun = matches!(byte, 33..=47 | 58..=64 | 91..=96 | 123..=126);
+            let is_ctl = matches!(byte, 0..=31 | 127);
+            let is_hex = is_dig || (b'a'..=b'f').contains(&byte) || (b'A'..=b'F').contains(&byte);
+            let is_bla = byte == b' ';
+
+            assert_eq!(
+                (entry & PPC_CTYPE_UPP) != 0,
+                is_upp,
+                "byte 0x{byte:02x} UPP flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_LOW) != 0,
+                is_low,
+                "byte 0x{byte:02x} LOW flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_DIG) != 0,
+                is_dig,
+                "byte 0x{byte:02x} DIG flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_WSP) != 0,
+                is_wsp,
+                "byte 0x{byte:02x} WSP flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_PUN) != 0,
+                is_pun,
+                "byte 0x{byte:02x} PUN flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_CTL) != 0,
+                is_ctl,
+                "byte 0x{byte:02x} CTL flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_HEX) != 0,
+                is_hex,
+                "byte 0x{byte:02x} HEX flag"
+            );
+            assert_eq!(
+                (entry & PPC_CTYPE_BLA) != 0,
+                is_bla,
+                "byte 0x{byte:02x} BLA flag"
+            );
+
+            if byte >= 128 {
+                assert_eq!(entry, 0, "non-ASCII byte 0x{byte:02x} must be 0");
+            }
+        }
+
+        // Execute every route through a synthetic PEF import.
+        for (name, target) in &expected_targets {
+            let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+                b"StdCLib",
+                name.as_bytes(),
+            ))
+            .unwrap();
+
+            assert_eq!(loaded.imports[0].dispatcher_target, *target);
+            assert_eq!(
+                loaded.memory.read_u32_be(PPC_IMPORT_CTYPE_POINTER),
+                Some(PPC_IMPORT_CTYPE_TABLE)
+            );
+            for byte in 0u16..=255 {
+                assert_eq!(
+                    loaded
+                        .memory
+                        .read_u8(PPC_IMPORT_CTYPE_TABLE + u32::from(byte)),
+                    Some(ppc_ctype_entry(byte as u8))
+                );
+            }
+
+            let test_inputs: &[(u32, u32)] = match target {
+                PpcImportDispatcherTarget::StdIsalnum => &[
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_LOW)),
+                    (u32::from(b'Z'), u32::from(PPC_CTYPE_UPP)),
+                    (u32::from(b'5'), u32::from(PPC_CTYPE_DIG)),
+                    (u32::from(b'!'), 0),
+                    (u32::from(b' '), 0),
+                    (0, 0),
+                    (0x80, 0),
+                    (0xFF, 0),
+                ],
+                PpcImportDispatcherTarget::StdIsalpha => &[
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_LOW)),
+                    (u32::from(b'Z'), u32::from(PPC_CTYPE_UPP)),
+                    (u32::from(b'5'), 0),
+                    (u32::from(b'?'), 0),
+                    (0, 0),
+                ],
+                PpcImportDispatcherTarget::StdIsascii => &[
+                    (0, 1),
+                    (0x41, 1),
+                    (0x7F, 1),
+                    (0x80, 0),
+                    (0xFF, 0),
+                    (0x100, 0),
+                    (0x1234_5678, 0),
+                ],
+                PpcImportDispatcherTarget::StdIscntrl => &[
+                    (0, u32::from(PPC_CTYPE_CTL)),
+                    (0x1F, u32::from(PPC_CTYPE_CTL)),
+                    (0x7F, u32::from(PPC_CTYPE_CTL)),
+                    (u32::from(b' '), 0),
+                    (u32::from(b'A'), 0),
+                ],
+                PpcImportDispatcherTarget::StdIsdigit => &[
+                    (u32::from(b'0'), u32::from(PPC_CTYPE_DIG)),
+                    (u32::from(b'9'), u32::from(PPC_CTYPE_DIG)),
+                    (u32::from(b'/'), 0),
+                    (u32::from(b':'), 0),
+                    (u32::from(b'a'), 0),
+                ],
+                PpcImportDispatcherTarget::StdIsgraph => &[
+                    (u32::from(b'!'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'~'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_LOW)),
+                    (u32::from(b'A'), u32::from(PPC_CTYPE_UPP)),
+                    (u32::from(b'0'), u32::from(PPC_CTYPE_DIG)),
+                    (u32::from(b' '), 0),
+                    (0x1F, 0),
+                    (0x7F, 0),
+                    (0x80, 0),
+                ],
+                PpcImportDispatcherTarget::StdIslower => &[
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_LOW)),
+                    (u32::from(b'z'), u32::from(PPC_CTYPE_LOW)),
+                    (u32::from(b'A'), 0),
+                    (u32::from(b'0'), 0),
+                    (u32::from(b' '), 0),
+                ],
+                PpcImportDispatcherTarget::StdIsprint => &[
+                    (u32::from(b' '), u32::from(PPC_CTYPE_BLA)),
+                    (u32::from(b'!'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'~'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_LOW)),
+                    (0x1F, 0),
+                    (0x7F, 0),
+                    (0x80, 0),
+                ],
+                PpcImportDispatcherTarget::StdIspunct => &[
+                    (u32::from(b'!'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'/'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b':'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'@'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'['), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'`'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'{'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'~'), u32::from(PPC_CTYPE_PUN)),
+                    (u32::from(b'a'), 0),
+                    (u32::from(b'0'), 0),
+                    (u32::from(b' '), 0),
+                ],
+                PpcImportDispatcherTarget::StdIsspace => &[
+                    (u32::from(b' '), u32::from(PPC_CTYPE_WSP)),
+                    (u32::from(b'\t'), u32::from(PPC_CTYPE_WSP)),
+                    (u32::from(b'\n'), u32::from(PPC_CTYPE_WSP)),
+                    (0x0B, u32::from(PPC_CTYPE_WSP)),
+                    (0x0C, u32::from(PPC_CTYPE_WSP)),
+                    (u32::from(b'\r'), u32::from(PPC_CTYPE_WSP)),
+                    (u32::from(b'a'), 0),
+                    (0, 0),
+                ],
+                PpcImportDispatcherTarget::StdIsupper => &[
+                    (u32::from(b'A'), u32::from(PPC_CTYPE_UPP)),
+                    (u32::from(b'Z'), u32::from(PPC_CTYPE_UPP)),
+                    (u32::from(b'a'), 0),
+                    (u32::from(b'0'), 0),
+                    (u32::from(b' '), 0),
+                ],
+                PpcImportDispatcherTarget::StdIsxdigit => &[
+                    (u32::from(b'0'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'9'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'a'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'f'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'A'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'F'), u32::from(PPC_CTYPE_HEX)),
+                    (u32::from(b'g'), 0),
+                    (u32::from(b'G'), 0),
+                    (u32::from(b' '), 0),
+                ],
+                PpcImportDispatcherTarget::StdToascii => &[
+                    (0x41, 0x41),
+                    (0xC1, 0x41),
+                    (0x1234_5678, 0x78),
+                    (0xFF, 0x7F),
+                    (u32::MAX, 0x7F),
+                    (0, 0),
+                ],
+                _ => unreachable!(),
+            };
+
+            for &(input, expected) in test_inputs {
+                loaded.cpu.gpr[3] = input;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(
+                    loaded.cpu.gpr[3], expected,
+                    "{name}(0x{input:02x}) expected 0x{expected:x}, got 0x{:x}",
+                    loaded.cpu.gpr[3]
+                );
+            }
+            if !matches!(target, PpcImportDispatcherTarget::StdToascii) {
+                loaded.cpu.gpr[3] = u32::MAX;
+                run_test_import(&mut loaded, target.clone());
+                assert_eq!(loaded.cpu.gpr[3], 0, "{name}(EOF)");
+            }
         }
     }
 
