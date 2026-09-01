@@ -187,6 +187,36 @@ pub struct ProcessVfsFileRecord {
     pub dirty: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessVfsDirectory {
+    pub dir_id: u32,
+    pub parent_dir_id: u32,
+    pub path: String,
+    pub creator: u32,
+    pub file_type: u32,
+    pub finder_flags: u16,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessVfsVolumeRecord {
+    pub ref_num: i16,
+    pub name: String,
+    pub root_dir_id: u32,
+    pub attributes: u16,
+    pub file_count: u16,
+    pub allocation_block_count: u16,
+    pub allocation_block_size: u32,
+    pub clump_size: u32,
+    pub free_blocks: u16,
+    pub bitmap_start: u16,
+    pub allocation_pointer: u16,
+    pub allocation_start: u16,
+    pub next_catalog_id: u32,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
 /// Native record index backed by the canonical process data-fork map.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessVfsFileRecords {
@@ -498,6 +528,10 @@ impl ProcessResourceManagerState {
 pub struct ProcessFileSystemState {
     pub(crate) files: Vec<ProcessOpenFileRecord>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
+    pub(crate) vfs_volumes: Vec<ProcessVfsVolumeRecord>,
+    pub(crate) vfs_directories: Vec<ProcessVfsDirectory>,
+    pub(crate) next_vfs_dir_id: u32,
+    pub(crate) default_dir_id: u32,
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
     pub(crate) resource_manager: SharedProcessResourceManager,
@@ -509,6 +543,10 @@ impl Default for ProcessFileSystemState {
         Self {
             files: Vec::new(),
             stdio_streams: HashMap::new(),
+            vfs_volumes: Vec::new(),
+            vfs_directories: Vec::new(),
+            next_vfs_dir_id: 0,
+            default_dir_id: 0,
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
             resource_manager: SharedProcessResourceManager::default(),
@@ -782,25 +820,43 @@ impl SharedProcessFileSystem {
         if Rc::ptr_eq(&self.0, &process_file_system.0) {
             return;
         }
-        assert!(
-            (self.vfs_files.is_empty()
-                && self.files.is_empty()
-                && self.resource_files.is_empty()
-                && self.vfs_resource_files.is_empty()
-                && self.vfs_resources.is_empty())
-                || (process_file_system.vfs_files.is_empty()
-                    && process_file_system.files.is_empty()
-                    && process_file_system.resource_files.is_empty()
-                    && process_file_system.vfs_resource_files.is_empty()
-                    && process_file_system.vfs_resources.is_empty()),
-            "cannot attach two populated process filesystems"
-        );
-        if process_file_system.vfs_files.is_empty()
+        let source_is_empty = self.vfs_files.is_empty()
+            && self.files.is_empty()
+            && self.resource_files.is_empty()
+            && self.vfs_resource_files.is_empty()
+            && self.vfs_resources.is_empty();
+        let target_is_empty = process_file_system.vfs_files.is_empty()
             && process_file_system.files.is_empty()
             && process_file_system.resource_files.is_empty()
             && process_file_system.vfs_resource_files.is_empty()
-            && process_file_system.vfs_resources.is_empty()
-        {
+            && process_file_system.vfs_resources.is_empty();
+        let source_catalogue_is_pristine = self.vfs_volumes.is_empty()
+            && self.vfs_directories.iter().all(|directory| !directory.dirty);
+        let target_catalogue_is_empty = process_file_system.vfs_volumes.is_empty()
+            && process_file_system.vfs_directories.is_empty()
+            && process_file_system.next_vfs_dir_id == 0
+            && process_file_system.default_dir_id == 0;
+        assert!(
+            source_is_empty || target_is_empty,
+            "cannot attach two populated process filesystems"
+        );
+        assert!(
+            source_catalogue_is_pristine || target_catalogue_is_empty,
+            "cannot attach two populated process VFS catalogues"
+        );
+        if target_catalogue_is_empty {
+            // SAFETY: catalogue attachment follows the same pre-exposure
+            // serialization contract as the file and resource indexes below.
+            unsafe {
+                let source = &mut *self.0.get();
+                let target = &mut *process_file_system.0.get();
+                target.vfs_volumes = std::mem::take(&mut source.vfs_volumes);
+                target.vfs_directories = std::mem::take(&mut source.vfs_directories);
+                target.next_vfs_dir_id = source.next_vfs_dir_id;
+                target.default_dir_id = source.default_dir_id;
+            }
+        }
+        if target_is_empty {
             // SAFETY: attachment occurs before the native adapter is exposed
             // through the runner, so no references into either state exist.
             unsafe {
@@ -4922,6 +4978,82 @@ mod tests {
         assert_eq!(detached_data.get("Existing").unwrap(), b"before");
         assert!(!detached_data.contains_key("Created"));
         assert!(detached_resources.is_empty());
+    }
+
+    #[test]
+    fn attached_file_systems_share_catalogue_state_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut files = SharedProcessFileSystem::default();
+        files.vfs_files.push(ProcessVfsFileRecord {
+            path: "Existing".to_string(),
+            data: b"data".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        let mut first = SharedProcessFileSystem::from_state(ProcessFileSystemState {
+            vfs_volumes: vec![ProcessVfsVolumeRecord {
+                ref_num: -1,
+                name: "Macintosh HD".to_string(),
+                root_dir_id: 2,
+                attributes: 0,
+                file_count: 1,
+                allocation_block_count: 100,
+                allocation_block_size: 4096,
+                clump_size: 4096,
+                free_blocks: 50,
+                bitmap_start: 3,
+                allocation_pointer: 4,
+                allocation_start: 5,
+                next_catalog_id: 17,
+                created_date: 1,
+                modified_date: 2,
+            }],
+            vfs_directories: vec![ProcessVfsDirectory {
+                dir_id: 2,
+                parent_dir_id: 1,
+                path: String::new(),
+                creator: 0,
+                file_type: 0,
+                finder_flags: 0,
+                dirty: false,
+            }],
+            next_vfs_dir_id: 16,
+            default_dir_id: 2,
+            ..ProcessFileSystemState::default()
+        });
+        let mut second = SharedProcessFileSystem::default();
+
+        context.attach_file_system(&mut files);
+        context.attach_file_system(&mut first);
+        context.attach_file_system(&mut second);
+        let detached = second.clone();
+
+        first.vfs_directories.push(ProcessVfsDirectory {
+            dir_id: 16,
+            parent_dir_id: 2,
+            path: "Games".to_string(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0x0400,
+            dirty: true,
+        });
+        first.vfs_volumes[0].file_count = 2;
+        first.next_vfs_dir_id = 17;
+        first.default_dir_id = 16;
+
+        assert!(files.ptr_eq(&first));
+        assert!(first.ptr_eq(&second));
+        assert_eq!(second.vfs_files[0].data, b"data");
+        assert_eq!(second.vfs_directories[1].path, "Games");
+        assert_eq!(second.vfs_volumes[0].file_count, 2);
+        assert_eq!(second.next_vfs_dir_id, 17);
+        assert_eq!(second.default_dir_id, 16);
+        assert_eq!(detached.vfs_directories.len(), 1);
+        assert_eq!(detached.vfs_volumes[0].file_count, 1);
+        assert_eq!(detached.next_vfs_dir_id, 16);
+        assert_eq!(detached.default_dir_id, 2);
     }
 
     #[test]
