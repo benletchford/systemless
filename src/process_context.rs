@@ -1505,6 +1505,45 @@ impl ProcessNativeMemoryManager {
                 .all(|offset| PpcMemory::write_u8(memory, ptr + offset, 0).is_some())
     }
 
+    /// Reserve process-owned native heap bytes for Toolbox records that are
+    /// not exposed as caller-disposable pointers.
+    pub(crate) fn reserve_native_bytes(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(required) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let Some(heap) = self.native_heap_state() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let Some((ptr, next)) = Self::native_allocation_bounds(
+            heap.heap_cursor,
+            heap.heap_limit,
+            required,
+            |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+        ) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        if !Self::prepare_native_allocation(memory, ptr, required, clear) {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        }
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator.heap.heap_cursor = next;
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        ptr
+    }
+
     /// Allocate a native nonrelocatable block in the process heap.
     ///
     /// `NewPtr` reserves fixed storage and `DisposePtr` returns it to the

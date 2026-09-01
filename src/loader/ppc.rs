@@ -24388,17 +24388,20 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::StdSprintf => {
             Some(PpcImportAction::Return(ppc_std_sprintf(cpu, memory)))
         }
-        PpcImportDispatcherTarget::StdIoCompatibility => Some(ppc_dispatch_stdio_compatibility(
-            binding,
-            cpu,
-            memory,
-            heap_cursor,
-            heap_limit,
-            files,
-            vfs_files,
-            next_file_ref_num,
-            stdio_streams,
-        )),
+        PpcImportDispatcherTarget::StdIoCompatibility => {
+            Some(ppc_dispatch_process_stdio_compatibility(
+                binding,
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                files,
+                vfs_files,
+                next_file_ref_num,
+                stdio_streams,
+            ))
+        }
         PpcImportDispatcherTarget::StdAbs => Some(PpcImportAction::Return(
             (cpu.gpr[3] as i32).wrapping_abs() as u32,
         )),
@@ -29932,9 +29935,64 @@ fn ppc_stdio_set_error(stream: u32, stdio_streams: &mut HashMap<u32, PpcStdioStr
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn ppc_dispatch_stdio_compatibility(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    next_file_ref_num: &mut i16,
+    stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
+) -> PpcImportAction {
+    ppc_dispatch_stdio_compatibility_with_manager(
+        binding,
+        cpu,
+        None,
+        memory,
+        heap_cursor,
+        heap_limit,
+        files,
+        vfs_files,
+        next_file_ref_num,
+        stdio_streams,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_process_stdio_compatibility(
+    binding: &PpcImportBinding,
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    files: &mut Vec<PpcFileRecord>,
+    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    next_file_ref_num: &mut i16,
+    stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
+) -> PpcImportAction {
+    ppc_dispatch_stdio_compatibility_with_manager(
+        binding,
+        cpu,
+        Some(process_memory_manager),
+        memory,
+        heap_cursor,
+        heap_limit,
+        files,
+        vfs_files,
+        next_file_ref_num,
+        stdio_streams,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_stdio_compatibility_with_manager(
+    binding: &PpcImportBinding,
+    cpu: &mut PpcCpu,
+    mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -29974,8 +30032,17 @@ fn ppc_dispatch_stdio_compatibility(
             let Some(next_ref_num) = next_file_ref_num.checked_add(1) else {
                 return PpcImportAction::Return(0);
             };
-            let stream_ptr =
-                ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_STDIO_FILE_SIZE, true);
+            let stream_ptr = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+                ppc_process_heap_alloc(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    PPC_STDIO_FILE_SIZE,
+                    true,
+                )
+            } else {
+                ppc_heap_alloc(memory, heap_cursor, heap_limit, PPC_STDIO_FILE_SIZE, true)
+            };
             if stream_ptr == 0 {
                 return PpcImportAction::Return(0);
             }
@@ -82521,6 +82588,21 @@ fn ppc_heap_alloc(
     }
     *heap_cursor = next;
     ppc_update_zone_free_bytes(memory, next, heap_limit);
+    ptr
+}
+
+fn ppc_process_heap_alloc(
+    memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    size: u32,
+    clear: bool,
+) -> u32 {
+    let ptr = memory_manager.reserve_native_bytes(memory, size, clear);
+    if let Some(heap) = memory_manager.native_heap_state() {
+        *heap_cursor = heap.heap_cursor;
+        ppc_update_zone_free_bytes(memory, heap.heap_cursor, heap.heap_limit);
+    }
     ptr
 }
 
@@ -159651,6 +159733,51 @@ pub(crate) mod tests {
             .any(|record| record.ptr == replacement));
         assert!(detached.native_allocator().unwrap().ptrs.is_empty());
         assert_eq!(native.last_mem_error(), PPC_PARAM_ERR);
+    }
+
+    #[test]
+    fn stdio_records_advance_the_process_owned_heap_immediately() {
+        let pef = synthetic_pef_with_library_import(b"StdCLib", b"fopen");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        let heap_before = context
+            .memory_manager_mut()
+            .native_heap_state()
+            .unwrap()
+            .heap_cursor;
+        let path = PPC_DATA_BASE + 0x2000;
+        let mode = path + 0x20;
+        native.memory.add_region(path, vec![0; 0x100]);
+        native.memory.write_bytes(path, b"test.bin\0").unwrap();
+        native.memory.write_bytes(mode, b"rb\0").unwrap();
+        native.vfs_files.push(PpcVfsFileRecord {
+            path: "Volume/test.bin".to_string(),
+            data: b"payload".to_vec(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
+        native.cpu.gpr[3] = path;
+        native.cpu.gpr[4] = mode;
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdIoCompatibility);
+
+        let stream = native.cpu.gpr[3];
+        assert_ne!(stream, 0);
+        let heap_after = context
+            .memory_manager_mut()
+            .native_heap_state()
+            .unwrap()
+            .heap_cursor;
+        assert!(heap_after > heap_before);
+        assert_eq!(native.heap_cursor(), heap_after);
+        assert_eq!(
+            detached.native_heap_state().unwrap().heap_cursor,
+            heap_before
+        );
     }
 
     #[test]
