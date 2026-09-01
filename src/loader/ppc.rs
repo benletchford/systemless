@@ -158144,6 +158144,39 @@ pub(crate) mod tests {
         math64_set_gprs(&mut cpu, 6, 2);
         let _ = ppc_dispatch_math64(&math64_binding("S64Multiply"), &mut cpu, &mut memory);
         assert_eq!(math64_read_memory(&mut memory, 0x1000), -2i64 as u64);
+
+        cpu.gpr[4] = 0x8000_0000;
+        let _ = ppc_dispatch_math64(&math64_binding("S64Set"), &mut cpu, &mut memory);
+        assert_eq!(
+            math64_read_memory(&mut memory, 0x1000),
+            0xffff_ffff_8000_0000,
+        );
+        let _ = ppc_dispatch_math64(&math64_binding("S64SetU"), &mut cpu, &mut memory);
+        assert_eq!(
+            math64_read_memory(&mut memory, 0x1000),
+            0x0000_0000_8000_0000,
+        );
+        let _ = ppc_dispatch_math64(&math64_binding("U64Set"), &mut cpu, &mut memory);
+        assert_eq!(
+            math64_read_memory(&mut memory, 0x1000),
+            0xffff_ffff_8000_0000,
+        );
+        let _ = ppc_dispatch_math64(&math64_binding("U64SetU"), &mut cpu, &mut memory);
+        assert_eq!(
+            math64_read_memory(&mut memory, 0x1000),
+            0x0000_0000_8000_0000,
+        );
+
+        cpu.gpr[3] = 0x1234_5678;
+        cpu.gpr[4] = 0x9abc_def0;
+        assert_eq!(
+            ppc_dispatch_math64(&math64_binding("S32Set"), &mut cpu, &mut memory),
+            PpcImportAction::Return(0x9abc_def0),
+        );
+        assert_eq!(
+            ppc_dispatch_math64(&math64_binding("U32SetU"), &mut cpu, &mut memory),
+            PpcImportAction::Return(0x9abc_def0),
+        );
     }
 
     #[test]
