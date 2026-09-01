@@ -187,7 +187,7 @@ impl<V> Default for SharedProcessMap<V> {
 }
 
 impl<V: Copy> SharedProcessMap<V> {
-    fn detached_clone(&self) -> Self {
+    pub(crate) fn detached_clone(&self) -> Self {
         Self(Rc::new(RefCell::new(self.0.borrow().clone())))
     }
 
@@ -244,6 +244,13 @@ impl<V: Copy> SharedProcessMap<V> {
 /// (1992), pp. 2-12, 2-40--2-41.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessMemoryManager {
+    native: ProcessNativeMemoryManager,
+}
+
+/// Canonical architecture-neutral allocation state used directly by native
+/// imports and by the classic Memory Manager bridge.
+#[derive(Debug, Default)]
+pub(crate) struct ProcessNativeMemoryManager {
     classic_allocator: Option<SharedClassicHeapAllocator>,
     ptr_to_handle: SharedProcessMap<u32>,
     handle_state_bits: SharedProcessMap<u8>,
@@ -253,6 +260,20 @@ pub(crate) struct ProcessMemoryManager {
     native_allocations: Vec<ProcessHandleRecord>,
     native_allocator: Option<ProcessNativeAllocatorState>,
     native_allocator_dirty: bool,
+}
+
+impl std::ops::Deref for ProcessMemoryManager {
+    type Target = ProcessNativeMemoryManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.native
+    }
+}
+
+impl std::ops::DerefMut for ProcessMemoryManager {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.native
+    }
 }
 
 /// Shared ownership handle for one process's architecture-neutral Memory Manager.
@@ -278,6 +299,89 @@ pub(crate) struct SharedProcessMemoryManager {
 impl Default for SharedProcessMemoryManager {
     fn default() -> Self {
         Self::from_manager(ProcessMemoryManager::default())
+    }
+}
+
+impl ProcessNativeMemoryManager {
+    const NATIVE_HEAP_ALIGNMENT: u32 = 16;
+    const MEM_FULL_ERR: i16 = -108;
+    const NIL_HANDLE_ERR: i16 = -109;
+    const MEM_WZ_ERR: i16 = -111;
+    const MEM_PUR_ERR: i16 = -112;
+    const NO_ERR: i16 = 0;
+    const PARAM_ERR: i16 = -50;
+
+    pub(crate) fn detached_clone(&self) -> Self {
+        Self {
+            classic_allocator: None,
+            ptr_to_handle: self.ptr_to_handle.detached_clone(),
+            handle_state_bits: self.handle_state_bits.detached_clone(),
+            handle_high_locked: self.handle_high_locked.detached_clone(),
+            native_handle_ptrs: self.native_handle_ptrs.clone(),
+            native_handles: self.native_handles.clone(),
+            native_allocations: self.native_allocations.clone(),
+            native_allocator: self.native_allocator.clone(),
+            native_allocator_dirty: self.native_allocator_dirty,
+        }
+    }
+
+    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
+        self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
+        self.handle_state_bits
+            .replace_from(&snapshot.handle_state_bits);
+        self.handle_high_locked
+            .replace_from(&snapshot.handle_high_locked);
+        self.native_handle_ptrs = snapshot.native_handle_ptrs;
+        self.native_handles = snapshot.native_handles;
+        self.native_allocations = snapshot.native_allocations;
+        self.native_allocator = snapshot.native_allocator;
+        self.native_allocator_dirty = snapshot.native_allocator_dirty;
+    }
+
+    fn commit_empty_native_handle(&mut self, record: ProcessHandleRecord) {
+        if record.ptr != 0 {
+            self.ptr_to_handle.remove(&record.ptr);
+            self.native_handle_ptrs.remove(&record.ptr);
+        }
+        self.set_native_allocation_record(ProcessHandleRecord {
+            handle: record.handle,
+            ptr: 0,
+            size: 0,
+            capacity: 0,
+        });
+        if let Some(allocator) = &mut self.native_allocator {
+            if record.ptr != 0 {
+                allocator.free_ptr_blocks.push(ProcessPtrRecord {
+                    ptr: record.ptr,
+                    size: record.capacity,
+                });
+            }
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+    }
+
+    pub(crate) fn empty_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+    ) -> i16 {
+        let Some(record) = self.native_allocation(handle) else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if self.state_for_handle(handle).unwrap_or(0) & 0x80 != 0 {
+            self.set_native_mem_error(Self::MEM_PUR_ERR);
+            return Self::MEM_PUR_ERR;
+        }
+        if PpcMemory::read_u32_be(memory, handle) != Some(record.ptr)
+            || PpcMemory::write_u32_be(memory, handle, 0).is_none()
+        {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+        self.commit_empty_native_handle(record);
+        Self::NO_ERR
     }
 }
 
@@ -372,47 +476,38 @@ impl SharedProcessMemoryManager {
 }
 
 impl ProcessMemoryManager {
-    const NATIVE_HEAP_ALIGNMENT: u32 = 16;
-    const MEM_FULL_ERR: i16 = -108;
-    const NIL_HANDLE_ERR: i16 = -109;
-    const MEM_WZ_ERR: i16 = -111;
-    const MEM_PUR_ERR: i16 = -112;
-    const NO_ERR: i16 = 0;
-    const PARAM_ERR: i16 = -50;
+    #[cfg(test)]
+    const MEM_FULL_ERR: i16 = ProcessNativeMemoryManager::MEM_FULL_ERR;
+    #[cfg(test)]
+    const NIL_HANDLE_ERR: i16 = ProcessNativeMemoryManager::NIL_HANDLE_ERR;
+    #[cfg(test)]
+    const MEM_PUR_ERR: i16 = ProcessNativeMemoryManager::MEM_PUR_ERR;
+    #[cfg(test)]
+    const NO_ERR: i16 = ProcessNativeMemoryManager::NO_ERR;
+    #[cfg(test)]
+    const PARAM_ERR: i16 = ProcessNativeMemoryManager::PARAM_ERR;
 
     pub(crate) fn detached_clone(&self) -> Self {
         Self {
-            classic_allocator: None,
-            ptr_to_handle: self.ptr_to_handle.detached_clone(),
-            handle_state_bits: self.handle_state_bits.detached_clone(),
-            handle_high_locked: self.handle_high_locked.detached_clone(),
-            native_handle_ptrs: self.native_handle_ptrs.clone(),
-            native_handles: self.native_handles.clone(),
-            native_allocations: self.native_allocations.clone(),
-            native_allocator: self.native_allocator.clone(),
-            native_allocator_dirty: self.native_allocator_dirty,
+            native: self.native.detached_clone(),
         }
-    }
-
-    /// Restore native Memory Manager metadata from an isolated transaction
-    /// snapshot while preserving the shared indexes held by CPU adapters.
-    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
-        self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
-        self.handle_state_bits
-            .replace_from(&snapshot.handle_state_bits);
-        self.handle_high_locked
-            .replace_from(&snapshot.handle_high_locked);
-        self.native_handle_ptrs = snapshot.native_handle_ptrs;
-        self.native_handles = snapshot.native_handles;
-        self.native_allocations = snapshot.native_allocations;
-        self.native_allocator = snapshot.native_allocator;
-        self.native_allocator_dirty = snapshot.native_allocator_dirty;
     }
 
     pub(crate) fn has_native_allocator(&self) -> bool {
         self.native_allocator.is_some()
     }
 
+    pub(crate) fn native_mut(&mut self) -> &mut ProcessNativeMemoryManager {
+        &mut self.native
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
+        self.native.restore_native_snapshot(snapshot.native);
+    }
+}
+
+impl ProcessNativeMemoryManager {
     /// Adopt the classic heap used by the process's 68K memory-bus adapter.
     ///
     /// The first attached bus contributes its live launch-time allocator;
@@ -644,10 +739,7 @@ impl ProcessMemoryManager {
     ///
     /// `NewEmptyHandle` returns a handle containing `NIL`. Inside Macintosh:
     /// Memory (1992), pp. 2-33--2-34.
-    pub(crate) fn new_empty_classic_handle(
-        &mut self,
-        bus: &mut MacMemoryBus,
-    ) -> Result<u32, i16> {
+    pub(crate) fn new_empty_classic_handle(&mut self, bus: &mut MacMemoryBus) -> Result<u32, i16> {
         self.assert_classic_memory_bus_attached(bus);
         let handle = bus.alloc(4);
         if handle == 0 {
@@ -756,9 +848,10 @@ impl ProcessMemoryManager {
         if ptr == 0 {
             return Self::NIL_HANDLE_ERR;
         }
-        let native_index = self.native_allocator.as_ref().and_then(|allocator| {
-            allocator.ptrs.iter().position(|record| record.ptr == ptr)
-        });
+        let native_index = self
+            .native_allocator
+            .as_ref()
+            .and_then(|allocator| allocator.ptrs.iter().position(|record| record.ptr == ptr));
         let old_size = native_index
             .and_then(|index| {
                 self.native_allocator
@@ -792,11 +885,7 @@ impl ProcessMemoryManager {
 
     /// Return the logical size of a native or classic relocatable block.
     /// Inside Macintosh: Memory (1992), pp. 2-39--2-40.
-    pub(crate) fn process_handle_size(
-        &self,
-        bus: &MacMemoryBus,
-        handle: u32,
-    ) -> Option<u32> {
+    pub(crate) fn process_handle_size(&self, bus: &MacMemoryBus, handle: u32) -> Option<u32> {
         self.assert_classic_memory_bus_attached(bus);
         self.native_allocations
             .iter()
@@ -1024,7 +1113,7 @@ impl ProcessMemoryManager {
         }
 
         let relocated = if let Some(record) = native_record {
-            let Some(required) = Self::native_allocation_size(size) else {
+            let Some(required) = ProcessNativeMemoryManager::native_allocation_size(size) else {
                 self.set_native_mem_error(Self::MEM_FULL_ERR);
                 return Err(Self::MEM_FULL_ERR);
             };
@@ -1034,11 +1123,11 @@ impl ProcessMemoryManager {
             };
             let reusable = allocator.free_ptr_blocks.iter().any(|free| {
                 free.ptr != record.ptr
-                    && Self::native_allocation_size(free.size)
+                    && ProcessNativeMemoryManager::native_allocation_size(free.size)
                         .is_some_and(|capacity| capacity >= required)
             });
             if !reusable
-                && Self::native_allocation_bounds(
+                && ProcessNativeMemoryManager::native_allocation_bounds(
                     allocator.heap.heap_cursor,
                     allocator.heap.heap_limit,
                     required,
@@ -1082,57 +1171,6 @@ impl ProcessMemoryManager {
         Ok(relocated)
     }
 
-    fn commit_empty_native_handle(&mut self, record: ProcessHandleRecord) {
-        if record.ptr != 0 {
-            self.ptr_to_handle.remove(&record.ptr);
-            self.native_handle_ptrs.remove(&record.ptr);
-        }
-        self.set_native_allocation_record(ProcessHandleRecord {
-            handle: record.handle,
-            ptr: 0,
-            size: 0,
-            capacity: 0,
-        });
-        if let Some(allocator) = &mut self.native_allocator {
-            if record.ptr != 0 {
-                allocator.free_ptr_blocks.push(ProcessPtrRecord {
-                    ptr: record.ptr,
-                    size: record.capacity,
-                });
-            }
-            allocator.heap.last_mem_error = Self::NO_ERR;
-            self.native_allocator_dirty = true;
-        }
-    }
-
-    /// Release a native relocatable block while retaining its master pointer.
-    ///
-    /// The handle becomes empty and may later be repopulated by
-    /// `ReallocateHandle`. A locked block is preserved and reports
-    /// `memPurErr`. Inside Macintosh: Memory (1992), pp. 2-51--2-52.
-    pub(crate) fn empty_native_handle(
-        &mut self,
-        memory: &mut GuestAddressSpace,
-        handle: u32,
-    ) -> i16 {
-        let Some(record) = self.native_allocation(handle) else {
-            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
-            return Self::NIL_HANDLE_ERR;
-        };
-        if self.state_for_handle(handle).unwrap_or(0) & 0x80 != 0 {
-            self.set_native_mem_error(Self::MEM_PUR_ERR);
-            return Self::MEM_PUR_ERR;
-        }
-        if PpcMemory::read_u32_be(memory, handle) != Some(record.ptr)
-            || PpcMemory::write_u32_be(memory, handle, 0).is_none()
-        {
-            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
-            return Self::NIL_HANDLE_ERR;
-        }
-        self.commit_empty_native_handle(record);
-        Self::NO_ERR
-    }
-
     /// Empty a native or classic relocatable block through the attached 68K bus.
     ///
     /// Allocation ownership and the reverse master-pointer index change as one
@@ -1171,44 +1209,22 @@ impl ProcessMemoryManager {
         bus.write_long(handle, 0);
         Self::NO_ERR
     }
+}
 
+impl ProcessNativeMemoryManager {
     #[cfg(test)]
     pub(crate) fn register_native_handle_records(
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
     ) {
-        self.replace_native_handle_records(handles, false);
+        self.replace_native_handle_records(handles);
     }
 
-    /// Refresh native allocation records without allowing an adapter snapshot
-    /// to replace canonical state changed by another CPU during the same run.
-    pub(crate) fn refresh_native_handle_records(
-        &mut self,
-        handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
-    ) {
-        self.replace_native_handle_records(handles, true);
-    }
-
+    #[cfg(test)]
     fn replace_native_handle_records(
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
-        retain_process_state: bool,
     ) {
-        let mut retained_states = HashMap::new();
-        let mut retained_high_locks = HashSet::new();
-        if retain_process_state {
-            retained_states.extend(self.native_handles.iter().filter_map(|handle| {
-                self.handle_state_bits
-                    .get(handle)
-                    .map(|state| (*handle, state))
-            }));
-            retained_high_locks.extend(
-                self.native_handles
-                    .iter()
-                    .filter(|handle| self.handle_high_locked.get(handle).unwrap_or(false))
-                    .copied(),
-            );
-        }
         for ptr in self.native_handle_ptrs.drain() {
             self.ptr_to_handle.remove(&ptr);
         }
@@ -1220,18 +1236,11 @@ impl ProcessMemoryManager {
         for (record, adapter_state) in handles {
             let ProcessHandleRecord { handle, ptr, .. } = record;
             if handle != 0 {
-                // Existing handles already have canonical process state. A CPU
-                // adapter's end-of-slice snapshot may predate a nested callback,
-                // so only use adapter state when admitting a new native handle.
-                let state = retained_states.remove(&handle).unwrap_or(adapter_state);
                 if ptr != 0 {
                     self.ptr_to_handle.insert(ptr, handle);
                     self.native_handle_ptrs.insert(ptr);
                 }
-                self.handle_state_bits.insert(handle, state);
-                if state & 0x80 != 0 && retained_high_locks.contains(&handle) {
-                    self.handle_high_locked.insert(handle, true);
-                }
+                self.handle_state_bits.insert(handle, adapter_state);
                 self.native_handles.insert(handle);
                 self.native_allocations.push(record);
             }
@@ -1376,8 +1385,7 @@ impl ProcessMemoryManager {
 
     fn native_allocation_size(size: u32) -> Option<u32> {
         Some(
-            size.checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
-                & !(Self::NATIVE_HEAP_ALIGNMENT - 1),
+            size.checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)? & !(Self::NATIVE_HEAP_ALIGNMENT - 1),
         )
         .map(|size| size.max(Self::NATIVE_HEAP_ALIGNMENT))
     }
@@ -1388,8 +1396,7 @@ impl ProcessMemoryManager {
         aligned_size: u32,
         mut readonly_overlap_end: impl FnMut(u32, u32) -> Option<u32>,
     ) -> Option<(u32, u32)> {
-        let mut ptr = heap_cursor
-            .checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
+        let mut ptr = heap_cursor.checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
             & !(Self::NATIVE_HEAP_ALIGNMENT - 1);
         loop {
             let next = ptr.checked_add(aligned_size)?;
@@ -1399,8 +1406,7 @@ impl ProcessMemoryManager {
             let Some(reserved_end) = readonly_overlap_end(ptr, aligned_size) else {
                 return Some((ptr, next));
             };
-            ptr = reserved_end
-                .checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
+            ptr = reserved_end.checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
                 & !(Self::NATIVE_HEAP_ALIGNMENT - 1);
         }
     }
@@ -1445,8 +1451,8 @@ impl ProcessMemoryManager {
         required: u32,
         clear: bool,
     ) -> bool {
-        let fully_mapped = (0..required)
-            .all(|offset| PpcMemory::read_u8(memory, ptr + offset).is_some());
+        let fully_mapped =
+            (0..required).all(|offset| PpcMemory::read_u8(memory, ptr + offset).is_some());
         if !fully_mapped {
             let Ok(required) = usize::try_from(required) else {
                 return false;
@@ -1454,9 +1460,88 @@ impl ProcessMemoryManager {
             memory.add_region(ptr, vec![0; required]);
             return true;
         }
-        !clear
-            || (0..required)
-                .all(|offset| PpcMemory::write_u8(memory, ptr + offset, 0).is_some())
+        !clear || (0..required).all(|offset| PpcMemory::write_u8(memory, ptr + offset, 0).is_some())
+    }
+
+    /// Reserve process-owned native heap bytes for Toolbox records that are
+    /// not exposed as caller-disposable pointers.
+    pub(crate) fn reserve_native_bytes(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(required) = Self::native_allocation_size(size) else {
+            return 0;
+        };
+        let Some(heap) = self.native_heap_state() else {
+            return 0;
+        };
+        let Some((ptr, next)) = Self::native_allocation_bounds(
+            heap.heap_cursor,
+            heap.heap_limit,
+            required,
+            |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+        ) else {
+            return 0;
+        };
+        if !Self::prepare_native_allocation(memory, ptr, required, clear) {
+            return 0;
+        }
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator.heap.heap_cursor = next;
+        self.native_allocator_dirty = true;
+        ptr
+    }
+
+    /// Borrow unmapped tail space for a non-reentrant native import scratch buffer.
+    ///
+    /// The cursor is intentionally unchanged: the caller must consume the
+    /// bytes before another process allocation occurs and must not publish the
+    /// address to guest code.
+    pub(crate) fn native_scratch_bytes(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(required) = Self::native_allocation_size(size) else {
+            return 0;
+        };
+        let Some(heap) = self.native_heap_state() else {
+            return 0;
+        };
+        let Some((ptr, _)) = Self::native_allocation_bounds(
+            heap.heap_cursor,
+            heap.heap_limit,
+            required,
+            |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+        ) else {
+            return 0;
+        };
+        Self::prepare_native_allocation(memory, ptr, required, clear)
+            .then_some(ptr)
+            .unwrap_or(0)
+    }
+
+    /// Commit a validated CFM mapping layout to the process-owned native heap.
+    ///
+    /// Dynamic PEF sections choose their individual alignment before they are
+    /// installed, so the loader validates the complete sparse layout first and
+    /// advances the canonical cursor only after every section has been mapped.
+    pub(crate) fn commit_native_heap_cursor(&mut self, heap_cursor: u32) -> bool {
+        let Some(allocator) = self.native_allocator.as_mut() else {
+            return false;
+        };
+        if heap_cursor < allocator.heap.heap_cursor || heap_cursor >= allocator.heap.heap_limit {
+            return false;
+        }
+        allocator.heap.heap_cursor = heap_cursor;
+        self.native_allocator_dirty = true;
+        true
     }
 
     /// Allocate a native nonrelocatable block in the process heap.
@@ -1759,9 +1844,7 @@ impl ProcessMemoryManager {
             };
             memory.add_region(old_end, vec![0; growth]);
         }
-        if (old_end..new_end)
-            .any(|address| PpcMemory::write_u8(memory, address, 0).is_none())
-        {
+        if (old_end..new_end).any(|address| PpcMemory::write_u8(memory, address, 0).is_none()) {
             self.set_native_mem_error(Self::PARAM_ERR);
             return Self::PARAM_ERR;
         }
@@ -1899,8 +1982,7 @@ impl ProcessMemoryManager {
             record.handle,
             Self::native_allocation_size(4).expect("four-byte master pointer fits"),
             true,
-        )
-            || !Self::prepare_native_allocation(memory, record.ptr, required, clear)
+        ) || !Self::prepare_native_allocation(memory, record.ptr, required, clear)
             || PpcMemory::write_u32_be(memory, record.handle, record.ptr).is_none()
         {
             self.set_native_mem_error(Self::MEM_FULL_ERR);
@@ -2253,8 +2335,7 @@ impl ProcessMemoryManager {
             || bytes.iter().copied().enumerate().any(|(offset, byte)| {
                 PpcMemory::write_u8(memory, new_ptr + offset as u32, byte).is_none()
             })
-            || (new_ptr != record.ptr
-                && PpcMemory::write_u32_be(memory, handle, new_ptr).is_none())
+            || (new_ptr != record.ptr && PpcMemory::write_u32_be(memory, handle, new_ptr).is_none())
         {
             self.set_native_mem_error(Self::PARAM_ERR);
             return Self::PARAM_ERR;
@@ -2463,37 +2544,6 @@ impl ProcessMemoryManager {
         self.native_allocator_dirty = false;
     }
 
-    pub(crate) fn synchronize_native_allocator(
-        &mut self,
-        heap_cursor: u32,
-        heap_limit: u32,
-        last_mem_error: i16,
-        ptrs: &[ProcessPtrRecord],
-        free_ptr_blocks: &[ProcessPtrRecord],
-        free_handle_blocks: &[ProcessHandleRecord],
-    ) {
-        let Some(heap) = self
-            .native_allocator
-            .as_ref()
-            .map(|allocator| allocator.heap)
-        else {
-            return;
-        };
-        self.publish_native_allocator(
-            ProcessNativeHeapState {
-                heap_base: heap.heap_base,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                heap_maximized: heap.heap_maximized,
-                master_pointer_blocks_requested: heap.master_pointer_blocks_requested,
-            },
-            ptrs,
-            free_ptr_blocks,
-            free_handle_blocks,
-        );
-    }
-
     pub(crate) fn native_allocator_update(&self) -> Option<ProcessNativeAllocatorState> {
         self.native_allocator_dirty
             .then(|| self.native_allocator.clone())
@@ -2550,13 +2600,15 @@ impl ProcessMemoryManager {
         {
             return;
         }
-        self.ptr_to_handle.extend(source.ptr_to_handle.take_entries());
+        self.ptr_to_handle
+            .extend(source.ptr_to_handle.take_entries());
         self.handle_state_bits
             .extend(source.handle_state_bits.take_entries());
         self.handle_high_locked
             .extend(source.handle_high_locked.take_entries());
         if self.native_allocations.is_empty() {
-            self.native_allocations.append(&mut source.native_allocations);
+            self.native_allocations
+                .append(&mut source.native_allocations);
             self.native_handle_ptrs
                 .extend(source.native_handle_ptrs.drain());
             self.native_handles.extend(source.native_handles.drain());
@@ -2592,7 +2644,9 @@ impl ProcessContext {
     }
 
     pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
-        self.memory_manager.borrow_mut().attach_classic_memory_bus(bus);
+        self.memory_manager
+            .borrow_mut()
+            .attach_classic_memory_bus(bus);
     }
 
     #[cfg(test)]
@@ -2600,10 +2654,7 @@ impl ProcessContext {
         self.memory_manager.borrow().handle_for_ptr(ptr)
     }
 
-    pub(crate) fn attach_memory_manager(
-        &self,
-        adapter: &mut Option<SharedProcessMemoryManager>,
-    ) {
+    pub(crate) fn attach_memory_manager(&self, adapter: &mut Option<SharedProcessMemoryManager>) {
         if let Some(attached) = adapter {
             assert!(
                 attached.ptr_eq(&self.memory_manager),
@@ -2774,7 +2825,9 @@ mod tests {
         let mut primary = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut primary);
 
-        let ptr = context.memory_manager_mut().new_classic_ptr(&mut primary, 37);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut primary, 37);
         assert_ne!(ptr, 0);
         assert_eq!(
             context.memory_manager.borrow().classic_allocation_size(ptr),
@@ -2829,10 +2882,7 @@ mod tests {
 
         context.attach_memory(0, low, &mut native);
         context.attach_memory(0x3000, high, &mut native);
-        assert_eq!(
-            context.memory_ranges(),
-            vec![(0, 0x1000), (0x3000, 0x1000)]
-        );
+        assert_eq!(context.memory_ranges(), vec![(0, 0x1000), (0x3000, 0x1000)]);
 
         let mut detached = native.clone();
         native.write_u32_be(0x100, 0x99aa_bbcc).unwrap();
@@ -2983,7 +3033,7 @@ mod tests {
     }
 
     #[test]
-    fn native_allocator_synchronization_preserves_process_heap_operations() {
+    fn native_heap_operations_update_canonical_state_directly() {
         const HEAP_BASE: u32 = 0x0300_0000;
         let mut manager = ProcessMemoryManager::default();
         manager.publish_native_allocator(
@@ -3002,14 +3052,10 @@ mod tests {
 
         manager.maximize_native_heap();
         manager.request_native_master_pointers();
-        manager.synchronize_native_allocator(
-            HEAP_BASE + 0x20,
-            HEAP_BASE + 0x1000,
-            ProcessMemoryManager::PARAM_ERR,
-            &[],
-            &[],
-            &[],
-        );
+        manager.set_native_mem_error(ProcessMemoryManager::PARAM_ERR);
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(HEAP_BASE, vec![0; 0x1000]);
+        assert_eq!(manager.reserve_native_bytes(&mut memory, 0x20, true), HEAP_BASE);
 
         let heap = manager.native_heap_state().unwrap();
         assert_eq!(heap.heap_cursor, HEAP_BASE + 0x20);
@@ -3719,11 +3765,7 @@ mod tests {
         let blocking_ptr = manager.new_native_ptr(&mut native, 16, false);
         assert_ne!(blocking_ptr, 0);
         assert_eq!(
-            manager.append_bytes_to_native_handle(
-                &mut native,
-                handle,
-                b" process memory manager",
-            ),
+            manager.append_bytes_to_native_handle(&mut native, handle, b" process memory manager",),
             ProcessMemoryManager::NO_ERR
         );
 
@@ -3735,10 +3777,7 @@ mod tests {
             b"native process memory manager"
         );
         bus.write_byte(appended.ptr + appended.size - 1, b'!');
-        assert_eq!(
-            native.read_u8(appended.ptr + appended.size - 1),
-            Some(b'!')
-        );
+        assert_eq!(native.read_u8(appended.ptr + appended.size - 1), Some(b'!'));
     }
 
     #[test]
@@ -3778,9 +3817,15 @@ mod tests {
         );
         let loaded = manager.native_allocation(unloaded).unwrap();
         assert_eq!(loaded.ptr, recycled_ptr);
-        assert_eq!(manager.native_heap_state().unwrap().heap_cursor, cursor_before_load);
+        assert_eq!(
+            manager.native_heap_state().unwrap().heap_cursor,
+            cursor_before_load
+        );
         assert_eq!(manager.recover_handle(loaded.ptr), Some(unloaded));
-        assert_eq!(bus.read_bytes(loaded.ptr, loaded.size as usize), b"resource");
+        assert_eq!(
+            bus.read_bytes(loaded.ptr, loaded.size as usize),
+            b"resource"
+        );
         assert_eq!(manager.state_for_handle(unloaded), Some(0x60));
 
         let second = manager.new_native_resource_handle(&mut native, Some(b"second"));
