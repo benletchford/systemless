@@ -250,6 +250,91 @@ cleanup:
     if (replayWorld != nil) DisposeGWorld(replayWorld);
 }
 
+/*
+ * Copy already-authored indexes from an offscreen GDevice whose ColorTable
+ * identifies the destination device, but whose RGB entries have been
+ * transiently cleared without changing the table seed. Device ColorTables
+ * assign colors by position, so CopyBits must preserve these indexes instead
+ * of matching their temporary black RGB values into the screen table. Inside
+ * Macintosh Volume V (1986), pp. V-57..V-58 and V-138..V-145; Imaging With
+ * QuickDraw (1994), pp. 6-16..6-21 and 7-24..7-28.
+ */
+static void DrawSameDeviceIndexedTransfer(void)
+{
+    GWorldPtr sourceWorld;
+    GDHandle screenDevice;
+    PixMapHandle sourcePixels;
+    PixMapHandle windowPixels;
+    CTabHandle screenColors;
+    CTabHandle sourceColors;
+    Rect localRect;
+    Rect displayRect;
+    Ptr base;
+    long rowBytes;
+    RGBColor color;
+    short x;
+    short y;
+
+    sourceWorld = nil;
+    screenDevice = GetGDevice();
+    if (screenDevice == nil) return;
+    if ((**(**screenDevice).gdPMap).pixelSize != 8) {
+        for (x = 0; x < 3; x++) {
+            if (x == 0) {
+                color.red = 0xffff; color.green = 0xffff; color.blue = 0;
+            } else if (x == 1) {
+                color.red = 0xffff; color.green = 0x6666; color.blue = 0;
+            } else {
+                color.red = 0; color.green = 0xcccc; color.blue = 0xaaaa;
+            }
+            RGBForeColor(&color);
+            SetRect(&displayRect, 330 + x * 64, 302,
+                    394 + x * 64, 320);
+            PaintRect(&displayRect);
+        }
+        color.red = color.green = color.blue = 0;
+        RGBForeColor(&color);
+        SetRect(&displayRect, 330, 302, 522, 320);
+        FrameRect(&displayRect);
+        return;
+    }
+    screenColors = (**(**screenDevice).gdPMap).pmTable;
+    if (screenColors == nil) return;
+
+    SetRect(&localRect, 0, 0, 192, 18);
+    if (NewGWorld(&sourceWorld, 8, &localRect, nil, nil, 0) != noErr) return;
+
+    sourcePixels = GetGWorldPixMap(sourceWorld);
+    windowPixels = GetGWorldPixMap((GWorldPtr)gMainWindow);
+    if (sourcePixels == nil || windowPixels == nil) goto cleanup;
+    sourceColors = (**sourcePixels).pmTable;
+    if (sourceColors == nil || !LockPixels(sourcePixels)) goto cleanup;
+
+    base = GetPixBaseAddr(sourcePixels);
+    rowBytes = (**sourcePixels).rowBytes & 0x3fff;
+    for (y = 0; y < 18; y++) {
+        for (x = 0; x < 192; x++) {
+            base[y * rowBytes + x] = (char)(2 + (x / 64));
+        }
+    }
+
+    (**sourceColors).ctSeed = (**screenColors).ctSeed;
+    (**sourceColors).ctFlags |= 0x8000;
+    for (x = 2; x <= 4; x++) {
+        (**sourceColors).ctTable[x].rgb.red = 0;
+        (**sourceColors).ctTable[x].rgb.green = 0;
+        (**sourceColors).ctTable[x].rgb.blue = 0;
+    }
+
+    SetRect(&displayRect, 330, 302, 522, 320);
+    CopyBits((BitMap *)*sourcePixels, (BitMap *)*windowPixels,
+             &localRect, &displayRect, srcCopy, nil);
+    FrameRect(&displayRect);
+
+cleanup:
+    if (sourceWorld != nil) DisposeGWorld(sourceWorld);
+}
+
 /* State variables */
 static short gPage = pageGraphics;
 static Boolean gQuit = false;
@@ -1170,9 +1255,12 @@ static void DrawPalettesPage(void)
     RGBForeColor(&black);
     MoveTo(30, 284);
     DrawString("\pIndexed PICT -> GWorld -> screen");
+    MoveTo(30, 314);
+    DrawString("\pDevice indexes survive black CLUT");
+    DrawSameDeviceIndexedTransfer();
     DrawIndexedPictureTransfer();
 
-    MoveTo(205, 304);
+    MoveTo(205, 348);
     DrawString(gPaletteAnimated ? "\pAnimated CLUT values" : "\pInitial CLUT values");
     DrawControls(gMainWindow);
 }
@@ -1534,7 +1622,7 @@ static void Initialize(void)
                                   pushButProc, 0);
 
     /* Page 7: Palette Manager Control */
-    SetRect(&r, 40, 307, 190, 333);
+    SetRect(&r, 40, 335, 190, 361);
     gPaletteAnimate = NewControl(gMainWindow, &r, "\pAnimate Palette", false, 0, 0, 1,
                                  pushButProc, 0);
 
