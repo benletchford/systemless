@@ -69,7 +69,7 @@ use crate::menu_manager::{
     MenuListEntry as PpcMenuListEntry, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
 };
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::ProcessContext;
+use crate::process_context::{ProcessContext, ProcessMemoryManager};
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
@@ -5115,6 +5115,50 @@ fn push_ppc_hle_import_trace_entry(
 }
 
 impl PpcLoadedApp {
+    fn process_handle_state_bits(&self, handle: u32) -> u8 {
+        let state = self
+            .handle_states
+            .iter()
+            .find(|record| record.handle == handle);
+        let mut bits = 0u8;
+        if state.is_some_and(|record| record.locked) {
+            bits |= 0x80;
+        }
+        if state.is_none_or(|record| !record.no_purge) {
+            bits |= 0x40;
+        }
+        if state.is_some_and(|record| record.resource) {
+            bits |= 0x20;
+        }
+        bits
+    }
+
+    fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
+        memory_manager.register_native_handle_records(self.handles.iter().map(|record| {
+            (
+                record.handle,
+                record.ptr,
+                self.process_handle_state_bits(record.handle),
+            )
+        }));
+    }
+
+    fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
+        let handles: Vec<u32> = self.handles.iter().map(|record| record.handle).collect();
+        for handle in handles {
+            let Some(bits) = memory_manager.state_for_handle(handle) else {
+                continue;
+            };
+            let state = ppc_handle_state_mut(&mut self.handle_states, handle);
+            state.locked = bits & 0x80 != 0;
+            if !state.locked {
+                state.high_locked = false;
+            }
+            state.no_purge = bits & 0x40 == 0;
+            state.resource = bits & 0x20 != 0;
+        }
+    }
+
     /// Replace bytes of a relocatable handle within the native process heap.
     ///
     /// If `expected_ptr` is nonzero, verifies that the master pointer currently
@@ -5284,11 +5328,13 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
-        context.register_native_handles(
-            self.handles
-                .iter()
-                .map(|record| (record.handle, record.ptr)),
-        );
+        context.register_native_handle_records(self.handles.iter().map(|record| {
+            (
+                record.handle,
+                record.ptr,
+                self.process_handle_state_bits(record.handle),
+            )
+        }));
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -5349,17 +5395,10 @@ impl PpcLoadedApp {
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.with_process_state(event_queue, menu_tracking, |app| {
-            memory_manager.register_native_handles(
-                app.handles
-                    .iter()
-                    .map(|record| (record.handle, record.ptr)),
-            );
+            app.apply_process_memory_manager(memory_manager);
+            app.publish_process_memory_manager(memory_manager);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(app)));
-            memory_manager.register_native_handles(
-                app.handles
-                    .iter()
-                    .map(|record| (record.handle, record.ptr)),
-            );
+            app.publish_process_memory_manager(memory_manager);
             match outcome {
                 Ok(result) => result,
                 Err(payload) => std::panic::resume_unwind(payload),
@@ -87212,6 +87251,47 @@ pub(crate) mod tests {
             Some(5)
         );
         assert!(native.toolbox_startup.menu_tracking.is_none());
+    }
+
+    #[test]
+    fn process_memory_manager_round_trips_native_handle_state_across_cpu_slices() {
+        let pef = synthetic_pef_with_import(b"NewHandle");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 32;
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::NewHandle { clear: false },
+        );
+        let handle = native.cpu.gpr[3];
+        assert_ne!(handle, 0);
+
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+        memory_manager.metadata_mut().1.insert(handle, 0xa0);
+
+        native.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |native| {
+                let state = native
+                    .handle_states
+                    .iter_mut()
+                    .find(|record| record.handle == handle)
+                    .expect("canonical process state materialized for native handle");
+                assert!(state.locked);
+                assert!(state.no_purge);
+                assert!(state.resource);
+                state.locked = false;
+                state.high_locked = false;
+                state.no_purge = false;
+                state.resource = false;
+            },
+        );
+
+        assert_eq!(memory_manager.state_for_handle(handle), Some(0x40));
     }
 
     #[test]
