@@ -3509,7 +3509,7 @@ impl FixtureRunner {
 
         self.bus.write_long(handle, data_ptr);
         if data_ptr != 0 {
-            self.dispatcher.ptr_to_handle.insert(data_ptr, handle);
+            self.dispatcher.track_handle_ptr(data_ptr, handle);
         }
         handle
     }

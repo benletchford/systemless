@@ -894,7 +894,7 @@ impl super::TrapDispatcher {
                 self.loaded_handles.remove(&handle);
                 self.resource_handle_files.remove(&handle);
                 self.detached_handle_files.remove(&handle);
-                self.handle_state_bits.remove(&handle);
+                self.remove_handle_state_bits(handle);
                 if handle != 0 {
                     let data_ptr = bus.read_long(handle);
                     if trace_memory_site(trap_site) {
@@ -1027,12 +1027,14 @@ impl super::TrapDispatcher {
                     }
                     match trap_num {
                         0x29 => {
-                            self.handle_state_bits
-                                .update(handle, |bits| Some(bits.unwrap_or(0) | 0x80));
+                            self.update_handle_state_bits(handle, |bits| {
+                                Some(bits.unwrap_or(0) | 0x80)
+                            });
                         }
                         0x2A => {
-                            self.handle_state_bits
-                                .update(handle, |bits| Some(bits.unwrap_or(0) & !0x80));
+                            self.update_handle_state_bits(handle, |bits| {
+                                Some(bits.unwrap_or(0) & !0x80)
+                            });
                         }
                         _ => {
                             if self.res_purge {
@@ -1564,7 +1566,7 @@ impl super::TrapDispatcher {
                     } else {
                         if master_was_nil && new_ptr != 0 {
                             bus.write_long(handle, new_ptr);
-                            self.ptr_to_handle.insert(new_ptr, handle);
+                            self.track_handle_ptr(new_ptr, handle);
                         }
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
@@ -1594,8 +1596,8 @@ impl super::TrapDispatcher {
                         bus.write_long(handle, new_ptr);
                         // Update the ptr→handle map: the handle's data
                         // pointer just moved.
-                        self.ptr_to_handle.remove(&old_ptr);
-                        self.ptr_to_handle.insert(new_ptr, handle);
+                        self.untrack_handle_ptr(old_ptr);
+                        self.track_handle_ptr(new_ptr, handle);
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
                 }
@@ -1644,11 +1646,11 @@ impl super::TrapDispatcher {
                         .map(|entry| entry.0)
                         .unwrap_or(old_ptr);
                     if old_ptr != 0 {
-                        self.ptr_to_handle.remove(&old_ptr);
+                        self.untrack_handle_ptr(old_ptr);
                         bus.free(old_ptr);
                     }
                     bus.write_long(handle, ptr);
-                    self.ptr_to_handle.insert(ptr, handle);
+                    self.track_handle_ptr(ptr, handle);
                     if let Some(entry) = self.loaded_handles.get_mut(&handle) {
                         entry.0 = ptr;
                     }
@@ -1668,7 +1670,7 @@ impl super::TrapDispatcher {
                     }
                     // Reallocation resets only the lock and purge flags. Any
                     // resource marker remains a property of the handle.
-                    self.handle_state_bits.update(handle, |bits| {
+                    self.update_handle_state_bits(handle, |bits| {
                         let bits = bits.unwrap_or(0) & !0xC0;
                         (bits != 0).then_some(bits)
                     });
@@ -1898,13 +1900,11 @@ impl super::TrapDispatcher {
             // master-pointer-table scan.
             (false, 0x28) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let handle = self
-                    .ptr_to_handle
-                    .get(&ptr)
+                let handle = self.handle_for_ptr(ptr)
                     .filter(|&handle| bus.read_long(handle) == ptr)
                     .unwrap_or(0);
                 if handle == 0 {
-                    self.ptr_to_handle.remove(&ptr);
+                    self.untrack_handle_ptr(ptr);
                 }
                 cpu.write_reg(Register::A0, handle);
                 cpu.write_reg(Register::D0, 0);
@@ -2161,8 +2161,7 @@ impl super::TrapDispatcher {
             (false, 0x49) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle != 0 {
-                    self.handle_state_bits
-                        .update(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
+                    self.update_handle_state_bits(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
                 }
                 Ok(())
             }
@@ -2173,7 +2172,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), p. 2-48.
             (false, 0x4A) => {
                 let handle = cpu.read_reg(Register::A0);
-                self.handle_state_bits.update(handle, |bits| {
+                self.update_handle_state_bits(handle, |bits| {
                     let bits = bits.unwrap_or(0) & !0x40;
                     (bits != 0).then_some(bits)
                 });
@@ -2186,7 +2185,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), pp. 2-48--2-49.
             (false, 0x69) => {
                 let handle = cpu.read_reg(Register::A0);
-                let mut state = self.handle_state_bits.get(&handle).unwrap_or(0);
+                let mut state = self.handle_state_bits(handle).unwrap_or(0);
                 if self.loaded_handles.contains_key(&handle) {
                     state |= 0x20; // resource bit
                 }
@@ -2203,9 +2202,9 @@ impl super::TrapDispatcher {
                 if handle != 0 {
                     let bits = (cpu.read_reg(Register::D0) as u8) & 0xC0;
                     if bits == 0 {
-                        self.handle_state_bits.remove(&handle);
+                        self.remove_handle_state_bits(handle);
                     } else {
-                        self.handle_state_bits.insert(handle, bits);
+                        self.set_handle_state_bits(handle, bits);
                     }
                 }
                 Ok(())
@@ -3797,7 +3796,7 @@ impl super::TrapDispatcher {
                 } else {
                     let master_ptr = bus.read_long(handle);
                     if master_ptr != 0 {
-                        self.ptr_to_handle.remove(&master_ptr);
+                        self.untrack_handle_ptr(master_ptr);
                         if !self.loaded_handles.contains_key(&handle) {
                             bus.free(master_ptr);
                         }
@@ -4019,8 +4018,7 @@ impl super::TrapDispatcher {
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    self.handle_state_bits
-                        .update(handle, |bits| Some(bits.unwrap_or(0) | 0x20));
+                    self.update_handle_state_bits(handle, |bits| Some(bits.unwrap_or(0) | 0x20));
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
                 Ok(())
@@ -4035,7 +4033,7 @@ impl super::TrapDispatcher {
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    self.handle_state_bits.update(handle, |bits| {
+                    self.update_handle_state_bits(handle, |bits| {
                         let bits = bits.unwrap_or(0) & !0x20;
                         (bits != 0).then_some(bits)
                     });
@@ -5761,9 +5759,7 @@ mod tests {
             "HSetRBit uses register calling convention and should preserve A7"
         );
         assert_eq!(
-            dispatcher
-                .handle_state_bits
-                .get(&handle)
+            dispatcher.handle_state_bits(handle)
                 .unwrap_or(0)
                 & 0x20,
             0x20,
@@ -5796,7 +5792,7 @@ mod tests {
         let data_ptr = bus.alloc(16);
         let handle = bus.alloc(4);
         bus.write_long(handle, data_ptr);
-        dispatcher.handle_state_bits.insert(handle, 0x20);
+        dispatcher.set_handle_state_bits(handle, 0x20);
         let sp_before = cpu.read_reg(Register::A7);
 
         cpu.write_reg(Register::A0, handle);
@@ -5814,9 +5810,7 @@ mod tests {
             "HClrRBit uses register calling convention and should preserve A7"
         );
         assert_eq!(
-            dispatcher
-                .handle_state_bits
-                .get(&handle)
+            dispatcher.handle_state_bits(handle)
                 .unwrap_or(0)
                 & 0x20,
             0,
@@ -9778,8 +9772,8 @@ mod tests {
                 .unwrap();
             let handle = cpu.read_reg(Register::A0);
             let old_ptr = bus.read_long(handle);
-            dispatcher.ptr_to_handle.insert(old_ptr, handle);
-            dispatcher.handle_state_bits.insert(handle, 0xE0);
+            dispatcher.track_handle_ptr(old_ptr, handle);
+            dispatcher.set_handle_state_bits(handle, 0xE0);
 
             cpu.write_reg(Register::A0, handle);
             cpu.write_reg(Register::D0, 17);
@@ -9797,10 +9791,10 @@ mod tests {
             );
             assert_eq!(bus.get_alloc_size(new_ptr), Some(17));
             assert_eq!(bus.read_bytes(new_ptr, 17), vec![0xA5; 17]);
-            assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), None);
-            assert_eq!(dispatcher.ptr_to_handle.get(&new_ptr), Some(handle));
+            assert_eq!(dispatcher.handle_for_ptr(old_ptr), None);
+            assert_eq!(dispatcher.handle_for_ptr(new_ptr), Some(handle));
             assert_eq!(
-                dispatcher.handle_state_bits.get(&handle),
+                dispatcher.handle_state_bits(handle),
                 Some(0x20),
                 "lock/purge bits clear while the resource bit survives"
             );
@@ -9818,7 +9812,7 @@ mod tests {
             .unwrap();
         let handle = cpu.read_reg(Register::A0);
         let old_ptr = bus.read_long(handle);
-        dispatcher.handle_state_bits.insert(handle, 0xC0);
+        dispatcher.set_handle_state_bits(handle, 0xC0);
 
         cpu.write_reg(Register::A0, handle);
         cpu.write_reg(Register::D0, u32::MAX);
@@ -9830,8 +9824,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), super::MEM_FULL_ERR);
         assert_eq!(bus.read_long(handle), old_ptr);
         assert_eq!(bus.get_alloc_size(old_ptr), Some(32));
-        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), Some(handle));
-        assert_eq!(dispatcher.handle_state_bits.get(&handle), Some(0xC0));
+        assert_eq!(dispatcher.handle_for_ptr(old_ptr), Some(handle));
+        assert_eq!(dispatcher.handle_state_bits(handle), Some(0xC0));
     }
 
     #[test]

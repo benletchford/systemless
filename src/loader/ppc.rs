@@ -87806,7 +87806,7 @@ pub(crate) mod tests {
         let expected_cursor = native.heap_cursor + 16;
         {
             let mut manager = memory_manager.borrow_mut();
-            manager.metadata_maps().1.insert(handle, 0xa0);
+            manager.set_state_for_handle(handle, 0xa0);
             let mut canonical = manager.native_allocation(handle).unwrap();
             canonical.size = 24;
             canonical.capacity = 40;
@@ -88162,7 +88162,7 @@ pub(crate) mod tests {
                 let handle = native.cpu.gpr[3];
                 let original = memory_manager.native_allocation(handle).unwrap();
                 assert_eq!(original.size, 24);
-                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0x40));
+                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x40));
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -88170,7 +88170,7 @@ pub(crate) mod tests {
                 native.cpu.gpr[3] = handle;
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
                 assert_eq!(memory_manager.handle_state(handle), 0xc0);
-                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0xc0));
+                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0xc0));
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -88178,7 +88178,7 @@ pub(crate) mod tests {
                 native.cpu.gpr[3] = handle;
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
                 assert_eq!(memory_manager.handle_state(handle), 0x80);
-                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0x80));
+                assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x80));
 
                 memory_manager.set_state_for_handle(handle, 0xa0);
                 native.cpu.pc = native.entry_pc;

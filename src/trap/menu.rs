@@ -788,8 +788,7 @@ impl super::TrapDispatcher {
             return None;
         }
 
-        self.ptr_to_handle
-            .get(&candidate)
+        self.handle_for_ptr(candidate)
             .or_else(|| {
                 self.menus
                     .iter()
@@ -869,7 +868,7 @@ impl super::TrapDispatcher {
         if menu_ptr == 0 {
             menu_ptr = res_ptr;
             bus.write_long(handle, menu_ptr);
-            self.ptr_to_handle.insert(menu_ptr, handle);
+            self.track_handle_ptr(menu_ptr, handle);
         }
         if menu_ptr != 0 {
             if bus.get_alloc_size(menu_ptr).unwrap_or(0) < 256 {
@@ -1301,7 +1300,7 @@ impl super::TrapDispatcher {
 
         bus.write_bytes(data_ptr, bytes);
         bus.write_long(handle, data_ptr);
-        self.ptr_to_handle.insert(data_ptr, handle);
+        self.track_handle_ptr(data_ptr, handle);
         handle
     }
 
@@ -1325,7 +1324,7 @@ impl super::TrapDispatcher {
             return 0;
         }
         bus.write_long(handle, menu_ptr);
-        self.ptr_to_handle.insert(menu_ptr, handle);
+        self.track_handle_ptr(menu_ptr, handle);
 
         let menu =
             if let Some((_, res_ptr)) = self.find_or_load_resource_any(bus, *b"MENU", menu_id) {
@@ -1438,12 +1437,12 @@ impl super::TrapDispatcher {
         };
 
         if old_ptr != 0 && old_ptr != new_ptr {
-            self.ptr_to_handle.remove(&old_ptr);
+            self.untrack_handle_ptr(old_ptr);
             bus.free(old_ptr);
         }
         bus.write_long(handle, new_ptr);
         if new_ptr != 0 {
-            self.ptr_to_handle.insert(new_ptr, handle);
+            self.track_handle_ptr(new_ptr, handle);
         }
         true
     }
@@ -1738,7 +1737,7 @@ impl super::TrapDispatcher {
                 let menu_ptr = bus.alloc(menu_record.len().max(256) as u32);
                 let handle = bus.alloc(4);
                 bus.write_long(handle, menu_ptr);
-                self.ptr_to_handle.insert(menu_ptr, handle);
+                self.track_handle_ptr(menu_ptr, handle);
                 bus.write_bytes(menu_ptr, &menu_record);
                 let title = macroman_to_string(&title_bytes);
                 // Track the menu in self.menus immediately so AppendMenu
@@ -2974,14 +2973,14 @@ impl super::TrapDispatcher {
                     let menu_ptr = bus.read_long(menu_handle);
                     if menu_ptr != 0 {
                         bus.free(menu_ptr);
-                        self.ptr_to_handle.remove(&menu_ptr);
+                        self.untrack_handle_ptr(menu_ptr);
                     }
                     self.forget_resource_handle_index_for_handle(menu_handle);
                     self.loaded_handles.remove(&menu_handle);
                     self.detached_handles.remove(&menu_handle);
                     self.resource_handle_files.remove(&menu_handle);
                     self.detached_handle_files.remove(&menu_handle);
-                    self.handle_state_bits.remove(&menu_handle);
+                    self.remove_handle_state_bits(menu_handle);
                     bus.free(menu_handle);
                 }
                 Ok(())

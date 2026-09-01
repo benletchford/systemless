@@ -69,7 +69,7 @@ impl super::TrapDispatcher {
                 return Self::MEM_FULL_ERR;
             }
             bus.write_long(handle, dce);
-            self.ptr_to_handle.insert(dce, handle);
+            self.track_handle_ptr(dce, handle);
         }
 
         // Devices 1994, pp. 1-83--1-85: both install forms clear the full

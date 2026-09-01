@@ -79,10 +79,6 @@ impl<V: Copy> SharedProcessMap<V> {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.borrow().is_empty()
-    }
-
     pub(crate) fn insert(&self, key: u32, value: V) -> Option<V> {
         self.0.borrow_mut().insert(key, value)
     }
@@ -140,22 +136,91 @@ pub(crate) struct ProcessMemoryManager {
 
 /// Shared ownership handle for one process's architecture-neutral Memory Manager.
 ///
-/// CPU adapters retain this handle across execution slices, while each operation
-/// takes a short mutable borrow. The runner still serializes all adapter access.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct SharedProcessMemoryManager(Rc<RefCell<ProcessMemoryManager>>);
+/// CPU adapters retain this handle across execution slices. Allocator operations
+/// take a short mutable manager borrow, while handle indexes remain independently
+/// borrowable for reentrant cross-ISA callbacks. The runner serializes adapters.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedProcessMemoryManager {
+    manager: Rc<RefCell<ProcessMemoryManager>>,
+    /// Reverse handle index used by RecoverHandle. Inside Macintosh Volume V
+    /// (1986), p. V-579.
+    ptr_to_handle: SharedProcessMap<u32>,
+    /// Guest-visible lock, purge, and resource bits indexed by master pointer.
+    /// Inside Macintosh: Memory (1992), pp. 2-46--2-49.
+    handle_state_bits: SharedProcessMap<u8>,
+}
+
+impl Default for SharedProcessMemoryManager {
+    fn default() -> Self {
+        Self::from_manager(ProcessMemoryManager::default())
+    }
+}
 
 impl SharedProcessMemoryManager {
+    fn from_manager(manager: ProcessMemoryManager) -> Self {
+        let ptr_to_handle = manager.ptr_to_handle.clone();
+        let handle_state_bits = manager.handle_state_bits.clone();
+        Self {
+            manager: Rc::new(RefCell::new(manager)),
+            ptr_to_handle,
+            handle_state_bits,
+        }
+    }
+
     pub(crate) fn borrow(&self) -> std::cell::Ref<'_, ProcessMemoryManager> {
-        self.0.borrow()
+        self.manager.borrow()
     }
 
     pub(crate) fn borrow_mut(&self) -> RefMut<'_, ProcessMemoryManager> {
-        self.0.borrow_mut()
+        self.manager.borrow_mut()
     }
 
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        Rc::ptr_eq(&self.manager, &other.manager)
+    }
+
+    pub(crate) fn track_handle_ptr(&self, ptr: u32, handle: u32) -> Option<u32> {
+        self.ptr_to_handle.insert(ptr, handle)
+    }
+
+    pub(crate) fn untrack_handle_ptr(&self, ptr: u32) -> Option<u32> {
+        self.ptr_to_handle.remove(&ptr)
+    }
+
+    pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
+        self.ptr_to_handle.get(&ptr)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_handle_ptr(&self, ptr: u32) -> bool {
+        self.ptr_to_handle.contains_key(&ptr)
+    }
+
+    pub(crate) fn set_handle_state(&self, handle: u32, state: u8) {
+        if handle != 0 {
+            self.handle_state_bits.insert(handle, state);
+        }
+    }
+
+    pub(crate) fn remove_handle_state(&self, handle: u32) -> Option<u8> {
+        self.handle_state_bits.remove(&handle)
+    }
+
+    pub(crate) fn handle_state(&self, handle: u32) -> Option<u8> {
+        self.handle_state_bits.get(&handle)
+    }
+
+    pub(crate) fn update_handle_state(
+        &self,
+        handle: u32,
+        update: impl FnOnce(Option<u8>) -> Option<u8>,
+    ) {
+        self.handle_state_bits.update(handle, update);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_handle_state(&self, handle: u32) -> bool {
+        self.handle_state_bits.contains_key(&handle)
     }
 
     /// Copy process Memory Manager metadata without retaining adapter sharing.
@@ -163,7 +228,7 @@ impl SharedProcessMemoryManager {
     /// A cloned CPU adapter represents a detached execution snapshot, so its
     /// allocation records and handle metadata must evolve independently.
     pub(crate) fn detached_clone(&self) -> Self {
-        Self(Rc::new(RefCell::new(self.0.borrow().detached_clone())))
+        Self::from_manager(self.manager.borrow().detached_clone())
     }
 }
 
@@ -379,35 +444,6 @@ impl ProcessMemoryManager {
                     .then(|| bus.read_long(handle))
                     .and_then(|ptr| bus.get_alloc_size(ptr))
             })
-    }
-
-    pub(crate) fn attach_metadata_adapters(
-        &mut self,
-        ptr_to_handle: &mut SharedProcessMap<u32>,
-        handle_state_bits: &mut SharedProcessMap<u8>,
-    ) {
-        if self.ptr_to_handle.ptr_eq(ptr_to_handle)
-            && self.handle_state_bits.ptr_eq(handle_state_bits)
-        {
-            return;
-        }
-        if self.ptr_to_handle.is_empty() && self.handle_state_bits.is_empty() {
-            self.ptr_to_handle = ptr_to_handle.clone();
-            self.handle_state_bits = handle_state_bits.clone();
-            return;
-        }
-        self.ptr_to_handle.extend(ptr_to_handle.take_entries());
-        self.handle_state_bits
-            .extend(handle_state_bits.take_entries());
-        *ptr_to_handle = self.ptr_to_handle.clone();
-        *handle_state_bits = self.handle_state_bits.clone();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn metadata_maps(
-        &self,
-    ) -> (&SharedProcessMap<u32>, &SharedProcessMap<u8>) {
-        (&self.ptr_to_handle, &self.handle_state_bits)
     }
 
     pub(crate) fn register_native_handle_records(
@@ -1103,6 +1139,22 @@ impl ProcessMemoryManager {
     }
 
     #[cfg(test)]
+    pub(crate) fn track_handle_ptr(&mut self, ptr: u32, handle: u32) -> Option<u32> {
+        self.ptr_to_handle.insert(ptr, handle)
+    }
+
+    pub(crate) fn adopt_handle_metadata(&mut self, source: &mut Self) {
+        if self.ptr_to_handle.ptr_eq(&source.ptr_to_handle)
+            && self.handle_state_bits.ptr_eq(&source.handle_state_bits)
+        {
+            return;
+        }
+        self.ptr_to_handle.extend(source.ptr_to_handle.take_entries());
+        self.handle_state_bits
+            .extend(source.handle_state_bits.take_entries());
+    }
+
+    #[cfg(test)]
     pub(crate) fn handle_state(&self, handle: u32) -> u8 {
         self.state_for_handle(handle).unwrap_or(0)
     }
@@ -1136,16 +1188,6 @@ impl ProcessContext {
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
         self.memory_manager.borrow().handle_for_ptr(ptr)
-    }
-
-    pub(crate) fn attach_memory_manager_metadata(
-        &mut self,
-        ptr_to_handle: &mut SharedProcessMap<u32>,
-        handle_state_bits: &mut SharedProcessMap<u8>,
-    ) {
-        self.memory_manager
-            .borrow_mut()
-            .attach_metadata_adapters(ptr_to_handle, handle_state_bits);
     }
 
     pub(crate) fn attach_memory_manager(
@@ -1770,7 +1812,7 @@ mod tests {
     #[test]
     fn native_handle_registration_tracks_relocation_without_discarding_classic_handles() {
         let mut manager = ProcessMemoryManager::default();
-        manager.metadata_maps().0.insert(0x2200, 0x1100);
+        manager.track_handle_ptr(0x2200, 0x1100);
 
         manager.register_native_handle_records([
             (
