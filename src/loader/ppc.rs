@@ -1028,6 +1028,17 @@ pub enum PpcImportDispatcherTarget {
     FixDiv,
     Long2Fix,
     Fix2Long,
+    FixRound,
+    Fix2Frac,
+    Frac2Fix,
+    Frac2X,
+    X2Frac,
+    FracSin,
+    FracCos,
+    FracSqrt,
+    FracMul,
+    FracDiv,
+    FixATan2,
     MoveTo,
     Move,
     LineTo,
@@ -14988,6 +14999,17 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "FixDiv") => PpcImportDispatcherTarget::FixDiv,
         ("InterfaceLib", "Long2Fix") => PpcImportDispatcherTarget::Long2Fix,
         ("InterfaceLib", "Fix2Long") => PpcImportDispatcherTarget::Fix2Long,
+        ("InterfaceLib", "FixRound") => PpcImportDispatcherTarget::FixRound,
+        ("InterfaceLib", "Fix2Frac") => PpcImportDispatcherTarget::Fix2Frac,
+        ("InterfaceLib", "Frac2Fix") => PpcImportDispatcherTarget::Frac2Fix,
+        ("InterfaceLib", "Frac2X") => PpcImportDispatcherTarget::Frac2X,
+        ("InterfaceLib", "X2Frac") => PpcImportDispatcherTarget::X2Frac,
+        ("InterfaceLib", "FracSin") => PpcImportDispatcherTarget::FracSin,
+        ("InterfaceLib", "FracCos") => PpcImportDispatcherTarget::FracCos,
+        ("InterfaceLib", "FracSqrt") => PpcImportDispatcherTarget::FracSqrt,
+        ("InterfaceLib", "FracMul") => PpcImportDispatcherTarget::FracMul,
+        ("InterfaceLib", "FracDiv") => PpcImportDispatcherTarget::FracDiv,
+        ("InterfaceLib", "FixATan2") => PpcImportDispatcherTarget::FixATan2,
         ("InterfaceLib", "NewMenu") => PpcImportDispatcherTarget::NewMenu,
         ("InterfaceLib", "DisposeMenu") => PpcImportDispatcherTarget::DisposeMenu,
         ("InterfaceLib", "GetMenu") => PpcImportDispatcherTarget::GetMenu,
@@ -17921,6 +17943,42 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Fix2Long => Some(PpcImportAction::Return(ppc_fix_to_long(
             cpu.gpr[3] as i32,
         ) as u32)),
+        PpcImportDispatcherTarget::FixRound => Some(PpcImportAction::Return(ppc_i16_result(
+            ppc_fix_round(cpu.gpr[3] as i32),
+        ))),
+        PpcImportDispatcherTarget::Fix2Frac => Some(PpcImportAction::Return(
+            ppc_fix_to_frac(cpu.gpr[3] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::Frac2Fix => Some(PpcImportAction::Return(
+            ppc_frac_to_fix(cpu.gpr[3] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::Frac2X => {
+            let frac = cpu.gpr[3] as i32;
+            cpu.fpr[1] = (f64::from(frac) / 1_073_741_824.0).to_bits();
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::X2Frac => {
+            let value = f64::from_bits(cpu.fpr[1]);
+            Some(PpcImportAction::Return(ppc_f64_to_frac(value)))
+        }
+        PpcImportDispatcherTarget::FracSin => Some(PpcImportAction::Return(
+            ppc_frac_sin(cpu.gpr[3] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::FracCos => Some(PpcImportAction::Return(
+            ppc_frac_cos(cpu.gpr[3] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::FracSqrt => Some(PpcImportAction::Return(
+            ppc_frac_sqrt(cpu.gpr[3]),
+        )),
+        PpcImportDispatcherTarget::FracMul => Some(PpcImportAction::Return(
+            ppc_frac_mul(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::FracDiv => Some(PpcImportAction::Return(
+            ppc_frac_div(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
+        )),
+        PpcImportDispatcherTarget::FixATan2 => Some(PpcImportAction::Return(
+            ppc_fix_atan2(cpu.gpr[3] as i32, cpu.gpr[4] as i32) as u32,
+        )),
         PpcImportDispatcherTarget::MoveTo => {
             *quickdraw_pen_h = cpu.gpr[3] as u16 as i16;
             *quickdraw_pen_v = cpu.gpr[4] as u16 as i16;
@@ -51757,6 +51815,96 @@ fn ppc_fix_to_long(value: i32) -> i32 {
     } else {
         -(((-value + 0x8000) >> 16) as i32)
     }
+}
+
+fn ppc_fix_round(value: i32) -> i16 {
+    // Inside Macintosh Volume I (1985), p. I-467: round to nearest integer,
+    // with exact halves rounded away from zero.
+    let value = i64::from(value);
+    let magnitude = (value.abs() + 0x8000) >> 16;
+    let rounded = if value < 0 { -magnitude } else { magnitude };
+    rounded as i16
+}
+
+const PPC_FIXMATH_PI_FIXED: f64 = 205_888.0;
+
+fn ppc_fixed_radians(value: i32) -> f64 {
+    // Inside Macintosh Volume IV (1986), p. IV-64: FracSin and FracCos use
+    // P = 3.1416015625 (Fixed $00032440) rather than IEEE pi for reduction.
+    f64::from(value) * std::f64::consts::PI / PPC_FIXMATH_PI_FIXED
+}
+
+fn ppc_radians_to_fixed(value: f64) -> i32 {
+    // Inside Macintosh Volume IV (1986), p. IV-65: FixATan2 uses the same
+    // $0000C910 approximation to pi/4, hence $00032440 for pi.
+    (value * PPC_FIXMATH_PI_FIXED / std::f64::consts::PI)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+fn ppc_fix_to_frac(value: i32) -> i32 {
+    // Operating System Utilities (1994), p. 3-44: shift left 14 bits with saturation.
+    (i64::from(value) << 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn ppc_frac_to_fix(value: i32) -> i32 {
+    // Operating System Utilities (1994), p. 3-44: shift right 14 bits with nearest rounding.
+    ((i64::from(value) + (1 << 13)) >> 14).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn ppc_f64_to_frac(value: f64) -> u32 {
+    // Operating System Utilities (1994), p. 3-46: convert float to Fract with saturation.
+    (value * 1_073_741_824.0)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32 as u32
+}
+
+fn ppc_frac_sin(value: i32) -> i32 {
+    // Inside Macintosh Volume IV (1986), p. IV-64: sine of Fixed radians returned as Fract.
+    let sin_val = ppc_fixed_radians(value).sin();
+    (sin_val * 1_073_741_824.0)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+fn ppc_frac_cos(value: i32) -> i32 {
+    // Inside Macintosh Volume IV (1986), p. IV-64: cosine of Fixed radians returned as Fract.
+    let cos_val = ppc_fixed_radians(value).cos();
+    (cos_val * 1_073_741_824.0)
+        .round()
+        .clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+fn ppc_frac_sqrt(value: u32) -> u32 {
+    // Operating System Utilities (1994), p. 3-41: unsigned Fract 0..4-2^-30 square root.
+    let val = (value as f64) / 1_073_741_824.0;
+    let sqrt_val = val.sqrt();
+    (sqrt_val * 1_073_741_824.0)
+        .round()
+        .clamp(0.0, 2_147_483_648.0) as u32
+}
+
+fn ppc_frac_mul(x: i32, y: i32) -> i32 {
+    // Inside Macintosh Volume IV (1986), p. IV-63: add half a unit in
+    // magnitude, then chop toward zero.
+    let product = i64::from(x) * i64::from(y);
+    let magnitude = (product.abs() + (1i64 << 29)) >> 30;
+    let rounded = if product < 0 { -magnitude } else { magnitude };
+    rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn ppc_frac_div(numerator: i32, denominator: i32) -> i32 {
+    // Inside Macintosh Volume I (1985), p. I-468: signed 2.30 quotient, saturating on divide-by-zero.
+    if denominator == 0 {
+        return if numerator >= 0 { i32::MAX } else { i32::MIN };
+    }
+    ((i64::from(numerator) << 30) / i64::from(denominator))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+fn ppc_fix_atan2(x: i32, y: i32) -> i32 {
+    // Inside Macintosh Volume IV (1986), p. IV-65: arctangent of y/x in radians.
+    ppc_radians_to_fixed(f64::from(y).atan2(f64::from(x)))
 }
 
 fn ppc_sync_gworld_pen(memory: &mut PpcSectionMem, current_gworld: u32, h: i16, v: i16) {
@@ -88049,6 +88197,214 @@ pub(crate) mod tests {
         assert_eq!(ppc_long_to_fix(72), 0x0048_0000);
         assert_eq!(ppc_long_to_fix(0x8000), i32::MAX);
         assert_eq!(ppc_long_to_fix(-0x8001), i32::MIN);
+    }
+
+    #[test]
+    fn ppc_fix_round_rounds_to_nearest_halves_away_from_zero() {
+        assert_eq!(ppc_fix_round(0x0001_4000), 1);
+        assert_eq!(ppc_fix_round(0x0001_8000), 2);
+        assert_eq!(ppc_fix_round(0x0001_c000), 2);
+        assert_eq!(ppc_fix_round(-0x0001_4000), -1);
+        assert_eq!(ppc_fix_round(-0x0001_8000), -2);
+        assert_eq!(ppc_fix_round(i32::MIN), i16::MIN);
+        assert_eq!(ppc_fix_round(0), 0);
+    }
+
+    #[test]
+    fn ppc_fix_and_frac_conversions() {
+        assert_eq!(ppc_fix_to_frac(0x0001_0000), 0x4000_0000);
+        assert_eq!(ppc_fix_to_frac(-0x0001_0000), -0x4000_0000);
+        assert_eq!(ppc_fix_to_frac(0x0002_0000), i32::MAX);
+        assert_eq!(ppc_fix_to_frac(-0x0002_0001), i32::MIN);
+
+        assert_eq!(ppc_frac_to_fix(0x4000_0000), 0x0001_0000);
+        assert_eq!(ppc_frac_to_fix(0x7000_0000), 0x0001_c000);
+        assert_eq!(ppc_frac_to_fix(-0x4000_0000), -0x0001_0000);
+        assert_eq!(ppc_frac_to_fix(0x2000_0000), 0x0000_8000);
+
+        assert_eq!(ppc_f64_to_frac(1.0), 0x4000_0000);
+        assert_eq!(ppc_f64_to_frac(-1.0), (-0x4000_0000i32) as u32);
+        assert_eq!(ppc_f64_to_frac(0.5), 0x2000_0000);
+        assert_eq!(ppc_f64_to_frac(3.0), 0x7fff_ffff);
+    }
+
+    #[test]
+    fn ppc_frac_arithmetic_and_trig() {
+        assert_eq!(ppc_frac_mul(0x2000_0000, 0x2000_0000), 0x1000_0000);
+        assert_eq!(ppc_frac_mul(-0x2000_0000, 0x2000_0000), -0x1000_0000);
+        assert_eq!(
+            ppc_frac_mul(0xa000_0000u32 as i32, 0x5333_3333),
+            0x8333_3333u32 as i32
+        );
+
+        assert_eq!(ppc_frac_div(0x1000_0000, 0x2000_0000), 0x2000_0000);
+        assert_eq!(ppc_frac_div(0x7ccc_cccd, 0x5333_3333), 0x6000_0000);
+        assert_eq!(
+            ppc_frac_div(0x8333_3333u32 as i32, 0x5333_3333),
+            0xa000_0000u32 as i32
+        );
+        assert_eq!(ppc_frac_div(0x4000_0000, 0x1000_0000), i32::MAX);
+        assert_eq!(ppc_frac_div(0x1000_0000, 0), i32::MAX);
+        assert_eq!(ppc_frac_div(-0x1000_0000, 0), i32::MIN);
+
+        assert_eq!(ppc_frac_sqrt(0x4000_0000), 0x4000_0000);
+        assert_eq!(ppc_frac_sqrt(0x1000_0000), 0x2000_0000);
+        assert_eq!(ppc_frac_sqrt(0x7d70_a3d7), 0x5999_999a);
+        assert_eq!(ppc_frac_sqrt(0), 0);
+
+        assert_eq!(ppc_frac_sin(0), 0);
+        assert_eq!(ppc_frac_cos(0), 0x4000_0000);
+        let pi_over_2_fixed = 102_944;
+        let sin_pi_2 = ppc_frac_sin(pi_over_2_fixed);
+        assert_eq!(sin_pi_2, 0x4000_0000);
+        let cos_pi_2 = ppc_frac_cos(pi_over_2_fixed);
+        assert_eq!(cos_pi_2, 0);
+        assert_eq!(ppc_frac_sin(205_888), 0);
+        assert_eq!(ppc_frac_cos(205_888), -0x4000_0000);
+
+        assert_eq!(ppc_fix_atan2(1, 0), 0);
+        assert_eq!(ppc_fix_atan2(0, 1), 102_944);
+        assert_eq!(ppc_fix_atan2(-1, -1), -154_416);
+    }
+
+    #[test]
+    fn ppc_fixmath_imports_execute_through_synthetic_pefs() {
+        // Universal Interfaces 3.4 FixMath.h declares these as InterfaceLib
+        // exports; examples and boundaries are from Inside Macintosh IV-65
+        // and Operating System Utilities (1994), pp. 3-40 through 3-46.
+        let cases: [
+            (
+                &str,
+                PpcImportDispatcherTarget,
+                u32,
+                u32,
+                Option<f64>,
+                Option<u32>,
+                Option<f64>,
+            );
+            11
+        ] = [
+            (
+                "FixRound",
+                PpcImportDispatcherTarget::FixRound,
+                i32::MIN as u32,
+                0,
+                None,
+                Some(0xffff_8000),
+                None,
+            ),
+            (
+                "Fix2Frac",
+                PpcImportDispatcherTarget::Fix2Frac,
+                0x0001_c000,
+                0,
+                None,
+                Some(0x7000_0000),
+                None,
+            ),
+            (
+                "Frac2Fix",
+                PpcImportDispatcherTarget::Frac2Fix,
+                0x9000_0000,
+                0,
+                None,
+                Some(0xfffe_4000),
+                None,
+            ),
+            (
+                "Frac2X",
+                PpcImportDispatcherTarget::Frac2X,
+                0x7000_0000,
+                0,
+                None,
+                None,
+                Some(1.75),
+            ),
+            (
+                "X2Frac",
+                PpcImportDispatcherTarget::X2Frac,
+                0,
+                0,
+                Some(-3.0),
+                Some(0x8000_0000),
+                None,
+            ),
+            (
+                "FracSin",
+                PpcImportDispatcherTarget::FracSin,
+                205_888,
+                0,
+                None,
+                Some(0),
+                None,
+            ),
+            (
+                "FracCos",
+                PpcImportDispatcherTarget::FracCos,
+                205_888,
+                0,
+                None,
+                Some(0xc000_0000),
+                None,
+            ),
+            (
+                "FracSqrt",
+                PpcImportDispatcherTarget::FracSqrt,
+                0xc000_0000,
+                0,
+                None,
+                Some(0x6ed9_eba1),
+                None,
+            ),
+            (
+                "FracMul",
+                PpcImportDispatcherTarget::FracMul,
+                0x6000_0000,
+                0x5333_3333,
+                None,
+                Some(0x7ccc_cccd),
+                None,
+            ),
+            (
+                "FracDiv",
+                PpcImportDispatcherTarget::FracDiv,
+                0x8333_3333,
+                0,
+                None,
+                Some(0x8000_0000),
+                None,
+            ),
+            (
+                "FixATan2",
+                PpcImportDispatcherTarget::FixATan2,
+                1,
+                1,
+                None,
+                Some(0x0000_c910),
+                None,
+            ),
+        ];
+
+        for (name, target, r3, r4, f1, expected_r3, expected_f1) in cases {
+            let mut loaded = load_pef_application(&synthetic_pef_with_import(name.as_bytes()))
+                .expect("synthetic FixMath PEF should load");
+            assert_eq!(loaded.imports[0].dispatcher_target, target, "{name}");
+            loaded.cpu.gpr[3] = r3;
+            loaded.cpu.gpr[4] = r4;
+            loaded.cpu.fpr[1] = f1.unwrap_or_default().to_bits();
+            loaded.cpu.pc = loaded.entry_pc;
+            loaded.cpu.lr = PPC_HALT_PC;
+
+            let result = loaded.run_with_hle_imports(64);
+
+            assert_eq!(result.handled_import_count, 1, "{name}");
+            if let Some(expected) = expected_r3 {
+                assert_eq!(loaded.cpu.gpr[3], expected, "{name}");
+            }
+            if let Some(expected) = expected_f1 {
+                assert_eq!(f64::from_bits(loaded.cpu.fpr[1]), expected, "{name}");
+            }
+        }
     }
 
     #[test]
