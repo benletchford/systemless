@@ -4465,8 +4465,8 @@ impl super::TrapDispatcher {
             return;
         }
 
-        let previous_port = self.current_port;
-        let previous_gdevice = self.current_gdevice;
+        let previous_port = *self.current_port;
+        let previous_gdevice = *self.current_gdevice;
         let previous_state = self.qd_state_snapshot();
 
         self.set_current_port_state(bus, cpu, state.port, None);
@@ -10750,8 +10750,8 @@ impl super::TrapDispatcher {
                 let extra = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
                 // Store spExtra at port offset +76 (Fixed)
-                if self.current_port != 0 {
-                    bus.write_long(self.current_port + 76, extra);
+                if *self.current_port != 0 {
+                    bus.write_long(*self.current_port + 76, extra);
                 }
                 Ok(())
             }
@@ -13982,12 +13982,12 @@ impl super::TrapDispatcher {
                         let movie = bus.alloc(16);
                         bus.write_long(movie, u32::from_be_bytes(*b"MooV"));
                         bus.write_long(movie + 4, flags);
-                        bus.write_long(movie + 8, self.current_port);
-                        bus.write_long(movie + 12, self.current_gdevice);
+                        bus.write_long(movie + 8, *self.current_port);
+                        bus.write_long(movie + 12, *self.current_gdevice);
                         let mut state =
                             MovieState::new(0, -1, flags as u16, (0, 0, 120, 160), 1, 600);
-                        state.gworld_port = self.current_port;
-                        state.gworld_gdh = self.current_gdevice;
+                        state.gworld_port = *self.current_port;
+                        state.gworld_gdh = *self.current_gdevice;
                         state.active = false;
                         self.movie_states.insert(movie, state);
                         bus.write_long(sp + 4, movie);
@@ -17019,7 +17019,7 @@ mod tests {
         // SpaceExtra sets the current GrafPort's spExtra field.
         let (mut disp, mut cpu, mut bus) = setup();
         let port = bus.alloc(128);
-        disp.current_port = port;
+        *disp.current_port = port;
         let extra = 0x0001_8000u32; // 1.5 Fixed
         bus.write_long(port + 76, 0xDEAD_BEEF);
         bus.write_long(TEST_SP, extra);
@@ -17036,7 +17036,7 @@ mod tests {
         // SpaceExtra(extra: Fixed) consumes one 4-byte Fixed argument.
         let (mut disp, mut cpu, mut bus) = setup();
         let port = bus.alloc(128);
-        disp.current_port = port;
+        *disp.current_port = port;
         let sp_before = cpu.read_reg(Register::A7);
         bus.write_long(sp_before, 0xFFFF_8000); // -0.5 Fixed
 
@@ -24968,7 +24968,7 @@ mod tests {
             white_pixels > 0,
             "LUpdate should render opposite-colored text pixels into a dark visible cell"
         );
-        assert_eq!(disp.current_port, window_ptr);
+        assert_eq!(*disp.current_port, window_ptr);
         assert_eq!(disp.fg_color, (0x1111, 0x2222, 0x3333));
         assert_eq!(disp.bg_color, (0xAAAA, 0xBBBB, 0xCCCC));
         assert_eq!(disp.pn_loc, (7, 8));
@@ -25131,7 +25131,7 @@ mod tests {
                 assert!(witness_pixels > 0, "trap ${trap:03X} lost row at y={top}");
             }
             assert_eq!(bus.read_byte(screen_base + 31 * row_bytes + 125), 42);
-            assert_eq!(disp.current_port, caller_port);
+            assert_eq!(*disp.current_port, caller_port);
             assert_eq!(disp.fg_color, (0x1111, 0x2222, 0x3333));
             assert_eq!(disp.bg_color, (0xAAAA, 0xBBBB, 0xCCCC));
             assert_eq!(disp.pn_loc, (7, 8));
@@ -33154,8 +33154,8 @@ mod tests {
     fn movietoolboxdispatch_new_movie_returns_empty_movie_with_current_gworld() {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
-        disp.current_port = 0x0033_0000;
-        disp.current_gdevice = 0x0044_0000;
+        *disp.current_port = 0x0033_0000;
+        *disp.current_gdevice = 0x0044_0000;
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::D0, 0x0187); // NewMovie

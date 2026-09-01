@@ -2297,7 +2297,7 @@ impl super::TrapDispatcher {
         bus.write_byte(te_ptr + Self::TE_TX_FACE_OFFSET, self.tx_face as u8);
         bus.write_word(te_ptr + Self::TE_TX_MODE_OFFSET, self.tx_mode as u16);
         bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, self.tx_size as u16);
-        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, self.current_port);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, *self.current_port);
         self.textedit_states.remove(&te_handle);
     }
 
@@ -2469,7 +2469,7 @@ impl super::TrapDispatcher {
         bus.write_long(te_ptr + Self::TE_TX_FONT_OFFSET, style_handle);
         bus.write_word(te_ptr + Self::TE_TX_MODE_OFFSET, self.tx_mode as u16);
         bus.write_word(te_ptr + Self::TE_TX_SIZE_OFFSET, 0xFFFF);
-        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, self.current_port);
+        bus.write_long(te_ptr + Self::TE_IN_PORT_OFFSET, *self.current_port);
         bus.write_word(te_ptr + Self::TE_N_LINES_OFFSET, 0);
         bus.write_word(te_ptr + Self::TE_LINE_STARTS_OFFSET, 0);
         self.textedit_states.remove(&te_handle);
@@ -2949,8 +2949,8 @@ impl super::TrapDispatcher {
         let old_size = self.tx_size;
         let old_fg = self.fg_color;
         let old_loc = self.pn_loc;
-        let previous_port = self.current_port;
-        let previous_gdevice = self.current_gdevice;
+        let previous_port = *self.current_port;
+        let previous_gdevice = *self.current_gdevice;
         let switched_port = te_port != 0 && te_port != previous_port;
         let color_port = te_port != 0 && (bus.read_word(te_port + 6) & 0xC000) == 0xC000;
         let old_port_fg_pixel = color_port.then(|| bus.read_long(te_port + 80));
@@ -2964,7 +2964,7 @@ impl super::TrapDispatcher {
         }
         if trace_textedit_enabled() {
             let (vis_top, vis_left, vis_bottom, vis_right) = {
-                let vis_handle = bus.read_long(self.current_port + 24);
+                let vis_handle = bus.read_long(*self.current_port + 24);
                 let vis_ptr = if vis_handle != 0 {
                     bus.read_long(vis_handle)
                 } else {
@@ -2982,7 +2982,7 @@ impl super::TrapDispatcher {
                 }
             };
             let (clip_top, clip_left, clip_bottom, clip_right) = {
-                let clip_handle = bus.read_long(self.current_port + 28);
+                let clip_handle = bus.read_long(*self.current_port + 28);
                 let clip_ptr = if clip_handle != 0 {
                     bus.read_long(clip_handle)
                 } else {
@@ -3004,7 +3004,7 @@ impl super::TrapDispatcher {
                 te_handle,
                 te_port,
                 previous_port,
-                self.current_port,
+                *self.current_port,
                 switched_port,
                 self.gworld_devices.contains_key(&te_port),
                 dest_rect.0,
@@ -3080,7 +3080,7 @@ impl super::TrapDispatcher {
                 sum
             };
         let checksum_before = if trace_textedit_enabled() {
-            checksum_view_rect(bus, self.current_port, view_rect)
+            checksum_view_rect(bus, *self.current_port, view_rect)
         } else {
             0
         };
@@ -3325,7 +3325,7 @@ impl super::TrapDispatcher {
                 "[TE] draw_te_contents checksum hTE=${:08X} before={} after={}",
                 te_handle,
                 checksum_before,
-                checksum_view_rect(bus, self.current_port, view_rect)
+                checksum_view_rect(bus, *self.current_port, view_rect)
             );
         }
 
@@ -5219,8 +5219,8 @@ impl super::TrapDispatcher {
         dialog_color_table: Option<u32>,
         dialog_item_color_table: Option<u32>,
     ) -> u32 {
-        let previous_port = self.current_port;
-        let previous_gdevice = self.current_gdevice;
+        let previous_port = *self.current_port;
+        let previous_gdevice = *self.current_gdevice;
         let dlg_ptr = if storage_ptr != 0 {
             storage_ptr
         } else {
@@ -15062,7 +15062,7 @@ impl super::TrapDispatcher {
                     };
                     eprintln!(
                         "[DIALOG-TEXT] TETextBox params current_port=${:08X} sp=${:08X} stack={:02X?} text_ptr=${:08X} len={} box=({},{}..{},{} ) align={} preview={:02X?}",
-                        self.current_port,
+                        *self.current_port,
                         sp,
                         stack_bytes,
                         text_ptr,
@@ -15109,7 +15109,7 @@ impl super::TrapDispatcher {
                             .is_some();
                             eprintln!(
                             "[DIALOG-TEXT] TETextBox current_port=${:08X} box=({},{}..{},{} ) align={} len={} txFont={} txFace=${:04X} txMode={} txSize={} firstChar={:?} firstGlyph={} text=\"{}\"",
-                            self.current_port,
+                            *self.current_port,
                             box_top,
                             box_left,
                             box_bottom,
@@ -15194,7 +15194,7 @@ impl super::TrapDispatcher {
                         }
                     }
                 }
-                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
 
@@ -21327,7 +21327,7 @@ mod tests {
         let update_vis_region_after =
             TrapDispatcher::region_handle_rect(&bus, bus.read_long(dialog_ptr + 24));
         let update_the_port_after = bus.read_long(crate::memory::globals::addr::THE_PORT);
-        let update_current_port_after = disp.current_port;
+        let update_current_port_after = *disp.current_port;
         let update_saved_vis_after = disp.saved_vis_regions.contains_key(&dialog_ptr);
         let update_queued_draw_procs = disp
             .modeless_dialog_draw_proc_queue
@@ -21954,7 +21954,7 @@ mod tests {
                 bus.read_long(dialog_ptr + 24),
             ),
             the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
-            current_port_after: disp.current_port,
+            current_port_after: *disp.current_port,
             saved_vis_after: disp.saved_vis_regions.contains_key(&dialog_ptr),
         }
     }
@@ -23051,7 +23051,7 @@ mod tests {
         seed_window_regions(&mut close_bus, close_previous_window, previous_bounds);
         close_bus.write_word(close_dialog_ptr + 108, 2);
         close_disp.front_window = close_dialog_ptr;
-        close_disp.current_port = close_dialog_ptr;
+        *close_disp.current_port = close_dialog_ptr;
         close_disp.window_bounds = bounds;
         close_disp.window_proc_id = 2;
         close_disp.window_list = vec![close_dialog_ptr, close_previous_window];
@@ -23115,7 +23115,7 @@ mod tests {
         let close_window_list_contains_dialog = close_disp.window_list.contains(&close_dialog_ptr);
         let close_front_window_after = close_disp.front_window;
         let close_the_port_after = close_bus.read_long(crate::memory::globals::addr::THE_PORT);
-        let close_current_port_after = close_disp.current_port;
+        let close_current_port_after = *close_disp.current_port;
         let close_update_event_for_previous_window = close_disp
             .event_queue
             .iter()
@@ -23137,7 +23137,7 @@ mod tests {
         seed_window_regions(&mut dispose_bus, dispose_previous_window, previous_bounds);
         dispose_bus.write_word(dispose_dialog_ptr + 108, 2);
         dispose_disp.front_window = dispose_dialog_ptr;
-        dispose_disp.current_port = dispose_dialog_ptr;
+        *dispose_disp.current_port = dispose_dialog_ptr;
         dispose_disp.window_bounds = bounds;
         dispose_disp.window_proc_id = 2;
         dispose_disp.window_list = vec![
@@ -23254,7 +23254,7 @@ mod tests {
                 .contains(&dispose_dialog_ptr),
             dispose_front_window_after: dispose_disp.front_window,
             dispose_the_port_after: dispose_bus.read_long(crate::memory::globals::addr::THE_PORT),
-            dispose_current_port_after: dispose_disp.current_port,
+            dispose_current_port_after: *dispose_disp.current_port,
             dispose_update_event_for_previous_window: dispose_disp
                 .event_queue
                 .iter()
@@ -23334,7 +23334,7 @@ mod tests {
         new_bus.write_long(0x0824, new_screen_base);
         new_disp.screen_mode = (new_screen_base, 640, 640, 480, 8);
         let new_previous_port = new_bus.alloc(170);
-        new_disp.current_port = new_previous_port;
+        *new_disp.current_port = new_previous_port;
         new_bus.write_long(crate::memory::globals::addr::THE_PORT, new_previous_port);
 
         let new_ditl = build_test_ditl_items(&[
@@ -23384,7 +23384,7 @@ mod tests {
         get_bus.write_long(0x0824, get_screen_base);
         get_disp.screen_mode = (get_screen_base, 640, 640, 480, 8);
         let get_previous_port = get_bus.alloc(170);
-        get_disp.current_port = get_previous_port;
+        *get_disp.current_port = get_previous_port;
         get_bus.write_long(crate::memory::globals::addr::THE_PORT, get_previous_port);
 
         let mut dlog = build_test_dlog((80, 90, 160, 240), 1901, 0);
@@ -23423,7 +23423,7 @@ mod tests {
             new_result_slot: new_bus.read_long(new_sp + 30),
             new_window_list: new_disp.window_list.clone(),
             new_front_window: new_disp.front_window,
-            new_current_port: new_disp.current_port,
+            new_current_port: *new_disp.current_port,
             new_the_port: new_bus.read_long(crate::memory::globals::addr::THE_PORT),
             new_visible_byte: new_bus.read_byte(new_dialog_ptr + 110),
             new_goaway_byte: new_bus.read_byte(new_dialog_ptr + 112),
@@ -23449,7 +23449,7 @@ mod tests {
             get_result_slot: get_bus.read_long(TEST_SP + 10),
             get_window_list: get_disp.window_list.clone(),
             get_front_window: get_disp.front_window,
-            get_current_port: get_disp.current_port,
+            get_current_port: *get_disp.current_port,
             get_the_port: get_bus.read_long(crate::memory::globals::addr::THE_PORT),
             get_visible_byte: get_bus.read_byte(get_dialog_ptr + 110),
             get_refcon: get_bus.read_long(get_dialog_ptr + 152),
@@ -23778,7 +23778,7 @@ mod tests {
         UpdtDialogUpdateRegionSnapshot {
             stack_after: cpu.read_reg(Register::A7),
             the_port_after: bus.read_long(crate::memory::globals::addr::THE_PORT),
-            current_port_after: disp.current_port,
+            current_port_after: *disp.current_port,
             deferred_after: disp.dialog_initial_draw_deferred.contains(&dialog_ptr),
             queued_draw_procs: disp
                 .modeless_dialog_draw_proc_queue
@@ -26848,7 +26848,7 @@ mod tests {
         }
 
         // Make sure the text renderer has a usable size and port state.
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -26892,7 +26892,7 @@ mod tests {
             }
         }
 
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -26924,7 +26924,7 @@ mod tests {
         // procedure taking text/length/box/align arguments.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -26955,7 +26955,7 @@ mod tests {
         // teJustCenter(1), and teJustRight(-1) alignment values.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -27031,7 +27031,7 @@ mod tests {
         // result slot written.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -27069,7 +27069,7 @@ mod tests {
         // in the destination rectangle.
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        disp.current_port = port_ptr;
+        *disp.current_port = port_ptr;
         disp.tx_size = 12;
         bus.write_word(port_ptr + 74, 12);
 
@@ -27170,7 +27170,7 @@ mod tests {
         bus.write_word(dialog_ptr + 108, 2);
         disp.window_proc_ids.insert(dialog_ptr, proc_id);
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (0, 0, 100, 220);
         disp.window_proc_id = proc_id;
         disp.window_list = vec![dialog_ptr, prev_window];
@@ -27229,7 +27229,7 @@ mod tests {
         bus.write_word(dialog_structure_ptr + 8, 322);
 
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
         bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
         let a5 = cpu.read_reg(Register::A5);
@@ -27243,7 +27243,7 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, prev_window);
-        assert_eq!(disp.current_port, prev_window);
+        assert_eq!(*disp.current_port, prev_window);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             prev_window
@@ -27281,7 +27281,7 @@ mod tests {
         seed_window_regions(&mut bus, visible_window, (0, 0, 342, 512));
 
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
         disp.window_list = vec![dialog_ptr, visible_window];
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
@@ -27291,7 +27291,7 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x182, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, visible_window);
-        assert_eq!(disp.current_port, visible_window);
+        assert_eq!(*disp.current_port, visible_window);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             visible_window
@@ -27347,7 +27347,7 @@ mod tests {
         let other_front = 0x181000u32;
 
         disp.front_window = other_front;
-        disp.current_port = other_front;
+        *disp.current_port = other_front;
         bus.write_long(crate::memory::globals::addr::THE_PORT, other_front);
         let a5 = cpu.read_reg(Register::A5);
         let global_ptr = bus.read_long(a5);
@@ -27360,7 +27360,7 @@ mod tests {
         assert!(result.unwrap().is_ok());
 
         assert_eq!(disp.front_window, other_front);
-        assert_eq!(disp.current_port, other_front);
+        assert_eq!(*disp.current_port, other_front);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             other_front
@@ -27445,7 +27445,7 @@ mod tests {
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
 
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
         bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
         let a5 = cpu.read_reg(Register::A5);
@@ -27459,7 +27459,7 @@ mod tests {
         let result = disp.dispatch_dialog(true, 0x183, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(disp.front_window, prev_window);
-        assert_eq!(disp.current_port, prev_window);
+        assert_eq!(*disp.current_port, prev_window);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             prev_window
@@ -27494,7 +27494,7 @@ mod tests {
 
         disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         bus.write_byte(dialog_ptr + 110, 0xFF);
         bus.write_byte(prev_window + 110, 0xFF);
         disp.window_stack
@@ -27522,7 +27522,7 @@ mod tests {
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
         disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (110, 155, 380, 645);
         disp.dialog_items.insert(
             dialog_ptr,
@@ -27562,7 +27562,7 @@ mod tests {
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
         disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = (110, 155, 380, 645);
         disp.dialog_modal_entered.insert(dialog_ptr);
         disp.pending_modal_button_dispose_dialog = Some(dialog_ptr);
@@ -28399,7 +28399,7 @@ mod tests {
         }
 
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = bounds;
         disp.window_list = vec![dialog_ptr];
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
@@ -28551,7 +28551,7 @@ mod tests {
         );
 
         disp.front_window = child_ptr;
-        disp.current_port = child_ptr;
+        *disp.current_port = child_ptr;
         disp.window_bounds = child_bounds;
         disp.window_list = vec![child_ptr, parent_ptr];
         disp.window_stack
@@ -28574,7 +28574,7 @@ mod tests {
             "disposing the child must restore the original parent userItem pixel"
         );
         assert_eq!(disp.front_window, parent_ptr);
-        assert_eq!(disp.current_port, parent_ptr);
+        assert_eq!(*disp.current_port, parent_ptr);
     }
 
     #[test]
@@ -30392,7 +30392,7 @@ mod tests {
         let item_hit_addr = 0x300000u32;
         let bounds = (40, 40, 130, 280);
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_bounds = bounds;
         disp.window_proc_id = 2;
         disp.window_title.clear();
@@ -31907,7 +31907,7 @@ mod tests {
         seed_window_regions(&mut bus, dialog_ptr, (100, 200, 200, 360));
         seed_window_regions(&mut bus, previous_window, (0, 0, 342, 512));
         disp.front_window = dialog_ptr;
-        disp.current_port = dialog_ptr;
+        *disp.current_port = dialog_ptr;
         disp.window_list = vec![dialog_ptr, previous_window];
         disp.window_stack
             .push((previous_window, (0, 0, 342, 512), 0, String::from("Map")));
@@ -31994,7 +31994,7 @@ mod tests {
         seed_window_regions(&mut bus, child, (100, 200, 200, 360));
         seed_window_regions(&mut bus, parent, (0, 0, 342, 512));
         disp.front_window = child;
-        disp.current_port = child;
+        *disp.current_port = child;
         disp.window_list = vec![child, parent];
         disp.window_stack
             .push((parent, (0, 0, 342, 512), 2, String::new()));
@@ -32323,7 +32323,7 @@ mod tests {
         text: &[u8],
     ) -> u32 {
         let te_handle = TrapDispatcher::allocate_te_handle(bus);
-        disp.current_port = 0x181000;
+        *disp.current_port = 0x181000;
         disp.tx_font = 4;
         disp.tx_face = 0;
         disp.tx_mode = 0;
@@ -35049,7 +35049,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
-        disp.current_port = 0x181000;
+        *disp.current_port = 0x181000;
         disp.tx_font = 4;
         disp.tx_face = 1;
         disp.tx_mode = 2;
@@ -35086,7 +35086,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
-        disp.current_port = 0x181000;
+        *disp.current_port = 0x181000;
         disp.tx_font = 4;
         disp.tx_face = 0;
         disp.tx_mode = 0;
@@ -35125,7 +35125,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         let te_handle = TrapDispatcher::allocate_te_handle(&mut bus);
-        disp.current_port = 0x181000;
+        *disp.current_port = 0x181000;
         disp.tx_font = 4;
         disp.tx_face = 0;
         disp.tx_mode = 0;

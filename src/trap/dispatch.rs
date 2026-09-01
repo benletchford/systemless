@@ -2438,9 +2438,9 @@ pub struct TrapDispatcher {
     /// Main GDevice handle in guest memory (0 = not yet allocated)
     pub(crate) main_gdevice_handle: u32,
     /// Current GDevice handle
-    pub(crate) current_gdevice: u32,
+    pub(crate) current_gdevice: SharedProcessValue<u32>,
     /// Current GrafPort/GWorld pointer
-    pub(crate) current_port: u32,
+    pub(crate) current_port: SharedProcessValue<u32>,
     /// Per-port pen/color/text state restored by SetPort and SetGWorld.
     pub(crate) port_draw_states: HashMap<u32, PortDrawState>,
     /// Bit 0/1 mark CGrafPort fgColor/bkColor fields that QuickDraw has
@@ -2867,6 +2867,7 @@ impl TrapDispatcher {
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_display_color_state(
             &mut self.device_clut,
             &mut self.color_manager_clut,
@@ -3288,7 +3289,7 @@ impl TrapDispatcher {
     /// Test-only: set the current port without going through SetPort.
     /// Used by integration test helpers like setup_with_cgraf_port().
     pub fn set_current_port_for_test(&mut self, port: u32) {
-        self.current_port = port;
+        *self.current_port = port;
     }
 
     /// Test-only: invoke save_dialog_pixels for the byte-isomorphism gate.
@@ -3997,8 +3998,8 @@ impl TrapDispatcher {
             copybits_screen_secs: Vec::new(),
             trace_sink: None,
             main_gdevice_handle: 0,
-            current_gdevice: 0,
-            current_port: 0,
+            current_gdevice: SharedProcessValue::from_value(0),
+            current_port: SharedProcessValue::from_value(0),
             port_draw_states: HashMap::new(),
             resolved_port_color_fields: HashMap::new(),
             gworld_devices: HashMap::new(),
