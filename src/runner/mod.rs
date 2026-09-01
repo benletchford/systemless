@@ -3277,6 +3277,7 @@ impl FixtureRunner {
             return;
         }
 
+        self.bus.detach_guest_address_space();
         self.ppc_app = None;
         self.ppc_sound_synced_file_playback_count = 0;
         self.ppc_sound_host_playbacks.clear();
@@ -3667,6 +3668,7 @@ impl FixtureRunner {
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
         use crate::memory::globals::addr;
 
+        self.bus.detach_guest_address_space();
         self.adopt_ppc_process_memory_image(&mut ppc_app);
         // These are process launch defaults, not PEF-loader state. Reapply
         // them after adopting a sparse construction image so a synthetic
@@ -3749,6 +3751,8 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::PC, 0);
         self.ppc_sound_synced_file_playback_count = 0;
         self.ppc_sound_host_playbacks.clear();
+        self.bus
+            .attach_guest_address_space(ppc_app.memory.shared_view());
         self.ppc_app = Some(ppc_app);
     }
 
@@ -6132,14 +6136,6 @@ impl FixtureRunner {
             return Some((0, true));
         }
 
-        // SAFETY: `ppc_app` is parked for this whole interval. The address
-        // space remains in place, and all reads and writes are serialized
-        // through this runner until the bus is detached below.
-        let shared_memory = unsafe { ppc_app.memory.shared_view() };
-        unsafe {
-            self.bus.attach_guest_address_space(shared_memory);
-        }
-
         let mut executed = 0usize;
         let mut running = true;
         while executed < max_steps {
@@ -6204,7 +6200,6 @@ impl FixtureRunner {
                 }
             }
         }
-        self.bus.detach_guest_address_space();
         Some((executed, running))
     }
 
@@ -12271,17 +12266,11 @@ mod tests {
         assert_eq!(ppc_app.memory.read_u32_be(SECOND_HOLE), Some(0x0506_0708));
 
         assert_eq!(ppc_app.memory.read_u32_be(PEF_MAPPING), Some(0x1234_5678));
-        // SAFETY: the test parks `ppc_app`, accesses it only through the bus
-        // while attached, and detaches before borrowing its memory again.
-        let shared = unsafe { ppc_app.memory.shared_view() };
-        unsafe {
-            runner.bus.attach_guest_address_space(shared);
-        }
+        // Ordinary PEF mappings stay authoritative for the process lifetime,
+        // including while the native adapter is parked outside execution.
         assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
         runner.bus.write_long(PEF_MAPPING, 0);
         assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
-        runner.bus.detach_guest_address_space();
-        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0xaabb_ccdd);
         assert_eq!(ppc_app.memory.read_u32_be(PEF_MAPPING), Some(0x1234_5678));
     }
 
@@ -14054,7 +14043,7 @@ mod tests {
         assert_eq!(ppc_app.cpu.gpr[3], 41);
         assert_eq!(ppc_app.cpu.pc, PPC_CODE_BASE);
         assert_eq!(ppc_app.cpu.lr, PPC_CODE_BASE);
-        assert_eq!(runner.bus.read_long(RESULT), 0);
+        assert_eq!(runner.bus.read_long(RESULT), 41);
     }
 
     #[test]

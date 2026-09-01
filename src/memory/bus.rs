@@ -722,9 +722,9 @@ pub struct MacMemoryBus {
     /// no guest code runs, so unbounded growth is impossible and overflow
     /// must not void the check).
     write_probe_uncapped: bool,
-    /// Temporary sparse-memory view used only while a parked native process
-    /// runs its emulated 68k context. The runner installs and removes this
-    /// view around each serialized execution interval.
+    /// Process-lifetime view of the native process's ordinary sparse mappings.
+    /// The runner replaces it when launching a different process and
+    /// serializes access between CPU adapters.
     foreign_address_space: Option<SharedGuestAddressSpace>,
 }
 
@@ -1273,11 +1273,13 @@ impl MacMemoryBus {
         }
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && self.foreign_address_space.is_none()
+            && !self.foreign_ordinary_sparse_overlaps(src, count as usize)
+            && !self.foreign_ordinary_sparse_overlaps(dst, count as usize)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = self.foreign_address_space.is_none()
+        let fast = !self.foreign_ordinary_sparse_overlaps(src, count as usize)
+            && !self.foreign_ordinary_sparse_overlaps(dst, count as usize)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         let count_usize = count as usize;
@@ -1445,14 +1447,8 @@ impl MacMemoryBus {
         }
     }
 
-    /// Attach one parked process's sparse mappings for a serialized 68k run.
-    ///
-    /// # Safety
-    ///
-    /// `memory` must remain alive and unmoved until
-    /// [`Self::detach_guest_address_space`] is called, and no other adapter
-    /// may access it during that interval.
-    pub(crate) unsafe fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
+    /// Retain one native process's sparse mappings for serialized cross-ISA access.
+    pub(crate) fn attach_guest_address_space(&mut self, memory: SharedGuestAddressSpace) {
         debug_assert!(self.foreign_address_space.is_none());
         self.foreign_address_space = Some(memory);
     }
@@ -1465,33 +1461,41 @@ impl MacMemoryBus {
     /// ordinary sparse regions (and not in a shared flat-RAM overlay).
     #[inline]
     pub(crate) fn is_foreign_ordinary_sparse_address(&self, address: u32) -> bool {
-        let Some(foreign) = self.foreign_address_space else {
+        let Some(foreign) = self.foreign_address_space.as_ref() else {
             return false;
         };
-        // SAFETY: see `foreign_read_u8`.
-        unsafe { foreign.is_ordinary_sparse_mapped(address) }
+        foreign.is_ordinary_sparse_mapped(address)
+    }
+
+    #[inline]
+    fn foreign_ordinary_sparse_overlaps(&self, address: u32, len: usize) -> bool {
+        let Some(foreign) = self.foreign_address_space.as_ref() else {
+            return false;
+        };
+        let Ok(len) = u32::try_from(len) else {
+            return true;
+        };
+        foreign.ordinary_mapping_overlaps(self.translate_guest_address(address), len)
     }
 
     /// Return the end of a read-only process mapping that overlaps a proposed
-    /// native heap allocation while the owning PowerPC process is parked.
+    /// native heap allocation while the owning PowerPC process is resident.
     pub(crate) fn foreign_readonly_allocation_overlap_end(
         &self,
         address: u32,
         len: u32,
     ) -> Option<u32> {
-        let foreign = self.foreign_address_space?;
-        // SAFETY: see `foreign_read_u8`.
-        unsafe { foreign.readonly_allocation_overlap_end(address, len) }
+        let foreign = self.foreign_address_space.as_ref()?;
+        foreign.readonly_allocation_overlap_end(address, len)
     }
 
-    /// Write bytes exclusively through the parked process address space.
+    /// Write bytes exclusively through the retained process address space.
     pub(crate) fn write_foreign_bytes(&mut self, address: u32, bytes: &[u8]) -> Option<()> {
-        let foreign = self.foreign_address_space?;
-        // SAFETY: see `foreign_read_u8`.
-        unsafe { foreign.write_bytes(address, bytes) }
+        let foreign = self.foreign_address_space.as_ref()?;
+        foreign.write_bytes(address, bytes)
     }
 
-    /// Exclusively operate on the parked process address space.
+    /// Exclusively operate on the retained process address space.
     ///
     /// The attachment contract serializes the native adapter while the 68K
     /// bus is active, and the mutable bus borrow prevents overlapping access
@@ -1500,78 +1504,63 @@ impl MacMemoryBus {
         &mut self,
         f: impl FnOnce(&mut GuestAddressSpace) -> R,
     ) -> Option<R> {
-        let foreign = self.foreign_address_space?;
-        // SAFETY: `attach_guest_address_space` requires an exclusive,
-        // serialized interval and `self` is mutably borrowed for the closure.
-        unsafe { foreign.with_mut(f) }
+        let foreign = self.foreign_address_space.as_ref()?;
+        Some(foreign.with_mut(f))
     }
 
     #[inline]
     fn foreign_read_u8(&self, address: u32) -> Option<u8> {
-        let memory = self.foreign_address_space?;
-        // SAFETY: attachment requires the runner to serialize the parked
-        // native process with this bus.
-        unsafe { memory.read_u8(address) }
+        let memory = self.foreign_address_space.as_ref()?;
+        memory.read_u8(address)
     }
 
     #[inline]
     fn foreign_read_u16(&self, address: u32) -> Option<u16> {
-        let memory = self.foreign_address_space?;
-        // SAFETY: see `foreign_read_u8`.
-        unsafe { memory.read_u16_be(address) }
+        let memory = self.foreign_address_space.as_ref()?;
+        memory.read_u16_be(address)
     }
 
     #[inline]
     fn foreign_read_u32(&self, address: u32) -> Option<u32> {
-        let memory = self.foreign_address_space?;
-        // SAFETY: see `foreign_read_u8`.
-        unsafe { memory.read_u32_be(address) }
+        let memory = self.foreign_address_space.as_ref()?;
+        memory.read_u32_be(address)
     }
 
     #[inline]
     fn foreign_write_u8_if_mapped(&mut self, address: u32, value: u8) -> bool {
-        let Some(memory) = self.foreign_address_space else {
+        let Some(memory) = self.foreign_address_space.as_ref() else {
             return false;
         };
         // A readable but non-writable mapping is still authoritative: ignore
         // the store instead of falling through into same-address flat RAM.
-        // SAFETY: see `attach_guest_address_space`.
-        unsafe {
-            if memory.read_u8(address).is_none() {
-                return false;
-            }
-            let _ = memory.write_u8(address, value);
+        if memory.read_u8(address).is_none() {
+            return false;
         }
+        let _ = memory.write_u8(address, value);
         true
     }
 
     #[inline]
     fn foreign_write_u16_if_mapped(&mut self, address: u32, value: u16) -> bool {
-        let Some(memory) = self.foreign_address_space else {
+        let Some(memory) = self.foreign_address_space.as_ref() else {
             return false;
         };
-        // SAFETY: see `attach_guest_address_space`.
-        unsafe {
-            if memory.read_u16_be(address).is_none() {
-                return false;
-            }
-            let _ = memory.write_u16_be(address, value);
+        if memory.read_u16_be(address).is_none() {
+            return false;
         }
+        let _ = memory.write_u16_be(address, value);
         true
     }
 
     #[inline]
     fn foreign_write_u32_if_mapped(&mut self, address: u32, value: u32) -> bool {
-        let Some(memory) = self.foreign_address_space else {
+        let Some(memory) = self.foreign_address_space.as_ref() else {
             return false;
         };
-        // SAFETY: see `attach_guest_address_space`.
-        unsafe {
-            if memory.read_u32_be(address).is_none() {
-                return false;
-            }
-            let _ = memory.write_u32_be(address, value);
+        if memory.read_u32_be(address).is_none() {
+            return false;
         }
+        let _ = memory.write_u32_be(address, value);
         true
     }
 
@@ -1849,7 +1838,9 @@ impl MacMemoryBus {
     /// tracing are active so diagnostics still observe each destination byte.
     #[inline]
     pub fn copy_ram_bytes(&mut self, src: u32, dst: u32, len: u32) -> bool {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(src, len as usize)
+            || self.foreign_ordinary_sparse_overlaps(dst, len as usize)
+        {
             self.block_move(src, dst, len);
             return true;
         }
@@ -1895,7 +1886,9 @@ impl MacMemoryBus {
     /// translation without allocating a scratch row.
     #[inline]
     pub fn copy_mapped_ram_bytes(&mut self, src: u32, dst: u32, len: u32, map: &[u8; 256]) -> bool {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(src, len as usize)
+            || self.foreign_ordinary_sparse_overlaps(dst, len as usize)
+        {
             if dst > src && dst < src.saturating_add(len) {
                 for offset in (0..len).rev() {
                     let value = map[self.read_byte(src.wrapping_add(offset)) as usize];
@@ -2117,7 +2110,7 @@ impl MemoryBus for MacMemoryBus {
             maybe_log_mem_read(address, 2, value as u32);
             return value;
         }
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(foreign_address, 2) {
             let value = (u16::from(self.read_byte(address)) << 8)
                 | u16::from(self.read_byte(address.wrapping_add(1)));
             maybe_log_mem_read(address, 2, value as u32);
@@ -2147,7 +2140,7 @@ impl MemoryBus for MacMemoryBus {
             maybe_log_mem_read(address, 4, value);
             return value;
         }
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(foreign_address, 4) {
             let value = (u32::from(self.read_word(address)) << 16)
                 | u32::from(self.read_word(address.wrapping_add(2)));
             maybe_log_mem_read(address, 4, value);
@@ -2354,11 +2347,11 @@ impl MemoryBus for MacMemoryBus {
         // Fast path: watchpoint disarmed + tracer disabled + write fully in-bounds.
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && self.foreign_address_space.is_none()
+            && !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = self.foreign_address_space.is_none()
+        let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 2)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         if let Some(address) =
@@ -2397,11 +2390,11 @@ impl MemoryBus for MacMemoryBus {
 
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
-            && self.foreign_address_space.is_none()
+            && !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         #[cfg(not(debug_assertions))]
-        let fast = self.foreign_address_space.is_none()
+        let fast = !self.foreign_ordinary_sparse_overlaps(protected_address, 4)
             && fb_write_trace_range().is_none()
             && self.write_probe_original.is_none();
         if let Some(address) =
@@ -2427,7 +2420,7 @@ impl MemoryBus for MacMemoryBus {
     /// that pulls more than a few bytes at once.
     #[inline]
     fn read_bytes(&self, address: u32, len: usize) -> Vec<u8> {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(address, len) {
             return (0..len)
                 .map(|offset| self.read_byte(address.wrapping_add(offset as u32)))
                 .collect();
@@ -2453,7 +2446,7 @@ impl MemoryBus for MacMemoryBus {
     /// copying twice per row.
     #[inline]
     fn read_bytes_into(&self, address: u32, dst: &mut [u8]) {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(address, dst.len()) {
             for (offset, byte) in dst.iter_mut().enumerate() {
                 *byte = self.read_byte(address.wrapping_add(offset as u32));
             }
@@ -2480,7 +2473,7 @@ impl MemoryBus for MacMemoryBus {
     /// trigger; same for the FB-write tracer.
     #[inline]
     fn write_bytes(&mut self, address: u32, data: &[u8]) {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(address, data.len()) {
             for (offset, byte) in data.iter().copied().enumerate() {
                 self.write_byte(address.wrapping_add(offset as u32), byte);
             }
@@ -2517,7 +2510,7 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_zeros(&mut self, address: u32, len: u32) {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(address, len as usize) {
             for offset in 0..len {
                 self.write_byte(address.wrapping_add(offset), 0);
             }
@@ -2564,13 +2557,15 @@ impl MemoryBus for MacMemoryBus {
         if count == 0 {
             return;
         }
-        if self.foreign_address_space.is_some() {
+        let span = u64::from(stride) * u64::from(count - 1) + 1;
+        if span > usize::MAX as u64
+            || self.foreign_ordinary_sparse_overlaps(address, span as usize)
+        {
             for offset in 0..count {
                 self.write_byte(address.wrapping_add(offset.wrapping_mul(stride)), value);
             }
             return;
         }
-        let span = u64::from(stride) * u64::from(count - 1) + 1;
         #[cfg(debug_assertions)]
         let fast = !WATCHPOINT_ARMED.load(Ordering::Relaxed)
             && fb_write_trace_range().is_none()
@@ -2600,7 +2595,7 @@ impl MemoryBus for MacMemoryBus {
 
     #[inline]
     fn fill_bytes(&mut self, address: u32, len: u32, value: u8) {
-        if self.foreign_address_space.is_some() {
+        if self.foreign_ordinary_sparse_overlaps(address, len as usize) {
             for offset in 0..len {
                 self.write_byte(address.wrapping_add(offset), value);
             }
@@ -3508,10 +3503,8 @@ mod tests {
             memory.add_shared_region(0x0000, shared_region);
         }
 
-        let shared = unsafe { memory.shared_view() };
-        unsafe {
-            bus.attach_guest_address_space(shared);
-        }
+        let shared = memory.shared_view();
+        bus.attach_guest_address_space(shared);
 
         assert!(!bus.is_foreign_ordinary_sparse_address(0x0500));
         assert!(bus.is_foreign_ordinary_sparse_address(0x2050));

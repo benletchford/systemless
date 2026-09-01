@@ -9525,8 +9525,8 @@ mod tests {
             .expect("test RAM should be shareable");
         let mut native = GuestAddressSpace::new();
         context.attach_memory(0, shared, &mut native);
-        let foreign = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(foreign) };
+        let foreign = native.shared_view();
+        bus.attach_guest_address_space(foreign);
         disp.attach_process_context(&mut context);
 
         let memory_manager = disp.process_memory_manager();

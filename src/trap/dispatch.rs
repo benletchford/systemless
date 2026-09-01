@@ -11281,8 +11281,8 @@ mod tests {
         }
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.attach_process_context(&mut context);
         let replacement = vec![0x5a; 48];
