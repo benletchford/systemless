@@ -5032,19 +5032,23 @@ impl Clone for PpcProcessMemoryManager {
 impl PpcProcessMemoryManager {
     pub(crate) fn with_heap(heap_cursor: u32, heap_limit: u32) -> Self {
         let memory_manager = Self::default();
-        memory_manager.0.borrow_mut().publish_native_allocator(
-            ProcessNativeHeapState {
-                heap_base: PPC_HEAP_BASE,
-                heap_cursor,
-                heap_limit,
-                last_mem_error: PPC_NO_ERR,
-                heap_maximized: false,
-                master_pointer_blocks_requested: 0,
-            },
-            &[],
-            &[],
-            &[],
-        );
+        memory_manager
+            .0
+            .borrow_mut()
+            .native_mut()
+            .publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: PPC_HEAP_BASE,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error: PPC_NO_ERR,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
         memory_manager
     }
 
