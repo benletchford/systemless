@@ -13930,7 +13930,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -14035,7 +14034,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
     }
@@ -16035,7 +16034,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -16175,7 +16173,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -16947,7 +16945,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17063,7 +17060,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17104,7 +17101,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17220,7 +17216,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17493,7 +17489,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE + 8,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17625,7 +17620,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE + 8, PPC_STACK_BASE),
             draw_sprocket: PpcDrawSprocketState {
                 front_buffer_gworld: PPC_DSP_BACK_GWORLD,
                 back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -17776,7 +17771,6 @@ mod tests {
             stack_base: PPC_STACK_BASE,
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
-            heap_cursor: PPC_HEAP_BASE + 8 * 16,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17941,7 +17935,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: Default::default(),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE + 8 * 16,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -18077,7 +18074,7 @@ mod tests {
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app.memory.add_region(PPC_HEAP_BASE, vec![0; 16]);
-        ppc_app.heap_cursor = PPC_HEAP_BASE + 16;
+        ppc_app.set_heap_cursor(PPC_HEAP_BASE + 16);
         ppc_app.gworlds.push(PpcGWorldRecord {
             port: PPC_MAIN_GWORLD,
             pixmap_handle: 0,
@@ -18193,7 +18190,7 @@ mod tests {
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
             let ppc_app = app.ppc.as_mut().expect("PPC app");
             ppc_app.memory.add_region(PPC_HEAP_BASE, pixels);
-            ppc_app.heap_cursor = PPC_HEAP_BASE + row_bytes * HEIGHT;
+            ppc_app.set_heap_cursor(PPC_HEAP_BASE + row_bytes * HEIGHT);
             ppc_app.gworlds.push(PpcGWorldRecord {
                 port: PPC_MAIN_GWORLD,
                 pixmap_handle: 0,
