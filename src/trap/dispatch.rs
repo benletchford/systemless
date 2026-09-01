@@ -7,7 +7,6 @@
 use super::types::UnderlineInfo;
 use crate::cpu::{CpuOps, Register};
 use crate::display::CursorImage;
-use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
@@ -16,8 +15,8 @@ use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
     ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessCursorState,
-    SharedProcessMemoryManager, SharedProcessResourceManager, SharedProcessSoundManager,
-    SharedProcessValue,
+    SharedProcessEventQueue, SharedProcessMemoryManager, SharedProcessResourceManager,
+    SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2389,7 +2388,7 @@ pub struct TrapDispatcher {
     pub(crate) input_trace_enabled: bool,
     pub(crate) input_trace_log: Vec<String>,
     /// Queued events (mouseDown, mouseUp, etc.) to deliver via GetNextEvent
-    pub(crate) event_queue: EventQueue,
+    pub(crate) event_queue: SharedProcessEventQueue,
     /// A mouseDown consumed by ModalDialog can return to the application
     /// before the physical release arrives. Keep ownership of that release
     /// even if the application disposes the dialog in the meantime.
@@ -2916,6 +2915,7 @@ impl TrapDispatcher {
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_event_queue(&mut self.event_queue);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.adopt_menu_tracking(&mut self.menu_tracking);
         let mut memory_manager = None;
@@ -2996,23 +2996,6 @@ impl TrapDispatcher {
         self.process_memory_manager().has_handle_state(handle)
     }
 
-    /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
-    /// adapter's local queue for the duration of `f`, and guarantee it is swapped back
-    /// on normal exit, early return, or unwind.
-    pub(crate) fn with_event_queue<R>(
-        &mut self,
-        event_queue: &mut EventQueue,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        std::mem::swap(&mut self.event_queue, event_queue);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
-        std::mem::swap(&mut self.event_queue, event_queue);
-        match outcome {
-            Ok(result) => result,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-
     /// Temporarily borrow the canonical menu tracking state from [`ProcessContext`]
     /// into this adapter's local tracking for the duration of `f`, and guarantee
     /// it is swapped back on normal exit, early return, or unwind.
@@ -3072,27 +3055,24 @@ impl TrapDispatcher {
 
     pub(crate) fn with_process_state_and_memory_manager<R>(
         &mut self,
-        event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
         memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_process_state(event_queue, menu_tracking, |dispatcher| {
+        self.with_process_state(menu_tracking, |dispatcher| {
             dispatcher.with_memory_manager(memory_manager, f)
         })
     }
 
-    /// Install all directly owned process state needed by one 68k execution
-    /// slice, returning it to [`ProcessContext`] before another CPU can run.
+    /// Temporarily install the retained Menu Manager continuation needed by
+    /// one 68K execution slice. The Event Manager queue stays attached to its
+    /// ProcessContext owner for the dispatcher's entire lifetime.
     pub(crate) fn with_process_state<R>(
         &mut self,
-        event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_event_queue(event_queue, |dispatcher| {
-            dispatcher.with_menu_tracking(menu_tracking, f)
-        })
+        self.with_menu_tracking(menu_tracking, f)
     }
 
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
@@ -4062,7 +4042,7 @@ impl TrapDispatcher {
             debug_scroll_rect_last_is_color: false,
             input_trace_enabled: false,
             input_trace_log: Vec::new(),
-            event_queue: EventQueue::default(),
+            event_queue: SharedProcessEventQueue::default(),
             pending_modal_dialog_mouse_up: false,
             pending_modal_dialog_mouse_down: None,
             flushed_update_events: VecDeque::new(),
@@ -11157,10 +11137,11 @@ mod tests {
     }
 
     #[test]
-    fn with_event_queue_restores_context_and_adapter_state_on_panic() {
+    fn attached_event_queue_remains_shared_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
-        let mut context_queue = EventQueue::default();
-        context_queue.push_back(QueuedEvent {
+        let mut context = ProcessContext::default();
+        dispatcher.attach_process_context(&mut context);
+        context.event_queue_mut().push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
             where_v: 10,
@@ -11169,26 +11150,24 @@ mod tests {
         });
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dispatcher.with_event_queue(&mut context_queue, |disp| {
-                disp.event_queue.push_back(QueuedEvent {
-                    what: 2,
-                    message: 0x2222,
-                    where_v: 30,
-                    where_h: 40,
-                    modifiers: 0,
-                });
-                disp.event_queue.invalidate_menu_bar();
-                panic!("simulated panic inside guest execution");
-            })
+            dispatcher.event_queue.push_back(QueuedEvent {
+                what: 2,
+                message: 0x2222,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0,
+            });
+            dispatcher.event_queue.invalidate_menu_bar();
+            panic!("simulated panic inside guest execution");
         }));
 
         assert!(panic_result.is_err());
-        assert_eq!(context_queue.len(), 2);
-        assert_eq!(context_queue[0].message, 0x1111);
-        assert_eq!(context_queue[1].message, 0x2222);
-        assert!(context_queue.menu_bar_is_invalid());
-        assert!(dispatcher.event_queue.is_empty());
-        assert!(!dispatcher.event_queue.menu_bar_is_invalid());
+        assert_eq!(context.event_queue().len(), 2);
+        assert_eq!(context.event_queue()[0].message, 0x1111);
+        assert_eq!(context.event_queue()[1].message, 0x2222);
+        assert!(context.event_queue().menu_bar_is_invalid());
+        assert_eq!(dispatcher.event_queue.len(), 2);
+        assert!(dispatcher.event_queue.menu_bar_is_invalid());
     }
 
     #[test]
@@ -11240,13 +11219,13 @@ mod tests {
     #[test]
     fn with_process_state_restores_all_canonical_slots_on_panic() {
         let mut dispatcher = TrapDispatcher::new();
-        let mut context_queue = EventQueue::default();
+        let mut context = ProcessContext::default();
+        dispatcher.attach_process_context(&mut context);
         let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x9abc));
-        let memory_manager = SharedProcessMemoryManager::default();
+        let memory_manager = context.menu_tracking_and_memory_manager().1.clone();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.with_process_state_and_memory_manager(
-                &mut context_queue,
                 &mut context_tracking,
                 &memory_manager,
                 |disp| {
@@ -11266,7 +11245,10 @@ mod tests {
         }));
 
         assert!(panic_result.is_err());
-        assert_eq!(context_queue.front().map(|event| event.message), Some(0x3333));
+        assert_eq!(
+            context.event_queue().front().map(|event| event.message),
+            Some(0x3333)
+        );
         assert_eq!(
             memory_manager.borrow().handle_for_ptr(0x4444),
             Some(0x5555)
@@ -11284,7 +11266,7 @@ mod tests {
                 .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
             Some((0x9abc, 7))
         );
-        assert!(dispatcher.event_queue.is_empty());
+        assert_eq!(dispatcher.event_queue.len(), 1);
         assert!(dispatcher.menu_tracking.is_none());
         assert!(dispatcher
             .process_memory_manager

@@ -75,7 +75,7 @@ use crate::process_context::{
     ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
-    SharedProcessFileSystem, SharedProcessMemoryManager,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -3396,7 +3396,7 @@ pub struct PpcLoadedApp {
     pub imports: Vec<PpcImportBinding>,
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
-    pub(crate) event_queue: EventQueue,
+    pub(crate) event_queue: SharedProcessEventQueue,
     pub(crate) guest_calls: SharedGuestCallStack,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
@@ -3844,6 +3844,7 @@ impl PpcLoadedApp {
         context.attach_file_system(&mut self.process_file_system);
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_event_queue(&mut self.event_queue);
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
@@ -3872,23 +3873,6 @@ impl PpcLoadedApp {
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
     }
 
-    /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
-    /// adapter's local queue for the duration of `f`, and guarantee it is swapped back
-    /// on normal exit, early return, or unwind.
-    pub(crate) fn with_event_queue<R>(
-        &mut self,
-        event_queue: &mut EventQueue,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        std::mem::swap(&mut self.event_queue, event_queue);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
-        std::mem::swap(&mut self.event_queue, event_queue);
-        match outcome {
-            Ok(result) => result,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-
     /// Temporarily install the canonical retained Menu Manager continuation in
     /// this adapter, restoring it to the process owner on return or unwind.
     pub(crate) fn with_menu_tracking<R>(
@@ -3905,27 +3889,26 @@ impl PpcLoadedApp {
         }
     }
 
-    /// Install all directly owned process state needed by one native
-    /// execution slice, returning it before the scheduler changes CPU.
+    /// Temporarily install the retained Menu Manager continuation needed by
+    /// one native execution slice. The Event Manager queue stays attached to
+    /// its process owner for the adapter's entire lifetime.
     pub(crate) fn with_process_state<R>(
         &mut self,
-        event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_event_queue(event_queue, |app| app.with_menu_tracking(menu_tracking, f))
+        self.with_menu_tracking(menu_tracking, f)
     }
 
     /// Run one native slice while publishing its live relocatable blocks to
     /// the process Memory Manager before another CPU adapter can execute.
     pub(crate) fn with_process_state_and_memory_manager<R>(
         &mut self,
-        event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
         memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
     ) -> R {
-        self.with_process_state(event_queue, menu_tracking, |app| {
+        self.with_process_state(menu_tracking, |app| {
             let mut memory_manager = memory_manager.borrow_mut();
             app.apply_process_memory_manager(&memory_manager);
             app.publish_process_memory_manager(&mut memory_manager, None);
@@ -12775,7 +12758,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         imports,
         section_bases,
         input: PpcInputSnapshot::default(),
-        event_queue: EventQueue::default(),
+        event_queue: SharedProcessEventQueue::default(),
         guest_calls: SharedGuestCallStack::default(),
         process_memory_manager,
         draw_sprocket: PpcDrawSprocketState::default(),
@@ -89843,64 +89826,79 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn attached_68k_and_powerpc_event_adapters_share_menu_bar_invalidation() {
+    fn attached_68k_and_powerpc_event_adapters_share_fifo_and_menu_bar_invalidation() {
         let (mut classic, _, _) = setup_with_port();
         let pef = synthetic_pef_with_import(b"InvalMenuBar");
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
 
-        assert!(!context.event_queue().menu_bar_is_invalid());
-
-        classic.with_event_queue(context.event_queue_mut(), |classic| {
-            classic.event_queue.invalidate_menu_bar();
-            assert!(classic.event_queue.menu_bar_is_invalid());
-        });
-
-        assert!(context.event_queue().menu_bar_is_invalid());
-
-        native.with_event_queue(context.event_queue_mut(), |native| {
-            assert!(native.event_queue.menu_bar_is_invalid());
-            assert!(native.event_queue.take_menu_bar_invalidation());
-            assert!(!native.event_queue.menu_bar_is_invalid());
-        });
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
 
         assert!(!context.event_queue().menu_bar_is_invalid());
-    }
 
-    #[test]
-    fn ppc_with_event_queue_restores_context_and_adapter_state_on_panic() {
-        let pef = synthetic_pef_with_import(b"InvalMenuBar");
-        let mut native = load_pef_application(&pef).unwrap();
-        let mut context_queue = EventQueue::default();
-        context_queue.push_back(QueuedEvent {
+        classic.event_queue.push_back(QueuedEvent {
             what: 1,
             message: 0x1111,
             where_v: 10,
             where_h: 20,
             modifiers: 0,
         });
+        native.event_queue.push_back(QueuedEvent {
+            what: 2,
+            message: 0x2222,
+            where_v: 30,
+            where_h: 40,
+            modifiers: 0,
+        });
+        classic.event_queue.invalidate_menu_bar();
+
+        assert_eq!(context.event_queue().len(), 2);
+        assert_eq!(native.event_queue[0].message, 0x1111);
+        assert_eq!(native.event_queue[1].message, 0x2222);
+        assert!(context.event_queue().menu_bar_is_invalid());
+
+        assert_eq!(native.event_queue.pop_front().unwrap().message, 0x1111);
+        assert_eq!(classic.event_queue.front().unwrap().message, 0x2222);
+        assert!(native.event_queue.take_menu_bar_invalidation());
+
+        assert_eq!(context.event_queue().len(), 1);
+        assert!(!context.event_queue().menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_ppc_event_queue_remains_shared_through_panic() {
+        let pef = synthetic_pef_with_import(b"InvalMenuBar");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        context.event_queue_mut().push_back(QueuedEvent {
+            what: 1,
+            message: 0x1111,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+        native.attach_process_context(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            native.with_event_queue(&mut context_queue, |app| {
-                app.event_queue.push_back(QueuedEvent {
-                    what: 2,
-                    message: 0x2222,
-                    where_v: 30,
-                    where_h: 40,
-                    modifiers: 0,
-                });
-                app.event_queue.invalidate_menu_bar();
-                panic!("simulated panic inside PPC guest execution");
-            })
+            native.event_queue.push_back(QueuedEvent {
+                what: 2,
+                message: 0x2222,
+                where_v: 30,
+                where_h: 40,
+                modifiers: 0,
+            });
+            native.event_queue.invalidate_menu_bar();
+            panic!("simulated panic inside PPC guest execution");
         }));
 
         assert!(panic_result.is_err());
-        assert_eq!(context_queue.len(), 2);
-        assert_eq!(context_queue[0].message, 0x1111);
-        assert_eq!(context_queue[1].message, 0x2222);
-        assert!(context_queue.menu_bar_is_invalid());
-        assert!(native.event_queue.is_empty());
-        assert!(!native.event_queue.menu_bar_is_invalid());
+        assert_eq!(context.event_queue().len(), 2);
+        assert_eq!(context.event_queue()[0].message, 0x1111);
+        assert_eq!(context.event_queue()[1].message, 0x2222);
+        assert!(context.event_queue().menu_bar_is_invalid());
+        assert_eq!(native.event_queue.len(), 2);
+        assert!(native.event_queue.menu_bar_is_invalid());
     }
 
     #[test]
@@ -90050,8 +90048,7 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         let expected_cursor = native.heap_cursor() + 16;
         {
             let mut manager = memory_manager.borrow_mut();
@@ -90080,7 +90077,6 @@ pub(crate) mod tests {
         }
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |_native, memory_manager| {
@@ -90260,10 +90256,7 @@ pub(crate) mod tests {
         let mut attached = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         attached.attach_process_context(&mut context);
-        let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
-            .clone();
+        let memory_manager = context.menu_tracking_and_memory_manager().1.clone();
 
         standalone.cpu.gpr[3] = 24;
         attached.cpu.gpr[3] = 24;
@@ -90396,8 +90389,7 @@ pub(crate) mod tests {
         native.memory.add_region(ptr & !0x0fff, vec![0; 0x1000]);
         native.memory.write_u32_be(handle, ptr).unwrap();
         native.memory.write_u8(ptr, 0x5a).unwrap();
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         // HLock and HGetState operate on the live relocatable block while the
         // stable handle continues to identify its master pointer. Inside
         // Macintosh: Memory (1992), pp. 1-18--1-19 and 2-45--2-49.
@@ -90405,7 +90397,6 @@ pub(crate) mod tests {
         let detached = memory_manager.detached_clone();
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |native, memory_manager| {
@@ -90470,10 +90461,7 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let process_memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
-            .clone();
+        let process_memory_manager = context.menu_tracking_and_memory_manager().1.clone();
         assert!(native
             .process_memory_manager
             .ptr_eq(&process_memory_manager));
@@ -90575,11 +90563,9 @@ pub(crate) mod tests {
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |native, memory_manager| {
@@ -90665,11 +90651,9 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |native, memory_manager| {
@@ -90860,11 +90844,9 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |native, memory_manager| {
@@ -91015,11 +90997,9 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
-            event_queue,
             menu_tracking,
             memory_manager,
             |native, memory_manager| {

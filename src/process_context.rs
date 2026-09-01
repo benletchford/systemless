@@ -565,6 +565,7 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
+pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 
 /// Canonical QuickDraw cursor state for one Macintosh process.
 ///
@@ -3387,7 +3388,7 @@ impl ProcessNativeMemoryManager {
 pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
     memory_manager: SharedProcessMemoryManager,
-    event_queue: EventQueue,
+    event_queue: SharedProcessEventQueue,
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
@@ -3439,6 +3440,14 @@ impl ProcessContext {
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
         adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
+    }
+
+    pub(crate) fn attach_event_queue(&self, adapter: &mut SharedProcessEventQueue) {
+        // The Operating System Event Manager maintains one FIFO queue for the
+        // current process. GetNextEvent removes the first matching event while
+        // EventAvail observes it in place. Inside Macintosh Volume I (1985),
+        // pp. I-244--I-245 and I-257--I-259; Processes (1994), pp. 2-15--2-16.
+        adapter.attach_to(&self.event_queue, EventQueue::is_pristine);
     }
 
     pub(crate) fn attach_classic_file_system(
@@ -3512,7 +3521,7 @@ impl ProcessContext {
         &self.event_queue
     }
 
-    pub(crate) fn event_queue_mut(&mut self) -> &mut EventQueue {
+    pub(crate) fn event_queue_mut(&mut self) -> &mut SharedProcessEventQueue {
         &mut self.event_queue
     }
 
@@ -3535,7 +3544,6 @@ impl ProcessContext {
         self.menu_tracking = state;
     }
 
-    #[cfg(test)]
     pub(crate) fn menu_tracking_slot_mut(&mut self) -> &mut Option<ProcessMenuTrackingState> {
         &mut self.menu_tracking
     }
@@ -3551,25 +3559,13 @@ impl ProcessContext {
         }
     }
 
-    /// Borrow the process state temporarily installed in an active CPU adapter.
-    pub(crate) fn event_queue_and_menu_tracking_mut(
-        &mut self,
-    ) -> (&mut EventQueue, &mut Option<ProcessMenuTrackingState>) {
-        (&mut self.event_queue, &mut self.menu_tracking)
-    }
-
-    pub(crate) fn event_queue_menu_tracking_and_memory_manager(
+    pub(crate) fn menu_tracking_and_memory_manager(
         &mut self,
     ) -> (
-        &mut EventQueue,
         &mut Option<ProcessMenuTrackingState>,
         &SharedProcessMemoryManager,
     ) {
-        (
-            &mut self.event_queue,
-            &mut self.menu_tracking,
-            &self.memory_manager,
-        )
+        (&mut self.menu_tracking, &self.memory_manager)
     }
 
     pub(crate) fn attach_native_menu_selection(&self, adapter: &mut SharedNativeMenuSelection) {
@@ -3733,15 +3729,15 @@ mod tests {
         assert_eq!(taken.map(|t| t.menu_handle), Some(0x0012_3456));
         assert!(context.menu_tracking().is_none());
 
-        let (queue, menu) = context.event_queue_and_menu_tracking_mut();
-        queue.push_back(QueuedEvent {
+        context.event_queue_mut().push_back(QueuedEvent {
             what: 2,
             message: 0x5678,
             where_v: 0,
             where_h: 0,
             modifiers: 0,
         });
-        *menu = Some(crate::menu_manager::test_process_menu_tracking(0x0065_4321));
+        *context.menu_tracking_slot_mut() =
+            Some(crate::menu_manager::test_process_menu_tracking(0x0065_4321));
         assert_eq!(context.event_queue().len(), 1);
         assert_eq!(
             context.menu_tracking().map(|t| t.menu_handle),
@@ -4923,6 +4919,41 @@ mod tests {
         assert_eq!(classic.sys_beep_volume(), 0x0080_0040);
         assert_eq!(detached.channels.len(), 1);
         assert_eq!(detached.sys_beep_volume(), 0x0100_0100);
+    }
+
+    #[test]
+    fn attached_event_queues_share_fifo_and_invalidation_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessEventQueue::default();
+        classic.push_back(QueuedEvent {
+            what: 1,
+            message: 0x1111,
+            where_v: 10,
+            where_h: 20,
+            modifiers: 0,
+        });
+        let mut native = SharedProcessEventQueue::default();
+
+        context.attach_event_queue(&mut classic);
+        context.attach_event_queue(&mut native);
+        let detached = native.clone();
+
+        native.push_back(QueuedEvent {
+            what: 2,
+            message: 0x2222,
+            where_v: 30,
+            where_h: 40,
+            modifiers: 0,
+        });
+        classic.invalidate_menu_bar();
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(classic.pop_front().unwrap().message, 0x1111);
+        assert_eq!(native.front().unwrap().message, 0x2222);
+        assert!(native.take_menu_bar_invalidation());
+        assert_eq!(detached.len(), 1);
+        assert_eq!(detached.front().unwrap().message, 0x1111);
+        assert!(!detached.menu_bar_is_invalid());
     }
 
     #[test]

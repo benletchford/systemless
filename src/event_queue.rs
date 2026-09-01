@@ -34,6 +34,10 @@ impl EventQueue {
         Self::default()
     }
 
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.events.is_empty() && !self.menu_bar_invalid
+    }
+
     /// Mark the menu bar for one deferred redraw by the Toolbox Event
     /// Manager. Repeated invalidations coalesce until the next event scan.
     /// Macintosh Toolbox Essentials (1992), pp. 3-93 and 3-114.
