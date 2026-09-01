@@ -13,6 +13,29 @@ struct ProcessMemoryRegion {
     bytes: SharedRamRegion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessHandleRecord {
+    pub handle: u32,
+    pub ptr: u32,
+    pub size: u32,
+    pub capacity: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessPtrRecord {
+    pub ptr: u32,
+    pub size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessHandleStateRecord {
+    pub handle: u32,
+    pub locked: bool,
+    pub high_locked: bool,
+    pub no_purge: bool,
+    pub resource: bool,
+}
+
 /// A deferred byte replacement for a relocatable guest handle.
 ///
 /// This channel lets a serialized 68k execution context request a handle resize
@@ -39,6 +62,7 @@ pub(crate) struct ProcessMemoryManager {
     handle_state_bits: HashMap<u32, u8>,
     native_ptrs: HashSet<u32>,
     native_handles: HashSet<u32>,
+    native_allocations: HashMap<u32, ProcessHandleRecord>,
 }
 
 impl ProcessMemoryManager {
@@ -80,7 +104,7 @@ impl ProcessMemoryManager {
 
     pub(crate) fn register_native_handle_records(
         &mut self,
-        handles: impl IntoIterator<Item = (u32, u32, u8)>,
+        handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
     ) {
         for ptr in self.native_ptrs.drain() {
             self.ptr_to_handle.remove(&ptr);
@@ -88,18 +112,30 @@ impl ProcessMemoryManager {
         for handle in self.native_handles.drain() {
             self.handle_state_bits.remove(&handle);
         }
-        for (handle, ptr, state) in handles {
+        self.native_allocations.clear();
+        for (record, state) in handles {
+            let ProcessHandleRecord { handle, ptr, .. } = record;
             if handle != 0 && ptr != 0 {
                 self.ptr_to_handle.insert(ptr, handle);
                 self.native_ptrs.insert(ptr);
                 self.handle_state_bits.insert(handle, state);
                 self.native_handles.insert(handle);
+                self.native_allocations.insert(handle, record);
             }
         }
     }
 
     pub(crate) fn state_for_handle(&self, handle: u32) -> Option<u8> {
         self.handle_state_bits.get(&handle).copied()
+    }
+
+    pub(crate) fn native_allocation(&self, handle: u32) -> Option<ProcessHandleRecord> {
+        self.native_allocations.get(&handle).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_native_allocation(&mut self, record: ProcessHandleRecord) {
+        self.native_allocations.insert(record.handle, record);
     }
 
     #[cfg(test)]
@@ -137,7 +173,7 @@ impl ProcessContext {
 
     pub(crate) fn register_native_handle_records(
         &mut self,
-        handles: impl IntoIterator<Item = (u32, u32, u8)>,
+        handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
     ) {
         self.memory_manager.register_native_handle_records(handles);
     }
@@ -545,21 +581,48 @@ mod tests {
         manager.merge_metadata(HashMap::from([(0x2200, 0x1100)]), HashMap::new());
 
         manager.register_native_handle_records([
-            (0x3300, 0x4400, 0x80),
-            (0x5500, 0x6600, 0x40),
+            (
+                ProcessHandleRecord {
+                    handle: 0x3300,
+                    ptr: 0x4400,
+                    size: 16,
+                    capacity: 32,
+                },
+                0x80,
+            ),
+            (
+                ProcessHandleRecord {
+                    handle: 0x5500,
+                    ptr: 0x6600,
+                    size: 48,
+                    capacity: 64,
+                },
+                0x40,
+            ),
         ]);
         assert_eq!(manager.handle_for_ptr(0x2200), Some(0x1100));
         assert_eq!(manager.handle_for_ptr(0x4400), Some(0x3300));
         assert_eq!(manager.handle_for_ptr(0x6600), Some(0x5500));
         assert_eq!(manager.handle_state(0x3300), 0x80);
         assert_eq!(manager.handle_state(0x5500), 0x40);
+        assert_eq!(manager.native_allocation(0x3300).unwrap().size, 16);
 
-        manager.register_native_handle_records([(0x3300, 0x7700, 0xc0)]);
+        manager.register_native_handle_records([(
+            ProcessHandleRecord {
+                handle: 0x3300,
+                ptr: 0x7700,
+                size: 80,
+                capacity: 96,
+            },
+            0xc0,
+        )]);
         assert_eq!(manager.handle_for_ptr(0x2200), Some(0x1100));
         assert_eq!(manager.handle_for_ptr(0x4400), None);
         assert_eq!(manager.handle_for_ptr(0x6600), None);
         assert_eq!(manager.handle_for_ptr(0x7700), Some(0x3300));
         assert_eq!(manager.handle_state(0x3300), 0xc0);
         assert_eq!(manager.handle_state(0x5500), 0);
+        assert_eq!(manager.native_allocation(0x3300).unwrap().size, 80);
+        assert_eq!(manager.native_allocation(0x5500), None);
     }
 }

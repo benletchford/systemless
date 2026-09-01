@@ -69,7 +69,10 @@ use crate::menu_manager::{
     MenuListEntry as PpcMenuListEntry, MENU_COLOR_ENTRY_SIZE, STANDARD_MENU_BAR_TITLE_ORIGIN_INSET,
 };
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::{ProcessContext, ProcessMemoryManager};
+use crate::process_context::{
+    ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
+    ProcessPtrRecord,
+};
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
     font_id_for_name, font_name_for_id, get_font_face_scale_ratio, get_font_face_scaled,
@@ -3244,28 +3247,9 @@ struct PpcPreparedMemFragment {
     exports: Vec<PpcCfmExport>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcHandleRecord {
-    pub handle: u32,
-    pub ptr: u32,
-    pub size: u32,
-    pub capacity: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcPtrRecord {
-    pub ptr: u32,
-    pub size: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcHandleStateRecord {
-    pub handle: u32,
-    pub locked: bool,
-    pub high_locked: bool,
-    pub no_purge: bool,
-    pub resource: bool,
-}
+pub type PpcHandleRecord = ProcessHandleRecord;
+pub type PpcPtrRecord = ProcessPtrRecord;
+pub type PpcHandleStateRecord = ProcessHandleStateRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcControlRecord {
@@ -5136,14 +5120,21 @@ impl PpcLoadedApp {
     fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
         memory_manager.register_native_handle_records(self.handles.iter().map(|record| {
             (
-                record.handle,
-                record.ptr,
+                *record,
                 self.process_handle_state_bits(record.handle),
             )
         }));
     }
 
     fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
+        for record in &mut self.handles {
+            if let Some(canonical) = memory_manager.native_allocation(record.handle) {
+                let live_ptr = self.memory.read_u32_be(record.handle);
+                if live_ptr == Some(canonical.ptr) || canonical.ptr == record.ptr {
+                    *record = canonical;
+                }
+            }
+        }
         let handles: Vec<u32> = self.handles.iter().map(|record| record.handle).collect();
         for handle in handles {
             let Some(bits) = memory_manager.state_for_handle(handle) else {
@@ -5330,8 +5321,7 @@ impl PpcLoadedApp {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         context.register_native_handle_records(self.handles.iter().map(|record| {
             (
-                record.handle,
-                record.ptr,
+                *record,
                 self.process_handle_state_bits(record.handle),
             )
         }));
@@ -87270,12 +87260,22 @@ pub(crate) mod tests {
         let (event_queue, menu_tracking, memory_manager) =
             context.event_queue_menu_tracking_and_memory_manager_mut();
         memory_manager.metadata_mut().1.insert(handle, 0xa0);
+        let mut canonical = memory_manager.native_allocation(handle).unwrap();
+        canonical.size = 24;
+        canonical.capacity = 40;
+        memory_manager.set_native_allocation(canonical);
 
         native.with_process_state_and_memory_manager(
             event_queue,
             menu_tracking,
             memory_manager,
             |native| {
+                let allocation = native
+                    .handles
+                    .iter()
+                    .find(|record| record.handle == handle)
+                    .expect("canonical allocation materialized for native handle");
+                assert_eq!((allocation.size, allocation.capacity), (24, 40));
                 let state = native
                     .handle_states
                     .iter_mut()
@@ -87292,6 +87292,14 @@ pub(crate) mod tests {
         );
 
         assert_eq!(memory_manager.state_for_handle(handle), Some(0x40));
+        assert_eq!(
+            memory_manager.native_allocation(handle),
+            native
+                .handles
+                .iter()
+                .copied()
+                .find(|record| record.handle == handle)
+        );
     }
 
     #[test]
