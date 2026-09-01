@@ -11030,6 +11030,8 @@ impl super::TrapDispatcher {
                         }
 
                         let state = super::dispatch::ListState {
+                            handle: list_handle,
+                            cells_handle,
                             view_rect,
                             data_bounds,
                             cell_size: resolved_cell_size,
@@ -12092,6 +12094,8 @@ impl super::TrapDispatcher {
                         }
 
                         let state = super::dispatch::ListState {
+                            handle: list_handle,
+                            cells_handle,
                             view_rect,
                             data_bounds,
                             cell_size: resolved_cell_size,

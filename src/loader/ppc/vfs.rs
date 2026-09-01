@@ -4,7 +4,9 @@ use crate::process_context::{
     ProcessForkBytes, ProcessOpenFileRecord, ProcessResourceFileRecord, ProcessStdioStreamRecord,
     ProcessVfsDirectory, ProcessVfsFileRecord, ProcessVfsResourceFileRecord,
     ProcessVfsResourceRecord, ProcessVfsVolumeRecord, SharedProcessScrapState,
+    SharedProcessValue,
 };
+use crate::list_manager::{ProcessListManagerState, ProcessListRecord};
 
 pub type PpcVfsDirectory = ProcessVfsDirectory;
 pub type PpcVfsVolumeRecord = ProcessVfsVolumeRecord;
@@ -49,17 +51,5 @@ pub struct PpcScrapState {
     pub(crate) desktop: SharedProcessScrapState,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct PpcListRecord {
-    pub(crate) handle: u32,
-    pub(crate) cells_handle: u32,
-    pub(crate) data_bounds: (i16, i16, i16, i16),
-    pub(crate) cells: Vec<Vec<u8>>,
-    pub(crate) selected: Vec<bool>,
-    pub(crate) draw_enabled: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct PpcListManagerState {
-    pub(crate) lists: Vec<PpcListRecord>,
-}
+pub(crate) type PpcListRecord = ProcessListRecord;
+pub type PpcListManagerState = SharedProcessValue<ProcessListManagerState>;
