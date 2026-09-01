@@ -3411,7 +3411,7 @@ impl super::TrapDispatcher {
     }
 
     fn serialized_scrap_size(&self) -> u32 {
-        self.scrap_entries
+        self.scrap.entries
             .iter()
             .map(|(_, data)| {
                 let padded = (data.len() as u32 + 1) & !1;
@@ -3422,7 +3422,7 @@ impl super::TrapDispatcher {
 
     fn serialize_scrap_entries(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.serialized_scrap_size() as usize);
-        for (entry_type, data) in &self.scrap_entries {
+        for (entry_type, data) in &self.scrap.entries {
             bytes.extend_from_slice(entry_type);
             bytes.extend_from_slice(&(data.len() as u32).to_be_bytes());
             bytes.extend_from_slice(data);
@@ -3606,7 +3606,7 @@ impl super::TrapDispatcher {
     }
 
     fn sync_scrap_handle(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        let handle = *self.scrap_handle.get_or_insert_with(|| {
+        let handle = *self.scrap.handle.get_or_insert_with(|| {
             let handle = bus.alloc(4);
             if handle != 0 {
                 bus.write_long(handle, 0);
@@ -3616,7 +3616,7 @@ impl super::TrapDispatcher {
         if handle == 0 {
             return 0;
         }
-        if !self.scrap_handle_dirty {
+        if !self.scrap.handle_dirty {
             return handle;
         }
 
@@ -3628,7 +3628,7 @@ impl super::TrapDispatcher {
             self.write_bytes_to_handle(bus, handle, &bytes) != 0
         };
         if wrote {
-            self.scrap_handle_dirty = false;
+            self.scrap.handle_dirty = false;
         }
         handle
     }
@@ -8870,19 +8870,19 @@ impl super::TrapDispatcher {
             (true, 0x1F9) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Allocate ScrapStuff at a fixed location if not yet done
-                let scrap_stuff_ptr = self.scrap_stuff_ptr.get_or_insert_with(|| bus.alloc(16));
+                let scrap_stuff_ptr = self.scrap.stuff_ptr.get_or_insert_with(|| bus.alloc(16));
                 let ptr = *scrap_stuff_ptr;
                 let total_size = self.serialized_scrap_size();
-                let scrap_handle = if self.scrap_in_memory {
+                let scrap_handle = if self.scrap.in_memory {
                     self.sync_scrap_handle(bus)
                 } else {
                     0
                 };
                 bus.write_long(ptr, total_size); // scrapSize
                 bus.write_long(ptr + 4, scrap_handle); // scrapHandle (live in-memory desk scrap)
-                bus.write_word(ptr + 8, self.scrap_count as u16); // scrapCount
+                bus.write_word(ptr + 8, self.scrap.count as u16); // scrapCount
                                                                   // IM:I I-457: scrapState is positive when the scrap is in memory.
-                bus.write_word(ptr + 10, if self.scrap_in_memory { 1 } else { 0 });
+                bus.write_word(ptr + 10, if self.scrap.in_memory { 1 } else { 0 });
                 bus.write_long(ptr + 12, 0); // scrapName (NIL)
                 bus.write_long(sp, ptr); // return value
                 Ok(())
@@ -8919,12 +8919,12 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::unloadscrap_and_loadscrap_return_noerr
             (true, 0x1FA) => {
                 let sp = cpu.read_reg(Register::A7);
-                if self.scrap_in_memory && !self.scrap_clipboard_writable {
+                if self.scrap.in_memory && !self.scrap.clipboard_writable {
                     bus.write_long(sp, (-1i32) as u32); // generic non-zero OSErr
-                } else if self.scrap_in_memory {
-                    self.scrap_in_memory = false;
-                    self.scrap_handle_dirty = true;
-                    if let Some(handle) = self.scrap_handle.take() {
+                } else if self.scrap.in_memory {
+                    self.scrap.in_memory = false;
+                    self.scrap.handle_dirty = true;
+                    if let Some(handle) = self.scrap.handle.take() {
                         let _ = self.write_bytes_to_handle(bus, handle, &[]);
                         bus.free(handle);
                     }
@@ -8965,10 +8965,11 @@ impl super::TrapDispatcher {
             //   src/trap/toolbox.rs::tests::loadscrap_writes_noerr_to_pascal_function_result_slot_and_preserves_stack_pointer
             (true, 0x1FB) => {
                 let sp = cpu.read_reg(Register::A7);
-                if !self.scrap_in_memory {
-                    self.scrap_in_memory = true;
-                    self.scrap_handle_dirty = true;
+                if !self.scrap.in_memory {
+                    self.scrap.in_memory = true;
+                    self.scrap.handle_dirty = true;
                 }
+                self.scrap.initialized = true;
                 bus.write_long(sp, 0); // noErr
                 Ok(())
             }
@@ -8984,10 +8985,11 @@ impl super::TrapDispatcher {
             // ZeroScrap ($A9FC): Clears scrap entries and increments scrap_count per IM:I I-458
             (true, 0x1FC) => {
                 let sp = cpu.read_reg(Register::A7);
-                self.scrap_entries.clear();
-                self.scrap_count = self.scrap_count.wrapping_add(1);
-                self.scrap_in_memory = true;
-                self.scrap_handle_dirty = true;
+                self.scrap.entries.clear();
+                self.scrap.count = self.scrap.count.wrapping_add(1);
+                self.scrap.initialized = true;
+                self.scrap.in_memory = true;
+                self.scrap.handle_dirty = true;
                 bus.write_long(sp, 0); // noErr
                 Ok(())
             }
@@ -9020,7 +9022,7 @@ impl super::TrapDispatcher {
                 // N the data offset is sum(8 + padded_len_i for i<N) + 8.
                 let mut found_offset: u32 = 0;
                 let mut found = None;
-                for entry in &self.scrap_entries {
+                for entry in &self.scrap.entries {
                     if entry.0 == the_type {
                         found = Some(entry.1.clone());
                         found_offset += 8; // skip the matched entry's own header
@@ -9081,8 +9083,8 @@ impl super::TrapDispatcher {
                     for (i, byte) in data.iter_mut().enumerate() {
                         *byte = bus.read_byte(source + i as u32);
                     }
-                    self.scrap_entries.push((the_type, data));
-                    self.scrap_handle_dirty = true;
+                    self.scrap.entries.push((the_type, data));
+                    self.scrap.handle_dirty = true;
                 }
 
                 bus.write_long(sp + 12, 0); // noErr
@@ -19459,7 +19461,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        disp.scrap_clipboard_writable = false;
+        disp.scrap.clipboard_writable = false;
 
         bus.write_long(sp, 0);
         let zero = disp.dispatch_toolbox(true, 0x1FC, &mut cpu, &mut bus);
