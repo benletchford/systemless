@@ -1,6 +1,7 @@
 //! PowerPC Sound Manager, Timer, and VBL task state and records.
 
 use super::imports::PpcHleImportTraceEntry;
+use crate::process_context::SharedProcessSoundManager;
 use ppc::{PpcFetchHistogram, PpcRunResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,11 +140,11 @@ pub struct PpcSoundCompletionCallProbe {
     pub fetch_histogram: Option<PpcFetchHistogram>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PpcSoundState {
+    pub(crate) manager: SharedProcessSoundManager,
     pub queued_commands: Vec<PpcSndCommandRecord>,
     pub immediate_commands: Vec<PpcSndCommandRecord>,
-    pub decoded_buffer_commands: Vec<PpcDecodedBufferCommandRecord>,
     pub double_buffer_playbacks: Vec<PpcSoundDoubleBufferPlaybackRecord>,
     pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
     pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
@@ -159,6 +160,29 @@ pub struct PpcSoundState {
     pub last_double_buffer_channel: u32,
     pub last_double_buffer_header: u32,
 }
+
+impl PartialEq for PpcSoundState {
+    fn eq(&self, other: &Self) -> bool {
+        self.queued_commands == other.queued_commands
+            && self.immediate_commands == other.immediate_commands
+            && self.double_buffer_playbacks == other.double_buffer_playbacks
+            && self.file_playbacks == other.file_playbacks
+            && self.decoded_file_playbacks == other.decoded_file_playbacks
+            && self.pending_completions == other.pending_completions
+            && self.pending_doublebacks == other.pending_doublebacks
+            && self.completion_invocations == other.completion_invocations
+            && self.sys_beep_count == other.sys_beep_count
+            && self.last_sys_beep_duration == other.last_sys_beep_duration
+            && self.start_count == other.start_count
+            && self.pause_count == other.pause_count
+            && self.stop_count == other.stop_count
+            && self.double_buffer_play_count == other.double_buffer_play_count
+            && self.last_double_buffer_channel == other.last_double_buffer_channel
+            && self.last_double_buffer_header == other.last_double_buffer_header
+    }
+}
+
+impl Eq for PpcSoundState {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcVblTaskRecord {

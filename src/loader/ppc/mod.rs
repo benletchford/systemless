@@ -3396,7 +3396,6 @@ pub struct PpcLoadedApp {
     pub next_vfs_dir_id: u32,
     pub default_dir_id: u32,
     pub launched_app_path: Option<String>,
-    pub default_output_volume: u32,
     pub param_text: [Vec<u8>; 4],
     pub scrap: PpcScrapState,
     pub list_manager: PpcListManagerState,
@@ -3844,6 +3843,7 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_file_system(&mut self.process_file_system);
+        context.attach_sound_manager(&mut self.sound.manager);
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
@@ -7245,7 +7245,6 @@ impl PpcLoadedApp {
         let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
         let mut next_vfs_dir_id = self.next_vfs_dir_id;
         let mut default_dir_id = self.default_dir_id;
-        let mut default_output_volume = self.default_output_volume;
         let mut param_text = std::mem::take(&mut self.param_text);
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
@@ -7763,7 +7762,6 @@ impl PpcLoadedApp {
                         &mut next_vfs_dir_id,
                         default_dir_id,
                         self.launched_app_path.as_deref(),
-                        &mut default_output_volume,
                         &mut param_text,
                         &mut scrap,
                         &mut list_manager,
@@ -8128,7 +8126,6 @@ impl PpcLoadedApp {
         self.vfs_directories = vfs_directories;
         self.next_vfs_dir_id = next_vfs_dir_id;
         self.default_dir_id = default_dir_id;
-        self.default_output_volume = default_output_volume;
         self.param_text = param_text;
         self.scrap = scrap;
         self.list_manager = list_manager;
@@ -12680,6 +12677,11 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         }
     }
 
+    let mut sound = PpcSoundState::default();
+    sound
+        .manager
+        .set_default_output_volume(PPC_DEFAULT_OUTPUT_VOLUME);
+
     Ok(PpcLoadedApp {
         cpu,
         memory,
@@ -12741,7 +12743,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         input_sprocket_virtual_elements: Vec::new(),
         toolbox_startup,
         quicktime: PpcQuickTimeState::default(),
-        sound: PpcSoundState::default(),
+        sound,
         timer_tasks: Vec::new(),
         vbl_tasks: Vec::new(),
         process_file_system: ppc_initial_process_file_system(),
@@ -12764,7 +12766,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         next_vfs_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
         default_dir_id: PPC_ROOT_DIR_ID,
         launched_app_path: None,
-        default_output_volume: PPC_DEFAULT_OUTPUT_VOLUME,
         param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
         scrap: PpcScrapState::default(),
         list_manager: PpcListManagerState::default(),
@@ -15060,7 +15061,6 @@ fn dispatch_supported_import(
     next_vfs_dir_id: &mut u32,
     default_dir_id: u32,
     launched_app_path: Option<&str>,
-    default_output_volume: &mut u32,
     param_text: &mut [Vec<u8>; 4],
     scrap: &mut PpcScrapState,
     list_manager: &mut PpcListManagerState,
@@ -23555,7 +23555,7 @@ fn dispatch_supported_import(
             if volume_out_ptr == 0
                 || !ppc_memory_can_write_bytes(memory, volume_out_ptr, 4)
                 || memory
-                    .write_u32_be(volume_out_ptr, *default_output_volume)
+                    .write_u32_be(volume_out_ptr, sound.manager.default_output_volume())
                     .is_none()
             {
                 Some(PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR)))
@@ -23564,7 +23564,7 @@ fn dispatch_supported_import(
             }
         }
         PpcImportDispatcherTarget::SetDefaultOutputVolume => {
-            *default_output_volume = cpu.gpr[3];
+            sound.manager.set_default_output_volume(cpu.gpr[3]);
             Some(PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)))
         }
         // FUNCTION GetVol (volName: StringPtr; VAR vRefNum: Integer): OSErr;
@@ -23594,6 +23594,7 @@ fn dispatch_supported_import(
                 memory,
                 heap_cursor,
                 last_mem_error,
+                sound,
             ),
         ))),
         PpcImportDispatcherTarget::SndDisposeChannel => Some(PpcImportAction::Return(
@@ -43658,6 +43659,7 @@ fn ppc_snd_new_channel(
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
+    sound: &mut PpcSoundState,
 ) -> i16 {
     let channel_out_ptr = cpu.gpr[3];
     if channel_out_ptr == 0 || !ppc_memory_can_write_bytes(memory, channel_out_ptr, 4) {
@@ -43672,6 +43674,7 @@ fn ppc_snd_new_channel(
     }
     let user_routine = cpu.gpr[6];
     let existing_channel = memory.read_u32_be(channel_out_ptr).unwrap_or(0);
+    let allocated = existing_channel == 0;
     let (channel, preserved_user_info, q_length) = if existing_channel != 0 {
         if !ppc_memory_can_write_bytes(memory, existing_channel, 36) {
             return PPC_PARAM_ERR;
@@ -43716,6 +43719,9 @@ fn ppc_snd_new_channel(
         return PPC_PARAM_ERR;
     }
     *last_mem_error = PPC_NO_ERR;
+    sound
+        .manager
+        .register_channel(channel, allocated, user_routine);
     if ppc_sound_trace_enabled() {
         eprintln!(
             "[PPC-SOUND] SndNewChannel chan=${channel:08X} synth={synth} init=${:08X} user_routine=${user_routine:08X}",
@@ -43973,7 +43979,22 @@ fn ppc_snd_do_immediate(
             return PPC_PARAM_ERR;
         }
     }
-    ppc_decode_buffer_command(memory, sound, channel, command);
+    if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
+        sound.manager.play_buffer_command(
+            channel,
+            decoded.samples,
+            decoded.sample_rate_fixed,
+        );
+    } else {
+        sound.manager.execute_immediate_command(
+            channel,
+            crate::sound::SndCommand {
+                cmd: command.command,
+                param1: command.param1,
+                param2: command.param2,
+            },
+        );
+    }
     sound
         .immediate_commands
         .push(PpcSndCommandRecord { channel, ..command });
@@ -44012,7 +44033,22 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
     }
     // The HLE queue is unbounded, so the noWait distinction cannot produce
     // queueFull.
-    ppc_decode_buffer_command(memory, sound, channel, command);
+    if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
+        sound.manager.play_buffer_command(
+            channel,
+            decoded.samples,
+            decoded.sample_rate_fixed,
+        );
+    } else {
+        let _ = sound.manager.enqueue_command(
+            channel,
+            crate::sound::SndCommand {
+                cmd: command.command,
+                param1: command.param1,
+                param2: command.param2,
+            },
+        );
+    }
     sound
         .queued_commands
         .push(PpcSndCommandRecord { channel, ..command });
@@ -44021,6 +44057,7 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
 
 fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     let channel = cpu.gpr[3];
+    sound.manager.remove_channel(channel);
     for playback in sound
         .file_playbacks
         .iter_mut()
@@ -44037,9 +44074,6 @@ fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     {
         playback.samples.clear();
     }
-    sound
-        .decoded_buffer_commands
-        .retain(|record| record.channel != channel);
     for playback in sound
         .double_buffer_playbacks
         .iter_mut()
@@ -44083,21 +44117,25 @@ fn ppc_snd_play(
         playback.paused = false;
     }
     let summary = decoded.summary;
+    let samples = decoded.samples;
     if ppc_sound_trace_enabled() {
         eprintln!(
             "[PPC-SOUND] SndPlay chan=${channel:08X} handle=${sound_handle:08X} async={} samples={} rate=${:08X}",
             async_play,
-            decoded.samples.len(),
+            samples.len(),
             summary.sample_rate_fixed
         );
     }
+    sound
+        .manager
+        .play_file_buffer(channel, samples.clone(), summary.sample_rate_fixed);
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
             file_playback_index,
             channel,
             sample_rate_fixed: summary.sample_rate_fixed,
-            samples: decoded.samples,
+            samples,
         });
     sound.file_playbacks.push(PpcSoundFilePlaybackRecord {
         channel,
@@ -44132,14 +44170,13 @@ fn ppc_snd_play(
 
 fn ppc_decode_buffer_command(
     memory: &mut PpcSectionMem,
-    sound: &mut PpcSoundState,
     channel: u32,
     command: PpcSndCommandRecord,
-) {
+) -> Option<PpcDecodedBufferCommandRecord> {
     const BUFFER_CMD: u16 = 81;
 
     if command.command != BUFFER_CMD || command.param2 == 0 {
-        return;
+        return None;
     }
     let Some(decoded) = ppc_decode_snd_header_from_memory(memory, command.param2) else {
         if ppc_sound_trace_enabled() {
@@ -44148,15 +44185,13 @@ fn ppc_decode_buffer_command(
                 command.param2
             );
         }
-        return;
+        return None;
     };
-    sound
-        .decoded_buffer_commands
-        .push(PpcDecodedBufferCommandRecord {
-            channel,
-            sample_rate_fixed: decoded.summary.sample_rate_fixed,
-            samples: decoded.samples,
-        });
+    Some(PpcDecodedBufferCommandRecord {
+        channel,
+        sample_rate_fixed: decoded.summary.sample_rate_fixed,
+        samples: decoded.samples,
+    })
 }
 
 /// Decode a Sound Manager SoundHeader referenced by bufferCmd.
@@ -44305,28 +44340,75 @@ fn ppc_snd_play_double_buffer(
         playback.active = false;
         playback.host_buffer_loaded = false;
     }
-    sound
-        .double_buffer_playbacks
-        .push(PpcSoundDoubleBufferPlaybackRecord {
-            channel,
-            header,
-            buffers: [buffer0, buffer1],
-            callback,
-            sample_rate_fixed,
-            num_channels,
-            sample_size,
-            compression_id,
-            packet_size,
-            current_buffer_index: 0,
-            callback_pending_mask: 0,
-            active: true,
-            host_initialized: false,
-            host_buffer_loaded: false,
-        });
+    let mut playback = PpcSoundDoubleBufferPlaybackRecord {
+        channel,
+        header,
+        buffers: [buffer0, buffer1],
+        callback,
+        sample_rate_fixed,
+        num_channels,
+        sample_size,
+        compression_id,
+        packet_size,
+        current_buffer_index: 0,
+        callback_pending_mask: 0,
+        active: true,
+        host_initialized: false,
+        host_buffer_loaded: false,
+    };
+    if let Some(samples) = ppc_decode_ready_double_buffer(memory, playback) {
+        sound
+            .manager
+            .play_double_buffer_samples(channel, samples, sample_rate_fixed);
+        playback.host_initialized = true;
+        playback.host_buffer_loaded = true;
+    }
+    sound.double_buffer_playbacks.push(playback);
     sound.double_buffer_play_count = sound.double_buffer_play_count.saturating_add(1);
     sound.last_double_buffer_channel = channel;
     sound.last_double_buffer_header = header;
     PPC_NO_ERR
+}
+
+fn ppc_decode_ready_double_buffer(
+    memory: &mut PpcSectionMem,
+    playback: PpcSoundDoubleBufferPlaybackRecord,
+) -> Option<Vec<crate::sound::StereoSample>> {
+    const MAX_RETAINED_SAMPLE_BYTES: usize = 64 * 1024 * 1024;
+
+    if playback.compression_id != 0 {
+        return None;
+    }
+    let buffer_ptr = playback.buffers[usize::from(playback.current_buffer_index & 1)];
+    if buffer_ptr == 0 {
+        return None;
+    }
+    let num_frames = usize::try_from(memory.read_u32_be(buffer_ptr)?).ok()?;
+    let flags = memory.read_u32_be(buffer_ptr.checked_add(4)?)?;
+    if flags & 0x01 == 0 || num_frames == 0 {
+        return None;
+    }
+    let num_channels = usize::from(playback.num_channels);
+    let sample_size = usize::from(playback.sample_size);
+    let bytes_per_sample = match sample_size {
+        8 => 1usize,
+        16 => 2usize,
+        _ => return None,
+    };
+    let byte_count = num_frames
+        .checked_mul(num_channels)?
+        .checked_mul(bytes_per_sample)?;
+    if byte_count > MAX_RETAINED_SAMPLE_BYTES {
+        return None;
+    }
+    let mut raw = vec![0; byte_count];
+    memory.read_bytes_into(buffer_ptr.checked_add(16)?, &mut raw)?;
+    crate::trap::decode_interleaved_stereo_samples(
+        &raw,
+        num_frames,
+        num_channels,
+        sample_size,
+    )
 }
 
 fn ppc_read_snd_command(memory: &mut PpcSectionMem, cmd_ptr: u32) -> Option<PpcSndCommandRecord> {
@@ -44394,6 +44476,11 @@ fn ppc_snd_start_file_play(
         }
     }
     if let (Some(file_playback_index), Some(decoded_sound)) = (file_playback_index, decoded_sound) {
+        sound.manager.play_file_buffer(
+            channel,
+            decoded_sound.samples.clone(),
+            decoded_sound.summary.sample_rate_fixed,
+        );
         sound
             .decoded_file_playbacks
             .push(PpcDecodedAiffPlaybackRecord {
@@ -44736,6 +44823,7 @@ fn ppc_snd_pause_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
         .find(|record| record.channel == channel && record.active)
     {
         playback.paused = !playback.paused;
+        sound.manager.set_file_paused(channel, playback.paused);
         return PPC_NO_ERR;
     }
     PPC_NO_ERR
@@ -44754,6 +44842,7 @@ fn ppc_snd_stop_file_play(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
         playback.paused = false;
         playback.quiet_now = quiet_now;
     }
+    sound.manager.quiet_channel(channel);
     PPC_NO_ERR
 }
 
@@ -93708,7 +93797,10 @@ pub(crate) mod tests {
         assert_eq!(loaded.vfs_resource_files.len(), 0);
         assert_eq!(loaded.process_file_system.vfs_resources.len(), 0);
         assert_eq!(loaded.next_file_ref_num, PPC_FIRST_FILE_REF_NUM);
-        assert_eq!(loaded.default_output_volume, PPC_DEFAULT_OUTPUT_VOLUME);
+        assert_eq!(
+            loaded.sound.manager.default_output_volume(),
+            PPC_DEFAULT_OUTPUT_VOLUME
+        );
         assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
         assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(loaded.default_dir_id, PPC_ROOT_DIR_ID);
@@ -159269,7 +159361,10 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"GetDefaultOutputVolume");
         let mut loaded = load_pef_application(&pef).unwrap();
         let volume_out_ptr = PPC_HEAP_BASE;
-        loaded.default_output_volume = 0x0000_8000;
+        loaded
+            .sound
+            .manager
+            .set_default_output_volume(0x0000_8000);
         loaded.memory.add_region(volume_out_ptr, vec![0; 4]);
         loaded.cpu.gpr[3] = volume_out_ptr;
 
@@ -159292,7 +159387,10 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
-        assert_eq!(loaded.default_output_volume, 0x0000_4000);
+        assert_eq!(
+            loaded.sound.manager.default_output_volume(),
+            0x0000_4000
+        );
     }
 
     #[test]
@@ -159447,6 +159545,23 @@ pub(crate) mod tests {
             .memory
             .add_region(channel, vec![0xdd; PPC_GUEST_SND_CHANNEL_SIZE as usize]);
         loaded.memory.add_region(header, vec![0; 24]);
+        loaded.memory.add_region(PPC_DATA_BASE + 0x3000, vec![0; 24]);
+        loaded.memory.add_region(PPC_DATA_BASE + 0x4000, vec![0; 24]);
+        loaded
+            .memory
+            .write_u32_be(PPC_DATA_BASE + 0x3000, 2)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(PPC_DATA_BASE + 0x3004, 1)
+            .unwrap();
+        loaded
+            .memory
+            .write_bytes(
+                PPC_DATA_BASE + 0x3010,
+                &[0x00, 0x00, 0x00, 0x00, 0x7f, 0xff, 0x7f, 0xff],
+            )
+            .unwrap();
         loaded.memory.write_u16_be(header, 2).unwrap();
         loaded.memory.write_u16_be(header + 2, 16).unwrap();
         loaded
@@ -159491,10 +159606,17 @@ pub(crate) mod tests {
                 current_buffer_index: 0,
                 callback_pending_mask: 0,
                 active: true,
-                host_initialized: false,
-                host_buffer_loaded: false,
+                host_initialized: true,
+                host_buffer_loaded: true,
             }]
         );
+        assert_eq!(loaded.sound.manager.debug_double_buffer_count, 1);
+        assert!(loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
         assert!(loaded.sound.pending_doublebacks.is_empty());
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -159792,12 +159914,20 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
+        assert!(loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
         assert_eq!(
-            loaded.sound.decoded_buffer_commands,
-            vec![PpcDecodedBufferCommandRecord {
+            loaded.sound.queued_commands,
+            vec![PpcSndCommandRecord {
                 channel,
-                sample_rate_fixed: 22_050u32 << 16,
-                samples: samples.to_vec(),
+                command: 81,
+                param1: 0,
+                param2: header_ptr,
             }]
         );
     }
@@ -160194,6 +160324,13 @@ pub(crate) mod tests {
                 preview: expected_preview,
             })
         );
+        assert_eq!(loaded.sound.manager.debug_file_play_count, 1);
+        assert!(loaded
+            .sound
+            .manager
+            .channels
+            .iter()
+            .any(|candidate| candidate.guest_ptr == channel && candidate.has_active_playback()));
     }
 
     #[test]
