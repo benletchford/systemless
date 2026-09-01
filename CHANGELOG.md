@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.13](https://github.com/benletchford/systemless/compare/v0.27.12...v0.27.13) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ppc:** implement StdCLib character classification ([#1126](https://github.com/benletchford/systemless/issues/1126)) ([0e5aecc](https://github.com/benletchford/systemless/commit/0e5aecc17c84b67531874f1f4fecfbd994d08a04))
+
 ## [0.27.12](https://github.com/benletchford/systemless/compare/v0.27.11...v0.27.12) (2026-09-01)
 
 
