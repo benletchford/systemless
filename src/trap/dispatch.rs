@@ -13,8 +13,9 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
-    ProcessKeyRepeatState, ProcessResourceManagerState, SharedProcessAppleEventHandlers,
+    ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
+    ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
+    ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessCursorState, SharedProcessEventQueue, SharedProcessInputState,
     SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessResourceManager,
     SharedProcessSoundManager, SharedProcessValue,
@@ -1084,42 +1085,9 @@ pub(crate) struct ControlAuxRecordState {
     pub handle: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct VfsMetadata {
-    pub file_id: u32,
-    pub parent_dir_id: u32,
-    pub file_type: u32,
-    pub creator: u32,
-    pub finder_flags: u16,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct VfsDirectory {
-    pub dir_id: u32,
-    pub parent_dir_id: u32,
-    pub name: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct VfsVolume {
-    pub ref_num: i16,
-    pub name: String,
-    pub root_dir_id: u32,
-    pub attributes: u16,
-    pub file_count: u16,
-    pub allocation_block_count: u16,
-    pub allocation_block_size: u32,
-    pub clump_size: u32,
-    pub free_blocks: u16,
-    pub bitmap_start: u16,
-    pub allocation_pointer: u16,
-    pub allocation_start: u16,
-    pub next_catalog_id: u32,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
+pub(crate) type VfsMetadata = ProcessVfsMetadata;
+pub(crate) type VfsDirectory = ProcessClassicVfsDirectory;
+pub(crate) type VfsVolume = ProcessVfsVolumeRecord;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WorkingDirectory {
@@ -2042,15 +2010,15 @@ pub struct TrapDispatcher {
     /// Virtual filesystem: filename -> resource fork contents
     pub vfs_rsrc: SharedProcessValue<ProcessForkMap>,
     /// Finder metadata and catalog IDs for VFS file entries.
-    pub(crate) vfs_metadata: HashMap<String, VfsMetadata>,
+    pub(crate) vfs_metadata: SharedProcessValue<HashMap<String, VfsMetadata>>,
     /// Directory catalog metadata keyed by normalized path.
-    pub(crate) vfs_directories: HashMap<String, VfsDirectory>,
+    pub(crate) vfs_directories: SharedProcessValue<HashMap<String, VfsDirectory>>,
     /// Reverse directory lookup by catalog ID.
-    pub(crate) vfs_directory_paths: HashMap<u32, String>,
+    pub(crate) vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
     /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
-    pub(crate) vfs_volumes: HashMap<i16, VfsVolume>,
+    pub(crate) vfs_volumes: SharedProcessValue<HashMap<i16, VfsVolume>>,
     /// Mounted volume lookup by normalized, case-insensitive name.
-    pub(crate) vfs_volume_names: HashMap<String, i16>,
+    pub(crate) vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
     /// Open working directories keyed by working directory reference number.
     pub(crate) working_directories: HashMap<i16, WorkingDirectory>,
     /// Open file table: refnum -> filename
@@ -2099,7 +2067,7 @@ pub struct TrapDispatcher {
     /// Inside Macintosh Volume V, p. V-529.
     pub(crate) default_startup_rec: u32,
     /// Next synthetic catalog directory ID for VFS directories.
-    pub(crate) next_vfs_dir_id: u32,
+    pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     /// Next stable negative volume reference for an extracted read-only volume.
     pub(crate) next_vfs_volume_ref_num: i16,
     /// Next synthetic file ID for VFS files.
@@ -2115,7 +2083,7 @@ pub struct TrapDispatcher {
     /// app next yields through WaitNextEvent/EventAvail/GetNextEvent.
     pub(crate) pending_launch_app: Option<PendingLaunchApplication>,
     /// Current default directory.
-    pub(crate) default_dir_id: u32,
+    pub(crate) default_dir_id: SharedProcessValue<u32>,
     /// Working directory reference number for the application's folder.
     pub(crate) app_wd_refnum: i16,
     /// Host directory to write output files to (if set)
@@ -2901,6 +2869,15 @@ impl TrapDispatcher {
         context.attach_input_state(&mut self.input_state);
         context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
+        context.attach_classic_vfs_catalogue(
+            &mut self.vfs_metadata,
+            &mut self.vfs_directories,
+            &mut self.vfs_directory_paths,
+            &mut self.vfs_volumes,
+            &mut self.vfs_volume_names,
+            &mut self.next_vfs_dir_id,
+            &mut self.default_dir_id,
+        );
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
         self.attach_memory_manager_handle(
@@ -3846,11 +3823,11 @@ impl TrapDispatcher {
             ui_theme_id: UiThemeId::ClassicSystem7,
             vfs: SharedProcessValue::default(),
             vfs_rsrc: SharedProcessValue::default(),
-            vfs_metadata: HashMap::new(),
-            vfs_directories,
-            vfs_directory_paths,
-            vfs_volumes: HashMap::new(),
-            vfs_volume_names: HashMap::new(),
+            vfs_metadata: SharedProcessValue::default(),
+            vfs_directories: SharedProcessValue::from_value(vfs_directories),
+            vfs_directory_paths: SharedProcessValue::from_value(vfs_directory_paths),
+            vfs_volumes: SharedProcessValue::default(),
+            vfs_volume_names: SharedProcessValue::default(),
             working_directories: HashMap::new(),
             open_files: HashMap::new(),
             synthetic_drivers: HashMap::new(),
@@ -3865,14 +3842,14 @@ impl TrapDispatcher {
             default_video_rec: 0x0000,        // no default video device selected
             default_os_rec: 0x0001,           // Macintosh Operating System
             default_startup_rec: 0x0000_0000, // zero-filled first-device startup default
-            next_vfs_dir_id: 16,
+            next_vfs_dir_id: SharedProcessValue::from_value(16),
             next_vfs_volume_ref_num: -2,
             next_vfs_file_id: 32,
             next_vfs_timestamp: 1,
             next_working_dir_refnum: 32,
             launched_app_path: None,
             pending_launch_app: None,
-            default_dir_id: 2,
+            default_dir_id: SharedProcessValue::from_value(2),
             app_wd_refnum: BOOT_VOLUME_REF_NUM,
             output_dir: None,
             fg_color: (0, 0, 0),
@@ -4795,8 +4772,8 @@ impl TrapDispatcher {
 
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
-        let dir_id = self.next_vfs_dir_id;
-        self.next_vfs_dir_id = self.next_vfs_dir_id.saturating_add(1);
+        let dir_id = *self.next_vfs_dir_id;
+        *self.next_vfs_dir_id = self.next_vfs_dir_id.saturating_add(1);
 
         self.vfs_directories.insert(
             normalized.clone(),
@@ -4893,7 +4870,7 @@ impl TrapDispatcher {
         let normalized = Self::normalize_vfs_path(name);
         self.ensure_vfs_file_metadata(&normalized);
         if let Some(metadata) = self.vfs_metadata.get(&normalized).copied() {
-            self.default_dir_id = metadata.parent_dir_id;
+            *self.default_dir_id = metadata.parent_dir_id;
             let app_volume_ref = self
                 .vfs_volume_for_path(&normalized)
                 .map(|volume| volume.ref_num)
@@ -5137,7 +5114,7 @@ impl TrapDispatcher {
                 return working_directory.dir_id;
             }
             if dir_id == 0 && vref == 0 {
-                return self.default_dir_id;
+                return *self.default_dir_id;
             }
             if dir_id == 0 {
                 return 2;
@@ -5148,7 +5125,7 @@ impl TrapDispatcher {
             return dir_id;
         }
         if vref == 0 {
-            return self.default_dir_id;
+            return *self.default_dir_id;
         }
         if vref == Self::boot_volume_ref_num() {
             return 2;
@@ -5175,7 +5152,7 @@ impl TrapDispatcher {
         // Mirror that fallback so callers that leave ioDirID stale still find
         // files relative to the current working directory.
         let fallback_dir_id = if vref == 0 {
-            Some(self.default_dir_id)
+            Some(*self.default_dir_id)
         } else {
             self.working_directories.get(&vref).map(|wd| wd.dir_id)
         };

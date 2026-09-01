@@ -3038,7 +3038,7 @@ impl FixtureRunner {
         let vfs_volume_names = self.dispatcher.vfs_volume_names.clone();
         let next_vfs_volume_ref_num = self.dispatcher.next_vfs_volume_ref_num;
         let locked_files = self.dispatcher.locked_files.clone();
-        let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id;
+        let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id.clone();
         let next_vfs_file_id = self.dispatcher.next_vfs_file_id;
         let next_vfs_timestamp = self.dispatcher.next_vfs_timestamp;
         let next_working_dir_refnum = self.dispatcher.next_working_dir_refnum;
@@ -3187,7 +3187,7 @@ impl FixtureRunner {
             .copied()
             .unwrap_or(crate::trap::dispatch::VfsMetadata {
                 file_id: 0,
-                parent_dir_id: self.dispatcher.default_dir_id,
+                parent_dir_id: *self.dispatcher.default_dir_id,
                 file_type: u32::from_be_bytes(*b"APPL"),
                 creator: u32::from_be_bytes(*b"????"),
                 finder_flags: 0,
@@ -3217,7 +3217,7 @@ impl FixtureRunner {
             crate::trap::dispatch::BOOT_VOLUME_REF_NUM as u16,
         ); // vcbVRefNum
         self.bus
-            .write_long(vcb_ptr + 172, self.dispatcher.default_dir_id);
+            .write_long(vcb_ptr + 172, *self.dispatcher.default_dir_id);
 
         self.bus.write_long(addr::DEF_VCB_PTR, vcb_ptr);
         self.bus.write_word(addr::VCB_Q_HDR, 0);
@@ -3451,7 +3451,7 @@ impl FixtureRunner {
         // CurDirStore: directory ID of directory last opened (long)
         // SFSaveDisk: negative of volume reference number (word)
         // Inside Macintosh Volume IV, IV-72
-        let app_dir_id = self.dispatcher.default_dir_id;
+        let app_dir_id = *self.dispatcher.default_dir_id;
         self.bus.write_long(addr::CUR_DIR_STORE, app_dir_id);
         self.bus.write_word(
             addr::SF_SAVE_DISK,
@@ -3714,7 +3714,7 @@ impl FixtureRunner {
         self.bus.write_word(addr::MBAR_HEIGHT, 20);
         self.bus.write_byte(addr::SOUND_LEVEL, 1);
 
-        let app_dir_id = self.dispatcher.default_dir_id;
+        let app_dir_id = *self.dispatcher.default_dir_id;
         self.bus.write_long(addr::CUR_DIR_STORE, app_dir_id);
         self.bus.write_word(
             addr::SF_SAVE_DISK,
@@ -15697,6 +15697,7 @@ mod tests {
                 ],
                 resource_manager: Default::default(),
                 next_file_ref_num: 128,
+                ..ProcessFileSystemState::default()
             }
             .with_resources(
                 Vec::new(),
@@ -18243,7 +18244,7 @@ mod tests {
         assert_eq!(runner.bus.read_long(fcb + 50), u32::from_be_bytes(*b"APPL"));
         assert_eq!(
             runner.bus.read_long(fcb + 58),
-            runner.dispatcher.default_dir_id
+            *runner.dispatcher.default_dir_id
         );
 
         let vcb = runner.bus.read_long(fcb + 20);

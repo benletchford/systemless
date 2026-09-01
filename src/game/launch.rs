@@ -3025,8 +3025,8 @@ fn ppc_diagnostic_vfs(
         files,
         resource_files,
         resources,
-        default_dir_id: dispatcher.default_dir_id,
-        next_dir_id: dispatcher.next_vfs_dir_id,
+        default_dir_id: *dispatcher.default_dir_id,
+        next_dir_id: *dispatcher.next_vfs_dir_id,
     }
 }
 

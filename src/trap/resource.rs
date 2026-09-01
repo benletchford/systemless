@@ -4333,7 +4333,7 @@ impl super::TrapDispatcher {
                 let dir_id = self
                     .working_directory_info(self.app_wd_refnum)
                     .map(|wd| wd.dir_id)
-                    .unwrap_or(self.default_dir_id);
+                    .unwrap_or(*self.default_dir_id);
                 bus.write_long(pb + 48, dir_id); // ioWDDirID
                 bus.write_word(pb + 16, 0); // noErr
                 cpu.write_reg(Register::D0, 0);
@@ -5894,7 +5894,7 @@ impl super::TrapDispatcher {
                 {
                     requested_dir_id
                 } else if requested_vref == 0 {
-                    self.default_dir_id
+                    *self.default_dir_id
                 } else if requested_vref == Self::boot_volume_ref_num() {
                     // ioVRefNum = -1: boot volume, use root directory (dirID 2).
                     2
@@ -5922,7 +5922,7 @@ impl super::TrapDispatcher {
                     }
                 }
 
-                self.default_dir_id = target_dir_id;
+                *self.default_dir_id = target_dir_id;
                 self.app_wd_refnum = if target_dir_id == 2 {
                     target_volume_ref_num
                 } else {
@@ -5941,7 +5941,7 @@ impl super::TrapDispatcher {
                     requested_vref,
                     requested_dir_id,
                     self.app_wd_refnum,
-                    self.default_dir_id
+                    *self.default_dir_id
                 );
                 bus.write_word(pb + 16, 0);
                 cpu.write_reg(Register::D0, 0);
@@ -7343,12 +7343,12 @@ impl super::TrapDispatcher {
                             ref_num: self
                                 .open_working_directory(
                                     super::TrapDispatcher::boot_volume_ref_num(),
-                                    self.default_dir_id,
+                                    *self.default_dir_id,
                                     0,
                                 )
                                 .unwrap_or(super::TrapDispatcher::boot_volume_ref_num()),
                             volume_ref_num: super::TrapDispatcher::boot_volume_ref_num(),
-                            dir_id: self.default_dir_id,
+                            dir_id: *self.default_dir_id,
                             proc_id: 0,
                         })
                     } else {
@@ -8109,7 +8109,7 @@ impl super::TrapDispatcher {
         self.ensure_vfs_catalog();
         let mut entries = Vec::new();
 
-        for (path, directory) in &self.vfs_directories {
+        for (path, directory) in &*self.vfs_directories {
             let entry_volume_ref = self
                 .vfs_volume_for_path(path)
                 .map(|volume| volume.ref_num)
@@ -17188,7 +17188,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
-        assert_eq!(disp.default_dir_id, dir_id);
+        assert_eq!(*disp.default_dir_id, dir_id);
         assert_eq!(bus.read_long(addr::CUR_DIR_STORE), dir_id);
         assert_eq!(
             bus.read_word(addr::SF_SAVE_DISK),
@@ -17217,7 +17217,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
-        assert_eq!(disp.default_dir_id, root_dir_id);
+        assert_eq!(*disp.default_dir_id, root_dir_id);
         assert_eq!(disp.resolve_volume_ref_num(disp.app_wd_refnum), volume_ref);
         assert_eq!(bus.read_word(addr::SF_SAVE_DISK), (-volume_ref) as u16);
     }
@@ -17254,7 +17254,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0) as i32, -35, "nsvErr");
         assert_eq!(bus.read_word(pb + 16) as i16, -35);
-        assert_eq!(disp.default_dir_id, 2);
+        assert_eq!(*disp.default_dir_id, 2);
     }
 
     #[test]
@@ -17416,7 +17416,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
-        assert_eq!(disp.default_dir_id, 2);
+        assert_eq!(*disp.default_dir_id, 2);
         assert_eq!(
             disp.app_wd_refnum,
             super::super::dispatch::BOOT_VOLUME_REF_NUM
@@ -17443,7 +17443,7 @@ mod tests {
 
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
-        assert_eq!(disp.default_dir_id, dir_id);
+        assert_eq!(*disp.default_dir_id, dir_id);
         assert_ne!(
             disp.app_wd_refnum,
             super::super::dispatch::BOOT_VOLUME_REF_NUM
@@ -17607,7 +17607,7 @@ mod tests {
             .insert("EV/Escape Velocity".to_string(), vec![0xAB]);
         disp.set_vfs_entry_metadata("EV/Escape Velocity", *b"APPL", *b"EV  ", 0);
         disp.set_launched_app_path("EV/Escape Velocity");
-        let expected_parent_dir_id = disp.default_dir_id;
+        let expected_parent_dir_id = *disp.default_dir_id;
 
         let pb = 0x300000u32;
         let name_ptr = setup_param_block(
