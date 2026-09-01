@@ -8908,8 +8908,6 @@ impl PpcLoadedApp {
         let mut heap_cursor = native_heap.heap_cursor;
         let mut heap_limit = native_heap.heap_limit;
         let mut last_mem_error = native_heap.last_mem_error;
-        let mut heap_maximized = native_heap.heap_maximized;
-        let mut master_pointer_blocks_requested = native_heap.master_pointer_blocks_requested;
         let tick_count = self.tick_count;
         let clock_cycles_per_tick = self.clock_cycles_per_tick;
         let clock_cycle_phase = self.clock_cycle_phase;
@@ -9419,8 +9417,6 @@ impl PpcLoadedApp {
                         &mut heap_limit,
                         self.stack_base,
                         &mut last_mem_error,
-                        &mut heap_maximized,
-                        &mut master_pointer_blocks_requested,
                         &mut import_tick_count,
                         clock_cycles_per_tick,
                         &mut current_resource_refnum,
@@ -9869,8 +9865,6 @@ impl PpcLoadedApp {
             heap_cursor,
             heap_limit,
             last_mem_error,
-            heap_maximized,
-            master_pointer_blocks_requested,
             &ptrs,
             &free_ptr_blocks,
             &free_handle_blocks,
@@ -16516,8 +16510,6 @@ fn ppc_synchronize_process_native_allocator(
     heap_cursor: u32,
     heap_limit: u32,
     last_mem_error: i16,
-    heap_maximized: bool,
-    master_pointer_blocks_requested: u32,
     ptrs: &[PpcPtrRecord],
     free_ptr_blocks: &[PpcPtrRecord],
     free_handle_blocks: &[PpcHandleRecord],
@@ -16526,8 +16518,6 @@ fn ppc_synchronize_process_native_allocator(
         heap_cursor,
         heap_limit,
         last_mem_error,
-        heap_maximized,
-        master_pointer_blocks_requested,
         ptrs,
         free_ptr_blocks,
         free_handle_blocks,
@@ -16619,8 +16609,6 @@ fn dispatch_supported_import(
     application_heap_limit: &mut u32,
     application_heap_ceiling: u32,
     last_mem_error: &mut i16,
-    heap_maximized: &mut bool,
-    master_pointer_blocks_requested: &mut u32,
     tick_count: &mut u32,
     cycles_per_tick: u32,
     current_resource_refnum: &mut i16,
@@ -16744,8 +16732,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -16774,8 +16760,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -16798,8 +16782,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -16843,8 +16825,6 @@ fn dispatch_supported_import(
                     *heap_cursor,
                     heap_limit,
                     *last_mem_error,
-                    *heap_maximized,
-                    *master_pointer_blocks_requested,
                     ptrs,
                     free_ptr_blocks,
                     free_handle_blocks,
@@ -16906,8 +16886,6 @@ fn dispatch_supported_import(
                                 *heap_cursor,
                                 heap_limit,
                                 *last_mem_error,
-                                *heap_maximized,
-                                *master_pointer_blocks_requested,
                                 ptrs,
                                 free_ptr_blocks,
                                 free_handle_blocks,
@@ -16972,8 +16950,6 @@ fn dispatch_supported_import(
                             *heap_cursor,
                             heap_limit,
                             *last_mem_error,
-                            *heap_maximized,
-                            *master_pointer_blocks_requested,
                             ptrs,
                             free_ptr_blocks,
                             free_handle_blocks,
@@ -17022,8 +16998,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -17066,8 +17040,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -17108,8 +17080,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -17284,8 +17254,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -17328,8 +17296,6 @@ fn dispatch_supported_import(
                 *heap_cursor,
                 heap_limit,
                 *last_mem_error,
-                *heap_maximized,
-                *master_pointer_blocks_requested,
                 ptrs,
                 free_ptr_blocks,
                 free_handle_blocks,
@@ -17368,12 +17334,12 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MaxApplZone => {
-            *heap_maximized = true;
+            process_memory_manager.maximize_native_heap();
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MoreMasters => {
-            *master_pointer_blocks_requested = master_pointer_blocks_requested.saturating_add(1);
+            process_memory_manager.request_native_master_pointers();
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
         }
@@ -88526,8 +88492,6 @@ pub(crate) mod tests {
                     heap_cursor,
                     allocator.heap.heap_limit,
                     allocator.heap.last_mem_error,
-                    allocator.heap.heap_maximized,
-                    allocator.heap.master_pointer_blocks_requested,
                     &ptrs,
                     &free_ptr_blocks,
                     &allocator.free_handle_blocks,
@@ -88665,8 +88629,6 @@ pub(crate) mod tests {
                     heap_cursor,
                     allocator.heap.heap_limit,
                     allocator.heap.last_mem_error,
-                    allocator.heap.heap_maximized,
-                    allocator.heap.master_pointer_blocks_requested,
                     &ptrs,
                     &free_ptr_blocks,
                     &allocator.free_handle_blocks,

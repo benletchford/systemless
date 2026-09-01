@@ -598,6 +598,33 @@ impl ProcessMemoryManager {
         }
     }
 
+    /// Record that the process application heap has been expanded to its limit.
+    ///
+    /// `MaxApplZone` grows the application heap as far as possible. Inside
+    /// Macintosh: Memory (1992), pp. 2-83--2-84.
+    pub(crate) fn maximize_native_heap(&mut self) {
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.heap.heap_maximized = true;
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+    }
+
+    /// Record one process-level request for another block of master pointers.
+    ///
+    /// `MoreMasters` adds master pointers to the current heap zone. Inside
+    /// Macintosh: Memory (1992), pp. 2-85--2-86.
+    pub(crate) fn request_native_master_pointers(&mut self) {
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.heap.master_pointer_blocks_requested = allocator
+                .heap
+                .master_pointer_blocks_requested
+                .saturating_add(1);
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+    }
+
     fn prepare_native_allocation(
         memory: &mut GuestAddressSpace,
         ptr: u32,
@@ -1148,33 +1175,30 @@ impl ProcessMemoryManager {
         self.native_allocator_dirty = false;
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn synchronize_native_allocator(
         &mut self,
         heap_cursor: u32,
         heap_limit: u32,
         last_mem_error: i16,
-        heap_maximized: bool,
-        master_pointer_blocks_requested: u32,
         ptrs: &[ProcessPtrRecord],
         free_ptr_blocks: &[ProcessPtrRecord],
         free_handle_blocks: &[ProcessHandleRecord],
     ) {
-        let Some(heap_base) = self
+        let Some(heap) = self
             .native_allocator
             .as_ref()
-            .map(|allocator| allocator.heap.heap_base)
+            .map(|allocator| allocator.heap)
         else {
             return;
         };
         self.publish_native_allocator(
             ProcessNativeHeapState {
-                heap_base,
+                heap_base: heap.heap_base,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
-                heap_maximized,
-                master_pointer_blocks_requested,
+                heap_maximized: heap.heap_maximized,
+                master_pointer_blocks_requested: heap.master_pointer_blocks_requested,
             },
             ptrs,
             free_ptr_blocks,
@@ -1660,6 +1684,42 @@ mod tests {
         begin_call(&second, 0x2000);
         context.attach_guest_calls(&mut first);
         context.attach_guest_calls(&mut second);
+    }
+
+    #[test]
+    fn native_allocator_synchronization_preserves_process_heap_operations() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: ProcessMemoryManager::NO_ERR,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+
+        manager.maximize_native_heap();
+        manager.request_native_master_pointers();
+        manager.synchronize_native_allocator(
+            HEAP_BASE + 0x20,
+            HEAP_BASE + 0x1000,
+            ProcessMemoryManager::PARAM_ERR,
+            &[],
+            &[],
+            &[],
+        );
+
+        let heap = manager.native_heap_state().unwrap();
+        assert_eq!(heap.heap_cursor, HEAP_BASE + 0x20);
+        assert_eq!(heap.last_mem_error, ProcessMemoryManager::PARAM_ERR);
+        assert!(heap.heap_maximized);
+        assert_eq!(heap.master_pointer_blocks_requested, 1);
     }
 
     #[test]
