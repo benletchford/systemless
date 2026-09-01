@@ -1281,8 +1281,8 @@ impl App {
         }
 
         let screen_mode = runner.dispatcher().screen_mode;
-        let device_clut = runner.dispatcher().device_clut;
-        let device_gamma = runner.dispatcher().device_gamma;
+        let device_clut = *runner.dispatcher().device_clut;
+        let device_gamma = *runner.dispatcher().device_gamma;
         #[cfg(target_os = "macos")]
         let cursor = if self.host_cursor.enabled() {
             None

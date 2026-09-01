@@ -4272,7 +4272,7 @@ impl super::TrapDispatcher {
                             && row_bytes == self.screen_mode.1
                             && pixel_size == self.screen_mode.4;
                         let clut = if is_screen_port {
-                            self.device_clut
+                            *self.device_clut
                         } else {
                             self.read_port_clut(bus, ctab_handle)
                         };
@@ -24992,7 +24992,7 @@ mod tests {
             let hilite = (0x0000, 0x8000, 0x0000);
 
             disp.set_screen_mode_for_test(screen_base, row_bytes, 192, 128, 8);
-            disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+            *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
             disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
             disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
             disp.hilite_color = hilite;
@@ -25196,7 +25196,7 @@ mod tests {
         let hilite = (0x0000, 0x8000, 0x0000);
 
         disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 96, 8);
-        disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
+        *disp.device_clut = [[0xFFFF, 0xFFFF, 0xFFFF]; 256];
         disp.device_clut[0] = [0x0000, 0x0000, 0x0000];
         disp.device_clut[42] = [hilite.0, hilite.1, hilite.2];
         disp.hilite_color = hilite;
