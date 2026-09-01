@@ -1539,6 +1539,23 @@ impl ProcessNativeMemoryManager {
         ptr
     }
 
+    /// Commit a validated CFM mapping layout to the process-owned native heap.
+    ///
+    /// Dynamic PEF sections choose their individual alignment before they are
+    /// installed, so the loader validates the complete sparse layout first and
+    /// advances the canonical cursor only after every section has been mapped.
+    pub(crate) fn commit_native_heap_cursor(&mut self, heap_cursor: u32) -> bool {
+        let Some(allocator) = self.native_allocator.as_mut() else {
+            return false;
+        };
+        if heap_cursor < allocator.heap.heap_cursor || heap_cursor >= allocator.heap.heap_limit {
+            return false;
+        }
+        allocator.heap.heap_cursor = heap_cursor;
+        self.native_allocator_dirty = true;
+        true
+    }
+
     /// Allocate a native nonrelocatable block in the process heap.
     ///
     /// `NewPtr` reserves fixed storage and `DisposePtr` returns it to the

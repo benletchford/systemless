@@ -14311,6 +14311,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
             return Err(PpcLoadError::AddressOverflow);
         }
         let init_block = ppc_create_mem_fragment_init_block(
+            None,
             &mut memory,
             &mut heap_cursor,
             stack_base,
@@ -20026,15 +20027,30 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::BitMapToRegion => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_bitmap_to_region(cpu, memory, heap_cursor, heap_limit, handles),
         ))),
-        PpcImportDispatcherTarget::NewRgn => Some(PpcImportAction::Return(ppc_new_rgn(
+        PpcImportDispatcherTarget::NewRgn => Some(PpcImportAction::Return(ppc_process_new_rgn(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             last_mem_error,
             handles,
+            free_ptr_blocks,
+            free_handle_blocks,
+            handle_states,
         ))),
         PpcImportDispatcherTarget::DisposeRgn => {
-            ppc_dispose_tracked_handle(cpu.gpr[3], memory, handles, handle_states);
+            let _ = ppc_dispose_process_native_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                cpu.gpr[3],
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::CopyRgn => {
@@ -20143,11 +20159,14 @@ fn dispatch_supported_import(
             ppc_rect_in_region(memory, cpu.gpr[3], cpu.gpr[4]),
         ))),
         PpcImportDispatcherTarget::OpenPoly => Some(PpcImportAction::Return(ppc_open_poly(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             last_mem_error,
             handles,
+            free_ptr_blocks,
+            free_handle_blocks,
+            handle_states,
             *current_gworld,
         ))),
         PpcImportDispatcherTarget::ClosePoly => {
@@ -21293,11 +21312,14 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::GetCTable => {
             let handle = ppc_get_ctable(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
                 handles,
+                free_ptr_blocks,
+                free_handle_blocks,
+                handle_states,
                 vfs_resources,
                 *current_resource_refnum,
             );
@@ -21421,25 +21443,48 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::DisposeCTable => {
             let ctable_handle = cpu.gpr[3];
-            ppc_dispose_tracked_handle(ctable_handle, memory, handles, handle_states);
+            let _ = ppc_dispose_process_native_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                ctable_handle,
+            );
             toolbox_startup
                 .indexed_screen_ctables
                 .retain(|_, handle| *handle != ctable_handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NewPixMap => Some(PpcImportAction::Return(ppc_new_pixmap(
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
             last_mem_error,
             handles,
+            free_ptr_blocks,
+            free_handle_blocks,
+            handle_states,
             *current_gdevice,
         ))),
         PpcImportDispatcherTarget::DisposePixMap => {
             ppc_dispose_pixmap(
                 cpu.gpr[3],
+                process_memory_manager,
                 memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
+                free_handle_blocks,
                 handle_states,
                 &mut toolbox_startup.indexed_screen_ctables,
             );
@@ -21913,6 +21958,7 @@ fn dispatch_supported_import(
         ))),
         PpcImportDispatcherTarget::GetSharedLibrary => Some(ppc_get_shared_library(
             cpu,
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
@@ -21936,6 +21982,7 @@ fn dispatch_supported_import(
         )),
         PpcImportDispatcherTarget::GetMemFragment => Some(ppc_get_mem_fragment(
             cpu,
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
@@ -21988,11 +22035,14 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::NewAlias => {
             Some(PpcImportAction::Return(ppc_i16_result(ppc_new_alias(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
                 handles,
+                free_ptr_blocks,
+                free_handle_blocks,
+                handle_states,
                 aliases,
             ))))
         }
@@ -25043,37 +25093,37 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3MemoryStorageNew => {
             Some(PpcImportAction::Return(ppc_q3_memory_storage_new(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
                 q3_memory_storages,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             )))
         }
         PpcImportDispatcherTarget::Q3MemoryStorageNewBuffer => {
             Some(PpcImportAction::Return(ppc_q3_memory_storage_new_buffer(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
                 q3_memory_storages,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             )))
         }
         PpcImportDispatcherTarget::Q3FSSpecStorageNew => {
             Some(PpcImportAction::Return(ppc_q3_fsspec_storage_new(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
                 vfs_directories,
                 vfs_files,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             )))
         }
@@ -25389,13 +25439,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3MemoryStorageSet => Some(PpcImportAction::Return(u32::from(
             ppc_q3_memory_storage_set(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 q3_error_state,
                 q3_memory_storages,
                 q3_files,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             ),
         ))),
@@ -25411,13 +25461,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3MemoryStorageSetBuffer => Some(PpcImportAction::Return(
             u32::from(ppc_q3_memory_storage_set_buffer(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 q3_error_state,
                 q3_memory_storages,
                 q3_files,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             )),
         )),
@@ -25910,12 +25960,12 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3TriMeshNew => {
             Some(PpcImportAction::Return(ppc_q3_trimesh_new(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 q3_object_refs,
                 next_q3_object,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
                 q3_trimeshes,
             )))
@@ -25923,9 +25973,9 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3TriMeshGetData => {
             Some(PpcImportAction::Return(u32::from(ppc_q3_trimesh_get_data(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
                 q3_objects,
                 q3_object_refs,
@@ -26105,6 +26155,7 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::Q3StorageSetData => {
             Some(PpcImportAction::Return(u32::from(ppc_q3_storage_set_data(
+                process_memory_manager,
                 memory,
                 q3_objects,
                 q3_error_state,
@@ -26115,7 +26166,6 @@ fn dispatch_supported_import(
                 cpu.gpr[6],
                 cpu.gpr[7],
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             ))))
         }
@@ -26300,6 +26350,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::Q3FileReadObject => {
             Some(PpcImportAction::Return(ppc_q3_file_read_object(
                 cpu,
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
@@ -27017,6 +27068,7 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ISpElementNewVirtualFromNeeds => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_isp_element_new_virtual_from_needs(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -27026,7 +27078,12 @@ fn dispatch_supported_import(
         )),
         PpcImportDispatcherTarget::ISpElementListNew => {
             Some(PpcImportAction::Return(ppc_i16_result(
-                ppc_isp_element_list_new(cpu, memory, heap_cursor, heap_limit),
+                ppc_isp_element_list_new(
+                    cpu,
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                ),
             )))
         }
         PpcImportDispatcherTarget::ISpElementListGetNextEvent => Some(PpcImportAction::Return(
@@ -32353,12 +32410,12 @@ fn ppc_q3_validate_draw_context_handle(
 
 fn ppc_q3_trimesh_new(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     next_q3_object: &mut u32,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     q3_trimeshes: &mut Vec<PpcQ3TriMeshRecord>,
 ) -> u32 {
@@ -32370,7 +32427,13 @@ fn ppc_q3_trimesh_new(
         return 0;
     };
     let Some(data) =
-        ppc_q3_trimesh_copy_get_data_arrays(memory, heap_cursor, heap_limit, last_mem_error, &data)
+        ppc_q3_trimesh_copy_get_data_arrays(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            &data,
+        )
     else {
         return 0;
     };
@@ -32396,9 +32459,9 @@ fn ppc_q3_trimesh_new(
 
 fn ppc_q3_trimesh_get_data(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     q3_objects: &[PpcQ3ObjectRecord],
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
@@ -32454,9 +32517,9 @@ fn ppc_q3_trimesh_get_data(
             })
             .or_else(|| {
                 ppc_q3_trimesh_copy_get_data_arrays(
+                    process_memory_manager,
                     memory,
                     heap_cursor,
-                    heap_limit,
                     last_mem_error,
                     &source_data,
                 )
@@ -32497,7 +32560,13 @@ fn ppc_q3_trimesh_get_data(
     };
     ppc_q3_trace_trimesh_header("GetData object copy-arrays source", cpu, trimesh, &data);
     let Some(data) =
-        ppc_q3_trimesh_copy_get_data_arrays(memory, heap_cursor, heap_limit, last_mem_error, &data)
+        ppc_q3_trimesh_copy_get_data_arrays(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            &data,
+        )
     else {
         return false;
     };
@@ -32688,17 +32757,17 @@ fn ppc_q3_trimesh_empty_data(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> bool {
 }
 
 fn ppc_q3_trimesh_copy_get_data_arrays(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     data: &[u8],
 ) -> Option<Vec<u8>> {
     let mut data = data.to_vec();
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET,
@@ -32707,9 +32776,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_TRIANGLES,
     )?;
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_TRIANGLE_ATTRIBUTE_TYPES_OFFSET,
@@ -32718,9 +32787,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_ATTRIBUTE_TYPES,
     )?;
     ppc_q3_trimesh_copy_get_data_attribute_payloads(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_TRIANGLES_OFFSET,
@@ -32729,9 +32798,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_TRIANGLES,
     )?;
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_EDGES_OFFSET,
@@ -32740,9 +32809,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_EDGES,
     )?;
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_EDGE_ATTRIBUTE_TYPES_OFFSET,
@@ -32751,9 +32820,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_ATTRIBUTE_TYPES,
     )?;
     ppc_q3_trimesh_copy_get_data_attribute_payloads(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_EDGES_OFFSET,
@@ -32762,9 +32831,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_EDGES,
     )?;
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_POINTS_OFFSET,
@@ -32773,9 +32842,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_POINTS,
     )?;
     ppc_q3_trimesh_copy_get_data_array(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_VERTEX_ATTRIBUTE_TYPES_OFFSET,
@@ -32784,9 +32853,9 @@ fn ppc_q3_trimesh_copy_get_data_arrays(
         PPC_Q3_SOFTWARE_RENDER_MAX_ATTRIBUTE_TYPES,
     )?;
     ppc_q3_trimesh_copy_get_data_attribute_payloads(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         last_mem_error,
         &mut data,
         PPC_Q3_TRIMESH_NUM_POINTS_OFFSET,
@@ -32916,9 +32985,9 @@ fn ppc_q3_trimesh_refresh_get_data_arrays(
 }
 
 fn ppc_q3_trimesh_copy_get_data_array(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     data: &mut [u8],
     count_offset: u32,
@@ -32935,7 +33004,13 @@ fn ppc_q3_trimesh_copy_get_data_array(
     if !ppc_memory_can_read_bytes(memory, source_ptr, byte_count) {
         return Some(());
     }
-    let dest_ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, byte_count, false);
+    let dest_ptr = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        byte_count,
+        false,
+    );
     if dest_ptr == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return None;
@@ -32947,9 +33022,9 @@ fn ppc_q3_trimesh_copy_get_data_array(
 }
 
 fn ppc_q3_trimesh_copy_get_data_attribute_payloads(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     data: &mut [u8],
     element_count_offset: u32,
@@ -32984,8 +33059,13 @@ fn ppc_q3_trimesh_copy_get_data_attribute_payloads(
         if source_data_ptr != 0
             && ppc_memory_can_read_bytes(memory, source_data_ptr, data_byte_count)
         {
-            let dest_data_ptr =
-                ppc_heap_alloc(memory, heap_cursor, heap_limit, data_byte_count, false);
+            let dest_data_ptr = ppc_process_heap_alloc(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                data_byte_count,
+                false,
+            );
             if dest_data_ptr == 0 {
                 *last_mem_error = PPC_MEM_FULL_ERR;
                 return None;
@@ -32999,8 +33079,13 @@ fn ppc_q3_trimesh_copy_get_data_attribute_payloads(
             continue;
         };
         if source_use_ptr != 0 && ppc_memory_can_read_bytes(memory, source_use_ptr, element_count) {
-            let dest_use_ptr =
-                ppc_heap_alloc(memory, heap_cursor, heap_limit, element_count, false);
+            let dest_use_ptr = ppc_process_heap_alloc(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                element_count,
+                false,
+            );
             if dest_use_ptr == 0 {
                 *last_mem_error = PPC_MEM_FULL_ERR;
                 return None;
@@ -36545,12 +36630,12 @@ fn ppc_q3_write_bytes(memory: &mut PpcSectionMem, dest_ptr: u32, data: &[u8]) ->
 
 fn ppc_q3_memory_storage_new(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
     q3_memory_storages: &mut Vec<PpcQ3MemoryStorageRecord>,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> u32 {
     let source_ptr = cpu.gpr[3];
@@ -36562,9 +36647,9 @@ fn ppc_q3_memory_storage_new(
     };
     let valid_size = if source_ptr == 0 { 0 } else { requested_size };
     let Some(buffer_ptr) = ppc_q3_allocate_owned_storage_buffer(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         buffer_size,
         last_mem_error,
     ) else {
@@ -36589,12 +36674,12 @@ fn ppc_q3_memory_storage_new(
 
 fn ppc_q3_memory_storage_new_buffer(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
     q3_memory_storages: &mut Vec<PpcQ3MemoryStorageRecord>,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> u32 {
     let buffer_ptr = cpu.gpr[3];
@@ -36605,9 +36690,9 @@ fn ppc_q3_memory_storage_new_buffer(
             .max(valid_size)
             .max(PPC_Q3_MEMORY_STORAGE_DEFAULT_BUFFER_SIZE);
         let Some(allocated_ptr) = ppc_q3_allocate_owned_storage_buffer(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             allocated_size,
             last_mem_error,
         ) else {
@@ -36640,13 +36725,13 @@ fn ppc_q3_memory_storage_new_buffer(
 
 fn ppc_q3_fsspec_storage_new(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
     vfs_directories: &[PpcVfsDirectory],
     vfs_files: &[PpcVfsFileRecord],
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> u32 {
     let spec_ptr = cpu.gpr[3];
@@ -36667,9 +36752,9 @@ fn ppc_q3_fsspec_storage_new(
         return 0;
     };
     let Some(buffer_ptr) = ppc_q3_allocate_owned_storage_buffer(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         data_size,
         last_mem_error,
     ) else {
@@ -36726,13 +36811,13 @@ fn ppc_q3_memory_storage_create(
 
 fn ppc_q3_memory_storage_set(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut [PpcQ3ObjectRecord],
     q3_error_state: &mut PpcQ3ErrorState,
     q3_memory_storages: &mut Vec<PpcQ3MemoryStorageRecord>,
     q3_files: &[PpcQ3FileRecord],
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> bool {
     let storage = cpu.gpr[3];
@@ -36756,9 +36841,9 @@ fn ppc_q3_memory_storage_set(
     };
     let valid_size = if source_ptr == 0 { 0 } else { requested_size };
     let Some(buffer_ptr) = ppc_q3_allocate_owned_storage_buffer(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         buffer_size,
         last_mem_error,
     ) else {
@@ -36830,13 +36915,13 @@ fn ppc_q3_memory_storage_get_buffer(
 
 fn ppc_q3_memory_storage_set_buffer(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut [PpcQ3ObjectRecord],
     q3_error_state: &mut PpcQ3ErrorState,
     q3_memory_storages: &mut Vec<PpcQ3MemoryStorageRecord>,
     q3_files: &[PpcQ3FileRecord],
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> bool {
     let storage = cpu.gpr[3];
@@ -36859,9 +36944,9 @@ fn ppc_q3_memory_storage_set_buffer(
             .max(valid_size)
             .max(PPC_Q3_MEMORY_STORAGE_DEFAULT_BUFFER_SIZE);
         let Some(allocated_ptr) = ppc_q3_allocate_owned_storage_buffer(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             allocated_size,
             last_mem_error,
         ) else {
@@ -37037,6 +37122,7 @@ fn ppc_q3_storage_get_data(
 }
 
 fn ppc_q3_storage_set_data(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut [PpcQ3ObjectRecord],
     q3_error_state: &mut PpcQ3ErrorState,
@@ -37047,7 +37133,6 @@ fn ppc_q3_storage_set_data(
     source_ptr: u32,
     size_written_ptr: u32,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> bool {
     if size_written_ptr == 0 || !ppc_memory_can_write_bytes(memory, size_written_ptr, 4) {
@@ -37071,13 +37156,13 @@ fn ppc_q3_storage_set_data(
         };
         if end_offset > q3_memory_storages[side_index].buffer_size
             && !ppc_q3_memory_storage_grow_for_write(
+                process_memory_manager,
                 memory,
                 q3_objects,
                 q3_memory_storages,
                 side_index,
                 end_offset,
                 heap_cursor,
-                heap_limit,
                 last_mem_error,
             )
         {
@@ -37128,9 +37213,9 @@ fn ppc_q3_storage_set_data(
 }
 
 fn ppc_q3_allocate_owned_storage_buffer(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     buffer_size: u32,
     last_mem_error: &mut i16,
 ) -> Option<u32> {
@@ -37138,7 +37223,13 @@ fn ppc_q3_allocate_owned_storage_buffer(
         *last_mem_error = PPC_NO_ERR;
         return Some(0);
     }
-    let ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, buffer_size, true);
+    let ptr = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        buffer_size,
+        true,
+    );
     if ptr == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         None
@@ -37198,13 +37289,13 @@ fn ppc_q3_storage_is_open(q3_files: &[PpcQ3FileRecord], storage: u32) -> bool {
 }
 
 fn ppc_q3_memory_storage_grow_for_write(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut [PpcQ3ObjectRecord],
     q3_memory_storages: &mut Vec<PpcQ3MemoryStorageRecord>,
     side_index: usize,
     required_size: u32,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> bool {
     let old_record = q3_memory_storages[side_index];
@@ -37212,9 +37303,9 @@ fn ppc_q3_memory_storage_grow_for_write(
         .max(old_record.buffer_size.saturating_mul(2))
         .max(PPC_Q3_MEMORY_STORAGE_DEFAULT_BUFFER_SIZE);
     let Some(new_ptr) = ppc_q3_allocate_owned_storage_buffer(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         grown_size,
         last_mem_error,
     ) else {
@@ -37434,6 +37525,7 @@ fn ppc_q3_file_open_read(
 
 fn ppc_q3_file_read_object(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
@@ -37525,6 +37617,7 @@ fn ppc_q3_file_read_object(
             ppc_q3_group_add_membership_once(q3_group_memberships, parent_group, object);
         }
         ppc_q3_file_record_object_body(
+            process_memory_manager,
             memory,
             q3_objects,
             next_q3_object,
@@ -37542,6 +37635,7 @@ fn ppc_q3_file_read_object(
         );
         if chunk.object_type == PPC_Q3_TYPE_CONTAINER {
             let container_state = ppc_q3_file_record_container_children(
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
@@ -37593,6 +37687,7 @@ fn ppc_q3_file_read_object(
 }
 
 fn ppc_q3_file_record_object_body(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
@@ -37613,6 +37708,7 @@ fn ppc_q3_file_record_object_body(
     };
     if object_type == PPC_Q3_TYPE_TRIMESH {
         if let Some(data) = ppc_q3_file_decode_trimesh_3dmf_body(
+            process_memory_manager,
             memory,
             body_ptr,
             body_size,
@@ -37640,6 +37736,7 @@ fn ppc_q3_file_record_object_body(
         }
     } else if object_type == PPC_Q3_TEXTURE_TYPE_MIPMAP && body_size > 0 {
         if let Some(data) = ppc_q3_file_decode_mipmap_3dmf_body(
+            process_memory_manager,
             memory,
             q3_objects,
             next_q3_object,
@@ -37647,7 +37744,6 @@ fn ppc_q3_file_record_object_body(
             body_ptr,
             body_size,
             heap_cursor,
-            heap_limit,
             last_mem_error,
         )
         .or_else(|| ppc_q3_read_bytes(memory, body_ptr, body_size))
@@ -37664,6 +37760,7 @@ fn ppc_q3_file_record_object_body(
 }
 
 fn ppc_q3_file_decode_mipmap_3dmf_body(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
@@ -37671,7 +37768,6 @@ fn ppc_q3_file_decode_mipmap_3dmf_body(
     body_ptr: u32,
     body_size: u32,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> Option<Vec<u8>> {
     const HEADER_SIZE: u32 = 32;
@@ -37699,7 +37795,12 @@ fn ppc_q3_file_decode_mipmap_3dmf_body(
         return None;
     }
     let image = ppc_q3_read_bytes(memory, body_ptr.checked_add(HEADER_SIZE)?, image_size)?;
-    let image_ptr = ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &image)?;
+    let image_ptr = ppc_q3_file_alloc_and_write_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        &image,
+    )?;
     let image_storage = ppc_q3_alloc_object(
         q3_objects,
         next_q3_object,
@@ -37767,6 +37868,7 @@ struct PpcQ3Decoded3dmfTriMesh {
 }
 
 fn ppc_q3_file_decode_trimesh_3dmf_body(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     body_ptr: u32,
     body_size: u32,
@@ -37811,43 +37913,60 @@ fn ppc_q3_file_decode_trimesh_3dmf_body(
         return None;
     }
 
-    let triangles_ptr =
-        ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &decoded.triangles)?;
-    let points_ptr =
-        ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &decoded.points)?;
+    let triangles_ptr = ppc_q3_file_alloc_and_write_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        &decoded.triangles,
+    )?;
+    let points_ptr = ppc_q3_file_alloc_and_write_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        &decoded.points,
+    )?;
     let edges_ptr = if decoded.edges.is_empty() {
         0
     } else {
-        ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &decoded.edges)?
+        ppc_q3_file_alloc_and_write_bytes(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            &decoded.edges,
+        )?
     };
     let triangle_attribute_types_ptr = ppc_q3_file_alloc_and_write_zeroes(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         triangle_attribute_types_size,
     )?;
     let edge_attribute_types_ptr = ppc_q3_file_alloc_and_write_zeroes(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         edge_attribute_types_size,
     )?;
     let vertex_attribute_types_ptr = ppc_q3_file_alloc_and_write_zeroes(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         vertex_attribute_types_size,
     )?;
     for attribute in &decoded.attributes {
-        let data_ptr =
-            ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &attribute.data)?;
+        let data_ptr = ppc_q3_file_alloc_and_write_bytes(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            &attribute.data,
+        )?;
         let use_array_ptr = if attribute.use_array.is_empty() {
             0
         } else {
             ppc_q3_file_alloc_and_write_bytes(
+                process_memory_manager,
                 memory,
                 heap_cursor,
-                heap_limit,
                 &attribute.use_array,
             )?
         };
@@ -38081,16 +38200,22 @@ fn ppc_q3_file_parse_trimesh_attribute_array(
 }
 
 fn ppc_q3_file_alloc_and_write_bytes(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     data: &[u8],
 ) -> Option<u32> {
     if data.is_empty() {
         return Some(0);
     }
     let size = u32::try_from(data.len()).ok()?;
-    let ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, size, true);
+    let ptr = ppc_process_heap_alloc(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        size,
+        true,
+    );
     if ptr == 0 || !ppc_q3_write_bytes(memory, ptr, data) {
         return None;
     }
@@ -38098,16 +38223,16 @@ fn ppc_q3_file_alloc_and_write_bytes(
 }
 
 fn ppc_q3_file_alloc_and_write_zeroes(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     size: u32,
 ) -> Option<u32> {
     if size == 0 {
         return Some(0);
     }
     let data = vec![0; usize::try_from(size).ok()?];
-    ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &data)
+    ppc_q3_file_alloc_and_write_bytes(process_memory_manager, memory, heap_cursor, &data)
 }
 
 fn ppc_q3_file_write_trimesh_attribute_record(
@@ -38130,6 +38255,7 @@ fn ppc_q3_file_write_trimesh_attribute_record(
 }
 
 fn ppc_q3_file_attach_trimesh_attribute_array(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     target_trimesh: u32,
     body_ptr: u32,
@@ -38213,8 +38339,12 @@ fn ppc_q3_file_attach_trimesh_attribute_array(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return false;
     }
-    let Some(data_ptr) =
-        ppc_q3_file_alloc_and_write_bytes(memory, heap_cursor, heap_limit, &attribute.data)
+    let Some(data_ptr) = ppc_q3_file_alloc_and_write_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        &attribute.data,
+    )
     else {
         return false;
     };
@@ -38222,9 +38352,9 @@ fn ppc_q3_file_attach_trimesh_attribute_array(
         0
     } else {
         let Some(ptr) = ppc_q3_file_alloc_and_write_bytes(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             &attribute.use_array,
         ) else {
             return false;
@@ -38489,6 +38619,7 @@ fn ppc_q3_file_promote_container_root_object(
 }
 
 fn ppc_q3_file_record_container_children(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     next_q3_object: &mut u32,
@@ -38641,6 +38772,7 @@ fn ppc_q3_file_record_container_children(
                 }
             }
             ppc_q3_file_record_object_body(
+                process_memory_manager,
                 memory,
                 q3_objects,
                 next_q3_object,
@@ -38662,6 +38794,7 @@ fn ppc_q3_file_record_container_children(
                 if let Some(target_trimesh) = current_trimesh {
                     if let Some(body_ptr) = header_ptr.checked_add(8) {
                         let _ = ppc_q3_file_attach_trimesh_attribute_array(
+                            process_memory_manager,
                             memory,
                             target_trimesh,
                             body_ptr,
@@ -38692,6 +38825,7 @@ fn ppc_q3_file_record_container_children(
             }
             if object_type == PPC_Q3_TYPE_CONTAINER {
                 let child_state = ppc_q3_file_record_container_children(
+                    process_memory_manager,
                     memory,
                     q3_objects,
                     next_q3_object,
@@ -49856,6 +49990,7 @@ fn ppc_gestalt_response(selector: u32) -> Option<(u32, i16)> {
 
 fn ppc_get_shared_library(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -49925,8 +50060,13 @@ fn ppc_get_shared_library(
                     Ok(size) => size,
                     Err(_) => return return_error(PPC_FRAG_NO_MEM),
                 };
-                let fragment_addr =
-                    ppc_heap_alloc(memory, heap_cursor, heap_limit, fragment_size, false);
+                let fragment_addr = ppc_process_heap_alloc(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    fragment_size,
+                    false,
+                );
                 if fragment_addr == 0
                     || memory.write_bytes(fragment_addr, &fragment.bytes).is_none()
                 {
@@ -49934,6 +50074,7 @@ fn ppc_get_shared_library(
                 }
                 let prepared = match ppc_prepare_mem_fragment(
                     &fragment.bytes,
+                    Some(process_memory_manager),
                     memory,
                     heap_cursor,
                     heap_limit,
@@ -49954,6 +50095,7 @@ fn ppc_get_shared_library(
                 };
                 if prepared.init_addr != 0 {
                     let init_block = match ppc_create_mem_fragment_init_block(
+                        Some(process_memory_manager),
                         memory,
                         heap_cursor,
                         heap_limit,
@@ -50142,6 +50284,7 @@ fn ppc_find_symbol(
 
 fn ppc_get_mem_fragment(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -50222,6 +50365,7 @@ fn ppc_get_mem_fragment(
             };
             let prepared = match ppc_prepare_mem_fragment(
                 &fragment,
+                Some(process_memory_manager),
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -50254,6 +50398,7 @@ fn ppc_get_mem_fragment(
             };
             if prepared.init_addr != 0 {
                 let init_block = match ppc_create_mem_fragment_init_block(
+                    Some(process_memory_manager),
                     memory,
                     heap_cursor,
                     heap_limit,
@@ -50311,6 +50456,7 @@ fn ppc_get_mem_fragment(
 }
 
 fn ppc_create_mem_fragment_init_block(
+    mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -50326,14 +50472,28 @@ fn ppc_create_mem_fragment_init_block(
     let name = encode_mac_roman_lossy(fragment_name);
     let name_len = name.len().min(255);
     let name_size = u32::try_from(name_len + 1).map_err(|_| PPC_FRAG_NO_MEM)?;
-    let init_block = ppc_heap_alloc(
-        memory,
-        heap_cursor,
-        heap_limit,
-        PPC_CFM_INIT_BLOCK_SIZE,
-        true,
-    );
-    let name_ptr = ppc_heap_alloc(memory, heap_cursor, heap_limit, name_size, true);
+    let init_block = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+        ppc_process_heap_alloc(
+            memory_manager,
+            memory,
+            heap_cursor,
+            PPC_CFM_INIT_BLOCK_SIZE,
+            true,
+        )
+    } else {
+        ppc_heap_alloc(
+            memory,
+            heap_cursor,
+            heap_limit,
+            PPC_CFM_INIT_BLOCK_SIZE,
+            true,
+        )
+    };
+    let name_ptr = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+        ppc_process_heap_alloc(memory_manager, memory, heap_cursor, name_size, true)
+    } else {
+        ppc_heap_alloc(memory, heap_cursor, heap_limit, name_size, true)
+    };
     if init_block == 0 || name_ptr == 0 {
         return Err(PPC_FRAG_NO_MEM);
     }
@@ -50372,6 +50532,7 @@ fn ppc_create_mem_fragment_init_block(
 
 fn ppc_prepare_mem_fragment(
     fragment: &[u8],
+    process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -50456,6 +50617,11 @@ fn ppc_prepare_mem_fragment(
 
     for section in &mapped_sections {
         if memory.write_bytes(section.base, &section.bytes).is_none() {
+            return Err(PPC_FRAG_NO_ADDR_SPACE);
+        }
+    }
+    if let Some(memory_manager) = process_memory_manager {
+        if !memory_manager.commit_native_heap_cursor(next_heap_cursor) {
             return Err(PPC_FRAG_NO_ADDR_SPACE);
         }
     }
@@ -58696,6 +58862,7 @@ fn ppc_write_c_string(memory: &mut PpcSectionMem, ptr: u32, bytes: &[u8]) -> Opt
 
 fn ppc_isp_element_new_virtual_from_needs(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -58754,10 +58921,10 @@ fn ppc_isp_element_new_virtual_from_needs(
 
     let mut created_records = Vec::with_capacity(drafts.len());
     for draft in drafts {
-        let element = ppc_heap_alloc(
+        let element = ppc_process_heap_alloc(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE,
             true,
         );
@@ -58816,9 +58983,9 @@ fn ppc_isp_element_new_virtual_from_needs(
 
 fn ppc_isp_element_list_new(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
 ) -> i16 {
     let count = cpu.gpr[3];
     let elements_ptr = cpu.gpr[4];
@@ -58840,10 +59007,10 @@ fn ppc_isp_element_list_new(
     // the returned value is an opaque list reference initialized with the
     // supplied elements. Keep only the state needed by the empty event queue.
     let _ = memory.write_u32_be(out_list_ptr, 0);
-    let list = ppc_heap_alloc(
+    let list = ppc_process_heap_alloc(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
         PPC_ISP_ELEMENT_LIST_RECORD_SIZE,
         true,
     );
@@ -65241,11 +65408,14 @@ fn ppc_pb_status(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> i16 {
 
 fn ppc_get_ctable(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
 ) -> u32 {
@@ -65284,7 +65454,17 @@ fn ppc_get_ctable(
     let Some(data) = data else {
         return 0;
     };
-    let handle = ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &data);
+    let handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        &data,
+    );
     *last_mem_error = if handle == 0 {
         PPC_MEM_FULL_ERR
     } else {
@@ -65322,11 +65502,15 @@ fn ppc_read_ctable_clut(
 }
 
 fn ppc_new_pixmap(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     current_gdevice: u32,
 ) -> u32 {
     // Inside Macintosh: Imaging With QuickDraw (1994), pp. 4-85--4-86:
@@ -65357,13 +65541,26 @@ fn ppc_new_pixmap(
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
     }
-    let ctable_handle =
-        ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &ctable_bytes);
-    let pixmap_handle = ppc_alloc_handle(
+    let ctable_handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
         memory,
         heap_cursor,
-        heap_limit,
+        last_mem_error,
         handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        &ctable_bytes,
+    );
+    let pixmap_handle = ppc_process_alloc_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
         PPC_PIXMAP_SIZE,
         true,
     );
@@ -65389,8 +65586,15 @@ fn ppc_new_pixmap(
 
 fn ppc_dispose_pixmap(
     pixmap_handle: u32,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     indexed_screen_ctables: &mut HashMap<u32, u32>,
 ) {
@@ -65407,11 +65611,35 @@ fn ppc_dispose_pixmap(
         .or_else(|| indexed_screen_ctables.remove(&pixmap_handle))
         .unwrap_or(0);
     if ctable_handle != 0 {
-        ppc_dispose_tracked_handle(ctable_handle, memory, handles, handle_states);
+        let _ = ppc_dispose_process_native_handle(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            handles,
+            free_handle_blocks,
+            handle_states,
+            ctable_handle,
+        );
         indexed_screen_ctables.retain(|_, handle| *handle != ctable_handle);
     }
     indexed_screen_ctables.remove(&pixmap_handle);
-    ppc_dispose_tracked_handle(pixmap_handle, memory, handles, handle_states);
+    let _ = ppc_dispose_process_native_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        handles,
+        free_handle_blocks,
+        handle_states,
+        pixmap_handle,
+    );
 }
 
 fn ppc_get_dialog_item(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, handles: &[PpcHandleRecord]) {
@@ -76539,6 +76767,41 @@ fn ppc_new_rgn(
     handle
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_process_new_rgn(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+) -> u32 {
+    let handle = ppc_process_alloc_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        10,
+        true,
+    );
+    if handle == 0 {
+        *last_mem_error = PPC_MEM_FULL_ERR;
+        return 0;
+    }
+    if ppc_set_empty_rgn(memory, handle).is_none() {
+        *last_mem_error = PPC_PARAM_ERR;
+        return 0;
+    }
+    *last_mem_error = PPC_NO_ERR;
+    handle
+}
+
 fn ppc_clip_rect(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
@@ -77172,18 +77435,32 @@ fn ppc_open_polygon(memory: &mut PpcSectionMem, current_gworld: u32) -> Option<u
 }
 
 fn ppc_open_poly(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     current_gworld: u32,
 ) -> u32 {
     if current_gworld == 0 || ppc_open_polygon(memory, current_gworld).is_some() {
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
-    let handle = ppc_alloc_handle(memory, heap_cursor, heap_limit, handles, 10, true);
+    let handle = ppc_process_alloc_handle(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        10,
+        true,
+    );
     let Some(ptr) = memory.read_u32_be(handle).filter(|ptr| *ptr != 0) else {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return 0;
@@ -81870,11 +82147,14 @@ fn ppc_find_folder_dir_id(folder_type: u32) -> u32 {
 
 fn ppc_new_alias(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
 ) -> i16 {
     let _from_file_ptr = cpu.gpr[3];
@@ -81898,7 +82178,17 @@ fn ppc_new_alias(
         return PPC_PARAM_ERR;
     };
 
-    let handle = ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &alias_data);
+    let handle = ppc_process_alloc_handle_with_bytes(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        handles,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handle_states,
+        &alias_data,
+    );
     if handle == 0 {
         *last_mem_error = PPC_MEM_FULL_ERR;
         return PPC_MEM_FULL_ERR;
