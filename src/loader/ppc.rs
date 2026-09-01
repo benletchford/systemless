@@ -71,8 +71,9 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord,
-    ProcessMemoryManager, ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessPtrRecord,
-    SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
+    ProcessMemoryManager, ProcessNativeAllocatorState, ProcessNativeHeapState,
+    ProcessNativeMemoryManager, ProcessPtrRecord, SharedProcessAppleEventHandlers,
+    SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -8916,6 +8917,7 @@ impl PpcLoadedApp {
             .map(|binding| binding.symbol_index);
         let input = self.input;
         let mut event_queue = std::mem::take(&mut self.event_queue);
+        let process_memory_manager = process_memory_manager.native_mut();
         let native_allocator = process_memory_manager
             .native_allocator_snapshot()
             .expect("native allocator registered before execution");
@@ -16537,7 +16539,7 @@ fn dispatcher_target_for_import(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_synchronize_process_native_allocator(
-    memory_manager: &mut ProcessMemoryManager,
+    memory_manager: &mut ProcessNativeMemoryManager,
     heap_cursor: u32,
     heap_limit: u32,
     last_mem_error: i16,
@@ -16556,7 +16558,7 @@ fn ppc_synchronize_process_native_allocator(
 }
 
 fn ppc_synchronize_process_native_handles(
-    memory_manager: &mut ProcessMemoryManager,
+    memory_manager: &mut ProcessNativeMemoryManager,
     handles: &[PpcHandleRecord],
     handle_states: &[PpcHandleStateRecord],
 ) {
@@ -16589,7 +16591,7 @@ fn ppc_process_handle_state_bits(
 }
 
 fn ppc_apply_process_native_allocator(
-    memory_manager: &ProcessMemoryManager,
+    memory_manager: &ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
@@ -16610,7 +16612,7 @@ fn ppc_apply_process_native_allocator(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispose_process_native_handle(
-    memory_manager: &mut ProcessMemoryManager,
+    memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -16650,7 +16652,7 @@ fn ppc_dispose_process_native_handle(
 }
 
 fn ppc_apply_process_native_handle(
-    memory_manager: &ProcessMemoryManager,
+    memory_manager: &ProcessNativeMemoryManager,
     handles: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
@@ -16678,7 +16680,7 @@ fn ppc_apply_process_native_handle(
 }
 
 fn ppc_apply_process_handle_state(
-    memory_manager: &ProcessMemoryManager,
+    memory_manager: &ProcessNativeMemoryManager,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     handle: u32,
 ) {
@@ -16695,7 +16697,7 @@ fn ppc_apply_process_handle_state(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_apply_process_native_resource_handle(
-    memory_manager: &ProcessMemoryManager,
+    memory_manager: &ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
@@ -16720,7 +16722,7 @@ fn dispatch_supported_import(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     heap_cursor: &mut u32,
     heap_limit: u32,
     application_heap_limit: &mut u32,
@@ -27583,7 +27585,7 @@ fn ppc_write_ae_desc(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_create_process_owned_ae_desc(
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -27669,7 +27671,7 @@ fn ppc_create_process_owned_ae_desc(
 fn ppc_dispatch_apple_event_compatibility(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -31021,7 +31023,7 @@ fn ppc_dispatch_stdc_qsort(
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_object_support_compatibility(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -52269,7 +52271,7 @@ fn ppc_color_table_clut_from_bytes(bytes: &[u8]) -> Option<PpcGWorldClut> {
 #[allow(clippy::too_many_arguments)]
 fn ppc_new_gworld(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -52566,7 +52568,7 @@ fn ppc_new_gworld(
 #[allow(clippy::too_many_arguments)]
 fn ppc_update_gworld(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -57806,7 +57808,7 @@ fn ppc_dsp_context_global_to_local(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dsp_alt_buffer_new(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60207,7 +60209,7 @@ fn ppc_handle_resize_allocation_size(
 
 fn ppc_get_resource(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60284,7 +60286,7 @@ const PPC_ICON_SUITE_MAGIC: u32 = u32::from_be_bytes(*b"ISUT");
 #[allow(clippy::too_many_arguments)]
 fn ppc_get_icon_suite(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60406,7 +60408,7 @@ fn ppc_resource_name_eq(left: &[u8], right: &[u8]) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn ppc_get_named_resource(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60479,7 +60481,7 @@ fn ppc_get_named_resource(
 
 fn ppc_get_ind_resource(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60558,7 +60560,7 @@ fn ppc_get_ind_resource(
 
 fn ppc_get_ind_string(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -60614,7 +60616,7 @@ fn ppc_get_ind_string(
 
 fn ppc_get_ccursor(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61076,7 +61078,7 @@ fn ppc_plot_cicon(
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispose_cicon(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61139,7 +61141,7 @@ fn ppc_set_cursor(
 
 fn ppc_get_cursor(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61207,7 +61209,7 @@ fn ppc_get_cursor(
 }
 
 fn ppc_materialize_vfs_resource_handle(
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61792,7 +61794,7 @@ fn ppc_install_apple_event_handler(
 #[allow(clippy::too_many_arguments)]
 fn ppc_process_apple_event(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -61991,7 +61993,7 @@ fn ppc_process_apple_event(
 fn ppc_complete_apple_event_dispatch(
     apple_events: &mut PpcAppleEventState,
     guest_call_depth: usize,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     last_mem_error: &mut i16,
@@ -62163,7 +62165,7 @@ fn ppc_remove_resource(
 
 fn ppc_release_resource(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -62465,7 +62467,7 @@ fn ppc_position_dialog_bounds(
 #[allow(clippy::too_many_arguments)]
 fn ppc_new_alert_dialog(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -62605,7 +62607,7 @@ fn ppc_new_alert_dialog(
 #[allow(clippy::too_many_arguments)]
 fn ppc_get_new_dialog(
     cpu: &PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -62846,7 +62848,7 @@ fn ppc_new_dialog(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_initialize_dialog_items(
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -70658,7 +70660,7 @@ fn ppc_insert_resource_menu_names(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_insert_resource_menu(
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -73599,7 +73601,7 @@ fn ppc_finish_menu_bar_tracking(
 #[allow(clippy::too_many_arguments)]
 fn ppc_load_menu_resource(
     menu_id: i16,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -73679,7 +73681,7 @@ fn ppc_load_menu_resource(
 #[allow(clippy::too_many_arguments)]
 fn ppc_menu_definition_handle(
     mdef_id: i16,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -73744,7 +73746,7 @@ fn ppc_menu_definition_handle(
 #[allow(clippy::too_many_arguments)]
 fn ppc_resolve_menu_definition(
     menu_handle: u32,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -73976,7 +73978,7 @@ fn ppc_alloc_menu_list_definition_handle(
 #[allow(clippy::too_many_arguments)]
 fn ppc_get_new_mbar(
     mbar_id: i16,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -80811,7 +80813,7 @@ fn ppc_open_resource_path(
 
 fn ppc_close_res_file(
     cpu: &mut PpcCpu,
-    process_memory_manager: &mut ProcessMemoryManager,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,

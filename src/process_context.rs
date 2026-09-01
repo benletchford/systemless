@@ -187,7 +187,7 @@ impl<V> Default for SharedProcessMap<V> {
 }
 
 impl<V: Copy> SharedProcessMap<V> {
-    fn detached_clone(&self) -> Self {
+    pub(crate) fn detached_clone(&self) -> Self {
         Self(Rc::new(RefCell::new(self.0.borrow().clone())))
     }
 
@@ -244,7 +244,6 @@ impl<V: Copy> SharedProcessMap<V> {
 /// (1992), pp. 2-12, 2-40--2-41.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessMemoryManager {
-    classic_allocator: Option<SharedClassicHeapAllocator>,
     native: ProcessNativeMemoryManager,
 }
 
@@ -252,6 +251,7 @@ pub(crate) struct ProcessMemoryManager {
 /// imports and by the classic Memory Manager bridge.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessNativeMemoryManager {
+    classic_allocator: Option<SharedClassicHeapAllocator>,
     ptr_to_handle: SharedProcessMap<u32>,
     handle_state_bits: SharedProcessMap<u8>,
     handle_high_locked: SharedProcessMap<bool>,
@@ -311,8 +311,9 @@ impl ProcessNativeMemoryManager {
     const NO_ERR: i16 = 0;
     const PARAM_ERR: i16 = -50;
 
-    fn detached_clone(&self) -> Self {
+    pub(crate) fn detached_clone(&self) -> Self {
         Self {
+            classic_allocator: None,
             ptr_to_handle: self.ptr_to_handle.detached_clone(),
             handle_state_bits: self.handle_state_bits.detached_clone(),
             handle_high_locked: self.handle_high_locked.detached_clone(),
@@ -324,7 +325,7 @@ impl ProcessNativeMemoryManager {
         }
     }
 
-    fn restore_snapshot(&mut self, snapshot: Self) {
+    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
         self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
         self.handle_state_bits
             .replace_from(&snapshot.handle_state_bits);
@@ -335,22 +336,6 @@ impl ProcessNativeMemoryManager {
         self.native_allocations = snapshot.native_allocations;
         self.native_allocator = snapshot.native_allocator;
         self.native_allocator_dirty = snapshot.native_allocator_dirty;
-    }
-
-    fn commit_dispose_native_handle(&mut self, index: usize, record: ProcessHandleRecord) {
-        self.native_allocations.remove(index);
-        if record.ptr != 0 {
-            self.ptr_to_handle.remove(&record.ptr);
-            self.native_handle_ptrs.remove(&record.ptr);
-        }
-        self.handle_state_bits.remove(&record.handle);
-        self.handle_high_locked.remove(&record.handle);
-        self.native_handles.remove(&record.handle);
-        if let Some(allocator) = &mut self.native_allocator {
-            allocator.free_handle_blocks.push(record);
-            allocator.heap.last_mem_error = Self::NO_ERR;
-            self.native_allocator_dirty = true;
-        }
     }
 
     fn commit_empty_native_handle(&mut self, record: ProcessHandleRecord) {
@@ -491,24 +476,21 @@ impl SharedProcessMemoryManager {
 }
 
 impl ProcessMemoryManager {
-    const MEM_FULL_ERR: i16 = -108;
-    const NIL_HANDLE_ERR: i16 = -109;
-    const MEM_WZ_ERR: i16 = -111;
-    const MEM_PUR_ERR: i16 = -112;
-    const NO_ERR: i16 = 0;
-    const PARAM_ERR: i16 = -50;
+    #[cfg(test)]
+    const MEM_FULL_ERR: i16 = ProcessNativeMemoryManager::MEM_FULL_ERR;
+    #[cfg(test)]
+    const NIL_HANDLE_ERR: i16 = ProcessNativeMemoryManager::NIL_HANDLE_ERR;
+    #[cfg(test)]
+    const MEM_PUR_ERR: i16 = ProcessNativeMemoryManager::MEM_PUR_ERR;
+    #[cfg(test)]
+    const NO_ERR: i16 = ProcessNativeMemoryManager::NO_ERR;
+    #[cfg(test)]
+    const PARAM_ERR: i16 = ProcessNativeMemoryManager::PARAM_ERR;
 
     pub(crate) fn detached_clone(&self) -> Self {
         Self {
-            classic_allocator: None,
             native: self.native.detached_clone(),
         }
-    }
-
-    /// Restore native Memory Manager metadata from an isolated transaction
-    /// snapshot while preserving the shared indexes held by CPU adapters.
-    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
-        self.native.restore_snapshot(snapshot.native);
     }
 
     pub(crate) fn has_native_allocator(&self) -> bool {
@@ -519,6 +501,13 @@ impl ProcessMemoryManager {
         &mut self.native
     }
 
+    #[cfg(test)]
+    pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
+        self.native.restore_native_snapshot(snapshot.native);
+    }
+}
+
+impl ProcessNativeMemoryManager {
     /// Adopt the classic heap used by the process's 68K memory-bus adapter.
     ///
     /// The first attached bus contributes its live launch-time allocator;
@@ -1221,7 +1210,7 @@ impl ProcessMemoryManager {
         let ptr = bus.read_long(handle);
         if ptr != 0 {
             bus.free(ptr);
-            self.native.ptr_to_handle.remove(&ptr);
+            self.ptr_to_handle.remove(&ptr);
         }
         bus.write_long(handle, 0);
         Self::NO_ERR
@@ -1638,7 +1627,7 @@ impl ProcessNativeMemoryManager {
             return 0;
         }
         if memory.write_bytes(replacement, &bytes).is_none() {
-            self.restore_snapshot(snapshot);
+            self.restore_native_snapshot(snapshot);
             self.set_native_mem_error(Self::PARAM_ERR);
             return 0;
         }
