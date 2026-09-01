@@ -1458,6 +1458,13 @@ pub enum PpcImportDispatcherTarget {
     StdStrcmp,
     StdStrncmp,
     StdStrlen,
+    StdMemchr,
+    StdStrchr,
+    StdStrrchr,
+    StdStrspn,
+    StdStrcspn,
+    StdStrpbrk,
+    StdStrstr,
     StdAtoi,
     StdGetenv,
     StdSprintf,
@@ -14663,6 +14670,15 @@ fn dispatcher_target_for_import(
         ("StdCLib", "strcmp") => PpcImportDispatcherTarget::StdStrcmp,
         ("StdCLib", "strncmp") => PpcImportDispatcherTarget::StdStrncmp,
         ("StdCLib", "strlen") => PpcImportDispatcherTarget::StdStrlen,
+        // Apple Universal Interfaces 3.4 string.h declares these with the
+        // standard C pointer, int, and size_t signatures for PowerPC CFM.
+        ("StdCLib", "memchr") => PpcImportDispatcherTarget::StdMemchr,
+        ("StdCLib", "strchr") => PpcImportDispatcherTarget::StdStrchr,
+        ("StdCLib", "strrchr") => PpcImportDispatcherTarget::StdStrrchr,
+        ("StdCLib", "strspn") => PpcImportDispatcherTarget::StdStrspn,
+        ("StdCLib", "strcspn") => PpcImportDispatcherTarget::StdStrcspn,
+        ("StdCLib", "strpbrk") => PpcImportDispatcherTarget::StdStrpbrk,
+        ("StdCLib", "strstr") => PpcImportDispatcherTarget::StdStrstr,
         ("StdCLib", "atoi") => PpcImportDispatcherTarget::StdAtoi,
         ("StdCLib", "getenv") => PpcImportDispatcherTarget::StdGetenv,
         ("StdCLib", "sprintf") => PpcImportDispatcherTarget::StdSprintf,
@@ -22657,6 +22673,33 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::StdStrlen => {
             Some(PpcImportAction::Return(ppc_std_strlen(memory, cpu.gpr[3])))
         }
+        PpcImportDispatcherTarget::StdMemchr => Some(PpcImportAction::Return(ppc_std_memchr(
+            memory, cpu.gpr[3], cpu.gpr[4] as u8, cpu.gpr[5],
+        ))),
+        PpcImportDispatcherTarget::StdStrchr => Some(PpcImportAction::Return(ppc_std_strchr(
+            memory,
+            cpu.gpr[3],
+            cpu.gpr[4] as u8,
+            false,
+        ))),
+        PpcImportDispatcherTarget::StdStrrchr => Some(PpcImportAction::Return(ppc_std_strchr(
+            memory,
+            cpu.gpr[3],
+            cpu.gpr[4] as u8,
+            true,
+        ))),
+        PpcImportDispatcherTarget::StdStrspn => Some(PpcImportAction::Return(ppc_std_strspn(
+            memory, cpu.gpr[3], cpu.gpr[4], true,
+        ))),
+        PpcImportDispatcherTarget::StdStrcspn => Some(PpcImportAction::Return(ppc_std_strspn(
+            memory, cpu.gpr[3], cpu.gpr[4], false,
+        ))),
+        PpcImportDispatcherTarget::StdStrpbrk => Some(PpcImportAction::Return(ppc_std_strpbrk(
+            memory, cpu.gpr[3], cpu.gpr[4],
+        ))),
+        PpcImportDispatcherTarget::StdStrstr => Some(PpcImportAction::Return(ppc_std_strstr(
+            memory, cpu.gpr[3], cpu.gpr[4],
+        ))),
         PpcImportDispatcherTarget::StdAtoi => {
             Some(PpcImportAction::Return(ppc_std_atoi(memory, cpu.gpr[3])))
         }
@@ -72421,6 +72464,156 @@ fn ppc_std_strlen(memory: &mut PpcSectionMem, string: u32) -> u32 {
         }
     }
     length
+}
+
+fn ppc_std_memchr(memory: &mut PpcSectionMem, bytes: u32, needle: u8, count: u32) -> u32 {
+    for offset in 0..count {
+        let Some(address) = bytes.checked_add(offset) else {
+            return 0;
+        };
+        let Some(value) = memory.read_u8(address) else {
+            return 0;
+        };
+        if value == needle {
+            return address;
+        }
+    }
+    0
+}
+
+fn ppc_std_strchr(
+    memory: &mut PpcSectionMem,
+    string: u32,
+    needle: u8,
+    reverse: bool,
+) -> u32 {
+    let mut offset = 0u32;
+    let mut last = 0u32;
+    loop {
+        let Some(address) = string.checked_add(offset) else {
+            return 0;
+        };
+        let Some(value) = memory.read_u8(address) else {
+            return 0;
+        };
+        if value == needle {
+            if !reverse {
+                return address;
+            }
+            last = address;
+        }
+        if value == 0 {
+            return last;
+        }
+        let Some(next) = offset.checked_add(1) else {
+            return 0;
+        };
+        offset = next;
+    }
+}
+
+fn ppc_std_c_string_contains(memory: &mut PpcSectionMem, string: u32, needle: u8) -> bool {
+    let mut offset = 0u32;
+    loop {
+        let Some(address) = string.checked_add(offset) else {
+            return false;
+        };
+        match memory.read_u8(address) {
+            Some(0) | None => return false,
+            Some(value) if value == needle => return true,
+            Some(_) => {
+                let Some(next) = offset.checked_add(1) else {
+                    return false;
+                };
+                offset = next;
+            }
+        }
+    }
+}
+
+fn ppc_std_strspn(memory: &mut PpcSectionMem, string: u32, set: u32, accept: bool) -> u32 {
+    let mut length = 0u32;
+    loop {
+        let Some(address) = string.checked_add(length) else {
+            return length;
+        };
+        let Some(value) = memory.read_u8(address) else {
+            return length;
+        };
+        if value == 0 || ppc_std_c_string_contains(memory, set, value) != accept {
+            return length;
+        }
+        let Some(next) = length.checked_add(1) else {
+            return length;
+        };
+        length = next;
+    }
+}
+
+fn ppc_std_strpbrk(memory: &mut PpcSectionMem, string: u32, set: u32) -> u32 {
+    let mut offset = 0u32;
+    loop {
+        let Some(address) = string.checked_add(offset) else {
+            return 0;
+        };
+        let Some(value) = memory.read_u8(address) else {
+            return 0;
+        };
+        if value == 0 {
+            return 0;
+        }
+        if ppc_std_c_string_contains(memory, set, value) {
+            return address;
+        }
+        let Some(next) = offset.checked_add(1) else {
+            return 0;
+        };
+        offset = next;
+    }
+}
+
+fn ppc_std_strstr(memory: &mut PpcSectionMem, haystack: u32, needle: u32) -> u32 {
+    match memory.read_u8(needle) {
+        Some(0) => return haystack,
+        Some(_) => {}
+        None => return 0,
+    }
+    let mut candidate_offset = 0u32;
+    loop {
+        let Some(candidate) = haystack.checked_add(candidate_offset) else {
+            return 0;
+        };
+        match memory.read_u8(candidate) {
+            Some(0) | None => return 0,
+            Some(_) => {}
+        }
+        let mut match_offset = 0u32;
+        loop {
+            let Some(needle_address) = needle.checked_add(match_offset) else {
+                return 0;
+            };
+            let Some(needle_value) = memory.read_u8(needle_address) else {
+                return 0;
+            };
+            if needle_value == 0 {
+                return candidate;
+            }
+            let Some(haystack_address) = candidate.checked_add(match_offset) else {
+                return 0;
+            };
+            if memory.read_u8(haystack_address) != Some(needle_value) {
+                break;
+            }
+            let Some(next) = match_offset.checked_add(1) else {
+                return 0;
+            };
+            match_offset = next;
+        }
+        let Some(next) = candidate_offset.checked_add(1) else {
+            return 0;
+        };
+        candidate_offset = next;
+    }
 }
 
 fn ppc_std_c_string(memory: &mut PpcSectionMem, string: u32, limit: usize) -> Vec<u8> {
@@ -155115,6 +155308,107 @@ pub(crate) mod tests {
             PpcImportDispatcherTarget::StdGetenv,
             dispatcher_target_for_import("StdCLib", "getenv")
         );
+    }
+
+    #[test]
+    fn stdclib_string_search_helpers_cover_guest_abi_edges() {
+        for (name, target) in [
+            ("memchr", PpcImportDispatcherTarget::StdMemchr),
+            ("strchr", PpcImportDispatcherTarget::StdStrchr),
+            ("strrchr", PpcImportDispatcherTarget::StdStrrchr),
+            ("strspn", PpcImportDispatcherTarget::StdStrspn),
+            ("strcspn", PpcImportDispatcherTarget::StdStrcspn),
+            ("strpbrk", PpcImportDispatcherTarget::StdStrpbrk),
+            ("strstr", PpcImportDispatcherTarget::StdStrstr),
+        ] {
+            assert_eq!(dispatcher_target_for_import("StdCLib", name), target);
+        }
+
+        let mut loaded = load_pef_application(&synthetic_pef_with_library_import(
+            b"StdCLib",
+            b"memchr",
+        ))
+        .unwrap();
+        let string = PPC_DATA_BASE + 0x2400;
+        let set = string + 0x40;
+        let reject = string + 0x50;
+        let needle = string + 0x60;
+        let empty = string + 0x80;
+        loaded.memory.add_region(string, vec![0; 0x100]);
+        loaded.memory.write_bytes(string, b"abc123abc\0").unwrap();
+        loaded.memory.write_bytes(set, b"abc\0").unwrap();
+        loaded.memory.write_bytes(reject, b"13\0").unwrap();
+        loaded.memory.write_bytes(needle, b"123a\0").unwrap();
+
+        assert_eq!(ppc_std_memchr(&mut loaded.memory, string, b'c', 3), string + 2);
+        assert_eq!(ppc_std_memchr(&mut loaded.memory, string, b'c', 2), 0);
+        assert_eq!(ppc_std_memchr(&mut loaded.memory, string, b'a', 0), 0);
+        assert_eq!(
+            ppc_std_strchr(&mut loaded.memory, string, b'a', false),
+            string
+        );
+        assert_eq!(
+            ppc_std_strchr(&mut loaded.memory, string, b'a', true),
+            string + 6
+        );
+        assert_eq!(
+            ppc_std_strchr(&mut loaded.memory, string, 0, false),
+            string + 9
+        );
+        assert_eq!(
+            ppc_std_strchr(&mut loaded.memory, string, 0, true),
+            string + 9
+        );
+        assert_eq!(ppc_std_strchr(&mut loaded.memory, string, b'z', false), 0);
+        assert_eq!(ppc_std_strspn(&mut loaded.memory, string, set, true), 3);
+        assert_eq!(ppc_std_strspn(&mut loaded.memory, string, reject, false), 3);
+        assert_eq!(ppc_std_strspn(&mut loaded.memory, string, empty, true), 0);
+        assert_eq!(ppc_std_strspn(&mut loaded.memory, string, empty, false), 9);
+        assert_eq!(
+            ppc_std_strpbrk(&mut loaded.memory, string, reject),
+            string + 3
+        );
+        assert_eq!(ppc_std_strpbrk(&mut loaded.memory, string, empty), 0);
+        assert_eq!(
+            ppc_std_strstr(&mut loaded.memory, string, needle),
+            string + 3
+        );
+        assert_eq!(ppc_std_strstr(&mut loaded.memory, string, empty), string);
+        loaded.memory.write_bytes(needle, b"missing\0").unwrap();
+        assert_eq!(ppc_std_strstr(&mut loaded.memory, string, needle), 0);
+
+        for (name, argument, count, expected) in [
+            (b"memchr".as_slice(), 0x163, 9, string + 2),
+            (b"strchr".as_slice(), u32::from(b'a'), 0, string),
+            (b"strrchr".as_slice(), u32::from(b'a'), 0, string + 6),
+            (b"strspn".as_slice(), set, 0, 3),
+            (b"strcspn".as_slice(), reject, 0, 3),
+            (b"strpbrk".as_slice(), reject, 0, string + 3),
+            (b"strstr".as_slice(), needle, 0, string + 3),
+        ] {
+            let mut imported = load_pef_application(&synthetic_pef_with_library_import(
+                b"StdCLib", name,
+            ))
+            .unwrap();
+            imported.memory.add_region(string, vec![0; 0x100]);
+            imported
+                .memory
+                .write_bytes(string, b"abc123abc\0")
+                .unwrap();
+            imported.memory.write_bytes(set, b"abc\0").unwrap();
+            imported.memory.write_bytes(reject, b"13\0").unwrap();
+            imported.memory.write_bytes(needle, b"123a\0").unwrap();
+            imported.cpu.gpr[3] = string;
+            imported.cpu.gpr[4] = argument;
+            imported.cpu.gpr[5] = count;
+            imported.cpu.pc = imported.entry_pc;
+            imported.cpu.lr = PPC_HALT_PC;
+
+            let result = imported.run_with_hle_imports(64);
+
+            assert_eq!(result.handled_import_count, 1, "{}", decode_mac_roman(name));
+            assert_eq!(imported.cpu.gpr[3], expected, "{}", decode_mac_roman(name));
+        }
     }
 
     #[test]
