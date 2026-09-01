@@ -431,7 +431,7 @@ impl super::TrapDispatcher {
                     r.bottom,
                     r.right,
                     area,
-                    self.current_port,
+                    *self.current_port,
                     self.tick_count,
                 );
             }
@@ -1169,12 +1169,12 @@ impl super::TrapDispatcher {
 
         if trace_dialog_text_enabled()
             && matches!(op, ShapeOp::Glyph(_))
-            && port != self.current_port
+            && port != *self.current_port
         {
             eprintln!(
                 "[DIALOG-TEXT] Glyph port mismatch a5_port=${:08X} current_port=${:08X} rect=({},{}..{},{} )",
                 port,
-                self.current_port,
+                *self.current_port,
                 r.top,
                 r.left,
                 r.bottom,
@@ -1433,7 +1433,7 @@ impl super::TrapDispatcher {
             let is_screen_port = pix_base == self.screen_mode.0
                 && pix_row_bytes == self.screen_mode.1
                 && pixel_size == self.screen_mode.4;
-            let current_ctab_handle = if port == self.current_port {
+            let current_ctab_handle = if port == *self.current_port {
                 self.current_gdevice_ctab_handle(bus)
             } else {
                 0
@@ -1636,7 +1636,7 @@ impl super::TrapDispatcher {
                 let is_screen_port = pix_base == self.screen_mode.0
                     && pix_row_bytes == self.screen_mode.1
                     && pixel_size == self.screen_mode.4;
-                let current_ctab_handle = if port == self.current_port {
+                let current_ctab_handle = if port == *self.current_port {
                     self.current_gdevice_ctab_handle(bus)
                 } else {
                     0

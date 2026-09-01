@@ -405,11 +405,11 @@ impl super::TrapDispatcher {
         if callable.is_empty() {
             return false;
         }
-        let restore_port = self.current_port;
-        let restore_gdevice = self.current_gdevice;
+        let restore_port = *self.current_port;
+        let restore_gdevice = *self.current_gdevice;
         let first_ctrl_ptr = Self::control_record_ptr(bus, callable[0].0);
         let owner = bus.read_long(first_ctrl_ptr + 4);
-        if owner != 0 && owner != self.current_port {
+        if owner != 0 && owner != *self.current_port {
             self.set_current_port_state(bus, cpu, owner, None);
         }
         let final_sp = cpu.read_reg(Register::A7);
@@ -1297,8 +1297,8 @@ impl super::TrapDispatcher {
                 return;
             }
         }
-        let saved_port = self.current_port;
-        let saved_gdevice = self.current_gdevice;
+        let saved_port = *self.current_port;
+        let saved_gdevice = *self.current_gdevice;
         if window_ptr != 0 && window_ptr != saved_port {
             self.set_current_port_state(bus, cpu, window_ptr, None);
         }
@@ -1580,7 +1580,7 @@ impl super::TrapDispatcher {
         for (top, left, width, height, pixels) in occluded_pixels {
             self.restore_screen_rect_pixels(bus, top, left, width, height, &pixels);
         }
-        if self.current_port != saved_port || self.current_gdevice != saved_gdevice {
+        if *self.current_port != saved_port || *self.current_gdevice != saved_gdevice {
             self.set_current_port_state(bus, cpu, saved_port, Some(saved_gdevice));
         }
     }
@@ -4058,7 +4058,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let ctrl_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let saved_gdevice = self.current_gdevice;
+                let saved_gdevice = *self.current_gdevice;
                 // Treat stale or out-of-range handles as inert rather than
                 // dereferencing arbitrary guest memory. The control record's
                 // Pascal title begins at offset 40, so we also reject handles
@@ -4083,7 +4083,7 @@ impl super::TrapDispatcher {
                                 // reuse the same control path as DrawControls.
                                 self.draw_control(cpu, bus, ctrl_ptr);
                             }
-                            debug_assert_eq!(self.current_gdevice, saved_gdevice);
+                            debug_assert_eq!(*self.current_gdevice, saved_gdevice);
                         }
                     }
                 }
@@ -5337,7 +5337,7 @@ mod tests {
         );
         assert_eq!(bus.read_long(trampoline + 26), 0);
         assert_eq!(bus.read_long(trampoline + 32), cdef_proc);
-        assert_eq!(disp.current_port, owner);
+        assert_eq!(*disp.current_port, owner);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::PC, return_pc);
@@ -5475,7 +5475,7 @@ mod tests {
         for offset in 0..(row_bytes * 128) {
             bus.write_byte(screen_base + offset, 0);
         }
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         bus.write_word(window_ptr + 8, 0);
         bus.write_word(window_ptr + 10, 0);
         bus.write_word(window_ptr + 16, 0);
@@ -5550,7 +5550,7 @@ mod tests {
             bus.write_byte(screen_base + offset, 0);
         }
 
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         bus.write_word(window_ptr + 8, 0);
         bus.write_word(window_ptr + 10, 0);
         bus.write_word(window_ptr + 16, 0);
@@ -5665,7 +5665,7 @@ mod tests {
         for offset in 0..(row_bytes * 128) {
             bus.write_byte(screen_base + offset, 0);
         }
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         bus.write_word(window_ptr + 8, 0);
         bus.write_word(window_ptr + 10, 0);
         bus.write_word(window_ptr + 16, 0);
@@ -5810,7 +5810,7 @@ mod tests {
         disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
         disp.enable_input_trace_capture();
         let sp = 0x300000u32;
-        let window = disp.current_port;
+        let window = *disp.current_port;
         let row_bytes = 64u32;
         let base = bus.alloc(row_bytes * 342);
         disp.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
@@ -5892,7 +5892,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.set_ui_theme_id(theme_id);
         let sp = 0x300000u32;
-        let window = disp.current_port;
+        let window = *disp.current_port;
         let screen_base = bus.read_long(window + 2);
         let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
         disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
@@ -5963,7 +5963,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         disp.set_ui_theme_id(theme_id);
         let sp = 0x300000u32;
-        let window = disp.current_port;
+        let window = *disp.current_port;
         let screen_base = bus.read_long(window + 2);
         let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
         disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
@@ -6177,7 +6177,7 @@ mod tests {
         disp.set_ui_theme_id(UiThemeId::SystemlessDefault);
         disp.enable_input_trace_capture();
         let sp = 0x300000u32;
-        let window = disp.current_port;
+        let window = *disp.current_port;
         let screen_base = bus.read_long(window + 2);
         let row_bytes = (bus.read_word(window + 6) & 0x3FFF) as u32;
         disp.set_screen_mode_for_test(screen_base, row_bytes, 512, 342, 1);
@@ -6894,7 +6894,7 @@ mod tests {
         bus.write_word(0x0828, row_bytes as u16);
         clear_1bpp_screen(&mut bus, screen_base, row_bytes, 128);
 
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         bus.write_word(window_ptr + 16, 0);
         bus.write_word(window_ptr + 18, 0);
         bus.write_word(window_ptr + 20, 128);
@@ -7062,8 +7062,8 @@ mod tests {
     fn draw1control_popup_control_preserves_current_gdevice_and_pops_arg() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let sp = 0x300000u32;
-        let window_ptr = disp.current_port;
-        let gdevice_before = disp.current_gdevice;
+        let window_ptr = *disp.current_port;
+        let gdevice_before = *disp.current_gdevice;
         let (ctrl_handle, ctrl_ptr) =
             alloc_button_control(&mut disp, &mut bus, window_ptr, (20, 20, 260, 60));
         disp.control_proc_ids.insert(ctrl_ptr, 1008);
@@ -7076,7 +7076,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(cpu.read_reg(Register::A7), sp + 4);
-        assert_eq!(disp.current_gdevice, gdevice_before);
+        assert_eq!(*disp.current_gdevice, gdevice_before);
     }
 
     #[test]
@@ -7169,7 +7169,7 @@ mod tests {
         let bounds = (20, 20, 40, 120);
 
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-        let classic_window = classic.current_port;
+        let classic_window = *classic.current_port;
         let classic_base = classic_bus.read_long(classic_window + 2);
         let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
         classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
@@ -7186,7 +7186,7 @@ mod tests {
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_window = themed.current_port;
+        let themed_window = *themed.current_port;
         let themed_base = themed_bus.read_long(themed_window + 2);
         let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
         themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
@@ -7232,7 +7232,7 @@ mod tests {
         let sp = 0x300000u32;
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_window = themed.current_port;
+        let themed_window = *themed.current_port;
         let row_bytes = 64u32;
         let base = themed_bus.alloc(row_bytes * 342);
         themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
@@ -7293,7 +7293,7 @@ mod tests {
         let bounds = (20, 20, 40, 80);
 
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-        let classic_window = classic.current_port;
+        let classic_window = *classic.current_port;
         let classic_base = classic_bus.read_long(classic_window + 2);
         let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
         classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
@@ -7308,7 +7308,7 @@ mod tests {
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_window = themed.current_port;
+        let themed_window = *themed.current_port;
         let themed_base = themed_bus.read_long(themed_window + 2);
         let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
         themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
@@ -7348,7 +7348,7 @@ mod tests {
         let sp = 0x300000u32;
         let (mut themed, mut cpu, mut bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let window = themed.current_port;
+        let window = *themed.current_port;
         let row_bytes = 64u32;
         let base = bus.alloc(row_bytes * 342);
         themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
@@ -7418,7 +7418,7 @@ mod tests {
         let sp = 0x300000u32;
 
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
-        let classic_window = classic.current_port;
+        let classic_window = *classic.current_port;
         let classic_base = classic_bus.read_long(classic_window + 2);
         let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
         classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
@@ -7449,7 +7449,7 @@ mod tests {
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_window = themed.current_port;
+        let themed_window = *themed.current_port;
         let themed_base = themed_bus.read_long(themed_window + 2);
         let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
         themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
@@ -7527,7 +7527,7 @@ mod tests {
         let sp = 0x300000u32;
         let (mut themed, mut cpu, mut bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let window = themed.current_port;
+        let window = *themed.current_port;
         let row_bytes = 64u32;
         let base = bus.alloc(row_bytes * 342);
         themed.set_screen_mode_for_test(base, row_bytes, 512, 342, 1);
@@ -7621,7 +7621,7 @@ mod tests {
         let bounds = (20, 20, 180, 36);
 
         let (mut classic, _classic_cpu, mut classic_bus) = setup_with_port();
-        let classic_window = classic.current_port;
+        let classic_window = *classic.current_port;
         let classic_base = classic_bus.read_long(classic_window + 2);
         let classic_row_bytes = (classic_bus.read_word(classic_window + 6) & 0x3FFF) as u32;
         classic.set_screen_mode_for_test(classic_base, classic_row_bytes, 512, 342, 1);
@@ -7649,7 +7649,7 @@ mod tests {
 
         let (mut themed, mut themed_cpu, mut themed_bus) = setup_with_port();
         themed.set_ui_theme_id(UiThemeId::SystemlessDefault);
-        let themed_window = themed.current_port;
+        let themed_window = *themed.current_port;
         let themed_base = themed_bus.read_long(themed_window + 2);
         let themed_row_bytes = (themed_bus.read_word(themed_window + 6) & 0x3FFF) as u32;
         themed.set_screen_mode_for_test(themed_base, themed_row_bytes, 512, 342, 1);
@@ -7871,7 +7871,7 @@ mod tests {
     fn dragcontrol_pops_18_bytes_and_leaves_contrlrect_unchanged_on_no_drag_path() {
         let (mut disp, mut cpu, mut bus) = setup_with_port();
         let sp = 0x300000u32;
-        let window_ptr = disp.current_port;
+        let window_ptr = *disp.current_port;
         let (ctrl_handle, ctrl_ptr) = alloc_control_handle(&mut bus, (88, 96, 132, 220), 0, 0);
         let limit_rect_ptr = bus.alloc(8);
         let slop_rect_ptr = bus.alloc(8);

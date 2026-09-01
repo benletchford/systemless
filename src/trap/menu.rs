@@ -3292,7 +3292,7 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 cpu.write_reg(Register::A7, sp + 8);
 
-                let port = self.current_port;
+                let port = *self.current_port;
                 if port == 0 {
                     return Some(Ok(()));
                 }
@@ -7431,7 +7431,7 @@ mod tests {
             .insert(mdef_handle, (mdef_ptr, *b"MDEF", 256));
         insert_menu(&mut disp, &mut cpu, &mut bus, handle);
         disp.draw_menu_bar_to_fb(&mut bus);
-        let original_port = disp.current_port;
+        let original_port = *disp.current_port;
 
         let trap_pc = 0x0012_3400;
         cpu.write_reg(Register::PC, trap_pc + 2);
@@ -7451,7 +7451,7 @@ mod tests {
         assert_eq!(bus.read_long(TEST_SP - 4), trap_pc);
         assert!(disp.is_menu_definition_callback_pending());
         assert_eq!(disp.guest_calls.len(), 1);
-        assert_eq!(disp.current_port, disp.window_manager_cport);
+        assert_eq!(*disp.current_port, disp.window_manager_cport);
 
         cpu.write_reg(Register::PC, trap_pc + 2);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -7507,7 +7507,7 @@ mod tests {
         assert_eq!(disp.menu_tracking, None);
         assert_eq!(disp.menu_definition_tracking, None);
         assert!(disp.guest_calls.is_empty());
-        assert_eq!(disp.current_port, original_port);
+        assert_eq!(*disp.current_port, original_port);
     }
 
     #[test]
@@ -15984,7 +15984,7 @@ mod tests {
         setup_8bpp_menu_screen(&mut disp, &mut bus, 240, 120);
         disp.menu_bar_hidden = false;
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 20);
-        let original_port = disp.current_port;
+        let original_port = *disp.current_port;
 
         let root = new_menu_with_title(&mut disp, &mut cpu, &mut bus, 140, 0x310600, "File");
         append_menu_data(
@@ -16073,7 +16073,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(disp.menu_tracking.as_ref().unwrap().submenus.is_empty());
-        assert_eq!(disp.current_port, original_port);
+        assert_eq!(*disp.current_port, original_port);
 
         disp.input_state.mouse_pos = (root_rect.0 + 8, root_rect.1 + 16);
         cpu.write_reg(Register::PC, trap_pc + 2);

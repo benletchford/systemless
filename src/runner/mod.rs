@@ -2210,7 +2210,7 @@ impl FixtureRunner {
                 &mut ppc_app.memory,
                 &ppc_app.gworlds,
                 PpcGWorldDumpState {
-                    current_gworld: ppc_app.current_gworld,
+                    current_gworld: *ppc_app.current_gworld,
                     front_gworld: ppc_app.draw_sprocket.front_buffer_gworld,
                     back_gworld: ppc_app.draw_sprocket.back_buffer_gworld,
                     swap_count: ppc_app.draw_sprocket.swap_count,
@@ -5968,7 +5968,7 @@ impl FixtureRunner {
                     tick: self.dispatcher.tick_count,
                     pc,
                     lr: ppc_app.cpu.lr,
-                    current_gworld: ppc_app.current_gworld,
+                    current_gworld: *ppc_app.current_gworld,
                     screen_events: self.dispatcher.screen_event_count,
                     handled_import_count: probe.handled_import_count,
                     last_import_index: probe.last_import_index,
@@ -13461,8 +13461,8 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             process_file_system: ppc_initial_process_file_system(),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -15694,8 +15694,8 @@ mod tests {
                 }],
             ),
             ),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -16591,8 +16591,8 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             process_file_system: ppc_initial_process_file_system(),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -16744,8 +16744,8 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             process_file_system: ppc_initial_process_file_system(),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -17156,8 +17156,8 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             process_file_system: ppc_initial_process_file_system(),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -17468,8 +17468,8 @@ mod tests {
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
             process_file_system: ppc_initial_process_file_system(),
-            current_gworld: PPC_MAIN_GWORLD,
-            current_gdevice: PPC_MAIN_GDEVICE,
+            current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+            current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
             quickdraw_fore_color: PpcRgbColor {
                 red: 0,
                 green: 0,
@@ -23782,7 +23782,7 @@ mod tests {
             .dialog_ptr = dialog_ptr;
 
         assert!(runner.fire_dialog_filter_proc());
-        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
+        assert_eq!(*runner.dispatcher.current_port, dialog_ptr);
         assert_eq!(
             runner
                 .active_interrupt_callback
@@ -23796,7 +23796,7 @@ mod tests {
         let (_steps, running) = runner.run_steps(1, None);
 
         assert!(running);
-        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
+        assert_eq!(*runner.dispatcher.current_port, dialog_ptr);
         assert!(runner.active_interrupt_callback.is_none());
     }
 
@@ -24117,7 +24117,7 @@ mod tests {
         assert!(running);
         assert!(runner.active_interrupt_callback.is_none());
         assert_eq!(
-            runner.dispatcher.current_port, dialog_ptr,
+            *runner.dispatcher.current_port, dialog_ptr,
             "Dialog Manager must leave the dialog port current after the draw proc"
         );
     }
@@ -24202,7 +24202,7 @@ mod tests {
 
         assert!(running);
         assert!(runner.active_interrupt_callback.is_none());
-        assert_eq!(runner.dispatcher.current_port, dialog_ptr);
+        assert_eq!(*runner.dispatcher.current_port, dialog_ptr);
         assert_eq!(runner.bus.read_word(dialog_ptr + 52), 1);
         assert_eq!(runner.bus.read_word(dialog_ptr + 54), 1);
         assert_eq!(runner.bus.read_word(dialog_ptr + 56), 8);

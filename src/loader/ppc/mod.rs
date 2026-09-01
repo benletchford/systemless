@@ -3372,8 +3372,8 @@ pub struct PpcLoadedApp {
     pub timer_tasks: Vec<PpcTimerTaskRecord>,
     pub vbl_tasks: Vec<PpcVblTaskRecord>,
     pub(crate) process_file_system: SharedProcessFileSystem,
-    pub current_gworld: u32,
-    pub current_gdevice: u32,
+    pub current_gworld: SharedProcessValue<u32>,
+    pub current_gdevice: SharedProcessValue<u32>,
     pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
@@ -3857,6 +3857,7 @@ impl PpcLoadedApp {
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_display_color_state(
             &mut self.screen_clut,
             &mut self.color_manager_clut,
@@ -3984,7 +3985,7 @@ impl PpcLoadedApp {
     }
 
     pub fn current_front_buffer(&self) -> Option<PpcFrontBuffer> {
-        ppc_front_buffer_for_gworld(&self.gworlds, self.current_gworld)
+        ppc_front_buffer_for_gworld(&self.gworlds, *self.current_gworld)
     }
 
     pub fn presented_front_buffer(&self) -> Option<PpcFrontBuffer> {
@@ -4037,7 +4038,7 @@ impl PpcLoadedApp {
                         clear_color: None,
                         source: PpcQ3RenderTargetSource::CurrentGWorld,
                         draw_context: None,
-                        gworld: Some(self.current_gworld),
+                        gworld: Some(*self.current_gworld),
                     })
             })
     }
@@ -5021,7 +5022,7 @@ impl PpcLoadedApp {
             &self.q3_views,
             &self.q3_draw_contexts,
             &self.gworlds,
-            self.current_gworld,
+            *self.current_gworld,
             frame,
         )
     }
@@ -7182,8 +7183,8 @@ impl PpcLoadedApp {
         let mut vfs_resource_files = std::mem::take(&mut self.vfs_resource_files);
         let mut vfs_resources = std::mem::take(&mut self.vfs_resources);
         let mut next_file_ref_num = self.next_file_ref_num;
-        let mut current_gworld = self.current_gworld;
-        let mut current_gdevice = self.current_gdevice;
+        let mut current_gworld = self.current_gworld.shared_handle();
+        let mut current_gdevice = self.current_gdevice.shared_handle();
         let mut screen_clut = self.screen_clut.shared_handle();
         let mut color_manager_clut = self.color_manager_clut.shared_handle();
         let mut device_gamma = self.device_gamma.shared_handle();
@@ -7312,7 +7313,7 @@ impl PpcLoadedApp {
                             &q3_draw_contexts,
                             &q3_trimeshes,
                             &gworlds,
-                            current_gworld,
+                            *current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
                         );
@@ -7497,7 +7498,7 @@ impl PpcLoadedApp {
                             &q3_draw_contexts,
                             &q3_trimeshes,
                             &gworlds,
-                            current_gworld,
+                            *current_gworld,
                             &mut q3_error_state,
                             input.is_idle(),
                         );
@@ -8069,8 +8070,6 @@ impl PpcLoadedApp {
         self.vfs_resource_files = vfs_resource_files;
         self.vfs_resources = vfs_resources;
         self.next_file_ref_num = next_file_ref_num;
-        self.current_gworld = current_gworld;
-        self.current_gdevice = current_gdevice;
         self.quickdraw_fore_color = quickdraw_fore_color;
         self.quickdraw_fore_indices = quickdraw_fore_indices;
         self.quickdraw_back_color = quickdraw_back_color;
@@ -12699,8 +12698,8 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         timer_tasks: Vec::new(),
         vbl_tasks: Vec::new(),
         process_file_system: ppc_initial_process_file_system(),
-        current_gworld: PPC_MAIN_GWORLD,
-        current_gdevice: PPC_MAIN_GDEVICE,
+        current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
+        current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
         screen_clut: SharedProcessValue::from_value(screen_clut),
         color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
         device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
@@ -85210,7 +85209,7 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let window_out = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(window_out, vec![0xff; 4]);
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded
             .memory
             .write_u16_be(PPC_MBAR_HEIGHT_ADDR, 12)
@@ -85271,7 +85270,7 @@ pub(crate) mod tests {
         assert_ne!(front_window, 0);
 
         // The current graphics port is not the Window Manager's z-order.
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded.cpu.gpr[3] = (80 << 16) | 80;
         loaded.cpu.gpr[4] = window_out;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::FindWindow);
@@ -85320,7 +85319,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             });
         }
-        loaded.current_gworld = dialog;
+        *loaded.current_gworld = dialog;
         loaded.cpu.gpr[3] = dialog;
 
         run_test_import(&mut loaded, PpcImportDispatcherTarget::DisposeDialog);
@@ -85328,7 +85327,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.toolbox_startup.dispose_dialog_count, 1);
         assert_eq!(loaded.toolbox_startup.last_disposed_dialog, dialog);
         assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
-        assert_eq!(loaded.current_gworld, application_window);
+        assert_eq!(*loaded.current_gworld, application_window);
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
             Some(application_window)
@@ -86357,8 +86356,8 @@ pub(crate) mod tests {
         let before =
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len).unwrap();
         let return_address = loaded.cpu.lr;
-        loaded.current_gworld = 0x1234_0000;
-        loaded.current_gdevice = 0x1234_1000;
+        *loaded.current_gworld = 0x1234_0000;
+        *loaded.current_gdevice = 0x1234_1000;
         loaded.cpu.gpr[3] = (10u32 << 16) | 12;
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: true,
@@ -86377,8 +86376,8 @@ pub(crate) mod tests {
                 .which_item(),
             2
         );
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_ne!(
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
             Some(before.clone())
@@ -86431,8 +86430,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
         assert_eq!(loaded.toolbox_startup.menu_definition_tracking, None);
         assert_eq!(loaded.toolbox_startup.menu_select_call, None);
-        assert_eq!(loaded.current_gworld, 0x1234_0000);
-        assert_eq!(loaded.current_gdevice, 0x1234_1000);
+        assert_eq!(*loaded.current_gworld, 0x1234_0000);
+        assert_eq!(*loaded.current_gdevice, 0x1234_1000);
         let mut restored = Vec::new();
         for y in 0..i32::from(tracking.saved_height) {
             for x in 0..i32::from(tracking.saved_width) {
@@ -86551,8 +86550,8 @@ pub(crate) mod tests {
             .unwrap();
 
         let return_address = loaded.cpu.lr;
-        loaded.current_gworld = 0x1234_0000;
-        loaded.current_gdevice = 0x1234_1000;
+        *loaded.current_gworld = 0x1234_0000;
+        *loaded.current_gdevice = 0x1234_1000;
         loaded.cpu.gpr[3] = (10u32 << 16) | 12;
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: true,
@@ -86603,8 +86602,8 @@ pub(crate) mod tests {
             .submenus
             .is_empty());
         assert_eq!(loaded.toolbox_startup.menu_select_call, None);
-        assert_eq!(loaded.current_gworld, 0x1234_0000);
-        assert_eq!(loaded.current_gdevice, 0x1234_1000);
+        assert_eq!(*loaded.current_gworld, 0x1234_0000);
+        assert_eq!(*loaded.current_gdevice, 0x1234_1000);
 
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: true,
@@ -86661,8 +86660,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.cpu.lr, return_address);
         assert_eq!(loaded.toolbox_startup.menu_tracking, None);
         assert_eq!(loaded.toolbox_startup.menu_select_call, None);
-        assert_eq!(loaded.current_gworld, 0x1234_0000);
-        assert_eq!(loaded.current_gdevice, 0x1234_1000);
+        assert_eq!(*loaded.current_gworld, 0x1234_0000);
+        assert_eq!(*loaded.current_gdevice, 0x1234_1000);
     }
 
     #[test]
@@ -88773,6 +88772,40 @@ pub(crate) mod tests {
             crate::display::default_display_gamma()
         );
         assert!(!*detached.device_gamma_explicit);
+    }
+
+    #[test]
+    fn attached_68k_and_powerpc_adapters_share_quickdraw_selection_without_runner_copy() {
+        let (mut classic, _, _) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"GetGWorld");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let detached = native.clone();
+
+        assert!(classic.current_port.ptr_eq(&native.current_gworld));
+        assert!(classic
+            .current_gdevice
+            .ptr_eq(&native.current_gdevice));
+        assert_eq!(*classic.current_port, PPC_MAIN_GWORLD);
+        assert_eq!(*classic.current_gdevice, PPC_MAIN_GDEVICE);
+
+        *native.current_gworld = 0x0030_0000;
+        *native.current_gdevice = 0x0030_1000;
+        assert_eq!(*classic.current_port, 0x0030_0000);
+        assert_eq!(*classic.current_gdevice, 0x0030_1000);
+
+        *classic.current_port = 0x0040_0000;
+        *classic.current_gdevice = 0x0040_1000;
+        assert_eq!(*native.current_gworld, 0x0040_0000);
+        assert_eq!(*native.current_gdevice, 0x0040_1000);
+
+        assert!(!native.current_gworld.ptr_eq(&detached.current_gworld));
+        assert!(!native.current_gdevice.ptr_eq(&detached.current_gdevice));
+        assert_eq!(*detached.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*detached.current_gdevice, PPC_MAIN_GDEVICE);
     }
 
     #[test]
@@ -91621,7 +91654,7 @@ pub(crate) mod tests {
         loaded.memory.write_u16_be(table + 4, 0x2222).unwrap();
         loaded.memory.write_u16_be(table + 6, 0x3333).unwrap();
         let ctable_handle =
-            ppc_gdevice_ctable_handle(&mut loaded.memory, loaded.current_gdevice).unwrap();
+            ppc_gdevice_ctable_handle(&mut loaded.memory, *loaded.current_gdevice).unwrap();
         let logical_before = ppc_read_ctable_clut(
             &mut loaded.memory,
             ctable_handle,
@@ -91639,7 +91672,7 @@ pub(crate) mod tests {
             ppc_pb_control(
                 &cpu,
                 &mut loaded.memory,
-                loaded.current_gdevice,
+                *loaded.current_gdevice,
                 &mut screen_clut,
                 &mut device_gamma,
                 &mut device_gamma_explicit,
@@ -92836,8 +92869,8 @@ pub(crate) mod tests {
             loaded.sound.manager.default_output_volume(),
             PPC_DEFAULT_OUTPUT_VOLUME
         );
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(loaded.default_dir_id, PPC_ROOT_DIR_ID);
         assert_eq!(
             loaded.memory.read_u32_be(PPC_MAIN_GWORLD + 2),
@@ -109800,7 +109833,7 @@ pub(crate) mod tests {
         assert_eq!(stats.target_depth, Some(front_buffer.depth));
         assert_eq!(stats.target_source, Some("current_gworld"));
         assert_eq!(stats.target_draw_context, None);
-        assert_eq!(stats.target_gworld, Some(loaded.current_gworld));
+        assert_eq!(stats.target_gworld, Some(*loaded.current_gworld));
         assert!(stats.target_consistent);
     }
 
@@ -109843,7 +109876,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded
             .q3_objects
             .push(test_q3_object(view, PPC_Q3_TYPE_VIEW));
@@ -109983,7 +110016,7 @@ pub(crate) mod tests {
             &mut loaded.q3_state_only_completed_frame_batches,
             &loaded.q3_draw_contexts,
             &loaded.gworlds,
-            loaded.current_gworld,
+            *loaded.current_gworld,
             &mut loaded.q3_error_state,
         );
 
@@ -110096,7 +110129,7 @@ pub(crate) mod tests {
             &mut loaded.q3_state_only_completed_frame_batches,
             &loaded.q3_draw_contexts,
             &loaded.gworlds,
-            loaded.current_gworld,
+            *loaded.current_gworld,
             &mut loaded.q3_error_state,
         );
 
@@ -115847,7 +115880,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -116010,7 +116043,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        replay_loaded.current_gworld = PPC_MAIN_GWORLD;
+        *replay_loaded.current_gworld = PPC_MAIN_GWORLD;
         assert!(replay_loaded.q3_submissions.is_empty());
         assert!(replay_loaded.q3_submission_transforms.is_empty());
         assert!(replay_loaded.q3_submission_materials.is_empty());
@@ -116163,7 +116196,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -116347,7 +116380,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -116503,7 +116536,7 @@ pub(crate) mod tests {
                 pixels_no_purge: false,
             },
         ];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded.draw_sprocket.front_buffer_gworld = PPC_MAIN_GWORLD;
         loaded.draw_sprocket.back_buffer_gworld = PPC_DSP_BACK_GWORLD;
 
@@ -116685,7 +116718,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             loaded
                 .memory
@@ -116830,7 +116863,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -117062,7 +117095,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -117322,7 +117355,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -117526,7 +117559,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -117732,7 +117765,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             loaded
                 .memory
@@ -117935,7 +117968,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             loaded
                 .memory
@@ -118160,7 +118193,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -118316,7 +118349,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -118516,7 +118549,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             write_trimesh(
                 &mut loaded.memory,
@@ -118676,7 +118709,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -118862,7 +118895,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -119036,7 +119069,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -119229,7 +119262,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -119379,7 +119412,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -119621,7 +119654,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -119788,7 +119821,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -120298,7 +120331,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -120408,7 +120441,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x500]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -120533,7 +120566,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(trimesh_data, vec![0; 0x600]);
         loaded.memory.add_region(front_base, front_buffer_bytes);
         loaded.gworlds = vec![q3_software_test_front_gworld(front_base)];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -121108,7 +121141,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -121297,7 +121330,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -121504,7 +121537,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -121778,7 +121811,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         write_lit_triangle_mesh(
             &mut loaded.memory,
@@ -121997,7 +122030,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         write_lit_triangle_mesh(
             &mut loaded.memory,
@@ -122213,7 +122246,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
             write_lit_triangle_mesh(
                 &mut loaded.memory,
                 trimesh_data,
@@ -122426,7 +122459,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             loaded
                 .memory
@@ -122625,7 +122658,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -122832,7 +122865,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -122994,7 +123027,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -123143,7 +123176,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -123319,7 +123352,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -123537,7 +123570,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -123734,7 +123767,7 @@ pub(crate) mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             }];
-            loaded.current_gworld = PPC_MAIN_GWORLD;
+            *loaded.current_gworld = PPC_MAIN_GWORLD;
 
             loaded
                 .memory
@@ -123924,7 +123957,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -124101,7 +124134,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         loaded
             .memory
@@ -124272,7 +124305,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
 
         write_triangle_mesh(
             &mut loaded.memory,
@@ -124659,7 +124692,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         write_triangle_mesh(&mut loaded.memory, trimesh_data, points_ptr, triangles_ptr);
 
         let mut view_state = PpcQ3ViewStateRecord::new(view);
@@ -124776,7 +124809,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         }];
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         loaded.q3_objects.push(PpcQ3ObjectRecord {
             object: draw_context,
             kind: PpcQ3ObjectKind::Generic,
@@ -128774,7 +128807,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = gworld;
+        *loaded.current_gworld = gworld;
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -128820,7 +128853,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = gworld;
+        *loaded.current_gworld = gworld;
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -128953,7 +128986,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = gworld;
+        *loaded.current_gworld = gworld;
 
         loaded.cpu.gpr[3] = handle;
         loaded.cpu.gpr[4] = rect_ptr;
@@ -129166,8 +129199,8 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_HEAP_BASE);
-        assert_eq!(loaded.current_gworld, PPC_HEAP_BASE);
-        assert_eq!(loaded.current_gdevice, PPC_HEAP_BASE + 4);
+        assert_eq!(*loaded.current_gworld, PPC_HEAP_BASE);
+        assert_eq!(*loaded.current_gdevice, PPC_HEAP_BASE + 4);
         assert_eq!(loaded.quickdraw_pen_h, 17);
         assert_eq!(loaded.quickdraw_pen_v, 23);
     }
@@ -129198,8 +129231,8 @@ pub(crate) mod tests {
         let window = loaded.cpu.gpr[3];
         assert_ne!(window, 0);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.current_gworld, window);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, window);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(loaded.gworlds.len(), gworld_count + 1);
         let record = loaded
             .gworlds
@@ -129927,7 +129960,7 @@ pub(crate) mod tests {
                 Some((140, 140, 240, 340)),
                 "{depth}bpp valid release did not apply the final delta",
             );
-            assert_eq!(loaded.current_gworld, window);
+            assert_eq!(*loaded.current_gworld, window);
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
                 Some(baseline.clone()),
@@ -130326,7 +130359,7 @@ pub(crate) mod tests {
             .memory
             .write_u8(window + PPC_CWINDOW_HILITED_OFFSET, 1)
             .unwrap();
-        loaded.current_gworld = window;
+        *loaded.current_gworld = window;
         loaded.cpu.gpr[3] = window;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -130341,7 +130374,7 @@ pub(crate) mod tests {
             loaded.memory.read_u8(window + PPC_CWINDOW_HILITED_OFFSET),
             Some(0)
         );
-        assert_eq!(loaded.current_gworld, window);
+        assert_eq!(*loaded.current_gworld, window);
 
         let pef = synthetic_pef_with_import(b"ShowHide");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -130463,8 +130496,8 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], storage_ptr);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.current_gworld, storage_ptr);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, storage_ptr);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(loaded.heap_cursor(), heap_cursor + required);
         assert_eq!(loaded.gworlds.len(), gworld_count + 1);
         let record = loaded
@@ -130516,8 +130549,8 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], storage_ptr);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.current_gworld, storage_ptr);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, storage_ptr);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
         assert_eq!(loaded.gworlds.len(), gworld_count + 1);
         let record = loaded
             .gworlds
@@ -130900,16 +130933,16 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = PPC_MAIN_GWORLD;
-        loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.current_gworld, window_ptr);
-        assert_eq!(loaded.current_gdevice, gdevice);
+        assert_eq!(*loaded.current_gworld, window_ptr);
+        assert_eq!(*loaded.current_gdevice, gdevice);
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
             Some(window_ptr)
@@ -130969,8 +131002,8 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = window_ptr;
-        loaded.current_gdevice = gdevice;
+        *loaded.current_gworld = window_ptr;
+        *loaded.current_gdevice = gdevice;
         loaded.cpu.gpr[3] = window_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -130989,8 +131022,8 @@ pub(crate) mod tests {
             .gworlds
             .iter()
             .any(|record| record.port == window_ptr));
-        assert_eq!(loaded.current_gworld, underlying_window);
-        assert_eq!(loaded.current_gdevice, gdevice);
+        assert_eq!(*loaded.current_gworld, underlying_window);
+        assert_eq!(*loaded.current_gdevice, gdevice);
         assert!(loaded
             .event_queue()
             .iter()
@@ -131131,7 +131164,7 @@ pub(crate) mod tests {
         loaded
             .memory
             .add_region(window, vec![0; PPC_CGRAF_PORT_SIZE as usize]);
-        loaded.current_gworld = window;
+        *loaded.current_gworld = window;
         let mut palette_resource = vec![0xbb; 32];
         palette_resource[..2].copy_from_slice(&1u16.to_be_bytes());
         palette_resource[16..22].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
@@ -131552,7 +131585,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::SelectWindow);
         assert_eq!(loaded.screen_clut[1], color_b);
-        assert_eq!(loaded.current_gworld, window_b);
+        assert_eq!(*loaded.current_gworld, window_b);
         assert_eq!(
             ppc_front_visible_window(&mut loaded.memory, &loaded.gworlds),
             Some(window_b)
@@ -131561,7 +131594,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = window_b;
         run_target(&mut loaded, PpcImportDispatcherTarget::HideWindow);
         assert_eq!(loaded.screen_clut[1], color_a);
-        assert_eq!(loaded.current_gworld, window_b);
+        assert_eq!(*loaded.current_gworld, window_b);
 
         loaded.cpu.gpr[3] = window_b;
         loaded.cpu.gpr[4] = palette_b2_handle;
@@ -131709,7 +131742,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[4] = windows[0];
         run_target(&mut loaded, PpcImportDispatcherTarget::LegacyWindow);
         assert_eq!(loaded.screen_clut[1], colors[1]);
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
 
         loaded.imports[0].symbol_name = "BringToFront".to_string();
         loaded.cpu.gpr[3] = windows[2];
@@ -134458,8 +134491,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.region_count(), region_count);
         assert_eq!(loaded.memory.read_u8(heap_cursor), Some(0));
         assert_eq!(loaded.gworlds.len(), gworld_count);
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
     }
 
     #[test]
@@ -134493,8 +134526,8 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.region_count(), region_count);
         assert_eq!(loaded.memory.read_u8(heap_cursor), Some(0));
         assert_eq!(loaded.gworlds.len(), gworld_count);
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
-        assert_eq!(loaded.current_gdevice, PPC_MAIN_GDEVICE);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gdevice, PPC_MAIN_GDEVICE);
     }
 
     #[test]
@@ -134575,7 +134608,7 @@ pub(crate) mod tests {
             .expect("main device ColorTable");
         // Depth zero rescans physical screen devices, not an arbitrary
         // offscreen/custom device that happens to be current.
-        loaded.current_gdevice = 0x0bad_cafe;
+        *loaded.current_gdevice = 0x0bad_cafe;
         let handle_count = test_handle_records!(loaded).len();
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = 0;
@@ -135120,8 +135153,8 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, pixmap, PPC_PIXMAP_SIZE).unwrap();
 
         ppc_write_rect(&mut loaded.memory, bounds_ptr, 5, 6, 8, 10).unwrap();
-        loaded.current_gworld = gworld;
-        loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        *loaded.current_gworld = gworld;
+        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
         loaded.toolbox_startup.last_quickdraw_error = PPC_PARAM_ERR;
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = u32::from(u16::MAX); // ignored when aGDevice is non-NIL
@@ -135140,8 +135173,8 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(updated.gdevice, gdevice_handle);
         assert_eq!(updated.depth, 16);
-        assert_eq!(loaded.current_gworld, gworld);
-        assert_eq!(loaded.current_gdevice, gdevice_handle);
+        assert_eq!(*loaded.current_gworld, gworld);
+        assert_eq!(*loaded.current_gdevice, gdevice_handle);
         run_test_import(&mut loaded, PpcImportDispatcherTarget::GetGDevice);
         assert_eq!(loaded.cpu.gpr[3], gdevice_handle);
         assert_eq!(
@@ -136196,7 +136229,7 @@ pub(crate) mod tests {
 
         loaded.run_with_hle_imports(64);
 
-        assert_eq!(loaded.current_gworld, port);
+        assert_eq!(*loaded.current_gworld, port);
         assert_eq!(loaded.quickdraw_fore_color, port_color);
         assert_eq!(loaded.quickdraw_fore_indices.get(&port), Some(&22));
 
@@ -136206,7 +136239,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = port;
         loaded.run_with_hle_imports(64);
 
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
         assert_eq!(loaded.quickdraw_fore_color, main_color);
         assert_eq!(
             loaded.quickdraw_fore_indices.get(&PPC_MAIN_GWORLD),
@@ -136224,7 +136257,7 @@ pub(crate) mod tests {
         );
 
         loaded.gworlds.push(record);
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded.quickdraw_fore_color = port_color;
         loaded.quickdraw_fore_indices.insert(port, 22);
         loaded.cpu.pc = loaded.entry_pc;
@@ -136233,7 +136266,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[3] = port;
         loaded.run_with_hle_imports(64);
 
-        assert_eq!(loaded.current_gworld, PPC_MAIN_GWORLD);
+        assert_eq!(*loaded.current_gworld, PPC_MAIN_GWORLD);
         assert_eq!(loaded.quickdraw_fore_color, main_color);
         assert!(!loaded.quickdraw_fore_indices.contains_key(&port));
         assert_eq!(
@@ -137629,7 +137662,7 @@ pub(crate) mod tests {
         loaded.memory.write_u8(src_pixels, 0xe0).unwrap();
         loaded.memory.write_u8(dst_pixels, 0x0a).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
-        loaded.current_gdevice = gdevice_handle;
+        *loaded.current_gdevice = gdevice_handle;
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -137942,7 +137975,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.memory.write_u8(src_pixels, 1).unwrap();
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 1).unwrap();
-        loaded.current_gdevice = gdevice_handle;
+        *loaded.current_gdevice = gdevice_handle;
         loaded.cpu.gpr[3] = src_pixmap;
         loaded.cpu.gpr[4] = dst_pixmap;
         loaded.cpu.gpr[5] = rect;
@@ -145602,14 +145635,14 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[3] = dialog;
-        loaded.current_gworld = PPC_MAIN_GWORLD;
+        *loaded.current_gworld = PPC_MAIN_GWORLD;
         let probe = loaded.run_with_hle_imports(128);
 
         assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u32_be(result), Some(dialog));
         assert_eq!(loaded.memory.read_u32_be(result + 4), Some(1));
-        assert_eq!(loaded.current_gworld, dialog);
+        assert_eq!(*loaded.current_gworld, dialog);
         assert!(loaded.dialog_callback_stack.is_empty());
     }
 
@@ -145658,7 +145691,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let dialog = loaded.cpu.gpr[3];
         assert_ne!(dialog, 0);
-        assert_eq!(loaded.current_gworld, dialog);
+        assert_eq!(*loaded.current_gworld, dialog);
         assert!(loaded.heap_cursor() > dialog);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
         assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
@@ -145714,7 +145747,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let dialog = loaded.cpu.gpr[3];
         assert_ne!(dialog, 0);
-        assert_eq!(loaded.current_gworld, dialog);
+        assert_eq!(*loaded.current_gworld, dialog);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
         assert_eq!(
             loaded
@@ -145793,7 +145826,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let dialog = loaded.cpu.gpr[3];
         assert_ne!(dialog, 0);
-        assert_eq!(loaded.current_gworld, dialog);
+        assert_eq!(*loaded.current_gworld, dialog);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
         assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
         let items_ptr = loaded.memory.read_u32_be(items).unwrap();
@@ -147846,7 +147879,7 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
         loaded.cpu.gpr[4] = item_hit_ptr;
-        loaded.current_gworld = dialog;
+        *loaded.current_gworld = dialog;
         loaded.set_event_queue([PpcQueuedEvent {
             what: 3,
             message: (2 << 8) | u32::from(b'D'),
@@ -148829,7 +148862,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, loaded.current_gworld).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
         let red_index = pict::closest_clut_index(0xffff, 0, 0, &loaded.screen_clut);
         assert_eq!(
             ppc_quickdraw_read_pixel(&mut loaded.memory, front, (2, 1)),
@@ -149304,7 +149337,7 @@ pub(crate) mod tests {
         loaded.memory.write_bytes(text, b"\x04PICT").unwrap();
         ppc_write_rect(&mut loaded.memory, destination, 50, 50, 90, 90).unwrap();
         let surface =
-            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, loaded.current_gworld)
+            ppc_live_quickdraw_surface(&mut loaded.memory, &loaded.gworlds, *loaded.current_gworld)
                 .unwrap();
         let before = ppc_quickdraw_read_pixel(
             &mut loaded.memory,
@@ -149368,7 +149401,7 @@ pub(crate) mod tests {
             &test_handle_records!(loaded),
             &loaded.process_file_system.vfs_resources,
             &loaded.gworlds,
-            loaded.current_gworld,
+            *loaded.current_gworld,
             &loaded.screen_clut,
             &mut loaded.color_manager_clut,
         ));
@@ -149404,7 +149437,7 @@ pub(crate) mod tests {
             &mut last_mem_error,
             test_handles!(loaded),
             &mut loaded.gworlds,
-            loaded.current_gdevice,
+            *loaded.current_gdevice,
         );
         assert_ne!(window, 0);
 
@@ -149490,7 +149523,7 @@ pub(crate) mod tests {
             &mut last_mem_error,
             test_handles!(loaded),
             &mut loaded.gworlds,
-            loaded.current_gdevice,
+            *loaded.current_gdevice,
         );
         assert_ne!(window, 0);
 
@@ -149888,7 +149921,7 @@ pub(crate) mod tests {
         };
         loaded.quickdraw_back_color = cyan;
         loaded.cpu.gpr[3] = rect_ptr;
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, loaded.current_gworld).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -149911,7 +149944,7 @@ pub(crate) mod tests {
         let rect_ptr = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(rect_ptr, vec![0; 8]);
         ppc_write_rect(&mut loaded.memory, rect_ptr, 1, 2, 4, 5).unwrap();
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, loaded.current_gworld).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
         assert_eq!(front.depth, 8);
         assert!(ppc_quickdraw_write_raw_pixel(
             &mut loaded.memory,
@@ -149971,7 +150004,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded.cpu.gpr[3] = rect_ptr;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -150024,7 +150057,7 @@ pub(crate) mod tests {
             test_handles!(loaded),
         );
         ppc_write_rgn_bbox(&mut loaded.memory, region, 1, 2, 4, 5).unwrap();
-        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, loaded.current_gworld).unwrap();
+        let front = ppc_front_buffer_for_gworld(&loaded.gworlds, *loaded.current_gworld).unwrap();
         assert_eq!(front.depth, 8);
         assert!(ppc_quickdraw_write_raw_pixel(
             &mut loaded.memory,
@@ -150104,7 +150137,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded.quickdraw_fore_color = PpcRgbColor {
             red: 0x1234,
             green: 0x5678,
@@ -150235,7 +150268,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded
             .memory
             .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -150368,7 +150401,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded.quickdraw_fore_indices.insert(port, 2);
         ppc_write_rect(&mut loaded.memory, rect, 0, 0, 1, 8).unwrap();
         loaded.cpu.gpr[3] = rect;
@@ -150411,7 +150444,7 @@ pub(crate) mod tests {
             pixels_locked: false,
             pixels_no_purge: false,
         });
-        loaded.current_gworld = port;
+        *loaded.current_gworld = port;
         loaded
             .memory
             .write_u16_be(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1)
@@ -153244,7 +153277,7 @@ pub(crate) mod tests {
     fn hle_import_runner_handles_get_gdevice() {
         let pef = synthetic_pef_with_import(b"GetGDevice");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -153258,7 +153291,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"SetGDevice");
         let mut loaded = load_pef_application(&pef).unwrap();
         let gdevice = PPC_HEAP_BASE + 0x100;
-        loaded.current_gdevice = PPC_MAIN_GDEVICE;
+        *loaded.current_gdevice = PPC_MAIN_GDEVICE;
         loaded.cpu.gpr[3] = gdevice;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -153266,7 +153299,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], gdevice);
-        assert_eq!(loaded.current_gdevice, gdevice);
+        assert_eq!(*loaded.current_gdevice, gdevice);
         assert!(loaded.toolbox_startup.known_gdevices.contains(&gdevice));
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -153277,7 +153310,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.current_gdevice, gdevice);
+        assert_eq!(*loaded.current_gdevice, gdevice);
         assert!(!loaded.toolbox_startup.known_gdevices.contains(&0));
     }
 
@@ -153386,7 +153419,7 @@ pub(crate) mod tests {
         let metrics_ptr = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(metrics_ptr, vec![0xaa; 20]);
         loaded.cpu.gpr[3] = metrics_ptr;
-        let text_font = ppc_current_text_font(&mut loaded.memory, loaded.current_gworld);
+        let text_font = ppc_current_text_font(&mut loaded.memory, *loaded.current_gworld);
         let (face, scale) = get_font_face_scaled(text_font, loaded.quickdraw_text_size);
         let metrics = face.metrics;
         let to_fixed = |value: i16| -> u32 { (i32::from(value) as u32) << 16 };
@@ -154719,7 +154752,7 @@ pub(crate) mod tests {
                 green: 0,
                 blue: 0,
             };
-            loaded.current_gworld = window;
+            *loaded.current_gworld = window;
             loaded.quickdraw_fore_color = red;
             loaded.quickdraw_fore_indices.remove(&window);
             ppc_write_rect(&mut loaded.memory, paint_rect, 1, 1, 4, 4).unwrap();
@@ -155298,7 +155331,7 @@ pub(crate) mod tests {
             if depth == 8 {
                 assert_eq!(black, 91);
                 assert_eq!(white, 92);
-                loaded.current_gworld = PPC_MAIN_GWORLD;
+                *loaded.current_gworld = PPC_MAIN_GWORLD;
                 loaded.quickdraw_fore_color = PPC_RGB_BLACK;
                 loaded.quickdraw_fore_indices.remove(&PPC_MAIN_GWORLD);
                 ppc_write_rect(&mut loaded.memory, paint_rect, 30, 30, 32, 32).unwrap();
@@ -156819,7 +156852,7 @@ pub(crate) mod tests {
     fn presented_front_buffer_uses_main_screen_without_active_draw_sprocket() {
         let pef = synthetic_pef_with_import(b"SetPort");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.current_gworld = PPC_DSP_BACK_GWORLD;
+        *loaded.current_gworld = PPC_DSP_BACK_GWORLD;
 
         let front_buffer = loaded.presented_front_buffer().unwrap();
 
@@ -156832,7 +156865,7 @@ pub(crate) mod tests {
     fn presented_front_buffer_uses_main_screen_before_first_draw_sprocket_swap() {
         let pef = synthetic_pef_with_import(b"SetPort");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.current_gworld = PPC_DSP_BACK_GWORLD;
+        *loaded.current_gworld = PPC_DSP_BACK_GWORLD;
         loaded.draw_sprocket.started = true;
         loaded.draw_sprocket.active_context = None;
         loaded.draw_sprocket.front_buffer_gworld = PPC_MAIN_GWORLD;
@@ -159714,7 +159747,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(128);
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-        let dialog = loaded.current_gworld;
+        let dialog = *loaded.current_gworld;
         assert_eq!(
             loaded
                 .memory

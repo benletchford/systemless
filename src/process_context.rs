@@ -1380,6 +1380,18 @@ impl<T: Copy + PartialEq> SharedProcessValue<T> {
         }
         self.0 = Rc::clone(&process_value.0);
     }
+
+    fn activate_copy_to(&mut self, process_value: &Self) {
+        if Rc::ptr_eq(&self.0, &process_value.0) {
+            return;
+        }
+        // SAFETY: application activation occurs while the runner exclusively
+        // owns both adapters and before guest execution resumes.
+        unsafe {
+            *process_value.0.get() = **self;
+        }
+        self.0 = Rc::clone(&process_value.0);
+    }
 }
 
 impl SharedProcessValue<ProcessResourceManagerState> {
@@ -4099,6 +4111,8 @@ pub(crate) struct ProcessContext {
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
     cursor_state: SharedProcessCursorState,
+    current_graphics_port: SharedProcessValue<u32>,
+    current_graphics_device: SharedProcessValue<u32>,
     device_clut: SharedProcessValue<[[u16; 3]; 256]>,
     color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     device_gamma: SharedProcessValue<DisplayGamma>,
@@ -4119,6 +4133,8 @@ impl Default for ProcessContext {
             file_system: SharedProcessFileSystem::default(),
             sound_manager: SharedProcessSoundManager::default(),
             cursor_state: SharedProcessCursorState::default(),
+            current_graphics_port: SharedProcessValue::from_value(0),
+            current_graphics_device: SharedProcessValue::from_value(0),
             device_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
             color_manager_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
             device_gamma: SharedProcessValue::from_value(default_display_gamma()),
@@ -4180,6 +4196,29 @@ impl ProcessContext {
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
         adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
+    }
+
+    /// Attach a CPU adapter to the process's current QuickDraw port and device.
+    ///
+    /// `GetPort`/`SetPort` expose one `thePort`, while `GetGWorld`/`SetGWorld`
+    /// preserve the associated current graphics device. Imaging With
+    /// QuickDraw (1994), pp. 2-41--2-42 and 6-29.
+    pub(crate) fn attach_quickdraw_selection(
+        &self,
+        current_port: &mut SharedProcessValue<u32>,
+        current_device: &mut SharedProcessValue<u32>,
+    ) {
+        current_port.attach_copy_to(&self.current_graphics_port, |address| *address == 0);
+        current_device.attach_copy_to(&self.current_graphics_device, |address| *address == 0);
+    }
+
+    pub(crate) fn activate_quickdraw_selection(
+        &self,
+        current_port: &mut SharedProcessValue<u32>,
+        current_device: &mut SharedProcessValue<u32>,
+    ) {
+        current_port.activate_copy_to(&self.current_graphics_port);
+        current_device.activate_copy_to(&self.current_graphics_device);
     }
 
     pub(crate) fn attach_display_color_state(

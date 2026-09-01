@@ -803,13 +803,13 @@ impl super::TrapDispatcher {
             };
 
             if trace_dialog_text_enabled()
-                && self.current_port == 0x00B16310
+                && *self.current_port == 0x00B16310
                 && (353..603).contains(&h)
                 && (8..148).contains(&v)
             {
                 eprintln!(
                     "[DIALOG-TEXT] draw_char port=${:08X} ch={:?} pnLoc=({}, {}) glyphRect=({},{}..{},{} ) glyphOrigin=({}, {}) glyphSize=({}, {}) txFont={} txSize={}",
-                    self.current_port,
+                    *self.current_port,
                     ch,
                     v,
                     h,
@@ -1145,11 +1145,11 @@ impl super::TrapDispatcher {
     /// integer-pixel portion to add to a space character's advance.
     /// Per IM:I I-171, SpaceExtra adds this value to every space drawn.
     pub(super) fn space_extra_pixels(&self, bus: &MacMemoryBus) -> i16 {
-        if self.current_port == 0 {
+        if *self.current_port == 0 {
             return 0;
         }
         // Fixed = 16.16. >> 16 keeps the integer part with sign.
-        ((bus.read_long(self.current_port + 76) as i32) >> 16) as i16
+        ((bus.read_long(*self.current_port + 76) as i32) >> 16) as i16
     }
 
     pub(super) fn glyph_advance(&self, glyph: &Glyph) -> i16 {

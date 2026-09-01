@@ -835,7 +835,7 @@ impl super::TrapDispatcher {
                 // code that avoids SetGWorld is expected to pair SetGDevice
                 // with SetPort for offscreen drawing (Imaging With QuickDraw
                 // 1994, p. 5-24; Inside Macintosh Volume V, p. V-124).
-                let current_gdevice = (self.current_gdevice != 0).then_some(self.current_gdevice);
+                let current_gdevice = (*self.current_gdevice != 0).then_some(*self.current_gdevice);
                 self.set_current_port_state(bus, cpu, port, current_gdevice);
                 Ok(())
             }
@@ -1119,8 +1119,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let src_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let port_ptr = if self.current_port != 0 {
-                    self.current_port
+                let port_ptr = if *self.current_port != 0 {
+                    *self.current_port
                 } else {
                     let a5 = cpu.read_reg(Register::A5);
                     let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
@@ -1176,8 +1176,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rgn_handle = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let port_ptr = if self.current_port != 0 {
-                    self.current_port
+                let port_ptr = if *self.current_port != 0 {
+                    *self.current_port
                 } else {
                     let a5 = cpu.read_reg(Register::A5);
                     let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
@@ -1227,8 +1227,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let rect_ptr = bus.read_long(sp);
                 cpu.write_reg(Register::A7, sp + 4);
-                let port_ptr = if self.current_port != 0 {
-                    self.current_port
+                let port_ptr = if *self.current_port != 0 {
+                    *self.current_port
                 } else {
                     let a5 = cpu.read_reg(Register::A5);
                     let global_ptr = if a5 != 0 { bus.read_long(a5) } else { 0 };
@@ -1480,8 +1480,8 @@ impl super::TrapDispatcher {
                 let sp = cpu.read_reg(Register::A7);
                 let device = bus.read_word(sp);
                 cpu.write_reg(Register::A7, sp + 2);
-                if self.current_port != 0 {
-                    bus.write_word(self.current_port, device);
+                if *self.current_port != 0 {
+                    bus.write_word(*self.current_port, device);
                 }
                 Ok(())
             }
@@ -1674,7 +1674,7 @@ impl super::TrapDispatcher {
                 if trace_dialog_text_enabled() {
                     eprintln!(
                         "[DIALOG-TEXT] MoveTo current_port=${:08X} pnLoc=({}, {})",
-                        self.current_port, v, h
+                        *self.current_port, v, h
                     );
                 }
                 Ok(())
@@ -2031,7 +2031,7 @@ impl super::TrapDispatcher {
                 if trace_dialog_text_enabled() {
                     eprintln!(
                         "[DIALOG-TEXT] DrawChar current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} ch={:?}",
-                        self.current_port,
+                        *self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
                         self.fg_color.0,
@@ -2045,7 +2045,7 @@ impl super::TrapDispatcher {
                     );
                 }
                 self.draw_char(cpu, bus, ch);
-                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
 
@@ -2068,7 +2068,7 @@ impl super::TrapDispatcher {
                     eprintln!(
                         "[DIALOG-TEXT] DrawString pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
                         pc,
-                        self.current_port,
+                        *self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
                         self.fg_color.0,
@@ -2103,7 +2103,7 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 self.draw_string(cpu, bus, str_ptr);
-                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
 
@@ -2129,7 +2129,7 @@ impl super::TrapDispatcher {
                     eprintln!(
                         "[DIALOG-TEXT] DrawText pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} text=\"{}\"",
                         pc,
-                        self.current_port,
+                        *self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
                         self.fg_color.0,
@@ -2146,7 +2146,7 @@ impl super::TrapDispatcher {
                     let ch = bus.read_byte(start + i as u32) as char;
                     self.draw_char(cpu, bus, ch);
                 }
-                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
 
@@ -2186,7 +2186,7 @@ impl super::TrapDispatcher {
                     eprintln!(
                         "[DIALOG-TEXT] StdText pc=${:08X} current_port=${:08X} pnLoc=({}, {}) fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) mode={} numer=({}, {}) denom=({}, {}) text=\"{}\"",
                         pc,
-                        self.current_port,
+                        *self.current_port,
                         self.pn_loc.0,
                         self.pn_loc.1,
                         self.fg_color.0,
@@ -2210,7 +2210,7 @@ impl super::TrapDispatcher {
                     self.draw_char(cpu, bus, ch);
                 }
                 self.tx_size = saved_tx_size;
-                self.refresh_visible_dialog_snapshot_for_port(bus, self.current_port);
+                self.refresh_visible_dialog_snapshot_for_port(bus, *self.current_port);
                 Ok(())
             }
 
@@ -2655,7 +2655,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] EraseRect port=${:08X} rect=({},{}..{},{}) bg=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port,
+                        *self.current_port,
                         r.top,
                         r.left,
                         r.bottom,
@@ -2744,7 +2744,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] FillRect port=${:08X} rect=({},{},{},{}) pat={:02X?} fg=({:04X},{:04X},{:04X}) bg=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port,
+                        *self.current_port,
                         r.top,
                         r.left,
                         r.bottom,
@@ -3162,7 +3162,7 @@ impl super::TrapDispatcher {
                         "[TITLE-DIAG] CopyBits tick={} pc=${:08X} port=${:08X} srcBits=${:08X} dstBits=${:08X} srcBase=${:08X} dstBase=${:08X} srcRect=({},{}..{},{} ) dstRect=({},{}..{},{} ) mode={} srcCTab=${:08X} dstCTab=${:08X}",
                         self.tick_count,
                         trap_pc,
-                        self.current_port,
+                        *self.current_port,
                         src_bits_ptr,
                         dst_bits_ptr,
                         src_info.base,
@@ -3203,7 +3203,7 @@ impl super::TrapDispatcher {
                 if trace_dialog_draw_enabled() && self.dialog_tracking.is_some() {
                     eprintln!(
                         "[DIALOG-DRAW] CopyBits current_port=${:08X} srcBase=${:08X} dstBase=${:08X} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} ) mask=${:08X}",
-                        self.current_port,
+                        *self.current_port,
                         src_info.base,
                         dst_info.base,
                         mode_base,
@@ -3219,10 +3219,10 @@ impl super::TrapDispatcher {
                     );
                 }
                 if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-                    Self::trace_port_snapshot(bus, "CopyBits-current", self.current_port);
+                    Self::trace_port_snapshot(bus, "CopyBits-current", *self.current_port);
                 }
                 if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-                    Self::trace_port_snapshot(bus, "CopyBits-current", self.current_port);
+                    Self::trace_port_snapshot(bus, "CopyBits-current", *self.current_port);
                 }
 
                 if src_bottom <= src_top
@@ -3485,7 +3485,7 @@ impl super::TrapDispatcher {
                         src_info.pixel_size,
                         dst_info.pixel_size,
                         mask_rgn,
-                        self.current_port,
+                        *self.current_port,
                         src_info.ctab_handle,
                         dst_info.ctab_handle,
                         dst_ctab_handle,
@@ -3663,7 +3663,7 @@ impl super::TrapDispatcher {
                         self.fill_kiosk_letterbox_for_copybits(bus, rect);
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
-                            self.current_port,
+                            *self.current_port,
                             (
                                 clip_t.saturating_sub(dst_info.bounds_top),
                                 clip_l.saturating_sub(dst_info.bounds_left),
@@ -3673,7 +3673,7 @@ impl super::TrapDispatcher {
                         );
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
-                            self.current_port,
+                            *self.current_port,
                             (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
                         );
                     }
@@ -4438,7 +4438,7 @@ impl super::TrapDispatcher {
                     self.fill_kiosk_letterbox_for_copybits(bus, rect);
                     self.refresh_dialog_saved_pixels_after_screen_draw(
                         bus,
-                        self.current_port,
+                        *self.current_port,
                         (
                             clip_t.saturating_sub(dst_info.bounds_top),
                             clip_l.saturating_sub(dst_info.bounds_left),
@@ -4448,7 +4448,7 @@ impl super::TrapDispatcher {
                     );
                     self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                         bus,
-                        self.current_port,
+                        *self.current_port,
                         (rect.dst_top, rect.dst_left, rect.dst_bottom, rect.dst_right),
                     );
                 }
@@ -4607,7 +4607,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] ForeColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port,
+                        *self.current_port,
                         color,
                         self.fg_color.0,
                         self.fg_color.1,
@@ -4618,7 +4618,7 @@ impl super::TrapDispatcher {
                 if trace_dialog_text_enabled() {
                     eprintln!(
                         "[DIALOG-TEXT] ForeColor current_port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X})",
-                        self.current_port,
+                        *self.current_port,
                         color,
                         self.fg_color.0,
                         self.fg_color.1,
@@ -4641,7 +4641,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] BackColor port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port,
+                        *self.current_port,
                         color,
                         self.bg_color.0,
                         self.bg_color.1,
@@ -4652,7 +4652,7 @@ impl super::TrapDispatcher {
                 if trace_dialog_text_enabled() {
                     eprintln!(
                         "[DIALOG-TEXT] BackColor current_port=${:08X} color=${:08X} rgb=({:04X},{:04X},{:04X})",
-                        self.current_port,
+                        *self.current_port,
                         color,
                         self.bg_color.0,
                         self.bg_color.1,
@@ -4685,7 +4685,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] RGBForeColor port=${:08X} ptr=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port,
+                        *self.current_port,
                         color_ptr,
                         r, g, b,
                         self.tick_count,
@@ -4716,7 +4716,7 @@ impl super::TrapDispatcher {
                 if trace_qd_colors_enabled() {
                     eprintln!(
                         "[QD-COLOR] RGBBackColor port=${:08X} ptr=${:08X} rgb=({:04X},{:04X},{:04X}) tick={}",
-                        self.current_port, color_ptr, r, g, b, self.tick_count
+                        *self.current_port, color_ptr, r, g, b, self.tick_count
                     );
                 }
                 Ok(())
@@ -5107,7 +5107,7 @@ impl super::TrapDispatcher {
                 if trace_palette_enabled() {
                     eprintln!(
                         "[PALETTE] GetNewPalette id={} current_port=${:08X} -> ${:08X}",
-                        palette_id, self.current_port, palette
+                        palette_id, *self.current_port, palette
                     );
                 }
                 bus.write_long(sp + 2, palette);
@@ -5285,17 +5285,17 @@ impl super::TrapDispatcher {
                     self.pm_fg_color = Some((palette, entry));
                     self.sync_current_port_draw_state(bus);
                     if (explicit || (usage & PM_ANIMATED) != 0)
-                        && self.current_port != 0
-                        && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
+                        && *self.current_port != 0
+                        && (bus.read_word(*self.current_port + 6) & 0xC000) == 0xC000
                     {
                         // Explicit entries name a device index directly.
                         // Animated entries select the distinct device index
                         // reserved for that palette entry; Systemless' single
                         // GDevice allocation maps it to the same index.
-                        bus.write_long(self.current_port + 80, (entry as u16 & 0x00FF) as u32);
+                        bus.write_long(*self.current_port + 80, (entry as u16 & 0x00FF) as u32);
                         *self
                             .resolved_port_color_fields
-                            .entry(self.current_port)
+                            .entry(*self.current_port)
                             .or_default() |= 0x01;
                     } else {
                         self.resolve_current_port_color_pixels(bus, true, false, false);
@@ -5303,7 +5303,7 @@ impl super::TrapDispatcher {
                     if trace_qd_colors_enabled() {
                         eprintln!(
                             "[QD-COLOR] PmForeColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
-                            self.current_port,
+                            *self.current_port,
                             entry,
                             self.fg_color.0,
                             self.fg_color.1,
@@ -5338,13 +5338,13 @@ impl super::TrapDispatcher {
                     self.pm_bg_color = Some((palette, entry));
                     self.sync_current_port_draw_state(bus);
                     if (explicit || (usage & PM_ANIMATED) != 0)
-                        && self.current_port != 0
-                        && (bus.read_word(self.current_port + 6) & 0xC000) == 0xC000
+                        && *self.current_port != 0
+                        && (bus.read_word(*self.current_port + 6) & 0xC000) == 0xC000
                     {
-                        bus.write_long(self.current_port + 84, (entry as u16 & 0x00FF) as u32);
+                        bus.write_long(*self.current_port + 84, (entry as u16 & 0x00FF) as u32);
                         *self
                             .resolved_port_color_fields
-                            .entry(self.current_port)
+                            .entry(*self.current_port)
                             .or_default() |= 0x02;
                     } else {
                         self.resolve_current_port_color_pixels(bus, false, true, false);
@@ -5352,7 +5352,7 @@ impl super::TrapDispatcher {
                     if trace_qd_colors_enabled() {
                         eprintln!(
                             "[QD-COLOR] PmBackColor port=${:08X} entry={} rgb=({:04X},{:04X},{:04X}) tick={}",
-                            self.current_port,
+                            *self.current_port,
                             entry,
                             self.bg_color.0,
                             self.bg_color.1,
@@ -5645,7 +5645,7 @@ impl super::TrapDispatcher {
                 // Resolve port pixel geometry from the dispatcher's
                 // current_port (kept in sync with the THE_PORT low-mem
                 // global at 0x09DA by set_current_port_state).
-                let the_port = self.current_port;
+                let the_port = *self.current_port;
                 let port_top;
                 let port_left;
                 let base_addr;
@@ -6082,8 +6082,8 @@ impl super::TrapDispatcher {
             // in the result slot.
             (true, 0x232) => {
                 let sp = cpu.read_reg(Register::A7);
-                let gdh = if self.current_gdevice != 0 {
-                    self.current_gdevice
+                let gdh = if *self.current_gdevice != 0 {
+                    *self.current_gdevice
                 } else {
                     self.ensure_main_gdevice(bus)
                 };
@@ -6109,7 +6109,7 @@ impl super::TrapDispatcher {
             (true, 0x231) => {
                 let sp = cpu.read_reg(Register::A7);
                 let gdh = bus.read_long(sp);
-                self.current_gdevice = gdh;
+                *self.current_gdevice = gdh;
                 bus.write_long(0x0CC8, gdh);
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -6908,7 +6908,7 @@ impl super::TrapDispatcher {
                 if trace_palette_enabled() {
                     eprintln!(
                         "[PALETTE] GetCTable id={} current_port=${:08X}",
-                        ct_id, self.current_port
+                        ct_id, *self.current_port
                     );
                 }
 
@@ -7602,8 +7602,8 @@ impl super::TrapDispatcher {
                                 bus.write_word(gd_ptr + 40, new_right as u16);
                             }
                         }
-                        if self.current_port == port {
-                            self.current_gdevice = self.gdevice_for_port(bus, port);
+                        if *self.current_port == port {
+                            *self.current_gdevice = self.gdevice_for_port(bus, port);
                         }
 
                         bus.write_long(sp + 22, result_flags);
@@ -7624,13 +7624,13 @@ impl super::TrapDispatcher {
                     0x0005 => {
                         let gd_ptr = bus.read_long(sp);
                         let port_ptr = bus.read_long(sp + 4);
-                        let gdh = if self.current_gdevice != 0 {
-                            self.current_gdevice
+                        let gdh = if *self.current_gdevice != 0 {
+                            *self.current_gdevice
                         } else {
                             self.ensure_main_gdevice(bus)
                         };
                         if port_ptr != 0 {
-                            bus.write_long(port_ptr, self.current_port);
+                            bus.write_long(port_ptr, *self.current_port);
                         }
                         if gd_ptr != 0 {
                             bus.write_long(gd_ptr, gdh);
@@ -7638,7 +7638,7 @@ impl super::TrapDispatcher {
                         if trace_dialog_gworld_enabled() {
                             eprintln!(
                                 "[DIALOG-GWORLD] GetGWorld port=${:08X} gdh=${:08X}",
-                                self.current_port, gdh
+                                *self.current_port, gdh
                             );
                         }
                         cpu.write_reg(Register::A7, sp + 8);
@@ -7799,8 +7799,8 @@ impl super::TrapDispatcher {
                     }
                     0x0012 => {
                         let gworld = bus.read_long(sp);
-                        let current_gdh = if self.current_gdevice != 0 {
-                            self.current_gdevice
+                        let current_gdh = if *self.current_gdevice != 0 {
+                            *self.current_gdevice
                         } else {
                             self.ensure_main_gdevice(bus)
                         };
@@ -7910,11 +7910,11 @@ impl super::TrapDispatcher {
                 let gd_ptr = bus.read_long(sp);
                 let port_ptr = bus.read_long(sp + 4);
                 if port_ptr != 0 {
-                    bus.write_long(port_ptr, self.current_port);
+                    bus.write_long(port_ptr, *self.current_port);
                 }
                 if gd_ptr != 0 {
-                    let gdh = if self.current_gdevice != 0 {
-                        self.current_gdevice
+                    let gdh = if *self.current_gdevice != 0 {
+                        *self.current_gdevice
                     } else {
                         self.ensure_main_gdevice(bus)
                     };
@@ -8360,7 +8360,7 @@ impl super::TrapDispatcher {
                                 String::from_utf8_lossy(&res_type),
                                 res_id,
                                 pic_handle,
-                                self.current_port,
+                                *self.current_port,
                                 port_base,
                                 use_top,
                                 use_left,
@@ -8371,7 +8371,7 @@ impl super::TrapDispatcher {
                             eprintln!(
                                 "[DIALOG-DRAW] DrawPicture handle=${:08X} current_port=${:08X} dstBase=${:08X} rect=({},{}..{},{} )",
                                 pic_handle,
-                                self.current_port,
+                                *self.current_port,
                                 port_base,
                                 use_top,
                                 use_left,
@@ -8381,10 +8381,10 @@ impl super::TrapDispatcher {
                         }
                     }
                     if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-                        Self::trace_port_snapshot(bus, "DrawPicture-current", self.current_port);
+                        Self::trace_port_snapshot(bus, "DrawPicture-current", *self.current_port);
                     }
                     if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-                        Self::trace_port_snapshot(bus, "DrawPicture-current", self.current_port);
+                        Self::trace_port_snapshot(bus, "DrawPicture-current", *self.current_port);
                     }
 
                     // Convert dst from port-local coordinates to pixel coordinates
@@ -8420,7 +8420,7 @@ impl super::TrapDispatcher {
                             eprintln!(
                                 "[TITLE-DIAG] DrawPicture tick={} port=${:08X} base=${:08X} handle=${:08X} type='{}' id={} rect=({},{}..{},{} )",
                                 self.tick_count,
-                                self.current_port,
+                                *self.current_port,
                                 port_base,
                                 pic_handle,
                                 String::from_utf8_lossy(&res_type),
@@ -8434,7 +8434,7 @@ impl super::TrapDispatcher {
                             eprintln!(
                                 "[TITLE-DIAG] DrawPicture tick={} port=${:08X} base=${:08X} handle=${:08X} rect=({},{}..{},{} )",
                                 self.tick_count,
-                                self.current_port,
+                                *self.current_port,
                                 port_base,
                                 pic_handle,
                                 use_top,
@@ -8902,7 +8902,7 @@ impl super::TrapDispatcher {
                     if ok && port_base == self.screen_mode.0 {
                         self.refresh_dialog_saved_pixels_after_screen_draw(
                             bus,
-                            self.current_port,
+                            *self.current_port,
                             (
                                 use_top.saturating_sub(port_bounds_top),
                                 use_left.saturating_sub(port_bounds_left),
@@ -8912,7 +8912,7 @@ impl super::TrapDispatcher {
                         );
                         self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                             bus,
-                            self.current_port,
+                            *self.current_port,
                             (
                                 use_top.saturating_sub(port_bounds_top),
                                 use_left.saturating_sub(port_bounds_left),
@@ -8987,7 +8987,7 @@ impl super::TrapDispatcher {
                     let picture = if let Some(snapshot) = self.recording_picture_bitmap.take() {
                         Some(snapshot)
                     } else if commands.is_empty() {
-                        let mut source = self.resolve_copy_bitmap(bus, self.current_port + 2);
+                        let mut source = self.resolve_copy_bitmap(bus, *self.current_port + 2);
                         if source.base == 0
                             || source.base == u32::MAX
                             || source.row_bytes == 0
@@ -9609,7 +9609,7 @@ impl super::TrapDispatcher {
                             String::from_utf8_lossy(&res_type),
                             res_id,
                             icon_handle,
-                            self.current_port,
+                            *self.current_port,
                             dst_base,
                             abs_top,
                             abs_left,
@@ -9620,7 +9620,7 @@ impl super::TrapDispatcher {
                         eprintln!(
                             "[DIALOG-DRAW] PlotCIcon handle=${:08X} current_port=${:08X} dstBase=${:08X} rect=({},{}..{},{} )",
                             icon_handle,
-                            self.current_port,
+                            *self.current_port,
                             dst_base,
                             abs_top,
                             abs_left,
@@ -10882,7 +10882,7 @@ impl super::TrapDispatcher {
                 let src_rect_ptr = bus.read_long(sp + 10);
                 let src_bits_ptr = bus.read_long(sp + 14);
                 cpu.write_reg(Register::A7, sp + 18);
-                let dst_bits_ptr = self.bitmap_ptr_for_port(bus, self.current_port);
+                let dst_bits_ptr = self.bitmap_ptr_for_port(bus, *self.current_port);
                 if dst_bits_ptr == 0 {
                     return Some(Ok(()));
                 }
@@ -13050,8 +13050,8 @@ impl super::TrapDispatcher {
                 let drawing_proc = bus.read_long(sp + 8);
                 let drawing_rgn = bus.read_long(sp + 12);
                 let main_gdevice = self.ensure_main_gdevice(bus);
-                let current_gdevice = if self.current_gdevice != 0 {
-                    self.current_gdevice
+                let current_gdevice = if *self.current_gdevice != 0 {
+                    *self.current_gdevice
                 } else {
                     main_gdevice
                 };
@@ -13561,7 +13561,7 @@ impl super::TrapDispatcher {
                     }
                     eprintln!(
                         "[QD-COLOR] FillCRect port=${:08X} rect=({},{},{},{}) pp=${:08X}->${:08X} patType={} patMap=${:08X} patData=${:08X} pat1={:02X?} raw={}",
-                        self.current_port,
+                        *self.current_port,
                         r.top,
                         r.left,
                         r.bottom,
@@ -14105,7 +14105,7 @@ impl super::TrapDispatcher {
                 // raw indices interchangeable when the tables contain
                 // different colors.
                 let dst_ctab_handle =
-                    self.copy_bits_destination_ctab_handle(bus, self.current_port, &dst_info);
+                    self.copy_bits_destination_ctab_handle(bus, *self.current_port, &dst_info);
                 let src_clut = matches!(src_info.pixel_size, 2 | 4 | 8)
                     .then(|| self.read_port_clut(bus, src_info.ctab_handle));
                 let screen_destination = dst_info.base == self.screen_mode.0
@@ -15173,7 +15173,7 @@ impl super::TrapDispatcher {
                         let new_main = bus.read_long(sp + 4);
                         if new_main != 0 {
                             self.main_gdevice_handle = new_main;
-                            self.current_gdevice = new_main;
+                            *self.current_gdevice = new_main;
                             bus.write_long(0x08A4, new_main); // MainDevice
                             bus.write_long(0x0CC8, new_main);
                         }
@@ -15735,8 +15735,8 @@ impl super::TrapDispatcher {
     }
 
     fn active_gdevice_or_main(&mut self, bus: &mut MacMemoryBus) -> u32 {
-        if Self::gdevice_pixmap_handle(bus, self.current_gdevice) != 0 {
-            self.current_gdevice
+        if Self::gdevice_pixmap_handle(bus, *self.current_gdevice) != 0 {
+            *self.current_gdevice
         } else {
             self.ensure_main_gdevice(bus)
         }
@@ -16241,7 +16241,7 @@ impl super::TrapDispatcher {
         bus.write_long(gd_handle, gd);
 
         self.main_gdevice_handle = gd_handle;
-        self.current_gdevice = gd_handle;
+        *self.current_gdevice = gd_handle;
 
         gd_handle
     }
@@ -16444,8 +16444,8 @@ impl super::TrapDispatcher {
     ) -> Option<[u16; 3]> {
         let device = if device != 0 {
             device
-        } else if self.current_gdevice != 0 {
-            self.current_gdevice
+        } else if *self.current_gdevice != 0 {
+            *self.current_gdevice
         } else {
             self.ensure_main_gdevice(bus)
         };
@@ -17194,8 +17194,8 @@ impl super::TrapDispatcher {
             }
         }
 
-        let gdh = if self.current_gdevice != 0 {
-            self.current_gdevice
+        let gdh = if *self.current_gdevice != 0 {
+            *self.current_gdevice
         } else {
             self.ensure_main_gdevice(bus)
         };
@@ -17357,7 +17357,7 @@ impl super::TrapDispatcher {
         if entry < 0 {
             return None;
         }
-        let palette_handle = self.window_palette_handle(self.current_port);
+        let palette_handle = self.window_palette_handle(*self.current_port);
         if palette_handle == 0 {
             return None;
         }
@@ -17691,13 +17691,13 @@ impl super::TrapDispatcher {
         self.recent_resource_ctable_fetch = Some(RecentColorTableFetch {
             ct_id,
             ctab_handle,
-            port: self.current_port,
+            port: *self.current_port,
             tick: self.tick_count,
         });
         if trace_palette_enabled() {
             eprintln!(
                 "[PALETTE] RememberGetCTable tick={} trap={} port=${:08X} ct_id={} handle=${:08X}",
-                self.tick_count, self.trap_count, self.current_port, ct_id, ctab_handle,
+                self.tick_count, self.trap_count, *self.current_port, ct_id, ctab_handle,
             );
         }
     }
@@ -18589,8 +18589,8 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn current_gdevice_ctab_handle(&self, bus: &MacMemoryBus) -> u32 {
-        let gdh = if self.current_gdevice != 0 {
-            self.current_gdevice
+        let gdh = if *self.current_gdevice != 0 {
+            *self.current_gdevice
         } else {
             self.main_gdevice_handle
         };
@@ -18749,16 +18749,16 @@ impl super::TrapDispatcher {
             false
         };
 
-        if self.current_port == port {
+        if *self.current_port == port {
             let main_gdevice = self.ensure_main_gdevice(bus);
             let fallback_port = self.ensure_color_window_manager_port(bus);
             self.set_current_port_state(bus, cpu, fallback_port, Some(main_gdevice));
-        } else if owns_attached_gdevice && attached_gdevice == self.current_gdevice {
+        } else if owns_attached_gdevice && attached_gdevice == *self.current_gdevice {
             let main_gdevice = self.ensure_main_gdevice(bus);
-            if self.current_port != 0 {
-                self.set_current_port_state(bus, cpu, self.current_port, Some(main_gdevice));
+            if *self.current_port != 0 {
+                self.set_current_port_state(bus, cpu, *self.current_port, Some(main_gdevice));
             } else {
-                self.current_gdevice = main_gdevice;
+                *self.current_gdevice = main_gdevice;
             }
         }
 
@@ -18874,8 +18874,8 @@ impl super::TrapDispatcher {
     ) {
         self.save_current_port_draw_state();
         let resolved_gdh = gdh.unwrap_or_else(|| self.gdevice_for_port(bus, port));
-        self.current_port = port;
-        self.current_gdevice = resolved_gdh;
+        *self.current_port = port;
+        *self.current_gdevice = resolved_gdh;
         // Re-selecting a port re-arms QDDone for that port.
         self.qddone_seen_ports.remove(&port);
         bus.write_long(crate::memory::globals::addr::THE_PORT, port);
@@ -18903,12 +18903,12 @@ impl super::TrapDispatcher {
     }
 
     fn save_current_port_draw_state(&mut self) {
-        if self.current_port == 0 {
+        if *self.current_port == 0 {
             return;
         }
 
         self.port_draw_states
-            .insert(self.current_port, self.current_draw_state());
+            .insert(*self.current_port, self.current_draw_state());
     }
 
     fn current_draw_state(&self) -> PortDrawState {
@@ -18988,7 +18988,7 @@ impl super::TrapDispatcher {
         &self,
         bus: &MacMemoryBus,
     ) -> super::dispatch::PortStateSnapshot {
-        let port = self.current_port;
+        let port = *self.current_port;
         let mut port_state_bytes = [0; 56];
         if Self::guest_range_in_ram(bus, port.wrapping_add(32), port_state_bytes.len() as u32) {
             for (i, byte) in port_state_bytes.iter_mut().enumerate() {
@@ -18997,7 +18997,7 @@ impl super::TrapDispatcher {
         }
         super::dispatch::PortStateSnapshot {
             port,
-            gdevice: self.current_gdevice,
+            gdevice: *self.current_gdevice,
             draw_state: self.current_draw_state(),
             port_state_bytes,
             vis_region: Self::capture_port_region(bus, port, 24),
@@ -19418,7 +19418,7 @@ impl super::TrapDispatcher {
         };
         let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
         ports.extend(self.window_list.iter().copied());
-        ports.extend([self.current_port, self.front_window]);
+        ports.extend([*self.current_port, self.front_window]);
         ports.sort_unstable();
         ports.dedup();
 
@@ -19469,7 +19469,7 @@ impl super::TrapDispatcher {
         let mut ctab_handles = vec![main_ctab_handle];
         let mut ports = self.cport_ports.iter().copied().collect::<Vec<_>>();
         ports.extend(self.window_list.iter().copied());
-        ports.extend([self.current_port, self.front_window]);
+        ports.extend([*self.current_port, self.front_window]);
         ports.sort_unstable();
         ports.dedup();
 
@@ -19498,15 +19498,15 @@ impl super::TrapDispatcher {
     }
 
     pub(super) fn sync_current_port_draw_state(&mut self, bus: &mut MacMemoryBus) {
-        if self.current_port == 0 {
+        if *self.current_port == 0 {
             return;
         }
-        if !self.port_allows_draw_state_memory_sync(bus, self.current_port) {
+        if !self.port_allows_draw_state_memory_sync(bus, *self.current_port) {
             return;
         }
         let state = self.current_draw_state();
-        self.port_draw_states.insert(self.current_port, state);
-        self.sync_port_draw_state(bus, self.current_port);
+        self.port_draw_states.insert(*self.current_port, state);
+        self.sync_port_draw_state(bus, *self.current_port);
     }
 
     pub(super) fn resolve_current_port_color_pixels(
@@ -19516,7 +19516,7 @@ impl super::TrapDispatcher {
         background: bool,
         use_screen_itable: bool,
     ) {
-        let port = self.current_port;
+        let port = *self.current_port;
         if port == 0
             || !self.port_allows_draw_state_memory_sync(bus, port)
             || (bus.read_word(port + 6) & 0xC000) != 0xC000
@@ -20107,7 +20107,7 @@ impl super::TrapDispatcher {
         if trace_dialog_draw_enabled() && self.dialog_tracking.is_some() {
             eprintln!(
                 "[DIALOG-DRAW] CopyBits current_port=${:08X} srcBase=${:08X} dstBase=${:08X} mode={} src=({},{}..{},{} ) dst=({},{}..{},{} ) mask=${:08X}",
-                self.current_port,
+                *self.current_port,
                 src_info.base,
                 dst_info.base,
                 mode_base,
@@ -20123,10 +20123,10 @@ impl super::TrapDispatcher {
             );
         }
         if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-            Self::trace_port_snapshot(bus, "CopyBits-current", self.current_port);
+            Self::trace_port_snapshot(bus, "CopyBits-current", *self.current_port);
         }
         if trace_dialog_port_dump_enabled() && self.dialog_tracking.is_some() {
-            Self::trace_port_snapshot(bus, "CopyBits-current", self.current_port);
+            Self::trace_port_snapshot(bus, "CopyBits-current", *self.current_port);
         }
 
         if src_bottom <= src_top
@@ -20816,7 +20816,7 @@ impl super::TrapDispatcher {
         if dst_info.base == self.screen_mode.0 {
             self.refresh_dialog_saved_pixels_after_screen_draw(
                 bus,
-                self.current_port,
+                *self.current_port,
                 (
                     clip_t.saturating_sub(dst_info.bounds_top),
                     clip_l.saturating_sub(dst_info.bounds_left),
@@ -20826,7 +20826,7 @@ impl super::TrapDispatcher {
             );
             self.refresh_visible_dialog_snapshot_after_bulk_port_draw(
                 bus,
-                self.current_port,
+                *self.current_port,
                 (
                     clip_t.saturating_sub(dst_info.bounds_top),
                     clip_l.saturating_sub(dst_info.bounds_left),
@@ -20942,7 +20942,7 @@ impl super::TrapDispatcher {
     /// custom proc that completes its work by calling CopyBits again gets the
     /// real blit instead of being handed back to itself.
     fn custom_bits_proc<C: CpuOps>(&self, bus: &MacMemoryBus, cpu: &C) -> Option<u32> {
-        let port = self.current_port;
+        let port = *self.current_port;
         if port == 0 || !Self::guest_range_in_ram(bus, port, 108) {
             return None;
         }
@@ -20969,7 +20969,7 @@ impl super::TrapDispatcher {
         dst_rect_ptr: u32,
         mask_rgn: u32,
     ) -> bool {
-        let port = self.current_port;
+        let port = *self.current_port;
         if port == 0 || !Self::guest_range_in_ram(bus, port, 32) {
             return false;
         }
@@ -23403,8 +23403,8 @@ impl super::TrapDispatcher {
     }
 
     fn palette_target_gdevice_handle(&self, bus: &MacMemoryBus) -> u32 {
-        if self.current_gdevice != 0 {
-            self.current_gdevice
+        if *self.current_gdevice != 0 {
+            *self.current_gdevice
         } else if self.main_gdevice_handle != 0 {
             self.main_gdevice_handle
         } else {
@@ -24166,7 +24166,7 @@ impl super::TrapDispatcher {
             reject!("invalid color table at offset ${:08X}", table_offset);
         };
 
-        let port = self.current_port;
+        let port = *self.current_port;
         if port == 0 {
             reject!("no current port");
         }
@@ -24545,8 +24545,8 @@ impl super::TrapDispatcher {
                 }
             }
         }
-        if self.current_port != 0 {
-            self.current_port
+        if *self.current_port != 0 {
+            *self.current_port
         } else {
             bus.read_long(crate::memory::globals::addr::THE_PORT)
         }
@@ -25022,7 +25022,7 @@ mod tests {
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let (screen_base, screen_row_bytes, screen_width, screen_height, _) = d.screen_mode;
         let port = 0x181000;
-        d.current_port = port;
+        *d.current_port = port;
         let src_pixmap = bus.alloc(50);
         let src_base = bus.alloc(512 * 342);
         let dst_pixmap = bus.alloc(50);
@@ -25230,7 +25230,7 @@ mod tests {
         // equivalent to CopyRgn + InsetRgn + DiffRgn.  A complex region's
         // interior must therefore remain untouched.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         d.pn_size = (1, 1);
         d.pn_pat = [0xFF; 8];
         d.pn_mode = 8; // patCopy
@@ -25352,7 +25352,7 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         d.init_cgraf_port_defaults(port, bus);
-        d.current_port = port;
+        *d.current_port = port;
         (screen_base, row_bytes)
     }
 
@@ -26249,8 +26249,8 @@ mod tests {
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             port_ptr
         );
-        assert_eq!(d.current_port, port_ptr);
-        assert_ne!(d.current_gdevice, 0);
+        assert_eq!(*d.current_port, port_ptr);
+        assert_ne!(*d.current_gdevice, 0);
     }
 
     #[test]
@@ -26303,8 +26303,8 @@ mod tests {
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             port_ptr
         );
-        assert_eq!(d.current_port, port_ptr);
-        assert_ne!(d.current_gdevice, 0);
+        assert_eq!(*d.current_port, port_ptr);
+        assert_ne!(*d.current_gdevice, 0);
     }
 
     #[test]
@@ -26313,7 +26313,7 @@ mod tests {
         // GrafDevice writes the device field of the current grafPort.
         let (mut d, mut cpu, mut bus) = setup_with_port();
         let port_ptr = 0x181000u32;
-        d.current_port = port_ptr;
+        *d.current_port = port_ptr;
         bus.write_word(port_ptr, 0x0000);
         bus.write_word(TEST_SP, 0x1234);
 
@@ -26327,7 +26327,7 @@ mod tests {
         // Inside Macintosh Volume I (1985), p. I-165:
         // GrafDevice(device: INTEGER) consumes one INTEGER argument.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         bus.write_word(TEST_SP, 0xABCD);
 
         let result = d.dispatch_quickdraw(true, 0x072, &mut cpu, &mut bus);
@@ -26397,7 +26397,7 @@ mod tests {
     #[test]
     fn setport_ignores_invalid_proc_pointer_without_syncing_draw_state() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        let original_port = d.current_port;
+        let original_port = *d.current_port;
         let invalid_port = 0x0001_6178u32;
         let watched = invalid_port + 56;
 
@@ -26411,7 +26411,7 @@ mod tests {
 
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_port, original_port);
+        assert_eq!(*d.current_port, original_port);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             original_port
@@ -26435,7 +26435,7 @@ mod tests {
         let set_device = d.dispatch_quickdraw(true, 0x231, &mut cpu, &mut bus);
         assert!(set_device.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_gdevice, custom_gdh);
+        assert_eq!(*d.current_gdevice, custom_gdh);
         assert_eq!(bus.read_long(0x0CC8), custom_gdh);
 
         cpu.write_reg(Register::A7, TEST_SP);
@@ -26444,8 +26444,8 @@ mod tests {
         assert!(set_port.unwrap().is_ok());
 
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_port, port_ptr);
-        assert_eq!(d.current_gdevice, custom_gdh);
+        assert_eq!(*d.current_port, port_ptr);
+        assert_eq!(*d.current_gdevice, custom_gdh);
         assert_eq!(
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             port_ptr
@@ -27524,8 +27524,8 @@ mod tests {
             bus.read_long(crate::memory::globals::addr::THE_PORT),
             new_port
         );
-        assert_eq!(d.current_port, new_port);
-        assert_ne!(d.current_gdevice, 0);
+        assert_eq!(*d.current_port, new_port);
+        assert_ne!(*d.current_gdevice, 0);
     }
 
     #[test]
@@ -28579,7 +28579,7 @@ mod tests {
         let pattern = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
         let port = bus.alloc(108);
         bus.write_word(port + 6, 0); // classic GrafPort rowBytes/version word
-        d.current_port = port;
+        *d.current_port = port;
         bus.write_bytes(pat_ptr, &pattern);
         bus.write_long(TEST_SP, pat_ptr);
         let result = d.dispatch_quickdraw(true, 0x07C, &mut cpu, &mut bus);
@@ -31124,7 +31124,7 @@ mod tests {
         // Inside Macintosh Volume I (1985), p. I-199:
         // StdBits consumes maskRgn/mode/dstRect/srcRect/srcBits stack frame.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         let src_base = 0x300300u32;
         bus.write_byte(src_base, 0x80);
         let src_bits_ptr = 0x300320u32;
@@ -31150,7 +31150,7 @@ mod tests {
         // Inside Macintosh Volume I (1985), pp. I-176 and I-199:
         // StdBits transfers bits as CopyBits to the current port bitmap.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         const PORT_PTR: u32 = 0x181000;
 
         let dst_base = 0x300380u32;
@@ -31246,7 +31246,7 @@ mod tests {
         bus.write_long(port + 28, clip_rgn_handle);
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, port);
-        d.current_port = port;
+        *d.current_port = port;
         dst_pixmap
     }
 
@@ -31565,7 +31565,7 @@ mod tests {
 
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, dialog_ptr);
-        d.current_port = dialog_ptr;
+        *d.current_port = dialog_ptr;
         d.front_window = dialog_ptr;
         d.dialog_items.insert(
             dialog_ptr,
@@ -31658,7 +31658,7 @@ mod tests {
         // HyperTint XCMD colourises HyperCard's black-and-white card blit this
         // way.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         const BITS_PROC: u32 = 0x0006_F123;
         const RETURN_PC: u32 = 0x0004_5678;
         let (src_bits_ptr, src_rect_ptr, dst_rect_ptr) =
@@ -31693,7 +31693,7 @@ mod tests {
         const PORT_PTR: u32 = 0x181000;
         const BITS_PROC: u32 = 0x0006_F123;
         const RETURN_PC: u32 = 0x0004_5678;
-        d.current_port = PORT_PTR;
+        *d.current_port = PORT_PTR;
         let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
 
         let vis_rgn_ptr = bus.alloc(10);
@@ -31716,7 +31716,7 @@ mod tests {
         // (IM:I I-197). CopyBits is already executing that standard operation,
         // so it must draw directly rather than recursively tail-call itself.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         let std_bits = d.get_or_create_tool_trap_trampoline(&mut bus, 0xA8EB);
         let _ = setup_copybits_through_port_bottleneck(&mut bus, std_bits);
         cpu.write_reg(Register::PC, 0x0004_5678);
@@ -31734,7 +31734,7 @@ mod tests {
         // Handing that nested call back to the same proc would never terminate,
         // so while the stack is still inside the tail call CopyBits blits.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        d.current_port = 0x181000;
+        *d.current_port = 0x181000;
         const BITS_PROC: u32 = 0x0006_F123;
         let _ = setup_copybits_through_port_bottleneck(&mut bus, BITS_PROC);
         cpu.write_reg(Register::PC, 0x0004_5678);
@@ -33464,7 +33464,7 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        d.current_port = port;
+        *d.current_port = port;
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
 
@@ -33596,7 +33596,7 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        d.current_port = port;
+        *d.current_port = port;
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(globals_ptr, port);
 
@@ -33672,7 +33672,7 @@ mod tests {
         bus.write_long(clip_handle, clip);
         bus.write_long(port + 28, clip_handle);
 
-        d.current_port = port;
+        *d.current_port = port;
         d.front_window = port;
         d.menu_bar_hidden = true;
         let globals_ptr = bus.read_long(cpu.read_reg(Register::A5));
@@ -34711,7 +34711,7 @@ mod tests {
 
         let global_ptr = bus.read_long(cpu.read_reg(Register::A5));
         bus.write_long(global_ptr, dialog_ptr);
-        d.current_port = dialog_ptr;
+        *d.current_port = dialog_ptr;
         d.front_window = dialog_ptr;
         d.dialog_items.insert(
             dialog_ptr,
@@ -36654,7 +36654,7 @@ mod tests {
         bus.write_long(current_pm_handle, current_pixmap);
         bus.write_long(current_gd + 22, current_pm_handle);
         bus.write_long(current_gdh, current_gd);
-        d.current_gdevice = current_gdh;
+        *d.current_gdevice = current_gdh;
 
         bus.write_byte(src_base, 1);
         bus.write_byte(dst_base, 0);
@@ -37881,7 +37881,7 @@ mod tests {
         bus.write_word(offscreen_gd + 38, 47);
         bus.write_word(offscreen_gd + 40, 73);
 
-        d.current_gdevice = offscreen_gdh;
+        *d.current_gdevice = offscreen_gdh;
         bus.write_long(0x0CC8, offscreen_gdh);
 
         let port_ptr = 0x300000u32;
@@ -37889,7 +37889,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x200, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_gdevice, offscreen_gdh);
+        assert_eq!(*d.current_gdevice, offscreen_gdh);
 
         let port_pm_handle = bus.read_long(port_ptr + 2);
         let port_pm = bus.read_long(port_pm_handle);
@@ -38787,7 +38787,7 @@ mod tests {
         bus.write_word(palette_ptr + 4, 0x9ABC);
         d.window_palettes.insert(u32::MAX, (palette_handle, 0));
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
@@ -38824,7 +38824,7 @@ mod tests {
 
         d.set_window_palette_association(window, palette_handle, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
@@ -38853,7 +38853,7 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -38889,7 +38889,7 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, super::PM_ALL_UPDATES);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
         let background_color = [0x0BAD, 0xC0DE, 0xCAFE];
         d.device_clut[200] = background_color;
         d.color_manager_clut[200] = background_color;
@@ -38955,7 +38955,7 @@ mod tests {
         d.set_window_palette_association(always, always_palette, super::PM_ALL_UPDATES);
         d.set_window_palette_association(quiet, quiet_palette, super::PM_NO_UPDATES);
         d.front_window = front;
-        d.current_port = front;
+        *d.current_port = front;
         bus.write_long(TEST_SP, front);
 
         let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
@@ -38983,7 +38983,7 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -39019,7 +39019,7 @@ mod tests {
         );
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
         let before = *d.device_clut;
         bus.write_long(TEST_SP, window);
 
@@ -39067,7 +39067,7 @@ mod tests {
         bus.write_word(src_rgb + 4, 0x9999);
         d.window_palettes.insert(u32::MAX, (palette_handle, 0));
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
@@ -39093,7 +39093,7 @@ mod tests {
         bus.write_word(src_rgb + 4, animated_rgb[2]);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = *d.device_clut;
         bus.write_long(TEST_SP, src_rgb);
@@ -39324,7 +39324,7 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 8), 0);
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(d.main_gdevice_handle, new_main);
-        assert_eq!(d.current_gdevice, new_main);
+        assert_eq!(*d.current_gdevice, new_main);
         assert_eq!(bus.read_long(0x08A4), new_main);
         assert_eq!(bus.read_long(0x0CC8), new_main);
 
@@ -39661,7 +39661,7 @@ mod tests {
         let result = d.dispatch_quickdraw(true, 0x231, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_gdevice, gdh);
+        assert_eq!(*d.current_gdevice, gdh);
         assert_eq!(bus.read_long(0x0CC8), gdh);
     }
 
@@ -40609,12 +40609,12 @@ mod tests {
     #[test]
     fn test_palette_dispatch_init_preserves_current_port() {
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        let saved_port = d.current_port;
+        let saved_port = *d.current_port;
         bus.write_word(TEST_SP, 0x0000u16); // selector: InitPalettes
         let result = d.dispatch_quickdraw(true, 0x2A2, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 2);
-        assert_eq!(d.current_port, saved_port);
+        assert_eq!(*d.current_port, saved_port);
     }
 
     #[test]
@@ -40642,7 +40642,7 @@ mod tests {
         let window = 0x181000u32;
         let target_rgb = [0x1111, 0x2222, 0x3333];
 
-        d.current_port = window;
+        *d.current_port = window;
         d.front_window = window;
         *d.device_clut = [[0, 0, 0]; 256];
         d.device_clut[42] = target_rgb;
@@ -40929,7 +40929,7 @@ mod tests {
         let src_ctab = make_test_ctab_handle(bus, &[[0x7777, 0x1111, 0x4444]], 0x3333_4444, 0);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = TrapDispatcher::read_palette_color_info(bus, palette, 0);
         (window, palette, src_ctab, before)
@@ -40945,7 +40945,7 @@ mod tests {
         let src_ctab = make_test_ctab_handle(&mut bus, &[animated_rgb], 0x3333_4444, 0);
         d.set_window_palette_association(window, palette, 0);
         d.front_window = window;
-        d.current_port = window;
+        *d.current_port = window;
 
         let before = *d.device_clut;
         bus.write_word(TEST_SP, 1);
@@ -42305,8 +42305,8 @@ mod tests {
             bus.read_word(gw_entry + 6),
         ];
 
-        d.current_port = gworld;
-        d.current_gdevice = d.gdevice_for_port(&mut bus, gworld);
+        *d.current_port = gworld;
+        *d.current_gdevice = d.gdevice_for_port(&mut bus, gworld);
 
         let table_ptr = bus.alloc(8);
         bus.write_word(table_ptr, 17);
@@ -42353,16 +42353,16 @@ mod tests {
         let gworld = bus.read_long(gworld_ptr_ptr);
         assert_eq!(d.gworld_devices.get(&gworld).copied(), Some(gdh));
 
-        let prior_port = d.current_port;
-        let prior_gdevice = d.current_gdevice;
+        let prior_port = *d.current_port;
+        let prior_gdevice = *d.current_gdevice;
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, 0u32); // would-be gdevice=nil
         bus.write_long(TEST_SP + 4, gworld); // would-be port
         let result = d.dispatch_quickdraw(true, 0x31C, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.current_port, prior_port);
-        assert_eq!(d.current_gdevice, prior_gdevice);
+        assert_eq!(*d.current_port, prior_port);
+        assert_eq!(*d.current_gdevice, prior_gdevice);
     }
 
     #[test]
@@ -42765,16 +42765,16 @@ mod tests {
         bus.write_long(TEST_SP + 4, gworld);
         let set_current = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(set_current.unwrap().is_ok());
-        assert_eq!(d.current_port, gworld);
-        assert_eq!(d.current_gdevice, attached_gdevice);
+        assert_eq!(*d.current_port, gworld);
+        assert_eq!(*d.current_gdevice, attached_gdevice);
 
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0004_0004);
         bus.write_long(TEST_SP, gworld);
         let dispose = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(dispose.unwrap().is_ok());
-        assert_eq!(d.current_gdevice, main_gdevice);
-        assert_ne!(d.current_port, gworld);
+        assert_eq!(*d.current_gdevice, main_gdevice);
+        assert_ne!(*d.current_port, gworld);
     }
 
     #[test]
@@ -42807,23 +42807,23 @@ mod tests {
         bus.write_long(TEST_SP + 4, gworld);
         let set_current = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(set_current.unwrap().is_ok());
-        assert_eq!(d.current_port, gworld);
-        assert_eq!(d.current_gdevice, attached_gdevice);
+        assert_eq!(*d.current_port, gworld);
+        assert_eq!(*d.current_gdevice, attached_gdevice);
 
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_long(TEST_SP, gworld);
         let dispose = d.dispatch_quickdraw(true, 0x31F, &mut cpu, &mut bus);
         assert!(dispose.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP);
-        assert_eq!(d.current_port, gworld);
-        assert_eq!(d.current_gdevice, attached_gdevice);
+        assert_eq!(*d.current_port, gworld);
+        assert_eq!(*d.current_gdevice, attached_gdevice);
     }
 
     #[test]
     fn test_get_gworld() {
         let (mut d, mut cpu, mut bus) = setup();
-        d.current_port = 0x400000;
-        d.current_gdevice = 0x500000;
+        *d.current_port = 0x400000;
+        *d.current_gdevice = 0x500000;
         let gd_ptr = 0x300000u32;
         let port_ptr = 0x300100u32;
         bus.write_long(TEST_SP, gd_ptr);
@@ -42998,9 +42998,9 @@ mod tests {
         // If the argument points to a regular GrafPort/CGrafPort,
         // GetGWorldDevice returns the current device.
         let (mut d, mut cpu, mut bus) = setup_with_port();
-        let regular_port = d.current_port;
+        let regular_port = *d.current_port;
         let main_gdh = d.ensure_main_gdevice(&mut bus);
-        d.current_gdevice = main_gdh;
+        *d.current_gdevice = main_gdh;
 
         let bounds_ptr = 0x300000u32;
         let gworld_ptr_ptr = 0x300100u32;
@@ -43020,8 +43020,8 @@ mod tests {
         assert_ne!(offscreen_gdh, 0);
         assert_ne!(offscreen_gdh, main_gdh);
 
-        d.current_port = gworld;
-        d.current_gdevice = offscreen_gdh;
+        *d.current_port = gworld;
+        *d.current_gdevice = offscreen_gdh;
 
         cpu.write_reg(Register::A7, TEST_SP);
         cpu.write_reg(Register::D0, 0x0004_0012);
@@ -43052,7 +43052,7 @@ mod tests {
         bus.write_word(linked_gd_ptr + 20, 0x2468);
         write_rect(&mut bus, linked_gd_ptr + 34, 900, 20, 940, 52);
         bus.write_long(main_gd + 30, linked_gdh);
-        d.current_gdevice = main_gdh;
+        *d.current_gdevice = main_gdh;
 
         let rgn_addr = bus.alloc(10);
         let rgn_handle = bus.alloc(4);
@@ -43205,15 +43205,15 @@ mod tests {
     #[test]
     fn test_ab1c_is_noop() {
         let (mut d, mut cpu, mut bus) = setup();
-        let prior_port = d.current_port;
-        let prior_gdevice = d.current_gdevice;
+        let prior_port = *d.current_port;
+        let prior_gdevice = *d.current_gdevice;
         bus.write_long(TEST_SP, 0x600000); // would-be gdevice
         bus.write_long(TEST_SP + 4, 0x700000); // would-be port
         let result = d.dispatch_quickdraw(true, 0x31C, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.current_port, prior_port);
-        assert_eq!(d.current_gdevice, prior_gdevice);
+        assert_eq!(*d.current_port, prior_port);
+        assert_eq!(*d.current_gdevice, prior_gdevice);
     }
 
     #[test]
@@ -43276,14 +43276,14 @@ mod tests {
         // IM:VI 1991 p. 17-13 / IWQD 1994 p. 6-45:
         // calling UnlockPixels on purged pixels does no harm.
         let (mut d, mut cpu, mut bus) = setup();
-        let prior_port = d.current_port;
-        let prior_gdevice = d.current_gdevice;
+        let prior_port = *d.current_port;
+        let prior_gdevice = *d.current_gdevice;
         bus.write_long(TEST_SP, 0); // stand-in for purged/invalid handle path
         let result = d.dispatch_quickdraw(true, 0x305, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
-        assert_eq!(d.current_port, prior_port);
-        assert_eq!(d.current_gdevice, prior_gdevice);
+        assert_eq!(*d.current_port, prior_port);
+        assert_eq!(*d.current_gdevice, prior_gdevice);
     }
 
     #[test]
@@ -43453,7 +43453,7 @@ mod tests {
         assert_ne!(copy_handle, 0);
         assert_eq!(flags & (1 << 16), 1 << 16);
         assert_eq!(stack_flags, flags);
-        assert_eq!(d.current_port, gworld);
+        assert_eq!(*d.current_port, gworld);
         assert!(stack_ok);
     }
 
@@ -44044,7 +44044,7 @@ mod tests {
         bus.write_long(TEST_SP + 4, gworld);
         let set_current = d.dispatch_quickdraw(true, 0x31D, &mut cpu, &mut bus);
         assert!(set_current.unwrap().is_ok());
-        assert_eq!(d.current_port, gworld);
+        assert_eq!(*d.current_port, gworld);
 
         let pm_handle = bus.read_long(gworld + 2);
         let pm_ptr = bus.read_long(pm_handle);
@@ -45171,7 +45171,7 @@ mod tests {
         bus.write_long(offscreen_pm_handle, offscreen_pixmap);
         bus.write_long(offscreen_gd + 22, offscreen_pm_handle);
         bus.write_long(offscreen_gdh, offscreen_gd);
-        d.current_gdevice = offscreen_gdh;
+        *d.current_gdevice = offscreen_gdh;
 
         let table_ptr = 0x339000u32;
         for index in 0..256u32 {
@@ -45223,7 +45223,7 @@ mod tests {
     fn test_recent_resource_ctable_fetch_consumed_for_immediate_screen_drawpicture() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        d.current_port = 0x00284CFC;
+        *d.current_port = 0x00284CFC;
         d.tick_count = 33;
         d.trap_count = 400;
 
@@ -45243,7 +45243,7 @@ mod tests {
 
         let fetch = d
             .take_recent_drawpicture_resource_ctable_fetch(
-                d.current_port,
+                *d.current_port,
                 d.screen_mode.0,
                 d.screen_mode.1,
                 8,
@@ -45259,7 +45259,7 @@ mod tests {
     fn test_recent_resource_ctable_fetch_consumed_for_immediate_offscreen_drawpicture() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        d.current_port = 0x00284CFC;
+        *d.current_port = 0x00284CFC;
         d.tick_count = 33;
         d.trap_count = 400;
 
@@ -45273,7 +45273,7 @@ mod tests {
         d.remember_recent_resource_ctable_fetch(1001, ctab_handle);
 
         let fetch =
-            d.take_recent_drawpicture_resource_ctable_fetch(d.current_port, 0x00ABD000, 512, 8);
+            d.take_recent_drawpicture_resource_ctable_fetch(*d.current_port, 0x00ABD000, 512, 8);
 
         assert_eq!(
             fetch
@@ -45288,7 +45288,7 @@ mod tests {
     fn test_recent_resource_ctable_fetch_ignored_for_different_drawpicture_port() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        d.current_port = 0x00284CFC;
+        *d.current_port = 0x00284CFC;
         d.tick_count = 33;
         d.trap_count = 400;
 
@@ -45337,8 +45337,8 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         let gdh = d.create_offscreen_gdevice(&mut bus, pixmap_handle, 0, 0, 64, 64);
         d.gworld_devices.insert(port, gdh);
-        d.current_port = port;
-        d.current_gdevice = gdh;
+        *d.current_port = port;
+        *d.current_gdevice = gdh;
 
         let fetch = RecentColorTableFetch {
             ct_id: 131,
@@ -45375,7 +45375,7 @@ mod tests {
     fn test_recent_resource_ctable_fetch_survives_intervening_traps_in_same_tick() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        d.current_port = 0x00284CFC;
+        *d.current_port = 0x00284CFC;
         d.tick_count = 33;
         d.trap_count = 400;
 
@@ -45390,7 +45390,7 @@ mod tests {
         d.trap_count = 404;
 
         let fetch = d.take_recent_drawpicture_resource_ctable_fetch(
-            d.current_port,
+            *d.current_port,
             d.screen_mode.0,
             d.screen_mode.1,
             8,
@@ -45409,7 +45409,7 @@ mod tests {
     fn test_recent_resource_ctable_fetch_expires_after_tick_advances() {
         let (mut d, _cpu, mut bus) = setup();
         d.screen_mode = (0x00ABC000, 800, 800, 600, 8);
-        d.current_port = 0x00284CFC;
+        *d.current_port = 0x00284CFC;
         d.tick_count = 33;
         d.trap_count = 400;
 
@@ -45424,7 +45424,7 @@ mod tests {
         d.tick_count = 35;
 
         let fetch = d.take_recent_drawpicture_resource_ctable_fetch(
-            d.current_port,
+            *d.current_port,
             d.screen_mode.0,
             d.screen_mode.1,
             8,
@@ -45709,7 +45709,7 @@ mod tests {
         bus.write_long(port + 2, pixmap_handle);
         bus.write_word(port + 6, 0xC000);
         write_rect(&mut bus, port + 16, 0, 0, 2, 8);
-        d.current_port = port;
+        *d.current_port = port;
 
         let pic_frame = 0x3002C0u32;
         write_rect(&mut bus, pic_frame, 0, 0, 2, 8);
@@ -46921,7 +46921,7 @@ mod tests {
         let main_ctab = TrapDispatcher::gdevice_ctab_handle(&bus, main_gdh);
         let stale_gdh = bus.alloc(4);
         bus.write_long(stale_gdh, 0xFFFF_FFF0);
-        d.current_gdevice = stale_gdh;
+        *d.current_gdevice = stale_gdh;
 
         assert_eq!(d.current_gdevice_ctab_handle(&bus), main_ctab);
     }
