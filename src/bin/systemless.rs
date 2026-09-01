@@ -1748,6 +1748,7 @@ impl App {
     }
 }
 
+#[allow(dead_code)]
 fn aspect_fit_dimensions(
     source_width: u32,
     source_height: u32,
