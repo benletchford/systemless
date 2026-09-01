@@ -254,6 +254,7 @@ impl ProcessMemoryManager {
     const NATIVE_HEAP_ALIGNMENT: u32 = 16;
     const MEM_FULL_ERR: i16 = -108;
     const NIL_HANDLE_ERR: i16 = -109;
+    const MEM_WZ_ERR: i16 = -111;
     const NO_ERR: i16 = 0;
     const PARAM_ERR: i16 = -50;
 
@@ -732,6 +733,112 @@ impl ProcessMemoryManager {
             Self::NO_ERR
         });
         size
+    }
+
+    /// Change the logical size of a native nonrelocatable block in place.
+    ///
+    /// A nonrelocatable block cannot move, so growth can fail when another
+    /// block occupies the following address range. Inside Macintosh: Memory
+    /// (1992), pp. 2-42--2-43.
+    pub(crate) fn set_native_ptr_size(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        ptr: u32,
+        size: u32,
+    ) -> i16 {
+        let Some(record) = self.native_allocator.as_ref().and_then(|allocator| {
+            allocator
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == ptr)
+                .copied()
+        }) else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        };
+        if size <= record.size {
+            let allocator = self
+                .native_allocator
+                .as_mut()
+                .expect("native allocator remains registered");
+            allocator
+                .ptrs
+                .iter_mut()
+                .find(|record| record.ptr == ptr)
+                .expect("native pointer remains registered")
+                .size = size;
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+            return Self::NO_ERR;
+        }
+
+        let Some(old_capacity) = Self::native_allocation_size(record.size) else {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        };
+        let Some(new_capacity) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let Some(old_end) = record.ptr.checked_add(old_capacity) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let Some(heap) = self.native_heap_state() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        if old_end != heap.heap_cursor {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+        let Some((resize_ptr, new_end)) = Self::native_allocation_bounds(
+            record.ptr,
+            heap.heap_limit,
+            new_capacity,
+            |base, len| memory.readonly_allocation_overlap_end(base, len),
+        ) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        if resize_ptr != record.ptr {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+        if new_end > old_end && PpcMemory::read_u8(memory, old_end).is_none() {
+            let Ok(growth) = usize::try_from(new_end - old_end) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Self::MEM_FULL_ERR;
+            };
+            memory.add_region(old_end, vec![0; growth]);
+        }
+        if (old_end..new_end)
+            .any(|address| PpcMemory::write_u8(memory, address, 0).is_none())
+        {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator
+            .ptrs
+            .iter_mut()
+            .find(|record| record.ptr == ptr)
+            .expect("native pointer remains registered")
+            .size = size;
+        allocator.heap.heap_cursor = new_end;
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        Self::NO_ERR
+    }
+
+    /// Recover the stable handle whose relocatable block starts at `ptr`.
+    /// Inside Macintosh: Memory (1992), pp. 2-54--2-55.
+    pub(crate) fn recover_handle(&self, ptr: u32) -> Option<u32> {
+        self.ptr_to_handle.get(&ptr)
     }
 
     /// Allocate a native relocatable block and its stable master pointer.

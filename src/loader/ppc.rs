@@ -920,6 +920,8 @@ pub enum PpcImportDispatcherTarget {
     NewPtr { clear: bool },
     DisposePtr,
     GetPtrSize,
+    SetPtrSize,
+    RecoverHandle,
     BlockMove,
     PtrToHand,
     HandToHand,
@@ -15513,6 +15515,8 @@ fn dispatcher_target_for_import(
         }
         ("InterfaceLib", "DisposePtr") => PpcImportDispatcherTarget::DisposePtr,
         ("InterfaceLib", "GetPtrSize") => PpcImportDispatcherTarget::GetPtrSize,
+        ("InterfaceLib", "SetPtrSize") => PpcImportDispatcherTarget::SetPtrSize,
+        ("InterfaceLib", "RecoverHandle") => PpcImportDispatcherTarget::RecoverHandle,
         ("InterfaceLib", "NewHandle") => PpcImportDispatcherTarget::NewHandle { clear: false },
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
@@ -16347,8 +16351,8 @@ fn dispatcher_target_for_import(
         (
             "InterfaceLib",
             "BitNot" | "BitSet" | "BitClr" | "Fix2X" | "GetMyZone" | "HandleZone" | "LockMemory"
-            | "MaxBlock" | "PurgeSpace" | "RecoverHandle" | "SetGrowZone" | "SetPtrSize"
-            | "StackSpace" | "TempFreeMem" | "UnlockMemory",
+            | "MaxBlock" | "PurgeSpace" | "SetGrowZone" | "StackSpace" | "TempFreeMem"
+            | "UnlockMemory",
         ) => PpcImportDispatcherTarget::LegacyMemoryUtility,
         (
             "InterfaceLib",
@@ -16797,6 +16801,44 @@ fn dispatch_supported_import(
                 free_handle_blocks,
             );
             Some(PpcImportAction::Return(size))
+        }
+        PpcImportDispatcherTarget::SetPtrSize => {
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            *last_mem_error = process_memory_manager.set_native_ptr_size(
+                memory,
+                cpu.gpr[3],
+                cpu.gpr[4],
+            );
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::RecoverHandle => {
+            ppc_synchronize_process_native_handles(
+                process_memory_manager,
+                handles,
+                handle_states,
+            );
+            Some(PpcImportAction::Return(
+                process_memory_manager
+                    .recover_handle(cpu.gpr[3])
+                    .unwrap_or(0),
+            ))
         }
         PpcImportDispatcherTarget::BlockMove => {
             if ppc_hle_trace_enabled()
@@ -26929,7 +26971,6 @@ fn dispatch_supported_import(
             heap_limit,
             *application_heap_limit,
             last_mem_error,
-            ptrs,
             free_ptr_blocks,
             handles,
         ),
@@ -82019,7 +82060,6 @@ fn ppc_dispatch_legacy_memory_utility(
     heap_limit: u32,
     application_heap_limit: u32,
     last_mem_error: &mut i16,
-    ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &[PpcHandleRecord],
 ) -> Option<PpcImportAction> {
@@ -82097,25 +82137,8 @@ fn ppc_dispatch_legacy_memory_utility(
             }
             Some(PpcImportAction::ReturnPreserve)
         }
-        "RecoverHandle" => Some(PpcImportAction::Return(
-            handles
-                .iter()
-                .find(|record| record.ptr == cpu.gpr[3])
-                .map_or(0, |record| record.handle),
-        )),
         "SetGrowZone" => {
             memory.write_u32_be(PPC_APPLICATION_ZONE + 16, cpu.gpr[3])?;
-            Some(PpcImportAction::ReturnPreserve)
-        }
-        "SetPtrSize" => {
-            *last_mem_error = ppc_set_ptr_size(
-                memory,
-                heap_cursor,
-                heap_limit,
-                ptrs,
-                cpu.gpr[3],
-                cpu.gpr[4],
-            );
             Some(PpcImportAction::ReturnPreserve)
         }
         "StackSpace" => Some(PpcImportAction::Return(
@@ -82140,61 +82163,6 @@ fn ppc_largest_free_ptr_block(
         .max()
         .unwrap_or(0)
         .max(ppc_heap_free_capacity(memory, heap_cursor, heap_limit).1)
-}
-
-fn ppc_set_ptr_size(
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    ptrs: &mut [PpcPtrRecord],
-    ptr: u32,
-    size: u32,
-) -> i16 {
-    const MEM_WZ_ERR: i16 = -111;
-    let Some(record) = ptrs.iter_mut().find(|record| record.ptr == ptr) else {
-        return MEM_WZ_ERR;
-    };
-    if size <= record.size {
-        record.size = size;
-        return PPC_NO_ERR;
-    }
-    let Some(old_capacity) = ppc_allocation_size(record.size) else {
-        return PPC_PARAM_ERR;
-    };
-    let Some(new_capacity) = ppc_allocation_size(size) else {
-        return PPC_MEM_FULL_ERR;
-    };
-    let Some(old_end) = record.ptr.checked_add(old_capacity) else {
-        return PPC_MEM_FULL_ERR;
-    };
-    if old_end != *heap_cursor {
-        // A nonrelocatable block cannot move. With no adjacent free-block
-        // representation, only the last heap allocation can grow in place.
-        return PPC_MEM_FULL_ERR;
-    }
-    let Some((resize_ptr, new_end)) =
-        ppc_heap_allocation_bounds(memory, record.ptr, heap_limit, new_capacity)
-    else {
-        return PPC_MEM_FULL_ERR;
-    };
-    if resize_ptr != record.ptr {
-        return PPC_MEM_FULL_ERR;
-    }
-    if new_end > old_end && memory.read_u8(old_end).is_none() {
-        let Ok(growth) = usize::try_from(new_end - old_end) else {
-            return PPC_MEM_FULL_ERR;
-        };
-        memory.add_region(old_end, vec![0; growth]);
-    }
-    for address in old_end..new_end {
-        if memory.write_u8(address, 0).is_none() {
-            return PPC_PARAM_ERR;
-        }
-    }
-    *heap_cursor = new_end;
-    ppc_update_zone_free_bytes(memory, new_end, heap_limit);
-    record.size = size;
-    PPC_NO_ERR
 }
 
 fn ppc_memory_can_write_bytes(memory: &mut PpcSectionMem, addr: u32, len: u32) -> bool {
@@ -88526,10 +88494,24 @@ pub(crate) mod tests {
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetPtrSize;
+                native.cpu.gpr[3] = ptr;
+                native.cpu.gpr[4] = 40;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(
+                    memory_manager
+                        .native_allocator()
+                        .and_then(|allocator| allocator.ptrs.last())
+                        .copied(),
+                    Some(ProcessPtrRecord { ptr, size: 40 })
+                );
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
                 native.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetPtrSize;
                 native.cpu.gpr[3] = ptr;
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
-                assert_eq!(native.cpu.gpr[3], 24);
+                assert_eq!(native.cpu.gpr[3], 40);
                 assert_eq!(
                     memory_manager
                         .native_allocator()
@@ -88552,7 +88534,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(
                     allocator.free_ptr_blocks,
-                    vec![ProcessPtrRecord { ptr, size: 24 }]
+                    vec![ProcessPtrRecord { ptr, size: 40 }]
                 );
             },
         );
@@ -88580,6 +88562,13 @@ pub(crate) mod tests {
                 let original = memory_manager.native_allocation(handle).unwrap();
                 assert_eq!(original.size, 24);
                 assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x40));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::RecoverHandle;
+                native.cpu.gpr[3] = original.ptr;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], handle);
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
@@ -91581,9 +91570,7 @@ pub(crate) mod tests {
             "LockMemory",
             "MaxBlock",
             "PurgeSpace",
-            "RecoverHandle",
             "SetGrowZone",
-            "SetPtrSize",
             "StackSpace",
             "TempFreeMem",
             "UnlockMemory",
@@ -91594,6 +91581,14 @@ pub(crate) mod tests {
                 "{symbol}"
             );
         }
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "SetPtrSize"),
+            PpcImportDispatcherTarget::SetPtrSize
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "RecoverHandle"),
+            PpcImportDispatcherTarget::RecoverHandle
+        );
     }
 
     #[test]
@@ -91636,58 +91631,39 @@ pub(crate) mod tests {
     #[test]
     fn set_ptr_size_grows_only_a_terminal_nonrelocatable_block() {
         let mut memory = PpcSectionMem::new();
-        let mut heap_cursor = PPC_HEAP_BASE;
         let heap_limit = PPC_HEAP_BASE + 0x1000;
-        let mut ptrs = Vec::new();
-        let mut free = Vec::new();
-        let ptr = ppc_alloc_ptr(
-            &mut memory,
-            &mut heap_cursor,
-            heap_limit,
-            &mut ptrs,
-            &mut free,
-            8,
-            true,
+        memory.add_region(PPC_HEAP_BASE, vec![0; 0x1000]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: PPC_HEAP_BASE,
+                heap_cursor: PPC_HEAP_BASE,
+                heap_limit,
+                last_mem_error: PPC_NO_ERR,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
         );
+        let ptr = manager.new_native_ptr(&mut memory, 8, true);
         assert_ne!(ptr, 0);
 
         assert_eq!(
-            ppc_set_ptr_size(
-                &mut memory,
-                &mut heap_cursor,
-                heap_limit,
-                &mut ptrs,
-                ptr,
-                24,
-            ),
+            manager.set_native_ptr_size(&mut memory, ptr, 24),
             PPC_NO_ERR
         );
-        assert_eq!(ptrs[0].size, 24);
+        assert_eq!(manager.native_ptr_size(ptr), 24);
         assert_eq!(memory.read_u8(ptr + 23), Some(0));
 
-        let second = ppc_alloc_ptr(
-            &mut memory,
-            &mut heap_cursor,
-            heap_limit,
-            &mut ptrs,
-            &mut free,
-            8,
-            true,
-        );
+        let second = manager.new_native_ptr(&mut memory, 8, true);
         assert_ne!(second, 0);
         assert_eq!(
-            ppc_set_ptr_size(
-                &mut memory,
-                &mut heap_cursor,
-                heap_limit,
-                &mut ptrs,
-                ptr,
-                32,
-            ),
+            manager.set_native_ptr_size(&mut memory, ptr, 32),
             PPC_MEM_FULL_ERR
         );
-        assert_eq!(ptrs[0].ptr, ptr);
-        assert_eq!(ptrs[0].size, 24);
+        assert_eq!(manager.native_ptr_size(ptr), 24);
     }
 
     #[test]
