@@ -16770,7 +16770,7 @@ fn dispatch_supported_import(
                 free_ptr_blocks,
                 free_handle_blocks,
             );
-            process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+            let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,

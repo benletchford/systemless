@@ -677,11 +677,11 @@ impl super::TrapDispatcher {
         memory_manager.new_classic_ptr(bus, size)
     }
 
-    fn dispose_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
+    fn dispose_process_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
-        memory_manager.dispose_classic_ptr(bus, ptr);
+        memory_manager.dispose_process_ptr(bus, ptr);
     }
 
     fn new_process_classic_handle(
@@ -904,7 +904,7 @@ impl super::TrapDispatcher {
             // Inside Macintosh: Memory (1992), pp. 2-38--2-39.
             (false, 0x1F) => {
                 let ptr = cpu.read_reg(Register::A0);
-                self.dispose_process_classic_ptr(bus, ptr);
+                self.dispose_process_ptr(bus, ptr);
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
@@ -4986,7 +4986,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_size_traps_observe_native_process_allocations() {
+    fn classic_size_and_dispose_traps_observe_native_process_allocations() {
         const HEAP_BASE: u32 = 0x0300_0000;
         const HANDLE: u32 = HEAP_BASE;
         const HANDLE_PTR: u32 = HEAP_BASE + 0x10;
@@ -5049,6 +5049,23 @@ mod tests {
             .unwrap();
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(context.memory_manager_mut().process_ptr_size(&bus, PTR), Some(20));
+
+        cpu.write_reg(Register::A0, PTR);
+        dispatcher.current_trap_word = 0xA01F;
+        dispatcher
+            .dispatch_memory(false, 0x1F, &mut cpu, &mut bus)
+            .expect("DisposePtr should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let memory_manager = context.memory_manager_mut();
+        assert_eq!(memory_manager.process_ptr_size(&bus, PTR), None);
+        assert_eq!(
+            memory_manager
+                .native_allocator()
+                .and_then(|allocator| allocator.free_ptr_blocks.last())
+                .copied(),
+            Some(ProcessPtrRecord { ptr: PTR, size: 20 })
+        );
     }
 
     #[test]

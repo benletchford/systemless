@@ -317,13 +317,27 @@ impl ProcessMemoryManager {
         bus.alloc(size)
     }
 
-    /// Release a classic nonrelocatable block owned by this process.
+    /// Release a native or classic nonrelocatable block owned by this process.
     ///
-    /// `DisposePtr` invalidates the pointer and returns its storage to the
-    /// heap. Inside Macintosh: Memory (1992), pp. 2-38--2-39.
-    pub(crate) fn dispose_classic_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
+    /// Native allocator metadata is updated immediately even when `DisposePtr`
+    /// originates in an attached 68K callback. Inside Macintosh: Memory
+    /// (1992), pp. 2-38--2-39.
+    pub(crate) fn dispose_process_ptr(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ptr: u32,
+    ) -> Option<ProcessPtrRecord> {
         self.assert_classic_memory_bus_attached(bus);
-        bus.free(ptr);
+        if self
+            .native_allocator
+            .as_ref()
+            .is_some_and(|allocator| allocator.ptrs.iter().any(|record| record.ptr == ptr))
+        {
+            self.dispose_native_ptr(ptr)
+        } else {
+            bus.free(ptr);
+            None
+        }
     }
 
     /// Allocate a classic relocatable block and stable master pointer.
@@ -996,14 +1010,18 @@ impl ProcessMemoryManager {
         ptr
     }
 
-    pub(crate) fn dispose_native_ptr(&mut self, ptr: u32) {
+    pub(crate) fn dispose_native_ptr(&mut self, ptr: u32) -> Option<ProcessPtrRecord> {
+        let mut disposed = None;
         if let Some(allocator) = &mut self.native_allocator {
             if let Some(index) = allocator.ptrs.iter().position(|record| record.ptr == ptr) {
-                allocator.free_ptr_blocks.push(allocator.ptrs.remove(index));
+                let record = allocator.ptrs.remove(index);
+                allocator.free_ptr_blocks.push(record);
+                disposed = Some(record);
             }
             allocator.heap.last_mem_error = Self::NO_ERR;
             self.native_allocator_dirty = true;
         }
+        disposed
     }
 
     pub(crate) fn native_ptr_size(&mut self, ptr: u32) -> u32 {
@@ -1969,7 +1987,7 @@ mod tests {
         assert_eq!(second_adapter.get_alloc_size(ptr), Some(37));
         context
             .memory_manager_mut()
-            .dispose_classic_ptr(&mut second_adapter, ptr);
+            .dispose_process_ptr(&mut second_adapter, ptr);
         assert_eq!(primary.get_alloc_size(ptr), None);
         assert_eq!(
             context.memory_manager.borrow().classic_allocation_size(ptr),
@@ -2607,13 +2625,49 @@ mod tests {
             Some([ProcessPtrRecord { ptr, size: 20 }].as_slice())
         );
         assert_eq!(manager.native_ptr_size(ptr), 20);
-        manager.dispose_native_ptr(ptr);
+        assert_eq!(
+            manager.dispose_native_ptr(ptr),
+            Some(ProcessPtrRecord { ptr, size: 20 })
+        );
         let allocator = manager.native_allocator().unwrap();
         assert!(allocator.ptrs.is_empty());
         assert_eq!(
             allocator.free_ptr_blocks,
             vec![ProcessPtrRecord { ptr, size: 20 }]
         );
+    }
+
+    #[test]
+    fn process_ptr_disposal_leaves_detached_allocator_independent() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let ptr = HEAP_BASE + 0x20;
+        let record = ProcessPtrRecord { ptr, size: 24 };
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE + 0x100,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[record],
+            &[],
+            &[],
+        );
+        let detached = manager.detached_clone();
+        let mut bus = MacMemoryBus::new(0x20_0000);
+        manager.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(manager.dispose_process_ptr(&mut bus, ptr), Some(record));
+        assert_eq!(manager.process_ptr_size(&bus, ptr), None);
+        assert_eq!(detached.native_allocator().unwrap().ptrs, vec![record]);
+        assert!(detached
+            .native_allocator()
+            .unwrap()
+            .free_ptr_blocks
+            .is_empty());
     }
 
     #[test]
