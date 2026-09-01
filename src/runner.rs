@@ -18,7 +18,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::ProcessContext;
+use crate::process_context::{ProcessContext, ProcessMemoryManager};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -6178,13 +6178,13 @@ impl FixtureRunner {
             event_queue,
             menu_tracking,
             memory_manager,
-            |app| match (trace_ppc_imports, trace_ppc_fetches) {
-                (true, true) => {
-                    app.run_with_hle_import_trace_and_fetch_histogram(ppc_max_steps as u64)
-                }
-                (true, false) => app.run_with_hle_import_trace(ppc_max_steps as u64),
-                (false, true) => app.run_with_hle_import_fetch_histogram(ppc_max_steps as u64),
-                (false, false) => app.run_with_hle_imports(ppc_max_steps as u64),
+            |app, memory_manager| {
+                app.run_with_process_memory_manager(
+                    ppc_max_steps as u64,
+                    trace_ppc_imports,
+                    trace_ppc_fetches,
+                    memory_manager,
+                )
             },
         );
         let profile_run_us = elapsed_profile_micros(profile_run_start);
@@ -6228,13 +6228,14 @@ impl FixtureRunner {
             let (event_queue, menu_tracking, memory_manager) = self
                 .process_context
                 .event_queue_menu_tracking_and_memory_manager_mut();
-            let probes = ppc_app.with_process_state_and_memory_manager(
+            ppc_app.with_process_state_and_memory_manager(
                 event_queue,
                 menu_tracking,
                 memory_manager,
-                |app| {
+                |app, memory_manager| {
                     Self::fire_ppc_tick_callbacks(
                         app,
+                        memory_manager,
                         ppc_start_tick,
                         ppc_start_time,
                         elapsed_ticks,
@@ -6243,8 +6244,7 @@ impl FixtureRunner {
                         trace_ppc_fetches,
                     )
                 },
-            );
-            probes
+            )
         };
         if trace_vbl_enabled() {
             for vbl_probe in &vbl_probes {
@@ -6898,6 +6898,7 @@ impl FixtureRunner {
     #[allow(clippy::too_many_arguments)]
     fn fire_ppc_tick_callbacks(
         ppc_app: &mut PpcLoadedApp,
+        memory_manager: &mut ProcessMemoryManager,
         start_tick: u32,
         start_time: u32,
         elapsed_ticks: u32,
@@ -6921,21 +6922,23 @@ impl FixtureRunner {
             ppc_app.set_tick_count(callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
-            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks(
+            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks_with_process_memory_manager(
                 callback_tick.wrapping_sub(1),
                 1,
                 usize::MAX,
                 max_cycles,
                 trace_imports,
                 trace_fetches,
+                memory_manager,
             ));
-            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks(
+            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks_with_process_memory_manager(
                 callback_tick.wrapping_sub(1),
                 1,
                 usize::MAX,
                 max_cycles,
                 trace_imports,
                 trace_fetches,
+                memory_manager,
             ));
         }
         (vbl_probes, timer_probes)
@@ -7992,12 +7995,13 @@ impl FixtureRunner {
                 event_queue,
                 menu_tracking,
                 memory_manager,
-                |app| {
-                    app.run_sound_doubleback_callback(
+                |app, memory_manager| {
+                    app.run_sound_doubleback_callback_with_process_memory_manager(
                         doubleback,
                         PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
                         trace_ppc_imports,
                         trace_ppc_fetches,
+                        memory_manager,
                     )
                 },
             );
@@ -8106,12 +8110,13 @@ impl FixtureRunner {
                 event_queue,
                 menu_tracking,
                 memory_manager,
-                |app| {
-                    app.run_sound_completion_callback(
+                |app, memory_manager| {
+                    app.run_sound_completion_callback_with_process_memory_manager(
                         completion,
                         PPC_SOUND_COMPLETION_CALLBACK_MAX_CYCLES,
                         trace_ppc_imports,
                         trace_ppc_fetches,
+                        memory_manager,
                     )
                 },
             );
@@ -12576,8 +12581,16 @@ mod tests {
             ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: task });
         }
 
-        let (vbl, timer) =
-            FixtureRunner::fire_ppc_tick_callbacks(&mut ppc_app, 41, 0x1020_3040, 2, 64, false, false);
+        let (vbl, timer) = FixtureRunner::fire_ppc_tick_callbacks(
+            &mut ppc_app,
+            runner.process_context.memory_manager_mut(),
+            41,
+            0x1020_3040,
+            2,
+            64,
+            false,
+            false,
+        );
 
         assert_eq!(vbl.len(), 2);
         assert!(timer.is_empty());

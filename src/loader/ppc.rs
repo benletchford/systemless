@@ -5100,21 +5100,7 @@ fn push_ppc_hle_import_trace_entry(
 
 impl PpcLoadedApp {
     fn process_handle_state_bits(&self, handle: u32) -> u8 {
-        let state = self
-            .handle_states
-            .iter()
-            .find(|record| record.handle == handle);
-        let mut bits = 0u8;
-        if state.is_some_and(|record| record.locked) {
-            bits |= 0x80;
-        }
-        if state.is_none_or(|record| !record.no_purge) {
-            bits |= 0x40;
-        }
-        if state.is_some_and(|record| record.resource) {
-            bits |= 0x20;
-        }
-        bits
+        ppc_process_handle_state_bits(&self.handle_states, handle)
     }
 
     fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
@@ -5351,12 +5337,14 @@ impl PpcLoadedApp {
         event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
         memory_manager: &mut crate::process_context::ProcessMemoryManager,
-        f: impl FnOnce(&mut Self) -> R,
+        f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
     ) -> R {
         self.with_process_state(event_queue, menu_tracking, |app| {
             app.apply_process_memory_manager(memory_manager);
             app.publish_process_memory_manager(memory_manager);
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(app)));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                f(app, memory_manager)
+            }));
             app.publish_process_memory_manager(memory_manager);
             match outcome {
                 Ok(result) => result,
@@ -7837,22 +7825,37 @@ impl PpcLoadedApp {
     }
 
     pub fn run_with_hle_imports(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, false)
+        self.run_with_hle_imports_with_trace(max_cycles, false, false, None)
     }
 
     pub fn run_with_hle_import_trace(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, false)
+        self.run_with_hle_imports_with_trace(max_cycles, true, false, None)
     }
 
     pub fn run_with_hle_import_fetch_histogram(&mut self, max_cycles: u64) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, false, true)
+        self.run_with_hle_imports_with_trace(max_cycles, false, true, None)
     }
 
     pub fn run_with_hle_import_trace_and_fetch_histogram(
         &mut self,
         max_cycles: u64,
     ) -> PpcHleRunProbe {
-        self.run_with_hle_imports_with_trace(max_cycles, true, true)
+        self.run_with_hle_imports_with_trace(max_cycles, true, true, None)
+    }
+
+    pub(crate) fn run_with_process_memory_manager(
+        &mut self,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+    ) -> PpcHleRunProbe {
+        self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+        )
     }
 
     pub fn run_sound_completion_callback(
@@ -7861,6 +7864,40 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_completion_callback_inner(
+            completion,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            None,
+        )
+    }
+
+    pub(crate) fn run_sound_completion_callback_with_process_memory_manager(
+        &mut self,
+        completion: PpcSoundCompletionRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_completion_callback_inner(
+            completion,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+        )
+    }
+
+    fn run_sound_completion_callback_inner(
+        &mut self,
+        completion: PpcSoundCompletionRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcSoundCompletionCallProbe {
         let saved_cpu = self.cpu.clone();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
@@ -7926,12 +7963,12 @@ impl PpcLoadedApp {
             &[completion.channel, command_ptr.unwrap_or(0)],
         );
 
-        let probe = match (trace_imports, trace_fetches) {
-            (true, true) => self.run_with_hle_import_trace_and_fetch_histogram(max_cycles),
-            (true, false) => self.run_with_hle_import_trace(max_cycles),
-            (false, true) => self.run_with_hle_import_fetch_histogram(max_cycles),
-            (false, false) => self.run_with_hle_imports(max_cycles),
-        };
+        let probe = self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            process_memory_manager,
+        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -7969,6 +8006,50 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        self.fire_timer_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fire_timer_tasks_for_ticks_with_process_memory_manager(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+    ) -> Vec<PpcTimerCallbackProbe> {
+        self.fire_timer_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fire_timer_tasks_for_ticks_inner(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        mut process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> Vec<PpcTimerCallbackProbe> {
         let mut probes = Vec::new();
         if elapsed_ticks == 0 || self.timer_tasks.is_empty() || max_callbacks == 0 {
@@ -8011,6 +8092,7 @@ impl PpcLoadedApp {
                         max_cycles,
                         trace_imports,
                         trace_fetches,
+                        process_memory_manager.as_deref_mut(),
                     ));
                 }
             }
@@ -8025,6 +8107,7 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcTimerCallbackProbe {
         let saved_cpu = self.cpu.clone();
         let saved_current_resource_refnum = self.current_resource_refnum;
@@ -8069,12 +8152,12 @@ impl PpcLoadedApp {
         // Manager passes the expired TMTask record to its callback. Mixed
         // Mode marshals that pointer into the native PowerPC argument area.
         let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
-        let probe = match (trace_imports, trace_fetches) {
-            (true, true) => self.run_with_hle_import_trace_and_fetch_histogram(max_cycles),
-            (true, false) => self.run_with_hle_import_trace(max_cycles),
-            (false, true) => self.run_with_hle_import_fetch_histogram(max_cycles),
-            (false, false) => self.run_with_hle_imports(max_cycles),
-        };
+        let probe = self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            process_memory_manager,
+        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -8110,6 +8193,50 @@ impl PpcLoadedApp {
         trace_imports: bool,
         trace_fetches: bool,
     ) -> Vec<PpcVblCallbackProbe> {
+        self.fire_vbl_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fire_vbl_tasks_for_ticks_with_process_memory_manager(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+    ) -> Vec<PpcVblCallbackProbe> {
+        self.fire_vbl_tasks_for_ticks_inner(
+            start_tick,
+            elapsed_ticks,
+            max_callbacks,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fire_vbl_tasks_for_ticks_inner(
+        &mut self,
+        start_tick: u32,
+        elapsed_ticks: u32,
+        max_callbacks: usize,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        mut process_memory_manager: Option<&mut ProcessMemoryManager>,
+    ) -> Vec<PpcVblCallbackProbe> {
         let mut probes = Vec::new();
         if elapsed_ticks == 0 || self.vbl_tasks.is_empty() || max_callbacks == 0 {
             return probes;
@@ -8142,6 +8269,7 @@ impl PpcLoadedApp {
                     max_cycles,
                     trace_imports,
                     trace_fetches,
+                    process_memory_manager.as_deref_mut(),
                 ));
                 // Inside Macintosh: Processes (1994), pp. 4-7–4-8: a VBL
                 // task must reset vblCount from its callback or the Vertical
@@ -8163,6 +8291,7 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcVblCallbackProbe {
         let saved_cpu = self.cpu.clone();
         let saved_current_resource_refnum = self.current_resource_refnum;
@@ -8209,12 +8338,12 @@ impl PpcLoadedApp {
         // pp. 2-32–2-33 documents the register-based routine convention that
         // Mixed Mode uses to marshal that four-byte A0 parameter to native PPC.
         let _ = ppc_install_native_call_arguments(&mut self.cpu, &mut self.memory, &[task_ptr]);
-        let probe = match (trace_imports, trace_fetches) {
-            (true, true) => self.run_with_hle_import_trace_and_fetch_histogram(max_cycles),
-            (true, false) => self.run_with_hle_import_trace(max_cycles),
-            (false, true) => self.run_with_hle_import_fetch_histogram(max_cycles),
-            (false, false) => self.run_with_hle_imports(max_cycles),
-        };
+        let probe = self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            process_memory_manager,
+        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -8247,6 +8376,40 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_doubleback_callback_inner(
+            doubleback,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            None,
+        )
+    }
+
+    pub(crate) fn run_sound_doubleback_callback_with_process_memory_manager(
+        &mut self,
+        doubleback: PpcSoundDoubleBackRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        memory_manager: &mut ProcessMemoryManager,
+    ) -> PpcSoundCompletionCallProbe {
+        self.run_sound_doubleback_callback_inner(
+            doubleback,
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            Some(memory_manager),
+        )
+    }
+
+    fn run_sound_doubleback_callback_inner(
+        &mut self,
+        doubleback: PpcSoundDoubleBackRecord,
+        max_cycles: u64,
+        trace_imports: bool,
+        trace_fetches: bool,
+        process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcSoundCompletionCallProbe {
         let saved_cpu = self.cpu.clone();
         let default_rtoc = if saved_cpu.gpr[2] != 0 {
@@ -8293,12 +8456,12 @@ impl PpcLoadedApp {
             &[doubleback.channel, doubleback.exhausted_buffer],
         );
 
-        let probe = match (trace_imports, trace_fetches) {
-            (true, true) => self.run_with_hle_import_trace_and_fetch_histogram(max_cycles),
-            (true, false) => self.run_with_hle_import_trace(max_cycles),
-            (false, true) => self.run_with_hle_import_fetch_histogram(max_cycles),
-            (false, false) => self.run_with_hle_imports(max_cycles),
-        };
+        let probe = self.run_with_hle_imports_with_trace(
+            max_cycles,
+            trace_imports,
+            trace_fetches,
+            process_memory_manager,
+        );
         let end_pc = self.cpu.pc;
         let end_sp = self.cpu.gpr[1];
         let end_r3 = self.cpu.gpr[3];
@@ -8333,6 +8496,7 @@ impl PpcLoadedApp {
         max_cycles: u64,
         trace_imports: bool,
         trace_fetches: bool,
+        mut process_memory_manager: Option<&mut ProcessMemoryManager>,
     ) -> PpcHleRunProbe {
         let mut imports = std::mem::take(&mut self.imports);
         let mut import_count = self.import_count;
@@ -8856,6 +9020,7 @@ impl PpcLoadedApp {
                         binding,
                         cpu,
                         memory,
+                        process_memory_manager.as_deref_mut(),
                         &mut heap_cursor,
                         heap_limit,
                         &mut heap_limit,
@@ -15950,10 +16115,89 @@ fn dispatcher_target_for_import(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn ppc_synchronize_process_native_allocator(
+    memory_manager: &mut ProcessMemoryManager,
+    heap_cursor: u32,
+    heap_limit: u32,
+    last_mem_error: i16,
+    heap_maximized: bool,
+    master_pointer_blocks_requested: u32,
+    ptrs: &[PpcPtrRecord],
+    free_ptr_blocks: &[PpcPtrRecord],
+    free_handle_blocks: &[PpcHandleRecord],
+) {
+    memory_manager.synchronize_native_allocator(
+        heap_cursor,
+        heap_limit,
+        last_mem_error,
+        heap_maximized,
+        master_pointer_blocks_requested,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+}
+
+fn ppc_synchronize_process_native_handles(
+    memory_manager: &mut ProcessMemoryManager,
+    handles: &[PpcHandleRecord],
+    handle_states: &[PpcHandleStateRecord],
+) {
+    memory_manager.register_native_handle_records(handles.iter().map(|record| {
+        (
+            *record,
+            ppc_process_handle_state_bits(handle_states, record.handle),
+        )
+    }));
+}
+
+fn ppc_process_handle_state_bits(
+    handle_states: &[PpcHandleStateRecord],
+    handle: u32,
+) -> u8 {
+    let state = handle_states
+        .iter()
+        .find(|state| state.handle == handle);
+    let mut bits = 0u8;
+    if state.is_some_and(|state| state.locked) {
+        bits |= 0x80;
+    }
+    if state.is_none_or(|state| !state.no_purge) {
+        bits |= 0x40;
+    }
+    if state.is_some_and(|state| state.resource) {
+        bits |= 0x20;
+    }
+    bits
+}
+
+fn ppc_apply_process_native_allocator(
+    memory_manager: &ProcessMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+) {
+    let Some(allocator) = memory_manager.native_allocator_update() else {
+        return;
+    };
+    *heap_cursor = allocator.heap.heap_cursor;
+    *last_mem_error = allocator.heap.last_mem_error;
+    *ptrs = allocator.ptrs;
+    *free_ptr_blocks = allocator.free_ptr_blocks;
+    *free_handle_blocks = allocator.free_handle_blocks;
+    ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn dispatch_supported_import(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
+    process_memory_manager: Option<&mut ProcessMemoryManager>,
     heap_cursor: &mut u32,
     heap_limit: u32,
     application_heap_limit: &mut u32,
@@ -16079,20 +16323,46 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::NewPtr { clear } => {
             let size = cpu.gpr[3];
-            let ptr = ppc_alloc_ptr(
-                memory,
-                heap_cursor,
-                heap_limit,
-                ptrs,
-                free_ptr_blocks,
-                size,
-                clear,
-            );
-            if ptr == 0 && size > 0 {
-                *last_mem_error = PPC_MEM_FULL_ERR;
+            let ptr = if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                let ptr = memory_manager.new_native_ptr(memory, size, clear);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ptr
             } else {
-                *last_mem_error = 0;
-            }
+                let ptr = ppc_alloc_ptr(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    ptrs,
+                    free_ptr_blocks,
+                    size,
+                    clear,
+                );
+                *last_mem_error = if ptr == 0 && size > 0 {
+                    PPC_MEM_FULL_ERR
+                } else {
+                    PPC_NO_ERR
+                };
+                ptr
+            };
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] {} size={} -> ${:08X} heap=${:08X}..${:08X} err={}",
@@ -16102,17 +16372,71 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::DisposePtr => {
-            ppc_release_ptr(ptrs, free_ptr_blocks, cpu.gpr[3]);
-            *last_mem_error = 0;
+            if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                memory_manager.dispose_native_ptr(cpu.gpr[3]);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+            } else {
+                ppc_release_ptr(ptrs, free_ptr_blocks, cpu.gpr[3]);
+                *last_mem_error = PPC_NO_ERR;
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::GetPtrSize => {
-            let size = ptrs
-                .iter()
-                .find(|record| record.ptr == cpu.gpr[3])
-                .map(|record| record.size)
-                .unwrap_or(0);
-            *last_mem_error = if size == 0 { PPC_PARAM_ERR } else { PPC_NO_ERR };
+            let size = if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                let size = memory_manager.native_ptr_size(cpu.gpr[3]);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                size
+            } else {
+                let size = ptrs
+                    .iter()
+                    .find(|record| record.ptr == cpu.gpr[3])
+                    .map(|record| record.size)
+                    .unwrap_or(0);
+                *last_mem_error = if size == 0 {
+                    PPC_PARAM_ERR
+                } else {
+                    PPC_NO_ERR
+                };
+                size
+            };
             Some(PpcImportAction::Return(size))
         }
         PpcImportDispatcherTarget::BlockMove => {
@@ -16154,33 +16478,162 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::NewHandle { clear } => {
-            Some(PpcImportAction::Return(ppc_new_handle(
-                cpu,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                free_handle_blocks,
-                clear,
-            )))
+            let size = cpu.gpr[3];
+            let manager_backed = process_memory_manager.is_some();
+            let handle = if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    memory_manager,
+                    handles,
+                    handle_states,
+                );
+                let handle = memory_manager.new_native_handle(memory, size, clear);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                if let Some(record) = memory_manager.native_allocation(handle) {
+                    handles.push(record);
+                }
+                handle
+            } else {
+                ppc_new_handle(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    free_handle_blocks,
+                    clear,
+                )
+            };
+            if manager_backed && ppc_hle_trace_enabled() {
+                eprintln!(
+                    "[PPC-TRACE] NewHandle size={} clear={} lr=${:08X} -> ${:08X} heap=${:08X}..${:08X} err={}",
+                    size, clear, cpu.lr, handle, *heap_cursor, heap_limit, *last_mem_error
+                );
+            }
+            Some(PpcImportAction::Return(handle))
         }
         PpcImportDispatcherTarget::TempNewHandle => {
-            Some(PpcImportAction::Return(ppc_temp_new_handle(
-                cpu,
-                memory,
-                heap_cursor,
-                heap_limit,
-                last_mem_error,
-                handles,
-                free_handle_blocks,
-            )))
+            let result_code_ptr = cpu.gpr[4];
+            if let Some(memory_manager) = process_memory_manager {
+                if result_code_ptr != 0 && memory.read_u16_be(result_code_ptr).is_none() {
+                    memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                    *last_mem_error = PPC_PARAM_ERR;
+                    return Some(PpcImportAction::Return(0));
+                }
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    memory_manager,
+                    handles,
+                    handle_states,
+                );
+                let handle = memory_manager.new_native_handle(memory, cpu.gpr[3], false);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                if let Some(record) = memory_manager.native_allocation(handle) {
+                    handles.push(record);
+                }
+                if result_code_ptr != 0
+                    && memory
+                        .write_u16_be(result_code_ptr, *last_mem_error as u16)
+                        .is_none()
+                {
+                    memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                    *last_mem_error = PPC_PARAM_ERR;
+                    return Some(PpcImportAction::Return(0));
+                }
+                Some(PpcImportAction::Return(handle))
+            } else {
+                Some(PpcImportAction::Return(ppc_temp_new_handle(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    last_mem_error,
+                    handles,
+                    free_handle_blocks,
+                )))
+            }
         }
         PpcImportDispatcherTarget::DisposeHandle => {
             let handle = cpu.gpr[3];
-            if let Some(index) = handles.iter().position(|record| record.handle == handle) {
+            let disposed = if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    memory_manager,
+                    handles,
+                    handle_states,
+                );
+                let disposed = memory_manager.dispose_native_handle(memory, handle);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                if disposed.is_some() {
+                    handles.retain(|record| record.handle != handle);
+                }
+                disposed
+            } else if let Some(index) =
+                handles.iter().position(|record| record.handle == handle)
+            {
                 let record = handles.remove(index);
                 let _ = memory.write_u32_be(record.handle, 0);
+                free_handle_blocks.push(record);
+                Some(record)
+            } else {
+                None
+            };
+            if disposed.is_some() {
                 ppc_forget_handle_state(handle, handle_states);
                 toolbox_startup
                     .indexed_screen_ctables
@@ -16194,7 +16647,6 @@ fn dispatch_supported_import(
                 {
                     resource.handle = 0;
                 }
-                free_handle_blocks.push(record);
             }
             *last_mem_error = PPC_NO_ERR;
             Some(PpcImportAction::ReturnPreserve)
@@ -16289,15 +16741,51 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::GetHandleSize => {
             let handle = cpu.gpr[3];
-            let size = handles
-                .iter()
-                .find(|record| record.handle == handle)
-                .map(|record| record.size)
-                .or_else(|| ppc_system_handle_record(memory, handle).map(|record| record.size));
-            *last_mem_error = if size.is_some() {
-                PPC_NO_ERR
+            let size = if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    memory_manager,
+                    handles,
+                    handle_states,
+                );
+                let size = memory_manager
+                    .native_handle_size(handle)
+                    .or_else(|| ppc_system_handle_record(memory, handle).map(|record| record.size));
+                if size.is_some() {
+                    memory_manager.set_native_mem_error(PPC_NO_ERR);
+                }
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                size
             } else {
-                PPC_NIL_HANDLE_ERR
+                let size = handles
+                    .iter()
+                    .find(|record| record.handle == handle)
+                    .map(|record| record.size)
+                    .or_else(|| ppc_system_handle_record(memory, handle).map(|record| record.size));
+                *last_mem_error = if size.is_some() {
+                    PPC_NO_ERR
+                } else {
+                    PPC_NIL_HANDLE_ERR
+                };
+                size
             };
             if ppc_hle_trace_enabled() {
                 eprintln!(
@@ -16312,8 +16800,46 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SetHandleSize => {
             let handle = cpu.gpr[3];
             let size = cpu.gpr[4];
-            *last_mem_error =
-                ppc_set_handle_size(memory, heap_cursor, heap_limit, handles, handle, size);
+            if let Some(memory_manager) = process_memory_manager {
+                ppc_synchronize_process_native_allocator(
+                    memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    *heap_maximized,
+                    *master_pointer_blocks_requested,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ppc_synchronize_process_native_handles(
+                    memory_manager,
+                    handles,
+                    handle_states,
+                );
+                *last_mem_error =
+                    memory_manager.set_native_handle_size(memory, handle, size);
+                ppc_apply_process_native_allocator(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                if let Some(updated) = memory_manager.native_allocation(handle) {
+                    if let Some(record) = handles
+                        .iter_mut()
+                        .find(|record| record.handle == handle)
+                    {
+                        *record = updated;
+                    }
+                }
+            } else {
+                *last_mem_error =
+                    ppc_set_handle_size(memory, heap_cursor, heap_limit, handles, handle, size);
+            }
             if ppc_hle_trace_enabled() {
                 eprintln!(
                     "[PPC-TRACE] SetHandleSize handle=${handle:08X} size={size} err={} ptr=${:08X}",
@@ -87256,7 +87782,7 @@ pub(crate) mod tests {
             event_queue,
             menu_tracking,
             memory_manager,
-            |native| {
+            |native, _memory_manager| {
                 assert_eq!(native.heap_cursor, expected_cursor);
                 assert_eq!(native.ptrs.last().map(|record| record.size), Some(8));
                 assert_eq!(
@@ -87306,6 +87832,179 @@ pub(crate) mod tests {
                 .iter()
                 .copied()
                 .find(|record| record.handle == handle)
+        );
+    }
+
+    #[test]
+    fn ppc_ptr_imports_mutate_the_process_memory_manager_immediately() {
+        let pef = synthetic_pef_with_import(b"NewPtrClear");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 24;
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+
+        native.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |native, memory_manager| {
+                let prior_ptr = ppc_alloc_ptr(
+                    &mut native.memory,
+                    &mut native.heap_cursor,
+                    native.heap_limit,
+                    &mut native.ptrs,
+                    &mut native.free_ptr_blocks,
+                    24,
+                    false,
+                );
+                assert_eq!(prior_ptr, PPC_HEAP_BASE);
+                let probe = native.run_with_process_memory_manager(
+                    64,
+                    false,
+                    false,
+                    memory_manager,
+                );
+                assert_eq!(probe.handled_import_count, 1);
+                let ptr = native.cpu.gpr[3];
+                assert_eq!(ptr, PPC_HEAP_BASE + ppc_allocation_size(24).unwrap());
+                assert_eq!(
+                    memory_manager
+                        .native_allocator()
+                        .and_then(|allocator| allocator.ptrs.last())
+                        .copied(),
+                    Some(ProcessPtrRecord { ptr, size: 24 })
+                );
+                assert_eq!(
+                    memory_manager
+                        .native_allocator()
+                        .and_then(|allocator| allocator.ptrs.first())
+                        .copied(),
+                    Some(ProcessPtrRecord {
+                        ptr: prior_ptr,
+                        size: 24,
+                    })
+                );
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetPtrSize;
+                native.cpu.gpr[3] = ptr;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 24);
+                assert_eq!(
+                    memory_manager
+                        .native_allocator()
+                        .map(|allocator| allocator.heap.last_mem_error),
+                    Some(PPC_NO_ERR)
+                );
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposePtr;
+                native.cpu.gpr[3] = ptr;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                let allocator = memory_manager.native_allocator().unwrap();
+                assert_eq!(
+                    allocator.ptrs,
+                    vec![ProcessPtrRecord {
+                        ptr: prior_ptr,
+                        size: 24,
+                    }]
+                );
+                assert_eq!(
+                    allocator.free_ptr_blocks,
+                    vec![ProcessPtrRecord { ptr, size: 24 }]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn ppc_handle_imports_mutate_the_process_memory_manager_immediately() {
+        let pef = synthetic_pef_with_import(b"NewHandleClear");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.cpu.gpr[3] = 24;
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+
+        native.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |native, memory_manager| {
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                let handle = native.cpu.gpr[3];
+                let original = memory_manager.native_allocation(handle).unwrap();
+                assert_eq!(original.size, 24);
+                assert!((0..32)
+                    .all(|offset| native.memory.read_u8(original.ptr + offset) == Some(0)));
+                native
+                    .memory
+                    .write_bytes(original.ptr, b"process-owned")
+                    .unwrap();
+
+                let blocking_ptr = ppc_alloc_ptr(
+                    &mut native.memory,
+                    &mut native.heap_cursor,
+                    native.heap_limit,
+                    &mut native.ptrs,
+                    &mut native.free_ptr_blocks,
+                    16,
+                    false,
+                );
+                assert_ne!(blocking_ptr, 0);
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetHandleSize;
+                native.cpu.gpr[3] = handle;
+                native.cpu.gpr[4] = 64;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                let grown = memory_manager.native_allocation(handle).unwrap();
+                assert_ne!(grown.ptr, original.ptr);
+                assert_eq!((grown.size, grown.capacity), (64, 64));
+                assert_eq!(
+                    ppc_memory_read_bytes(&mut native.memory, grown.ptr, 13),
+                    Some(b"process-owned".to_vec())
+                );
+                assert_eq!(native.memory.read_u32_be(handle), Some(grown.ptr));
+                assert_eq!(
+                    native
+                        .handles
+                        .iter()
+                        .find(|record| record.handle == handle)
+                        .copied(),
+                    Some(grown)
+                );
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetHandleSize;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 64);
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(memory_manager.native_allocation(handle), None);
+                assert_eq!(native.memory.read_u32_be(handle), Some(0));
+                assert!(!native
+                    .handles
+                    .iter()
+                    .any(|record| record.handle == handle));
+                assert!(memory_manager
+                    .native_allocator()
+                    .unwrap()
+                    .free_handle_blocks
+                    .iter()
+                    .any(|record| record.handle == handle));
+            },
         );
     }
 

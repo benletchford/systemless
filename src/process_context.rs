@@ -5,6 +5,7 @@ use crate::guest_call::SharedGuestCallStack;
 use crate::memory::bus::SharedRamRegion;
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
+use ppc::PpcMemory;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
@@ -77,6 +78,7 @@ impl ProcessMemoryManager {
     const MEM_FULL_ERR: i16 = -108;
     const NIL_HANDLE_ERR: i16 = -109;
     const NO_ERR: i16 = 0;
+    const PARAM_ERR: i16 = -50;
 
     pub(crate) fn merge_metadata(
         &mut self,
@@ -162,10 +164,10 @@ impl ProcessMemoryManager {
     }
 
     fn native_allocation_bounds(
-        bus: &MacMemoryBus,
         heap_cursor: u32,
         heap_limit: u32,
         aligned_size: u32,
+        mut readonly_overlap_end: impl FnMut(u32, u32) -> Option<u32>,
     ) -> Option<(u32, u32)> {
         let mut ptr = heap_cursor
             .checked_add(Self::NATIVE_HEAP_ALIGNMENT - 1)?
@@ -175,9 +177,7 @@ impl ProcessMemoryManager {
             if next >= heap_limit {
                 return None;
             }
-            let Some(reserved_end) =
-                bus.foreign_readonly_allocation_overlap_end(ptr, aligned_size)
-            else {
+            let Some(reserved_end) = readonly_overlap_end(ptr, aligned_size) else {
                 return Some((ptr, next));
             };
             ptr = reserved_end
@@ -186,11 +186,354 @@ impl ProcessMemoryManager {
         }
     }
 
-    fn set_native_mem_error(&mut self, error: i16) {
+    pub(crate) fn set_native_mem_error(&mut self, error: i16) {
         if let Some(allocator) = &mut self.native_allocator {
             allocator.heap.last_mem_error = error;
             self.native_allocator_dirty = true;
         }
+    }
+
+    fn prepare_native_allocation(
+        memory: &mut GuestAddressSpace,
+        ptr: u32,
+        required: u32,
+        clear: bool,
+    ) -> bool {
+        let fully_mapped = (0..required)
+            .all(|offset| PpcMemory::read_u8(memory, ptr + offset).is_some());
+        if !fully_mapped {
+            let Ok(required) = usize::try_from(required) else {
+                return false;
+            };
+            memory.add_region(ptr, vec![0; required]);
+            return true;
+        }
+        !clear
+            || (0..required)
+                .all(|offset| PpcMemory::write_u8(memory, ptr + offset, 0).is_some())
+    }
+
+    /// Allocate a native nonrelocatable block in the process heap.
+    ///
+    /// `NewPtr` reserves fixed storage and `DisposePtr` returns it to the
+    /// application heap. Inside Macintosh: Memory (1992), pp. 2-42--2-44.
+    pub(crate) fn new_native_ptr(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(required) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let Some(allocator) = self.native_allocator.as_ref() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let reusable_index = allocator
+            .free_ptr_blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| {
+                let capacity = Self::native_allocation_size(record.size)?;
+                (capacity >= required).then_some((index, capacity))
+            })
+            .min_by_key(|(_, capacity)| *capacity)
+            .map(|(index, _)| index);
+        let allocation = if let Some(index) = reusable_index {
+            Some((allocator.free_ptr_blocks[index].ptr, None))
+        } else {
+            Self::native_allocation_bounds(
+                allocator.heap.heap_cursor,
+                allocator.heap.heap_limit,
+                required,
+                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+            )
+            .map(|(ptr, next)| (ptr, Some(next)))
+        };
+        let Some((ptr, next_cursor)) = allocation else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+
+        if !Self::prepare_native_allocation(memory, ptr, required, clear) {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        }
+
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        if let Some(index) = reusable_index {
+            allocator.free_ptr_blocks.swap_remove(index);
+        }
+        if let Some(next_cursor) = next_cursor {
+            allocator.heap.heap_cursor = next_cursor;
+        }
+        allocator.ptrs.push(ProcessPtrRecord { ptr, size });
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        ptr
+    }
+
+    pub(crate) fn dispose_native_ptr(&mut self, ptr: u32) {
+        if let Some(allocator) = &mut self.native_allocator {
+            if let Some(index) = allocator.ptrs.iter().position(|record| record.ptr == ptr) {
+                allocator.free_ptr_blocks.push(allocator.ptrs.remove(index));
+            }
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+    }
+
+    pub(crate) fn native_ptr_size(&mut self, ptr: u32) -> u32 {
+        let size = self
+            .native_allocator
+            .as_ref()
+            .and_then(|allocator| allocator.ptrs.iter().find(|record| record.ptr == ptr))
+            .map_or(0, |record| record.size);
+        self.set_native_mem_error(if size == 0 {
+            Self::PARAM_ERR
+        } else {
+            Self::NO_ERR
+        });
+        size
+    }
+
+    /// Allocate a native relocatable block and its stable master pointer.
+    ///
+    /// A handle addresses a nonrelocatable master pointer whose contents may
+    /// change when the relocatable block moves. Inside Macintosh: Memory
+    /// (1992), pp. 1-18--1-19 and 2-40--2-41.
+    pub(crate) fn new_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        size: u32,
+        clear: bool,
+    ) -> u32 {
+        let Some(required) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let Some(allocator) = self.native_allocator.as_ref() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let reusable_index = allocator
+            .free_handle_blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, record)| {
+                let capacity = Self::native_allocation_size(record.capacity)?;
+                (capacity >= required).then_some((index, capacity))
+            })
+            .min_by_key(|(_, capacity)| *capacity)
+            .map(|(index, _)| index);
+        let (record, next_cursor) = if let Some(index) = reusable_index {
+            let mut record = allocator.free_handle_blocks[index];
+            record.size = size;
+            (record, None)
+        } else {
+            let Some(handle_required) = Self::native_allocation_size(4) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return 0;
+            };
+            let Some((handle, after_handle)) = Self::native_allocation_bounds(
+                allocator.heap.heap_cursor,
+                allocator.heap.heap_limit,
+                handle_required,
+                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+            ) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return 0;
+            };
+            let Some((ptr, after_ptr)) = Self::native_allocation_bounds(
+                after_handle,
+                allocator.heap.heap_limit,
+                required,
+                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+            ) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return 0;
+            };
+            (
+                ProcessHandleRecord {
+                    handle,
+                    ptr,
+                    size,
+                    capacity: size,
+                },
+                Some(after_ptr),
+            )
+        };
+
+        if !Self::prepare_native_allocation(
+            memory,
+            record.handle,
+            Self::native_allocation_size(4).expect("four-byte master pointer fits"),
+            true,
+        )
+            || !Self::prepare_native_allocation(memory, record.ptr, required, clear)
+            || PpcMemory::write_u32_be(memory, record.handle, record.ptr).is_none()
+        {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        }
+
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        if let Some(index) = reusable_index {
+            allocator.free_handle_blocks.swap_remove(index);
+        }
+        if let Some(next_cursor) = next_cursor {
+            allocator.heap.heap_cursor = next_cursor;
+        }
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocations.insert(record.handle, record);
+        self.ptr_to_handle.insert(record.ptr, record.handle);
+        self.native_handle_ptrs.insert(record.ptr);
+        self.handle_state_bits.insert(record.handle, 0x40);
+        self.native_handles.insert(record.handle);
+        self.native_allocator_dirty = true;
+        record.handle
+    }
+
+    pub(crate) fn dispose_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+    ) -> Option<ProcessHandleRecord> {
+        let Some(record) = self.native_allocations.remove(&handle) else {
+            self.set_native_mem_error(Self::NO_ERR);
+            return None;
+        };
+        if PpcMemory::write_u32_be(memory, handle, 0).is_none() {
+            self.native_allocations.insert(handle, record);
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return None;
+        }
+        self.ptr_to_handle.remove(&record.ptr);
+        self.native_handle_ptrs.remove(&record.ptr);
+        self.handle_state_bits.remove(&handle);
+        self.native_handles.remove(&handle);
+        if let Some(allocator) = &mut self.native_allocator {
+            allocator.free_handle_blocks.push(record);
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        }
+        Some(record)
+    }
+
+    pub(crate) fn native_handle_size(&mut self, handle: u32) -> Option<u32> {
+        let size = self
+            .native_allocations
+            .get(&handle)
+            .map(|record| record.size);
+        self.set_native_mem_error(if size.is_some() {
+            Self::NO_ERR
+        } else {
+            Self::NIL_HANDLE_ERR
+        });
+        size
+    }
+
+    pub(crate) fn set_native_handle_size(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+        size: u32,
+    ) -> i16 {
+        let Some(mut record) = self.native_allocations.get(&handle).copied() else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        if PpcMemory::read_u32_be(memory, handle) != Some(record.ptr) {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        }
+        if size <= record.capacity {
+            record.size = size;
+            self.native_allocations.insert(handle, record);
+            self.set_native_mem_error(Self::NO_ERR);
+            return Self::NO_ERR;
+        }
+        let Some(old_aligned) = Self::native_allocation_size(record.size) else {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        };
+        let Some(new_aligned) = Self::native_allocation_size(size) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let Some(allocator) = self.native_allocator.as_ref() else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let can_extend_last = record.ptr.checked_add(old_aligned)
+            == Some(allocator.heap.heap_cursor)
+            && Self::native_allocation_bounds(
+                record.ptr,
+                allocator.heap.heap_limit,
+                new_aligned,
+                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+            )
+            .is_some_and(|(ptr, _)| ptr == record.ptr);
+        let (new_ptr, next_cursor) = if can_extend_last {
+            (record.ptr, record.ptr.checked_add(new_aligned))
+        } else {
+            let Some((ptr, next)) = Self::native_allocation_bounds(
+                allocator.heap.heap_cursor,
+                allocator.heap.heap_limit,
+                new_aligned,
+                |ptr, len| memory.readonly_allocation_overlap_end(ptr, len),
+            ) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Self::MEM_FULL_ERR;
+            };
+            (ptr, Some(next))
+        };
+        let Some(next_cursor) = next_cursor else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let mut bytes = Vec::with_capacity(record.size as usize);
+        for offset in 0..record.size {
+            let Some(byte) = PpcMemory::read_u8(memory, record.ptr + offset) else {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            };
+            bytes.push(byte);
+        }
+        if !Self::prepare_native_allocation(memory, new_ptr, new_aligned, true)
+            || bytes.iter().copied().enumerate().any(|(offset, byte)| {
+                PpcMemory::write_u8(memory, new_ptr + offset as u32, byte).is_none()
+            })
+            || (new_ptr != record.ptr
+                && PpcMemory::write_u32_be(memory, handle, new_ptr).is_none())
+        {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+        self.ptr_to_handle.remove(&record.ptr);
+        self.native_handle_ptrs.remove(&record.ptr);
+        record.ptr = new_ptr;
+        record.size = size;
+        record.capacity = size;
+        self.native_allocations.insert(handle, record);
+        self.ptr_to_handle.insert(new_ptr, handle);
+        self.native_handle_ptrs.insert(new_ptr);
+        let allocator = self
+            .native_allocator
+            .as_mut()
+            .expect("native allocator remains registered");
+        allocator.heap.heap_cursor = next_cursor;
+        allocator.heap.last_mem_error = Self::NO_ERR;
+        self.native_allocator_dirty = true;
+        Self::NO_ERR
     }
 
     /// Replace a native relocatable block while its process address space is
@@ -239,20 +582,20 @@ impl ProcessMemoryManager {
             let can_extend_last = record.ptr.checked_add(old_aligned)
                 == Some(allocator.heap.heap_cursor)
                 && Self::native_allocation_bounds(
-                    bus,
                     record.ptr,
                     allocator.heap.heap_limit,
                     new_aligned,
+                    |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 )
                 .is_some_and(|(ptr, _)| ptr == record.ptr);
             if can_extend_last {
                 new_cursor = record.ptr + new_aligned;
             } else {
                 let Some((ptr, next)) = Self::native_allocation_bounds(
-                    bus,
                     allocator.heap.heap_cursor,
                     allocator.heap.heap_limit,
                     new_aligned,
+                    |ptr, len| bus.foreign_readonly_allocation_overlap_end(ptr, len),
                 ) else {
                     self.set_native_mem_error(Self::MEM_FULL_ERR);
                     return Err(Self::MEM_FULL_ERR);
@@ -323,6 +666,40 @@ impl ProcessMemoryManager {
                 .extend_from_slice(free_handle_blocks);
         }
         self.native_allocator_dirty = false;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn synchronize_native_allocator(
+        &mut self,
+        heap_cursor: u32,
+        heap_limit: u32,
+        last_mem_error: i16,
+        heap_maximized: bool,
+        master_pointer_blocks_requested: u32,
+        ptrs: &[ProcessPtrRecord],
+        free_ptr_blocks: &[ProcessPtrRecord],
+        free_handle_blocks: &[ProcessHandleRecord],
+    ) {
+        let Some(heap_base) = self
+            .native_allocator
+            .as_ref()
+            .map(|allocator| allocator.heap.heap_base)
+        else {
+            return;
+        };
+        self.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                heap_maximized,
+                master_pointer_blocks_requested,
+            },
+            ptrs,
+            free_ptr_blocks,
+            free_handle_blocks,
+        );
     }
 
     pub(crate) fn native_allocator_update(&self) -> Option<ProcessNativeAllocatorState> {
@@ -823,6 +1200,84 @@ mod tests {
                 .map(|allocator| allocator.heap.last_mem_error),
             Some(ProcessMemoryManager::MEM_FULL_ERR)
         );
+    }
+
+    #[test]
+    fn process_memory_manager_allocates_native_ptrs_around_readonly_mappings() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_readonly_region(HEAP_BASE, vec![0xcc; 0x30]);
+        native
+            .add_readonly_allocation_exclusion(HEAP_BASE, 0x30)
+            .unwrap();
+        native.add_region(HEAP_BASE + 0x30, vec![0x5a; 0x100]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x130,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+
+        let ptr = manager.new_native_ptr(&mut native, 20, true);
+
+        assert_eq!(ptr, HEAP_BASE + 0x30);
+        assert_eq!(native.read_u8(HEAP_BASE), Some(0xcc));
+        assert!((0..32).all(|offset| native.read_u8(ptr + offset) == Some(0)));
+        assert_eq!(
+            manager
+                .native_allocator()
+                .map(|allocator| allocator.ptrs.as_slice()),
+            Some([ProcessPtrRecord { ptr, size: 20 }].as_slice())
+        );
+        assert_eq!(manager.native_ptr_size(ptr), 20);
+        manager.dispose_native_ptr(ptr);
+        let allocator = manager.native_allocator().unwrap();
+        assert!(allocator.ptrs.is_empty());
+        assert_eq!(
+            allocator.free_ptr_blocks,
+            vec![ProcessPtrRecord { ptr, size: 20 }]
+        );
+    }
+
+    #[test]
+    fn process_memory_manager_native_allocations_are_immediately_cross_isa_visible() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+
+        let handle = manager.new_native_handle(&mut native, 24, true);
+        let record = manager.native_allocation(handle).unwrap();
+        native.write_bytes(record.ptr, b"native").unwrap();
+
+        assert_eq!(bus.read_long(handle), record.ptr);
+        assert_eq!(bus.read_bytes(record.ptr, 6), b"native");
+        bus.write_byte(record.ptr + 6, b'!');
+        assert_eq!(native.read_u8(record.ptr + 6), Some(b'!'));
     }
 
     #[test]
