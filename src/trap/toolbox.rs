@@ -6678,7 +6678,9 @@ impl super::TrapDispatcher {
                     let refnum = self.next_refnum;
                     self.next_refnum += 1;
                     let rsrc_key = format!("__rsrc__{}", vfs_key);
-                    self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data);
+                    self.vfs
+                        .entry(rsrc_key.clone())
+                        .or_insert(rsrc_data.into());
                     self.open_files.insert(refnum, rsrc_key);
                     self.file_positions.insert(refnum, 0);
                     bus.write_word(pb + 24, refnum);
@@ -13875,8 +13877,7 @@ impl super::TrapDispatcher {
                             file_name.as_ref().and_then(|name| {
                                 self.vfs
                                     .get(name)
-                                    .cloned()
-                                    .map(|data| (-1, String::new(), data))
+                                    .map(|data| (-1, String::new(), data.to_vec()))
                             })
                         } else {
                             None

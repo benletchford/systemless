@@ -6675,7 +6675,9 @@ impl super::TrapDispatcher {
 
                         let rsrc_data = self.vfs_rsrc.get(&vfs_key).cloned().unwrap_or_default();
                         let rsrc_key = format!("__rsrc__{vfs_key}");
-                        self.vfs.entry(rsrc_key.clone()).or_insert(rsrc_data);
+                        self.vfs
+                            .entry(rsrc_key.clone())
+                            .or_insert(rsrc_data.into());
                         let refnum = self.next_refnum;
                         self.next_refnum += 1;
                         self.open_files.insert(refnum, rsrc_key.clone());
@@ -17629,7 +17631,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         disp.vfs
-            .insert("Game/Data 1".to_string(), (0u8..12).collect());
+            .insert("Game/Data 1".to_string(), (0u8..12).collect::<Vec<_>>());
         disp.set_vfs_entry_metadata("Game/Data 1", *b"DATA", *b"TST!", 0);
         let metadata = disp.vfs_file_metadata("Game/Data 1").unwrap();
         disp.open_files.insert(123, "Game/Data 1".to_string());

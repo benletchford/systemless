@@ -4,10 +4,9 @@
 //! It packs resource payloads into a shared data fork file while referencing them
 //! via a `qDir` resource in the companion resource file.
 
-use std::collections::HashMap;
-
 use crate::mac_roman::decode_mac_roman;
 use crate::managers::resource::{serialize_resource_fork, ResourceFork, ResourceForkEntry};
+use crate::process_context::ProcessForkMap;
 
 
 /// 60-byte directory record inside a `qDir` resource.
@@ -71,8 +70,8 @@ pub fn vfs_parent_path(path: &str) -> &str {
 
 /// Find matching Quilt resources for a target path from available VFS data and resource forks.
 pub fn quilt_named_resource_records(
-    vfs_files: &HashMap<String, Vec<u8>>,
-    vfs_resource_files: &HashMap<String, Vec<u8>>,
+    vfs_files: &ProcessForkMap,
+    vfs_resource_files: &ProcessForkMap,
     target_path: &str,
 ) -> Option<(String, Vec<ResourceForkEntry>)> {
     let normalized_target = normalize_vfs_path(target_path);
@@ -84,7 +83,7 @@ pub fn quilt_named_resource_records(
     let mut matches = Vec::new();
     let mut best_name_rank = 0u8;
 
-    for (rsrc_path, rsrc_data) in vfs_resource_files {
+    for (rsrc_path, rsrc_data) in vfs_resource_files.iter() {
         let Some(fork) = ResourceFork::parse(rsrc_data) else {
             continue;
         };
@@ -183,8 +182,8 @@ pub fn quilt_named_resource_records(
 
 /// Resolve referenced animation picture resources (`ANAM` -> `.PICR`).
 pub fn add_quilt_anam_picture_resources(
-    vfs_files: &HashMap<String, Vec<u8>>,
-    vfs_resource_files: &HashMap<String, Vec<u8>>,
+    vfs_files: &ProcessForkMap,
+    vfs_resource_files: &ProcessForkMap,
     source_file_path: &str,
     resources: &mut Vec<ResourceForkEntry>,
 ) {
@@ -460,8 +459,8 @@ pub fn synthesize_quilt_img_resource_if_missing(
 /// Materialize Quilt resources into existing VFS resource forks and synthesize virtual Quilt resource files.
 /// Returns `(materialized_count, Vec<(synthesized_path, file_type, creator, finder_flags)>)`.
 pub fn materialize_quilt_resources_for_vfs(
-    vfs: &HashMap<String, Vec<u8>>,
-    vfs_rsrc: &mut HashMap<String, Vec<u8>>,
+    vfs: &ProcessForkMap,
+    vfs_rsrc: &mut ProcessForkMap,
 ) -> (usize, Vec<(String, [u8; 4], [u8; 4], u16)>) {
     let mut qdir_files = Vec::new();
     for (rsrc_path, rsrc_data) in vfs_rsrc.iter() {
@@ -605,8 +604,8 @@ mod tests {
 
     #[test]
     fn quilt_materialization_combines_base_and_quilt_resources() {
-        let mut vfs = HashMap::new();
-        let mut vfs_rsrc = HashMap::new();
+        let mut vfs = ProcessForkMap::default();
+        let mut vfs_rsrc = ProcessForkMap::default();
 
         let mut bits = vec![0u8; 64];
         bits[16..21].copy_from_slice(b"state");
@@ -664,8 +663,8 @@ mod tests {
 
     #[test]
     fn quilt_materialization_synthesizes_virtual_picr_file() {
-        let mut vfs = HashMap::new();
-        let mut vfs_rsrc = HashMap::new();
+        let mut vfs = ProcessForkMap::default();
+        let mut vfs_rsrc = ProcessForkMap::default();
 
         let mut data = vec![0u8; 128];
         data[16..21].copy_from_slice(b"#data");

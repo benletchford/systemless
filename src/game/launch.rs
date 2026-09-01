@@ -2951,7 +2951,7 @@ fn ppc_diagnostic_vfs(
             let metadata = dispatcher.vfs_metadata.get(path);
             PpcVfsFileRecord {
                 path: path.clone(),
-                data: data.clone(),
+                data: (data.clone()).into(),
                 creator: metadata.map_or(0, |value| value.creator),
                 file_type: metadata.map_or(0, |value| value.file_type),
                 finder_flags: metadata.map_or(0, |value| value.finder_flags),
@@ -2975,7 +2975,7 @@ fn ppc_diagnostic_vfs(
             file_type,
             finder_flags: metadata.map_or(0, |value| value.finder_flags),
             resource_len: u32::try_from(rsrc_data.len()).unwrap_or(u32::MAX),
-            raw_data: Some(rsrc_data.clone()),
+            raw_data: Some(rsrc_data.to_vec()),
             map_attrs: parsed_fork.as_ref().map_or(0, ResourceFork::map_attrs),
             dirty: false,
         });
@@ -2985,7 +2985,7 @@ fn ppc_diagnostic_vfs(
         {
             files.push(PpcVfsFileRecord {
                 path: path.clone(),
-                data: Vec::new(),
+                data: Vec::new().into(),
                 creator,
                 file_type,
                 finder_flags: metadata.map_or(0, |value| value.finder_flags),
@@ -4274,7 +4274,7 @@ mod tests {
             if let Some(data) = data {
                 files.push(PpcVfsFileRecord {
                     path: path.to_string(),
-                    data,
+                    data: data.into(),
                     creator: 0,
                     file_type: 0,
                     finder_flags: 0,
@@ -4349,7 +4349,7 @@ mod tests {
             directories: Vec::new(),
             files: vec![PpcVfsFileRecord {
                 path: "Volume/SDL".to_string(),
-                data: pef.clone(),
+                data: (pef.clone()).into(),
                 creator: 0,
                 file_type: 0,
                 finder_flags: 0,

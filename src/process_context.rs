@@ -9,6 +9,8 @@ use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use ppc::PpcMemory;
 use std::cell::{RefCell, RefMut, UnsafeCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::hash::Hash;
 use std::rc::Rc;
 
 #[derive(Debug)]
@@ -17,14 +19,241 @@ struct ProcessMemoryRegion {
     bytes: SharedRamRegion,
 }
 
+/// A process-owned file fork whose attached views share bytes immediately.
+///
+/// Ordinary clones are detached snapshots. `shared_handle` is reserved for
+/// installing another index over the same process fork, such as the native
+/// File Manager record and the classic VFS path map.
+pub struct ProcessForkBytes(Rc<UnsafeCell<Vec<u8>>>);
+
+impl Default for ProcessForkBytes {
+    fn default() -> Self {
+        Self::from(Vec::new())
+    }
+}
+
+impl Clone for ProcessForkBytes {
+    fn clone(&self) -> Self {
+        Self::from((**self).clone())
+    }
+}
+
+impl fmt::Debug for ProcessForkBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_tuple("ProcessForkBytes").field(&**self).finish()
+    }
+}
+
+impl PartialEq for ProcessForkBytes {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl PartialEq<Vec<u8>> for ProcessForkBytes {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for ProcessForkBytes {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for ProcessForkBytes {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for ProcessForkBytes {}
+
+impl From<Vec<u8>> for ProcessForkBytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(Rc::new(UnsafeCell::new(bytes)))
+    }
+}
+
+impl AsRef<[u8]> for ProcessForkBytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl std::ops::Deref for ProcessForkBytes {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: process adapters are serialized by the runner, and normal
+        // clones detach instead of creating an alias.
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl std::ops::DerefMut for ProcessForkBytes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: see `Deref`.
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+impl ProcessForkBytes {
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Path index for process-owned fork bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProcessForkMap(HashMap<String, ProcessForkBytes>);
+
+impl std::ops::Deref for ProcessForkMap {
+    type Target = HashMap<String, ProcessForkBytes>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ProcessForkMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl ProcessForkMap {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn insert(
+        &mut self,
+        path: String,
+        bytes: impl Into<ProcessForkBytes>,
+    ) -> Option<ProcessForkBytes> {
+        self.0.insert(path, bytes.into())
+    }
+
+    pub fn get<Q>(&self, path: &Q) -> Option<&Vec<u8>>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.0.get(path).map(|bytes| &**bytes)
+    }
+
+    pub fn get_mut<Q>(&mut self, path: &Q) -> Option<&mut Vec<u8>>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.0.get_mut(path).map(|bytes| &mut **bytes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn get_shared<Q>(&self, path: &Q) -> Option<&ProcessForkBytes>
+    where
+        String: std::borrow::Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+    {
+        self.0.get(path)
+    }
+
+    pub(crate) fn insert_shared(
+        &mut self,
+        path: String,
+        bytes: &ProcessForkBytes,
+    ) -> Option<ProcessForkBytes> {
+        self.0.insert(path, bytes.shared_handle())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessVfsFileRecord {
     pub path: String,
-    pub data: Vec<u8>,
+    pub data: ProcessForkBytes,
     pub creator: u32,
     pub file_type: u32,
     pub finder_flags: u16,
     pub dirty: bool,
+}
+
+/// Native record index backed by the canonical process data-fork map.
+#[derive(Debug, Default)]
+pub(crate) struct ProcessVfsFileRecords {
+    records: Vec<ProcessVfsFileRecord>,
+    data_forks: SharedProcessValue<ProcessForkMap>,
+}
+
+impl Clone for ProcessVfsFileRecords {
+    fn clone(&self) -> Self {
+        Self::from(self.records.clone())
+    }
+}
+
+impl From<Vec<ProcessVfsFileRecord>> for ProcessVfsFileRecords {
+    fn from(records: Vec<ProcessVfsFileRecord>) -> Self {
+        let mut result = Self::default();
+        for record in records {
+            result.push(record);
+        }
+        result
+    }
+}
+
+impl std::ops::Deref for ProcessVfsFileRecords {
+    type Target = Vec<ProcessVfsFileRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for ProcessVfsFileRecords {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
+}
+
+impl ProcessVfsFileRecords {
+    pub(crate) fn push(&mut self, record: ProcessVfsFileRecord) {
+        if !record.path.is_empty() {
+            self.data_forks
+                .insert_shared(record.path.clone(), &record.data);
+        }
+        self.records.push(record);
+    }
+
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&ProcessVfsFileRecord) -> bool) {
+        self.records.retain(|record| keep(record));
+        self.data_forks.retain(|path, _| {
+            self.records
+                .iter()
+                .any(|record| record.path.eq_ignore_ascii_case(path))
+        });
+    }
+
+    pub(crate) fn replace(&mut self, records: Vec<ProcessVfsFileRecord>) {
+        self.records.clear();
+        self.data_forks.clear();
+        for record in records {
+            self.push(record);
+        }
+    }
+
+    fn adopt(&mut self, source: &mut Self) {
+        for record in source.records.drain(..) {
+            self.push(record);
+        }
+        source.data_forks.clear();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +320,7 @@ pub struct ProcessVfsResourceRecord {
 pub struct ProcessFileSystemState {
     pub(crate) files: Vec<ProcessOpenFileRecord>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
-    pub(crate) vfs_files: Vec<ProcessVfsFileRecord>,
+    pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
     pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
     pub(crate) vfs_resource_files: Vec<ProcessVfsResourceFileRecord>,
@@ -104,7 +333,7 @@ impl Default for ProcessFileSystemState {
         Self {
             files: Vec::new(),
             stdio_streams: HashMap::new(),
-            vfs_files: Vec::new(),
+            vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
             resource_files: Vec::new(),
             vfs_resource_files: Vec::new(),
@@ -245,7 +474,17 @@ impl SharedProcessFileSystem {
             // SAFETY: attachment occurs before the native adapter is exposed
             // through the runner, so no references into either state exist.
             unsafe {
-                *process_file_system.0.get() = std::mem::take(&mut **self);
+                let source = &mut *self.0.get();
+                let target = &mut *process_file_system.0.get();
+                target.vfs_files.adopt(&mut source.vfs_files);
+                target.files = std::mem::take(&mut source.files);
+                target.stdio_streams = std::mem::take(&mut source.stdio_streams);
+                target.deleted_vfs_file_paths =
+                    std::mem::take(&mut source.deleted_vfs_file_paths);
+                target.resource_files = std::mem::take(&mut source.resource_files);
+                target.vfs_resource_files = std::mem::take(&mut source.vfs_resource_files);
+                target.vfs_resources = std::mem::take(&mut source.vfs_resources);
+                target.next_file_ref_num = source.next_file_ref_num;
             }
         }
         self.0 = Rc::clone(&process_file_system.0);
@@ -2876,8 +3115,7 @@ pub(crate) struct ProcessContext {
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
-    data_forks: SharedProcessValue<HashMap<String, Vec<u8>>>,
-    resource_forks: SharedProcessValue<HashMap<String, Vec<u8>>>,
+    resource_forks: SharedProcessValue<ProcessForkMap>,
 }
 
 impl ProcessContext {
@@ -2914,11 +3152,14 @@ impl ProcessContext {
 
     pub(crate) fn attach_classic_file_system(
         &self,
-        data_forks: &mut SharedProcessValue<HashMap<String, Vec<u8>>>,
-        resource_forks: &mut SharedProcessValue<HashMap<String, Vec<u8>>>,
+        data_forks: &mut SharedProcessValue<ProcessForkMap>,
+        resource_forks: &mut SharedProcessValue<ProcessForkMap>,
     ) {
-        data_forks.attach_to(&self.data_forks, HashMap::is_empty);
-        resource_forks.attach_to(&self.resource_forks, HashMap::is_empty);
+        data_forks.attach_to(
+            &self.file_system.vfs_files.data_forks,
+            ProcessForkMap::is_empty,
+        );
+        resource_forks.attach_to(&self.resource_forks, ProcessForkMap::is_empty);
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
@@ -4245,16 +4486,27 @@ mod tests {
     #[test]
     fn attached_classic_file_maps_share_mutations_while_clones_detach() {
         let context = ProcessContext::default();
-        let mut first_data = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
-        let mut first_resources = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+        let mut native = SharedProcessFileSystem::default();
+        let mut first_data = SharedProcessValue::<ProcessForkMap>::default();
+        let mut first_resources = SharedProcessValue::<ProcessForkMap>::default();
         first_data.insert("Existing".to_string(), b"before".to_vec());
-        let mut second_data = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
-        let mut second_resources = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+        let mut second_data = SharedProcessValue::<ProcessForkMap>::default();
+        let mut second_resources = SharedProcessValue::<ProcessForkMap>::default();
 
         context.attach_classic_file_system(&mut first_data, &mut first_resources);
         context.attach_classic_file_system(&mut second_data, &mut second_resources);
+        context.attach_file_system(&mut native);
         let detached_data = second_data.clone();
         let detached_resources = second_resources.clone();
+
+        native.vfs_files.push(ProcessVfsFileRecord {
+            path: "Created".to_string(),
+            data: b"native".to_vec().into(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: true,
+        });
 
         second_data
             .get_mut("Existing")
@@ -4265,8 +4517,10 @@ mod tests {
         assert!(first_data.ptr_eq(&second_data));
         assert!(first_resources.ptr_eq(&second_resources));
         assert_eq!(first_data.get("Existing").unwrap(), b"before-after");
+        assert_eq!(second_data.get("Created").unwrap(), b"native");
         assert_eq!(second_resources.get("Existing").unwrap(), b"resource");
         assert_eq!(detached_data.get("Existing").unwrap(), b"before");
+        assert!(!detached_data.contains_key("Created"));
         assert!(detached_resources.is_empty());
     }
 }

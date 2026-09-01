@@ -70,12 +70,13 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState, ProcessHandleRecord,
+    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState, ProcessForkBytes,
+    ProcessHandleRecord,
     ProcessHandleStateRecord, ProcessMemoryManager, ProcessNativeAllocatorState,
     ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessOpenFileRecord, ProcessPtrRecord,
     ProcessResourceFileRecord, ProcessStdioStreamRecord, ProcessVfsFileRecord,
-    ProcessVfsResourceFileRecord, ProcessVfsResourceRecord, SharedProcessAppleEventHandlers,
-    SharedProcessFileSystem, SharedProcessMemoryManager,
+    ProcessVfsFileRecords, ProcessVfsResourceFileRecord, ProcessVfsResourceRecord,
+    SharedProcessAppleEventHandlers, SharedProcessFileSystem, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -8159,7 +8160,7 @@ impl PpcLoadedApp {
         resources: Vec<PpcVfsResourceRecord>,
     ) {
         ppc_register_vfs_resource_fonts(&resources);
-        self.vfs_files = files;
+        self.vfs_files.replace(files);
         self.deleted_vfs_file_paths.clear();
         self.vfs_resource_files = resource_files;
         self.vfs_resources = resources;
@@ -8267,7 +8268,7 @@ impl PpcLoadedApp {
         {
             exports.push(PpcVfsFileExport {
                 path: file.path.clone(),
-                data: file.data.clone(),
+                data: file.data.shared_handle(),
                 creator: file.creator,
                 file_type: file.file_type,
                 finder_flags: file.finder_flags,
@@ -14938,7 +14939,7 @@ fn dispatch_supported_import(
     timer_tasks: &mut Vec<PpcTimerTaskRecord>,
     vbl_tasks: &mut Vec<PpcVblTaskRecord>,
     files: &mut Vec<PpcFileRecord>,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
     deleted_vfs_file_paths: &mut Vec<String>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
@@ -28803,7 +28804,7 @@ fn ppc_dispatch_stdio_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     files: &mut Vec<PpcFileRecord>,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
@@ -28830,7 +28831,7 @@ fn ppc_dispatch_process_stdio_compatibility(
     heap_cursor: &mut u32,
     heap_limit: u32,
     files: &mut Vec<PpcFileRecord>,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
@@ -28857,7 +28858,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
     heap_cursor: &mut u32,
     heap_limit: u32,
     files: &mut Vec<PpcFileRecord>,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     next_file_ref_num: &mut i16,
     stdio_streams: &mut HashMap<u32, PpcStdioStreamRecord>,
 ) -> PpcImportAction {
@@ -28912,7 +28913,7 @@ fn ppc_dispatch_stdio_compatibility_with_manager(
             {
                 vfs_files.push(PpcVfsFileRecord {
                     path: path.clone(),
-                    data: Vec::new(),
+                    data: Vec::new().into(),
                     creator: 0,
                     file_type: 0,
                     finder_flags: 0,
@@ -44785,7 +44786,7 @@ fn ppc_qt_get_graphics_importer_for_file(
         return PPC_NO_ERR;
     };
     quicktime.graphics_importer_path = path;
-    quicktime.graphics_importer_data = file.data.clone();
+    quicktime.graphics_importer_data = file.data.to_vec();
     quicktime.graphics_importer_bounds = ppc_qt_pict_bounds(&quicktime.graphics_importer_data);
     if qt_trace_enabled() {
         eprintln!(
@@ -46809,7 +46810,7 @@ fn ppc_qt_new_movie_from_file(
         let mut selected_data = vfs_files
             .iter()
             .find(|file| file.path.eq_ignore_ascii_case(&quicktime.movie_file_path))
-            .map(|file| file.data.clone())
+            .map(|file| file.data.to_vec())
             .unwrap_or_else(|| quicktime.movie_file_data.clone());
         let Some(selected_res_id) = ppc_qt_append_movie_resource(
             &mut selected_data,
@@ -46887,7 +46888,7 @@ fn ppc_qt_open_movie_file(
                 .find(|record| record.path.eq_ignore_ascii_case(&path))
             {
                 movie_file_path = path;
-                movie_file_data = file.data.clone();
+                movie_file_data = file.data.to_vec();
                 movie_file_bounds = ppc_qt_movie_bounds(&movie_file_data);
                 movie_file_video_track = ppc_qt_movie_first_video_track(&movie_file_data);
                 movie_file_video_samples = ppc_qt_movie_video_samples(&movie_file_data);
@@ -80726,7 +80727,7 @@ fn ppc_fsp_create_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     last_resource_error: &mut i16,
 ) {
@@ -80747,7 +80748,7 @@ fn ppc_fsp_create_res_file(
     if ppc_vfs_file_index(vfs_files, &path).is_none() {
         vfs_files.push(PpcVfsFileRecord {
             path: path.clone(),
-            data: Vec::new(),
+            data: Vec::new().into(),
             creator,
             file_type,
             finder_flags: 0,
@@ -80771,7 +80772,7 @@ fn ppc_h_create_res_file(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     default_dir_id: u32,
     last_resource_error: &mut i16,
@@ -80807,7 +80808,7 @@ fn ppc_h_create_res_file(
         } else {
             vfs_files.push(PpcVfsFileRecord {
                 path: path.clone(),
-                data: Vec::new(),
+                data: Vec::new().into(),
                 creator: 0,
                 file_type: 0,
                 finder_flags: 0,
@@ -80835,7 +80836,7 @@ fn ppc_fsp_open_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
@@ -80940,7 +80941,7 @@ fn ppc_fsp_open_res_file(
 fn ppc_open_res_file(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
@@ -81004,7 +81005,7 @@ fn ppc_h_open_res_file(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
@@ -81054,7 +81055,7 @@ fn ppc_h_open_res_file(
 
 #[allow(clippy::too_many_arguments)]
 fn ppc_open_resource_path(
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
     resource_files: &mut Vec<PpcResourceFileRecord>,
     vfs_resources: &mut Vec<PpcVfsResourceRecord>,
@@ -81467,7 +81468,7 @@ fn ppc_fsp_create(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
 ) -> i16 {
     let spec_ptr = cpu.gpr[3];
     let creator = cpu.gpr[4];
@@ -81481,7 +81482,7 @@ fn ppc_fsp_create(
     }
     vfs_files.push(PpcVfsFileRecord {
         path,
-        data: Vec::new(),
+        data: Vec::new().into(),
         creator,
         file_type,
         finder_flags: 0,
@@ -81494,7 +81495,7 @@ fn ppc_h_create(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
 ) -> i16 {
     // Inside Macintosh: Files (1992), 2-169: HCreate identifies the parent
@@ -81517,7 +81518,7 @@ fn ppc_pbh_create(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
 ) -> i16 {
     let pb = cpu.gpr[3];
@@ -81559,7 +81560,7 @@ fn ppc_create(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
 ) -> i16 {
     // The non-hierarchical Create call resolves against the current directory.
@@ -81580,7 +81581,7 @@ fn ppc_create(
 fn ppc_create_data_fork_by_name(
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     default_dir_id: u32,
     vref: i16,
     dir_id: u32,
@@ -81608,7 +81609,7 @@ fn ppc_create_data_fork_by_name(
     }
     vfs_files.push(PpcVfsFileRecord {
         path,
-        data: Vec::new(),
+        data: Vec::new().into(),
         creator,
         file_type,
         finder_flags: 0,
@@ -81621,7 +81622,7 @@ fn ppc_fsp_delete(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
@@ -81650,7 +81651,7 @@ fn ppc_delete_by_name(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
@@ -81739,7 +81740,7 @@ fn ppc_delete_by_name(
 
 fn ppc_delete_vfs_path(
     path: &str,
-    vfs_files: &mut Vec<PpcVfsFileRecord>,
+    vfs_files: &mut ProcessVfsFileRecords,
     deleted_vfs_file_paths: &mut Vec<String>,
     files: &mut Vec<PpcFileRecord>,
     vfs_resource_files: &mut Vec<PpcVfsResourceFileRecord>,
@@ -89345,7 +89346,7 @@ pub(crate) mod tests {
         let mut first = load_pef_application(&pef).unwrap();
         first.vfs_files.push(PpcVfsFileRecord {
             path: "Shared Data".to_string(),
-            data: b"first".to_vec(),
+            data: (b"first".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -89388,7 +89389,7 @@ pub(crate) mod tests {
         let mut original = load_pef_application(&pef).unwrap();
         original.vfs_files.push(PpcVfsFileRecord {
             path: "Detached Data".to_string(),
-            data: b"before".to_vec(),
+            data: (b"before".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -92472,7 +92473,7 @@ pub(crate) mod tests {
         }];
         let vfs_files = vec![PpcVfsFileRecord {
             path: path.to_string(),
-            data: b"data".to_vec(),
+            data: (b"data".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -102060,7 +102061,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "model.3dmf".to_string(),
-            data: storage_bytes.clone(),
+            data: (storage_bytes.clone()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"3DMF"),
             finder_flags: 0,
@@ -102186,7 +102187,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Data/Skeletons/New T-REX_Finished.3df".to_string(),
-            data: storage_bytes.clone(),
+            data: (storage_bytes.clone()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"3DMF"),
             finder_flags: 0,
@@ -126447,7 +126448,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(scratch, vec![0xaa; 80]);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Intro.mov".to_string(),
-            data: movie_data.clone(),
+            data: (movie_data.clone()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"MooV"),
             finder_flags: 0,
@@ -126689,7 +126690,7 @@ pub(crate) mod tests {
         let data_fork = complete_movie[..data_fork_len].to_vec();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Music/Theme".to_string(),
-            data: data_fork,
+            data: (data_fork).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"MooV"),
             finder_flags: 0,
@@ -128430,7 +128431,7 @@ pub(crate) mod tests {
         }];
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Splash Pict".to_string(),
-            data: test_v1_one_bit_packbits_pict(),
+            data: (test_v1_one_bit_packbits_pict()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"PICT"),
             finder_flags: 0,
@@ -128530,7 +128531,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(scratch, vec![0; 128]);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Data/Images/Boot1.PICT".to_string(),
-            data: test_v1_one_bit_packbits_pict(),
+            data: (test_v1_one_bit_packbits_pict()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"PICT"),
             finder_flags: 0,
@@ -139949,7 +139950,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -139993,7 +139994,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Prefs Alias".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
             file_type: u32::from_be_bytes(*b"alis"),
             finder_flags: 0,
@@ -140028,7 +140029,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
@@ -140101,7 +140102,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Level Alias".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
             file_type: u32::from_be_bytes(*b"alis"),
             finder_flags: 0,
@@ -140131,7 +140132,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Folder/Data/Level 1".to_string(),
-            data: b"level".to_vec(),
+            data: (b"level".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"DATA"),
             finder_flags: 0,
@@ -140179,7 +140180,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Prefs Alias".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"MACS"),
             file_type: u32::from_be_bytes(*b"alis"),
             finder_flags: 0,
@@ -140214,7 +140215,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
@@ -140610,7 +140611,7 @@ pub(crate) mod tests {
         loaded.seed_vfs_directories(directories, PPC_ROOT_DIR_ID, audio_dir_id + 1);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Data/Audio/Song_Pangea".to_string(),
-            data: b"aiff".to_vec(),
+            data: (b"aiff".to_vec()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"AIFF"),
             finder_flags: 0,
@@ -140713,7 +140714,7 @@ pub(crate) mod tests {
         loaded.memory.write_u32_be(pb + 100, 0xdead_beef).unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -140757,7 +140758,7 @@ pub(crate) mod tests {
         write_ppc_pstring(&mut loaded.memory, name_ptr, b"Escape Velocity Prefs");
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Escape Velocity Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"EvlT"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0100,
@@ -140933,7 +140934,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App HighScores".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -141026,7 +141027,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -141113,7 +141114,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Gridz™ CD/ToolBot Power Supply".to_string(),
-            data: b"license".to_vec(),
+            data: (b"license".to_vec()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"TEXT"),
             finder_flags: 0,
@@ -141372,7 +141373,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -141419,7 +141420,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Settings".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"TEST"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
@@ -141503,7 +141504,7 @@ pub(crate) mod tests {
             .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -141675,7 +141676,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(pb, vec![0; 17]);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -141710,7 +141711,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -141783,7 +141784,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Data/Audio/Song_Pangea".to_string(),
-            data: b"aiff".to_vec(),
+            data: (b"aiff".to_vec()).into(),
             creator: 0,
             file_type: u32::from_be_bytes(*b"AIFF"),
             finder_flags: 0,
@@ -141830,7 +141831,7 @@ pub(crate) mod tests {
         loaded.seed_vfs_directories(directories, app_dir_id, data_dir_id + 1);
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Gridz Demo/Gridz Demo Bits".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -141838,7 +141839,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Gridz Demo/Gridz Data/Gridz Demo Bits".to_string(),
-            data: b"packed-bits".to_vec(),
+            data: (b"packed-bits".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -141940,7 +141941,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -141986,7 +141987,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"old".to_vec(),
+            data: (b"old".to_vec()).into(),
             creator: u32::from_be_bytes(*b"NanO"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0200,
@@ -142149,7 +142150,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App HighScores".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -142257,7 +142258,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
@@ -142302,7 +142303,7 @@ pub(crate) mod tests {
         write_ppc_pstring(&mut loaded.memory, name_ptr, b"Test App Prefs");
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0,
@@ -142502,7 +142503,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -142578,7 +142579,7 @@ pub(crate) mod tests {
 
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Gridz Data/Gridz Demo Bits".to_string(),
-            data: bits,
+            data: (bits).into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -142684,7 +142685,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -142723,7 +142724,7 @@ pub(crate) mod tests {
     fn ppc_vfs_file_or_resource_path_matches_path_qualified_parent_basename() {
         let vfs_files = vec![PpcVfsFileRecord {
             path: "Gridz Demo/Gridz Data/Control Files/Game Control 2".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -142800,7 +142801,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -142910,7 +142911,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -142988,7 +142989,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -143119,7 +143120,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -143197,7 +143198,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Game Data/Packed Bits".to_string(),
-            data,
+            data: data.into(),
             creator: u32::from_be_bytes(*b"Game"),
             file_type: u32::from_be_bytes(*b"bits"),
             finder_flags: 0,
@@ -143442,7 +143443,7 @@ pub(crate) mod tests {
         .unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "rex.skeleton".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"BIOp"),
             file_type: u32::from_be_bytes(*b"SkeP"),
             finder_flags: 0,
@@ -143757,7 +143758,7 @@ pub(crate) mod tests {
         );
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Gridz Preferences".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Grid"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x0400,
@@ -143791,7 +143792,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: vec![0, 1, 2, 3],
+            data: (vec![0, 1, 2, 3]).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -143832,7 +143833,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"data".to_vec(),
+            data: (b"data".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -143867,7 +143868,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"abcdef".to_vec(),
+            data: (b"abcdef".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -144007,7 +144008,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"old".to_vec(),
+            data: (b"old".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -145291,7 +145292,7 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Test App Prefs".to_string(),
-            data: b"prefs".to_vec(),
+            data: (b"prefs".to_vec()).into(),
             creator: u32::from_be_bytes(*b"Nano"),
             file_type: u32::from_be_bytes(*b"pref"),
             finder_flags: 0x4000,
@@ -145299,7 +145300,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "System Folder/Preferences/Clean Prefs".to_string(),
-            data: b"clean".to_vec(),
+            data: (b"clean".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -153330,7 +153331,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Source Folder/Installer".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"SRC!"),
             file_type: u32::from_be_bytes(*b"APPL"),
             finder_flags: 0,
@@ -153338,7 +153339,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: "Gridz Demo ƒ/Gridz™ Demo".to_string(),
-            data: Vec::new(),
+            data: (Vec::new()).into(),
             creator: u32::from_be_bytes(*b"Grid"),
             file_type: u32::from_be_bytes(*b"APPL"),
             finder_flags: 0,
@@ -159653,7 +159654,7 @@ pub(crate) mod tests {
         });
         loaded.vfs_files.push(PpcVfsFileRecord {
             path: path.to_string(),
-            data: aiff,
+            data: (aiff).into(),
             creator: u32::from_be_bytes(*b"ttxt"),
             file_type: u32::from_be_bytes(*b"AIFF"),
             finder_flags: 0,
@@ -160604,7 +160605,7 @@ pub(crate) mod tests {
         native.memory.write_bytes(mode, b"rb\0").unwrap();
         native.vfs_files.push(PpcVfsFileRecord {
             path: "Volume/test.bin".to_string(),
-            data: b"payload".to_vec(),
+            data: (b"payload".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
@@ -160828,14 +160829,15 @@ pub(crate) mod tests {
 
         let mut cpu = PpcCpu::new();
         let mut files = Vec::new();
-        let mut vfs_files = vec![PpcVfsFileRecord {
+        let mut vfs_files: ProcessVfsFileRecords = vec![PpcVfsFileRecord {
             path: "Volume/test.bin".to_string(),
-            data: b"abcdef".to_vec(),
+            data: (b"abcdef".to_vec()).into(),
             creator: 0,
             file_type: 0,
             finder_flags: 0,
             dirty: false,
-        }];
+        }]
+        .into();
         let mut next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
         let path = PPC_DATA_BASE + 0x2000;
         let mode = PPC_DATA_BASE + 0x2020;

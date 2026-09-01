@@ -14,7 +14,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    ProcessContext, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
+    ProcessContext, ProcessForkMap, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
     SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
@@ -2062,9 +2062,9 @@ pub struct TrapDispatcher {
     /// chrome pixels without changing guest-visible Toolbox behavior.
     pub(crate) ui_theme_id: UiThemeId,
     /// Virtual filesystem: filename -> data fork contents
-    pub vfs: SharedProcessValue<HashMap<String, Vec<u8>>>,
+    pub vfs: SharedProcessValue<ProcessForkMap>,
     /// Virtual filesystem: filename -> resource fork contents
-    pub vfs_rsrc: SharedProcessValue<HashMap<String, Vec<u8>>>,
+    pub vfs_rsrc: SharedProcessValue<ProcessForkMap>,
     /// Finder metadata and catalog IDs for VFS file entries.
     pub(crate) vfs_metadata: HashMap<String, VfsMetadata>,
     /// Directory catalog metadata keyed by normalized path.
@@ -4744,7 +4744,7 @@ impl TrapDispatcher {
         self.vfs
             .iter()
             .find(|(key, _)| Self::normalize_vfs_path(key).eq_ignore_ascii_case(&target))
-            .map(|(_, bytes)| bytes.clone())
+            .map(|(_, bytes)| bytes.to_vec())
     }
 
     pub(crate) fn boot_volume_ref_num() -> i16 {
