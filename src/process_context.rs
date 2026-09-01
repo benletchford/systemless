@@ -2,6 +2,7 @@
 
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
+use crate::guest_procedure::GuestProcedure;
 use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
@@ -37,6 +38,121 @@ pub struct ProcessHandleStateRecord {
     pub high_locked: bool,
     pub no_purge: bool,
     pub resource: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessAppleEventHandler {
+    pub(crate) procedure: GuestProcedure,
+    pub(crate) refcon: u32,
+}
+
+/// One process's application and system AppleEvent dispatch tables.
+///
+/// Get and remove use the exact key supplied by the caller, while dispatch
+/// searches the application table before the system table and considers the
+/// exact, class-wildcard, ID-wildcard, and double-wildcard keys in that order.
+/// Inside Macintosh: Interapplication Communication (1993), pp. 4-62--4-68.
+#[derive(Debug, Default)]
+pub(crate) struct SharedProcessAppleEventHandlers(
+    Rc<RefCell<HashMap<(bool, u32, u32), ProcessAppleEventHandler>>>,
+);
+
+impl Clone for SharedProcessAppleEventHandlers {
+    fn clone(&self) -> Self {
+        Self(Rc::new(RefCell::new(self.0.borrow().clone())))
+    }
+}
+
+impl PartialEq for SharedProcessAppleEventHandlers {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0.borrow() == *other.0.borrow()
+    }
+}
+
+impl Eq for SharedProcessAppleEventHandlers {}
+
+impl SharedProcessAppleEventHandlers {
+    pub(crate) fn attach_to(&mut self, process_handlers: &Self) {
+        if Rc::ptr_eq(&self.0, &process_handlers.0) {
+            return;
+        }
+        assert!(
+            self.0.borrow().is_empty() || process_handlers.0.borrow().is_empty(),
+            "cannot attach two populated AppleEvent dispatch tables"
+        );
+        let handlers = std::mem::take(&mut *self.0.borrow_mut());
+        self.0 = Rc::clone(&process_handlers.0);
+        self.0.borrow_mut().extend(handlers);
+    }
+
+    pub(crate) fn install(
+        &self,
+        is_system_handler: bool,
+        event_class: u32,
+        event_id: u32,
+        handler: ProcessAppleEventHandler,
+    ) {
+        self.0
+            .borrow_mut()
+            .insert((is_system_handler, event_class, event_id), handler);
+    }
+
+    pub(crate) fn get(
+        &self,
+        is_system_handler: bool,
+        event_class: u32,
+        event_id: u32,
+    ) -> Option<ProcessAppleEventHandler> {
+        self.0
+            .borrow()
+            .get(&(is_system_handler, event_class, event_id))
+            .copied()
+    }
+
+    pub(crate) fn remove(
+        &self,
+        is_system_handler: bool,
+        event_class: u32,
+        event_id: u32,
+        procedure: u32,
+    ) -> bool {
+        let key = (is_system_handler, event_class, event_id);
+        let mut handlers = self.0.borrow_mut();
+        let matches = handlers.get(&key).is_some_and(|handler| {
+            procedure == 0 || handler.procedure.original_pointer == procedure
+        });
+        if matches {
+            handlers.remove(&key);
+        }
+        matches
+    }
+
+    pub(crate) fn handler_for(
+        &self,
+        event_class: u32,
+        event_id: u32,
+        wildcard: u32,
+    ) -> Option<ProcessAppleEventHandler> {
+        let handlers = self.0.borrow();
+        for is_system_handler in [false, true] {
+            for key in [
+                (is_system_handler, event_class, event_id),
+                (is_system_handler, event_class, wildcard),
+                (is_system_handler, wildcard, event_id),
+                (is_system_handler, wildcard, wildcard),
+            ] {
+                if let Some(handler) = handlers.get(&key) {
+                    return Some(*handler);
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2466,6 +2582,7 @@ pub(crate) struct ProcessContext {
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
+    apple_event_handlers: SharedProcessAppleEventHandlers,
 }
 
 impl ProcessContext {
@@ -2616,6 +2733,13 @@ impl ProcessContext {
 
     pub(crate) fn attach_guest_calls(&self, adapter: &mut SharedGuestCallStack) {
         adapter.attach_to(&self.guest_calls);
+    }
+
+    pub(crate) fn attach_apple_event_handlers(
+        &self,
+        adapter: &mut SharedProcessAppleEventHandlers,
+    ) {
+        adapter.attach_to(&self.apple_event_handlers);
     }
 }
 
@@ -3738,5 +3862,82 @@ mod tests {
         assert_eq!(manager.handle_state(0x5500), 0);
         assert_eq!(manager.native_allocation(0x3300).unwrap().size, 80);
         assert_eq!(manager.native_allocation(0x5500), None);
+    }
+
+    #[test]
+    fn apple_event_dispatch_prefers_application_exact_and_wildcard_entries() {
+        let handlers = SharedProcessAppleEventHandlers::default();
+        let wildcard = u32::from_be_bytes(*b"****");
+        let event_class = u32::from_be_bytes(*b"aevt");
+        let event_id = u32::from_be_bytes(*b"oapp");
+        for (is_system, class, id, pointer, refcon) in [
+            (true, event_class, event_id, 0x1000, 1),
+            (false, wildcard, wildcard, 0x2000, 2),
+            (false, event_class, wildcard, 0x3000, 3),
+            (false, event_class, event_id, 0x4000, 4),
+        ] {
+            handlers.install(
+                is_system,
+                class,
+                id,
+                ProcessAppleEventHandler {
+                    procedure: GuestProcedure::raw_m68k(pointer),
+                    refcon,
+                },
+            );
+        }
+
+        assert_eq!(
+            handlers
+                .handler_for(event_class, event_id, wildcard)
+                .map(|handler| (handler.procedure.original_pointer, handler.refcon)),
+            Some((0x4000, 4))
+        );
+        assert!(handlers.remove(false, event_class, event_id, 0));
+        assert_eq!(
+            handlers
+                .handler_for(event_class, event_id, wildcard)
+                .map(|handler| (handler.procedure.original_pointer, handler.refcon)),
+            Some((0x3000, 3))
+        );
+        assert!(handlers.remove(false, event_class, wildcard, 0x3000));
+        assert!(!handlers.remove(false, wildcard, wildcard, 0x9998));
+        assert_eq!(
+            handlers
+                .handler_for(event_class, event_id, wildcard)
+                .map(|handler| (handler.procedure.original_pointer, handler.refcon)),
+            Some((0x2000, 2))
+        );
+    }
+
+    #[test]
+    fn attached_apple_event_tables_share_mutations_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessAppleEventHandlers::default();
+        let mut native = SharedProcessAppleEventHandlers::default();
+        context.attach_apple_event_handlers(&mut classic);
+        context.attach_apple_event_handlers(&mut native);
+        let detached = native.clone();
+        let event_class = u32::from_be_bytes(*b"misc");
+        let event_id = u32::from_be_bytes(*b"slct");
+
+        classic.install(
+            false,
+            event_class,
+            event_id,
+            ProcessAppleEventHandler {
+                procedure: GuestProcedure::raw_m68k(0x4000),
+                refcon: 0x1234_5678,
+            },
+        );
+
+        assert_eq!(
+            native.get(false, event_class, event_id),
+            classic.get(false, event_class, event_id)
+        );
+        assert_eq!(detached.get(false, event_class, event_id), None);
+        assert_eq!(classic.len(), 1);
+        assert_eq!(native.len(), 1);
+        assert_eq!(detached.len(), 0);
     }
 }
