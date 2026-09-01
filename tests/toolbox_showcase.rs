@@ -765,6 +765,33 @@ fn test_toolbox_showcase() {
         indexed_picture_left, indexed_picture_right,
         "DrawPicture and CopyBits must preserve the indexed PICT gradient across CTables"
     );
+    let same_device_left = screen_rgb(
+        &mut runner,
+        (win_top + 310) as u16,
+        (win_left + 345) as u16,
+    );
+    let same_device_middle = screen_rgb(
+        &mut runner,
+        (win_top + 310) as u16,
+        (win_left + 410) as u16,
+    );
+    let same_device_right = screen_rgb(
+        &mut runner,
+        (win_top + 310) as u16,
+        (win_left + 490) as u16,
+    );
+    assert!(
+        same_device_left != [0, 0, 0]
+            && same_device_middle != [0, 0, 0]
+            && same_device_right != [0, 0, 0],
+        "same-device indexed CopyBits must not remap a transient black device CTable to black"
+    );
+    assert!(
+        same_device_left != same_device_middle
+            && same_device_middle != same_device_right
+            && same_device_left != same_device_right,
+        "same-device indexed CopyBits must preserve three distinct positional device indexes"
+    );
     let initial_palette_rgb = screen_rgb(
         &mut runner,
         (win_top + 130) as u16,
@@ -773,8 +800,8 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, powerpc, "10-palette.png");
 
-    // Animate Palette button: local Rect (307, 40, 333, 190).
-    click_point(&mut runner, win_top + 320, win_left + 115);
+    // Animate Palette button: local Rect (335, 40, 361, 190).
+    click_point(&mut runner, win_top + 348, win_left + 115);
     run_ticks(&mut runner, "palette animation to settle", 1);
     let animated_palette_rgb = screen_rgb(
         &mut runner,

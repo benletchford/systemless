@@ -25,11 +25,12 @@ test protocol. Its Pages menu selects seven interactive views:
    editable text, and a system alert.
 7. Palettes activates a resource-backed mixed-usage palette, draws through
    `PmForeColor` and `PmBackColor`, translates an unrelated indexed PICT
-   through a canonical offscreen GWorld into the active screen palette, and
-   animates explicit CLUT entries without redrawing their indexed pixels. The
-   68K slice records and replays the PICT; the PowerPC slice draws the expected
-   color strip because its fixture adapter does not record `CopyBits` inside
-   `OpenPicture`.
+   through a canonical offscreen GWorld into the active screen palette,
+   preserves positional indexes copied from a same-identity device ColorTable
+   whose RGB entries are transiently black, and animates explicit CLUT entries
+   without redrawing their indexed pixels. The 68K slice records and replays
+   the PICT; the PowerPC slice draws the expected color strip because its
+   fixture adapter does not record `CopyBits` inside `OpenPicture`.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -83,8 +84,10 @@ selects the 68K `CODE` slice, and the second launch selects the native PEF with
    that block for a response, then dismiss it or record its return.
 9. Verify the final dialog status after both modal sessions.
 10. Activate the Palettes page, verify the indexed PICT → GWorld → screen
-    transfer retains distinct colors across unrelated CTables, and capture its
-    initial tolerant and animated-explicit color environment.
+    transfer retains distinct colors across unrelated CTables, verify a
+    same-device transfer retains its positional indexes through a transient
+    black device ColorTable, and capture the initial tolerant and
+    animated-explicit color environment.
 11. Click Animate Palette and capture the same indexed pixels recolored by
     `AnimateEntry` without repainting the swatches.
 12. Open File, drag across the menu bar to Pages, and capture Graphics
@@ -123,8 +126,10 @@ surrounding operating-system presentation remains environment-dependent.
 
 SheepShaver's oracle display is direct color, so its animation checkpoint is
 intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11 notes
-that color-table animation is unavailable on direct devices. The Systemless
-8-bit captures demonstrate the indexed CLUT transition.
+that color-table animation is unavailable on direct devices. Its same-device
+transfer band likewise uses an RGB fallback because positional CLUT indexes
+exist only on indexed devices. The Systemless 8-bit captures for both CPU
+slices and BasiliskII's 8-bit capture exercise the actual indexed paths.
 
 ### 68K
 
