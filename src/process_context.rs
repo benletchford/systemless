@@ -1,6 +1,7 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
 use crate::callback_manager::{ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask};
+use crate::control_manager::ProcessControlManagerState;
 use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
@@ -1228,6 +1229,7 @@ pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTas
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
 pub(crate) type SharedProcessScrapState = SharedProcessValue<ProcessScrapState>;
+pub(crate) type SharedProcessControlManager = SharedProcessValue<ProcessControlManagerState>;
 /// Detached-by-default attachment handle for Dialog Manager `ParamText` slots.
 pub type SharedProcessDialogText = SharedProcessValue<[Vec<u8>; 4]>;
 
@@ -4182,6 +4184,7 @@ pub(crate) struct ProcessContext {
     vbl_tasks: SharedProcessVblTasks,
     callback_scheduling: SharedProcessCallbackScheduling,
     scrap_state: SharedProcessScrapState,
+    control_manager: SharedProcessControlManager,
     dialog_text: SharedProcessDialogText,
     cursor_state: SharedProcessCursorState,
     current_graphics_port: SharedProcessValue<u32>,
@@ -4209,6 +4212,7 @@ impl Default for ProcessContext {
             vbl_tasks: SharedProcessVblTasks::default(),
             callback_scheduling: SharedProcessCallbackScheduling::default(),
             scrap_state: SharedProcessScrapState::default(),
+            control_manager: SharedProcessControlManager::default(),
             dialog_text: SharedProcessDialogText::default(),
             cursor_state: SharedProcessCursorState::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
@@ -4287,6 +4291,10 @@ impl ProcessContext {
 
     pub(crate) fn attach_scrap_state(&self, adapter: &mut SharedProcessScrapState) {
         adapter.attach_to(&self.scrap_state, ProcessScrapState::is_pristine);
+    }
+
+    pub(crate) fn attach_control_manager(&self, adapter: &mut SharedProcessControlManager) {
+        adapter.attach_to(&self.control_manager, ProcessControlManagerState::is_pristine);
     }
 
     pub(crate) fn attach_dialog_text(&self, adapter: &mut SharedProcessDialogText) {

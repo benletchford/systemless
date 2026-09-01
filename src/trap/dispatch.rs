@@ -16,7 +16,8 @@ use crate::process_context::{
     ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
-    SharedProcessCursorState, SharedProcessDialogText, SharedProcessEventQueue,
+    SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
+    SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
     SharedProcessSoundManager, SharedProcessValue,
@@ -2662,14 +2663,8 @@ pub struct TrapDispatcher {
     pub(crate) list_states: HashMap<u32, ListState>,
     /// Host-side TextEdit feature state keyed by guest TEHandle.
     pub(crate) textedit_states: HashMap<u32, TextEditState>,
-    /// Maps guest ControlRecord pointer → procID, set by NewControl/GetNewControl.
-    /// Used by DrawControls to dispatch to the correct rendering routine.
-    /// Inside Macintosh Volume I, I-331
-    pub(crate) control_proc_ids: HashMap<u32, i16>,
-    /// Creation-time pop-up title widths keyed by ControlRecord pointer.
-    /// The standard pop-up CDEF replaces `contrlMax` with the menu item count,
-    /// so the original pixel width must remain in its private state.
-    pub(crate) popup_control_title_widths: HashMap<u32, i16>,
+    /// Process-owned Control Manager metadata shared with native execution.
+    pub(crate) control_manager: SharedProcessControlManager,
     /// The menu ID of the most recently inserted menu (via InsertMenu).
     /// Cleared when a type-0 userItem GetDItem is called immediately after.
     pub(crate) last_inserted_menu_id: Option<i16>,
@@ -2805,6 +2800,7 @@ impl TrapDispatcher {
             &mut self.callback_scheduling,
         );
         context.attach_scrap_state(&mut self.scrap);
+        context.attach_control_manager(&mut self.control_manager);
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
@@ -4020,8 +4016,7 @@ impl TrapDispatcher {
             saved_vis_regions: HashMap::new(),
             list_states: HashMap::new(),
             textedit_states: HashMap::new(),
-            control_proc_ids: HashMap::new(),
-            popup_control_title_widths: HashMap::new(),
+            control_manager: SharedProcessControlManager::default(),
             last_inserted_menu_id: None,
             pending_dialog_popup_menu: None,
             dialog_item_popup_menus: HashMap::new(),

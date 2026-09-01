@@ -1064,7 +1064,7 @@ fn scripted_install_modal_preferences_checkbox_dialog(
     dispatcher.window_bounds = bounds;
     dispatcher.window_proc_id = 1;
     dispatcher.window_title = "Preferences".to_string();
-    dispatcher.control_proc_ids.insert(checkbox_ptr, 1);
+    dispatcher.control_manager.set_proc_id(checkbox_ptr, 1);
     dispatcher
         .dialog_control_handles
         .insert(checkbox_handle, (dialog_ptr, 2));

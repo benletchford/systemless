@@ -1,5 +1,139 @@
 //! Architecture-neutral Control Manager records and list operations.
 
+/// Host metadata for one guest `ControlRecord`.
+///
+/// The relocatable record and its window-list link remain canonical guest
+/// memory. This process-owned entry retains only information that the HLE
+/// cannot recover reliably from the record, including the original control
+/// definition ID and pop-up definition private values. Inside Macintosh
+/// Volume I (1985), pp. I-316--I-319 and I-328--I-333.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessControlRecord {
+    pub(crate) handle: u32,
+    pub(crate) pointer: u32,
+    pub(crate) proc_id: i16,
+    pub(crate) popup_menu_id: i16,
+    pub(crate) popup_title_width: Option<i16>,
+}
+
+/// Canonical Control Manager metadata for one Macintosh process.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessControlManagerState {
+    records: Vec<ProcessControlRecord>,
+}
+
+impl ProcessControlManagerState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub(crate) fn register(&mut self, handle: u32, pointer: u32, proc_id: i16, popup_menu_id: i16) {
+        self.records
+            .retain(|record| handle == 0 || record.handle != handle || record.pointer == pointer);
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.pointer == pointer && pointer != 0)
+        {
+            if handle != 0 {
+                record.handle = handle;
+            }
+            record.proc_id = proc_id;
+            record.popup_menu_id = popup_menu_id;
+            return;
+        }
+        self.records.push(ProcessControlRecord {
+            handle,
+            pointer,
+            proc_id,
+            popup_menu_id,
+            popup_title_width: None,
+        });
+    }
+
+    pub(crate) fn proc_id(&self, pointer: u32) -> i16 {
+        self.records
+            .iter()
+            .find(|record| record.pointer == pointer)
+            .map_or(0, |record| record.proc_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_pointer(&self, pointer: u32) -> bool {
+        self.records.iter().any(|record| record.pointer == pointer)
+    }
+
+    pub(crate) fn set_proc_id(&mut self, pointer: u32, proc_id: i16) {
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.pointer == pointer)
+        {
+            record.proc_id = proc_id;
+        } else {
+            self.register(0, pointer, proc_id, 0);
+        }
+    }
+
+    pub(crate) fn associate_handle(&mut self, handle: u32, pointer: u32) {
+        self.records
+            .retain(|record| record.handle != handle || record.pointer == pointer);
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.pointer == pointer)
+        {
+            record.handle = handle;
+        } else {
+            self.register(handle, pointer, 0, 0);
+        }
+    }
+
+    pub(crate) fn set_popup_title_width(&mut self, pointer: u32, width: i16) {
+        if !self.records.iter().any(|record| record.pointer == pointer) {
+            self.register(0, pointer, 0, 0);
+        }
+        if let Some(record) = self
+            .records
+            .iter_mut()
+            .find(|record| record.pointer == pointer)
+        {
+            record.popup_title_width = Some(width);
+        }
+    }
+
+    pub(crate) fn popup_title_width(&self, pointer: u32, fallback: i16) -> i16 {
+        self.records
+            .iter()
+            .find(|record| record.pointer == pointer)
+            .and_then(|record| record.popup_title_width)
+            .unwrap_or(fallback)
+    }
+
+    pub(crate) fn remove_pointer(&mut self, pointer: u32) {
+        self.records.retain(|record| record.pointer != pointer);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_handle(&mut self, handle: u32) {
+        self.records.retain(|record| record.handle != handle);
+    }
+}
+
+impl std::ops::Deref for ProcessControlManagerState {
+    type Target = Vec<ProcessControlRecord>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+impl std::ops::DerefMut for ProcessControlManagerState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.records
+    }
+}
+
 /// Maximum number of controls accepted from one live guest `wControlList`.
 ///
 /// This is a defensive corruption bound, not a guest-visible Control Manager
