@@ -17,9 +17,7 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::{
-    ProcessContext, ProcessMemoryManager, SharedProcessFileSystem,
-};
+use crate::process_context::{ProcessContext, ProcessMemoryManager, SharedProcessFileSystem};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -1652,8 +1650,8 @@ impl FixtureRunner {
         );
         let (clut, _) = TrapDispatcher::standard_mac_indexed_clut(config.screen_depth)
             .expect("validated indexed screen depth");
-        dispatcher.device_clut = clut;
-        dispatcher.color_manager_clut = clut;
+        *dispatcher.device_clut = clut;
+        *dispatcher.color_manager_clut = clut;
         dispatcher.seeded_picture_palette = clut;
         let standard_adb_service = bus.alloc_synthetic(2);
         bus.write_word(standard_adb_service, 0x4E75); // RTS
@@ -7720,11 +7718,6 @@ impl FixtureRunner {
         let Some(primary_buffer) = ppc_app.presented_front_buffer() else {
             return;
         };
-        if matches!(primary_buffer.depth, 1 | 2 | 4 | 8) {
-            self.dispatcher.device_clut = ppc_app.screen_clut;
-            self.dispatcher.color_manager_clut = ppc_app.color_manager_clut;
-            self.dispatcher.device_gamma = ppc_app.device_gamma;
-        }
         let (canvas_width, canvas_height) = Self::ppc_host_canvas_dimensions(primary_buffer);
         let Some(canvas_row_bytes) = Self::ppc_host_row_bytes(canvas_width, primary_buffer.depth)
         else {
@@ -10978,7 +10971,9 @@ mod tests {
     use crate::loader::ppc::*;
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::menu_manager::TrackedMenuPaneView;
-    use crate::process_context::{ProcessFileSystemState, SharedProcessFileSystem};
+    use crate::process_context::{
+        ProcessFileSystemState, SharedProcessFileSystem, SharedProcessValue,
+    };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
@@ -13414,10 +13409,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
             q3_objects: Vec::new(),
@@ -15584,10 +15585,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
             q3_objects: Vec::new(),
@@ -16532,10 +16539,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
             q3_objects: Vec::new(),
@@ -16679,10 +16692,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: Vec::new(),
             q3_objects: Vec::new(),
@@ -17058,10 +17077,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: vec![
                 PpcGWorldRecord {
@@ -17331,10 +17356,16 @@ mod tests {
             cfm_library_fragments: Vec::new(),
             next_cfm_connection_id: 1,
             controls: Vec::new(),
-            screen_clut: TrapDispatcher::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: TrapDispatcher::standard_mac_8bpp_clut(),
+            screen_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
+            device_gamma: SharedProcessValue::from_value(
+                crate::display::default_display_gamma(),
+            ),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(
+                TrapDispatcher::standard_mac_8bpp_clut(),
+            ),
             aliases: Vec::new(),
             gworlds: vec![PpcGWorldRecord {
                 port: PPC_MAIN_GWORLD,
@@ -17646,8 +17677,8 @@ mod tests {
         runner.bus.fill_bytes(canary, 8, 0x5a);
 
         let (two_bit_clut, _) = TrapDispatcher::standard_mac_indexed_clut(2).expect("2bpp CLUT");
-        ppc_app.screen_clut = two_bit_clut;
-        ppc_app.color_manager_clut = two_bit_clut;
+        *ppc_app.screen_clut = two_bit_clut;
+        *ppc_app.color_manager_clut = two_bit_clut;
         ppc_app.gworlds[0].depth = 2;
         ppc_app.gworlds[0].row_bytes = 2;
 
@@ -17698,7 +17729,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_packed_front_buffers_sync_centered_pixels_and_color_state() {
+    fn ppc_packed_front_buffers_sync_centered_pixels_with_process_color_state() {
         const WIDTH: u32 = 513;
         const HEIGHT: u32 = 342;
         const CANVAS_WIDTH: u32 = 800;
@@ -17737,20 +17768,20 @@ mod tests {
                 pixels_locked: false,
                 pixels_no_purge: false,
             });
-            let (mut device_clut, _) =
-                TrapDispatcher::standard_mac_indexed_clut(depth).expect("standard indexed depth");
-            device_clut[0][0] = 0xfffe;
-            let mut color_manager_clut = device_clut;
-            color_manager_clut[0][1] = 0xfffd;
-            ppc_app.screen_clut = device_clut;
-            ppc_app.color_manager_clut = color_manager_clut;
-            ppc_app.device_gamma = crate::display::linear_display_gamma();
-
             let config = FixtureRunnerConfig::default()
                 .with_screen_depth(depth)
                 .expect("packed indexed mode");
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, config);
             let mut ppc_app = app.ppc.take().expect("PPC app");
+            ppc_app.attach_process_context(&mut runner.process_context);
+            let (mut device_clut, _) =
+                TrapDispatcher::standard_mac_indexed_clut(depth).expect("standard indexed depth");
+            device_clut[0][0] = 0xfffe;
+            let mut color_manager_clut = device_clut;
+            color_manager_clut[0][1] = 0xfffd;
+            *ppc_app.screen_clut = device_clut;
+            *ppc_app.color_manager_clut = color_manager_clut;
+            *ppc_app.device_gamma = crate::display::linear_display_gamma();
             runner.sync_ppc_front_buffer_to_host(&mut ppc_app);
 
             let (base, host_row_bytes, width, height, host_depth) = runner.dispatcher.screen_mode;

@@ -76,7 +76,7 @@ use crate::process_context::{
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
-    SharedProcessMemoryManager, SharedProcessMenuTracking,
+    SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessValue,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -3374,10 +3374,10 @@ pub struct PpcLoadedApp {
     pub(crate) process_file_system: SharedProcessFileSystem,
     pub current_gworld: u32,
     pub current_gdevice: u32,
-    pub screen_clut: [[u16; 3]; 256],
-    pub color_manager_clut: [[u16; 3]; 256],
-    pub device_gamma: crate::display::DisplayGamma,
-    pub device_gamma_explicit: bool,
+    pub screen_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
+    pub device_gamma_explicit: SharedProcessValue<bool>,
     pub quickdraw_fore_color: PpcRgbColor,
     pub(crate) quickdraw_fore_indices: HashMap<u32, u8>,
     pub quickdraw_back_color: PpcRgbColor,
@@ -3857,6 +3857,12 @@ impl PpcLoadedApp {
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_display_color_state(
+            &mut self.screen_clut,
+            &mut self.color_manager_clut,
+            &mut self.device_gamma,
+            &mut self.device_gamma_explicit,
+        );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.process_input);
         context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
@@ -4471,7 +4477,7 @@ impl PpcLoadedApp {
                         &self.color_manager_clut,
                     )
                 })
-                .unwrap_or(self.color_manager_clut)
+                .unwrap_or(*self.color_manager_clut)
         });
         let surface =
             PpcQ3SoftwareFrontBufferSurface::new(&mut self.memory, front_buffer, indexed_clut);
@@ -7178,10 +7184,10 @@ impl PpcLoadedApp {
         let mut next_file_ref_num = self.next_file_ref_num;
         let mut current_gworld = self.current_gworld;
         let mut current_gdevice = self.current_gdevice;
-        let mut screen_clut = self.screen_clut;
-        let mut color_manager_clut = self.color_manager_clut;
-        let mut device_gamma = self.device_gamma;
-        let mut device_gamma_explicit = self.device_gamma_explicit;
+        let mut screen_clut = self.screen_clut.shared_handle();
+        let mut color_manager_clut = self.color_manager_clut.shared_handle();
+        let mut device_gamma = self.device_gamma.shared_handle();
+        let mut device_gamma_explicit = self.device_gamma_explicit.shared_handle();
         let mut quickdraw_fore_color = self.quickdraw_fore_color;
         let mut quickdraw_fore_indices = std::mem::take(&mut self.quickdraw_fore_indices);
         let mut quickdraw_back_color = self.quickdraw_back_color;
@@ -8065,10 +8071,6 @@ impl PpcLoadedApp {
         self.next_file_ref_num = next_file_ref_num;
         self.current_gworld = current_gworld;
         self.current_gdevice = current_gdevice;
-        self.screen_clut = screen_clut;
-        self.color_manager_clut = color_manager_clut;
-        self.device_gamma = device_gamma;
-        self.device_gamma_explicit = device_gamma_explicit;
         self.quickdraw_fore_color = quickdraw_fore_color;
         self.quickdraw_fore_indices = quickdraw_fore_indices;
         self.quickdraw_back_color = quickdraw_back_color;
@@ -12699,10 +12701,10 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         process_file_system: ppc_initial_process_file_system(),
         current_gworld: PPC_MAIN_GWORLD,
         current_gdevice: PPC_MAIN_GDEVICE,
-        screen_clut,
-        color_manager_clut,
-        device_gamma: crate::display::default_display_gamma(),
-        device_gamma_explicit: false,
+        screen_clut: SharedProcessValue::from_value(screen_clut),
+        color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
+        device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
+        device_gamma_explicit: SharedProcessValue::from_value(false),
         quickdraw_fore_color: PPC_RGB_BLACK,
         quickdraw_fore_indices: HashMap::new(),
         quickdraw_back_color: PPC_RGB_WHITE,
@@ -88727,6 +88729,53 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn attached_68k_and_powerpc_adapters_share_display_color_state_without_runner_copy() {
+        let (mut classic, _, _) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"GetCTable");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let detached = native.clone();
+
+        native.screen_clut[7] = [0x1111, 0x2222, 0x3333];
+        native.color_manager_clut[9] = [0x4444, 0x5555, 0x6666];
+        native.device_gamma[1][42] = 0x7f;
+        *native.device_gamma_explicit = true;
+
+        assert!(classic.device_clut.ptr_eq(&native.screen_clut));
+        assert!(classic
+            .color_manager_clut
+            .ptr_eq(&native.color_manager_clut));
+        assert!(classic.device_gamma.ptr_eq(&native.device_gamma));
+        assert!(classic
+            .device_gamma_explicit
+            .ptr_eq(&native.device_gamma_explicit));
+        assert_eq!(classic.device_clut[7], [0x1111, 0x2222, 0x3333]);
+        assert_eq!(classic.color_manager_clut[9], [0x4444, 0x5555, 0x6666]);
+        assert_eq!(classic.device_gamma[1][42], 0x7f);
+        assert!(*classic.device_gamma_explicit);
+
+        classic.device_clut[3] = [0xaaaa, 0xbbbb, 0xcccc];
+        classic.device_gamma[2][99] = 0x55;
+        assert_eq!(native.screen_clut[3], [0xaaaa, 0xbbbb, 0xcccc]);
+        assert_eq!(native.device_gamma[2][99], 0x55);
+
+        assert!(!native.screen_clut.ptr_eq(&detached.screen_clut));
+        assert!(!native.device_gamma.ptr_eq(&detached.device_gamma));
+        assert_eq!(
+            detached.screen_clut,
+            crate::display::standard_mac_8bpp_clut()
+        );
+        assert_eq!(
+            detached.device_gamma,
+            crate::display::default_display_gamma()
+        );
+        assert!(!*detached.device_gamma_explicit);
+    }
+
+    #[test]
     fn attached_ppc_event_queue_remains_shared_through_panic() {
         let pef = synthetic_pef_with_import(b"InvalMenuBar");
         let mut native = load_pef_application(&pef).unwrap();
@@ -131537,8 +131586,8 @@ pub(crate) mod tests {
                 component.rotate_left(7),
             ]
         });
-        loaded.screen_clut = direct_clut;
-        loaded.color_manager_clut = direct_clut;
+        *loaded.screen_clut = direct_clut;
+        *loaded.color_manager_clut = direct_clut;
         ppc_write_device_color_table(
             &mut loaded.memory,
             PPC_MAIN_GDEVICE,
@@ -131651,7 +131700,7 @@ pub(crate) mod tests {
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
             &mut loaded.device_gamma,
-            loaded.device_gamma_explicit,
+            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -131760,7 +131809,7 @@ pub(crate) mod tests {
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
             &mut loaded.device_gamma,
-            loaded.device_gamma_explicit,
+            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
         assert_eq!(loaded.screen_clut[1], color);
@@ -132302,7 +132351,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
         }
-        let original = loaded.screen_clut;
+        let original = *loaded.screen_clut;
 
         for window in [background, offscreen] {
             loaded.cpu.pc = loaded.entry_pc;
@@ -132324,7 +132373,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(palette, vec![0; 16 + 5 * 16]);
         loaded.memory.write_u32_be(handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 5).unwrap();
-        let original = loaded.screen_clut;
+        let original = *loaded.screen_clut;
         let entries = [
             ([0x3333, 0, 0], 0x0000, 0),
             ([0x4444, 0, 0], 0x0002, 0xffff),
@@ -133053,8 +133102,8 @@ pub(crate) mod tests {
         loaded.screen_clut[1] = [0xaaaa, 0xbbbb, 0xcccc];
         loaded.color_manager_clut[1] = [0xaaaa, 0xbbbb, 0xcccc];
         loaded.toolbox_startup.clut_protected.fill(true);
-        let expected_screen = loaded.screen_clut;
-        let expected_manager = loaded.color_manager_clut;
+        let expected_screen = *loaded.screen_clut;
+        let expected_manager = *loaded.color_manager_clut;
 
         assert!(ppc_activate_window_palette(
             &mut loaded.memory,
@@ -133064,7 +133113,7 @@ pub(crate) mod tests {
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
             &mut loaded.device_gamma,
-            loaded.device_gamma_explicit,
+            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -133126,8 +133175,8 @@ pub(crate) mod tests {
         );
         loaded.screen_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
         loaded.color_manager_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
-        let expected_screen = loaded.screen_clut;
-        let expected_manager = loaded.color_manager_clut;
+        let expected_screen = *loaded.screen_clut;
+        let expected_manager = *loaded.color_manager_clut;
 
         ppc_restore_device_clut(
             &mut loaded.memory,
@@ -133240,7 +133289,7 @@ pub(crate) mod tests {
         );
         ppc_device_clut_protected_mut(&mut loaded.toolbox_startup, other_gdevice)[42] = true;
         ppc_device_clut_reserved_mut(&mut loaded.toolbox_startup, other_gdevice)[43] = true;
-        let expected_screen = loaded.screen_clut;
+        let expected_screen = *loaded.screen_clut;
 
         assert!(ppc_activate_window_palette(
             &mut loaded.memory,
@@ -133250,7 +133299,7 @@ pub(crate) mod tests {
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
             &mut loaded.device_gamma,
-            loaded.device_gamma_explicit,
+            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
 
@@ -133290,7 +133339,7 @@ pub(crate) mod tests {
             &mut loaded.screen_clut,
             &mut loaded.color_manager_clut,
             &mut loaded.device_gamma,
-            loaded.device_gamma_explicit,
+            *loaded.device_gamma_explicit,
             &mut loaded.toolbox_startup,
         ));
         assert_eq!(
@@ -133455,7 +133504,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(palette, vec![0; 32]);
         loaded.memory.write_u32_be(handle, palette).unwrap();
         loaded.memory.write_u16_be(palette, 2).unwrap();
-        let original_clut = loaded.screen_clut;
+        let original_clut = *loaded.screen_clut;
         loaded.screen_clut[42] = [0x1234, 0x5678, 0x9abc];
         loaded
             .toolbox_startup
@@ -133467,7 +133516,7 @@ pub(crate) mod tests {
                 entry_mappings: vec![PpcPaletteEntryMapping::AnimatedReserved(42)],
                 reserved_indices: vec![42],
             });
-        let expected_clut = loaded.screen_clut;
+        let expected_clut = *loaded.screen_clut;
         let expected_allocations = loaded.toolbox_startup.palette_allocations.clone();
 
         assert!(!ppc_apply_palette(
@@ -134010,8 +134059,8 @@ pub(crate) mod tests {
         );
         loaded.screen_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
         loaded.color_manager_clut[42] = [0xaaaa, 0xbbbb, 0xcccc];
-        let expected_screen = loaded.screen_clut;
-        let expected_manager = loaded.color_manager_clut;
+        let expected_screen = *loaded.screen_clut;
+        let expected_manager = *loaded.color_manager_clut;
         loaded
             .toolbox_startup
             .palette_allocations
@@ -153800,8 +153849,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         let before_startup = loaded.toolbox_startup.clone();
-        let before_screen_clut = loaded.screen_clut;
-        let before_color_manager_clut = loaded.color_manager_clut;
+        let before_screen_clut = *loaded.screen_clut;
+        let before_color_manager_clut = *loaded.color_manager_clut;
         loaded.set_heap_limit(loaded.heap_cursor() + 32);
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -154072,8 +154121,8 @@ pub(crate) mod tests {
                 ppc_main_screen_buffer_size(),
             )
             .unwrap();
-            let before_screen_clut = loaded.screen_clut;
-            let before_color_manager_clut = loaded.color_manager_clut;
+            let before_screen_clut = *loaded.screen_clut;
+            let before_color_manager_clut = *loaded.color_manager_clut;
             let before_toolbox_startup = loaded.toolbox_startup.clone();
 
             loaded.cpu.gpr[3] = gdevice;

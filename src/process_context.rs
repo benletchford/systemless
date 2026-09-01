@@ -1,6 +1,9 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
-use crate::display::{default_arrow_cursor_image, CursorImage};
+use crate::display::{
+    default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
+    DisplayGamma,
+};
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::GuestProcedure;
@@ -1292,13 +1295,13 @@ impl<T: PartialEq> PartialEq for SharedProcessValue<T> {
     }
 }
 
-impl<T: Eq> Eq for SharedProcessValue<T> {}
-
-impl<T: PartialEq> PartialEq<Option<T>> for SharedProcessValue<Option<T>> {
-    fn eq(&self, other: &Option<T>) -> bool {
+impl<T: PartialEq> PartialEq<T> for SharedProcessValue<T> {
+    fn eq(&self, other: &T) -> bool {
         **self == *other
     }
 }
+
+impl<T: Eq> Eq for SharedProcessValue<T> {}
 
 #[cfg(test)]
 impl<T: Clone> SharedProcessValue<T> {
@@ -1329,6 +1332,15 @@ impl<T> SharedProcessValue<T> {
     pub(crate) fn from_value(value: T) -> Self {
         Self(Rc::new(UnsafeCell::new(value)))
     }
+
+    pub(crate) fn shared_handle(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl<T: Default> SharedProcessValue<T> {
@@ -1349,10 +1361,24 @@ impl<T: Default> SharedProcessValue<T> {
         }
         self.0 = Rc::clone(&process_value.0);
     }
+}
 
-    #[cfg(test)]
-    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+impl<T: Copy + PartialEq> SharedProcessValue<T> {
+    fn attach_copy_to(&mut self, process_value: &Self, is_pristine: impl Fn(&T) -> bool) {
+        if Rc::ptr_eq(&self.0, &process_value.0) {
+            return;
+        }
+        assert!(
+            is_pristine(self) || is_pristine(process_value) || **self == **process_value,
+            "cannot attach two populated process manager values"
+        );
+        if is_pristine(process_value) && !is_pristine(self) {
+            // SAFETY: attachment occurs before either adapter is exposed.
+            unsafe {
+                *process_value.0.get() = **self;
+            }
+        }
+        self.0 = Rc::clone(&process_value.0);
     }
 }
 
@@ -4060,7 +4086,7 @@ impl ProcessNativeMemoryManager {
 ///
 /// `FixtureRunner` owns this context and serializes all adapter access through
 /// its mutable borrow.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
     memory_manager: SharedProcessMemoryManager,
@@ -4073,6 +4099,32 @@ pub(crate) struct ProcessContext {
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
     cursor_state: SharedProcessCursorState,
+    device_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
+    device_gamma: SharedProcessValue<DisplayGamma>,
+    device_gamma_explicit: SharedProcessValue<bool>,
+}
+
+impl Default for ProcessContext {
+    fn default() -> Self {
+        Self {
+            memory: Vec::new(),
+            memory_manager: SharedProcessMemoryManager::default(),
+            event_queue: SharedProcessEventQueue::default(),
+            input_state: SharedProcessInputState::default(),
+            menu_tracking: SharedProcessMenuTracking::default(),
+            pending_native_menu_selection: SharedNativeMenuSelection::default(),
+            guest_calls: SharedGuestCallStack::default(),
+            apple_event_handlers: SharedProcessAppleEventHandlers::default(),
+            file_system: SharedProcessFileSystem::default(),
+            sound_manager: SharedProcessSoundManager::default(),
+            cursor_state: SharedProcessCursorState::default(),
+            device_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
+            color_manager_clut: SharedProcessValue::from_value(standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(default_display_gamma()),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+        }
+    }
 }
 
 impl ProcessContext {
@@ -4128,6 +4180,27 @@ impl ProcessContext {
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
         adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
+    }
+
+    pub(crate) fn attach_display_color_state(
+        &self,
+        device_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
+        color_manager_clut: &mut SharedProcessValue<[[u16; 3]; 256]>,
+        device_gamma: &mut SharedProcessValue<DisplayGamma>,
+        device_gamma_explicit: &mut SharedProcessValue<bool>,
+    ) {
+        let clut_is_pristine =
+            |clut: &[[u16; 3]; 256]| *clut == [[0; 3]; 256] || *clut == standard_mac_8bpp_clut();
+        let gamma_is_pristine = |gamma: &DisplayGamma| {
+            gamma
+                .iter()
+                .all(|channel| channel.iter().all(|component| *component == 0))
+                || *gamma == default_display_gamma()
+        };
+        device_clut.attach_copy_to(&self.device_clut, clut_is_pristine);
+        color_manager_clut.attach_copy_to(&self.color_manager_clut, clut_is_pristine);
+        device_gamma.attach_copy_to(&self.device_gamma, gamma_is_pristine);
+        device_gamma_explicit.attach_copy_to(&self.device_gamma_explicit, |explicit| !*explicit);
     }
 
     pub(crate) fn attach_event_queue(&self, adapter: &mut SharedProcessEventQueue) {

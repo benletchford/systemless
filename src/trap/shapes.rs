@@ -1446,7 +1446,7 @@ impl super::TrapDispatcher {
                 port_ctab_handle
             };
             let port_clut = if is_screen_port {
-                self.device_clut
+                *self.device_clut
             } else if use_raw_current_ctab {
                 self.read_ctab_handle_clut(bus, ctab_handle)
             } else {
@@ -1649,7 +1649,7 @@ impl super::TrapDispatcher {
                     port_ctab_handle
                 };
                 Some(if is_screen_port {
-                    self.device_clut
+                    *self.device_clut
                 } else if use_raw_current_ctab {
                     self.read_ctab_handle_clut(bus, ctab_handle)
                 } else {

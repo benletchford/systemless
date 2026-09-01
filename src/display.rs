@@ -22,6 +22,37 @@ pub type RgbaPalette = [u32; 256];
 /// QuickDraw color component to its most-significant byte.
 pub type DisplayGamma = [[u8; 256]; 3];
 
+/// Generate the standard Mac 8-bit system palette as 16-bit RGB values.
+///
+/// The indexed device color table is shared graphics-device state. Imaging
+/// With QuickDraw (1994), pp. 1-22--1-24 and 4-92--4-93, describes the
+/// `GDevice` color table as the Color Manager's process-visible view of the
+/// video device CLUT.
+pub(crate) fn standard_mac_8bpp_clut() -> [[u16; 3]; 256] {
+    let mut clut = [[0u16; 3]; 256];
+    for i in 0u32..=214 {
+        let r = 5 - (i / 36);
+        let g = 5 - ((i / 6) % 6);
+        let b = 5 - (i % 6);
+        clut[i as usize] = [
+            (r as u16) * 0x3333,
+            (g as u16) * 0x3333,
+            (b as u16) * 0x3333,
+        ];
+    }
+    const RAMP: [u16; 10] = [
+        0xEEEE, 0xDDDD, 0xBBBB, 0xAAAA, 0x8888, 0x7777, 0x5555, 0x4444, 0x2222, 0x1111,
+    ];
+    for (offset, component) in RAMP.into_iter().enumerate() {
+        clut[215 + offset] = [component, 0, 0];
+        clut[225 + offset] = [0, component, 0];
+        clut[235 + offset] = [0, 0, component];
+        clut[245 + offset] = [component, component, component];
+    }
+    clut[255] = [0, 0, 0];
+    clut
+}
+
 /// Return the classic video-driver depth-mode token for a pixel size.
 ///
 /// Universal Interfaces `Video.h` defines the consecutive `oneBitMode`

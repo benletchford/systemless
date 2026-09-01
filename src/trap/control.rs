@@ -5431,7 +5431,7 @@ mod tests {
         let screen_base = bus.alloc(128 * 128);
         let row_bytes = 128u32;
         disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 8);
-        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        *disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         disp.device_clut[42] = [0x7FFF, 0x7FFF, 0x7FFF];
         disp.device_clut[255] = [0, 0, 0];
@@ -5518,7 +5518,7 @@ mod tests {
 
         // A custom palette with only neutral white/black endpoints still
         // maps grayishTextOr's blend to a visible tinted intermediate entry.
-        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        *disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         disp.device_clut[255] = [0, 0, 0];
         for offset in 0..(row_bytes * 128) {
@@ -5541,7 +5541,7 @@ mod tests {
         let screen_base = bus.alloc(256 * 128);
         let row_bytes = 256u32;
         disp.set_screen_mode_for_test(screen_base, row_bytes, 256, 128, 8);
-        disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        *disp.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         disp.device_clut[255] = [0, 0, 0];
         bus.write_long(0x0824, screen_base);
@@ -5632,7 +5632,7 @@ mod tests {
         disp.set_screen_mode_for_test(screen_base, row_bytes, 128, 128, 8);
 
         // Live device CLUT: black lives at 255, and index 1 is bright green.
-        disp.device_clut = [[0x8080, 0x8080, 0x8080]; 256];
+        *disp.device_clut = [[0x8080, 0x8080, 0x8080]; 256];
         disp.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         disp.device_clut[1] = [0, 0xFFFF, 0];
         disp.device_clut[255] = [0, 0, 0];

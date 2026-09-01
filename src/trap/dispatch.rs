@@ -2484,18 +2484,18 @@ pub struct TrapDispatcher {
     /// Runtime device CLUT for 8bpp mode. 256 entries of [R, G, B] in 16-bit Mac values.
     /// Initialized to the standard Mac 8-bit system palette. Updated by SetEntries trap
     /// and low-level video driver cscSetEntries. Used for DISPLAY rendering only.
-    pub device_clut: [[u16; 3]; 256],
+    pub device_clut: SharedProcessValue<[[u16; 3]; 256]>,
     /// Per-channel transfer tables installed by the video driver's
     /// `cscSetGamma` control call. These affect presentation only; the device
     /// and Color Manager CLUTs retain the guest's uncorrected 16-bit values.
-    pub device_gamma: crate::display::DisplayGamma,
-    pub device_gamma_explicit: bool,
+    pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
+    pub device_gamma_explicit: SharedProcessValue<bool>,
     /// Color Manager CLUT for 8bpp mode. Updated only by high-level SetEntries ($AA3F)
     /// and ActivatePalette — NOT by low-level video driver palette fades.
     /// Used by QuickDraw shape drawing (PaintRect, etc.) for RGB→index mapping,
     /// mirroring the real Mac OS ITable which is derived from the Color Manager palette.
     /// Imaging With QuickDraw 1994, p. 4-82
-    pub color_manager_clut: [[u16; 3]; 256],
+    pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     /// Cached inverse-table payloads keyed by actual CLUT contents and
     /// resolution. Used by MakeITable and bounded to avoid retaining arbitrary
     /// game palettes indefinitely.
@@ -2867,6 +2867,12 @@ impl TrapDispatcher {
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_cursor_state(&mut self.cursor_state);
+        context.attach_display_color_state(
+            &mut self.device_clut,
+            &mut self.color_manager_clut,
+            &mut self.device_gamma,
+            &mut self.device_gamma_explicit,
+        );
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.input_state);
         context.attach_menu_tracking(&mut self.menu_tracking);
@@ -4014,10 +4020,10 @@ impl TrapDispatcher {
                     profile.screen_depth,
                 )
             },
-            device_clut: Self::standard_mac_8bpp_clut(),
-            device_gamma: crate::display::default_display_gamma(),
-            device_gamma_explicit: false,
-            color_manager_clut: Self::standard_mac_8bpp_clut(),
+            device_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
+            device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
+            device_gamma_explicit: SharedProcessValue::from_value(false),
+            color_manager_clut: SharedProcessValue::from_value(Self::standard_mac_8bpp_clut()),
             inverse_table_cache: Vec::new(),
             clut_protected: [false; 256],
             clut_reserved: [false; 256],
@@ -4225,39 +4231,7 @@ impl TrapDispatcher {
 
     /// Generate the standard Mac 8-bit system palette as 16-bit RGB values.
     pub(crate) fn standard_mac_8bpp_clut() -> [[u16; 3]; 256] {
-        let mut clut = [[0u16; 3]; 256];
-        // Indices 0-214: 6x6x6 color cube (215 entries)
-        // R varies slowest (÷36), G medium (÷6 %6), B fastest (%6)
-        // Each component has 6 levels: 5→0xFFFF, 4→0xCCCC, 3→0x9999, 2→0x6666, 1→0x3333, 0→0x0000
-        // Index 0 = (5,5,5) = white, index 214 = (0,0,1)
-        // Imaging With QuickDraw 1994, Table 4-6, p. 4-93
-        // references/executor/src/quickdraw/default_ctab_values.cpp
-        for i in 0u32..=214 {
-            let r = 5 - (i / 36);
-            let g = 5 - ((i / 6) % 6);
-            let b = 5 - (i % 6);
-            clut[i as usize] = [
-                (r as u16) * 0x3333,
-                (g as u16) * 0x3333,
-                (b as u16) * 0x3333,
-            ];
-        }
-        // Indices 215-254: primary + gray ramps (10 entries each)
-        // Brightness levels: n * 0x1111 for n in {14,13,11,10,8,7,5,4,2,1}
-        // (integers 1-14 excluding multiples of 3: 3,6,9,12)
-        // references/executor/src/quickdraw/default_ctab_values.cpp
-        const RAMP: [u16; 10] = [
-            0xEEEE, 0xDDDD, 0xBBBB, 0xAAAA, 0x8888, 0x7777, 0x5555, 0x4444, 0x2222, 0x1111,
-        ];
-        for j in 0..10usize {
-            clut[215 + j] = [RAMP[j], 0, 0]; // Red ramp
-            clut[225 + j] = [0, RAMP[j], 0]; // Green ramp
-            clut[235 + j] = [0, 0, RAMP[j]]; // Blue ramp
-            clut[245 + j] = [RAMP[j], RAMP[j], RAMP[j]]; // Gray ramp
-        }
-        // Index 255: black
-        clut[255] = [0, 0, 0];
-        clut
+        crate::display::standard_mac_8bpp_clut()
     }
 
     /// Return the canonical indexed Color QuickDraw table and entry count for

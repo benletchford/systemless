@@ -6474,7 +6474,7 @@ impl super::TrapDispatcher {
                                 };
                                 self.read_port_clut(bus, ctab_handle)
                             } else {
-                                self.color_manager_clut
+                                *self.color_manager_clut
                             };
                             let device_ct_seed =
                                 Self::ctab_seed(bus, self.current_gdevice_ctab_handle(bus))
@@ -24763,7 +24763,7 @@ mod tests {
         assert_eq!(pixel_size, 8);
 
         // Hardware CLUT is faded completely black
-        disp.device_clut = [[0u16; 3]; 256];
+        *disp.device_clut = [[0u16; 3]; 256];
 
         bus.write_word(dialog_ptr + 8, 0);
         bus.write_word(dialog_ptr + 10, 0);
@@ -25967,7 +25967,7 @@ mod tests {
 
         let (mut dispatcher, _cpu, mut bus) = setup();
         dispatcher.set_screen_mode_for_test(screen_base, row_bytes, 160, 140, 8);
-        dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        *dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         dispatcher.device_clut[42] = [0x7FFF, 0x7FFF, 0x7FFF];
         dispatcher.device_clut[255] = [0, 0, 0];
@@ -26042,7 +26042,7 @@ mod tests {
             );
         }
 
-        dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
+        *dispatcher.device_clut = [[0x2020, 0x4040, 0x6060]; 256];
         dispatcher.device_clut[0] = [0xFFFF, 0xFFFF, 0xFFFF];
         dispatcher.device_clut[255] = [0, 0, 0];
         for offset in 0..(row_bytes * 140) {
@@ -28584,7 +28584,7 @@ mod tests {
         bus.write_long(0x0824, screen_base);
         disp.screen_mode = (screen_base, 100, 100, 80, 8);
         disp.device_clut[0x22] = [0x3333, 0x7777, 0x2222];
-        disp.color_manager_clut = disp.device_clut;
+        *disp.color_manager_clut = *disp.device_clut;
 
         let offscreen_base = bus.alloc(100 * 80);
         bus.write_bytes(offscreen_base, &vec![0x22; 100 * 80]);
