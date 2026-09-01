@@ -105,6 +105,8 @@ const PPC_IMPORT_STD_DBL_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x430;
 const PPC_IMPORT_STD_FLT_EPSILON: u32 = PPC_IMPORT_DATA_BASE + 0x438;
 const PPC_IMPORT_STD_FLT_MAX: u32 = PPC_IMPORT_DATA_BASE + 0x43c;
 const PPC_IMPORT_STD_FLT_MIN: u32 = PPC_IMPORT_DATA_BASE + 0x440;
+const PPC_IMPORT_STD_ERRNO: u32 = PPC_IMPORT_DATA_BASE + 0x444;
+const PPC_IMPORT_STD_MAC_OS_ERR: u32 = PPC_IMPORT_DATA_BASE + 0x448;
 const PPC_IMPORT_CTYPE_TABLE: u32 = PPC_IMPORT_DATA_BASE + 0x500;
 const PPC_IMPORT_CUR_AP_NAME: u32 = PPC_IMPORT_DATA_BASE + 0x900;
 // Metrowerks StdCLib exposes `_iob` as the three 24-byte FILE records used
@@ -47816,6 +47818,14 @@ fn ppc_find_symbol(
     if !ppc_is_explicit_hle_cfm_library(&connection.library_name) {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_SYMBOL_NOT_FOUND));
     }
+    if let Some(address) = import_data_address_for(&connection.library_name, &symbol_name) {
+        if memory.write_u32_be(symbol_addr_ptr, address).is_none()
+            || memory.write_u8(symbol_class_ptr, 1).is_none()
+        {
+            return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
+        }
+        return PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR));
+    }
     let target = dispatcher_target_for_import(&connection.library_name, &symbol_name);
     if target == PpcImportDispatcherTarget::Unsupported || *import_count >= PPC_IMPORT_CAPACITY {
         return PpcImportAction::Return(ppc_i16_result(PPC_FRAG_SYMBOL_NOT_FOUND));
@@ -80899,6 +80909,8 @@ fn import_data_address_for(library_name: &str, symbol_name: &str) -> Option<u32>
         ("StdCLib", "_FLT_EPSILON") => Some(PPC_IMPORT_STD_FLT_EPSILON),
         ("StdCLib", "_FLT_MAX") => Some(PPC_IMPORT_STD_FLT_MAX),
         ("StdCLib", "_FLT_MIN") => Some(PPC_IMPORT_STD_FLT_MIN),
+        ("StdCLib", "errno") => Some(PPC_IMPORT_STD_ERRNO),
+        ("StdCLib", "MacOSErr") => Some(PPC_IMPORT_STD_MAC_OS_ERR),
         // PowerPC Numerics exposes `pi` as an addressable MathLib export.
         // Some CFM clients label the import as a transition-vector symbol but
         // dereference it directly as a double, so bind the known export to
@@ -80928,6 +80940,10 @@ fn ppc_seed_import_data(memory: &mut PpcSectionMem) {
     let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_EPSILON, f32::EPSILON.to_bits());
     let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_MAX, f32::MAX.to_bits());
     let _ = memory.write_u32_be(PPC_IMPORT_STD_FLT_MIN, f32::MIN_POSITIVE.to_bits());
+    // Universal Interfaces 3.4 errno.h declares StdCLib's writable `errno`
+    // as an int and `MacOSErr` as a short. Both begin clear at process launch.
+    let _ = memory.write_u32_be(PPC_IMPORT_STD_ERRNO, 0);
+    let _ = memory.write_u16_be(PPC_IMPORT_STD_MAC_OS_ERR, 0);
     let _ = memory.write_bytes(
         PPC_STDIO_IOB_ADDR,
         &vec![0; (3 * PPC_STDIO_FILE_SIZE) as usize],
@@ -96788,6 +96804,54 @@ pub(crate) mod tests {
         assert_eq!(loaded.memory.read_u32_be(address_ptr), Some(0x0312_3456));
         assert_eq!(loaded.memory.read_u8(class_ptr), Some(1));
         assert_eq!(loaded.imports.len(), import_len_before);
+    }
+
+    #[test]
+    fn find_symbol_returns_the_static_stdclib_data_identity() {
+        let pef = synthetic_pef_with_import(b"FindSymbol");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let scratch = PPC_HEAP_BASE;
+        loaded.memory.add_region(scratch, vec![0; 128]);
+        let symbol_ptr = scratch;
+        let address_ptr = scratch + 32;
+        let class_ptr = scratch + 36;
+        loaded.cfm_connections.push(PpcCfmConnection {
+            id: 78,
+            library_name: "StdCLib".to_string(),
+            main_addr: 0,
+            init_addr: 0,
+            term_addr: 0,
+            exports: Vec::new(),
+        });
+        loaded.cpu.gpr[3] = 78;
+        loaded.cpu.gpr[4] = symbol_ptr;
+        loaded.cpu.gpr[5] = address_ptr;
+        loaded.cpu.gpr[6] = class_ptr;
+        let import_len_before = loaded.imports.len();
+        let import_count_before = loaded.import_count;
+        let mut import_binding_indices =
+            ppc_import_binding_indices(&loaded.imports, loaded.import_count);
+
+        for (symbol, expected_address) in [
+            (b"errno".as_slice(), PPC_IMPORT_STD_ERRNO),
+            (b"MacOSErr".as_slice(), PPC_IMPORT_STD_MAC_OS_ERR),
+        ] {
+            write_ppc_pstring(&mut loaded.memory, symbol_ptr, symbol);
+            let action = ppc_find_symbol(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &loaded.cfm_connections,
+                &mut loaded.imports,
+                &mut loaded.import_count,
+                &mut import_binding_indices,
+            );
+
+            assert_eq!(action, PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR)));
+            assert_eq!(loaded.memory.read_u32_be(address_ptr), Some(expected_address));
+            assert_eq!(loaded.memory.read_u8(class_ptr), Some(1));
+            assert_eq!(loaded.imports.len(), import_len_before);
+            assert_eq!(loaded.import_count, import_count_before);
+        }
     }
 
     #[test]
@@ -123909,9 +123973,56 @@ pub(crate) mod tests {
             PPC_IMPORT_STD_FLT_EPSILON,
             PPC_IMPORT_STD_FLT_MAX,
             PPC_IMPORT_STD_FLT_MIN,
+            PPC_IMPORT_STD_ERRNO,
+            PPC_IMPORT_STD_MAC_OS_ERR,
         ];
         assert!(occupied.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(PPC_IMPORT_STD_FLT_MIN + 4 <= PPC_IMPORT_CTYPE_TABLE);
+        assert!(PPC_IMPORT_STD_MAC_OS_ERR + 2 <= PPC_IMPORT_CTYPE_TABLE);
+    }
+
+    #[test]
+    fn stdclib_error_globals_are_writable_process_scoped_data() {
+        let errno_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"StdCLib",
+            b"errno",
+            1,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut first = load_pef_application(&errno_pef).unwrap();
+        assert_eq!(first.imports[0].class, 1);
+        assert_eq!(first.imports[0].address, PPC_IMPORT_STD_ERRNO);
+        assert_eq!(first.imports[0].tvector_address, None);
+        assert_eq!(first.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(0));
+        assert_eq!(first.memory.read_u32_be(PPC_DATA_BASE), Some(PPC_IMPORT_STD_ERRNO));
+        assert!(first.memory.write_u32_be(PPC_IMPORT_STD_ERRNO, 34).is_some());
+        assert_eq!(first.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(34));
+
+        let mut second = load_pef_application(&errno_pef).unwrap();
+        assert_eq!(second.memory.read_u32_be(PPC_IMPORT_STD_ERRNO), Some(0));
+
+        let mac_os_err_pef = synthetic_pef_with_loader(synthetic_loader_with_symbol_class(
+            b"StdCLib",
+            b"MacOSErr",
+            1,
+            &[sm_index_reloc(0x30, 0)],
+        ));
+        let mut loaded = load_pef_application(&mac_os_err_pef).unwrap();
+        assert_eq!(loaded.imports[0].class, 1);
+        assert_eq!(loaded.imports[0].address, PPC_IMPORT_STD_MAC_OS_ERR);
+        assert_eq!(loaded.imports[0].tvector_address, None);
+        assert_eq!(loaded.memory.read_u16_be(PPC_IMPORT_STD_MAC_OS_ERR), Some(0));
+        assert_eq!(
+            loaded.memory.read_u32_be(PPC_DATA_BASE),
+            Some(PPC_IMPORT_STD_MAC_OS_ERR)
+        );
+        assert!(loaded
+            .memory
+            .write_u16_be(PPC_IMPORT_STD_MAC_OS_ERR, 0xffce)
+            .is_some());
+        assert_eq!(
+            loaded.memory.read_u16_be(PPC_IMPORT_STD_MAC_OS_ERR),
+            Some(0xffce)
+        );
     }
 
     #[test]
