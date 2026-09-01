@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.2](https://github.com/benletchford/systemless/compare/v0.28.1...v0.28.2) (2026-09-01)
+
+
+### Code Refactoring
+
+* **memory:** share process memory across CPU adapters ([#1077](https://github.com/benletchford/systemless/issues/1077)) ([e9bd628](https://github.com/benletchford/systemless/commit/e9bd628f75f2efe4ac60c2bb203de137ecbaa62d))
+
 ## [0.28.1](https://github.com/benletchford/systemless/compare/v0.28.0...v0.28.1) (2026-09-01)
 
 
