@@ -145682,9 +145682,9 @@ pub(crate) mod tests {
         .unwrap();
         let te_handle = ppc_te_initialize_record(
             &mut loaded.memory,
-            &mut loaded.heap_cursor,
-            loaded.heap_limit,
-            &mut loaded.handles,
+            test_heap_cursor!(loaded),
+            test_heap_limit!(loaded),
+            test_handles!(loaded),
             rects,
             rects + 8,
             PPC_MAIN_GWORLD,
@@ -145698,9 +145698,9 @@ pub(crate) mod tests {
         assert_eq!(
             ppc_te_set_text(
                 &mut loaded.memory,
-                &mut loaded.heap_cursor,
-                loaded.heap_limit,
-                &mut loaded.handles,
+                test_heap_cursor!(loaded),
+                test_heap_limit!(loaded),
+                test_handles!(loaded),
                 te_handle,
                 b"one two three",
             ),
