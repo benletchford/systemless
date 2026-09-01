@@ -929,6 +929,7 @@ pub enum PpcImportDispatcherTarget {
     NewHandle { clear: bool },
     TempNewHandle,
     DisposeHandle,
+    EmptyHandle,
     GetHandleSize,
     SetHandleSize,
     HLock,
@@ -15521,6 +15522,7 @@ fn dispatcher_target_for_import(
         ("InterfaceLib", "NewHandleClear") => PpcImportDispatcherTarget::NewHandle { clear: true },
         ("InterfaceLib", "TempNewHandle") => PpcImportDispatcherTarget::TempNewHandle,
         ("InterfaceLib", "DisposeHandle") => PpcImportDispatcherTarget::DisposeHandle,
+        ("InterfaceLib", "EmptyHandle") => PpcImportDispatcherTarget::EmptyHandle,
         ("InterfaceLib", "BlockMove") | ("InterfaceLib", "BlockMoveData") => {
             PpcImportDispatcherTarget::BlockMove
         }
@@ -17160,6 +17162,35 @@ fn dispatch_supported_import(
                 }
             }
             *last_mem_error = PPC_NO_ERR;
+            Some(PpcImportAction::ReturnPreserve)
+        }
+        PpcImportDispatcherTarget::EmptyHandle => {
+            let handle = cpu.gpr[3];
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            ppc_synchronize_process_native_handles(
+                process_memory_manager,
+                handles,
+                handle_states,
+            );
+            *last_mem_error = process_memory_manager.empty_native_handle(memory, handle);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            ppc_apply_process_native_handle(process_memory_manager, handles, handle);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HLock => {
@@ -88655,6 +88686,56 @@ pub(crate) mod tests {
 
                 native.cpu.pc = native.entry_pc;
                 native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(
+                    memory_manager
+                        .native_heap_state()
+                        .map(|heap| heap.last_mem_error),
+                    Some(-112)
+                );
+                assert_eq!(native.memory.read_u32_be(handle), Some(grown.ptr));
+                assert_eq!(memory_manager.native_allocation(handle), Some(grown));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HUnlock;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(memory_manager.state_for_handle(handle), Some(0x20));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::EmptyHandle;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(
+                    memory_manager
+                        .native_heap_state()
+                        .map(|heap| heap.last_mem_error),
+                    Some(PPC_NO_ERR)
+                );
+                assert_eq!(native.memory.read_u32_be(handle), Some(0));
+                assert_eq!(
+                    memory_manager.native_allocation(handle),
+                    Some(ProcessHandleRecord {
+                        handle,
+                        ptr: 0,
+                        size: 0,
+                        capacity: 0,
+                    })
+                );
+                assert_eq!(memory_manager.recover_handle(grown.ptr), None);
+                assert!(memory_manager
+                    .native_allocator()
+                    .unwrap()
+                    .free_ptr_blocks
+                    .iter()
+                    .any(|record| record.ptr == grown.ptr && record.size == grown.capacity));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
                 native.imports[0].dispatcher_target = PpcImportDispatcherTarget::DisposeHandle;
                 native.cpu.gpr[3] = handle;
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
@@ -88665,6 +88746,27 @@ pub(crate) mod tests {
                     .iter()
                     .any(|record| record.handle == handle));
                 assert!(memory_manager
+                    .native_allocator()
+                    .unwrap()
+                    .free_handle_blocks
+                    .iter()
+                    .any(|record| record.handle == handle && record.ptr == 0));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target =
+                    PpcImportDispatcherTarget::NewHandle { clear: true };
+                native.cpu.gpr[3] = 32;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], handle);
+                let reused = memory_manager.native_allocation(handle).unwrap();
+                assert_ne!(reused.ptr, 0);
+                assert_eq!((reused.size, reused.capacity), (32, 32));
+                assert_eq!(
+                    ppc_memory_read_bytes(&mut native.memory, reused.ptr, 32),
+                    Some(vec![0; 32])
+                );
+                assert!(!memory_manager
                     .native_allocator()
                     .unwrap()
                     .free_handle_blocks
@@ -92299,6 +92401,10 @@ pub(crate) mod tests {
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "DisposeHandle"),
             PpcImportDispatcherTarget::DisposeHandle
+        );
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "EmptyHandle"),
+            PpcImportDispatcherTarget::EmptyHandle
         );
         assert_eq!(
             dispatcher_target_for_import("InterfaceLib", "ReleaseResource"),

@@ -777,6 +777,13 @@ impl super::TrapDispatcher {
             .map_err(|error| error as i32 as u32)
     }
 
+    fn empty_process_handle(&mut self, bus: &mut MacMemoryBus, handle: u32) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.empty_process_handle(bus, handle) as i32 as u32
+    }
+
     pub(crate) fn dispatch_memory<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -3751,27 +3758,18 @@ impl super::TrapDispatcher {
             // ========== Memory Manager Utility Traps ==========
 
             // EmptyHandle ($A02B)
-            // Purges the relocatable block and sets master pointer to NIL.
-            // PROCEDURE EmptyHandle(h: Handle);
-            // Inside Macintosh: Memory, 2-42
-            //
-            // EmptyHandle ($A02B): Frees data block and sets master pointer to NIL; returns nilHandleErr for NIL handle; per IM:Memory 2-42. Resource-backed handles preserve Resource Manager metadata so LoadResource can revalidate them after purge (MMTB 1993 1-80; Memory 1992 2-52).
+            // Releases an unlocked relocatable block while retaining its
+            // master pointer, whose value becomes NIL.
+            // PROCEDURE EmptyHandle (h: Handle);
+            // Inside Macintosh: Memory (1992), pp. 2-51--2-52.
             (false, 0x2B) => {
                 let handle = cpu.read_reg(Register::A0);
-                if handle == 0 {
-                    cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
-                } else {
-                    let master_ptr = bus.read_long(handle);
-                    if master_ptr != 0 {
-                        self.untrack_handle_ptr(master_ptr);
-                        if !self.loaded_handles.contains_key(&handle) {
-                            bus.free(master_ptr);
-                        }
-                    }
-                    self.forget_resource_residency_for_handle(handle);
-                    bus.write_long(handle, 0); // set master pointer to NIL
-                    cpu.write_reg(Register::D0, 0); // noErr
+                let resource_backed = self.loaded_handles.contains_key(&handle);
+                let result = self.empty_process_handle(bus, handle);
+                if result == NO_ERR && resource_backed {
+                    self.empty_resource_handle_residency(handle);
                 }
+                write_memory_result(cpu, bus, result);
                 Ok(())
             }
 
@@ -4808,6 +4806,88 @@ mod tests {
         );
         assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x20));
         assert_eq!(bus.read_bytes(old_ptr, 8), b"original");
+    }
+
+    #[test]
+    fn empty_handle_trap_updates_native_process_allocation_immediately() {
+        // Memory (1992), pp. 2-51--2-52: EmptyHandle frees an unlocked
+        // relocatable block, preserves its master pointer slot, and writes
+        // NIL into that slot.
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x20;
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        bus.write_long(handle, old_ptr);
+        bus.write_bytes(old_ptr, b"original");
+
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor: HEAP_BASE + 0x100,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(
+                ProcessHandleRecord {
+                    handle,
+                    ptr: old_ptr,
+                    size: 8,
+                    capacity: 32,
+                },
+                0x60,
+            )]);
+        }
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher.current_trap_word = 0xA02B;
+        dispatcher
+            .dispatch_memory(false, 0x2B, &mut cpu, &mut bus)
+            .expect("EmptyHandle should be handled")
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(handle), 0);
+        assert_eq!(
+            memory_manager.borrow().native_allocation(handle),
+            Some(ProcessHandleRecord {
+                handle,
+                ptr: 0,
+                size: 0,
+                capacity: 0,
+            })
+        );
+        assert_eq!(memory_manager.borrow().recover_handle(old_ptr), None);
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x60));
+        assert_eq!(
+            memory_manager
+                .borrow()
+                .native_allocator()
+                .and_then(|allocator| allocator.free_ptr_blocks.last())
+                .copied(),
+            Some(ProcessPtrRecord {
+                ptr: old_ptr,
+                size: 32,
+            })
+        );
     }
 
     #[test]
@@ -9918,6 +9998,60 @@ mod tests {
                 "lock/purge bits clear while the resource bit survives"
             );
         }
+    }
+
+    #[test]
+    fn empty_handle_preserves_locked_classic_block_then_releases_it_when_unlocked() {
+        // Memory (1992), pp. 2-51--2-52: a locked block reports memPurErr
+        // without changing the handle; an unlocked block is released while
+        // the four-byte master pointer remains allocated and becomes NIL.
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        cpu.write_reg(Register::D0, 24);
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        let ptr = bus.read_long(handle);
+        dispatcher.set_handle_state_bits(handle, 0xC0);
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x2B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), (-112i32) as u32);
+        assert_eq!(bus.read_word(addr::MEM_ERR), (-112i16) as u16);
+        assert_eq!(bus.read_long(handle), ptr);
+        assert_eq!(bus.get_alloc_size(ptr), Some(24));
+        assert_eq!(dispatcher.handle_for_ptr(ptr), Some(handle));
+        assert_eq!(dispatcher.handle_state_bits(handle), Some(0xC0));
+
+        dispatcher.set_handle_state_bits(handle, 0x40);
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x2B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_word(addr::MEM_ERR), 0);
+        assert_eq!(bus.read_long(handle), 0);
+        assert_eq!(bus.get_alloc_size(handle), Some(4));
+        assert_eq!(bus.get_alloc_size(ptr), None);
+        assert_eq!(dispatcher.handle_for_ptr(ptr), None);
+        assert_eq!(dispatcher.handle_state_bits(handle), Some(0x40));
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x23, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        cpu.write_reg(Register::A0, handle);
+        dispatcher
+            .dispatch_memory(false, 0x2B, &mut cpu, &mut bus)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), super::MEM_WZ_ERR);
     }
 
     #[test]

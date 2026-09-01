@@ -1163,6 +1163,37 @@ impl super::TrapDispatcher {
         }
     }
 
+    /// Retain a resource handle's identity while marking its data nonresident.
+    ///
+    /// `EmptyHandle` releases the relocatable block and sets the master
+    /// pointer to `NIL`; a later Resource Manager lookup may reload the data
+    /// into the same handle. Inside Macintosh: Memory (1992), pp. 2-51--2-52,
+    /// and More Macintosh Toolbox (1993), pp. 1-79--1-80.
+    pub(crate) fn empty_resource_handle_residency(&mut self, handle: u32) {
+        let Some((_, res_type, res_id)) = self.loaded_handles.get(&handle).copied() else {
+            return;
+        };
+        let Some(refnum) = self.resource_handle_files.get(&handle).copied() else {
+            return;
+        };
+        self.resident_resources.remove(&(refnum, res_type, res_id));
+        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+            entry.0 = 0;
+        }
+        if let Some(file) = self
+            .resources
+            .as_mut()
+            .and_then(|resources| resources.files.get_mut(&refnum))
+        {
+            file.loaded.insert((res_type, res_id), 0);
+            for ((named_type, _), (named_id, ptr)) in &mut file.named {
+                if *named_type == res_type && *named_id == res_id {
+                    *ptr = 0;
+                }
+            }
+        }
+    }
+
     pub(crate) fn live_resource_identity_for_handle(
         &self,
         handle: u32,
@@ -2081,16 +2112,33 @@ impl super::TrapDispatcher {
                             handle, type_str, res_id, ptr
                         );
                     }
-                    // Successful reload must canonicalize the master
-                    // pointer again even if the caller had emptied or
-                    // scribbled over it first.
-                    let was_empty = bus.read_long(handle) == 0;
-                    bus.write_long(handle, ptr);
-                    self.restore_loaded_resource_handle(handle, ptr);
-                    if was_empty {
-                        self.add_resource_materialization_tick_cost(bus, ptr);
+                    let reloaded_ptr = if ptr != 0 {
+                        Some(ptr)
+                    } else {
+                        self.resource_handle_files
+                            .get(&handle)
+                            .copied()
+                            .and_then(|refnum| {
+                                self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
+                            })
+                    };
+                    if let Some(ptr) = reloaded_ptr {
+                        // Successful reload must canonicalize the master
+                        // pointer again even if the caller had emptied or
+                        // scribbled over it first.
+                        let was_empty = bus.read_long(handle) == 0;
+                        bus.write_long(handle, ptr);
+                        if let Some(entry) = self.loaded_handles.get_mut(&handle) {
+                            entry.0 = ptr;
+                        }
+                        self.restore_loaded_resource_handle(handle, ptr);
+                        if was_empty {
+                            self.add_resource_materialization_tick_cost(bus, ptr);
+                        }
+                        bus.write_word(0x0A60, 0);
+                    } else {
+                        bus.write_word(0x0A60, MEM_FULL_ERR as u16);
                     }
-                    bus.write_word(0x0A60, 0);
                 } else {
                     bus.write_word(0x0A60, 0);
                 }
@@ -10074,6 +10122,24 @@ mod tests {
             bus.read_long(handle),
             0,
             "resource handle should be empty after purge"
+        );
+        assert_eq!(
+            bus.get_alloc_size(data_ptr),
+            None,
+            "EmptyHandle should return the resource block to the process heap"
+        );
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(0),
+            "resource identity should remain registered without a resident pointer"
+        );
+        assert_eq!(
+            disp.resources
+                .as_ref()
+                .and_then(|resources| resources.files.get(&refnum))
+                .and_then(|file| file.loaded.get(&(*b"DLOG", 202)))
+                .copied(),
+            Some(0)
         );
 
         cpu.write_reg(Register::A7, TEST_SP);
