@@ -24151,53 +24151,111 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::StdMalloc => {
             let size = cpu.gpr[3];
-            let ptr = ppc_alloc_ptr(
-                memory,
-                heap_cursor,
+            let preserved_mem_error = *last_mem_error;
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
                 heap_limit,
+                *last_mem_error,
                 ptrs,
                 free_ptr_blocks,
-                size,
-                false,
+                free_handle_blocks,
+            );
+            let ptr = process_memory_manager.new_native_ptr(memory, size, false);
+            process_memory_manager.set_native_mem_error(preserved_mem_error);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
             );
             Some(PpcImportAction::Return(ptr))
         }
         PpcImportDispatcherTarget::StdFree => {
-            if let Some(index) = ptrs.iter().position(|record| record.ptr == cpu.gpr[3]) {
-                let record = ptrs.remove(index);
-                free_ptr_blocks.push(record);
-            }
+            let preserved_mem_error = *last_mem_error;
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            let _ = process_memory_manager.dispose_native_ptr(cpu.gpr[3]);
+            process_memory_manager.set_native_mem_error(preserved_mem_error);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::StdCalloc => {
             let count = cpu.gpr[3];
-            let ptr = count
+            let ptr = if let Some(size) = count
                 .checked_mul(cpu.gpr[4])
-                .and_then(|size| {
-                    (size != 0).then(|| {
-                        ppc_alloc_ptr(
-                            memory,
-                            heap_cursor,
-                            heap_limit,
-                            ptrs,
-                            free_ptr_blocks,
-                            size,
-                            true,
-                        )
-                    })
-                })
-                .unwrap_or(0);
+                .filter(|size| *size != 0)
+            {
+                let preserved_mem_error = *last_mem_error;
+                ppc_synchronize_process_native_allocator(
+                    process_memory_manager,
+                    *heap_cursor,
+                    heap_limit,
+                    *last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                let ptr = process_memory_manager.new_native_ptr(memory, size, true);
+                process_memory_manager.set_native_mem_error(preserved_mem_error);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                ptr
+            } else {
+                0
+            };
             Some(PpcImportAction::Return(ptr))
         }
-        PpcImportDispatcherTarget::StdRealloc => Some(PpcImportAction::Return(ppc_realloc_ptr(
-            memory,
-            heap_cursor,
-            heap_limit,
-            ptrs,
-            free_ptr_blocks,
-            cpu.gpr[3],
-            cpu.gpr[4],
-        ))),
+        PpcImportDispatcherTarget::StdRealloc => {
+            let preserved_mem_error = *last_mem_error;
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            let ptr =
+                process_memory_manager.reallocate_native_ptr(memory, cpu.gpr[3], cpu.gpr[4]);
+            process_memory_manager.set_native_mem_error(preserved_mem_error);
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            Some(PpcImportAction::Return(ptr))
+        }
         PpcImportDispatcherTarget::StdStrcpy => {
             let destination = cpu.gpr[3];
             let source = cpu.gpr[4];
@@ -82298,67 +82356,6 @@ fn ppc_release_ptr(
     };
     free_ptr_blocks.push(ptrs.remove(index));
     true
-}
-
-fn ppc_realloc_ptr(
-    memory: &mut PpcSectionMem,
-    heap_cursor: &mut u32,
-    heap_limit: u32,
-    ptrs: &mut Vec<PpcPtrRecord>,
-    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
-    old_ptr: u32,
-    new_size: u32,
-) -> u32 {
-    if old_ptr == 0 {
-        return ppc_alloc_ptr(
-            memory,
-            heap_cursor,
-            heap_limit,
-            ptrs,
-            free_ptr_blocks,
-            new_size,
-            false,
-        );
-    }
-    let Some(old_record) = ptrs.iter().find(|record| record.ptr == old_ptr).copied() else {
-        return 0;
-    };
-    if new_size == 0 {
-        if let Some(index) = ptrs.iter().position(|record| record.ptr == old_ptr) {
-            free_ptr_blocks.push(ptrs.remove(index));
-        }
-        return 0;
-    }
-    let new_ptr = ppc_alloc_ptr(
-        memory,
-        heap_cursor,
-        heap_limit,
-        ptrs,
-        free_ptr_blocks,
-        new_size,
-        false,
-    );
-    if new_ptr == 0 {
-        return 0;
-    }
-    let copy_size = old_record.size.min(new_size);
-    let Some(bytes) = ppc_memory_read_bytes(memory, old_ptr, copy_size) else {
-        if let Some(index) = ptrs.iter().position(|record| record.ptr == new_ptr) {
-            free_ptr_blocks.push(ptrs.remove(index));
-        }
-        return 0;
-    };
-    if !ppc_memory_can_write_bytes(memory, new_ptr, copy_size) {
-        if let Some(index) = ptrs.iter().position(|record| record.ptr == new_ptr) {
-            free_ptr_blocks.push(ptrs.remove(index));
-        }
-        return 0;
-    }
-    let _ = memory.write_bytes(new_ptr, &bytes);
-    if let Some(index) = ptrs.iter().position(|record| record.ptr == old_ptr) {
-        free_ptr_blocks.push(ptrs.remove(index));
-    }
-    new_ptr
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -158762,6 +158759,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn stdclib_allocations_are_immediately_process_owned_and_cross_isa_visible() {
+        let pef = synthetic_pef_with_library_import(b"StdCLib", b"malloc");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        native.set_last_mem_error(PPC_PARAM_ERR);
+
+        native.cpu.gpr[3] = 8;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdMalloc);
+        let original = native.cpu.gpr[3];
+        assert_ne!(original, 0);
+        assert!(context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == original && record.size == 8));
+        assert!(!detached
+            .native_allocator()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == original));
+
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        classic_bus.write_bytes(original, b"payload!");
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, original, 8),
+            Some(b"payload!".to_vec())
+        );
+
+        native.cpu.gpr[3] = original;
+        native.cpu.gpr[4] = u32::MAX;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdRealloc);
+        assert_eq!(native.cpu.gpr[3], 0);
+        assert_eq!(classic_bus.read_bytes(original, 8), b"payload!");
+        assert!(context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == original));
+
+        native.cpu.gpr[3] = original;
+        native.cpu.gpr[4] = 24;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdRealloc);
+        let replacement = native.cpu.gpr[3];
+        assert_ne!(replacement, 0);
+        assert_ne!(replacement, original);
+        assert_eq!(classic_bus.read_bytes(replacement, 8), b"payload!");
+        let allocator = context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap();
+        assert!(allocator
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == replacement && record.size == 24));
+        assert!(!allocator.ptrs.iter().any(|record| record.ptr == original));
+
+        native.cpu.gpr[3] = 4;
+        native.cpu.gpr[4] = 4;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdCalloc);
+        let zeroed = native.cpu.gpr[3];
+        assert_ne!(zeroed, 0);
+        assert_eq!(classic_bus.read_bytes(zeroed, 16), vec![0; 16]);
+        native.memory.write_u8(zeroed, 0x5a).unwrap();
+        assert_eq!(classic_bus.read_byte(zeroed), 0x5a);
+
+        native.cpu.gpr[3] = replacement;
+        run_test_import(&mut native, PpcImportDispatcherTarget::StdFree);
+        assert!(!context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == replacement));
+        assert!(detached.native_allocator().unwrap().ptrs.is_empty());
+        assert_eq!(native.last_mem_error(), PPC_PARAM_ERR);
+    }
+
+    #[test]
     fn stdclib_heap_and_string_helpers_cover_guest_abi_edges() {
         for (name, target) in [
             ("malloc", PpcImportDispatcherTarget::StdMalloc),
@@ -158777,80 +158863,6 @@ pub(crate) mod tests {
         }
 
         let mut loaded = load_pef_application(&synthetic_pef_with_import(b"malloc")).unwrap();
-        let first = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
-            ppc_alloc_ptr(
-                &mut loaded.memory,
-                test_heap_cursor!(loaded),
-                test_heap_limit!(loaded),
-                ptrs,
-                free_ptr_blocks,
-                8,
-                false,
-            )
-        });
-        assert_ne!(first, 0);
-        loaded.memory.write_bytes(first, b"payload!").unwrap();
-        let second = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
-            ppc_realloc_ptr(
-                &mut loaded.memory,
-                test_heap_cursor!(loaded),
-                test_heap_limit!(loaded),
-                ptrs,
-                free_ptr_blocks,
-                first,
-                16,
-            )
-        });
-        assert_ne!(second, 0);
-        assert_eq!(
-            ppc_memory_read_bytes(&mut loaded.memory, second, 8),
-            Some(b"payload!".to_vec())
-        );
-        assert!(loaded
-            .free_ptr_blocks()
-            .iter()
-            .any(|record| record.ptr == first));
-        let zeroed = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
-            ppc_alloc_ptr(
-                &mut loaded.memory,
-                test_heap_cursor!(loaded),
-                test_heap_limit!(loaded),
-                ptrs,
-                free_ptr_blocks,
-                12,
-                true,
-            )
-        });
-        assert!(ppc_memory_read_bytes(&mut loaded.memory, zeroed, 12)
-            .unwrap()
-            .iter()
-            .all(|byte| *byte == 0));
-        let allocated = loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
-            ppc_realloc_ptr(
-                &mut loaded.memory,
-                test_heap_cursor!(loaded),
-                test_heap_limit!(loaded),
-                ptrs,
-                free_ptr_blocks,
-                0,
-                4,
-            )
-        });
-        assert_eq!(allocated, loaded.ptrs().last().unwrap().ptr);
-        assert_eq!(
-            loaded.with_ptr_allocator_records(|loaded, ptrs, free_ptr_blocks| {
-                ppc_realloc_ptr(
-                    &mut loaded.memory,
-                    test_heap_cursor!(loaded),
-                    test_heap_limit!(loaded),
-                    ptrs,
-                    free_ptr_blocks,
-                    second,
-                    0,
-                )
-            }),
-            0
-        );
 
         let source = PPC_DATA_BASE + 0x2000;
         let destination = PPC_DATA_BASE + 0x2100;

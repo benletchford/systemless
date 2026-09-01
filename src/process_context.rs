@@ -1422,6 +1422,57 @@ impl ProcessMemoryManager {
         disposed
     }
 
+    /// Replace native fixed storage while preserving its existing bytes.
+    ///
+    /// StdCLib `realloc` may move a block, unlike the Memory Manager's
+    /// in-place `SetPtrSize`. Keep the old allocation live until the new
+    /// storage and byte copy both succeed so a failed replacement is atomic.
+    pub(crate) fn reallocate_native_ptr(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        ptr: u32,
+        size: u32,
+    ) -> u32 {
+        if ptr == 0 {
+            return self.new_native_ptr(memory, size, false);
+        }
+        let Some(record) = self.native_allocator.as_ref().and_then(|allocator| {
+            allocator
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == ptr)
+                .copied()
+        }) else {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return 0;
+        };
+        if size == 0 {
+            let _ = self.dispose_native_ptr(ptr);
+            return 0;
+        }
+        let copy_size = record.size.min(size);
+        let Some(bytes) = (0..copy_size)
+            .map(|offset| PpcMemory::read_u8(memory, ptr + offset))
+            .collect::<Option<Vec<_>>>()
+        else {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return 0;
+        };
+
+        let snapshot = self.detached_clone();
+        let replacement = self.new_native_ptr(memory, size, false);
+        if replacement == 0 {
+            return 0;
+        }
+        if memory.write_bytes(replacement, &bytes).is_none() {
+            self.restore_native_snapshot(snapshot);
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return 0;
+        }
+        let _ = self.dispose_native_ptr(ptr);
+        replacement
+    }
+
     /// Reclaim a contiguous tail allocation from the native process heap.
     ///
     /// Composite Toolbox objects can own both fixed blocks and relocatable
@@ -3258,6 +3309,80 @@ mod tests {
         assert_eq!(
             allocator.free_ptr_blocks,
             vec![ProcessPtrRecord { ptr, size: 20 }]
+        );
+    }
+
+    #[test]
+    fn process_memory_manager_reallocates_native_ptrs_atomically() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x100]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x100,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let original = manager.new_native_ptr(&mut native, 8, false);
+        native.write_bytes(original, b"payload!").unwrap();
+        let detached = manager.detached_clone();
+
+        assert_eq!(
+            manager.reallocate_native_ptr(&mut native, original, u32::MAX),
+            0
+        );
+        assert_eq!(
+            (0..8)
+                .map(|offset| native.read_u8(original + offset))
+                .collect::<Option<Vec<_>>>(),
+            Some(b"payload!".to_vec())
+        );
+        assert!(manager
+            .native_allocator()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == original));
+
+        let replacement = manager.reallocate_native_ptr(&mut native, original, 24);
+
+        assert_ne!(replacement, 0);
+        assert_ne!(replacement, original);
+        assert_eq!(
+            (0..8)
+                .map(|offset| native.read_u8(replacement + offset))
+                .collect::<Option<Vec<_>>>(),
+            Some(b"payload!".to_vec())
+        );
+        let allocator = manager.native_allocator().unwrap();
+        assert_eq!(
+            allocator.ptrs,
+            vec![ProcessPtrRecord {
+                ptr: replacement,
+                size: 24,
+            }]
+        );
+        assert_eq!(
+            allocator.free_ptr_blocks,
+            vec![ProcessPtrRecord {
+                ptr: original,
+                size: 8,
+            }]
+        );
+        assert_eq!(
+            detached.native_allocator().unwrap().ptrs,
+            vec![ProcessPtrRecord {
+                ptr: original,
+                size: 8,
+            }]
         );
     }
 
