@@ -119,6 +119,9 @@ pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     let mut state = ProcessFileSystemState::default();
     state.stdio_streams = ppc_initial_stdio_streams();
     state.next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
+    state.vfs_directories = initial_ppc_vfs_directories();
+    state.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+    state.default_dir_id = PPC_ROOT_DIR_ID;
     SharedProcessFileSystem::from_state(state)
 }
 
@@ -3383,10 +3386,6 @@ pub struct PpcLoadedApp {
     pub quickdraw_text_mode: i16,
     pub quickdraw_text_size: i16,
     pub(crate) cursor_state: SharedProcessCursorState,
-    pub vfs_volumes: Vec<PpcVfsVolumeRecord>,
-    pub vfs_directories: Vec<PpcVfsDirectory>,
-    pub next_vfs_dir_id: u32,
-    pub default_dir_id: u32,
     pub launched_app_path: Option<String>,
     pub param_text: [Vec<u8>; 4],
     pub scrap: PpcScrapState,
@@ -12709,10 +12708,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: SharedProcessCursorState::default(),
-        vfs_volumes: Vec::new(),
-        vfs_directories: initial_ppc_vfs_directories(),
-        next_vfs_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
-        default_dir_id: PPC_ROOT_DIR_ID,
         launched_app_path: None,
         param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
         scrap: PpcScrapState::default(),
@@ -88800,10 +88795,24 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
+        second.vfs_directories.push(PpcVfsDirectory {
+            dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Shared Folder".to_string(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0x0400,
+            dirty: true,
+        });
+        second.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        second.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
 
         assert_eq!(first.vfs_files[0].data, b"first-second");
         assert_eq!(first.deleted_vfs_file_paths, ["Obsolete Data"]);
         assert_eq!(first.vfs_resources[0].data, b"resource");
+        assert_eq!(first.vfs_directories.last().unwrap().path, "Shared Folder");
+        assert_eq!(first.next_vfs_dir_id, PPC_FIRST_DYNAMIC_DIR_ID + 1);
+        assert_eq!(first.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
     }
 
     #[test]
@@ -88830,10 +88839,21 @@ pub(crate) mod tests {
             attrs: 0,
             handle: 0,
         });
+        original.vfs_directories.push(PpcVfsDirectory {
+            dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Detached Folder".to_string(),
+            creator: 0,
+            file_type: 0,
+            finder_flags: 0,
+            dirty: false,
+        });
         let detached = original.clone();
 
         original.vfs_files[0].data.copy_from_slice(b"change");
         original.vfs_resources[0].data.copy_from_slice(b"changed!");
+        original.vfs_directories.last_mut().unwrap().path = "Changed Folder".to_string();
+        original.next_vfs_dir_id += 1;
 
         assert!(!original
             .process_file_system
@@ -88842,6 +88862,9 @@ pub(crate) mod tests {
         assert_eq!(detached.vfs_files[0].data, b"before");
         assert_eq!(original.vfs_resources[0].data, b"changed!");
         assert_eq!(detached.vfs_resources[0].data, b"resource");
+        assert_eq!(original.vfs_directories.last().unwrap().path, "Changed Folder");
+        assert_eq!(detached.vfs_directories.last().unwrap().path, "Detached Folder");
+        assert_eq!(original.next_vfs_dir_id, detached.next_vfs_dir_id + 1);
     }
 
     #[test]

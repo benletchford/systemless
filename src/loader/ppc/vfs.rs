@@ -2,39 +2,12 @@
 
 use crate::process_context::{
     ProcessForkBytes, ProcessOpenFileRecord, ProcessResourceFileRecord,
-    ProcessStdioStreamRecord, ProcessVfsFileRecord, ProcessVfsResourceFileRecord,
-    ProcessVfsResourceRecord,
+    ProcessStdioStreamRecord, ProcessVfsDirectory, ProcessVfsFileRecord,
+    ProcessVfsResourceFileRecord, ProcessVfsResourceRecord, ProcessVfsVolumeRecord,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcVfsDirectory {
-    pub dir_id: u32,
-    pub parent_dir_id: u32,
-    pub path: String,
-    pub creator: u32,
-    pub file_type: u32,
-    pub finder_flags: u16,
-    pub dirty: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcVfsVolumeRecord {
-    pub ref_num: i16,
-    pub name: String,
-    pub root_dir_id: u32,
-    pub attributes: u16,
-    pub file_count: u16,
-    pub allocation_block_count: u16,
-    pub allocation_block_size: u32,
-    pub clump_size: u32,
-    pub free_blocks: u16,
-    pub bitmap_start: u16,
-    pub allocation_pointer: u16,
-    pub allocation_start: u16,
-    pub next_catalog_id: u32,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
+pub type PpcVfsDirectory = ProcessVfsDirectory;
+pub type PpcVfsVolumeRecord = ProcessVfsVolumeRecord;
 
 pub type PpcFileRecord = ProcessOpenFileRecord;
 pub(crate) type PpcStdioStreamRecord = ProcessStdioStreamRecord;
