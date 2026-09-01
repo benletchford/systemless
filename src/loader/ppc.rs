@@ -71,7 +71,7 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
-    ProcessPtrRecord,
+    ProcessNativeHeapState, ProcessPtrRecord,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -5118,6 +5118,19 @@ impl PpcLoadedApp {
     }
 
     fn publish_process_memory_manager(&self, memory_manager: &mut ProcessMemoryManager) {
+        memory_manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: self.heap_base,
+                heap_cursor: self.heap_cursor,
+                heap_limit: self.heap_limit,
+                last_mem_error: self.last_mem_error,
+                heap_maximized: self.heap_maximized,
+                master_pointer_blocks_requested: self.master_pointer_blocks_requested,
+            },
+            &self.ptrs,
+            &self.free_ptr_blocks,
+            &self.free_handle_blocks,
+        );
         memory_manager.register_native_handle_records(self.handles.iter().map(|record| {
             (
                 *record,
@@ -5127,6 +5140,18 @@ impl PpcLoadedApp {
     }
 
     fn apply_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
+        if let Some(allocator) = memory_manager.native_allocator_update() {
+            self.heap_base = allocator.heap.heap_base;
+            self.heap_cursor = allocator.heap.heap_cursor;
+            self.heap_limit = allocator.heap.heap_limit;
+            self.last_mem_error = allocator.heap.last_mem_error;
+            self.heap_maximized = allocator.heap.heap_maximized;
+            self.master_pointer_blocks_requested =
+                allocator.heap.master_pointer_blocks_requested;
+            self.ptrs = allocator.ptrs;
+            self.free_ptr_blocks = allocator.free_ptr_blocks;
+            self.free_handle_blocks = allocator.free_handle_blocks;
+        }
         for record in &mut self.handles {
             if let Some(canonical) = memory_manager.native_allocation(record.handle) {
                 let live_ptr = self.memory.read_u32_be(record.handle);
@@ -5319,12 +5344,7 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
-        context.register_native_handle_records(self.handles.iter().map(|record| {
-            (
-                *record,
-                self.process_handle_state_bits(record.handle),
-            )
-        }));
+        self.publish_process_memory_manager(context.memory_manager_mut());
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -87264,12 +87284,44 @@ pub(crate) mod tests {
         canonical.size = 24;
         canonical.capacity = 40;
         memory_manager.set_native_allocation(canonical);
+        let expected_cursor = native.heap_cursor + 16;
+        memory_manager.mutate_native_allocator(|allocator| {
+            allocator.heap.heap_cursor = expected_cursor;
+            allocator.ptrs.push(ProcessPtrRecord {
+                ptr: PPC_HEAP_BASE + 4,
+                size: 8,
+            });
+            allocator.free_ptr_blocks.push(ProcessPtrRecord {
+                ptr: PPC_HEAP_BASE + 12,
+                size: 4,
+            });
+            allocator.free_handle_blocks.push(ProcessHandleRecord {
+                handle: PPC_HEAP_BASE + 16,
+                ptr: PPC_HEAP_BASE + 20,
+                size: 4,
+                capacity: 8,
+            });
+        });
 
         native.with_process_state_and_memory_manager(
             event_queue,
             menu_tracking,
             memory_manager,
             |native| {
+                assert_eq!(native.heap_cursor, expected_cursor);
+                assert_eq!(native.ptrs.last().map(|record| record.size), Some(8));
+                assert_eq!(
+                    native.free_ptr_blocks.last().map(|record| record.size),
+                    Some(4)
+                );
+                assert_eq!(
+                    native
+                        .free_handle_blocks
+                        .last()
+                        .map(|record| record.capacity),
+                    Some(8)
+                );
+                native.heap_cursor += 8;
                 let allocation = native
                     .handles
                     .iter()
@@ -87292,6 +87344,12 @@ pub(crate) mod tests {
         );
 
         assert_eq!(memory_manager.state_for_handle(handle), Some(0x40));
+        assert_eq!(
+            memory_manager
+                .native_allocator()
+                .map(|allocator| allocator.heap.heap_cursor),
+            Some(expected_cursor + 8)
+        );
         assert_eq!(
             memory_manager.native_allocation(handle),
             native

@@ -36,6 +36,24 @@ pub struct ProcessHandleStateRecord {
     pub resource: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessNativeHeapState {
+    pub(crate) heap_base: u32,
+    pub(crate) heap_cursor: u32,
+    pub(crate) heap_limit: u32,
+    pub(crate) last_mem_error: i16,
+    pub(crate) heap_maximized: bool,
+    pub(crate) master_pointer_blocks_requested: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessNativeAllocatorState {
+    pub(crate) heap: ProcessNativeHeapState,
+    pub(crate) ptrs: Vec<ProcessPtrRecord>,
+    pub(crate) free_ptr_blocks: Vec<ProcessPtrRecord>,
+    pub(crate) free_handle_blocks: Vec<ProcessHandleRecord>,
+}
+
 /// A deferred byte replacement for a relocatable guest handle.
 ///
 /// This channel lets a serialized 68k execution context request a handle resize
@@ -60,9 +78,11 @@ pub(crate) struct PendingHandleByteReplacement {
 pub(crate) struct ProcessMemoryManager {
     ptr_to_handle: HashMap<u32, u32>,
     handle_state_bits: HashMap<u32, u8>,
-    native_ptrs: HashSet<u32>,
+    native_handle_ptrs: HashSet<u32>,
     native_handles: HashSet<u32>,
     native_allocations: HashMap<u32, ProcessHandleRecord>,
+    native_allocator: Option<ProcessNativeAllocatorState>,
+    native_allocator_dirty: bool,
 }
 
 impl ProcessMemoryManager {
@@ -106,7 +126,7 @@ impl ProcessMemoryManager {
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
     ) {
-        for ptr in self.native_ptrs.drain() {
+        for ptr in self.native_handle_ptrs.drain() {
             self.ptr_to_handle.remove(&ptr);
         }
         for handle in self.native_handles.drain() {
@@ -117,7 +137,7 @@ impl ProcessMemoryManager {
             let ProcessHandleRecord { handle, ptr, .. } = record;
             if handle != 0 && ptr != 0 {
                 self.ptr_to_handle.insert(ptr, handle);
-                self.native_ptrs.insert(ptr);
+                self.native_handle_ptrs.insert(ptr);
                 self.handle_state_bits.insert(handle, state);
                 self.native_handles.insert(handle);
                 self.native_allocations.insert(handle, record);
@@ -133,9 +153,66 @@ impl ProcessMemoryManager {
         self.native_allocations.get(&handle).copied()
     }
 
+    pub(crate) fn publish_native_allocator(
+        &mut self,
+        heap: ProcessNativeHeapState,
+        ptrs: &[ProcessPtrRecord],
+        free_ptr_blocks: &[ProcessPtrRecord],
+        free_handle_blocks: &[ProcessHandleRecord],
+    ) {
+        let allocator = self
+            .native_allocator
+            .get_or_insert_with(|| ProcessNativeAllocatorState {
+                heap,
+                ptrs: Vec::new(),
+                free_ptr_blocks: Vec::new(),
+                free_handle_blocks: Vec::new(),
+            });
+        allocator.heap = heap;
+        if allocator.ptrs != ptrs {
+            allocator.ptrs.clear();
+            allocator.ptrs.extend_from_slice(ptrs);
+        }
+        if allocator.free_ptr_blocks != free_ptr_blocks {
+            allocator.free_ptr_blocks.clear();
+            allocator.free_ptr_blocks.extend_from_slice(free_ptr_blocks);
+        }
+        if allocator.free_handle_blocks != free_handle_blocks {
+            allocator.free_handle_blocks.clear();
+            allocator
+                .free_handle_blocks
+                .extend_from_slice(free_handle_blocks);
+        }
+        self.native_allocator_dirty = false;
+    }
+
+    pub(crate) fn native_allocator_update(&self) -> Option<ProcessNativeAllocatorState> {
+        self.native_allocator_dirty
+            .then(|| self.native_allocator.clone())
+            .flatten()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn native_allocator(&self) -> Option<&ProcessNativeAllocatorState> {
+        self.native_allocator.as_ref()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_native_allocation(&mut self, record: ProcessHandleRecord) {
         self.native_allocations.insert(record.handle, record);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mutate_native_allocator(
+        &mut self,
+        mutation: impl FnOnce(&mut ProcessNativeAllocatorState),
+    ) {
+        mutation(
+            self.native_allocator
+                .as_mut()
+                .expect("native allocator registered"),
+        );
+        self.native_allocator_dirty = true;
     }
 
     #[cfg(test)]
@@ -166,16 +243,13 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
+    pub(crate) fn memory_manager_mut(&mut self) -> &mut ProcessMemoryManager {
+        &mut self.memory_manager
+    }
+
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
         self.memory_manager.handle_for_ptr(ptr)
-    }
-
-    pub(crate) fn register_native_handle_records(
-        &mut self,
-        handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
-    ) {
-        self.memory_manager.register_native_handle_records(handles);
     }
 
     pub(crate) fn adopt_memory_manager_metadata(
