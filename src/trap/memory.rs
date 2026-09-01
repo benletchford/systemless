@@ -3,6 +3,7 @@
 use super::dispatch::{
     raw_trap_route, selector_operation_route, OsRoutineVariant, SelectorOperationRoute,
 };
+use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{CpuOps, Register};
 use crate::machine_profile::REFERENCE_MACHINE_PROFILE;
 use crate::memory::{globals::addr, MacMemoryBus, MemoryBus};
@@ -413,6 +414,17 @@ fn memory_manager_trap_updates_dispatcher_ccr(is_tool: bool, trap_num: u16) -> b
 }
 
 impl super::TrapDispatcher {
+    fn sync_time_task_links(&self, bus: &mut MacMemoryBus) {
+        for (index, task) in self.timer_tasks.iter().enumerate() {
+            let next = self
+                .timer_tasks
+                .get(index.saturating_add(1))
+                .map(|next| next.task_ptr)
+                .unwrap_or(0);
+            bus.write_long(task.task_ptr, next);
+        }
+    }
+
     /// Install a video-device gamma table from a `VDGammaRecord`.
     ///
     /// Universal Interfaces 3.4 `Video.h` defines `VDGammaRecord.csGTable`
@@ -507,7 +519,7 @@ impl super::TrapDispatcher {
             }
         }
 
-        for task in &self.vbl_tasks {
+        for task in self.vbl_tasks.iter() {
             let next = self
                 .vbl_tasks
                 .iter()
@@ -643,6 +655,7 @@ impl super::TrapDispatcher {
         self.vbl_tasks.retain(|task| task.task_ptr != task_ptr);
         self.vbl_tasks.push(super::dispatch::VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot,
             pending: false,
         });
@@ -1915,13 +1928,15 @@ impl super::TrapDispatcher {
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
                 self.timer_tasks.push(super::dispatch::TimerTask {
                     task_ptr,
+                    architecture: CallbackTaskArchitecture::M68k,
                     extended,
-                    tm_addr,
+                    callback: tm_addr,
                     active: false,
                     fire_at_tick: 0,
                     fire_at_subtick: 0,
                     last_fired_tick: None,
                 });
+                self.sync_time_task_links(bus);
                 // InsTime clears the qType high-order bit (task inactive until PrimeTime).
                 // Processes 1994, 3-12: "InsTime procedure initially clears this bit."
                 let q = bus.read_word(task_ptr + 4);
@@ -1945,6 +1960,7 @@ impl super::TrapDispatcher {
                     .map(|task| task.fire_at_subtick.saturating_sub(current_subtick))
                     .unwrap_or(0);
                 self.timer_tasks.retain(|t| t.task_ptr != task_ptr);
+                self.sync_time_task_links(bus);
 
                 // The revised and extended Time Managers return unused time
                 // through tmCount. Prefer negated microseconds for maximum
@@ -2039,7 +2055,7 @@ impl super::TrapDispatcher {
                     task.fire_at_tick = fire_at;
                     task.fire_at_subtick = fire_at_subtick;
                     // Re-read tmAddr in case it changed between InsTime and PrimeTime
-                    task.tm_addr = bus.read_long(task_ptr + 6);
+                    task.callback = bus.read_long(task_ptr + 6);
                 }
                 // PrimeTime sets the qType high-order bit (task now active/primed).
                 // Processes 1994, 3-20: "PrimeTime sets the high-order bit of the qType field to 1."
@@ -6999,6 +7015,63 @@ mod tests {
         assert_eq!(bus.read_long(super::VBL_QUEUE_HEADER + 6), second);
         assert_eq!(bus.read_long(anchor), second);
         assert_eq!(bus.read_long(second), 0);
+    }
+
+    #[test]
+    fn classic_callback_task_traps_mutate_the_attached_process_registry() {
+        let (mut classic, mut cpu, mut bus) = setup();
+        let mut attached_view = super::super::TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        attached_view.attach_process_context(&mut context);
+
+        let timer = bus.alloc(22);
+        bus.write_long(timer + 6, 0x1234_5678);
+        cpu.write_reg(Register::A0, timer);
+        classic.current_trap_word = 0xA058;
+        classic
+            .dispatch_memory(false, 0x58, &mut cpu, &mut bus)
+            .expect("InsTime should be handled")
+            .expect("InsTime should return");
+
+        let vbl = bus.alloc(14);
+        bus.write_word(vbl + 4, 1);
+        bus.write_long(vbl + 6, 0x1234_5678);
+        bus.write_word(vbl + 10, 2);
+        cpu.write_reg(Register::A0, vbl);
+        classic
+            .dispatch_memory(false, 0x33, &mut cpu, &mut bus)
+            .expect("VInstall should be handled")
+            .expect("VInstall should return");
+
+        assert!(classic.timer_tasks.ptr_eq(&attached_view.timer_tasks));
+        assert!(classic.vbl_tasks.ptr_eq(&attached_view.vbl_tasks));
+        assert_eq!(
+            attached_view.timer_tasks[0].architecture,
+            crate::callback_manager::CallbackTaskArchitecture::M68k
+        );
+        assert_eq!(
+            attached_view.vbl_tasks[0].architecture,
+            crate::callback_manager::CallbackTaskArchitecture::M68k
+        );
+        let detached_timers = attached_view.timer_tasks.clone();
+        let detached_vbls = attached_view.vbl_tasks.clone();
+
+        cpu.write_reg(Register::A0, timer);
+        classic
+            .dispatch_memory(false, 0x59, &mut cpu, &mut bus)
+            .expect("RmvTime should be handled")
+            .expect("RmvTime should return");
+        cpu.write_reg(Register::A0, vbl);
+        classic
+            .dispatch_memory(false, 0x34, &mut cpu, &mut bus)
+            .expect("VRemove should be handled")
+            .expect("VRemove should return");
+
+        assert!(attached_view.timer_tasks.is_empty());
+        assert!(attached_view.vbl_tasks.is_empty());
+        assert_eq!(detached_timers.len(), 1);
+        assert_eq!(detached_vbls.len(), 1);
     }
 
     #[test]

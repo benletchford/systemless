@@ -14,6 +14,7 @@ use super::pef::{
     SECTION_KIND_PATTERN_DATA, SECTION_KIND_UNPACKED_DATA,
 };
 use super::ApplicationSizeResource;
+use crate::callback_manager::CallbackTaskArchitecture;
 use crate::event_queue::{EventQueue, QueuedEvent};
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::{
@@ -76,7 +77,8 @@ use crate::process_context::{
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
-    SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessValue,
+    SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessTimerTasks,
+    SharedProcessValue, SharedProcessVblTasks,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -3369,8 +3371,8 @@ pub struct PpcLoadedApp {
     pub toolbox_startup: PpcToolboxStartupState,
     pub quicktime: PpcQuickTimeState,
     pub sound: PpcSoundState,
-    pub timer_tasks: Vec<PpcTimerTaskRecord>,
-    pub vbl_tasks: Vec<PpcVblTaskRecord>,
+    pub(crate) timer_tasks: SharedProcessTimerTasks,
+    pub(crate) vbl_tasks: SharedProcessVblTasks,
     pub(crate) process_file_system: SharedProcessFileSystem,
     pub current_gworld: SharedProcessValue<u32>,
     pub current_gdevice: SharedProcessValue<u32>,
@@ -3879,6 +3881,7 @@ impl PpcLoadedApp {
         context.attach_file_system(&mut self.process_file_system);
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
+        context.attach_callback_tasks(&mut self.timer_tasks, &mut self.vbl_tasks);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -6673,7 +6676,8 @@ impl PpcLoadedApp {
                     .iter()
                     .copied()
                     .filter(|task| {
-                        task.active
+                        task.architecture == CallbackTaskArchitecture::PowerPc
+                            && task.active
                             && task.last_fired_tick != Some(current_tick)
                             && current_tick.wrapping_sub(task.fire_at_tick) < 0x8000_0000
                     })
@@ -6849,8 +6853,11 @@ impl PpcLoadedApp {
         }
         for tick_offset in 0..elapsed_ticks {
             self.tick_count = start_tick.wrapping_add(tick_offset).wrapping_add(1);
-            let tasks = self.vbl_tasks.clone();
+            let tasks = (*self.vbl_tasks).clone();
             for task in tasks {
+                if task.architecture != CallbackTaskArchitecture::PowerPc {
+                    continue;
+                }
                 if probes.len() >= max_callbacks {
                     return probes;
                 }
@@ -12719,8 +12726,8 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         toolbox_startup,
         quicktime: PpcQuickTimeState::default(),
         sound,
-        timer_tasks: Vec::new(),
-        vbl_tasks: Vec::new(),
+        timer_tasks: Default::default(),
+        vbl_tasks: Default::default(),
         process_file_system: ppc_initial_process_file_system(),
         current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
         current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -29436,7 +29443,12 @@ fn ppc_install_vbl_task(
     let _ = memory.write_u16_be(task_ptr + 10, vbl_count.wrapping_add(vbl_phase));
 
     vbl_tasks.retain(|task| task.task_ptr != task_ptr);
-    vbl_tasks.push(PpcVblTaskRecord { task_ptr });
+    vbl_tasks.push(PpcVblTaskRecord {
+        task_ptr,
+        architecture: CallbackTaskArchitecture::PowerPc,
+        slot: None,
+        pending: false,
+    });
     ppc_sync_vbl_task_links(memory, vbl_tasks);
     PPC_NO_ERR
 }
@@ -29457,9 +29469,12 @@ fn ppc_install_time_task(
     timer_tasks.retain(|task| task.task_ptr != task_ptr);
     timer_tasks.push(PpcTimerTaskRecord {
         task_ptr,
+        architecture: CallbackTaskArchitecture::PowerPc,
+        extended: false,
         callback: memory.read_u32_be(task_ptr + 6).unwrap_or(0),
         active: false,
         fire_at_tick: 0,
+        fire_at_subtick: 0,
         last_fired_tick: None,
     });
     ppc_sync_time_task_links(memory, timer_tasks);
@@ -29502,6 +29517,7 @@ fn ppc_prime_time_task(
         task.callback = memory.read_u32_be(task_ptr + 6).unwrap_or(0);
         task.active = true;
         task.fire_at_tick = current_tick.wrapping_add(delay_ticks.max(1));
+        task.fire_at_subtick = u64::from(task.fire_at_tick) * 1_000_000;
         if ppc_timer_trace_enabled() {
             eprintln!(
                 "[TIMER-PPC] prime task=${task_ptr:08X} count={count} now={current_tick} fire_at={} callback=${:08X}",
@@ -29566,10 +29582,13 @@ fn ppc_remove_vbl_task(
 }
 
 fn ppc_sync_vbl_task_links(memory: &mut PpcSectionMem, vbl_tasks: &[PpcVblTaskRecord]) {
-    for (index, task) in vbl_tasks.iter().enumerate() {
+    for task in vbl_tasks {
         let next = vbl_tasks
-            .get(index.saturating_add(1))
-            .map(|next| next.task_ptr)
+            .iter()
+            .skip_while(|candidate| candidate.task_ptr != task.task_ptr)
+            .skip(1)
+            .find(|candidate| candidate.slot == task.slot)
+            .map(|candidate| candidate.task_ptr)
             .unwrap_or(0);
         let _ = memory.write_u32_be(task.task_ptr, next);
     }
@@ -97527,7 +97546,12 @@ pub(crate) mod tests {
             .write_u32_be(task_ptr + 6, callback_entry)
             .unwrap();
         loaded.memory.write_u16_be(task_ptr + 10, 1).unwrap();
-        loaded.vbl_tasks.push(PpcVblTaskRecord { task_ptr });
+        loaded.vbl_tasks.push(PpcVblTaskRecord {
+            task_ptr,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            slot: None,
+            pending: false,
+        });
 
         let probes = loaded.fire_vbl_tasks_for_ticks(0, 3, 8, 64, false, false);
 
@@ -97544,7 +97568,54 @@ pub(crate) mod tests {
                 )
         }));
         assert_eq!(loaded.memory.read_u16_be(task_ptr + 10), Some(2));
-        assert_eq!(loaded.vbl_tasks, vec![PpcVblTaskRecord { task_ptr }]);
+        assert_eq!(
+            *loaded.vbl_tasks,
+            vec![PpcVblTaskRecord {
+                task_ptr,
+                architecture: CallbackTaskArchitecture::PowerPc,
+                slot: None,
+                pending: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn native_callback_task_imports_mutate_the_attached_process_registry() {
+        let mut native = load_pef_application(&synthetic_pef()).unwrap();
+        let mut classic = TrapDispatcher::new();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        classic.attach_process_context(&mut context);
+
+        assert!(native.timer_tasks.ptr_eq(&classic.timer_tasks));
+        assert!(native.vbl_tasks.ptr_eq(&classic.vbl_tasks));
+
+        let timer = PPC_HEAP_BASE + 0x800;
+        let vbl = timer + 0x20;
+        native.memory.add_region(timer, vec![0; 0x40]);
+        native.memory.write_u32_be(timer + 6, 0x1234_5678).unwrap();
+        native.memory.write_u16_be(vbl + 4, 1).unwrap();
+        native.memory.write_u16_be(vbl + 10, 2).unwrap();
+
+        ppc_install_time_task(&mut native.memory, &mut native.timer_tasks, timer);
+        ppc_install_vbl_task(&mut native.memory, &mut native.vbl_tasks, vbl);
+        assert_eq!(classic.timer_tasks.len(), 1);
+        assert_eq!(classic.vbl_tasks.len(), 1);
+        assert_eq!(classic.timer_tasks[0].architecture, CallbackTaskArchitecture::PowerPc);
+        assert_eq!(classic.vbl_tasks[0].architecture, CallbackTaskArchitecture::PowerPc);
+
+        let detached_timers = classic.timer_tasks.clone();
+        let detached_vbls = classic.vbl_tasks.clone();
+        ppc_remove_time_task(&mut native.memory, &mut native.timer_tasks, timer);
+        assert_eq!(
+            ppc_remove_vbl_task(&mut native.memory, &mut native.vbl_tasks, vbl),
+            PPC_NO_ERR
+        );
+
+        assert!(classic.timer_tasks.is_empty());
+        assert!(classic.vbl_tasks.is_empty());
+        assert_eq!(detached_timers.len(), 1);
+        assert_eq!(detached_vbls.len(), 1);
     }
 
     #[test]

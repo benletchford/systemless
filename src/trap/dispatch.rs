@@ -839,42 +839,7 @@ pub(crate) struct RecentColorTableFetch {
     pub tick: u32,
 }
 
-/// An installed Time Manager task.
-/// Processes 1994, 3-14
-#[derive(Clone, Debug)]
-pub struct TimerTask {
-    /// Guest address of the TMTask record
-    pub task_ptr: u32,
-    /// Whether InsXTime installed the extended, drift-free record form.
-    pub extended: bool,
-    /// Address of the callback procedure (from tmAddr at task_ptr+6)
-    pub tm_addr: u32,
-    /// Whether the task is primed (waiting to fire)
-    pub active: bool,
-    /// Tick count at which this task should fire.
-    /// Computed from current ticks + delay when PrimeTime is called.
-    pub fire_at_tick: u32,
-    /// Revised Time Manager deadline in millionths of a 60 Hz guest tick.
-    /// This preserves negative PrimeTime microsecond delays below one VBL.
-    pub fire_at_subtick: u64,
-    /// VBL tick in which this task was most recently dispatched. The PPC
-    /// runner uses this to prevent repeat delivery within a VBL; the 68K
-    /// runner retains it as callback metadata while honoring revised
-    /// sub-VBL deadlines.
-    pub last_fired_tick: Option<u32>,
-}
-
-/// An installed Vertical Retrace Manager task.
-/// Processes 1994, 4-6 to 4-7
-#[derive(Clone, Debug)]
-pub struct VblTask {
-    /// Guest address of the VBLTask record.
-    pub task_ptr: u32,
-    /// Optional slot number for slot-based VBL tasks.
-    pub slot: Option<i16>,
-    /// The task reached a zero count but has not yet received its callback.
-    pub pending: bool,
-}
+pub use crate::callback_manager::{ProcessTimerTask as TimerTask, ProcessVblTask as VblTask};
 
 pub(crate) const LOADSEG_GETRESOURCE_SENTINEL: u16 = 0x51F0;
 
@@ -2595,7 +2560,7 @@ pub struct TrapDispatcher {
     pub(crate) bits_proc_reentry: Option<(u32, u32)>,
     /// Installed Time Manager tasks.
     /// Processes 1994, 3-14
-    pub(crate) timer_tasks: Vec<TimerTask>,
+    pub(crate) timer_tasks: crate::process_context::SharedProcessTimerTasks,
     /// Exact scheduled wake-up retained for extended Time Manager records.
     /// The guest `tmWakeUp` representation is explicitly private to the
     /// manager; this map preserves its semantic deadline across RmvTime and
@@ -2608,7 +2573,7 @@ pub struct TrapDispatcher {
     pub(crate) sleep_queue: Vec<u32>,
     /// Installed Vertical Retrace Manager tasks.
     /// Processes 1994, 4-6 to 4-7
-    pub(crate) vbl_tasks: Vec<VblTask>,
+    pub(crate) vbl_tasks: crate::process_context::SharedProcessVblTasks,
     /// Dormant system-owned queue element kept ahead of application VBL tasks.
     pub(crate) system_vbl_queue_anchor: u32,
     /// Slot number of the primary video monitor for AttachVBL / VBL cursor routing.
@@ -2866,6 +2831,7 @@ impl TrapDispatcher {
         context.attach_file_system(&mut self.process_file_system);
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
+        context.attach_callback_tasks(&mut self.timer_tasks, &mut self.vbl_tasks);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -4048,11 +4014,11 @@ impl TrapDispatcher {
             trap_exception_vector_defaults: None,
             pending_native_trap_calls: HashMap::new(),
             bits_proc_reentry: None,
-            timer_tasks: Vec::new(),
+            timer_tasks: Default::default(),
             timer_extended_wakeups: HashMap::new(),
             timer_current_subtick: 0,
             sleep_queue: Vec::new(),
-            vbl_tasks: Vec::new(),
+            vbl_tasks: Default::default(),
             system_vbl_queue_anchor: 0,
             primary_vbl_slot: 0,
             dialog_tracking: None,

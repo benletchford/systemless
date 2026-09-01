@@ -1,5 +1,6 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
+use crate::callback_manager::{ProcessTimerTask, ProcessVblTask};
 use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
@@ -1223,6 +1224,8 @@ pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
 pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
+pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
+pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessKeyRepeatState {
@@ -4132,6 +4135,8 @@ pub(crate) struct ProcessContext {
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
+    timer_tasks: SharedProcessTimerTasks,
+    vbl_tasks: SharedProcessVblTasks,
     cursor_state: SharedProcessCursorState,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
@@ -4154,6 +4159,8 @@ impl Default for ProcessContext {
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
             file_system: SharedProcessFileSystem::default(),
             sound_manager: SharedProcessSoundManager::default(),
+            timer_tasks: SharedProcessTimerTasks::default(),
+            vbl_tasks: SharedProcessVblTasks::default(),
             cursor_state: SharedProcessCursorState::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
@@ -4214,6 +4221,15 @@ impl ProcessContext {
 
     pub(crate) fn attach_sound_manager(&self, adapter: &mut SharedProcessSoundManager) {
         adapter.attach_to(&self.sound_manager, SoundManager::is_pristine);
+    }
+
+    pub(crate) fn attach_callback_tasks(
+        &self,
+        timer_tasks: &mut SharedProcessTimerTasks,
+        vbl_tasks: &mut SharedProcessVblTasks,
+    ) {
+        timer_tasks.attach_to(&self.timer_tasks, Vec::is_empty);
+        vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
     }
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
