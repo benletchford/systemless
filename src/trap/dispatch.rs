@@ -13,7 +13,9 @@ use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
-use crate::process_context::{ProcessContext, SharedProcessMap};
+use crate::process_context::{
+    ProcessContext, SharedProcessMap, SharedProcessMemoryManager,
+};
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -23,7 +25,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::ptr::NonNull;
 
 pub use crate::event_queue::QueuedEvent;
 
@@ -1798,9 +1799,8 @@ pub struct TrapDispatcher {
     /// dereferenced master pointer.
     /// Inside Macintosh Volume V, V-579
     pub(crate) ptr_to_handle: SharedProcessMap<u32>,
-    /// Exclusive process Memory Manager access for allocation operations
-    /// during one serialized CPU dispatch interval.
-    process_memory_manager: Option<NonNull<crate::process_context::ProcessMemoryManager>>,
+    /// Safely shared process Memory Manager used by both CPU adapters.
+    process_memory_manager: Option<SharedProcessMemoryManager>,
     /// Detached resource handles that should no longer be treated as resource-backed.
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
     /// Resource-file refnum for each resource-backed handle.
@@ -2950,6 +2950,7 @@ impl TrapDispatcher {
             &mut self.ptr_to_handle,
             &mut self.handle_state_bits,
         );
+        context.attach_memory_manager(&mut self.process_memory_manager);
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
     }
@@ -2988,29 +2989,25 @@ impl TrapDispatcher {
         }
     }
 
-    /// Attach canonical process Memory Manager metadata to this 68K adapter
-    /// for a serialized dispatch interval.
+    /// Attach the canonical process Memory Manager to this 68K adapter.
     pub(crate) fn with_memory_manager<R>(
         &mut self,
-        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        assert!(
-            self.process_memory_manager.is_none(),
-            "cannot attach two process Memory Managers"
-        );
-        memory_manager.attach_metadata_adapters(
+        if let Some(attached) = &self.process_memory_manager {
+            assert!(
+                attached.ptr_eq(memory_manager),
+                "cannot attach two process Memory Managers"
+            );
+        } else {
+            self.process_memory_manager = Some(memory_manager.clone());
+        }
+        memory_manager.borrow_mut().attach_metadata_adapters(
             &mut self.ptr_to_handle,
             &mut self.handle_state_bits,
         );
-        let process_memory_manager = NonNull::from(&mut *memory_manager);
-        self.process_memory_manager = Some(process_memory_manager);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
-        self.process_memory_manager = None;
-        match outcome {
-            Ok(result) => result,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
+        f(self)
     }
 
     /// Replace bytes in a native relocatable block through the process-level
@@ -3022,17 +3019,12 @@ impl TrapDispatcher {
         expected_ptr: u32,
         bytes: &[u8],
     ) -> bool {
-        let Some(mut memory_manager) = self.process_memory_manager else {
+        let Some(memory_manager) = self.process_memory_manager.clone() else {
             return false;
         };
-        // SAFETY: `with_memory_manager` installs this pointer only while it
-        // owns the manager's exclusive mutable borrow. The runner serializes
-        // that interval with the parked native address-space attachment.
-        let result = unsafe {
-            memory_manager
-                .as_mut()
-                .replace_native_handle_bytes(bus, handle, expected_ptr, bytes)
-        };
+        let result = memory_manager
+            .borrow_mut()
+            .replace_native_handle_bytes(bus, handle, expected_ptr, bytes);
         match result {
             Ok((old_ptr, new_ptr)) => {
                 self.ptr_to_handle.remove(&old_ptr);
@@ -3054,7 +3046,7 @@ impl TrapDispatcher {
         &mut self,
         event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
-        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
         self.with_process_state(event_queue, menu_tracking, |dispatcher| {
@@ -11265,13 +11257,13 @@ mod tests {
         let mut dispatcher = TrapDispatcher::new();
         let mut context_queue = EventQueue::default();
         let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x9abc));
-        let mut memory_manager = crate::process_context::ProcessMemoryManager::default();
+        let memory_manager = SharedProcessMemoryManager::default();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.with_process_state_and_memory_manager(
                 &mut context_queue,
                 &mut context_tracking,
-                &mut memory_manager,
+                &memory_manager,
                 |disp| {
                     disp.event_queue.push_back(QueuedEvent {
                         what: 1,
@@ -11290,11 +11282,18 @@ mod tests {
 
         assert!(panic_result.is_err());
         assert_eq!(context_queue.front().map(|event| event.message), Some(0x3333));
-        assert_eq!(memory_manager.handle_for_ptr(0x4444), Some(0x5555));
-        assert_eq!(memory_manager.handle_state(0x5555), 0xc0);
+        assert_eq!(
+            memory_manager.borrow().handle_for_ptr(0x4444),
+            Some(0x5555)
+        );
+        assert_eq!(memory_manager.borrow().handle_state(0x5555), 0xc0);
         assert_eq!(dispatcher.ptr_to_handle.get(&0x4444), Some(0x5555));
         assert_eq!(dispatcher.handle_state_bits.get(&0x5555), Some(0xc0));
-        memory_manager.metadata_maps().0.insert(0x6666, 0x7777);
+        memory_manager
+            .borrow()
+            .metadata_maps()
+            .0
+            .insert(0x6666, 0x7777);
         assert_eq!(dispatcher.ptr_to_handle.get(&0x6666), Some(0x7777));
         assert_eq!(
             context_tracking
@@ -11304,18 +11303,95 @@ mod tests {
         );
         assert!(dispatcher.event_queue.is_empty());
         assert!(dispatcher.menu_tracking.is_none());
-        assert!(dispatcher.process_memory_manager.is_none());
+        assert!(dispatcher
+            .process_memory_manager
+            .as_ref()
+            .is_some_and(|attached| attached.ptr_eq(&memory_manager)));
     }
 
     #[test]
     fn detached_dispatchers_keep_independent_memory_manager_metadata() {
-        let first = TrapDispatcher::new();
-        let second = TrapDispatcher::new();
+        let mut first = TrapDispatcher::new();
+        let mut second = TrapDispatcher::new();
+        let mut first_context = ProcessContext::default();
+        let mut second_context = ProcessContext::default();
+        first.attach_process_context(&mut first_context);
+        second.attach_process_context(&mut second_context);
 
         first.ptr_to_handle.insert(0x2200, 0x1100);
         first.handle_state_bits.insert(0x1100, 0x80);
 
         assert_eq!(second.ptr_to_handle.get(&0x2200), None);
         assert_eq!(second.handle_state_bits.get(&0x1100), None);
+        assert!(!first
+            .process_memory_manager
+            .as_ref()
+            .unwrap()
+            .ptr_eq(second.process_memory_manager.as_ref().unwrap()));
+    }
+
+    #[test]
+    fn attached_dispatcher_relocates_native_handle_without_slice_pointer() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let mut native = crate::memory::GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        ppc::PpcMemory::write_u32_be(&mut native, handle, old_ptr).unwrap();
+
+        let mut context = ProcessContext::default();
+        {
+            let mut manager = context.memory_manager_mut();
+            manager.publish_native_allocator(
+                crate::process_context::ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(
+                crate::process_context::ProcessHandleRecord {
+                    handle,
+                    ptr: old_ptr,
+                    size: 8,
+                    capacity: 16,
+                },
+                0,
+            )]);
+        }
+
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        let mut dispatcher = TrapDispatcher::new();
+        dispatcher.attach_process_context(&mut context);
+        let replacement = vec![0x5a; 48];
+
+        assert!(dispatcher.replace_process_native_handle_bytes(
+            &mut bus,
+            handle,
+            old_ptr,
+            &replacement,
+        ));
+        assert_eq!(bus.read_long(handle), heap_cursor);
+        assert_eq!(bus.read_bytes(heap_cursor, replacement.len()), replacement);
+        assert_eq!(dispatcher.ptr_to_handle.get(&heap_cursor), Some(handle));
+        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), None);
+        assert_eq!(
+            context.memory_manager_mut().native_allocation(handle),
+            Some(crate::process_context::ProcessHandleRecord {
+                handle,
+                ptr: heap_cursor,
+                size: 48,
+                capacity: 48,
+            })
+        );
     }
 }

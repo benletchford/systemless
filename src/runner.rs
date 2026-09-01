@@ -5819,7 +5819,7 @@ impl FixtureRunner {
                     self.dispatcher.yield_for_ui = yield_for_ui;
                     let (event_queue, menu_tracking, memory_manager) = self
                         .process_context
-                        .event_queue_menu_tracking_and_memory_manager_mut();
+                        .event_queue_menu_tracking_and_memory_manager();
                     let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
@@ -6174,7 +6174,7 @@ impl FixtureRunner {
         let profile_run_start = profile_ppc.then(Instant::now);
         let (event_queue, menu_tracking, memory_manager) = self
             .process_context
-            .event_queue_menu_tracking_and_memory_manager_mut();
+            .event_queue_menu_tracking_and_memory_manager();
         let probe = ppc_app.with_process_state_and_memory_manager(
             event_queue,
             menu_tracking,
@@ -6228,7 +6228,7 @@ impl FixtureRunner {
             let elapsed_ticks = self.dispatcher.tick_count.wrapping_sub(ppc_start_tick);
             let (event_queue, menu_tracking, memory_manager) = self
                 .process_context
-                .event_queue_menu_tracking_and_memory_manager_mut();
+                .event_queue_menu_tracking_and_memory_manager();
             ppc_app.with_process_state_and_memory_manager(
                 event_queue,
                 menu_tracking,
@@ -6551,7 +6551,7 @@ impl FixtureRunner {
                     }
                     let (event_queue, menu_tracking, memory_manager) = self
                         .process_context
-                        .event_queue_menu_tracking_and_memory_manager_mut();
+                        .event_queue_menu_tracking_and_memory_manager();
                     let dispatch_err = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
@@ -7991,7 +7991,7 @@ impl FixtureRunner {
             let resume_pc = ppc_app.cpu.pc;
             let (event_queue, menu_tracking, memory_manager) = self
                 .process_context
-                .event_queue_menu_tracking_and_memory_manager_mut();
+                .event_queue_menu_tracking_and_memory_manager();
             let probe = ppc_app.with_process_state_and_memory_manager(
                 event_queue,
                 menu_tracking,
@@ -8106,7 +8106,7 @@ impl FixtureRunner {
             let completion = ppc_app.sound.pending_completions.remove(0);
             let (event_queue, menu_tracking, memory_manager) = self
                 .process_context
-                .event_queue_menu_tracking_and_memory_manager_mut();
+                .event_queue_menu_tracking_and_memory_manager();
             let probe = ppc_app.with_process_state_and_memory_manager(
                 event_queue,
                 menu_tracking,
@@ -10859,7 +10859,7 @@ impl FixtureRunner {
                     }
                     let (event_queue, menu_tracking, memory_manager) = self
                         .process_context
-                        .event_queue_menu_tracking_and_memory_manager_mut();
+                        .event_queue_menu_tracking_and_memory_manager();
                     let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
@@ -12582,9 +12582,10 @@ mod tests {
             ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: task });
         }
 
+        let mut memory_manager = runner.process_context.memory_manager_mut();
         let (vbl, timer) = FixtureRunner::fire_ppc_tick_callbacks(
             &mut ppc_app,
-            runner.process_context.memory_manager_mut(),
+            &mut memory_manager,
             41,
             0x1020_3040,
             2,

@@ -4513,7 +4513,7 @@ mod tests {
 
         cpu.write_reg(Register::D0, 24);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
                 event_queue,
@@ -4529,11 +4529,14 @@ mod tests {
             .unwrap();
         let ptr = cpu.read_reg(Register::A0);
         assert_ne!(ptr, 0);
-        assert_eq!(memory_manager.classic_allocation_size(ptr), Some(24));
+        assert_eq!(
+            memory_manager.borrow().classic_allocation_size(ptr),
+            Some(24)
+        );
 
         cpu.write_reg(Register::D0, 13);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
                 event_queue,
@@ -4551,13 +4554,19 @@ mod tests {
         let data_ptr = bus.read_long(handle);
         assert_ne!(handle, 0);
         assert_ne!(data_ptr, 0);
-        assert_eq!(memory_manager.classic_allocation_size(handle), Some(4));
-        assert_eq!(memory_manager.classic_allocation_size(data_ptr), Some(13));
-        assert_eq!(memory_manager.handle_for_ptr(data_ptr), Some(handle));
+        assert_eq!(
+            memory_manager.borrow().classic_allocation_size(handle),
+            Some(4)
+        );
+        assert_eq!(
+            memory_manager.borrow().classic_allocation_size(data_ptr),
+            Some(13)
+        );
+        assert_eq!(memory_manager.borrow().handle_for_ptr(data_ptr), Some(handle));
 
         cpu.write_reg(Register::A0, ptr);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
                 event_queue,
@@ -4571,11 +4580,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(memory_manager.classic_allocation_size(ptr), None);
+        assert_eq!(memory_manager.borrow().classic_allocation_size(ptr), None);
 
         cpu.write_reg(Register::A0, handle);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
                 event_queue,
@@ -4589,8 +4598,8 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(memory_manager.classic_allocation_size(handle), None);
-        assert_eq!(memory_manager.classic_allocation_size(data_ptr), None);
+        assert_eq!(memory_manager.borrow().classic_allocation_size(handle), None);
+        assert_eq!(memory_manager.borrow().classic_allocation_size(data_ptr), None);
     }
 
     #[test]

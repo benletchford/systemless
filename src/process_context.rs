@@ -6,7 +6,7 @@ use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use ppc::PpcMemory;
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -132,6 +132,28 @@ pub(crate) struct ProcessMemoryManager {
     native_allocations: HashMap<u32, ProcessHandleRecord>,
     native_allocator: Option<ProcessNativeAllocatorState>,
     native_allocator_dirty: bool,
+}
+
+/// Shared ownership handle for one process's architecture-neutral Memory Manager.
+///
+/// CPU adapters retain this handle across execution slices, while each operation
+/// takes a short mutable borrow. The runner still serializes all adapter access.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SharedProcessMemoryManager(Rc<RefCell<ProcessMemoryManager>>);
+
+impl SharedProcessMemoryManager {
+    #[cfg(test)]
+    pub(crate) fn borrow(&self) -> std::cell::Ref<'_, ProcessMemoryManager> {
+        self.0.borrow()
+    }
+
+    pub(crate) fn borrow_mut(&self) -> RefMut<'_, ProcessMemoryManager> {
+        self.0.borrow_mut()
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl ProcessMemoryManager {
@@ -892,7 +914,7 @@ impl ProcessMemoryManager {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
-    memory_manager: ProcessMemoryManager,
+    memory_manager: SharedProcessMemoryManager,
     event_queue: EventQueue,
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
@@ -900,17 +922,17 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
-    pub(crate) fn memory_manager_mut(&mut self) -> &mut ProcessMemoryManager {
-        &mut self.memory_manager
+    pub(crate) fn memory_manager_mut(&self) -> RefMut<'_, ProcessMemoryManager> {
+        self.memory_manager.borrow_mut()
     }
 
     pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
-        self.memory_manager.attach_classic_memory_bus(bus);
+        self.memory_manager.borrow_mut().attach_classic_memory_bus(bus);
     }
 
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
-        self.memory_manager.handle_for_ptr(ptr)
+        self.memory_manager.borrow().handle_for_ptr(ptr)
     }
 
     pub(crate) fn attach_memory_manager_metadata(
@@ -919,7 +941,22 @@ impl ProcessContext {
         handle_state_bits: &mut SharedProcessMap<u8>,
     ) {
         self.memory_manager
+            .borrow_mut()
             .attach_metadata_adapters(ptr_to_handle, handle_state_bits);
+    }
+
+    pub(crate) fn attach_memory_manager(
+        &self,
+        adapter: &mut Option<SharedProcessMemoryManager>,
+    ) {
+        if let Some(attached) = adapter {
+            assert!(
+                attached.ptr_eq(&self.memory_manager),
+                "cannot attach two process Memory Managers"
+            );
+        } else {
+            *adapter = Some(self.memory_manager.clone());
+        }
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
@@ -1021,17 +1058,17 @@ impl ProcessContext {
         (&mut self.event_queue, &mut self.menu_tracking)
     }
 
-    pub(crate) fn event_queue_menu_tracking_and_memory_manager_mut(
+    pub(crate) fn event_queue_menu_tracking_and_memory_manager(
         &mut self,
     ) -> (
         &mut EventQueue,
         &mut Option<ProcessMenuTrackingState>,
-        &mut ProcessMemoryManager,
+        &SharedProcessMemoryManager,
     ) {
         (
             &mut self.event_queue,
             &mut self.menu_tracking,
-            &mut self.memory_manager,
+            &self.memory_manager,
         )
     }
 
@@ -1078,7 +1115,7 @@ mod tests {
         let ptr = primary.alloc(37);
         assert_ne!(ptr, 0);
         assert_eq!(
-            context.memory_manager.classic_allocation_size(ptr),
+            context.memory_manager.borrow().classic_allocation_size(ptr),
             Some(37)
         );
 
@@ -1087,7 +1124,10 @@ mod tests {
         assert_eq!(second_adapter.get_alloc_size(ptr), Some(37));
         second_adapter.free(ptr);
         assert_eq!(primary.get_alloc_size(ptr), None);
-        assert_eq!(context.memory_manager.classic_allocation_size(ptr), None);
+        assert_eq!(
+            context.memory_manager.borrow().classic_allocation_size(ptr),
+            None
+        );
     }
 
     #[test]
@@ -1102,7 +1142,13 @@ mod tests {
         assert_eq!(attached_ptr, detached_ptr);
         attached.free(attached_ptr);
 
-        assert_eq!(context.memory_manager.classic_allocation_size(attached_ptr), None);
+        assert_eq!(
+            context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(attached_ptr),
+            None
+        );
         assert_eq!(detached.get_alloc_size(detached_ptr), Some(24));
         assert_eq!(detached.heap_bump_ptr(), 0x20_0000 + 24);
     }

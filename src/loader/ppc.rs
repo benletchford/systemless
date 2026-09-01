@@ -71,7 +71,7 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
-    ProcessNativeHeapState, ProcessPtrRecord,
+    ProcessNativeHeapState, ProcessPtrRecord, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -5279,7 +5279,8 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
-        self.publish_process_memory_manager(context.memory_manager_mut());
+        let mut memory_manager = context.memory_manager_mut();
+        self.publish_process_memory_manager(&mut memory_manager);
         context
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
@@ -5336,16 +5337,17 @@ impl PpcLoadedApp {
         &mut self,
         event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
-        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
     ) -> R {
         self.with_process_state(event_queue, menu_tracking, |app| {
-            app.apply_process_memory_manager(memory_manager);
-            app.publish_process_memory_manager(memory_manager);
+            let mut memory_manager = memory_manager.borrow_mut();
+            app.apply_process_memory_manager(&memory_manager);
+            app.publish_process_memory_manager(&mut memory_manager);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                f(app, memory_manager)
+                f(app, &mut memory_manager)
             }));
-            app.publish_process_memory_manager(memory_manager);
+            app.publish_process_memory_manager(&mut memory_manager);
             match outcome {
                 Ok(result) => result,
                 Err(payload) => std::panic::resume_unwind(payload),
@@ -88003,30 +88005,33 @@ pub(crate) mod tests {
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
-        memory_manager.metadata_maps().1.insert(handle, 0xa0);
-        let mut canonical = memory_manager.native_allocation(handle).unwrap();
-        canonical.size = 24;
-        canonical.capacity = 40;
-        memory_manager.set_native_allocation(canonical);
+            context.event_queue_menu_tracking_and_memory_manager();
         let expected_cursor = native.heap_cursor + 16;
-        memory_manager.mutate_native_allocator(|allocator| {
-            allocator.heap.heap_cursor = expected_cursor;
-            allocator.ptrs.push(ProcessPtrRecord {
-                ptr: PPC_HEAP_BASE + 4,
-                size: 8,
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.metadata_maps().1.insert(handle, 0xa0);
+            let mut canonical = manager.native_allocation(handle).unwrap();
+            canonical.size = 24;
+            canonical.capacity = 40;
+            manager.set_native_allocation(canonical);
+            manager.mutate_native_allocator(|allocator| {
+                allocator.heap.heap_cursor = expected_cursor;
+                allocator.ptrs.push(ProcessPtrRecord {
+                    ptr: PPC_HEAP_BASE + 4,
+                    size: 8,
+                });
+                allocator.free_ptr_blocks.push(ProcessPtrRecord {
+                    ptr: PPC_HEAP_BASE + 12,
+                    size: 4,
+                });
+                allocator.free_handle_blocks.push(ProcessHandleRecord {
+                    handle: PPC_HEAP_BASE + 16,
+                    ptr: PPC_HEAP_BASE + 20,
+                    size: 4,
+                    capacity: 8,
+                });
             });
-            allocator.free_ptr_blocks.push(ProcessPtrRecord {
-                ptr: PPC_HEAP_BASE + 12,
-                size: 4,
-            });
-            allocator.free_handle_blocks.push(ProcessHandleRecord {
-                handle: PPC_HEAP_BASE + 16,
-                ptr: PPC_HEAP_BASE + 20,
-                size: 4,
-                capacity: 8,
-            });
-        });
+        }
 
         native.with_process_state_and_memory_manager(
             event_queue,
@@ -88068,15 +88073,16 @@ pub(crate) mod tests {
             },
         );
 
-        assert_eq!(memory_manager.state_for_handle(handle), Some(0x40));
+        let manager = memory_manager.borrow();
+        assert_eq!(manager.state_for_handle(handle), Some(0x40));
         assert_eq!(
-            memory_manager
+            manager
                 .native_allocator()
                 .map(|allocator| allocator.heap.heap_cursor),
             Some(expected_cursor + 8)
         );
         assert_eq!(
-            memory_manager.native_allocation(handle),
+            manager.native_allocation(handle),
             native
                 .handles
                 .iter()
@@ -88093,7 +88099,7 @@ pub(crate) mod tests {
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
             event_queue,
@@ -88181,7 +88187,7 @@ pub(crate) mod tests {
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
             event_queue,
@@ -88302,7 +88308,7 @@ pub(crate) mod tests {
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager_mut();
+            context.event_queue_menu_tracking_and_memory_manager();
 
         native.with_process_state_and_memory_manager(
             event_queue,
