@@ -15515,8 +15515,8 @@ mod tests {
                 ProcessFileSystemState {
                 files: Vec::new(),
                 stdio_streams: ppc_initial_stdio_streams(),
-                vfs_volumes: Vec::new(),
-                vfs_directories: vec![PpcVfsDirectory {
+                vfs_volumes: crate::process_context::SharedProcessValue::default(),
+                vfs_directories: crate::process_context::SharedProcessValue::from_value(vec![PpcVfsDirectory {
                     dir_id: 18,
                     parent_dir_id: 17,
                     path: "System Folder/Preferences/Test App Saves".to_string(),
@@ -15524,9 +15524,9 @@ mod tests {
                     file_type: u32::from_be_bytes(*b"dir "),
                     finder_flags: 0x0080,
                     dirty: true,
-                }],
-                next_vfs_dir_id: 18,
-                default_dir_id: 2,
+                }]),
+                next_vfs_dir_id: crate::process_context::SharedProcessValue::from_value(18),
+                default_dir_id: crate::process_context::SharedProcessValue::from_value(2),
                 vfs_files: vec![PpcVfsFileRecord {
                     path: "System Folder/Preferences/Test App Prefs".to_string(),
                     data: (b"prefs".to_vec()).into(),
