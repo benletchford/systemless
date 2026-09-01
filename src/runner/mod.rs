@@ -2,7 +2,6 @@
 
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
-use crate::display::CursorImage;
 use crate::loader::ppc::{
     PpcDecodedAiffPlaybackRecord, PpcDrawSprocketTraceEntry,
     PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding,
@@ -387,28 +386,6 @@ fn format_input_key_map(key_map: &[u8; 16]) -> String {
         let _ = write!(out, "{:02X}", byte);
     }
     out
-}
-
-fn sync_ppc_cursor_state(
-    dispatcher: &mut TrapDispatcher,
-    cursor_level: i16,
-    toolbox_startup: &crate::loader::ppc::PpcToolboxStartupState,
-) {
-    // InitCursor, HideCursor, and ShowCursor maintain a signed visibility
-    // level shared by QuickDraw and the cursor display code.
-    // Inside Macintosh Volume I (1985), pp. I-167--I-168.
-    dispatcher.cursor_level = cursor_level;
-    dispatcher.cursor_visible = cursor_level == 0;
-    dispatcher.cursor_data = Some(if toolbox_startup.cursor_installed {
-        CursorImage::mono(
-            toolbox_startup.cursor_data,
-            toolbox_startup.cursor_mask,
-            toolbox_startup.cursor_hot_v,
-            toolbox_startup.cursor_hot_h,
-        )
-    } else {
-        TrapDispatcher::default_arrow_cursor_image()
-    });
 }
 
 fn format_oracle_hex32(value: u32) -> String {
@@ -6015,11 +5992,6 @@ impl FixtureRunner {
             self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
         }
         self.service_ppc_sound_adapter(&mut ppc_app);
-        sync_ppc_cursor_state(
-            &mut self.dispatcher,
-            ppc_app.quickdraw_cursor_level,
-            &ppc_app.toolbox_startup,
-        );
         let profile_sync_us = elapsed_profile_micros(profile_sync_start);
 
         if profile_ppc {
@@ -13598,7 +13570,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 18,
@@ -15823,7 +15795,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: vec![PpcVfsDirectory {
                 dir_id: 18,
@@ -16570,32 +16542,34 @@ mod tests {
     }
 
     #[test]
-    fn ppc_cursor_level_controls_the_shared_host_cursor() {
+    fn cursor_state_is_immediately_shared_between_cpu_adapters() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
 
-        let mut toolbox_startup = crate::loader::ppc::PpcToolboxStartupState::default();
-        toolbox_startup.cursor_installed = true;
-        toolbox_startup.cursor_data[0] = 0x80;
-        toolbox_startup.cursor_mask[0] = 0xc0;
-        toolbox_startup.cursor_hot_v = 3;
-        toolbox_startup.cursor_hot_h = 4;
+        let mut data = [0; 32];
+        data[0] = 0x80;
+        let mut mask = [0; 32];
+        mask[0] = 0xc0;
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        ppc_app
+            .cursor_state
+            .install(crate::display::CursorImage::mono(data, mask, 3, 4));
+        ppc_app.cursor_state.hide();
 
-        sync_ppc_cursor_state(&mut runner.dispatcher, -1, &toolbox_startup);
         assert_eq!(runner.dispatcher.cursor_level(), -1);
         assert!(!runner.dispatcher.cursor_visible());
-        assert_eq!(
-            runner.dispatcher.cursor_data(),
-            Some((
-                toolbox_startup.cursor_data,
-                toolbox_startup.cursor_mask,
-                3,
-                4
-            ))
-        );
+        assert_eq!(runner.dispatcher.cursor_data(), Some((data, mask, 3, 4)));
 
-        sync_ppc_cursor_state(&mut runner.dispatcher, 0, &toolbox_startup);
-        assert_eq!(runner.dispatcher.cursor_level(), 0);
-        assert!(runner.dispatcher.cursor_visible());
+        runner.dispatcher.cursor_state.show();
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_ref()
+                .expect("PPC app installed")
+                .cursor_level(),
+            0
+        );
     }
 
     #[test]
@@ -16723,7 +16697,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 18,
@@ -16873,7 +16847,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 18,
@@ -17282,7 +17256,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 18,
@@ -17591,7 +17565,7 @@ mod tests {
             quickdraw_pen_v: 0,
             quickdraw_text_mode: PPC_QD_TEXT_MODE_SRC_OR,
             quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
-            quickdraw_cursor_level: 0,
+            cursor_state: crate::process_context::SharedProcessCursorState::default(),
             vfs_volumes: Vec::new(),
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 18,
@@ -18759,8 +18733,7 @@ mod tests {
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
         runner.cpu.write_reg(Register::PC, call_site);
         runner.cpu.write_reg(Register::A7, initial_sp);
-        runner.dispatcher.cursor_level = -1;
-        runner.dispatcher.cursor_visible = false;
+        runner.dispatcher.cursor_state.level = -1;
 
         let (steps, running) = runner.run_steps(4, None);
 
@@ -18810,8 +18783,7 @@ mod tests {
         runner.bus.write_word(call_site + 6, 0x4E71); // NOP
         runner.cpu.write_reg(Register::PC, call_site);
         runner.cpu.write_reg(Register::A7, initial_sp);
-        runner.dispatcher.cursor_level = -1;
-        runner.dispatcher.cursor_visible = false;
+        runner.dispatcher.cursor_state.level = -1;
 
         let (steps, running) = runner.run_steps(4, None);
 

@@ -13481,9 +13481,7 @@ impl super::TrapDispatcher {
             // InitCursor ($A850): Sets arrow cursor, resets cursor level to 0,
             // makes visible (IM:I I-167).
             (true, 0x050) => {
-                self.cursor_data = Some(Self::default_arrow_cursor_image());
-                self.cursor_level = 0;
-                self.cursor_visible = true;
+                self.cursor_state.init();
                 Ok(())
             }
 
@@ -13512,8 +13510,8 @@ impl super::TrapDispatcher {
                 let hot_v = bus.read_word(crsr_ptr + 64) as i16;
                 let hot_h = bus.read_word(crsr_ptr + 66) as i16;
 
-                self.cursor_data = Some(CursorImage::mono(data, mask, hot_v, hot_h));
-                self.cursor_visible = self.cursor_level == 0;
+                self.cursor_state
+                    .install(CursorImage::mono(data, mask, hot_v, hot_h));
                 Ok(())
             }
 
@@ -13521,8 +13519,7 @@ impl super::TrapDispatcher {
             // HideCursor ($A852): Decrements cursor level and hides while level < 0
             // per IM:I I-168.
             (true, 0x052) => {
-                self.cursor_level = self.cursor_level.saturating_sub(1);
-                self.cursor_visible = self.cursor_level == 0;
+                self.cursor_state.hide();
                 Ok(())
             }
 
@@ -13530,10 +13527,7 @@ impl super::TrapDispatcher {
             // ShowCursor ($A853): Increments cursor level toward 0; extra calls
             // at level 0 are no-op (IM:I I-168).
             (true, 0x053) => {
-                if self.cursor_level < 0 {
-                    self.cursor_level += 1;
-                }
-                self.cursor_visible = self.cursor_level == 0;
+                self.cursor_state.show();
                 Ok(())
             }
 
@@ -36251,15 +36245,14 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
 
         // Start from a hidden nested level to prove InitCursor reset.
-        disp.cursor_data = None;
-        disp.cursor_level = -3;
-        disp.cursor_visible = false;
+        disp.cursor_state.image = None;
+        disp.cursor_state.level = -3;
 
         let result = disp.dispatch_dialog(true, 0x050, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert!(disp.cursor_data.is_some());
-        assert_eq!(disp.cursor_level, 0);
-        assert!(disp.cursor_visible);
+        assert!(disp.cursor_data().is_some());
+        assert_eq!(disp.cursor_level(), 0);
+        assert!(disp.cursor_visible());
     }
 
     // ---- SetCursor ($A851) ----
@@ -36310,12 +36303,11 @@ mod tests {
         bus.write_word(crsr_ptr + 66, 4);
         bus.write_long(TEST_SP, crsr_ptr);
 
-        disp.cursor_level = -1;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         let result = disp.dispatch_dialog(true, 0x051, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(disp.cursor_level, -1);
-        assert!(!disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), -1);
+        assert!(!disp.cursor_visible());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
     }
 
@@ -36326,13 +36318,12 @@ mod tests {
         // IM:I I-168: HideCursor decrements cursor level (from 0 to -1)
         // and removes the cursor from the screen.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_level = 0;
-        disp.cursor_visible = true;
+        disp.cursor_state.level = 0;
 
         let result = disp.dispatch_dialog(true, 0x052, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(disp.cursor_level, -1);
-        assert!(!disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), -1);
+        assert!(!disp.cursor_visible());
     }
 
     // ---- ShowCursor ($A853) ----
@@ -36342,18 +36333,17 @@ mod tests {
         // IM:I I-168: ShowCursor increments toward 0 and only shows the
         // cursor when level becomes 0.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_level = -2;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -2;
 
         let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(disp.cursor_level, -1);
-        assert!(!disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), -1);
+        assert!(!disp.cursor_visible());
 
         let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(disp.cursor_level, 0);
-        assert!(disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), 0);
+        assert!(disp.cursor_visible());
     }
 
     #[test]
@@ -36361,13 +36351,12 @@ mod tests {
         // IM:I I-168: extra ShowCursor calls have no effect and do not
         // increment cursor level above 0.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_level = 0;
-        disp.cursor_visible = true;
+        disp.cursor_state.level = 0;
 
         let result = disp.dispatch_dialog(true, 0x053, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
-        assert_eq!(disp.cursor_level, 0);
-        assert!(disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), 0);
+        assert!(disp.cursor_visible());
     }
 
     // ---- ObscureCursor ($A856) ----
@@ -36378,15 +36367,14 @@ mod tests {
         // no arguments. Systemless's HLE compromise keeps it as a no-op because
         // synthesized mouse-move events would immediately un-obscure anyway.
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_level = -1;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -1;
         let sp_before = cpu.read_reg(Register::A7);
 
         let result = disp.dispatch_dialog(true, 0x056, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), sp_before);
-        assert_eq!(disp.cursor_level, -1);
-        assert!(!disp.cursor_visible);
+        assert_eq!(disp.cursor_level(), -1);
+        assert!(!disp.cursor_visible());
     }
 
     #[test]
@@ -36399,8 +36387,7 @@ mod tests {
         // ObscureCursor "has no effect on the cursor level and must
         // not be balanced by a call to ShowCursor."
         let (mut disp, mut cpu, mut bus) = setup();
-        disp.cursor_level = -2;
-        disp.cursor_visible = false;
+        disp.cursor_state.level = -2;
         let sp_before = cpu.read_reg(Register::A7);
 
         for i in 0..5 {
@@ -36412,7 +36399,7 @@ mod tests {
                 "iteration {i}: ObscureCursor must leave SP unchanged (0-byte pop)",
             );
             assert_eq!(
-                disp.cursor_level, -2,
+                disp.cursor_level(), -2,
                 "iteration {i}: ObscureCursor must NOT change cursor level per IM:I I-168",
             );
         }

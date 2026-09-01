@@ -1,5 +1,6 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
+use crate::display::{default_arrow_cursor_image, CursorImage};
 use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::GuestProcedure;
@@ -563,6 +564,55 @@ pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
 
 pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
+pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
+
+/// Canonical QuickDraw cursor state for one Macintosh process.
+///
+/// InitCursor, SetCursor, HideCursor, and ShowCursor operate on one signed
+/// visibility level and one installed image regardless of the executing ISA.
+/// Inside Macintosh Volume I (1985), pp. I-167--I-168.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessCursorState {
+    pub(crate) image: Option<CursorImage>,
+    pub(crate) level: i16,
+}
+
+impl Default for ProcessCursorState {
+    fn default() -> Self {
+        Self {
+            image: Some(default_arrow_cursor_image()),
+            level: 0,
+        }
+    }
+}
+
+impl ProcessCursorState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self == &Self::default()
+    }
+
+    pub(crate) fn visible(&self) -> bool {
+        self.level == 0
+    }
+
+    pub(crate) fn init(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn install(&mut self, image: CursorImage) {
+        self.image = Some(image);
+    }
+
+    pub(crate) fn hide(&mut self) {
+        self.level = self.level.saturating_sub(1);
+    }
+
+    pub(crate) fn show(&mut self) {
+        if self.level < 0 {
+            self.level += 1;
+        }
+    }
+}
 
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
@@ -3344,6 +3394,7 @@ pub(crate) struct ProcessContext {
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
     sound_manager: SharedProcessSoundManager,
+    cursor_state: SharedProcessCursorState,
 }
 
 impl ProcessContext {
@@ -3384,6 +3435,10 @@ impl ProcessContext {
 
     pub(crate) fn attach_sound_manager(&self, adapter: &mut SharedProcessSoundManager) {
         adapter.attach_to(&self.sound_manager, SoundManager::is_pristine);
+    }
+
+    pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {
+        adapter.attach_to(&self.cursor_state, ProcessCursorState::is_pristine);
     }
 
     pub(crate) fn attach_classic_file_system(
@@ -4868,5 +4923,31 @@ mod tests {
         assert_eq!(classic.sys_beep_volume(), 0x0080_0040);
         assert_eq!(detached.channels.len(), 1);
         assert_eq!(detached.sys_beep_volume(), 0x0100_0100);
+    }
+
+    #[test]
+    fn attached_cursor_states_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessCursorState::default();
+        let mut native = SharedProcessCursorState::default();
+        context.attach_cursor_state(&mut classic);
+        context.attach_cursor_state(&mut native);
+        let detached = native.clone();
+        let mut data = [0; 32];
+        data[0] = 0x80;
+        let mut mask = [0; 32];
+        mask[0] = 0xc0;
+
+        native.hide();
+        classic.install(CursorImage::mono(data, mask, 3, 4));
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(classic.level, -1);
+        assert_eq!(native.image.as_ref().unwrap().mono_parts(), (data, mask, 3, 4));
+        assert_eq!(detached.level, 0);
+        assert_eq!(
+            detached.image.as_ref().unwrap().mono_parts(),
+            crate::display::default_arrow_cursor()
+        );
     }
 }

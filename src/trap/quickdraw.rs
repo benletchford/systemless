@@ -12123,8 +12123,7 @@ impl super::TrapDispatcher {
                         && cursor_left < shield_right
                         && cursor_right > shield_left
                     {
-                        self.cursor_level = self.cursor_level.saturating_sub(1);
-                        self.cursor_visible = false;
+                        self.cursor_state.hide();
                     }
                 }
                 Ok(())
@@ -14049,9 +14048,8 @@ impl super::TrapDispatcher {
                     let crsr_ptr = bus.read_long(crsr_handle);
                     if crsr_ptr != 0 {
                         if let Some(cursor) = self.cursor_image_from_ccrsr(bus, crsr_ptr) {
-                            self.cursor_data = Some(cursor);
+                            self.cursor_state.install(cursor);
                         }
-                        self.cursor_visible = self.cursor_level == 0;
                     }
                 }
                 Ok(())
@@ -25963,8 +25961,7 @@ mod tests {
         bus.write_word(crsr_ptr + 84, 13);
         bus.write_word(crsr_ptr + 86, -9i16 as u16);
 
-        d.cursor_level = -1;
-        d.cursor_visible = false;
+        d.cursor_state.level = -1;
         bus.write_long(TEST_SP, crsr_handle);
 
         let result = d.dispatch_quickdraw(true, 0x21C, &mut cpu, &mut bus);
@@ -26629,14 +26626,13 @@ mod tests {
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
         d.set_mouse_position(150, 180);
-        d.cursor_level = 0;
-        d.cursor_visible = true;
+        d.cursor_state.level = 0;
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.cursor_level, -1);
-        assert!(!d.cursor_visible);
+        assert_eq!(d.cursor_level(), -1);
+        assert!(!d.cursor_visible());
     }
 
     #[test]
@@ -26652,14 +26648,13 @@ mod tests {
         bus.write_long(TEST_SP + 4, shield_rect_ptr);
 
         d.set_mouse_position(20, 30);
-        d.cursor_level = 0;
-        d.cursor_visible = true;
+        d.cursor_state.level = 0;
 
         let result = d.dispatch_quickdraw(true, 0x055, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 8);
-        assert_eq!(d.cursor_level, 0);
-        assert!(d.cursor_visible);
+        assert_eq!(d.cursor_level(), 0);
+        assert!(d.cursor_visible());
     }
 
     #[test]
