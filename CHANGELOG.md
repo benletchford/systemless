@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.27.11](https://github.com/benletchford/systemless/compare/v0.27.10...v0.27.11) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ppc:** bind the StdCLib error globals ([#1119](https://github.com/benletchford/systemless/issues/1119)) ([4420762](https://github.com/benletchford/systemless/commit/4420762f5e7f094ef9decf60749608040b2bafc2))
+
+
+### Code Refactoring
+
+* share textedit mutation semantics ([#1118](https://github.com/benletchford/systemless/issues/1118)) ([6105aa5](https://github.com/benletchford/systemless/commit/6105aa55ff2f6e7f3c35c587310abc740ab8aee7))
+
 ## [0.27.10](https://github.com/benletchford/systemless/compare/v0.27.9...v0.27.10) (2026-08-31)
 
 
