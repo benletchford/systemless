@@ -3973,8 +3973,8 @@ mod tests {
         )]);
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         let replacement = vec![0x5a; 48];
         let relocated = manager
             .replace_native_handle_bytes(&mut bus, handle, old_ptr, &replacement)
@@ -4036,8 +4036,8 @@ mod tests {
         )]);
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         manager.attach_classic_memory_bus(&mut bus);
 
         assert_eq!(
@@ -4092,8 +4092,8 @@ mod tests {
         manager.register_native_handle_records([(record, 0xE0)]);
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         manager.attach_classic_memory_bus(&mut bus);
 
         assert_eq!(
@@ -4149,8 +4149,8 @@ mod tests {
         manager.register_native_handle_records([(original, 0)]);
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         assert_eq!(
             manager.replace_native_handle_bytes(&mut bus, handle, old_ptr, &[0x5a; 48]),
             Err(ProcessMemoryManager::MEM_FULL_ERR)
@@ -4200,8 +4200,8 @@ mod tests {
         manager.register_native_handle_records([(original, 0xE0)]);
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         manager.attach_classic_memory_bus(&mut bus);
 
         assert_eq!(
@@ -4291,8 +4291,8 @@ mod tests {
         );
 
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         manager.attach_classic_memory_bus(&mut bus);
         assert_eq!(
             manager.reallocate_process_handle(&mut bus, handle, 17),
@@ -4595,8 +4595,8 @@ mod tests {
             &[],
         );
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
 
         let handle = manager.new_native_handle(&mut native, 24, true);
         let record = manager.native_allocation(handle).unwrap();
@@ -4628,8 +4628,8 @@ mod tests {
             &[],
         );
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
 
         let handle = manager.copy_bytes_to_new_native_handle(&mut native, b"native");
         let original = manager.native_allocation(handle).unwrap();
@@ -4673,8 +4673,8 @@ mod tests {
             &[],
         );
         let mut bus = MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
 
         let unloaded = manager.new_native_resource_handle(&mut native, None);
         assert_ne!(unloaded, 0);

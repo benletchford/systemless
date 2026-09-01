@@ -4618,8 +4618,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut native = GuestAddressSpace::new();
         native.add_region(HEAP_BASE, vec![0; 0x1000]);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         bus.write_long(handle, old_ptr);
         bus.write_bytes(old_ptr, b"original");
 
@@ -4691,8 +4691,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut native = GuestAddressSpace::new();
         native.add_region(HEAP_BASE, vec![0; 0x1000]);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         bus.write_long(handle, old_ptr);
         bus.write_bytes(old_ptr, b"original");
 
@@ -4766,8 +4766,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut native = GuestAddressSpace::new();
         native.add_region(HEAP_BASE, vec![0; 0x1000]);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         bus.write_long(handle, old_ptr);
         bus.write_bytes(old_ptr, b"original");
 
@@ -4850,8 +4850,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut native = GuestAddressSpace::new();
         native.add_region(HEAP_BASE, vec![0; 0x1000]);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         bus.write_long(handle, ptr);
         bus.write_bytes(ptr, b"original");
 
@@ -4918,8 +4918,8 @@ mod tests {
         let (mut dispatcher, mut cpu, mut bus) = setup();
         let mut native = GuestAddressSpace::new();
         native.add_region(HEAP_BASE, vec![0; 0x2000]);
-        let shared = unsafe { native.shared_view() };
-        unsafe { bus.attach_guest_address_space(shared) };
+        let shared = native.shared_view();
+        bus.attach_guest_address_space(shared);
         bus.write_long(SOURCE_HANDLE, SOURCE_PTR);
         bus.write_bytes(SOURCE_PTR, b"native");
 

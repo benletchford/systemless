@@ -89274,9 +89274,9 @@ pub(crate) mod tests {
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
         classic.attach_process_context(&mut context);
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         let (handle, ptr) = context
             .memory_manager_mut()
@@ -89792,9 +89792,9 @@ pub(crate) mod tests {
                 );
                 assert_eq!(loaded, handle);
                 let record = memory_manager.native_allocation(handle).unwrap();
-                let shared = unsafe { native.memory.shared_view() };
+                let shared = native.memory.shared_view();
                 let mut classic_bus = MacMemoryBus::new(0x2000);
-                unsafe { classic_bus.attach_guest_address_space(shared) };
+                classic_bus.attach_guest_address_space(shared);
                 assert_eq!(
                     classic_bus.read_bytes(record.ptr, record.size as usize),
                     b"process resource"
@@ -89863,8 +89863,8 @@ pub(crate) mod tests {
         native.memory.add_region(scratch, vec![0; 0x100]);
         native.memory.write_bytes(source, b"native").unwrap();
         let mut classic_bus = crate::memory::MacMemoryBus::new(0x2000);
-        let shared = unsafe { native.memory.shared_view() };
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        let shared = native.memory.shared_view();
+        classic_bus.attach_guest_address_space(shared);
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
@@ -134711,9 +134711,9 @@ pub(crate) mod tests {
             .any(|record| record.ptr == world.base_addr));
         assert_eq!(detached.native_allocation(ctable_handle), None);
 
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(0x2000);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         classic_bus.write_byte(world.base_addr, 0xa5);
         assert_eq!(native.memory.read_u8(world.base_addr), Some(0xa5));
@@ -134864,9 +134864,9 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.ptr == updated.base_addr));
 
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(0x2000);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         classic_bus.write_byte(updated.base_addr, 0xa5);
         assert_eq!(native.memory.read_u8(updated.base_addr), Some(0xa5));
@@ -151388,9 +151388,9 @@ pub(crate) mod tests {
         assert_eq!(detached.native_allocation(event_handle), None);
         assert_eq!(detached.native_allocation(reply_handle), None);
 
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(0x2000);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         assert_eq!(
             classic_bus.read_bytes(event_allocation.ptr, 8),
@@ -160089,9 +160089,9 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.ptr == original));
 
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(0x2000);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         classic_bus.write_bytes(original, b"payload!");
         assert_eq!(
@@ -161877,9 +161877,9 @@ pub(crate) mod tests {
         );
         assert_eq!(detached.native_allocation(handle), None);
 
-        let shared = unsafe { native.memory.shared_view() };
+        let shared = native.memory.shared_view();
         let mut classic_bus = MacMemoryBus::new(0x2000);
-        unsafe { classic_bus.attach_guest_address_space(shared) };
+        classic_bus.attach_guest_address_space(shared);
         context.attach_classic_memory_bus(&mut classic_bus);
         assert_eq!(classic_bus.read_bytes(allocation.ptr, 7), b"payload");
         classic_bus.write_byte(allocation.ptr, b'P');
