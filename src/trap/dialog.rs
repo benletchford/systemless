@@ -2515,6 +2515,57 @@ impl super::TrapDispatcher {
         bus.read_bytes(text_ptr, len)
     }
 
+    fn te_edit_buffer(
+        bus: &MacMemoryBus,
+        te_handle: u32,
+    ) -> Option<crate::text_edit::TextEditBuffer> {
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return None;
+        }
+        Some(crate::text_edit::TextEditBuffer::new(
+            Self::te_text_bytes(bus, te_handle),
+            bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize,
+            bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize,
+        ))
+    }
+
+    fn te_commit_edit_buffer(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        te_handle: u32,
+        buffer: &crate::text_edit::TextEditBuffer,
+    ) {
+        self.te_set_text_contents(bus, te_handle, buffer.text());
+        let te_ptr = Self::te_record_ptr(bus, te_handle);
+        if te_ptr == 0 {
+            return;
+        }
+        let selection = buffer.selection();
+        let start = selection.start.min(u16::MAX as usize) as u16;
+        let end = selection.end.min(u16::MAX as usize) as u16;
+        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, start);
+        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, end);
+    }
+
+    fn te_set_scrap_bytes(bus: &mut MacMemoryBus, selected: &[u8]) {
+        use crate::memory::globals::addr;
+
+        let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
+        if scrap_handle == 0 {
+            scrap_handle = Self::allocate_handle_with_data(bus, 0);
+            bus.write_long(addr::TE_SCRP_HANDLE, scrap_handle);
+        }
+        let text_ptr = Self::ensure_text_handle_size(bus, scrap_handle, selected.len());
+        if text_ptr != 0 && !selected.is_empty() {
+            bus.write_bytes(text_ptr, selected);
+        }
+        bus.write_word(
+            addr::TE_SCRP_LENGTH,
+            selected.len().min(u16::MAX as usize) as u16,
+        );
+    }
+
     pub(crate) fn te_find_word_bounds(
         &self,
         bus: &MacMemoryBus,
@@ -2671,31 +2722,11 @@ impl super::TrapDispatcher {
     }
 
     fn te_insert_text(&mut self, bus: &mut MacMemoryBus, te_handle: u32, text: &[u8]) {
-        let te_ptr = Self::te_record_ptr(bus, te_handle);
-        if te_ptr == 0 {
+        let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) else {
             return;
-        }
-
-        let existing = Self::te_text_bytes(bus, te_handle);
-        let mut sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-        let mut sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-        let text_len = existing.len();
-        sel_start = sel_start.min(text_len);
-        sel_end = sel_end.min(text_len);
-        if sel_end < sel_start {
-            std::mem::swap(&mut sel_start, &mut sel_end);
-        }
-
-        let mut merged =
-            Vec::with_capacity(sel_start + text.len() + text_len.saturating_sub(sel_end));
-        merged.extend_from_slice(&existing[..sel_start]);
-        merged.extend_from_slice(text);
-        merged.extend_from_slice(&existing[sel_end..]);
-        self.te_set_text_contents(bus, te_handle, &merged);
-
-        let insertion_end = (sel_start + text.len()).min(u16::MAX as usize) as u16;
-        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, insertion_end);
-        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, insertion_end);
+        };
+        buffer.replace_selection(text);
+        self.te_commit_edit_buffer(bus, te_handle, &buffer);
     }
 
     fn te_char_width(&self, font: i16, size: i16, byte: u8) -> i16 {
@@ -2845,20 +2876,6 @@ impl super::TrapDispatcher {
 
         if styled {
             Self::te_update_styled_run_sentinel(bus, te_handle, text_len);
-        }
-    }
-
-    fn te_line_origin_x(just: i16, box_left: i16, box_right: i16, line_width: i16) -> i16 {
-        // Per Inside Macintosh: Text 1993, p. 7320-7323 (and MPW
-        // Universal Headers `TextEdit.h`):
-        //   teJustLeft   =  0  (flush left — system default for LTR)
-        //   teJustCenter =  1  (centered)
-        //   teJustRight  = -1  (flush right)
-        //   teForceLeft  = -2  (force flush left, overrides localised right-to-left)
-        match just {
-            1 => box_left + ((box_right - box_left) - line_width) / 2,
-            -1 => box_right - line_width,
-            _ => box_left.saturating_add(Self::TE_LINE_LEFT_INSET), // 0 / -2 / any other → flush left inside destRect
         }
     }
 
@@ -3126,7 +3143,13 @@ impl super::TrapDispatcher {
             } else {
                 self.te_measure_text_width(font, size, &text_bytes, *start, trimmed_end)
             };
-            let x = Self::te_line_origin_x(just, dest_rect.1, dest_rect.3, line_width);
+            let x = crate::text_edit::aligned_line_left(
+                dest_rect.1,
+                dest_rect.3,
+                line_width,
+                just,
+                Self::TE_LINE_LEFT_INSET,
+            );
             visual_lines.push((*start, *end, top, line_bottom, x));
             self.pn_loc = (top.saturating_add(line_ascent), x);
             for (offset, &byte) in text_bytes[*start..trimmed_end].iter().enumerate() {
@@ -15162,7 +15185,13 @@ impl super::TrapDispatcher {
                             //   teJustCenter =  1 (centered)
                             //   teJustRight  = -1 (flush right)
                             //   teForceLeft  = -2 (force flush left)
-                            let x = Self::te_line_origin_x(align, box_left, box_right, lw);
+                            let x = crate::text_edit::aligned_line_left(
+                                box_left,
+                                box_right,
+                                lw,
+                                align,
+                                Self::TE_LINE_LEFT_INSET,
+                            );
                             self.pn_loc = (y, x);
                             for &byte in &text_bytes[line.start..line.visible_end] {
                                 self.draw_char(cpu, bus, byte as char);
@@ -15446,35 +15475,9 @@ impl super::TrapDispatcher {
             (true, 0x1D5) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
-                let te_ptr = Self::te_record_ptr(bus, te_handle);
-                if te_ptr != 0 {
-                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                    let (s, e) = if sel_start <= sel_end {
-                        (sel_start, sel_end)
-                    } else {
-                        (sel_end, sel_start)
-                    };
-                    if s != e {
-                        use crate::memory::globals::addr;
-                        let existing = Self::te_text_bytes(bus, te_handle);
-                        let s = s.min(existing.len());
-                        let e = e.min(existing.len());
-                        let selected = &existing[s..e];
-                        let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
-                        if scrap_handle == 0 {
-                            scrap_handle = Self::allocate_handle_with_data(bus, 0);
-                            bus.write_long(addr::TE_SCRP_HANDLE, scrap_handle);
-                        }
-                        let text_ptr =
-                            Self::ensure_text_handle_size(bus, scrap_handle, selected.len());
-                        if text_ptr != 0 && !selected.is_empty() {
-                            bus.write_bytes(text_ptr, selected);
-                        }
-                        bus.write_word(
-                            addr::TE_SCRP_LENGTH,
-                            selected.len().min(u16::MAX as usize) as u16,
-                        );
+                if let Some(buffer) = Self::te_edit_buffer(bus, te_handle) {
+                    if !buffer.selected_text().is_empty() {
+                        Self::te_set_scrap_bytes(bus, buffer.selected_text());
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -15492,47 +15495,11 @@ impl super::TrapDispatcher {
             (true, 0x1D6) => {
                 let sp = cpu.read_reg(Register::A7);
                 let te_handle = bus.read_long(sp);
-                let te_ptr = Self::te_record_ptr(bus, te_handle);
-                if te_ptr != 0 {
-                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                    let (s, e) = if sel_start <= sel_end {
-                        (sel_start, sel_end)
-                    } else {
-                        (sel_end, sel_start)
-                    };
-                    if s != e {
-                        let existing = Self::te_text_bytes(bus, te_handle);
-                        let s = s.min(existing.len());
-                        let e = e.min(existing.len());
-                        // Copy selection into the scrap (replace, not
-                        // append — IM:I I-391).
-                        {
-                            use crate::memory::globals::addr;
-                            let selected = &existing[s..e];
-                            let mut scrap_handle = bus.read_long(addr::TE_SCRP_HANDLE);
-                            if scrap_handle == 0 {
-                                scrap_handle = Self::allocate_handle_with_data(bus, 0);
-                                bus.write_long(addr::TE_SCRP_HANDLE, scrap_handle);
-                            }
-                            let text_ptr =
-                                Self::ensure_text_handle_size(bus, scrap_handle, selected.len());
-                            if text_ptr != 0 && !selected.is_empty() {
-                                bus.write_bytes(text_ptr, selected);
-                            }
-                            bus.write_word(
-                                addr::TE_SCRP_LENGTH,
-                                selected.len().min(u16::MAX as usize) as u16,
-                            );
-                        }
-                        // Delete selection from the TE text.
-                        let mut merged = Vec::with_capacity(existing.len() - (e - s));
-                        merged.extend_from_slice(&existing[..s]);
-                        merged.extend_from_slice(&existing[e..]);
-                        self.te_set_text_contents(bus, te_handle, &merged);
-                        let new_pos = s.min(u16::MAX as usize) as u16;
-                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
-                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                if let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) {
+                    if !buffer.selected_text().is_empty() {
+                        Self::te_set_scrap_bytes(bus, buffer.selected_text());
+                        buffer.delete_selection();
+                        self.te_commit_edit_buffer(bus, te_handle, &buffer);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -15556,22 +15523,9 @@ impl super::TrapDispatcher {
                 if trace_textedit_enabled() {
                     eprintln!("[TE] TEDelete hTE=${:08X}", te_handle);
                 }
-                let te_ptr = Self::te_record_ptr(bus, te_handle);
-                if te_ptr != 0 {
-                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                    if sel_start != sel_end {
-                        let existing = Self::te_text_bytes(bus, te_handle);
-                        let s = sel_start.min(existing.len());
-                        let e = sel_end.min(existing.len());
-                        let (s, e) = if s > e { (e, s) } else { (s, e) };
-                        let mut merged = Vec::with_capacity(existing.len() - (e - s));
-                        merged.extend_from_slice(&existing[..s]);
-                        merged.extend_from_slice(&existing[e..]);
-                        self.te_set_text_contents(bus, te_handle, &merged);
-                        let new_pos = s.min(u16::MAX as usize) as u16;
-                        bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
-                        bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
+                if let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) {
+                    if buffer.delete_selection() {
+                        self.te_commit_edit_buffer(bus, te_handle, &buffer);
                     }
                 }
                 cpu.write_reg(Register::A7, sp + 4);
@@ -15729,42 +15683,9 @@ impl super::TrapDispatcher {
                         char::from(key).escape_default().to_string()
                     );
                 }
-                let te_ptr = Self::te_record_ptr(bus, te_handle);
-                if te_ptr != 0 {
-                    let sel_start = bus.read_word(te_ptr + Self::TE_SEL_START_OFFSET) as usize;
-                    let sel_end = bus.read_word(te_ptr + Self::TE_SEL_END_OFFSET) as usize;
-                    let existing = Self::te_text_bytes(bus, te_handle);
-                    let text_len = existing.len();
-                    let s = sel_start.min(text_len);
-                    let e = sel_end.min(text_len);
-                    let (s, e) = if s > e { (e, s) } else { (s, e) };
-
-                    if key == 0x08 {
-                        // Backspace
-                        if s != e {
-                            // Delete selected text
-                            let mut merged = Vec::with_capacity(text_len - (e - s));
-                            merged.extend_from_slice(&existing[..s]);
-                            merged.extend_from_slice(&existing[e..]);
-                            self.te_set_text_contents(bus, te_handle, &merged);
-                            let new_pos = s.min(u16::MAX as usize) as u16;
-                            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
-                            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
-                        } else if s > 0 {
-                            // Delete character before insertion point
-                            let mut merged = Vec::with_capacity(text_len - 1);
-                            merged.extend_from_slice(&existing[..s - 1]);
-                            merged.extend_from_slice(&existing[s..]);
-                            self.te_set_text_contents(bus, te_handle, &merged);
-                            let new_pos = (s - 1).min(u16::MAX as usize) as u16;
-                            bus.write_word(te_ptr + Self::TE_SEL_START_OFFSET, new_pos);
-                            bus.write_word(te_ptr + Self::TE_SEL_END_OFFSET, new_pos);
-                        }
-                        // At start with no selection: do nothing
-                    } else {
-                        // Insert printable character (replacing selection if any)
-                        self.te_insert_text(bus, te_handle, &[key]);
-                    }
+                if let Some(mut buffer) = Self::te_edit_buffer(bus, te_handle) {
+                    buffer.apply_key(key);
+                    self.te_commit_edit_buffer(bus, te_handle, &buffer);
 
                     // TEKey is a drawing operation as well as an editing
                     // operation. Applications do not need to follow every
@@ -19254,7 +19175,7 @@ mod tests {
         assert_eq!(bus.read_word(TEST_SP + 6) as i16, -1);
     }
 
-    // ---- te_line_origin_x (TextEdit alignment) ----
+    // ---- shared TextEdit alignment ----
     //
     // Per IM:Text 1993 lines 7320-7323 and the MPW Universal Headers:
     // teJustLeft = 0, teJustCenter = 1, teJustRight = -1, teForceLeft = -2.
@@ -19263,7 +19184,7 @@ mod tests {
     fn te_line_origin_te_just_left_flush_left() {
         // teJustLeft (0): origin = box_left + TextEdit's left inset.
         assert_eq!(
-            TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
+            crate::text_edit::aligned_line_left(20, 200, 80, 0, 1),
             21,
             "teJustLeft (0) must anchor one pixel inside box_left"
         );
@@ -19274,7 +19195,7 @@ mod tests {
         // teJustCenter (1): origin = box_left + (box_w - line_w) / 2.
         // (200-20 - 80) / 2 = 50 → origin = 20 + 50 = 70.
         assert_eq!(
-            TrapDispatcher::te_line_origin_x(1, 20, 200, 80),
+            crate::text_edit::aligned_line_left(20, 200, 80, 1, 1),
             70,
             "teJustCenter must midpoint the slack"
         );
@@ -19285,7 +19206,7 @@ mod tests {
         // teJustRight (-1): origin = box_right - line_width.
         // 200 - 80 = 120.
         assert_eq!(
-            TrapDispatcher::te_line_origin_x(-1, 20, 200, 80),
+            crate::text_edit::aligned_line_left(20, 200, 80, -1, 1),
             120,
             "teJustRight (-1) must anchor at box_right - line_width"
         );
@@ -19297,7 +19218,7 @@ mod tests {
         // (overrides any
         // localised right-to-left default).
         assert_eq!(
-            TrapDispatcher::te_line_origin_x(-2, 20, 200, 80),
+            crate::text_edit::aligned_line_left(20, 200, 80, -2, 1),
             21,
             "teForceLeft (-2) must anchor one pixel inside box_left"
         );
@@ -19308,7 +19229,7 @@ mod tests {
         // teJustSystem (0): localised default = left for LTR, with the
         // same TextEdit left inset.
         assert_eq!(
-            TrapDispatcher::te_line_origin_x(0, 20, 200, 80),
+            crate::text_edit::aligned_line_left(20, 200, 80, 0, 1),
             21,
             "teJustSystem must default to flush left inside box_left"
         );
@@ -27089,11 +27010,16 @@ mod tests {
         let x_right = run_align(-1);
 
         let expected_left =
-            TrapDispatcher::te_line_origin_x(0, box_left, box_right, line_width) + line_width;
+            crate::text_edit::aligned_line_left(box_left, box_right, line_width, 0, 1) + line_width;
         let expected_center =
-            TrapDispatcher::te_line_origin_x(1, box_left, box_right, line_width) + line_width;
-        let expected_right =
-            TrapDispatcher::te_line_origin_x(-1, box_left, box_right, line_width) + line_width;
+            crate::text_edit::aligned_line_left(box_left, box_right, line_width, 1, 1) + line_width;
+        let expected_right = crate::text_edit::aligned_line_left(
+            box_left,
+            box_right,
+            line_width,
+            -1,
+            1,
+        ) + line_width;
 
         assert_eq!(x_left, expected_left);
         assert_eq!(x_center, expected_center);
@@ -35953,6 +35879,42 @@ mod tests {
             1
         );
         assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 1);
+    }
+
+    #[test]
+    fn tekey_arrows_move_the_caret_without_inserting_text() {
+        // Inside Macintosh: Text (1993), pp. 2-36 to 2-37 and 2-81:
+        // arrow key codes move the insertion point; they are not text bytes.
+        let (mut disp, mut cpu, mut bus) = setup();
+        let te_handle = make_te_with_text(&mut disp, &mut bus, b"HELLO");
+        let te_ptr = bus.read_long(te_handle);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET, 2);
+        bus.write_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET, 4);
+
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0x001C);
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            2
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 2);
+
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, te_handle);
+        bus.write_word(TEST_SP + 4, 0x001D);
+        let result = disp.dispatch_dialog(true, 0x1DC, &mut cpu, &mut bus);
+        assert!(result.unwrap().is_ok());
+        assert_eq!(
+            bus.read_word(te_ptr + TrapDispatcher::TE_SEL_START_OFFSET),
+            3
+        );
+        assert_eq!(bus.read_word(te_ptr + TrapDispatcher::TE_SEL_END_OFFSET), 3);
+        assert_eq!(
+            TrapDispatcher::te_text_bytes(&bus, te_handle),
+            b"HELLO".to_vec()
+        );
     }
 
     // ---- HideDialogItem / ShowDialogItem ($A827 / $A828) ----

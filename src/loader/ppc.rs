@@ -67060,43 +67060,64 @@ fn ppc_te_replace_selection(
     te_handle: u32,
     inserted: &[u8],
 ) -> i16 {
-    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+    let Some(mut buffer) = ppc_te_edit_buffer(memory, handles, te_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    let Some(existing) = ppc_te_text_bytes(memory, handles, te_handle) else {
-        return PPC_PARAM_ERR;
+    buffer.replace_selection(inserted);
+    ppc_te_commit_edit_buffer(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        te_handle,
+        &buffer,
+    )
+}
+
+fn ppc_te_edit_buffer(
+    memory: &mut PpcSectionMem,
+    handles: &[PpcHandleRecord],
+    te_handle: u32,
+) -> Option<crate::text_edit::TextEditBuffer> {
+    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+        return None;
     };
-    let mut start = usize::from(
-        memory
-            .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-            .unwrap_or(0),
-    )
-    .min(existing.len());
-    let mut end = usize::from(
-        memory
-            .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-            .unwrap_or(0),
-    )
-    .min(existing.len());
-    if end < start {
-        std::mem::swap(&mut start, &mut end);
-    }
-    let mut merged = Vec::with_capacity(
-        start
-            .saturating_add(inserted.len())
-            .saturating_add(existing.len().saturating_sub(end)),
+    Some(crate::text_edit::TextEditBuffer::new(
+        ppc_te_text_bytes(memory, handles, te_handle)?,
+        usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?),
+        usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?),
+    ))
+}
+
+fn ppc_te_commit_edit_buffer(
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    handles: &mut Vec<PpcHandleRecord>,
+    te_handle: u32,
+    buffer: &crate::text_edit::TextEditBuffer,
+) -> i16 {
+    let result = ppc_te_set_text(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        te_handle,
+        buffer.text(),
     );
-    merged.extend_from_slice(&existing[..start]);
-    merged.extend_from_slice(inserted);
-    merged.extend_from_slice(&existing[end..]);
-    let result = ppc_te_set_text(memory, heap_cursor, heap_limit, handles, te_handle, &merged);
     if result != PPC_NO_ERR {
         return result;
     }
-    let insertion_end = start.saturating_add(inserted.len()).min(i16::MAX as usize) as u16;
     if let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) {
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, insertion_end);
-        let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, insertion_end);
+        let selection = buffer.selection();
+        let _ = memory.write_u16_be(
+            te_ptr + PPC_TE_SEL_START_OFFSET,
+            selection.start.min(i16::MAX as usize) as u16,
+        );
+        let _ = memory.write_u16_be(
+            te_ptr + PPC_TE_SEL_END_OFFSET,
+            selection.end.min(i16::MAX as usize) as u16,
+        );
     }
     PPC_NO_ERR
 }
@@ -67109,49 +67130,18 @@ fn ppc_te_key(
     te_handle: u32,
     key: u8,
 ) -> i16 {
-    let Some(te_ptr) = ppc_te_record_ptr(memory, te_handle) else {
+    let Some(mut buffer) = ppc_te_edit_buffer(memory, handles, te_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
-    let length = memory
-        .read_u16_be(te_ptr + PPC_TE_LENGTH_OFFSET)
-        .unwrap_or(0);
-    let start = memory
-        .read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)
-        .unwrap_or(0)
-        .min(length);
-    let end = memory
-        .read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)
-        .unwrap_or(0)
-        .min(length);
-    match key {
-        0x08 | 0x7f => {
-            if start == end && start != 0 {
-                let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, start - 1);
-            }
-            ppc_te_replace_selection(memory, heap_cursor, heap_limit, handles, te_handle, &[])
-        }
-        0x1c => {
-            let insertion = if start != end {
-                start.min(end)
-            } else {
-                start.saturating_sub(1)
-            };
-            let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, insertion);
-            let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, insertion);
-            PPC_NO_ERR
-        }
-        0x1d => {
-            let insertion = if start != end {
-                start.max(end)
-            } else {
-                start.saturating_add(1).min(length)
-            };
-            let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET, insertion);
-            let _ = memory.write_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET, insertion);
-            PPC_NO_ERR
-        }
-        _ => ppc_te_replace_selection(memory, heap_cursor, heap_limit, handles, te_handle, &[key]),
-    }
+    buffer.apply_key(key);
+    ppc_te_commit_edit_buffer(
+        memory,
+        heap_cursor,
+        heap_limit,
+        handles,
+        te_handle,
+        &buffer,
+    )
 }
 
 fn ppc_te_line_range(
@@ -67194,14 +67184,6 @@ fn ppc_te_metrics(memory: &mut PpcSectionMem, te_ptr: u32) -> (i16, i16, i16, i1
     (font, size, line_height.max(1), ascent.max(0))
 }
 
-fn ppc_te_aligned_left(left: i16, right: i16, width: i16, alignment: i16) -> i16 {
-    match alignment {
-        1 => left.saturating_add(right.saturating_sub(left).saturating_sub(width) / 2),
-        -1 => right.saturating_sub(width),
-        _ => left,
-    }
-}
-
 fn ppc_te_click(
     memory: &mut PpcSectionMem,
     handles: &[PpcHandleRecord],
@@ -67240,7 +67222,7 @@ fn ppc_te_click(
         .map_or(start, |index| index + 1);
     let width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
-    let line_left = ppc_te_aligned_left(left.saturating_add(1), right, width, alignment);
+    let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
     let target_x = h.saturating_sub(line_left);
     let mut offset = start;
     let mut advance = 0i16;
@@ -67346,7 +67328,7 @@ fn ppc_te_draw_text_box(
         }
         let bytes = &text[line.start..line.visible_end];
         let width = ppc_text_bytes_advance_for_font(bytes, font, text_size);
-        let x = ppc_te_aligned_left(left, right, width, alignment);
+        let x = crate::text_edit::aligned_line_left(left, right, width, alignment, 0);
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,
@@ -67465,7 +67447,7 @@ fn ppc_te_get_point(
         .map_or(start, |index| index + 1);
     let line_width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
     let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
-    let line_left = ppc_te_aligned_left(left.saturating_add(1), right, line_width, alignment);
+    let line_left = crate::text_edit::aligned_line_left(left, right, line_width, alignment, 1);
     let h = line_left.saturating_add(ppc_text_bytes_advance_for_font(
         &text[start..offset.min(visible_end)],
         font,
@@ -67592,15 +67574,11 @@ fn ppc_te_selected_bytes(
     handles: &[PpcHandleRecord],
     te_handle: u32,
 ) -> Option<Vec<u8>> {
-    let te_ptr = ppc_te_record_ptr(memory, te_handle)?;
-    let text = ppc_te_text_bytes(memory, handles, te_handle)?;
-    let mut start =
-        usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET)?).min(text.len());
-    let mut end = usize::from(memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET)?).min(text.len());
-    if end < start {
-        std::mem::swap(&mut start, &mut end);
-    }
-    Some(text[start..end].to_vec())
+    Some(
+        ppc_te_edit_buffer(memory, handles, te_handle)?
+            .selected_text()
+            .to_vec(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -67616,6 +67594,9 @@ fn ppc_te_copy_or_cut(
     let Some(selected) = ppc_te_selected_bytes(memory, handles, te_handle) else {
         return PPC_NIL_HANDLE_ERR;
     };
+    if selected.is_empty() {
+        return PPC_NO_ERR;
+    }
     let result = ppc_te_set_scrap_bytes(memory, heap_cursor, heap_limit, handles, scrap, &selected);
     if result != PPC_NO_ERR || !cut {
         return result;
@@ -67759,7 +67740,7 @@ fn ppc_te_draw(
         }
         let width = ppc_text_bytes_advance_for_font(&text[start..visible_end], font, size);
         let alignment = memory.read_u16_be(te_ptr + PPC_TE_JUST_OFFSET).unwrap_or(0) as i16;
-        let line_left = ppc_te_aligned_left(left.saturating_add(1), right, width, alignment);
+        let line_left = crate::text_edit::aligned_line_left(left, right, width, alignment, 1);
         let _ = ppc_draw_text_bytes(
             memory,
             gworlds,
@@ -142545,13 +142526,39 @@ pub(crate) mod tests {
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0x1c;
+        loaded.run_with_hle_imports(64);
+        let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
+        assert_eq!(
+            loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+            Some(2)
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_END_OFFSET),
+            Some(2)
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+        loaded.cpu.gpr[3] = 0x1d;
+        loaded.run_with_hle_imports(64);
+        assert_eq!(
+            loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
+            Some(3)
+        );
+        assert_eq!(
+            ppc_te_text_bytes(&mut loaded.memory, &loaded.handles, te_handle),
+            Some(b"abZ".to_vec())
+        );
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::TEClick;
         loaded.tick_count = 100;
         loaded.cpu.gpr[3] = (12u32 << 16) | 20;
         loaded.cpu.gpr[4] = 0;
         loaded.cpu.gpr[5] = te_handle;
         loaded.run_with_hle_imports(64);
-        let te_ptr = loaded.memory.read_u32_be(te_handle).unwrap();
         assert_eq!(
             loaded.memory.read_u16_be(te_ptr + PPC_TE_SEL_START_OFFSET),
             Some(0)

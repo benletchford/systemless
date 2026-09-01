@@ -80,6 +80,7 @@ pub mod scripted_traces;
 pub mod sound;
 pub mod trace;
 pub mod trap;
+mod text_edit;
 mod ui_art;
 pub mod ui_theme;
 mod window_manager;
