@@ -122,6 +122,68 @@ impl Default for ProcessFileSystemState {
 #[derive(Debug)]
 pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>);
 
+/// Detached-by-default shared storage for one process manager collection.
+///
+/// Ordinary clones are snapshots so cloning a dispatcher cannot couple two
+/// processes. Adapters share only through `attach_to`, under the same
+/// serialized runner ownership used for guest RAM and the Memory Manager.
+#[derive(Debug)]
+pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
+
+impl<T: Default> Default for SharedProcessValue<T> {
+    fn default() -> Self {
+        Self(Rc::new(UnsafeCell::new(T::default())))
+    }
+}
+
+impl<T: Clone> Clone for SharedProcessValue<T> {
+    fn clone(&self) -> Self {
+        Self(Rc::new(UnsafeCell::new((**self).clone())))
+    }
+}
+
+impl<T> std::ops::Deref for SharedProcessValue<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: attachment and access are serialized by the owning runner;
+        // normal clones allocate detached snapshots.
+        unsafe { &*self.0.get() }
+    }
+}
+
+impl<T> std::ops::DerefMut for SharedProcessValue<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: see `Deref`.
+        unsafe { &mut *self.0.get() }
+    }
+}
+
+impl<T: Default> SharedProcessValue<T> {
+    pub(crate) fn attach_to(&mut self, process_value: &Self, is_empty: impl Fn(&T) -> bool) {
+        if Rc::ptr_eq(&self.0, &process_value.0) {
+            return;
+        }
+        assert!(
+            is_empty(self) || is_empty(process_value),
+            "cannot attach two populated process manager collections"
+        );
+        if is_empty(process_value) {
+            // SAFETY: attachment occurs before the adapter is exposed through
+            // the runner, so no references into either value exist.
+            unsafe {
+                *process_value.0.get() = std::mem::take(&mut **self);
+            }
+        }
+        self.0 = Rc::clone(&process_value.0);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 impl Default for SharedProcessFileSystem {
     fn default() -> Self {
         Self(Rc::new(UnsafeCell::new(ProcessFileSystemState::default())))
@@ -2814,6 +2876,8 @@ pub(crate) struct ProcessContext {
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
     file_system: SharedProcessFileSystem,
+    data_forks: SharedProcessValue<HashMap<String, Vec<u8>>>,
+    resource_forks: SharedProcessValue<HashMap<String, Vec<u8>>>,
 }
 
 impl ProcessContext {
@@ -2846,6 +2910,15 @@ impl ProcessContext {
 
     pub(crate) fn attach_file_system(&self, adapter: &mut SharedProcessFileSystem) {
         adapter.attach_to(&self.file_system);
+    }
+
+    pub(crate) fn attach_classic_file_system(
+        &self,
+        data_forks: &mut SharedProcessValue<HashMap<String, Vec<u8>>>,
+        resource_forks: &mut SharedProcessValue<HashMap<String, Vec<u8>>>,
+    ) {
+        data_forks.attach_to(&self.data_forks, HashMap::is_empty);
+        resource_forks.attach_to(&self.resource_forks, HashMap::is_empty);
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
@@ -4167,5 +4240,33 @@ mod tests {
         assert_eq!(classic.len(), 1);
         assert_eq!(native.len(), 1);
         assert_eq!(detached.len(), 0);
+    }
+
+    #[test]
+    fn attached_classic_file_maps_share_mutations_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut first_data = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+        let mut first_resources = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+        first_data.insert("Existing".to_string(), b"before".to_vec());
+        let mut second_data = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+        let mut second_resources = SharedProcessValue::<HashMap<String, Vec<u8>>>::default();
+
+        context.attach_classic_file_system(&mut first_data, &mut first_resources);
+        context.attach_classic_file_system(&mut second_data, &mut second_resources);
+        let detached_data = second_data.clone();
+        let detached_resources = second_resources.clone();
+
+        second_data
+            .get_mut("Existing")
+            .unwrap()
+            .extend_from_slice(b"-after");
+        first_resources.insert("Existing".to_string(), b"resource".to_vec());
+
+        assert!(first_data.ptr_eq(&second_data));
+        assert!(first_resources.ptr_eq(&second_resources));
+        assert_eq!(first_data.get("Existing").unwrap(), b"before-after");
+        assert_eq!(second_resources.get("Existing").unwrap(), b"resource");
+        assert_eq!(detached_data.get("Existing").unwrap(), b"before");
+        assert!(detached_resources.is_empty());
     }
 }

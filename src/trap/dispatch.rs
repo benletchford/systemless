@@ -15,6 +15,7 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     ProcessContext, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
+    SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -2061,9 +2062,9 @@ pub struct TrapDispatcher {
     /// chrome pixels without changing guest-visible Toolbox behavior.
     pub(crate) ui_theme_id: UiThemeId,
     /// Virtual filesystem: filename -> data fork contents
-    pub vfs: HashMap<String, Vec<u8>>,
+    pub vfs: SharedProcessValue<HashMap<String, Vec<u8>>>,
     /// Virtual filesystem: filename -> resource fork contents
-    pub vfs_rsrc: HashMap<String, Vec<u8>>,
+    pub vfs_rsrc: SharedProcessValue<HashMap<String, Vec<u8>>>,
     /// Finder metadata and catalog IDs for VFS file entries.
     pub(crate) vfs_metadata: HashMap<String, VfsMetadata>,
     /// Directory catalog metadata keyed by normalized path.
@@ -2941,6 +2942,7 @@ pub(crate) struct LoadedResources {
 impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.adopt_menu_tracking(&mut self.menu_tracking);
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
@@ -3957,8 +3959,8 @@ impl TrapDispatcher {
             std_pix_gateway: 0,
             param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             ui_theme_id: UiThemeId::ClassicSystem7,
-            vfs: HashMap::new(),
-            vfs_rsrc: HashMap::new(),
+            vfs: SharedProcessValue::default(),
+            vfs_rsrc: SharedProcessValue::default(),
             vfs_metadata: HashMap::new(),
             vfs_directories,
             vfs_directory_paths,
