@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.12](https://github.com/benletchford/systemless/compare/v0.27.11...v0.27.12) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ppc:** implement StdCLib string searches ([#1123](https://github.com/benletchford/systemless/issues/1123)) ([89a6bfc](https://github.com/benletchford/systemless/commit/89a6bfc17d0f05e65fb64d10541452aa99260452))
+
 ## [0.27.11](https://github.com/benletchford/systemless/compare/v0.27.10...v0.27.11) (2026-09-01)
 
 
