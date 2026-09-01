@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/benletchford/systemless/compare/v0.27.16...v0.28.0) (2026-09-01)
+
+
+### Features
+
+* **ppc:** implement the Math64 integer library ([#1136](https://github.com/benletchford/systemless/issues/1136)) ([4efae65](https://github.com/benletchford/systemless/commit/4efae650f072b8247e397dfa9cb9fadcb837c1a0))
+
 ## [0.27.16](https://github.com/benletchford/systemless/compare/v0.27.15...v0.27.16) (2026-09-01)
 
 
