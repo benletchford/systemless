@@ -217,6 +217,24 @@ pub struct ProcessVfsVolumeRecord {
     pub modified_date: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProcessVfsMetadata {
+    pub file_id: u32,
+    pub parent_dir_id: u32,
+    pub file_type: u32,
+    pub creator: u32,
+    pub finder_flags: u16,
+    pub created_date: u32,
+    pub modified_date: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessClassicVfsDirectory {
+    pub dir_id: u32,
+    pub parent_dir_id: u32,
+    pub name: String,
+}
+
 /// Native record index backed by the canonical process data-fork map.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessVfsFileRecords {
@@ -532,6 +550,16 @@ pub struct ProcessFileSystemState {
     pub(crate) vfs_directories: Vec<ProcessVfsDirectory>,
     pub(crate) next_vfs_dir_id: u32,
     pub(crate) default_dir_id: u32,
+    pub(crate) classic_vfs_metadata:
+        SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
+    pub(crate) classic_vfs_directories:
+        SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
+    pub(crate) classic_vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
+    pub(crate) classic_vfs_volumes:
+        SharedProcessValue<HashMap<i16, ProcessVfsVolumeRecord>>,
+    pub(crate) classic_vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
+    pub(crate) classic_next_vfs_dir_id: SharedProcessValue<u32>,
+    pub(crate) classic_default_dir_id: SharedProcessValue<u32>,
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
     pub(crate) resource_manager: SharedProcessResourceManager,
@@ -547,6 +575,13 @@ impl Default for ProcessFileSystemState {
             vfs_directories: Vec::new(),
             next_vfs_dir_id: 0,
             default_dir_id: 0,
+            classic_vfs_metadata: SharedProcessValue::default(),
+            classic_vfs_directories: SharedProcessValue::default(),
+            classic_vfs_directory_paths: SharedProcessValue::default(),
+            classic_vfs_volumes: SharedProcessValue::default(),
+            classic_vfs_volume_names: SharedProcessValue::default(),
+            classic_next_vfs_dir_id: SharedProcessValue::from_value(16),
+            classic_default_dir_id: SharedProcessValue::from_value(2),
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
             resource_manager: SharedProcessResourceManager::default(),
@@ -730,6 +765,12 @@ impl<T> std::ops::DerefMut for SharedProcessValue<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: see `Deref`.
         unsafe { &mut *self.0.get() }
+    }
+}
+
+impl<T> SharedProcessValue<T> {
+    pub(crate) fn from_value(value: T) -> Self {
+        Self(Rc::new(UnsafeCell::new(value)))
     }
 }
 
@@ -3618,6 +3659,39 @@ impl ProcessContext {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attach_classic_vfs_catalogue(
+        &self,
+        metadata: &mut SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
+        directories: &mut SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
+        directory_paths: &mut SharedProcessValue<HashMap<u32, String>>,
+        volumes: &mut SharedProcessValue<HashMap<i16, ProcessVfsVolumeRecord>>,
+        volume_names: &mut SharedProcessValue<HashMap<String, i16>>,
+        next_dir_id: &mut SharedProcessValue<u32>,
+        default_dir_id: &mut SharedProcessValue<u32>,
+    ) {
+        metadata.attach_to(&self.file_system.classic_vfs_metadata, HashMap::is_empty);
+        directories.attach_to(
+            &self.file_system.classic_vfs_directories,
+            HashMap::is_empty,
+        );
+        directory_paths.attach_to(
+            &self.file_system.classic_vfs_directory_paths,
+            HashMap::is_empty,
+        );
+        volumes.attach_to(&self.file_system.classic_vfs_volumes, HashMap::is_empty);
+        volume_names.attach_to(
+            &self.file_system.classic_vfs_volume_names,
+            HashMap::is_empty,
+        );
+        next_dir_id.attach_to(&self.file_system.classic_next_vfs_dir_id, |value| {
+            *value == 16
+        });
+        default_dir_id.attach_to(&self.file_system.classic_default_dir_id, |value| {
+            *value == 2
+        });
+    }
+
     /// Install a canonical process-memory allocation and attach a CPU
     /// address-space adapter to it.
     ///
@@ -4978,6 +5052,81 @@ mod tests {
         assert_eq!(detached_data.get("Existing").unwrap(), b"before");
         assert!(!detached_data.contains_key("Created"));
         assert!(detached_resources.is_empty());
+    }
+
+    #[test]
+    fn attached_classic_catalogues_share_mutations_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut first_metadata =
+            SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
+        let mut first_directories =
+            SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
+        let mut first_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
+        let mut first_volumes =
+            SharedProcessValue::<HashMap<i16, ProcessVfsVolumeRecord>>::default();
+        let mut first_volume_names = SharedProcessValue::<HashMap<String, i16>>::default();
+        let mut first_next_dir_id = SharedProcessValue::from_value(16);
+        let mut first_default_dir_id = SharedProcessValue::from_value(2);
+        first_directories.insert(
+            String::new(),
+            ProcessClassicVfsDirectory {
+                dir_id: 2,
+                parent_dir_id: 1,
+                name: "MacintoshHD".to_string(),
+            },
+        );
+        first_directory_paths.insert(2, String::new());
+
+        context.attach_classic_vfs_catalogue(
+            &mut first_metadata,
+            &mut first_directories,
+            &mut first_directory_paths,
+            &mut first_volumes,
+            &mut first_volume_names,
+            &mut first_next_dir_id,
+            &mut first_default_dir_id,
+        );
+
+        let mut second_metadata =
+            SharedProcessValue::<HashMap<String, ProcessVfsMetadata>>::default();
+        let mut second_directories =
+            SharedProcessValue::<HashMap<String, ProcessClassicVfsDirectory>>::default();
+        let mut second_directory_paths = SharedProcessValue::<HashMap<u32, String>>::default();
+        let mut second_volumes =
+            SharedProcessValue::<HashMap<i16, ProcessVfsVolumeRecord>>::default();
+        let mut second_volume_names = SharedProcessValue::<HashMap<String, i16>>::default();
+        let mut second_next_dir_id = SharedProcessValue::from_value(16);
+        let mut second_default_dir_id = SharedProcessValue::from_value(2);
+        context.attach_classic_vfs_catalogue(
+            &mut second_metadata,
+            &mut second_directories,
+            &mut second_directory_paths,
+            &mut second_volumes,
+            &mut second_volume_names,
+            &mut second_next_dir_id,
+            &mut second_default_dir_id,
+        );
+        let detached_directories = second_directories.clone();
+        let detached_default_dir_id = second_default_dir_id.clone();
+
+        first_directories.insert(
+            "Games".to_string(),
+            ProcessClassicVfsDirectory {
+                dir_id: 16,
+                parent_dir_id: 2,
+                name: "Games".to_string(),
+            },
+        );
+        first_directory_paths.insert(16, "Games".to_string());
+        *first_next_dir_id = 17;
+        *first_default_dir_id = 16;
+
+        assert!(second_directories.contains_key("Games"));
+        assert_eq!(second_directory_paths.get(&16).map(String::as_str), Some("Games"));
+        assert_eq!(*second_next_dir_id, 17);
+        assert_eq!(*second_default_dir_id, 16);
+        assert!(!detached_directories.contains_key("Games"));
+        assert_eq!(*detached_default_dir_id, 2);
     }
 
     #[test]
