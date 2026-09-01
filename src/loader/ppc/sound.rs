@@ -184,19 +184,9 @@ impl PartialEq for PpcSoundState {
 
 impl Eq for PpcSoundState {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcVblTaskRecord {
-    pub task_ptr: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PpcTimerTaskRecord {
-    pub task_ptr: u32,
-    pub callback: u32,
-    pub active: bool,
-    pub fire_at_tick: u32,
-    pub last_fired_tick: Option<u32>,
-}
+pub use crate::callback_manager::{
+    ProcessTimerTask as PpcTimerTaskRecord, ProcessVblTask as PpcVblTaskRecord,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PpcTimerCallbackInvocationRecord {

@@ -50,6 +50,7 @@
 mod adb;
 pub mod audio;
 pub mod binhex;
+pub mod callback_manager;
 mod control_manager;
 pub mod cpu;
 pub mod debug_overlay;
@@ -78,9 +79,9 @@ pub mod runner;
 #[cfg(feature = "test-support")]
 pub mod scripted_traces;
 pub mod sound;
+mod text_edit;
 pub mod trace;
 pub mod trap;
-mod text_edit;
 mod ui_art;
 pub mod ui_theme;
 mod window_manager;

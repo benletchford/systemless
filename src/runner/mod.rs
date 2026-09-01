@@ -1,5 +1,6 @@
 //! Fixture Runner - Loading and execution infrastructure
 
+use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::ppc::{
@@ -8750,7 +8751,12 @@ impl FixtureRunner {
             .iter()
             .map(|task| task.pending)
             .collect();
-        for task in &mut self.dispatcher.vbl_tasks {
+        for task in self
+            .dispatcher
+            .vbl_tasks
+            .iter_mut()
+            .filter(|task| task.architecture == CallbackTaskArchitecture::M68k)
+        {
             let count = self.bus.read_word(task.task_ptr + 10) as i16;
             if count <= 0 {
                 continue;
@@ -8764,12 +8770,19 @@ impl FixtureRunner {
 
         let due_index = pending_before
             .iter()
-            .position(|pending| *pending)
+            .enumerate()
+            .position(|(index, pending)| {
+                *pending
+                    && self.dispatcher.vbl_tasks[index].architecture
+                        == CallbackTaskArchitecture::M68k
+            })
             .or_else(|| {
                 self.dispatcher
                     .vbl_tasks
                     .iter()
-                    .position(|task| task.pending)
+                    .position(|task| {
+                        task.architecture == CallbackTaskArchitecture::M68k && task.pending
+                    })
             });
         let due_task = due_index.map(|index| {
             let task = &mut self.dispatcher.vbl_tasks[index];
@@ -8899,11 +8912,15 @@ impl FixtureRunner {
             .dispatcher
             .timer_tasks
             .iter_mut()
-            .filter(|task| task.active && current_subtick >= task.fire_at_subtick)
+            .filter(|task| {
+                task.architecture == CallbackTaskArchitecture::M68k
+                    && task.active
+                    && current_subtick >= task.fire_at_subtick
+            })
             .min_by_key(|task| task.fire_at_subtick)
         {
             let task_ptr = task.task_ptr;
-            let tm_addr = task.tm_addr;
+            let tm_addr = task.callback;
             self.dispatcher.timer_current_subtick = current_subtick;
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
@@ -11937,7 +11954,12 @@ mod tests {
         ppc_app.memory.add_region(TASK, vec![0; 0x104]);
         ppc_app.memory.write_u32_be(TASK + 6, CALLBACK).unwrap();
         ppc_app.memory.write_u16_be(TASK + 10, 1).unwrap();
-        ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: TASK });
+        ppc_app.vbl_tasks.push(PpcVblTaskRecord {
+            task_ptr: TASK,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            slot: None,
+            pending: false,
+        });
         let mut tick_count = test_ppc_import_binding(0, "InterfaceLib", "LMGetTicks");
         tick_count.address = PPC_IMPORT_TRAP_BASE;
         tick_count.trap_pc = PPC_IMPORT_TRAP_BASE;
@@ -11994,7 +12016,12 @@ mod tests {
                     .write_u32_be(callback + offset as u32 * 4, instruction)
                     .unwrap();
             }
-            ppc_app.vbl_tasks.push(PpcVblTaskRecord { task_ptr: task });
+            ppc_app.vbl_tasks.push(PpcVblTaskRecord {
+                task_ptr: task,
+                architecture: CallbackTaskArchitecture::PowerPc,
+                slot: None,
+                pending: false,
+            });
         }
 
         let mut memory_manager = runner.process_context.memory_manager_mut();
@@ -13391,8 +13418,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound,
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -15024,12 +15051,18 @@ mod tests {
         ppc_app.imports = vec![exit];
         ppc_app.vbl_tasks.push(PpcVblTaskRecord {
             task_ptr: PPC_DATA_BASE + 0x3000,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            slot: None,
+            pending: false,
         });
         ppc_app.timer_tasks.push(PpcTimerTaskRecord {
             task_ptr: PPC_DATA_BASE + 0x3100,
+            architecture: CallbackTaskArchitecture::PowerPc,
+            extended: false,
             callback: CALLBACK,
             active: true,
             fire_at_tick: 0,
+            fire_at_subtick: 0,
             last_fired_tick: None,
         });
 
@@ -15635,8 +15668,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound: Default::default(),
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: SharedProcessFileSystem::from_state(
                 ProcessFileSystemState {
                 files: Vec::new(),
@@ -16653,8 +16686,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound: Default::default(),
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -16805,8 +16838,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound: Default::default(),
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -17216,8 +17249,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound: Default::default(),
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -17527,8 +17560,8 @@ mod tests {
             toolbox_startup: Default::default(),
             quicktime: Default::default(),
             sound: Default::default(),
-            timer_tasks: Vec::new(),
-            vbl_tasks: Vec::new(),
+            timer_tasks: Default::default(),
+            vbl_tasks: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -19069,8 +19102,9 @@ mod tests {
 
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            architecture: CallbackTaskArchitecture::M68k,
             extended: false,
-            tm_addr: 0x0004_1234,
+            callback: 0x0004_1234,
             active: true,
             fire_at_tick: 10,
             fire_at_subtick: 10_000_000,
@@ -19122,8 +19156,9 @@ mod tests {
         runner.bus.write_word(callback_addr, 0x4E75); // RTS
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            architecture: CallbackTaskArchitecture::M68k,
             extended: false,
-            tm_addr: callback_addr,
+            callback: callback_addr,
             active: true,
             fire_at_tick: 101,
             fire_at_subtick: 101_000_000,
@@ -19162,8 +19197,9 @@ mod tests {
         runner.tick_budget = runner.instructions_per_tick as i32;
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            architecture: CallbackTaskArchitecture::M68k,
             extended: false,
-            tm_addr: callback_addr,
+            callback: callback_addr,
             active: true,
             fire_at_tick: 101,
             fire_at_subtick: 100_200_000,
@@ -19208,8 +19244,9 @@ mod tests {
         });
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr: 0x0039_38C8,
+            architecture: CallbackTaskArchitecture::M68k,
             extended: false,
-            tm_addr: callback_addr,
+            callback: callback_addr,
             active: true,
             fire_at_tick: 102,
             fire_at_subtick: 102_000_000,
@@ -19248,8 +19285,9 @@ mod tests {
         runner.dispatcher.timer_tasks.extend([
             TimerTask {
                 task_ptr: 0x0039_38C8,
+                architecture: CallbackTaskArchitecture::M68k,
                 extended: false,
-                tm_addr: 0x0002_0000,
+                callback: 0x0002_0000,
                 active: true,
                 fire_at_tick: 10,
                 fire_at_subtick: 10_000_000,
@@ -19257,8 +19295,9 @@ mod tests {
             },
             TimerTask {
                 task_ptr: 0x0039_3900,
+                architecture: CallbackTaskArchitecture::M68k,
                 extended: false,
-                tm_addr: 0x0002_1000,
+                callback: 0x0002_1000,
                 active: true,
                 fire_at_tick: 10,
                 fire_at_subtick: 10_000_000,
@@ -19307,8 +19346,9 @@ mod tests {
         runner.cpu.write_reg(Register::A7, interrupted_sp);
         runner.dispatcher.timer_tasks.push(TimerTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             extended: false,
-            tm_addr: 0x0002_0000,
+            callback: 0x0002_0000,
             active: true,
             fire_at_tick: 10,
             fire_at_subtick: 10_100_000,
@@ -20278,6 +20318,7 @@ mod tests {
         runner.bus.write_word(task_ptr + 12, 0); // vblPhase
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot: Some(9),
             pending: false,
         });
@@ -20324,6 +20365,7 @@ mod tests {
             runner.bus.write_word(task_ptr + 10, 1);
             runner.dispatcher.vbl_tasks.push(VblTask {
                 task_ptr,
+                architecture: CallbackTaskArchitecture::M68k,
                 slot: None,
                 pending: false,
             });
@@ -20365,6 +20407,7 @@ mod tests {
         runner.bus.write_word(task_ptr + 12, 0);
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot: None,
             pending: false,
         });
@@ -20397,6 +20440,7 @@ mod tests {
         runner.bus.write_word(task_ptr + 12, 0);
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot: None,
             pending: false,
         });
@@ -22158,6 +22202,7 @@ mod tests {
         runner.bus.write_word(task_ptr + 12, 0);
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot: None,
             pending: false,
         });
@@ -24368,6 +24413,7 @@ mod tests {
         runner.bus.write_word(task_ptr + 12, 0);
         runner.dispatcher.vbl_tasks.push(VblTask {
             task_ptr,
+            architecture: CallbackTaskArchitecture::M68k,
             slot: None,
             pending: false,
         });
