@@ -4958,6 +4958,13 @@ impl PpcProcessMemoryManager {
     fn ptr_eq(&self, memory_manager: &SharedProcessMemoryManager) -> bool {
         self.0.ptr_eq(memory_manager)
     }
+
+    fn heap_limit(&self, fallback: u32) -> u32 {
+        self.0
+            .borrow()
+            .native_heap_state()
+            .map_or(fallback, |heap| heap.heap_limit)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4971,7 +4978,6 @@ pub struct PpcLoadedApp {
     pub stack_size: u32,
     pub stack_pointer: u32,
     pub heap_cursor: u32,
-    pub heap_limit: u32,
     pub last_mem_error: i16,
     pub tick_count: u32,
     pub clock_cycles_per_tick: u32,
@@ -5122,6 +5128,11 @@ impl PpcLoadedApp {
             .map_or(PPC_HEAP_BASE, |heap| heap.heap_base)
     }
 
+    /// Return the upper bound of the process-owned native heap.
+    pub fn heap_limit(&self) -> u32 {
+        self.process_memory_manager.heap_limit(self.stack_base)
+    }
+
     /// Report whether `MaxApplZone` has expanded the process-owned native heap.
     pub fn heap_maximized(&self) -> bool {
         self.process_memory_manager
@@ -5196,7 +5207,6 @@ impl PpcLoadedApp {
         if memory_manager.has_native_allocator() {
             memory_manager.mutate_native_allocator(|allocator| {
                 allocator.heap.heap_cursor = self.heap_cursor;
-                allocator.heap.heap_limit = self.heap_limit;
                 allocator.heap.last_mem_error = self.last_mem_error;
                 allocator.ptrs = ptrs;
                 allocator.free_ptr_blocks = free_ptr_blocks;
@@ -5206,7 +5216,7 @@ impl PpcLoadedApp {
                 ProcessNativeHeapState {
                     heap_base: PPC_HEAP_BASE,
                     heap_cursor: self.heap_cursor,
-                    heap_limit: self.heap_limit,
+                    heap_limit: self.stack_base,
                     last_mem_error: self.last_mem_error,
                     heap_maximized: false,
                     master_pointer_blocks_requested: 0,
@@ -5230,6 +5240,30 @@ impl PpcLoadedApp {
         result
     }
 
+    #[cfg(test)]
+    fn set_heap_limit(&self, heap_limit: u32) {
+        let mut memory_manager = self.process_memory_manager.0.borrow_mut();
+        if memory_manager.has_native_allocator() {
+            memory_manager.mutate_native_allocator(|allocator| {
+                allocator.heap.heap_limit = heap_limit;
+            });
+        } else {
+            memory_manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: PPC_HEAP_BASE,
+                    heap_cursor: self.heap_cursor,
+                    heap_limit,
+                    last_mem_error: self.last_mem_error,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+        }
+    }
+
     fn publish_process_memory_manager(
         &self,
         memory_manager: &mut ProcessMemoryManager,
@@ -5238,14 +5272,18 @@ impl PpcLoadedApp {
         let existing_heap = memory_manager.native_heap_state();
         let pointer_records =
             pointer_records.or_else(|| memory_manager.native_allocator_snapshot());
+        let canonical_heap = pointer_records
+            .as_ref()
+            .map(|allocator| allocator.heap)
+            .or(existing_heap);
         memory_manager.publish_native_allocator(
             ProcessNativeHeapState {
-                heap_base: existing_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_base),
+                heap_base: canonical_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_base),
                 heap_cursor: self.heap_cursor,
-                heap_limit: self.heap_limit,
+                heap_limit: canonical_heap.map_or(self.stack_base, |heap| heap.heap_limit),
                 last_mem_error: self.last_mem_error,
-                heap_maximized: existing_heap.is_some_and(|heap| heap.heap_maximized),
-                master_pointer_blocks_requested: existing_heap
+                heap_maximized: canonical_heap.is_some_and(|heap| heap.heap_maximized),
+                master_pointer_blocks_requested: canonical_heap
                     .map_or(0, |heap| heap.master_pointer_blocks_requested),
             },
             pointer_records
@@ -5284,9 +5322,12 @@ impl PpcLoadedApp {
 
     fn apply_process_native_allocator(&mut self, allocator: ProcessNativeAllocatorState) {
         self.heap_cursor = allocator.heap.heap_cursor;
-        self.heap_limit = allocator.heap.heap_limit;
         self.last_mem_error = allocator.heap.last_mem_error;
-        ppc_update_zone_free_bytes(&mut self.memory, self.heap_cursor, self.heap_limit);
+        ppc_update_zone_free_bytes(
+            &mut self.memory,
+            self.heap_cursor,
+            allocator.heap.heap_limit,
+        );
     }
 
     fn apply_process_handle_metadata(
@@ -5339,7 +5380,7 @@ impl PpcLoadedApp {
         // Preserve that source-compatible path by attaching late only when
         // every byte outside the future bump-heap tail is genuinely unmapped.
         let future_start = u64::from(self.heap_cursor);
-        let future_end = u64::from(self.heap_limit);
+        let future_end = u64::from(self.heap_limit());
         let before_end = end.min(future_start);
         let after_start = start.max(future_end);
         if ordinary_overlaps(&mut self.memory, start, before_end)
@@ -8698,12 +8739,12 @@ impl PpcLoadedApp {
         let input = self.input;
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let mut heap_cursor = self.heap_cursor;
-        let mut heap_limit = self.heap_limit;
         let mut last_mem_error = self.last_mem_error;
         let native_allocator = process_memory_manager
             .native_allocator_snapshot()
             .expect("native allocator registered before execution");
         let native_heap = native_allocator.heap;
+        let mut heap_limit = native_heap.heap_limit;
         let mut heap_maximized = native_heap.heap_maximized;
         let mut master_pointer_blocks_requested = native_heap.master_pointer_blocks_requested;
         let tick_count = self.tick_count;
@@ -9573,7 +9614,6 @@ impl PpcLoadedApp {
         drop(fetch_observer);
 
         self.heap_cursor = heap_cursor;
-        self.heap_limit = heap_limit;
         self.last_mem_error = last_mem_error;
         self.tick_count = tick_count;
         self.current_resource_refnum = current_resource_refnum;
@@ -9667,7 +9707,7 @@ impl PpcLoadedApp {
         ppc_synchronize_process_native_allocator(
             process_memory_manager,
             self.heap_cursor,
-            self.heap_limit,
+            heap_limit,
             self.last_mem_error,
             heap_maximized,
             master_pointer_blocks_requested,
@@ -14160,7 +14200,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         stack_size,
         stack_pointer,
         heap_cursor,
-        heap_limit: stack_base,
         last_mem_error: 0,
         tick_count: 0,
         clock_cycles_per_tick: 1,
@@ -82767,6 +82806,14 @@ fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // Low-level allocator tests borrow adapter fields independently, so read
+    // the canonical heap limit through the disjoint manager field.
+    macro_rules! test_heap_limit {
+        ($app:ident) => {
+            $app.process_memory_manager.heap_limit($app.stack_base)
+        };
+    }
     use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
     use crate::memory::MemoryBus;
@@ -82928,7 +82975,7 @@ pub(crate) mod tests {
         let menu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             menu_id,
@@ -82940,7 +82987,7 @@ pub(crate) mod tests {
                 ppc_insert_menu_items(
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     &mut loaded.handles,
                     menu,
                     scratch + 0x80,
@@ -82953,7 +83000,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 menu,
@@ -82978,7 +83025,7 @@ pub(crate) mod tests {
             ppc_delete_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 current_menu_list,
                 menu_id,
@@ -82989,7 +83036,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 menu,
@@ -83512,7 +83559,7 @@ pub(crate) mod tests {
         let regular = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             128,
@@ -83521,7 +83568,7 @@ pub(crate) mod tests {
         let hierarchical = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             200,
@@ -83533,7 +83580,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 regular,
                 regular_items,
@@ -83545,7 +83592,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 hierarchical,
                 hierarchical_items,
@@ -83557,7 +83604,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 regular,
@@ -83569,7 +83616,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 hierarchical,
@@ -83718,7 +83765,7 @@ pub(crate) mod tests {
             },
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -83749,7 +83796,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 hierarchical,
@@ -83837,7 +83884,7 @@ pub(crate) mod tests {
         let color_handle = ppc_ensure_menu_color_table_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -83846,7 +83893,7 @@ pub(crate) mod tests {
             ppc_replace_menu_bytes(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 color_handle,
                 &color_bytes,
@@ -84153,7 +84200,7 @@ pub(crate) mod tests {
         let regular = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             200,
@@ -84162,7 +84209,7 @@ pub(crate) mod tests {
         let hierarchical = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             200,
@@ -84173,7 +84220,7 @@ pub(crate) mod tests {
                 ppc_insert_menu(
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     &mut loaded.handles,
                     &mut free_handle_blocks,
                     handle,
@@ -84193,7 +84240,7 @@ pub(crate) mod tests {
             ppc_delete_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu_list_handle,
                 200,
@@ -84218,7 +84265,7 @@ pub(crate) mod tests {
             ppc_delete_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu_list_handle,
                 200,
@@ -84251,7 +84298,7 @@ pub(crate) mod tests {
         let existing = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             200,
@@ -84260,7 +84307,7 @@ pub(crate) mod tests {
         let insertion = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             201,
@@ -84285,7 +84332,7 @@ pub(crate) mod tests {
             &full,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -84296,7 +84343,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 insertion,
@@ -84521,7 +84568,7 @@ pub(crate) mod tests {
         let menu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             128,
@@ -84532,7 +84579,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 menu,
@@ -85064,7 +85111,7 @@ pub(crate) mod tests {
         let color_handle = ppc_ensure_menu_color_table_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -85073,7 +85120,7 @@ pub(crate) mod tests {
             ppc_replace_menu_bytes(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 color_handle,
                 &color_bytes,
@@ -85445,7 +85492,7 @@ pub(crate) mod tests {
             &mut loaded.cpu,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &loaded.vfs_resources,
             &mut loaded.toolbox_startup,
             invocation,
@@ -85636,7 +85683,7 @@ pub(crate) mod tests {
         let child = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             141,
@@ -85647,7 +85694,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 child,
                 scratch + 0x180,
@@ -85665,7 +85712,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 child,
@@ -86160,7 +86207,7 @@ pub(crate) mod tests {
         let submenu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             201,
@@ -86170,7 +86217,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 submenu,
                 scratch + 0x280,
@@ -86182,7 +86229,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 submenu,
@@ -86496,7 +86543,7 @@ pub(crate) mod tests {
         let submenu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             201,
@@ -86507,7 +86554,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 submenu,
                 scratch + 0x180,
@@ -86519,7 +86566,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 submenu,
@@ -86796,7 +86843,7 @@ pub(crate) mod tests {
         let options = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             201,
@@ -86805,7 +86852,7 @@ pub(crate) mod tests {
         let speed = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             202,
@@ -86817,7 +86864,7 @@ pub(crate) mod tests {
                 ppc_insert_menu_items(
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     &mut loaded.handles,
                     menu,
                     items,
@@ -86829,7 +86876,7 @@ pub(crate) mod tests {
                 ppc_insert_menu(
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     &mut loaded.handles,
                     &mut free_handle_blocks,
                     menu,
@@ -87417,7 +87464,7 @@ pub(crate) mod tests {
         let menu_handle = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             128,
@@ -87428,7 +87475,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu_handle,
                 scratch + 0x20,
@@ -87440,7 +87487,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 menu_handle,
@@ -88165,6 +88212,7 @@ pub(crate) mod tests {
         assert!(native
             .process_memory_manager
             .ptr_eq(&process_memory_manager));
+        let attached_heap_limit = native.heap_limit() - 0x1000;
 
         process_memory_manager
             .borrow_mut()
@@ -88178,6 +88226,7 @@ pub(crate) mod tests {
         process_memory_manager
             .borrow_mut()
             .mutate_native_allocator(|allocator| {
+                allocator.heap.heap_limit = attached_heap_limit;
                 allocator.heap.heap_maximized = true;
                 allocator.heap.master_pointer_blocks_requested = 7;
                 allocator.ptrs.push(ProcessPtrRecord {
@@ -88196,8 +88245,10 @@ pub(crate) mod tests {
                 });
             });
         assert!(native.heap_maximized());
+        assert_eq!(native.heap_limit(), attached_heap_limit);
         assert_eq!(native.master_pointer_blocks_requested(), 7);
         assert!(!detached.heap_maximized());
+        assert_eq!(detached.heap_limit(), detached.stack_base);
         assert_eq!(detached.master_pointer_blocks_requested(), 0);
         assert_eq!(native.ptrs().last().map(|record| record.size), Some(16));
         assert_eq!(
@@ -88257,7 +88308,7 @@ pub(crate) mod tests {
                 let prior_ptr = ppc_alloc_ptr(
                     &mut native.memory,
                     &mut native.heap_cursor,
-                    native.heap_limit,
+                    allocator.heap.heap_limit,
                     &mut ptrs,
                     &mut free_ptr_blocks,
                     24,
@@ -88266,7 +88317,7 @@ pub(crate) mod tests {
                 ppc_synchronize_process_native_allocator(
                     memory_manager,
                     native.heap_cursor,
-                    native.heap_limit,
+                    allocator.heap.heap_limit,
                     native.last_mem_error,
                     allocator.heap.heap_maximized,
                     allocator.heap.master_pointer_blocks_requested,
@@ -88395,7 +88446,7 @@ pub(crate) mod tests {
                 let blocking_ptr = ppc_alloc_ptr(
                     &mut native.memory,
                     &mut native.heap_cursor,
-                    native.heap_limit,
+                    allocator.heap.heap_limit,
                     &mut ptrs,
                     &mut free_ptr_blocks,
                     16,
@@ -88404,7 +88455,7 @@ pub(crate) mod tests {
                 ppc_synchronize_process_native_allocator(
                     memory_manager,
                     native.heap_cursor,
-                    native.heap_limit,
+                    allocator.heap.heap_limit,
                     native.last_mem_error,
                     allocator.heap.heap_maximized,
                     allocator.heap.master_pointer_blocks_requested,
@@ -88853,7 +88904,7 @@ pub(crate) mod tests {
             &menu_handles,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -88908,7 +88959,7 @@ pub(crate) mod tests {
             &menu_handles,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -88943,7 +88994,7 @@ pub(crate) mod tests {
             &[0x1111_0000, 0x2222_0000],
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -88990,7 +89041,7 @@ pub(crate) mod tests {
             &original,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -89111,7 +89162,7 @@ pub(crate) mod tests {
             ppc_replace_menu_list_definition(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 current,
                 &nonstandard,
@@ -89508,7 +89559,7 @@ pub(crate) mod tests {
         let color_handle = ppc_ensure_menu_color_table_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -89517,7 +89568,7 @@ pub(crate) mod tests {
             ppc_replace_menu_bytes(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 color_handle,
                 &stale,
@@ -89754,7 +89805,7 @@ pub(crate) mod tests {
         let color_handle = ppc_ensure_menu_color_table_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -89762,7 +89813,7 @@ pub(crate) mod tests {
             ppc_replace_menu_bytes(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 color_handle,
                 &[
@@ -89812,7 +89863,7 @@ pub(crate) mod tests {
         let source = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &source_bytes,
         );
@@ -91169,7 +91220,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.stack_size, PPC_DEFAULT_STACK_SIZE);
         assert_eq!(loaded.heap_base(), PPC_HEAP_BASE);
         assert_eq!(loaded.heap_cursor, PPC_HEAP_BASE);
-        assert_eq!(loaded.heap_limit, PPC_STACK_BASE);
+        assert_eq!(test_heap_limit!(loaded), PPC_STACK_BASE);
         assert_eq!(loaded.last_mem_error, 0);
         assert_eq!(loaded.current_resource_refnum, 0);
         assert_eq!(loaded.last_resource_error, 0);
@@ -91476,7 +91527,7 @@ pub(crate) mod tests {
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             64,
             true,
         );
@@ -91560,7 +91611,7 @@ pub(crate) mod tests {
         let handle = ppc_new_control_record_values(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.controls,
@@ -91618,7 +91669,7 @@ pub(crate) mod tests {
         let handle = ppc_new_control_record_values(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.controls,
@@ -91687,7 +91738,7 @@ pub(crate) mod tests {
         let handle = ppc_new_control_record_values(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.controls,
@@ -91732,7 +91783,7 @@ pub(crate) mod tests {
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             32,
             true,
         );
@@ -91741,7 +91792,7 @@ pub(crate) mod tests {
         let handle = ppc_new_control_values(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.controls,
@@ -91791,7 +91842,7 @@ pub(crate) mod tests {
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             32,
             true,
         );
@@ -91800,7 +91851,7 @@ pub(crate) mod tests {
         let handle = ppc_new_control_values(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.controls,
@@ -91830,7 +91881,7 @@ pub(crate) mod tests {
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             64,
             true,
         );
@@ -91911,7 +91962,7 @@ pub(crate) mod tests {
         let (bounds, title) = ppc_materialize_window_resource_parameters(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &wind,
         )
         .unwrap();
@@ -95485,7 +95536,7 @@ pub(crate) mod tests {
             Some(ppc_heap_free_capacity(
                 &loaded.memory,
                 loaded.heap_cursor,
-                loaded.heap_limit
+                test_heap_limit!(loaded)
             )
             .0)
         );
@@ -95513,10 +95564,10 @@ pub(crate) mod tests {
             .memory
             .add_readonly_allocation_exclusion(reservation_base, reservation_len)
             .unwrap();
-        loaded.heap_limit = reservation_base + reservation_len + 0x2000;
+        loaded.set_heap_limit(reservation_base + reservation_len + 0x2000);
         let expected = (0x3000, 0x2000);
         assert_eq!(
-            ppc_heap_free_capacity(&loaded.memory, loaded.heap_cursor, loaded.heap_limit),
+            ppc_heap_free_capacity(&loaded.memory, loaded.heap_cursor, test_heap_limit!(loaded)),
             expected
         );
 
@@ -95541,7 +95592,7 @@ pub(crate) mod tests {
         let allocation = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             PPC_HEAP_ALIGNMENT,
             true,
         );
@@ -95651,7 +95702,7 @@ pub(crate) mod tests {
         let task_ptr = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
@@ -95671,7 +95722,7 @@ pub(crate) mod tests {
         let second_task_ptr = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
@@ -95709,14 +95760,14 @@ pub(crate) mod tests {
         let task_ptr = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             20,
             true,
         );
         let callback_entry = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
@@ -95802,14 +95853,14 @@ pub(crate) mod tests {
         let task_ptr = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
         let callback_entry = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
@@ -96464,7 +96515,7 @@ pub(crate) mod tests {
                 &loaded.cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.toolbox_startup,
                 target,
                 proc_info,
@@ -98123,11 +98174,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             loaded.memory.read_u32_be(PPC_APPLICATION_ZONE),
-            Some(loaded.heap_limit)
+            Some(test_heap_limit!(loaded))
         );
         assert_eq!(
             loaded.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
-            Some(loaded.heap_limit - loaded.heap_base())
+            Some(test_heap_limit!(loaded) - loaded.heap_base())
         );
     }
 
@@ -98383,7 +98434,7 @@ pub(crate) mod tests {
     fn hle_import_runner_handles_compact_mem_as_heap_free_query() {
         let pef = synthetic_pef_with_import(b"CompactMem");
         let mut loaded = load_pef_application(&pef).unwrap();
-        let free = loaded.heap_limit - loaded.heap_cursor;
+        let free = test_heap_limit!(loaded) - loaded.heap_cursor;
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -98397,7 +98448,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"PurgeMem");
         let mut loaded = load_pef_application(&pef).unwrap();
         let heap_cursor = loaded.heap_cursor;
-        let free = loaded.heap_limit - loaded.heap_cursor;
+        let free = test_heap_limit!(loaded) - loaded.heap_cursor;
         loaded.last_mem_error = PPC_MEM_FULL_ERR;
         loaded.cpu.gpr[3] = free;
 
@@ -98528,7 +98579,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"abcdefghijkl",
         );
@@ -98561,7 +98612,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"abcdefghijkl",
         );
@@ -98570,7 +98621,7 @@ pub(crate) mod tests {
         let blocker = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             16,
             true,
         );
@@ -98601,7 +98652,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"data",
         );
@@ -98659,7 +98710,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"lockable",
         );
@@ -99011,7 +99062,7 @@ pub(crate) mod tests {
         let result_code_ptr = PPC_DATA_BASE;
         let heap_cursor = loaded.heap_cursor;
         loaded.memory.add_region(result_code_ptr, vec![0xff; 4]);
-        loaded.heap_limit = heap_cursor + 8;
+        loaded.set_heap_limit(heap_cursor + 8);
         loaded.cpu.gpr[3] = 4;
         loaded.cpu.gpr[4] = result_code_ptr;
 
@@ -99038,7 +99089,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(PPC_DATA_BASE, 0xffff_ffff)
             .unwrap();
-        let free = loaded.heap_limit - loaded.heap_cursor;
+        let free = test_heap_limit!(loaded) - loaded.heap_cursor;
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -99541,7 +99592,7 @@ pub(crate) mod tests {
         let fragment_addr = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             fragment.len() as u32,
             false,
         );
@@ -99550,7 +99601,7 @@ pub(crate) mod tests {
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             128,
             true,
         );
@@ -126969,7 +127020,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &pict,
         );
@@ -127032,7 +127083,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &pict,
         );
@@ -127078,7 +127129,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &pict,
         );
@@ -127211,7 +127262,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &pict,
         );
@@ -127320,7 +127371,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &minimal_pict_bytes(),
         );
@@ -128492,7 +128543,7 @@ pub(crate) mod tests {
         let table_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &table,
         );
@@ -128660,7 +128711,7 @@ pub(crate) mod tests {
                 &depth_cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut loaded.gworlds,
                 &mut loaded.toolbox_startup,
@@ -129354,7 +129405,7 @@ pub(crate) mod tests {
         let src_palette = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             48,
             true,
@@ -129362,7 +129413,7 @@ pub(crate) mod tests {
         let dst_palette = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             32,
             true,
@@ -129470,7 +129521,7 @@ pub(crate) mod tests {
         let ctable_handle = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             24,
             true,
@@ -129478,7 +129529,7 @@ pub(crate) mod tests {
         let palette_handle = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             32,
             true,
@@ -129566,7 +129617,7 @@ pub(crate) mod tests {
         let ctable_handle = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             16,
             true,
@@ -130482,7 +130533,7 @@ pub(crate) mod tests {
         let icon = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &[0xff; 128],
         );
@@ -132658,7 +132709,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &[0; 16],
         );
@@ -132711,7 +132762,7 @@ pub(crate) mod tests {
             10,
         ])
         .unwrap();
-        loaded.heap_limit = heap_cursor + required - 4;
+        loaded.set_heap_limit(heap_cursor + required - 4);
         assert_eq!(loaded.memory.read_u8(heap_cursor), Some(0));
         loaded.cpu.gpr[3] = 0;
         loaded.cpu.gpr[4] = bounds_ptr;
@@ -133375,7 +133426,7 @@ pub(crate) mod tests {
         let source_ctable = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_color_table_bytes(0x1234_5678, &source_colors).unwrap(),
         );
@@ -133475,7 +133526,7 @@ pub(crate) mod tests {
         let target_ctable = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_color_table_bytes(0x8765_4321, &target_colors).unwrap(),
         );
@@ -133542,7 +133593,7 @@ pub(crate) mod tests {
         let sparse_ctable = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &sparse_bytes,
         );
@@ -133597,7 +133648,7 @@ pub(crate) mod tests {
         let reversed_ctable = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_color_table_bytes(0x1234_5678, &[[0, 0, 0], [0xffff; 3]]).unwrap(),
         );
@@ -133748,7 +133799,7 @@ pub(crate) mod tests {
         let allocation_limit = heap_cursor_before
             + ppc_allocation_size(table_size).unwrap()
             + ppc_allocation_size(pixel_allocation_size).unwrap();
-        loaded.heap_limit = allocation_limit;
+        loaded.set_heap_limit(allocation_limit);
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = 8;
         loaded.cpu.gpr[5] = bounds_ptr;
@@ -133821,7 +133872,7 @@ pub(crate) mod tests {
         let invalid_ctable = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             8,
             true,
@@ -133967,7 +134018,7 @@ pub(crate) mod tests {
         let replacement = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_color_table_bytes(0x9876_5432, &replacement_colors).unwrap(),
         );
@@ -134082,7 +134133,7 @@ pub(crate) mod tests {
             ppc_alloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 ptrs,
                 free_ptr_blocks,
                 4096,
@@ -134153,7 +134204,7 @@ pub(crate) mod tests {
         let sentinel = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             sentinel_bytes,
         );
@@ -134396,7 +134447,7 @@ pub(crate) mod tests {
             PPC_CGRAF_PORT_SIZE,
         ])
         .unwrap();
-        loaded.heap_limit = heap_cursor + required - 4;
+        loaded.set_heap_limit(heap_cursor + required - 4);
         assert_eq!(loaded.memory.read_u8(heap_cursor), Some(0));
         loaded.cpu.gpr[3] = gworld_out_ptr;
         loaded.cpu.gpr[4] = 16;
@@ -134962,7 +135013,7 @@ pub(crate) mod tests {
         let mask_rgn = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -134975,7 +135026,7 @@ pub(crate) mod tests {
             ppc_write_region_storage(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 mask_rgn,
                 &mask_storage,
@@ -137228,7 +137279,7 @@ pub(crate) mod tests {
         let alias_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &alias_data,
         );
@@ -137275,7 +137326,7 @@ pub(crate) mod tests {
         let alias_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &alias_data,
         );
@@ -137532,7 +137583,7 @@ pub(crate) mod tests {
         let alias_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &alias_data,
         );
@@ -137632,7 +137683,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(alias_out_ptr, 0xdead_beef)
             .unwrap();
-        loaded.heap_limit = loaded.heap_cursor + 16;
+        loaded.set_heap_limit(loaded.heap_cursor + 16);
         loaded.cpu.gpr[3] = 0;
         loaded.cpu.gpr[4] = scratch;
         loaded.cpu.gpr[5] = alias_out_ptr;
@@ -142521,7 +142572,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"changed",
         );
@@ -142575,7 +142626,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"detached",
         );
@@ -142633,7 +142684,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &[0, 0, 0, 1, 0, 0, 0, 0],
         );
@@ -142673,7 +142724,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"changed",
         );
@@ -143585,7 +143636,7 @@ pub(crate) mod tests {
         let items = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ditl,
         );
@@ -143751,7 +143802,7 @@ pub(crate) mod tests {
         let items = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &[0xff, 0xff],
         );
@@ -143833,7 +143884,7 @@ pub(crate) mod tests {
         let items = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ditl,
         );
@@ -145001,7 +145052,7 @@ pub(crate) mod tests {
         let text_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"Hello",
         );
@@ -145017,7 +145068,7 @@ pub(crate) mod tests {
         let items_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ditl,
         );
@@ -145121,7 +145172,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             b"old",
         );
@@ -145255,7 +145306,7 @@ pub(crate) mod tests {
         let te_handle = ppc_te_initialize_record(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             rects,
             rects + 8,
@@ -145274,7 +145325,7 @@ pub(crate) mod tests {
             ppc_te_set_text(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 te_handle,
                 b"abc",
@@ -145455,7 +145506,7 @@ pub(crate) mod tests {
         let te_handle = ppc_te_initialize_record(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             te_rects,
             te_rects + 8,
@@ -145470,7 +145521,7 @@ pub(crate) mod tests {
             ppc_te_set_text(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 te_handle,
                 b"0",
@@ -145504,7 +145555,7 @@ pub(crate) mod tests {
         let te_handle = ppc_te_initialize_record(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             rects,
             rects + 8,
@@ -145518,7 +145569,7 @@ pub(crate) mod tests {
         ppc_te_set_text(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             te_handle,
             b"Pilot Name",
@@ -145553,7 +145604,7 @@ pub(crate) mod tests {
         let destination = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             0,
             true,
@@ -145707,7 +145758,7 @@ pub(crate) mod tests {
         let menu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             128,
@@ -145718,7 +145769,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu,
                 definitions,
@@ -145739,7 +145790,7 @@ pub(crate) mod tests {
                 &cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
             ),
             PPC_NO_ERR
@@ -145754,7 +145805,7 @@ pub(crate) mod tests {
             ppc_delete_menu_item(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu,
                 2,
@@ -145771,7 +145822,7 @@ pub(crate) mod tests {
             ppc_insert_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 &mut free_handle_blocks,
                 menu,
@@ -145788,7 +145839,7 @@ pub(crate) mod tests {
             ppc_delete_menu(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu_list,
                 128,
@@ -146028,7 +146079,7 @@ pub(crate) mod tests {
         let control_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &[0],
         );
@@ -146934,7 +146985,7 @@ pub(crate) mod tests {
         let region = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147033,7 +147084,7 @@ pub(crate) mod tests {
         let destination = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147044,7 +147095,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147073,7 +147124,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             destination,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147113,7 +147164,7 @@ pub(crate) mod tests {
         let oval = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147122,7 +147173,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147136,7 +147187,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             oval,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147157,7 +147208,7 @@ pub(crate) mod tests {
         let rounded = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147166,7 +147217,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             PPC_MAIN_GWORLD,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147185,7 +147236,7 @@ pub(crate) mod tests {
             &mut loaded.memory,
             rounded,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut handle_states,
@@ -147318,7 +147369,7 @@ pub(crate) mod tests {
             &window_cpu,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.gworlds,
@@ -147329,7 +147380,7 @@ pub(crate) mod tests {
         let clobbered_rgn = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147357,7 +147408,7 @@ pub(crate) mod tests {
         let clobbered_rgn = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147401,7 +147452,7 @@ pub(crate) mod tests {
             &window_cpu,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
             &mut loaded.gworlds,
@@ -147412,7 +147463,7 @@ pub(crate) mod tests {
         let clobbered_rgn = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147483,7 +147534,7 @@ pub(crate) mod tests {
             ppc_set_handle_size(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 src_rgn,
                 16,
@@ -147897,7 +147948,7 @@ pub(crate) mod tests {
         let region = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -147932,7 +147983,7 @@ pub(crate) mod tests {
         let region = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -148700,7 +148751,7 @@ pub(crate) mod tests {
         let region = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -148723,7 +148774,7 @@ pub(crate) mod tests {
         let saved = ppc_new_rgn(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.last_mem_error,
             &mut loaded.handles,
         );
@@ -151101,7 +151152,7 @@ pub(crate) mod tests {
         let private_ctable_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_default_color_table_bytes(1).unwrap(),
         );
@@ -151114,7 +151165,7 @@ pub(crate) mod tests {
         let blocker = ppc_alloc_handle(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             32,
             true,
@@ -151208,7 +151259,7 @@ pub(crate) mod tests {
         let private_ctable_handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &ppc_default_color_table_bytes(1).unwrap(),
         );
@@ -151294,7 +151345,7 @@ pub(crate) mod tests {
         let before_startup = loaded.toolbox_startup.clone();
         let before_screen_clut = loaded.screen_clut;
         let before_color_manager_clut = loaded.color_manager_clut;
-        loaded.heap_limit = loaded.heap_cursor + 32;
+        loaded.set_heap_limit(loaded.heap_cursor + 32);
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
         loaded.cpu.gpr[4] = 4;
@@ -151479,7 +151530,7 @@ pub(crate) mod tests {
             loaded.memory.write_u32_be(ctable_handle, ctable).unwrap();
             loaded.memory.write_u16_be(ctable + 6, ct_size).unwrap();
             let heap_cursor = loaded.heap_cursor;
-            let heap_limit = loaded.heap_limit;
+            let heap_limit = test_heap_limit!(loaded);
 
             assert_eq!(
                 ppc_preflight_ctable_growth(
@@ -152575,7 +152626,7 @@ pub(crate) mod tests {
         let menu = ppc_new_menu(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
             128,
@@ -152586,7 +152637,7 @@ pub(crate) mod tests {
             ppc_insert_menu_items(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut loaded.handles,
                 menu,
                 item,
@@ -152598,7 +152649,7 @@ pub(crate) mod tests {
             &[menu],
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &mut free_handle_blocks,
         );
@@ -154950,7 +155001,7 @@ pub(crate) mod tests {
         let region_count = loaded.memory.region_count();
         let input_sprocket = loaded.input_sprocket;
         let element_size = ppc_allocation_size(PPC_ISP_VIRTUAL_ELEMENT_RECORD_SIZE).unwrap();
-        loaded.heap_limit = heap_cursor + element_size * 2 - 4;
+        loaded.set_heap_limit(heap_cursor + element_size * 2 - 4);
         loaded.cpu.gpr[3] = 2;
         loaded.cpu.gpr[4] = needs_ptr;
         loaded.cpu.gpr[5] = elements_out_ptr;
@@ -156975,7 +157026,7 @@ pub(crate) mod tests {
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut loaded.handles,
             &resource,
         );
@@ -157674,7 +157725,7 @@ pub(crate) mod tests {
             ppc_alloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 ptrs,
                 free_ptr_blocks,
                 8,
@@ -157687,7 +157738,7 @@ pub(crate) mod tests {
             ppc_realloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 ptrs,
                 free_ptr_blocks,
                 first,
@@ -157707,7 +157758,7 @@ pub(crate) mod tests {
             ppc_alloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 ptrs,
                 free_ptr_blocks,
                 12,
@@ -157722,7 +157773,7 @@ pub(crate) mod tests {
             ppc_realloc_ptr(
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 ptrs,
                 free_ptr_blocks,
                 0,
@@ -157735,7 +157786,7 @@ pub(crate) mod tests {
                 ppc_realloc_ptr(
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     ptrs,
                     free_ptr_blocks,
                     second,
@@ -157958,7 +158009,7 @@ pub(crate) mod tests {
             &mut cpu,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut files,
             &mut vfs_files,
             &mut next_file_ref_num,
@@ -157983,7 +158034,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158012,7 +158063,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158030,7 +158081,7 @@ pub(crate) mod tests {
             &mut cpu,
             &mut loaded.memory,
             &mut loaded.heap_cursor,
-            loaded.heap_limit,
+            test_heap_limit!(loaded),
             &mut files,
             &mut vfs_files,
             &mut next_file_ref_num,
@@ -158049,7 +158100,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158075,7 +158126,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158094,7 +158145,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158115,7 +158166,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158128,7 +158179,7 @@ pub(crate) mod tests {
         loaded.memory.write_bytes(mode, b"w\0").unwrap();
         loaded.memory.write_bytes(path, b"test.bin\0").unwrap();
         let saved_heap_cursor = loaded.heap_cursor;
-        loaded.heap_cursor = loaded.heap_limit.saturating_sub(8);
+        loaded.heap_cursor = test_heap_limit!(loaded).saturating_sub(8);
         cpu.gpr[3] = path;
         cpu.gpr[4] = mode;
         assert_eq!(
@@ -158137,7 +158188,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158159,7 +158210,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158174,7 +158225,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158199,7 +158250,7 @@ pub(crate) mod tests {
                 &mut cpu,
                 &mut loaded.memory,
                 &mut loaded.heap_cursor,
-                loaded.heap_limit,
+                test_heap_limit!(loaded),
                 &mut files,
                 &mut vfs_files,
                 &mut next_file_ref_num,
@@ -158226,7 +158277,7 @@ pub(crate) mod tests {
                     &mut cpu,
                     &mut loaded.memory,
                     &mut loaded.heap_cursor,
-                    loaded.heap_limit,
+                    test_heap_limit!(loaded),
                     &mut files,
                     &mut vfs_files,
                     &mut next_file_ref_num,
