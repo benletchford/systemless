@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.5](https://github.com/benletchford/systemless/compare/v0.28.4...v0.28.5) (2026-09-01)
+
+
+### Code Refactoring
+
+* **ppc,runner:** modularize monolithic loader and execution engines ([#1159](https://github.com/benletchford/systemless/issues/1159)) ([df1c698](https://github.com/benletchford/systemless/commit/df1c6988232a8a1db69f402e1294f596c301d288))
+
 ## [0.28.4](https://github.com/benletchford/systemless/compare/v0.28.3...v0.28.4) (2026-09-01)
 
 
