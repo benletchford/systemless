@@ -493,6 +493,10 @@ impl super::TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Option<Result<()>> {
+        if self.process_quickdraw_port_state_attached {
+            let port = *self.current_port;
+            self.load_port_draw_state(bus, port);
+        }
         Some(match (is_tool, trap_num) {
             // ========== QuickDraw Initialization ==========
 

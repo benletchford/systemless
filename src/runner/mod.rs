@@ -13374,6 +13374,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -15623,6 +15624,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -16640,6 +16642,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -16791,6 +16794,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -17174,6 +17178,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
@@ -17451,6 +17456,7 @@ mod tests {
                 crate::display::default_display_gamma(),
             ),
             device_gamma_explicit: SharedProcessValue::from_value(false),
+            process_quickdraw_port_state_attached: false,
             color_manager_clut: SharedProcessValue::from_value(
                 TrapDispatcher::standard_mac_8bpp_clut(),
             ),
