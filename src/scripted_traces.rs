@@ -1236,8 +1236,8 @@ fn scripted_record_modal_app_control_value_trace(
     let ctrl_ptr = bus.read_long(ctrl_handle);
     dispatcher.record_input_trace_line(format!(
         "A991 action=app_set_control_value live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) item_hit={} item_type={} control_handle={} control_ptr={} control_value={} result=app outcome={}",
-        dispatcher.mouse_pos.0,
-        dispatcher.mouse_pos.1,
+        dispatcher.input_state.mouse_pos.0,
+        dispatcher.input_state.mouse_pos.1,
         dispatcher.input_trace_state_fields(),
         scripted_trace_nonzero(dialog_ptr),
         bounds.0,

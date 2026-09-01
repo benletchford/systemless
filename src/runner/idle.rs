@@ -190,10 +190,10 @@ pub(crate) struct IdleCycleHostSnapshot {
 impl IdleCycleHostSnapshot {
     pub(crate) fn capture(dispatcher: &TrapDispatcher) -> Self {
         Self {
-            mouse_pos: dispatcher.mouse_pos,
-            mouse_button: dispatcher.mouse_button,
+            mouse_pos: dispatcher.input_state.mouse_pos,
+            mouse_button: dispatcher.input_state.mouse_button,
             key_map: *dispatcher.key_map_bytes(),
-            caps_lock_physically_pressed: dispatcher.caps_lock_physically_pressed,
+            caps_lock_physically_pressed: dispatcher.input_state.caps_lock_physically_pressed,
             window_list: dispatcher.window_list.clone(),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
         }

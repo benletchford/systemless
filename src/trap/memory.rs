@@ -3587,7 +3587,7 @@ impl super::TrapDispatcher {
                         address,
                         bus.read_long(info_ptr),
                         bus.read_long(info_ptr + 4),
-                        self.mouse_button,
+                        self.input_state.mouse_button,
                     );
                 }
                 cpu.write_reg(Register::D0, 0); // noErr

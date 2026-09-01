@@ -213,8 +213,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) item_hit={} item_type={} highlighted={} result={} outcome={}",
             action,
-            self.mouse_pos.0,
-            self.mouse_pos.1,
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -252,8 +252,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) edit_item={} item_type={} key_code=${:02X} char_code=${:02X} text_before={} text_after={} result={} outcome={}",
             action,
-            self.mouse_pos.0,
-            self.mouse_pos.1,
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -309,8 +309,8 @@ impl super::TrapDispatcher {
         self.record_input_trace_line(format!(
             "A991 action={} live_mouse=({},{}) {} dialog={} bounds=({},{},{},{}) filter_proc={} event={} message={} where={} modifiers={} item_hit={} item_type={} handled_mouse_down={} dialog_retained={} result={} outcome={}",
             action,
-            self.mouse_pos.0,
-            self.mouse_pos.1,
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
             self.input_trace_state_fields(),
             input_trace_nonzero(dialog_ptr),
             bounds.0,
@@ -4266,7 +4266,7 @@ impl super::TrapDispatcher {
                 let rect = Self::dialog_item_screen_rect(bounds, item.rect);
                 let is_default = hit == default_item;
                 self.draw_dialog_button_highlight_state(bus, rect, &item.text, is_default, true);
-                if self.mouse_button {
+                if self.input_state.mouse_button {
                     let tracking = self.dialog_tracking.as_mut().unwrap();
                     tracking.active_button = Some(super::dispatch::DialogButtonTrackingState {
                         mouse_down: event.clone(),
@@ -9394,7 +9394,7 @@ impl super::TrapDispatcher {
     }
 
     pub(crate) fn mouse_down_over_dialog_button(&self) -> bool {
-        if !self.mouse_button {
+        if !self.input_state.mouse_button {
             return false;
         }
         let Some(tracking) = self.dialog_tracking.as_ref() else {
@@ -9403,20 +9403,20 @@ impl super::TrapDispatcher {
         Self::dialog_button_hit_test(
             &tracking.items,
             tracking.bounds,
-            self.mouse_pos.0,
-            self.mouse_pos.1,
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
         ) > 0
     }
 
     pub(crate) fn mouse_down_over_dialog_plain_user_item(&self) -> bool {
-        if !self.mouse_button {
+        if !self.input_state.mouse_button {
             return false;
         }
         let Some(tracking) = self.dialog_tracking.as_ref() else {
             return false;
         };
         tracking.active_user_item.is_some()
-            || self.dialog_plain_user_item_hit_test(tracking, self.mouse_pos.0, self.mouse_pos.1)
+            || self.dialog_plain_user_item_hit_test(tracking, self.input_state.mouse_pos.0, self.input_state.mouse_pos.1)
                 > 0
     }
 
@@ -9678,8 +9678,8 @@ impl super::TrapDispatcher {
                     self.event_queue.remove(idx);
                 }
             }
-            self.mouse_button = false;
-            self.adb.note_mouse_state(self.mouse_pos, false);
+            self.input_state.mouse_button = false;
+            self.adb.note_mouse_state(self.input_state.mouse_pos, false);
             bus.write_byte(0x0172, 0x80);
         }
 
@@ -10323,8 +10323,8 @@ impl super::TrapDispatcher {
     }
 
     fn handle_dialog_popup_tracking<C: CpuOps>(&mut self, cpu: &mut C, bus: &mut MacMemoryBus) {
-        if self.mouse_button {
-            let (mv, mh) = self.mouse_pos;
+        if self.input_state.mouse_button {
+            let (mv, mh) = self.input_state.mouse_pos;
             let new_item = self.dialog_popup_item_at_point(bus, mh, mv);
             let old_item = self
                 .dialog_tracking
@@ -10440,10 +10440,10 @@ impl super::TrapDispatcher {
         };
 
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
-        let (mouse_v, mouse_h) = self.mouse_pos;
+        let (mouse_v, mouse_h) = self.input_state.mouse_pos;
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
 
-        if self.mouse_button {
+        if self.input_state.mouse_button {
             if inside != highlighted {
                 self.draw_dialog_button_highlight_state(
                     bus,
@@ -10544,7 +10544,7 @@ impl super::TrapDispatcher {
             return;
         };
 
-        if self.mouse_button {
+        if self.input_state.mouse_button {
             return;
         }
 
@@ -10554,7 +10554,7 @@ impl super::TrapDispatcher {
         }
 
         let (top, left, bottom, right) = Self::dialog_item_screen_rect(bounds, rect);
-        let (mouse_v, mouse_h) = self.mouse_pos;
+        let (mouse_v, mouse_h) = self.input_state.mouse_pos;
         let inside = mouse_v >= top && mouse_v < bottom && mouse_h >= left && mouse_h < right;
         if !inside {
             return;
@@ -12235,10 +12235,10 @@ impl super::TrapDispatcher {
                     };
 
                     if let Some(mut e) = event {
-                        if e.what == 0 && self.mouse_button {
+                        if e.what == 0 && self.input_state.mouse_button {
                             e.what = 1;
-                            e.where_v = self.mouse_pos.0;
-                            e.where_h = self.mouse_pos.1;
+                            e.where_v = self.input_state.mouse_pos.0;
+                            e.where_h = self.input_state.mouse_pos.1;
                         }
                         match e.what {
                             // updateEvt — re-snapshot rendered_pixels.
@@ -12335,7 +12335,7 @@ impl super::TrapDispatcher {
                                                     is_default,
                                                     true,
                                                 );
-                                                if self.mouse_button {
+                                                if self.input_state.mouse_button {
                                                     let t = self.dialog_tracking.as_mut().unwrap();
                                                     t.active_button = Some(
                                                         super::dispatch::DialogButtonTrackingState {
@@ -12534,7 +12534,7 @@ impl super::TrapDispatcher {
                                                         tracking, hit, item,
                                                     )
                                                 },
-                                            ) && self.mouse_button =>
+                                            ) && self.input_state.mouse_button =>
                                             {
                                                 let (dlg_ptr, edit_item, edit_text, items) = {
                                                     let tracking =
@@ -21672,8 +21672,8 @@ mod tests {
         });
         bus.write_word(item_hit_ptr, 0xCAFE);
         cpu.write_reg(Register::A7, TEST_SP);
-        disp.mouse_button = true;
-        disp.mouse_pos = (150, 240);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (150, 240);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -28056,8 +28056,8 @@ mod tests {
             ..Default::default()
         });
 
-        disp.mouse_button = true;
-        disp.mouse_pos = (probe_y, probe_x);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (probe_y, probe_x);
         disp.handle_dialog_button_tracking(&mut bus);
 
         assert!(
@@ -28072,7 +28072,7 @@ mod tests {
             Some(true)
         );
 
-        disp.mouse_pos = (40, 50);
+        disp.input_state.mouse_pos = (40, 50);
         disp.handle_dialog_button_tracking(&mut bus);
 
         assert!(
@@ -30627,8 +30627,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.mouse_button = true;
-        disp.mouse_pos = (115, 125);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (115, 125);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -30658,7 +30658,7 @@ mod tests {
             .and_then(|tracking| tracking.active_popup.as_ref())
             .map(|popup| popup.dropdown_rect)
             .expect("popup tracking should expose the live dropdown rect");
-        disp.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
+        disp.input_state.mouse_pos = (dropdown_top + 1 + 16 + 1, dropdown_left + 5);
         disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus)
             .unwrap()
             .unwrap();
@@ -30670,7 +30670,7 @@ mod tests {
             Some(2)
         );
 
-        disp.mouse_button = false;
+        disp.input_state.mouse_button = false;
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
@@ -31467,8 +31467,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.mouse_button = true;
-        disp.mouse_pos = (130, 240);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (130, 240);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -31533,8 +31533,8 @@ mod tests {
         disp.dialog_popup_original_rects
             .insert((dialog_ptr, 1), (20, 30, 40, 150));
         disp.dialog_popup_candidate_items.insert((dialog_ptr, 1));
-        disp.mouse_button = true;
-        disp.mouse_pos = (130, 260);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (130, 260);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -31601,8 +31601,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.mouse_button = true;
-        disp.mouse_pos = (130, 240);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (130, 240);
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 1,
@@ -31622,7 +31622,7 @@ mod tests {
             .and_then(|tracking| tracking.active_button.as_ref())
             .is_some());
 
-        disp.mouse_button = false;
+        disp.input_state.mouse_button = false;
         disp.event_queue
             .push_back(crate::trap::dispatch::QueuedEvent {
                 what: 2,
@@ -31836,7 +31836,7 @@ mod tests {
         bus.write_word(item_hit_ptr, 1);
         disp.dialog_filter_result_addr = result_addr;
         disp.front_window = dialog_ptr;
-        disp.mouse_button = true;
+        disp.input_state.mouse_button = true;
         disp.dialog_tracking = Some(DialogTrackingState {
             dialog_ptr,
             bounds,
@@ -32024,7 +32024,7 @@ mod tests {
         assert_eq!(queued_downs.len(), 1);
         assert_eq!((queued_downs[0].where_v, queued_downs[0].where_h), (20, 30));
         assert!(disp.pending_modal_dialog_mouse_up);
-        assert!(!disp.mouse_button);
+        assert!(!disp.input_state.mouse_button);
         assert_eq!(bus.read_byte(0x0172), 0x80);
 
         for trap in [0x173, 0x174, 0x177] {
@@ -32185,8 +32185,8 @@ mod tests {
             active_button: None,
             active_user_item: None,
         });
-        disp.mouse_button = true;
-        disp.mouse_pos = (130, 240);
+        disp.input_state.mouse_button = true;
+        disp.input_state.mouse_pos = (130, 240);
 
         let result = disp.dispatch_dialog(true, 0x191, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());

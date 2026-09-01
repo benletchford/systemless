@@ -71,12 +71,12 @@ use crate::menu_manager::{
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
-    ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
+    ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState, ProcessMemoryManager,
     ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
-    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessMemoryManager,
-    SharedProcessMenuTracking,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
+    SharedProcessMemoryManager, SharedProcessMenuTracking,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -3397,6 +3397,7 @@ pub struct PpcLoadedApp {
     pub imports: Vec<PpcImportBinding>,
     pub section_bases: Vec<Option<u32>>,
     pub input: PpcInputSnapshot,
+    pub(crate) process_input: SharedProcessInputState,
     pub(crate) event_queue: SharedProcessEventQueue,
     pub(crate) guest_calls: SharedGuestCallStack,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
@@ -3819,6 +3820,24 @@ impl PpcLoadedApp {
                 .write_u16_be(point_addr + 2, input.mouse_h as u16);
         }
         self.input = input;
+        self.process_input.key_map = input.key_map;
+        self.process_input.mouse_button = input.mouse_button;
+        self.process_input.mouse_pos = (input.mouse_v, input.mouse_h);
+    }
+
+    fn current_input_snapshot(&self) -> PpcInputSnapshot {
+        let ProcessInputState {
+            key_map,
+            mouse_button,
+            mouse_pos: (mouse_v, mouse_h),
+            ..
+        } = *self.process_input;
+        PpcInputSnapshot {
+            key_map,
+            mouse_button,
+            mouse_v,
+            mouse_h,
+        }
     }
 
     pub fn set_event_queue<I>(&mut self, events: I)
@@ -3846,6 +3865,7 @@ impl PpcLoadedApp {
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_event_queue(&mut self.event_queue);
+        context.attach_input_state(&mut self.process_input);
         context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
@@ -7103,7 +7123,7 @@ impl PpcLoadedApp {
                 binding.dispatcher_target == PpcImportDispatcherTarget::Q3ViewEndRendering
             })
             .map(|binding| binding.symbol_index);
-        let input = self.input;
+        let input = self.current_input_snapshot();
         let mut event_queue = std::mem::take(&mut self.event_queue);
         let process_memory_manager = process_memory_manager.native_mut();
         let native_allocator = process_memory_manager
@@ -12736,6 +12756,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         imports,
         section_bases,
         input: PpcInputSnapshot::default(),
+        process_input: SharedProcessInputState::default(),
         event_queue: SharedProcessEventQueue::default(),
         guest_calls: SharedGuestCallStack::default(),
         process_memory_manager,
@@ -89837,6 +89858,50 @@ pub(crate) mod tests {
 
         assert_eq!(context.event_queue().len(), 1);
         assert!(!context.event_queue().menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_68k_and_powerpc_adapters_share_live_input_without_runner_copy() {
+        let (mut classic, _, _) = setup_with_port();
+        let pef = synthetic_pef_with_import(b"Button");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let detached = native.clone();
+
+        classic.input_state.mouse_pos = (123, 456);
+        classic.input_state.mouse_button = true;
+        classic.input_state.key_map[6] = 0x20;
+
+        assert_eq!(
+            native.current_input_snapshot(),
+            PpcInputSnapshot {
+                key_map: {
+                    let mut key_map = [0; 16];
+                    key_map[6] = 0x20;
+                    key_map
+                },
+                mouse_button: true,
+                mouse_v: 123,
+                mouse_h: 456,
+            }
+        );
+        let probe = native.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(native.cpu.gpr[3], 1);
+
+        native.process_input.mouse_pos = (-20, 99);
+        native.process_input.mouse_button = false;
+        native.process_input.key_map[1] = 0x08;
+
+        assert!(classic.input_state.ptr_eq(&native.process_input));
+        assert_eq!(classic.input_state.mouse_pos, (-20, 99));
+        assert!(!classic.input_state.mouse_button);
+        assert_eq!(classic.input_state.key_map[1], 0x08);
+        assert!(!native.process_input.ptr_eq(&detached.process_input));
+        assert_eq!(detached.current_input_snapshot(), PpcInputSnapshot::default());
     }
 
     #[test]

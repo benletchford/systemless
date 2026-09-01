@@ -14,9 +14,10 @@ use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
-    ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessCursorState,
-    SharedProcessEventQueue, SharedProcessMemoryManager, SharedProcessMenuTracking,
-    SharedProcessResourceManager, SharedProcessSoundManager, SharedProcessValue,
+    ProcessKeyRepeatState, ProcessResourceManagerState, SharedProcessAppleEventHandlers,
+    SharedProcessCursorState, SharedProcessEventQueue, SharedProcessInputState,
+    SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessResourceManager,
+    SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1045,13 +1046,6 @@ pub(crate) struct AeCoercionHandler {
     pub handler_ptr: u32,
     pub refcon: u32,
     pub from_type_is_desc: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct KeyRepeatState {
-    pub key_code: u8,
-    pub char_code: u8,
-    pub next_tick: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -2322,20 +2316,8 @@ pub struct TrapDispatcher {
     pub(crate) region_tracking: Option<RegionTrackingState>,
     /// Underline info for continuous underline across a string (set by draw_string)
     pub(crate) underline_info: Option<UnderlineInfo>,
-    /// Current mouse position in Mac screen coordinates (v, h)
-    pub(crate) mouse_pos: (i16, i16),
-    /// Current mouse button state: true = button is pressed
-    pub(crate) mouse_button: bool,
-    /// Current keyboard state as a classic 16-byte KeyMap (128 keys).
-    /// Bits are packed for direct byte/bit readers:
-    /// key >> 3 selects the byte, key & 7 selects the bit.
-    pub(crate) key_map: [u8; 16],
-    /// Physical Caps Lock press state, kept separately from its logical
-    /// latched bit in `key_map` so a release does not clear the latch and a
-    /// repeated host key-down cannot toggle it twice.
-    pub(crate) caps_lock_physically_pressed: bool,
-    /// Auto-key repeat state for the currently repeating character key.
-    pub(crate) key_repeat: Option<KeyRepeatState>,
+    /// Process-owned live mouse, keyboard, and key-repeat state.
+    pub(crate) input_state: SharedProcessInputState,
     /// Debug counter for GetKeys calls that observed at least one held key.
     pub debug_getkeys_nonzero_count: u64,
     /// Last non-zero KeyMap returned by GetKeys. Used by regression tests to
@@ -2916,6 +2898,7 @@ impl TrapDispatcher {
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_event_queue(&mut self.event_queue);
+        context.attach_input_state(&mut self.input_state);
         context.attach_menu_tracking(&mut self.menu_tracking);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         let mut memory_manager = None;
@@ -3625,11 +3608,11 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn key_is_down(&self, key_code: u8) -> bool {
-        key_map_key_is_down(&self.key_map, key_code)
+        key_map_key_is_down(&self.input_state.key_map, key_code)
     }
 
     pub(crate) fn key_map_bytes(&self) -> &[u8; 16] {
-        &self.key_map
+        &self.input_state.key_map
     }
 
     pub(crate) fn current_event_modifiers(&self) -> u16 {
@@ -3641,7 +3624,7 @@ impl TrapDispatcher {
         const CONTROL_KEY: u16 = 4096;
 
         let mut modifiers = 0u16;
-        if !self.mouse_button {
+        if !self.input_state.mouse_button {
             modifiers |= BTN_STATE;
         }
         if self.key_is_down(0x37) {
@@ -3688,8 +3671,8 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn input_trace_state_fields(&self) -> String {
-        let key_map = if self.key_map.iter().any(|&byte| byte != 0) {
-            self.key_map
+        let key_map = if self.input_state.key_map.iter().any(|&byte| byte != 0) {
+            self.input_state.key_map
                 .iter()
                 .map(|byte| format!("{byte:02X}"))
                 .collect::<Vec<_>>()
@@ -3699,9 +3682,9 @@ impl TrapDispatcher {
         };
         format!(
             "state=mouse=({},{}) button={} live_modifiers=${:04X} key_map={} tracking=menu:{} dialog:{} control:{}",
-            self.mouse_pos.0,
-            self.mouse_pos.1,
-            if self.mouse_button { "down" } else { "up" },
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
+            if self.input_state.mouse_button { "down" } else { "up" },
             self.current_event_modifiers(),
             key_map,
             if self.is_menu_tracking() { "active" } else { "idle" },
@@ -3977,11 +3960,7 @@ impl TrapDispatcher {
             grow_window_tracking: None,
             region_tracking: None,
             underline_info: None,
-            mouse_pos: (0, 0),
-            mouse_button: false,
-            key_map: [0; 16],
-            caps_lock_physically_pressed: false,
-            key_repeat: None,
+            input_state: SharedProcessInputState::default(),
             debug_getkeys_nonzero_count: 0,
             debug_last_getkeys_nonzero_key_map: [0; 16],
             debug_key_event_delivery_count: 0,
@@ -5677,8 +5656,8 @@ impl TrapDispatcher {
     /// Update the current mouse position (called from GUI layer).
     /// Coordinates are in Mac screen space (0,0 = top-left of screen).
     pub fn set_mouse_position(&mut self, v: i16, h: i16) {
-        self.mouse_pos = (v, h);
-        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
+        self.input_state.mouse_pos = (v, h);
+        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
     }
 
     pub(crate) fn has_unmatched_queued_mouse_down(&self) -> bool {
@@ -5695,9 +5674,9 @@ impl TrapDispatcher {
 
     /// Push a mouse-down event into the event queue.
     pub fn push_mouse_down(&mut self, v: i16, h: i16) {
-        self.mouse_button = true;
-        self.mouse_pos = (v, h);
-        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
+        self.input_state.mouse_button = true;
+        self.input_state.mouse_pos = (v, h);
+        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         let modifiers = self.current_event_modifiers();
         self.event_queue.push_back(QueuedEvent {
             what: 1, // mouseDown
@@ -5714,9 +5693,9 @@ impl TrapDispatcher {
     /// combine that state with pending mouse events to decide whether the
     /// original click is still in progress.
     pub fn push_mouse_up(&mut self, v: i16, h: i16) {
-        self.mouse_pos = (v, h);
-        self.mouse_button = false;
-        self.adb.note_mouse_state(self.mouse_pos, self.mouse_button);
+        self.input_state.mouse_pos = (v, h);
+        self.input_state.mouse_button = false;
+        self.adb.note_mouse_state(self.input_state.mouse_pos, self.input_state.mouse_button);
         // The classic mouse has one button, so the first physical release
         // after a ModalDialog-owned press is its matching mouseUp. Consume it
         // at injection time so event masks or FlushEvents cannot leave stale
@@ -5744,19 +5723,19 @@ impl TrapDispatcher {
         // Inside Macintosh Volume I, I-246. Ignore duplicate host callbacks
         // so they cannot enqueue extra keyDown records or restart autoKey.
         if key_code == Self::CAPS_LOCK_KEY_CODE {
-            if self.caps_lock_physically_pressed {
+            if self.input_state.caps_lock_physically_pressed {
                 return;
             }
-            self.caps_lock_physically_pressed = true;
+            self.input_state.caps_lock_physically_pressed = true;
             // Caps Lock latches on one physical press and releases on the
             // next. Inside Macintosh Volume I (1985), p. I-34.
             let latched = !self.key_is_down(key_code);
-            set_key_map_key(&mut self.key_map, key_code, latched);
+            set_key_map_key(&mut self.input_state.key_map, key_code, latched);
         } else {
             if self.key_is_down(key_code) {
                 return;
             }
-            set_key_map_key(&mut self.key_map, key_code, true);
+            set_key_map_key(&mut self.input_state.key_map, key_code, true);
         }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
@@ -5774,15 +5753,15 @@ impl TrapDispatcher {
         self.event_queue.push_back(QueuedEvent {
             what: 3, // keyDown
             message,
-            where_v: self.mouse_pos.0,
-            where_h: self.mouse_pos.1,
+            where_v: self.input_state.mouse_pos.0,
+            where_h: self.input_state.mouse_pos.1,
             modifiers,
         });
 
         if Self::key_generates_auto_key(key_code) {
             // Auto-key timing defaults are 16 ticks for the first repeat and
             // 4 ticks thereafter. Inside Macintosh Volume I, I-246.
-            self.key_repeat = Some(KeyRepeatState {
+            self.input_state.key_repeat = Some(ProcessKeyRepeatState {
                 key_code,
                 char_code,
                 next_tick: self.tick_count.wrapping_add(Self::AUTO_KEY_THRESHOLD_TICKS),
@@ -5806,15 +5785,16 @@ impl TrapDispatcher {
         char_code: u8,
     ) {
         if key_code == Self::CAPS_LOCK_KEY_CODE {
-            self.caps_lock_physically_pressed = false;
+            self.input_state.caps_lock_physically_pressed = false;
         } else {
-            set_key_map_key(&mut self.key_map, key_code, false);
+            set_key_map_key(&mut self.input_state.key_map, key_code, false);
         }
         if self
+            .input_state
             .key_repeat
             .is_some_and(|repeat| repeat.key_code == key_code)
         {
-            self.key_repeat = None;
+            self.input_state.key_repeat = None;
         }
         let modifiers = self.current_event_modifiers();
         if trace_input_enabled() {
@@ -5838,8 +5818,8 @@ impl TrapDispatcher {
             self.event_queue.push_back(QueuedEvent {
                 what: 4, // keyUp
                 message,
-                where_v: self.mouse_pos.0,
-                where_h: self.mouse_pos.1,
+                where_v: self.input_state.mouse_pos.0,
+                where_h: self.input_state.mouse_pos.1,
                 modifiers,
             });
         }
@@ -5922,7 +5902,7 @@ impl TrapDispatcher {
 
     /// Get the current mouse position.
     pub fn mouse_position(&self) -> (i16, i16) {
-        self.mouse_pos
+        self.input_state.mouse_pos
     }
 
     /// Number of Time Manager tasks currently in the queue.
