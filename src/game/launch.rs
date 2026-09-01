@@ -2241,6 +2241,36 @@ fn load_selected_executable(
             let app = runner
                 .load_app(&fork)
                 .ok_or_else(|| "Failed to load app".to_string())?;
+            if let Some(cfrg) = fork
+                .get(*b"cfrg", 0)
+                .and_then(|resource| parse_cfrg_resource(&resource.data))
+            {
+                if let Some((fragment, range)) = select_powerpc_application_fragment(
+                    &cfrg,
+                    runner
+                        .dispatcher()
+                        .vfs
+                        .get(&executable.vfs_key)
+                        .map_or(0, Vec::len),
+                ) {
+                    let fragment_offset = u32::try_from(range.start).unwrap_or(u32::MAX);
+                    let fragment_length = u32::try_from(range.len()).unwrap_or(u32::MAX);
+                    match load_powerpc_executable(
+                        runner,
+                        executable,
+                        fragment.architecture,
+                        fragment_offset,
+                        fragment_length,
+                        fragment.app_stack_size,
+                    ) {
+                        Ok(companion) => runner.stage_ppc_companion(companion),
+                        Err(error) if crate::runner::trace_load_enabled() => {
+                            eprintln!("[LOAD] PowerPC companion unavailable: {error}");
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
             merge_launch_resource_companions(runner, executable)?;
             Ok(app)
         }
@@ -2249,72 +2279,82 @@ fn load_selected_executable(
             fragment_offset,
             fragment_length,
             app_stack_size,
-        } => {
-            let data = runner
-                .dispatcher()
-                .vfs
-                .get(&executable.vfs_key)
-                .cloned()
-                .ok_or_else(|| {
-                    format!("Selected executable data fork missing: {}", executable.name)
-                })?;
-            let ppc_vfs = ppc_diagnostic_vfs(runner, Some(&executable.name));
-            let pef = pef_fragment_data(&data, fragment_offset, fragment_length).ok_or_else(|| {
-                format!(
-                    "PowerPC PEF executable \"{}\" selected, but cfrg fragment range is outside the data fork (architecture {})",
-                    executable.name,
-                    fourcc_lossy(architecture)
-                )
-            })?;
-            if crate::runner::trace_load_enabled() {
-                if let Some(details) = pef_diagnostic_details(
-                    pef,
-                    fragment_offset,
-                    fragment_length,
-                    app_stack_size,
-                    Some(&ppc_vfs),
-                ) {
-                    eprintln!("[LOAD] PowerPC PEF details: {details}");
-                }
-            }
-            let mut ppc_config =
-                crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
-            ppc_config.screen_depth = runner.configured_powerpc_screen_depth();
-            let system_reservation = runner.powerpc_system_reservation_range().ok_or_else(|| {
-                format!(
-                    "PowerPC PEF executable \"{}\" selected, but runner RAM cannot hold its system reservation",
-                    executable.name
-                )
-            })?;
-            let mut loaded =
-                crate::loader::ppc::load_pef_application_with_config_and_system_reservation(
-                    pef,
-                    ppc_config,
-                    system_reservation,
-                )
-                .map_err(|error| {
-                    format!(
-                        "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
-                        executable.name
-                    )
-                })?;
-            let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
-            loaded.seed_cfm_library_fragments(library_fragments);
-            loaded.seed_vfs_volumes(ppc_vfs.volumes);
-            loaded.seed_vfs_directories(
-                ppc_vfs.directories,
-                ppc_vfs.default_dir_id,
-                ppc_vfs.next_dir_id,
-            );
-            loaded.seed_vfs_files_and_resources(
-                ppc_vfs.files,
-                ppc_vfs.resource_files,
-                ppc_vfs.resources,
-            );
-            loaded.set_launched_app_path(&executable.name);
-            Ok(LoadedApp::from_ppc(loaded))
+        } => load_powerpc_executable(
+            runner,
+            executable,
+            architecture,
+            fragment_offset,
+            fragment_length,
+            app_stack_size,
+        )
+        .map(LoadedApp::from_ppc),
+    }
+}
+
+fn load_powerpc_executable(
+    runner: &mut FixtureRunner,
+    executable: &ExecutableCandidate,
+    architecture: [u8; 4],
+    fragment_offset: u32,
+    fragment_length: u32,
+    app_stack_size: u32,
+) -> Result<crate::loader::ppc::PpcLoadedApp, String> {
+    let data = runner
+        .dispatcher()
+        .vfs
+        .get(&executable.vfs_key)
+        .cloned()
+        .ok_or_else(|| format!("Selected executable data fork missing: {}", executable.name))?;
+    let ppc_vfs = ppc_diagnostic_vfs(runner, Some(&executable.name));
+    let pef = pef_fragment_data(&data, fragment_offset, fragment_length).ok_or_else(|| {
+        format!(
+            "PowerPC PEF executable \"{}\" selected, but cfrg fragment range is outside the data fork (architecture {})",
+            executable.name,
+            fourcc_lossy(architecture)
+        )
+    })?;
+    if crate::runner::trace_load_enabled() {
+        if let Some(details) = pef_diagnostic_details(
+            pef,
+            fragment_offset,
+            fragment_length,
+            app_stack_size,
+            Some(&ppc_vfs),
+        ) {
+            eprintln!("[LOAD] PowerPC PEF details: {details}");
         }
     }
+    let mut ppc_config =
+        crate::loader::ppc::PpcLoadConfig::from_cfrg_app_stack_size(app_stack_size);
+    ppc_config.screen_depth = runner.configured_powerpc_screen_depth();
+    let system_reservation = runner.powerpc_system_reservation_range().ok_or_else(|| {
+        format!(
+            "PowerPC PEF executable \"{}\" selected, but runner RAM cannot hold its system reservation",
+            executable.name
+        )
+    })?;
+    let mut loaded = crate::loader::ppc::load_pef_application_with_config_and_system_reservation(
+        pef,
+        ppc_config,
+        system_reservation,
+    )
+    .map_err(|error| {
+        format!(
+            "PowerPC PEF executable \"{}\" selected, but PPC loading failed: {error:?}",
+            executable.name
+        )
+    })?;
+    let library_fragments = discover_ppc_cfm_library_fragments(&ppc_vfs);
+    loaded.seed_cfm_library_fragments(library_fragments);
+    loaded.seed_vfs_volumes(ppc_vfs.volumes);
+    loaded.seed_vfs_directories(
+        ppc_vfs.directories,
+        ppc_vfs.default_dir_id,
+        ppc_vfs.next_dir_id,
+    );
+    loaded.seed_vfs_files_and_resources(ppc_vfs.files, ppc_vfs.resource_files, ppc_vfs.resources);
+    loaded.set_launched_app_path(&executable.name);
+    Ok(loaded)
 }
 
 fn merge_launch_resource_companions(
@@ -4529,6 +4569,42 @@ mod tests {
             classify_executable_with_preference(&ppc_data, &rsrc, true, false),
             Some(ExecutableKind::Classic68k)
         );
+    }
+
+    #[test]
+    fn classic_fat_application_retains_its_powerpc_execution_companion() {
+        let rsrc = make_fat_application_resource_fork(make_cfrg(0, 0));
+        let ppc_data = crate::loader::ppc::tests::synthetic_pef();
+        let mut runner = new_runner();
+        insert_forks_into_vfs(
+            &mut runner,
+            "Fat Application",
+            ppc_data.clone(),
+            rsrc,
+            *b"APPL",
+            *b"TEST",
+            0,
+        );
+        let executable = ExecutableCandidate {
+            name: "Fat Application".to_string(),
+            vfs_key: "Fat Application".to_string(),
+            kind: ExecutableKind::Classic68k,
+            is_appl: true,
+            has_data_fork: true,
+            score: ppc_data.len(),
+            priority: 0,
+            creator: *b"TEST",
+            is_installer: false,
+            is_documentation: false,
+            is_demo: false,
+            version: None,
+        };
+
+        let loaded = load_selected_executable(&mut runner, &executable)
+            .expect("classic fat application should load");
+
+        assert!(!loaded.is_powerpc());
+        assert!(runner.has_ppc_companion());
     }
 
     #[test]
