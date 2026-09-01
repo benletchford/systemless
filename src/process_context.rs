@@ -142,7 +142,6 @@ pub(crate) struct ProcessMemoryManager {
 pub(crate) struct SharedProcessMemoryManager(Rc<RefCell<ProcessMemoryManager>>);
 
 impl SharedProcessMemoryManager {
-    #[cfg(test)]
     pub(crate) fn borrow(&self) -> std::cell::Ref<'_, ProcessMemoryManager> {
         self.0.borrow()
     }
@@ -176,11 +175,181 @@ impl ProcessMemoryManager {
         }
     }
 
+    fn assert_classic_memory_bus_attached(&self, bus: &MacMemoryBus) {
+        let allocator = self
+            .classic_allocator
+            .as_ref()
+            .expect("classic Memory Manager operation requires an attached bus");
+        assert!(
+            allocator.ptr_eq(&bus.shared_classic_heap_allocator()),
+            "classic Memory Manager operation used a detached bus"
+        );
+    }
+
     #[cfg(test)]
     pub(crate) fn classic_allocation_size(&self, address: u32) -> Option<u32> {
         self.classic_allocator
             .as_ref()
             .and_then(|allocator| allocator.allocation_size(address))
+    }
+
+    /// Allocate a classic nonrelocatable block for this process.
+    ///
+    /// `NewPtr` returns a fixed block in the current heap or `NIL` with
+    /// `memFullErr`. Inside Macintosh: Memory (1992), pp. 2-36--2-37.
+    pub(crate) fn new_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
+        self.assert_classic_memory_bus_attached(bus);
+        bus.alloc(size)
+    }
+
+    /// Release a classic nonrelocatable block owned by this process.
+    ///
+    /// `DisposePtr` invalidates the pointer and returns its storage to the
+    /// heap. Inside Macintosh: Memory (1992), pp. 2-38--2-39.
+    pub(crate) fn dispose_classic_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
+        self.assert_classic_memory_bus_attached(bus);
+        bus.free(ptr);
+    }
+
+    /// Allocate a classic relocatable block and stable master pointer.
+    ///
+    /// `NewHandle` creates an unlocked, unpurgeable block and returns `NIL`
+    /// if either allocation fails. Inside Macintosh: Memory (1992),
+    /// pp. 2-29--2-31.
+    pub(crate) fn new_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        size: u32,
+    ) -> Result<(u32, u32), i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        let ptr = bus.alloc(size);
+        if ptr == 0 && size > 0 {
+            return Err(Self::MEM_FULL_ERR);
+        }
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            bus.free(ptr);
+            return Err(Self::MEM_FULL_ERR);
+        }
+        bus.write_long(handle, ptr);
+        self.ptr_to_handle.insert(ptr, handle);
+        Ok((handle, ptr))
+    }
+
+    /// Allocate a classic master pointer whose relocatable block is empty.
+    ///
+    /// `NewEmptyHandle` returns a handle containing `NIL`. Inside Macintosh:
+    /// Memory (1992), pp. 2-33--2-34.
+    pub(crate) fn new_empty_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+    ) -> Result<u32, i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        let handle = bus.alloc(4);
+        if handle == 0 {
+            return Err(Self::MEM_FULL_ERR);
+        }
+        bus.write_long(handle, 0);
+        Ok(handle)
+    }
+
+    /// Release a classic relocatable block and its master pointer.
+    ///
+    /// The stale reverse entry is intentionally retained because disposed
+    /// master-pointer contents are undefined and `RecoverHandle` scans those
+    /// slots. Inside Macintosh: Memory (1992), pp. 2-34--2-35, and Inside
+    /// Macintosh Volume V (1986), p. V-579.
+    pub(crate) fn dispose_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        dispose_data: bool,
+    ) {
+        self.assert_classic_memory_bus_attached(bus);
+        if handle == 0 {
+            return;
+        }
+        let ptr = bus.read_long(handle);
+        if dispose_data {
+            bus.free(ptr);
+        }
+        bus.free(handle);
+        self.handle_state_bits.remove(&handle);
+    }
+
+    /// Return the logical size of a native or classic nonrelocatable block.
+    /// Inside Macintosh: Memory (1992), pp. 2-41--2-42.
+    pub(crate) fn process_ptr_size(&self, bus: &MacMemoryBus, ptr: u32) -> Option<u32> {
+        self.assert_classic_memory_bus_attached(bus);
+        self.native_allocator
+            .as_ref()
+            .and_then(|allocator| allocator.ptrs.iter().find(|record| record.ptr == ptr))
+            .map(|record| record.size)
+            .or_else(|| bus.get_alloc_size(ptr))
+    }
+
+    /// Change a native or classic nonrelocatable block's logical size without
+    /// moving its pointer. Inside Macintosh: Memory (1992), pp. 2-42--2-43.
+    pub(crate) fn set_process_ptr_size(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ptr: u32,
+        new_size: u32,
+    ) -> i16 {
+        self.assert_classic_memory_bus_attached(bus);
+        if ptr == 0 {
+            return Self::NIL_HANDLE_ERR;
+        }
+        let native_index = self.native_allocator.as_ref().and_then(|allocator| {
+            allocator.ptrs.iter().position(|record| record.ptr == ptr)
+        });
+        let old_size = native_index
+            .and_then(|index| {
+                self.native_allocator
+                    .as_ref()
+                    .and_then(|allocator| allocator.ptrs.get(index))
+                    .map(|record| record.size)
+            })
+            .or_else(|| bus.get_alloc_size(ptr))
+            .unwrap_or(0);
+        if MacMemoryBus::allocation_bucket_size(new_size)
+            > MacMemoryBus::allocation_bucket_size(old_size)
+        {
+            return Self::MEM_FULL_ERR;
+        }
+        if new_size < old_size {
+            bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
+        }
+        if let Some(index) = native_index {
+            let allocator = self
+                .native_allocator
+                .as_mut()
+                .expect("native pointer record retains its allocator");
+            allocator.ptrs[index].size = new_size;
+            allocator.heap.last_mem_error = Self::NO_ERR;
+            self.native_allocator_dirty = true;
+        } else {
+            bus.set_alloc_size(ptr, new_size);
+        }
+        Self::NO_ERR
+    }
+
+    /// Return the logical size of a native or classic relocatable block.
+    /// Inside Macintosh: Memory (1992), pp. 2-39--2-40.
+    pub(crate) fn process_handle_size(
+        &self,
+        bus: &MacMemoryBus,
+        handle: u32,
+    ) -> Option<u32> {
+        self.assert_classic_memory_bus_attached(bus);
+        self.native_allocations
+            .get(&handle)
+            .map(|record| record.size)
+            .or_else(|| {
+                (handle != 0)
+                    .then(|| bus.read_long(handle))
+                    .and_then(|ptr| bus.get_alloc_size(ptr))
+            })
     }
 
     pub(crate) fn attach_metadata_adapters(
@@ -1112,7 +1281,7 @@ mod tests {
         let mut primary = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut primary);
 
-        let ptr = primary.alloc(37);
+        let ptr = context.memory_manager_mut().new_classic_ptr(&mut primary, 37);
         assert_ne!(ptr, 0);
         assert_eq!(
             context.memory_manager.borrow().classic_allocation_size(ptr),
@@ -1122,7 +1291,9 @@ mod tests {
         let mut second_adapter = MacMemoryBus::new(8 * 1024 * 1024);
         context.attach_classic_memory_bus(&mut second_adapter);
         assert_eq!(second_adapter.get_alloc_size(ptr), Some(37));
-        second_adapter.free(ptr);
+        context
+            .memory_manager_mut()
+            .dispose_classic_ptr(&mut second_adapter, ptr);
         assert_eq!(primary.get_alloc_size(ptr), None);
         assert_eq!(
             context.memory_manager.borrow().classic_allocation_size(ptr),

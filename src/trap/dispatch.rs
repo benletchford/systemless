@@ -2955,6 +2955,10 @@ impl TrapDispatcher {
         context.attach_guest_calls(&mut self.guest_calls);
     }
 
+    pub(crate) fn process_memory_manager(&self) -> Option<SharedProcessMemoryManager> {
+        self.process_memory_manager.clone()
+    }
+
     /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
     /// adapter's local queue for the duration of `f`, and guarantee it is swapped back
     /// on normal exit, early return, or unwind.

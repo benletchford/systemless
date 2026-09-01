@@ -669,6 +669,133 @@ impl super::TrapDispatcher {
         0
     }
 
+    fn new_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            return bus.alloc(size);
+        };
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.new_classic_ptr(bus, size)
+    }
+
+    fn dispose_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            bus.free(ptr);
+            return;
+        };
+        memory_manager.borrow_mut().dispose_classic_ptr(bus, ptr);
+    }
+
+    fn new_process_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        size: u32,
+    ) -> std::result::Result<(u32, u32), u32> {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            let ptr = bus.alloc(size);
+            if ptr == 0 && size > 0 {
+                return Err(MEM_FULL_ERR);
+            }
+            let handle = bus.alloc(4);
+            if handle == 0 {
+                bus.free(ptr);
+                return Err(MEM_FULL_ERR);
+            }
+            bus.write_long(handle, ptr);
+            self.ptr_to_handle.insert(ptr, handle);
+            return Ok((handle, ptr));
+        };
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager
+            .new_classic_handle(bus, size)
+            .map_err(|error| error as i32 as u32)
+    }
+
+    fn new_empty_process_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+    ) -> std::result::Result<u32, u32> {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            let handle = bus.alloc(4);
+            if handle == 0 {
+                return Err(MEM_FULL_ERR);
+            }
+            bus.write_long(handle, 0);
+            return Ok(handle);
+        };
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager
+            .new_empty_classic_handle(bus)
+            .map_err(|error| error as i32 as u32)
+    }
+
+    fn dispose_process_classic_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        dispose_data: bool,
+    ) {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            if handle != 0 {
+                if dispose_data {
+                    bus.free(bus.read_long(handle));
+                }
+                bus.free(handle);
+            }
+            return;
+        };
+        memory_manager
+            .borrow_mut()
+            .dispose_classic_handle(bus, handle, dispose_data);
+    }
+
+    fn process_ptr_size(&self, bus: &MacMemoryBus, ptr: u32) -> Option<u32> {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            return bus.get_alloc_size(ptr);
+        };
+        let memory_manager = memory_manager.borrow();
+        memory_manager.process_ptr_size(bus, ptr)
+    }
+
+    fn set_process_ptr_size(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        ptr: u32,
+        new_size: u32,
+    ) -> u32 {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            if ptr == 0 {
+                return NIL_HANDLE_ERR;
+            }
+            let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
+            if MacMemoryBus::allocation_bucket_size(new_size)
+                > MacMemoryBus::allocation_bucket_size(old_size)
+            {
+                return MEM_FULL_ERR;
+            }
+            if new_size < old_size {
+                bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
+            }
+            bus.set_alloc_size(ptr, new_size);
+            return NO_ERR;
+        };
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.set_process_ptr_size(bus, ptr, new_size) as i32 as u32
+    }
+
+    fn process_handle_size(
+        &self,
+        bus: &MacMemoryBus,
+        handle: u32,
+    ) -> Option<u32> {
+        let Some(memory_manager) = self.process_memory_manager() else {
+            return (handle != 0)
+                .then(|| bus.read_long(handle))
+                .and_then(|ptr| bus.get_alloc_size(ptr));
+        };
+        let memory_manager = memory_manager.borrow();
+        memory_manager.process_handle_size(bus, handle)
+    }
+
     pub(crate) fn dispatch_memory<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -680,8 +807,8 @@ impl super::TrapDispatcher {
             // ========== Memory Manager ==========
             // NewPtr ($A11E) / NewPtrSys ($A51E) / NewPtrClear ($A31E) / NewPtrSysClear ($A71E)
             // Allocates a nonrelocatable block. CLEAR variants zero the memory.
-            // Inside Macintosh: Memory (1992), pp. 2-35--2-37.
-            // Allocates via `bus.alloc()` and returns the pointer in A0;
+            // Inside Macintosh: Memory (1992), pp. 2-36--2-38.
+            // Allocates through the process Memory Manager and returns the pointer in A0;
             // CLEAR variants zero memory and SYS variants do not extend the
             // application-zone header.
             (false, 0x1E) => {
@@ -696,7 +823,7 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                let ptr = bus.alloc(size);
+                let ptr = self.new_process_classic_ptr(bus, size);
                 if ptr == 0 && size > 0 {
                     cpu.write_reg(Register::A0, 0);
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
@@ -728,7 +855,7 @@ impl super::TrapDispatcher {
             // NewHandle ($A022)
             // Allocates a new relocatable block and returns a handle to it. CLEAR variants zero the memory.
             // FUNCTION NewHandle (logicalSize: Size): Handle;
-            // Inside Macintosh Volume II, II-27
+            // Inside Macintosh: Memory (1992), pp. 2-29--2-32.
             (false, 0x22) => {
                 let size = cpu.read_reg(Register::D0);
                 let variant = raw_trap_route(self.current_trap_word).os_routine_variant;
@@ -739,12 +866,14 @@ impl super::TrapDispatcher {
                     write_memory_result(cpu, bus, MEM_FULL_ERR);
                     return Some(Ok(()));
                 }
-                let ptr = bus.alloc(size);
-                if ptr == 0 && size > 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                    return Some(Ok(()));
-                }
+                let (handle, ptr) = match self.new_process_classic_handle(bus, size) {
+                    Ok(allocation) => allocation,
+                    Err(error) => {
+                        cpu.write_reg(Register::A0, 0);
+                        write_memory_result(cpu, bus, error);
+                        return Some(Ok(()));
+                    }
+                };
                 if matches!(
                     variant,
                     OsRoutineVariant::CurrentHeapClear | OsRoutineVariant::SystemHeapClear
@@ -754,20 +883,6 @@ impl super::TrapDispatcher {
                 } else {
                     scribble_uninitialized_allocation(bus, ptr, size);
                 }
-                let handle = bus.alloc(4);
-                if handle == 0 {
-                    if ptr != 0 {
-                        bus.free(ptr);
-                    }
-                    cpu.write_reg(Register::A0, 0);
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                    return Some(Ok(()));
-                }
-                bus.write_long(handle, ptr);
-                // Track the ptr → handle mapping so RecoverHandle can find
-                // this handle later given just its master pointer's data
-                // address. Inside Macintosh Volume V, V-579.
-                self.ptr_to_handle.insert(ptr, handle);
                 cpu.write_reg(Register::A0, handle);
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
@@ -776,26 +891,29 @@ impl super::TrapDispatcher {
             // NewEmptyHandle ($A166)
             // Allocates a master pointer set to NIL without allocating a data block.
             // FUNCTION NewEmptyHandle: Handle;
-            // Inside Macintosh: Memory, 2-33
+            // Inside Macintosh: Memory (1992), p. 2-33.
             // NewEmptyHandle ($A066): Allocates master pointer set to NIL, no data block
             (false, 0x66) => {
-                let handle = bus.alloc(4);
-                if handle == 0 {
-                    cpu.write_reg(Register::A0, 0);
-                    write_memory_result(cpu, bus, MEM_FULL_ERR);
-                } else {
-                    bus.write_long(handle, 0); // master pointer = NIL
-                    cpu.write_reg(Register::A0, handle);
-                    write_memory_result(cpu, bus, NO_ERR);
+                match self.new_empty_process_classic_handle(bus) {
+                    Ok(handle) => {
+                        cpu.write_reg(Register::A0, handle);
+                        write_memory_result(cpu, bus, NO_ERR);
+                    }
+                    Err(error) => {
+                        cpu.write_reg(Register::A0, 0);
+                        write_memory_result(cpu, bus, error);
+                    }
                 }
                 Ok(())
             }
 
-            // DisposePtr ($A01F): A0 = pointer to free
-            // DisposePtr ($A01F): Frees pointer via bus.free(), returns noErr
+            // DisposePtr ($A01F)
+            // Releases a nonrelocatable block for reuse.
+            // PROCEDURE DisposePtr (p: Ptr);
+            // Inside Macintosh: Memory (1992), pp. 2-38--2-39.
             (false, 0x1F) => {
                 let ptr = cpu.read_reg(Register::A0);
-                bus.free(ptr);
+                self.dispose_process_classic_ptr(bus, ptr);
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
             }
@@ -839,10 +957,11 @@ impl super::TrapDispatcher {
                     // rather than nil. We replicate this by leaving the stale
                     // entry in ptr_to_handle; NewHandle will overwrite it if
                     // the address is ever reused. (IM:V V-579)
-                    if resource_backing.is_none() {
-                        bus.free(data_ptr);
-                    }
-                    bus.free(handle);
+                    self.dispose_process_classic_handle(
+                        bus,
+                        handle,
+                        resource_backing.is_none(),
+                    );
                 }
                 write_memory_result(cpu, bus, NO_ERR);
                 Ok(())
@@ -975,7 +1094,7 @@ impl super::TrapDispatcher {
             // GetHandleSize ($A025)
             // Returns the logical size in bytes of the relocatable block whose handle is h.
             // FUNCTION GetHandleSize (h: Handle): Size;
-            // Inside Macintosh Volume II, II-31
+            // Inside Macintosh: Memory (1992), pp. 2-39--2-40.
             (false, 0x25) => {
                 let handle = cpu.read_reg(Register::A0);
                 let trap_site = cpu.read_reg(Register::PC).wrapping_sub(2);
@@ -985,7 +1104,7 @@ impl super::TrapDispatcher {
                     let ptr = bus.read_long(handle);
                     let size = self
                         .resource_handle_memory_size(bus, handle, ptr)
-                        .or_else(|| bus.get_alloc_size(ptr))
+                        .or_else(|| self.process_handle_size(bus, handle))
                         .unwrap_or(0);
                     if trace_sound_enabled() {
                         if let Some((_resource_ptr, res_type, res_id)) =
@@ -1842,7 +1961,7 @@ impl super::TrapDispatcher {
             // Changes the logical size of a nonrelocatable block.
             // On entry: A0 = pointer, D0 = newSize
             // On exit:  D0 = result code (noErr or memFullErr)
-            // Inside Macintosh: Memory 1992, 2-44. Critical contract:
+            // Inside Macintosh: Memory (1992), pp. 2-42--2-43. Critical contract:
             // "SetPtrSize doesn't move the pointer" — the block stays at
             // its current address whether shrinking or growing.
             //
@@ -1852,44 +1971,21 @@ impl super::TrapDispatcher {
             // in-capacity-grow we update the stored logical size and keep
             // the pointer stable. For grow beyond the aligned capacity we
             // return memFullErr.
-            // SetPtrSize ($A020): Resizes nonrelocatable block: allocs new, copies data, frees old, updates A0; per IM:II II-38
             (false, 0x20) => {
                 let ptr = cpu.read_reg(Register::A0);
                 let new_size = cpu.read_reg(Register::D0);
-                if ptr == 0 {
-                    write_memory_result(cpu, bus, NIL_HANDLE_ERR);
-                    return Some(Ok(()));
-                }
-                let old_size = bus.get_alloc_size(ptr).unwrap_or(0);
-                let old_aligned = MacMemoryBus::allocation_bucket_size(old_size);
-                let new_aligned = MacMemoryBus::allocation_bucket_size(new_size);
-                if new_aligned <= old_aligned {
-                    // Fits in the existing block — just update the
-                    // logical size and zero the newly "freed" tail so
-                    // the block reads clean for any subsequent
-                    // SetPtrSize grow.
-                    if new_size < old_size {
-                        bus.fill_zeros(ptr.wrapping_add(new_size), old_size - new_size);
-                    }
-                    bus.set_alloc_size(ptr, new_size);
-                    write_memory_result(cpu, bus, NO_ERR);
-                    return Some(Ok(()));
-                }
-                // Can't grow beyond aligned capacity without moving —
-                // spec requires memFullErr rather than silently
-                // moving the pointer.
-                write_memory_result(cpu, bus, MEM_FULL_ERR);
+                let result = self.set_process_ptr_size(bus, ptr, new_size);
+                write_memory_result(cpu, bus, result);
                 Ok(())
             }
 
             // GetPtrSize ($A021)
             // Returns the logical size of the nonrelocatable block pointed to by A0.
             // On exit: D0 = size (or negative error code)
-            // Inside Macintosh Volume II, II-39
-            // GetPtrSize ($A021): Returns actual allocation size via `get_alloc_size`; per IM:II II-39
+            // Inside Macintosh: Memory (1992), pp. 2-41--2-42.
             (false, 0x21) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let size = bus.get_alloc_size(ptr).unwrap_or(0);
+                let size = self.process_ptr_size(bus, ptr).unwrap_or(0);
                 cpu.write_reg(Register::D0, size);
                 Ok(())
             }
@@ -4489,7 +4585,9 @@ mod tests {
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
     use crate::memory::MemoryBus;
-    use crate::process_context::ProcessContext;
+    use crate::process_context::{
+        ProcessContext, ProcessHandleRecord, ProcessNativeHeapState, ProcessPtrRecord,
+    };
     use crate::trap::dispatch::{LoadedResources, ResourceFileMap};
     use std::collections::HashMap;
 
@@ -4565,6 +4663,22 @@ mod tests {
         assert_eq!(memory_manager.borrow().handle_for_ptr(data_ptr), Some(handle));
 
         cpu.write_reg(Register::A0, ptr);
+        dispatcher.current_trap_word = 0xA021;
+        dispatcher
+            .dispatch_memory(false, 0x21, &mut cpu, &mut bus)
+            .expect("GetPtrSize should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 24);
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher.current_trap_word = 0xA025;
+        dispatcher
+            .dispatch_memory(false, 0x25, &mut cpu, &mut bus)
+            .expect("GetHandleSize should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 13);
+
+        cpu.write_reg(Register::A0, ptr);
         let (event_queue, menu_tracking, memory_manager) =
             context.event_queue_menu_tracking_and_memory_manager();
         dispatcher
@@ -4626,6 +4740,72 @@ mod tests {
             .expect("HLock should be handled")
             .unwrap();
         assert_eq!(context.memory_manager_mut().handle_state(handle), 0x80);
+    }
+
+    #[test]
+    fn classic_size_traps_observe_native_process_allocations() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        const HANDLE: u32 = HEAP_BASE;
+        const HANDLE_PTR: u32 = HEAP_BASE + 0x10;
+        const PTR: u32 = HEAP_BASE + 0x80;
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        bus.write_long(HANDLE, HANDLE_PTR);
+        {
+            let mut memory_manager = context.memory_manager_mut();
+            memory_manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor: HEAP_BASE + 0x100,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[ProcessPtrRecord { ptr: PTR, size: 37 }],
+                &[],
+                &[],
+            );
+            memory_manager.register_native_handle_records([(
+                ProcessHandleRecord {
+                    handle: HANDLE,
+                    ptr: HANDLE_PTR,
+                    size: 48,
+                    capacity: 64,
+                },
+                0,
+            )]);
+        }
+        dispatcher.attach_process_context(&mut context);
+        assert_eq!(bus.get_alloc_size(HANDLE_PTR), None);
+        assert_eq!(bus.get_alloc_size(PTR), None);
+
+        cpu.write_reg(Register::A0, HANDLE);
+        dispatcher.current_trap_word = 0xA025;
+        dispatcher
+            .dispatch_memory(false, 0x25, &mut cpu, &mut bus)
+            .expect("GetHandleSize should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 48);
+
+        cpu.write_reg(Register::A0, PTR);
+        dispatcher.current_trap_word = 0xA021;
+        dispatcher
+            .dispatch_memory(false, 0x21, &mut cpu, &mut bus)
+            .expect("GetPtrSize should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 37);
+
+        cpu.write_reg(Register::A0, PTR);
+        cpu.write_reg(Register::D0, 20);
+        dispatcher.current_trap_word = 0xA020;
+        dispatcher
+            .dispatch_memory(false, 0x20, &mut cpu, &mut bus)
+            .expect("SetPtrSize should be handled")
+            .unwrap();
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(context.memory_manager_mut().process_ptr_size(&bus, PTR), Some(20));
     }
 
     #[test]

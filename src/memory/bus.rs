@@ -497,7 +497,7 @@ impl Default for ClassicHeapAllocatorState {
 pub(crate) struct SharedClassicHeapAllocator(Rc<RefCell<ClassicHeapAllocatorState>>);
 
 impl SharedClassicHeapAllocator {
-    fn ptr_eq(&self, other: &Self) -> bool {
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
     }
 
