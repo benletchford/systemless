@@ -19385,7 +19385,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"CNTL", cntl_id, &[0u8; 32]);
         disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
         disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
-        disp.res_load = false;
+        disp.policy.res_load = false;
 
         bus.write_word(0x0A60, 0x7FFF);
         bus.write_word(TEST_SP, dlog_id as u16);
@@ -19543,7 +19543,7 @@ mod tests {
         disp.install_test_resource(&mut bus, *b"CNTL", cntl_id, &[0u8; 32]);
         disp.install_test_resource(&mut bus, *b"ICON", icon_id, &[0xAA; 128]);
         disp.install_test_resource(&mut bus, *b"PICT", pict_id, &[0x11; 32]);
-        disp.res_load = false;
+        disp.policy.res_load = false;
 
         bus.write_word(0x0A60, 0x7FFF);
         bus.write_word(TEST_SP, alrt_id as u16);

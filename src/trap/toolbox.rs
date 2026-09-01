@@ -9111,7 +9111,7 @@ impl super::TrapDispatcher {
                 // reading the whole word would turn SetResPurge(FALSE) into
                 // TRUE.
                 let install = (bus.read_word(sp) >> 8) != 0;
-                self.res_purge = install;
+                self.policy.res_purge = install;
                 cpu.write_reg(Register::A7, sp + 2);
                 Ok(())
             }
@@ -9128,7 +9128,7 @@ impl super::TrapDispatcher {
                 // stack word. The low byte is padding and can be non-zero;
                 // reading the whole word turns SetResLoad(FALSE) into TRUE.
                 let load = (bus.read_word(sp) >> 8) != 0;
-                self.res_load = load;
+                self.policy.res_load = load;
                 // Clear ResErr on success — real ROM does, and callers
                 // that probe ResError after a successful SetResLoad
                 // otherwise see stale values from boot-time auto-loads.
@@ -16761,7 +16761,7 @@ impl super::TrapDispatcher {
         if let Some(candidates) = candidates {
             if index >= 1 && (index as usize) <= candidates.len() {
                 let (res_id, refnum, ptr) = candidates[(index - 1) as usize];
-                let ptr = if ptr == 0 && self.res_load {
+                let ptr = if ptr == 0 && self.policy.res_load {
                     self.reload_resource_data_from_file(bus, refnum, res_type, res_id)
                         .unwrap_or(0)
                 } else {
@@ -22950,7 +22950,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(!disp.res_purge);
+        assert!(!disp.policy.res_purge);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
         assert_eq!(bus.read_word(sp + 2), 0xBEEF);
     }
@@ -22966,14 +22966,14 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(disp.res_purge);
+        assert!(disp.policy.res_purge);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_word(sp, 0x00FF);
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(!disp.res_purge);
+        assert!(!disp.policy.res_purge);
     }
 
     fn write_drag_region_frame(
@@ -23089,7 +23089,7 @@ mod tests {
         // IM:More Macintosh Toolbox 1993, 1-79 plus MPW stack convention:
         // Boolean FALSE is $00 in the high byte. The low byte is padding and
         // must not turn the parameter true.
-        disp.res_load = true;
+        disp.policy.res_load = true;
         bus.write_word(sp, 0x00FF);
         bus.write_word(0x0A60, 0xBEEF);
 
@@ -23097,7 +23097,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(!disp.res_load);
+        assert!(!disp.policy.res_load);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
 
@@ -23109,7 +23109,7 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
 
-        assert!(disp.res_load);
+        assert!(disp.policy.res_load);
         assert_eq!(bus.read_word(0x0A60), 0);
         assert_eq!(cpu.read_reg(Register::A7), sp + 2);
     }
@@ -23177,7 +23177,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = bus.alloc(8);
         bus.write_bytes(data_ptr, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
-        disp.res_load = false;
+        disp.policy.res_load = false;
         disp.resources = Some(LoadedResources {
             files: HashMap::from([(
                 0,
@@ -23226,7 +23226,7 @@ mod tests {
         disp.remember_resource_backing_data(0, *b"CODE", 1, bytes.clone());
         let handle = disp.get_or_create_resource_handle_in_file(&mut bus, *b"CODE", 1, 0, 0);
         assert_eq!(bus.read_long(handle), 0);
-        disp.res_load = true;
+        disp.policy.res_load = true;
         bus.write_word(TEST_SP, 1);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"CODE"));
         bus.write_long(TEST_SP + 6, 0);
@@ -23296,7 +23296,7 @@ mod tests {
         });
 
         for res_load in [true, false] {
-            disp.res_load = res_load;
+            disp.policy.res_load = res_load;
             cpu.write_reg(Register::A7, TEST_SP);
             bus.write_word(TEST_SP, 1);
             bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"seg!"));

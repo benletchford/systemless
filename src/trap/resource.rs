@@ -899,7 +899,7 @@ impl super::TrapDispatcher {
                         self.loaded_handles
                             .insert(handle, (ptr, existing_type, existing_id));
                     }
-                    if bus.read_long(handle) == 0 && (self.res_load || recorded_resident) {
+                    if bus.read_long(handle) == 0 && (self.policy.res_load || recorded_resident) {
                         bus.write_long(handle, existing_ptr);
                         self.add_resource_materialization_tick_cost(bus, existing_ptr);
                     }
@@ -918,7 +918,7 @@ impl super::TrapDispatcher {
         // an empty handle (master pointer NIL) for resource data that is not
         // already in memory. Keep the true data pointer in loaded_handles so
         // LoadResource can populate the master pointer later.
-        let materialize = self.res_load || recorded_resident;
+        let materialize = self.policy.res_load || recorded_resident;
         bus.write_long(handle, if materialize { ptr } else { 0 });
         self.loaded_handles.insert(handle, (ptr, res_type, res_id));
         self.resource_handle_files.insert(handle, refnum);
@@ -1074,7 +1074,7 @@ impl super::TrapDispatcher {
         // resource-returning routines may return an empty handle; preserve
         // that contract while restoring released resources when automatic
         // loading is enabled.
-        if ptr != 0 || !self.res_load {
+        if ptr != 0 || !self.policy.res_load {
             return Some(ptr);
         }
 
@@ -7725,7 +7725,7 @@ impl super::TrapDispatcher {
 
         let identity = self.loaded_handles.get(&handle).copied();
         let ptr = match identity {
-            Some((0, res_type, res_id)) if self.res_load => self
+            Some((0, res_type, res_id)) if self.policy.res_load => self
                 .resource_handle_files
                 .get(&handle)
                 .copied()
@@ -9007,7 +9007,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(!disp.res_purge);
+        assert!(!disp.policy.res_purge);
 
         cpu.write_reg(Register::A7, sp);
         bus.write_long(sp, handle);
@@ -9034,7 +9034,7 @@ mod tests {
         let result = disp.dispatch_toolbox(true, 0x193, &mut cpu, &mut bus);
         assert!(result.is_some());
         assert!(result.unwrap().is_ok());
-        assert!(disp.res_purge);
+        assert!(disp.policy.res_purge);
 
         cpu.write_reg(Register::A7, sp);
         cpu.write_reg(Register::A0, handle);
@@ -9617,7 +9617,7 @@ mod tests {
         // IM:More Macintosh Toolbox 1993, 1-79 to 1-80: after
         // SetResLoad(FALSE), GetResource returns an empty handle for data
         // that is not already in memory; LoadResource later fills it.
-        disp.res_load = false;
+        disp.policy.res_load = false;
 
         let sp = TEST_SP;
         bus.write_word(sp, 501u16);
@@ -9690,7 +9690,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"LOAD", 502, &[0xBE, 0xEF]);
 
-        disp.res_load = false;
+        disp.policy.res_load = false;
         bus.write_word(TEST_SP, 502u16);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
         call(&mut disp, true, 0x1A0, &mut cpu, &mut bus).unwrap();
@@ -9701,7 +9701,7 @@ mod tests {
 
         // IM:More Macintosh Toolbox 1993, 1-79: SetResLoad(TRUE) returns
         // resource-returning calls to automatic loading behavior.
-        disp.res_load = true;
+        disp.policy.res_load = true;
         cpu.write_reg(Register::A7, TEST_SP);
         bus.write_word(TEST_SP, 502u16);
         bus.write_long(TEST_SP + 2, u32::from_be_bytes(*b"LOAD"));
@@ -10281,7 +10281,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"LOAD", 205, &[0x12, 0x34]);
 
-        disp.res_load = false;
+        disp.policy.res_load = false;
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"LOAD", 205, data_ptr);
         assert_eq!(bus.read_long(handle), 0);
 
@@ -10629,7 +10629,7 @@ mod tests {
             .loaded
             .insert((*b"CODE", 1), 0);
         bus.write_long(handle, 0);
-        disp.res_load = true;
+        disp.policy.res_load = true;
 
         bus.write_long(TEST_SP, handle);
         call(&mut disp, true, 0x1A5, &mut cpu, &mut bus).unwrap();
@@ -10825,9 +10825,9 @@ mod tests {
             94,
             &[0x10, 0x20, 0x30, 0x40, 0x50],
         );
-        disp.res_load = false;
+        disp.policy.res_load = false;
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"PART", 94, data_ptr);
-        disp.res_load = true;
+        disp.policy.res_load = true;
         assert_eq!(bus.read_long(handle), 0, "handle should be empty");
         let buffer = bus.alloc(4);
         bus.write_bytes(buffer, &[0xEE; 4]);
@@ -10882,9 +10882,9 @@ mod tests {
         // the resource map entry rather than treating the handle as missing.
         let (mut disp, mut cpu, mut bus) = setup();
         let data_ptr = setup_resources(&mut disp, &mut bus, b"WEPT", 95, &[0xAA, 0xBB, 0xCC, 0xDD]);
-        disp.res_load = false;
+        disp.policy.res_load = false;
         let handle = disp.get_or_create_resource_handle(&mut bus, *b"WEPT", 95, data_ptr);
-        disp.res_load = true;
+        disp.policy.res_load = true;
         assert_eq!(bus.read_long(handle), 0, "handle should be empty");
         let src = bus.alloc(2);
         bus.write_bytes(src, &[0x11, 0x22]);

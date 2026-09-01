@@ -108,6 +108,10 @@ pub mod addr {
     /// Macintosh Toolbox Essentials (1992), pp. 3-115--3-119.
     pub const THE_MENU: u32 = 0x0A26;
 
+    /// ResErr: result code from the most recent Resource Manager operation.
+    /// Inside Macintosh Volume I (1985), pp. I-109 and I-119.
+    pub const RES_ERR: u32 = 0x0A60;
+
     /// MenuDisable: menu ID + item number of the last menu item the cursor
     /// passed over while a menu was down (4 bytes, LongInt — high word =
     /// menuID, low word = itemNumber). Maintained by the standard menu
