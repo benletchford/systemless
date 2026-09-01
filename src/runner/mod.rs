@@ -28,6 +28,17 @@ use ppc::{PpcException, PpcFetchHistogram, PpcMemory, PpcRunResult};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub mod audio;
+pub mod idle;
+pub mod interrupt;
+pub mod ppc_exec;
+pub mod vfs;
+
+pub(crate) use idle::*;
+pub(crate) use interrupt::*;
+pub(crate) use ppc_exec::*;
+pub use vfs::*;
+
 // Cache env-var lookups (per-call syscall otherwise).
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::OnceLock;
@@ -440,34 +451,6 @@ fn format_input_tick_trace(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcProfileSample {
-    max_steps: usize,
-    cycles: u64,
-    total_instructions: u64,
-    tick: u32,
-    pc: u32,
-    lr: u32,
-    current_gworld: u32,
-    screen_events: u64,
-    handled_import_count: u32,
-    last_import_index: Option<u32>,
-    unsupported_import_index: Option<u32>,
-    q3_frames: usize,
-    q3_frame_start: usize,
-    q3_frame_end: usize,
-    q3_commands: usize,
-    q3_vertices: usize,
-    q3_triangles: usize,
-    q3_pixels: usize,
-    dsp_front_gworld: u32,
-    dsp_back_gworld: u32,
-    run_us: u128,
-    render_us: u128,
-    sync_us: u128,
-    total_us: u128,
-}
-
 fn format_optional_profile_u32(value: Option<u32>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
@@ -626,14 +609,6 @@ fn format_ppc_import_histogram(histogram: &HashMap<(String, String), u64>, top_n
         );
     }
     out
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PpcGWorldDumpState {
-    current_gworld: u32,
-    front_gworld: u32,
-    back_gworld: u32,
-    swap_count: u32,
 }
 
 fn format_ppc_gworld_sample(
@@ -1204,213 +1179,6 @@ fn event_manager_yield_trap(opcode: u16) -> bool {
 // Cap how many ticks the fast-forward will advance in one shot,
 // to protect against pathological target values (e.g. overflowed
 // unsigned register values being misinterpreted as huge-future
-// ticks). If the cap trips, we fall back to normal spin — still
-// correct, just not fast.
-const SPIN_FASTFWD_MAX_TICKS: u32 = 1_000_000;
-
-/// Outcome of `advance_until_tick`. Used to distinguish the "we
-/// advanced, please synthesise the exit state" happy path from
-/// the abort paths: tick_cap reached (caller must break the
-/// outer run loop), pathological target difference (caller must
-/// NOT synthesise — let the guest spin normally), and interrupt
-/// callback injection (caller must leave the CPU at the callback
-/// trampoline).
-enum AdvanceResult {
-    Advanced,
-    CapHit,
-    Interrupted,
-    TooFar,
-}
-
-/// Processor state that can affect guest execution at a candidate idle-cycle
-/// boundary. JIT/decode caches and remaining host batch cycles are deliberately
-/// excluded, while precise prefetch and loop-mode state remain part of the
-/// proof.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CpuArchitecturalSnapshot {
-    dar: [u32; 16],
-    dar_save: [u32; 16],
-    sr_save: u16,
-    ppc: u32,
-    stack_pointers: [u32; 8],
-    pc: u32,
-    sr: u16,
-    vbr: u32,
-    sfc: u32,
-    dfc: u32,
-    cacr: u32,
-    caar: u32,
-    cacr_pending_ops: u32,
-    itt: [u32; 2],
-    dtt: [u32; 2],
-    ir: u32,
-    fpr: [m68k::fpu::FloatX80; 8],
-    fpiar: u32,
-    fpsr: u32,
-    fpcr: u32,
-    mmu: [u32; 14],
-    pmmu_enabled: bool,
-    int_level: u32,
-    stopped: u32,
-    change_of_flow: bool,
-    loop_mode: bool,
-    loop_body_word: u16,
-    loop_dbcc_word: u16,
-    prefetch: [u16; 2],
-    prefetch_count: u8,
-    consume_without_prefetch: bool,
-    pending_sync_clocks: u32,
-    run_mode: u32,
-    fpu_just_reset: bool,
-    reset_cycles: u32,
-    virq_state: u32,
-    nmi_pending: u32,
-    exception_processing: bool,
-}
-
-impl CpuArchitecturalSnapshot {
-    fn capture(cpu: &m68k::CpuCore) -> Self {
-        Self {
-            dar: cpu.dar,
-            dar_save: cpu.dar_save,
-            sr_save: cpu.sr_save,
-            ppc: cpu.ppc,
-            stack_pointers: cpu.sp,
-            pc: cpu.pc,
-            sr: cpu.get_sr(),
-            vbr: cpu.vbr,
-            sfc: cpu.sfc,
-            dfc: cpu.dfc,
-            cacr: cpu.cacr,
-            caar: cpu.caar,
-            cacr_pending_ops: cpu.cacr_pending_ops,
-            itt: [cpu.itt0, cpu.itt1],
-            dtt: [cpu.dtt0, cpu.dtt1],
-            ir: cpu.ir,
-            fpr: cpu.fpr,
-            fpiar: cpu.fpiar,
-            fpsr: cpu.fpsr,
-            fpcr: cpu.fpcr,
-            mmu: [
-                cpu.mmu_crp_aptr,
-                cpu.mmu_crp_limit,
-                cpu.mmu_srp_aptr,
-                cpu.mmu_srp_limit,
-                cpu.mmu_tc,
-                cpu.mmu_sr,
-                cpu.mmu_tt0,
-                cpu.mmu_tt1,
-                cpu.dacr0,
-                cpu.dacr1,
-                cpu.iacr0,
-                cpu.iacr1,
-                cpu.pcr,
-                cpu.buscr,
-            ],
-            pmmu_enabled: cpu.pmmu_enabled,
-            int_level: cpu.int_level,
-            stopped: cpu.stopped,
-            // Deliberately normalized: `change_of_flow` is the m68k core's
-            // internal did-the-last-instruction-branch bookkeeping (a trace
-            // and loop-mode heuristic input), not architectural state. Its
-            // value at a trap site depends on whether execution arrived via
-            // the interpreter or a compiled trace, so comparing it makes
-            // wait-identity proofs fail whenever the JIT compiles part of a
-            // wait loop: measured on the SC2K boot census, the flag was the
-            // sole differing field in every sampled proof failure, and each
-            // lost proof is a lost tick fast-forward.
-            change_of_flow: false,
-            loop_mode: cpu.loop_mode,
-            loop_body_word: cpu.loop_body_word,
-            loop_dbcc_word: cpu.loop_dbcc_word,
-            prefetch: cpu.prefetch_queue,
-            prefetch_count: cpu.prefetch_count,
-            consume_without_prefetch: cpu.consume_without_prefetch,
-            pending_sync_clocks: cpu.pending_sync_clocks,
-            run_mode: cpu.run_mode,
-            fpu_just_reset: cpu.fpu_just_reset,
-            reset_cycles: cpu.reset_cycles,
-            virq_state: cpu.virq_state,
-            nmi_pending: cpu.nmi_pending,
-            exception_processing: cpu.exception_processing,
-        }
-    }
-}
-
-struct IdleCycleProbe {
-    trap_pc: u32,
-    tick: u32,
-    cpu: CpuArchitecturalSnapshot,
-    /// Same-site arrivals observed since the probe began without matching
-    /// the starting CPU state. A wait cycle may have a small period (EV
-    /// Override's crawl alternates two polled keycodes through D5, a
-    /// strict period-2 cycle); the proof closes when an arrival matches
-    /// the probe's origin with the write journal -- kept open across the
-    /// whole period -- restored, and aborts past `IDLE_CYCLE_MAX_PERIOD`.
-    arrivals: u8,
-}
-
-/// Longest wait-cycle period the exact-state prover will chase. Period-2
-/// covers the measured EV Override crawl; 4 leaves headroom without
-/// letting genuinely progressing loops hold a write journal open long.
-const IDLE_CYCLE_MAX_PERIOD: u8 = 4;
-
-/// Probes the prover will start at one poll site within one tick. A genuine
-/// wait proves on its first probe (or its second, when the loop's first
-/// iteration still carries setup); a site whose probes keep failing on
-/// changed memory or CPU state is polling while it works. Without a budget
-/// such a site re-arms a fresh write journal on every arrival -- EV
-/// Override's boot started 928,781 probes in 17 s, 926,295 of them failing
-/// on memory -- and each journal costs a hash insert per store plus fastmem
-/// withdrawn for the whole core. Past the budget the site is left alone
-/// until the tick changes.
-const IDLE_CYCLE_MAX_PROBES_PER_TICK: u8 = 2;
-
-/// Host-side Event Manager inputs that are not stored in guest RAM. A proven
-/// idle cycle may remain parked across frontend calls only while these inputs
-/// are unchanged and the Event Manager still has no deliverable event.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct IdleCycleHostSnapshot {
-    mouse_pos: (i16, i16),
-    mouse_button: bool,
-    key_map: [u8; 16],
-    caps_lock_physically_pressed: bool,
-    /// Host mirror of the guest window chain, read by the admitted Window
-    /// Manager queries. Every mutation of it is also written into the guest
-    /// chain (journaled), so this is belt-and-braces: a parked cycle must
-    /// not resume across a reordering the journal somehow missed.
-    window_list: Vec<u32>,
-    /// A native menu selection staged for MenuSelect. It is always paired
-    /// with a pending event the resume gate sees; recorded here so the
-    /// pairing is not the only thing standing between it and a proof.
-    pending_native_menu_selection: Option<(i16, i16)>,
-}
-
-impl IdleCycleHostSnapshot {
-    fn capture(dispatcher: &TrapDispatcher) -> Self {
-        Self {
-            mouse_pos: dispatcher.mouse_pos,
-            mouse_button: dispatcher.mouse_button,
-            key_map: *dispatcher.key_map_bytes(),
-            caps_lock_physically_pressed: dispatcher.caps_lock_physically_pressed,
-            window_list: dispatcher.window_list.clone(),
-            pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
-        }
-    }
-}
-
-/// A complete null-event cycle that has already been proven to be an exact
-/// identity operation. The bus write journal remains armed while the frontend
-/// owns execution, so any guest-memory mutation invalidates the parked state
-/// without hashing the whole emulated address space every frame.
-struct ProvenIdleCycleSleep {
-    trap_pc: u32,
-    wake_tick: u32,
-    tick: u32,
-    cpu: CpuArchitecturalSnapshot,
-    host: IdleCycleHostSnapshot,
-}
-
 // Layout for dialog callback scratch region.
 const DIALOG_DRAW_TRAMPOLINE_OFFSET: u32 = 0x00;
 const DIALOG_FILTER_TRAMPOLINE_OFFSET: u32 = 0x40;
@@ -1422,52 +1190,6 @@ const DIALOG_CALLBACK_SCRATCH_SIZE: u32 = 0xC0;
 /// Compact Mac video hardware refreshes at approximately 60.15 Hz.
 pub const DEFAULT_VBL_HZ: f64 = 60.15;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VfsFileSummary {
-    pub path: String,
-    pub data_len: usize,
-    pub resource_len: usize,
-    pub data_hash: u64,
-    pub resource_hash: u64,
-    pub file_type: u32,
-    pub creator: u32,
-    pub finder_flags: u16,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VfsFileStat {
-    pub path: String,
-    pub data_len: usize,
-    pub resource_len: usize,
-    pub file_type: u32,
-    pub creator: u32,
-    pub finder_flags: u16,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VfsFileSnapshot {
-    pub path: String,
-    pub data_fork: Vec<u8>,
-    pub resource_fork: Vec<u8>,
-    pub file_type: u32,
-    pub creator: u32,
-    pub finder_flags: u16,
-    pub created_date: u32,
-    pub modified_date: u32,
-}
-
-fn vfs_fork_hash(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
 /// Default emulated CPU speed from the canonical machine profile.
 pub const DEFAULT_REALTIME_CPU_MHZ: f64 =
     crate::machine_profile::REFERENCE_MACHINE_PROFILE.realtime_cpu_mhz;
@@ -1514,54 +1236,6 @@ fn current_mac_epoch_seconds() -> u32 {
     unix_now
         .saturating_add(MAC_EPOCH_OFFSET_FROM_UNIX)
         .min(u32::MAX as u64) as u32
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ActiveInterruptCallbackSource {
-    Adb,
-    Timer,
-    Vbl,
-    CursorTask,
-    SoundCallback,
-    SoundFileCompletion,
-    SoundDoubleBack,
-    FileCompletion,
-    DialogDrawProc,
-    DialogFilterProc,
-    MenuHook,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ActiveInterruptCallback {
-    source: ActiveInterruptCallbackSource,
-    resume_pc: u32,
-    resume_sp: u32,
-    d_regs: [u32; 8],
-    a_regs: [u32; 8],
-    sr: u16,
-    ccr: u8,
-    restore_port: Option<(u32, u32)>,
-}
-
-fn is_sound_interrupt_source(source: ActiveInterruptCallbackSource) -> bool {
-    matches!(
-        source,
-        ActiveInterruptCallbackSource::SoundCallback
-            | ActiveInterruptCallbackSource::SoundFileCompletion
-            | ActiveInterruptCallbackSource::SoundDoubleBack
-    )
-}
-
-fn interrupt_callback_sr(source: ActiveInterruptCallbackSource, saved_sr: u16) -> u16 {
-    match source {
-        // A vertical retrace interrupt runs with processor priority level 1
-        // and then restores the previous priority when it completes.
-        // Inside Macintosh: Processes (1994), pp. 1-11 and 6-3.
-        ActiveInterruptCallbackSource::Vbl | ActiveInterruptCallbackSource::CursorTask => {
-            (saved_sr & !0x0700) | 0x2100
-        }
-        _ => saved_sr,
-    }
 }
 
 fn align4(value: u32) -> u32 {
@@ -1694,18 +1368,6 @@ impl Default for FixtureRunnerConfig {
             screen_depth: 8,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PpcHostSoundPlayback {
-    file_playback_index: usize,
-    channel: u32,
-}
-
-struct PpcDecodedDoubleBuffer {
-    buffer_ptr: u32,
-    flags: u32,
-    samples: Vec<crate::sound::StereoSample>,
 }
 
 impl FixtureRunnerConfig {
@@ -2680,8 +2342,7 @@ impl FixtureRunner {
     }
 
     fn redraw_chrome(&mut self) {
-        let (event_queue, menu_tracking) =
-            self.process_context.event_queue_and_menu_tracking_mut();
+        let (event_queue, menu_tracking) = self.process_context.event_queue_and_menu_tracking_mut();
         self.dispatcher
             .with_process_state(event_queue, menu_tracking, |dispatcher| {
                 dispatcher.redraw_chrome(&mut self.bus);
@@ -6923,24 +6584,28 @@ impl FixtureRunner {
             ppc_app.set_tick_count(callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TICKS, callback_tick);
             let _ = ppc_app.memory.write_u32_be(addr::TIME, callback_time);
-            vbl_probes.extend(ppc_app.fire_vbl_tasks_for_ticks_with_process_memory_manager(
-                callback_tick.wrapping_sub(1),
-                1,
-                usize::MAX,
-                max_cycles,
-                trace_imports,
-                trace_fetches,
-                memory_manager,
-            ));
-            timer_probes.extend(ppc_app.fire_timer_tasks_for_ticks_with_process_memory_manager(
-                callback_tick.wrapping_sub(1),
-                1,
-                usize::MAX,
-                max_cycles,
-                trace_imports,
-                trace_fetches,
-                memory_manager,
-            ));
+            vbl_probes.extend(
+                ppc_app.fire_vbl_tasks_for_ticks_with_process_memory_manager(
+                    callback_tick.wrapping_sub(1),
+                    1,
+                    usize::MAX,
+                    max_cycles,
+                    trace_imports,
+                    trace_fetches,
+                    memory_manager,
+                ),
+            );
+            timer_probes.extend(
+                ppc_app.fire_timer_tasks_for_ticks_with_process_memory_manager(
+                    callback_tick.wrapping_sub(1),
+                    1,
+                    usize::MAX,
+                    max_cycles,
+                    trace_imports,
+                    trace_fetches,
+                    memory_manager,
+                ),
+            );
         }
         (vbl_probes, timer_probes)
     }
@@ -11762,7 +11427,9 @@ mod tests {
             .dispatcher
             .install_trap_address(&mut runner.bus, TRAP_WORD, saved_first);
         assert_eq!(
-            runner.dispatcher.native_trap_handler(&runner.bus, TRAP_WORD),
+            runner
+                .dispatcher
+                .native_trap_handler(&runner.bus, TRAP_WORD),
             Some(FIRST_PATCH)
         );
         runner
@@ -12355,14 +12022,20 @@ mod tests {
         // Test case 1: Context has event and invalidation=true, detached PPC has event and invalidation=false
         {
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-            runner.process_context.event_queue_mut().push_back(QueuedEvent {
-                what: 3,
-                message: 0x1111,
-                where_v: 10,
-                where_h: 20,
-                modifiers: 0x0100,
-            });
-            runner.process_context.event_queue_mut().invalidate_menu_bar();
+            runner
+                .process_context
+                .event_queue_mut()
+                .push_back(QueuedEvent {
+                    what: 3,
+                    message: 0x1111,
+                    where_v: 10,
+                    where_h: 20,
+                    modifiers: 0x0100,
+                });
+            runner
+                .process_context
+                .event_queue_mut()
+                .invalidate_menu_bar();
 
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
             let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
@@ -12379,22 +12052,34 @@ mod tests {
 
             let queue = runner.process_context.event_queue();
             assert_eq!(queue.len(), 2);
-            assert_eq!(queue[0].message, 0x1111, "canonical event must remain in front");
-            assert_eq!(queue[1].message, 0x2222, "detached PPC event must be appended after canonical events");
-            assert!(queue.menu_bar_is_invalid(), "menu_bar_invalid should be true when context was true");
+            assert_eq!(
+                queue[0].message, 0x1111,
+                "canonical event must remain in front"
+            );
+            assert_eq!(
+                queue[1].message, 0x2222,
+                "detached PPC event must be appended after canonical events"
+            );
+            assert!(
+                queue.menu_bar_is_invalid(),
+                "menu_bar_invalid should be true when context was true"
+            );
             assert!(runner.ppc_app.as_ref().unwrap().event_queue.is_empty());
         }
 
         // Test case 2: Context has event and invalidation=false, detached PPC has event and invalidation=true
         {
             let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-            runner.process_context.event_queue_mut().push_back(QueuedEvent {
-                what: 3,
-                message: 0x3333,
-                where_v: 10,
-                where_h: 20,
-                modifiers: 0x0100,
-            });
+            runner
+                .process_context
+                .event_queue_mut()
+                .push_back(QueuedEvent {
+                    what: 3,
+                    message: 0x3333,
+                    where_v: 10,
+                    where_h: 20,
+                    modifiers: 0x0100,
+                });
 
             let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
             let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
@@ -12412,9 +12097,18 @@ mod tests {
 
             let queue = runner.process_context.event_queue();
             assert_eq!(queue.len(), 2);
-            assert_eq!(queue[0].message, 0x3333, "canonical event must remain in front");
-            assert_eq!(queue[1].message, 0x4444, "detached PPC event must be appended after canonical events");
-            assert!(queue.menu_bar_is_invalid(), "menu_bar_invalid should be true when detached PPC was true");
+            assert_eq!(
+                queue[0].message, 0x3333,
+                "canonical event must remain in front"
+            );
+            assert_eq!(
+                queue[1].message, 0x4444,
+                "detached PPC event must be appended after canonical events"
+            );
+            assert!(
+                queue.menu_bar_is_invalid(),
+                "menu_bar_invalid should be true when detached PPC was true"
+            );
             assert!(runner.ppc_app.as_ref().unwrap().event_queue.is_empty());
         }
     }
@@ -12715,9 +12409,7 @@ mod tests {
 
         let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
         let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
-        ppc_app
-            .memory
-            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app.memory.add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
         ppc_app
             .memory
             .add_readonly_region(PEF_MAPPING, 0x1234_5678u32.to_be_bytes().to_vec());
@@ -12741,15 +12433,9 @@ mod tests {
             .unwrap();
         assert_eq!(runner.bus.read_long(FIRST_HOLE), 0x0102_0304);
         runner.bus.write_long(SECOND_HOLE, 0x0506_0708);
-        assert_eq!(
-            ppc_app.memory.read_u32_be(SECOND_HOLE),
-            Some(0x0506_0708)
-        );
+        assert_eq!(ppc_app.memory.read_u32_be(SECOND_HOLE), Some(0x0506_0708));
 
-        assert_eq!(
-            ppc_app.memory.read_u32_be(PEF_MAPPING),
-            Some(0x1234_5678)
-        );
+        assert_eq!(ppc_app.memory.read_u32_be(PEF_MAPPING), Some(0x1234_5678));
         // SAFETY: the test parks `ppc_app`, accesses it only through the bus
         // while attached, and detaches before borrowing its memory again.
         let shared = unsafe { ppc_app.memory.shared_view() };
@@ -12761,10 +12447,7 @@ mod tests {
         assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
         runner.bus.detach_guest_address_space();
         assert_eq!(runner.bus.read_long(PEF_MAPPING), 0xaabb_ccdd);
-        assert_eq!(
-            ppc_app.memory.read_u32_be(PEF_MAPPING),
-            Some(0x1234_5678)
-        );
+        assert_eq!(ppc_app.memory.read_u32_be(PEF_MAPPING), Some(0x1234_5678));
     }
 
     #[test]
@@ -14033,7 +13716,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         })
     }
@@ -14173,8 +13859,7 @@ mod tests {
                 .unwrap()
                 .memory
                 .read_u32_be(callback_marker);
-            callback_value == Some(CALLBACK_VALUE)
-                && runner.dispatcher.guest_calls.is_empty()
+            callback_value == Some(CALLBACK_VALUE) && runner.dispatcher.guest_calls.is_empty()
         });
         assert!(
             callback_completed,
@@ -14325,7 +14010,10 @@ mod tests {
         let root_rect = (0..16)
             .find_map(|_| {
                 let (_, running) = runner.run_steps(512, None);
-                assert!(running, "native MenuSelect halted before opening the root menu");
+                assert!(
+                    running,
+                    "native MenuSelect halted before opening the root menu"
+                );
                 runner
                     .process_context
                     .menu_tracking()
@@ -14340,7 +14028,10 @@ mod tests {
         runner.sync_mouse_position_lowmem();
         let callback_completed = (0..32).any(|_| {
             let (_, running) = runner.run_steps(512, None);
-            assert!(running, "native MenuSelect halted during the growing 68k callback");
+            assert!(
+                running,
+                "native MenuSelect halted during the growing 68k callback"
+            );
             runner
                 .ppc_app
                 .as_mut()
@@ -14350,7 +14041,10 @@ mod tests {
                 == Some(CALLBACK_VALUE)
                 && runner.dispatcher.guest_calls.is_empty()
         });
-        assert!(callback_completed, "the growing real 68k MDEF callback did not return");
+        assert!(
+            callback_completed,
+            "the growing real 68k MDEF callback did not return"
+        );
 
         let native = runner.ppc_app.as_mut().expect("native app retained");
         let relocated_record = native
@@ -14367,7 +14061,10 @@ mod tests {
         assert_eq!(handle_record.handle, root_menu);
         assert_eq!(handle_record.size, handle_record.capacity);
         assert!(handle_record.size > original_handle_record.size);
-        assert_ne!(relocated_record, original_record, "the fixture must force relocation");
+        assert_ne!(
+            relocated_record, original_record,
+            "the fixture must force relocation"
+        );
         assert_eq!(
             runner.process_context.handle_for_ptr(relocated_record),
             Some(root_menu),
@@ -14385,7 +14082,10 @@ mod tests {
             "native decoding must observe the item appended by the 68k callback"
         );
         assert_eq!(native.last_mem_error(), 0);
-        assert_eq!(runner.bus.read_word(crate::memory::globals::addr::MEM_ERR), 0);
+        assert_eq!(
+            runner.bus.read_word(crate::memory::globals::addr::MEM_ERR),
+            0
+        );
 
         let target_v = root_rect.0 + 24;
         let target_h = root_rect.1 + 16;
@@ -14401,7 +14101,10 @@ mod tests {
                     tracking.menu_handle == root_menu && tracking.highlighted_item == TARGET_ITEM
                 })
         });
-        assert!(target_observed, "native tracking did not reach the live regular row");
+        assert!(
+            target_observed,
+            "native tracking did not reach the live regular row"
+        );
         runner.push_canonical_mouse_up(target_v, target_h);
         for _ in 0..128 {
             let (_, running) = runner.run_steps(512, None);
@@ -15633,13 +15336,16 @@ mod tests {
             offset_v > 0 && offset_h > 0,
             "fixture must use a centered viewport"
         );
-        runner.process_context.event_queue_mut().push_back(QueuedEvent {
-            what: 3,
-            message: 0x1122_3344,
-            where_v: 120,
-            where_h: 180,
-            modifiers: 0x0080,
-        });
+        runner
+            .process_context
+            .event_queue_mut()
+            .push_back(QueuedEvent {
+                what: 3,
+                message: 0x1122_3344,
+                where_v: 120,
+                where_h: 180,
+                modifiers: 0x0080,
+            });
 
         fire_callbacks(&mut runner);
 
@@ -15730,7 +15436,11 @@ mod tests {
 
         runner.push_mouse_down(offset_v.saturating_add(12), offset_h.saturating_add(34));
 
-        let event = runner.process_context.event_queue().back().expect("mouseDown");
+        let event = runner
+            .process_context
+            .event_queue()
+            .back()
+            .expect("mouseDown");
         assert_eq!((event.where_v, event.where_h), (12, 34));
         let mut ppc_app = runner.ppc_app.take().expect("PPC app");
         ppc_app.with_event_queue(runner.process_context.event_queue_mut(), |ppc_app| {
@@ -15753,8 +15463,18 @@ mod tests {
         assert_eq!(runner.process_context.event_queue().len(), 1);
         assert_eq!(
             (
-                runner.process_context.event_queue().front().unwrap().where_v,
-                runner.process_context.event_queue().front().unwrap().where_h
+                runner
+                    .process_context
+                    .event_queue()
+                    .front()
+                    .unwrap()
+                    .where_v,
+                runner
+                    .process_context
+                    .event_queue()
+                    .front()
+                    .unwrap()
+                    .where_h
             ),
             (10, 20)
         );
@@ -15777,14 +15497,19 @@ mod tests {
 
         // Immediately visible in ProcessContext without sync copies
         assert_eq!(runner.process_context.event_queue().len(), 1);
-        assert_eq!(runner.process_context.event_queue().front().unwrap().what, 2);
+        assert_eq!(
+            runner.process_context.event_queue().front().unwrap().what,
+            2
+        );
 
         // 68k dispatcher receives canonical queue during execution
-        runner.dispatcher.with_event_queue(runner.process_context.event_queue_mut(), |classic| {
-            assert_eq!(classic.event_queue.len(), 1);
-            let event = classic.event_queue.pop_front().unwrap();
-            assert_eq!((event.where_v, event.where_h), (30, 40));
-        });
+        runner
+            .dispatcher
+            .with_event_queue(runner.process_context.event_queue_mut(), |classic| {
+                assert_eq!(classic.event_queue.len(), 1);
+                let event = classic.event_queue.pop_front().unwrap();
+                assert_eq!((event.where_v, event.where_h), (30, 40));
+            });
 
         assert!(runner.process_context.event_queue().is_empty());
     }
@@ -16171,7 +15896,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17057,7 +16785,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17212,7 +16943,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE, PPC_STACK_BASE),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState::default(),
         });
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -17615,7 +17349,10 @@ mod tests {
             input: PpcInputSnapshot::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
-            process_memory_manager: PpcProcessMemoryManager::with_heap(PPC_HEAP_BASE + 8, PPC_STACK_BASE),
+            process_memory_manager: PpcProcessMemoryManager::with_heap(
+                PPC_HEAP_BASE + 8,
+                PPC_STACK_BASE,
+            ),
             draw_sprocket: PpcDrawSprocketState {
                 front_buffer_gworld: PPC_DSP_BACK_GWORLD,
                 back_buffer_gworld: PPC_MAIN_GWORLD,
@@ -21294,7 +21031,10 @@ mod tests {
         assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
         runner.dispatcher.window_list.pop();
         assert_eq!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
-        runner.dispatcher.pending_native_menu_selection.stage((3, 1));
+        runner
+            .dispatcher
+            .pending_native_menu_selection
+            .stage((3, 1));
         assert_ne!(before, IdleCycleHostSnapshot::capture(&runner.dispatcher));
     }
 
@@ -22705,13 +22445,16 @@ mod tests {
             assert_eq!(runner.cpu.read_reg(Register::PC), base);
 
             runner.dispatcher.modeless_dialog_draw_proc_queue.clear();
-            runner.process_context.event_queue_mut().push_back(QueuedEvent {
-                what: 3,
-                message: 0x0000_351B, // Escape
-                where_v: 0,
-                where_h: 0,
-                modifiers: 0,
-            });
+            runner
+                .process_context
+                .event_queue_mut()
+                .push_back(QueuedEvent {
+                    what: 3,
+                    message: 0x0000_351B, // Escape
+                    where_v: 0,
+                    where_h: 0,
+                    modifiers: 0,
+                });
             let (cancel_steps, cancel_running) = runner.run_gui_slice_with_audio(1, 3, 0);
 
             assert!(cancel_running);
@@ -22906,13 +22649,16 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.tick_count = 0;
-        runner.process_context.event_queue_mut().push_back(QueuedEvent {
-            what: 6,
-            message: 0,
-            where_v: 0,
-            where_h: 0,
-            modifiers: 0,
-        });
+        runner
+            .process_context
+            .event_queue_mut()
+            .push_back(QueuedEvent {
+                what: 6,
+                message: 0,
+                where_v: 0,
+                where_h: 0,
+                modifiers: 0,
+            });
         runner.dispatcher.dialog_tracking =
             Some(dialog_tracking_for_test(filter_proc, 0x0010_0100));
 
@@ -22943,13 +22689,16 @@ mod tests {
         runner.cpu.write_reg(Register::A7, 0x0010_0000);
         runner.bus.write_long(0x016A, 0);
         runner.dispatcher.tick_count = 0;
-        runner.process_context.event_queue_mut().push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 12,
-            where_h: 24,
-            modifiers: 0,
-        });
+        runner
+            .process_context
+            .event_queue_mut()
+            .push_back(QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 12,
+                where_h: 24,
+                modifiers: 0,
+            });
         let mut tracking = dialog_tracking_for_test(filter_proc, 0x0010_0100);
         tracking.items.push(DialogItem {
             item_type: 4,
@@ -23013,13 +22762,16 @@ mod tests {
         runner.dispatcher.tick_count = 42;
         runner.bus.write_long(0x016A, 42);
         runner.dialog_filter_last_null_event_tick = Some((dialog_ptr, 42));
-        runner.process_context.event_queue_mut().push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 12,
-            where_h: 34,
-            modifiers: 0,
-        });
+        runner
+            .process_context
+            .event_queue_mut()
+            .push_back(QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 12,
+                where_h: 34,
+                modifiers: 0,
+            });
 
         assert!(
             runner.should_fire_dialog_filter_proc(),
@@ -24101,13 +23853,16 @@ mod tests {
             "the same invalid-region update should not refire indefinitely in one guest tick"
         );
 
-        runner.process_context.event_queue_mut().push_back(QueuedEvent {
-            what: 1,
-            message: 0,
-            where_v: 123,
-            where_h: 234,
-            modifiers: 0,
-        });
+        runner
+            .process_context
+            .event_queue_mut()
+            .push_back(QueuedEvent {
+                what: 1,
+                message: 0,
+                where_v: 123,
+                where_h: 234,
+                modifiers: 0,
+            });
         assert!(
             runner.dialog_filter_has_real_event_pending(dialog_ptr),
             "queued user input must bypass synthetic update pacing"
@@ -25085,11 +24840,19 @@ mod tests {
         // about MBState despite the unconsumed events, not about queue
         // state). Read it from the canonical process_context queue.
         assert!(
-            runner.process_context.event_queue().iter().any(|e| e.what == 1),
+            runner
+                .process_context
+                .event_queue()
+                .iter()
+                .any(|e| e.what == 1),
             "mouseDown event must remain in the queue (would be drained by GetNextEvent)"
         );
         assert!(
-            runner.process_context.event_queue().iter().any(|e| e.what == 2),
+            runner
+                .process_context
+                .event_queue()
+                .iter()
+                .any(|e| e.what == 2),
             "mouseUp event must remain in the queue"
         );
     }
