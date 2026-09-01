@@ -4988,7 +4988,6 @@ pub struct PpcLoadedApp {
     pub cfm_library_fragments: Vec<PpcCfmLibraryFragment>,
     pub next_cfm_connection_id: u32,
     pub handles: Vec<PpcHandleRecord>,
-    pub free_handle_blocks: Vec<PpcHandleRecord>,
     pub controls: Vec<PpcControlRecord>,
     pub aliases: Vec<PpcAliasRecord>,
     pub gworlds: Vec<PpcGWorldRecord>,
@@ -5168,6 +5167,15 @@ impl PpcLoadedApp {
             .map_or_else(Vec::new, |allocator| allocator.free_ptr_blocks)
     }
 
+    /// Return the process-owned native handle free list.
+    pub fn free_handle_blocks(&self) -> Vec<PpcHandleRecord> {
+        self.process_memory_manager
+            .0
+            .borrow()
+            .native_allocator_snapshot()
+            .map_or_else(Vec::new, |allocator| allocator.free_handle_blocks)
+    }
+
     #[cfg(test)]
     fn replace_handle_states(&self, handle_states: Vec<PpcHandleStateRecord>) {
         let mut memory_manager = self.process_memory_manager.0.borrow_mut();
@@ -5205,7 +5213,7 @@ impl PpcLoadedApp {
                 },
                 &ptrs,
                 &free_ptr_blocks,
-                &self.free_handle_blocks,
+                &[],
             );
         }
     }
@@ -5246,7 +5254,9 @@ impl PpcLoadedApp {
             pointer_records
                 .as_ref()
                 .map_or(&[], |allocator| allocator.free_ptr_blocks.as_slice()),
-            &self.free_handle_blocks,
+            pointer_records
+                .as_ref()
+                .map_or(&[], |allocator| allocator.free_handle_blocks.as_slice()),
         );
         let handle_states: Vec<_> = self
             .handles
@@ -5276,7 +5286,6 @@ impl PpcLoadedApp {
         self.heap_cursor = allocator.heap.heap_cursor;
         self.heap_limit = allocator.heap.heap_limit;
         self.last_mem_error = allocator.heap.last_mem_error;
-        self.free_handle_blocks = allocator.free_handle_blocks;
         ppc_update_zone_free_bytes(&mut self.memory, self.heap_cursor, self.heap_limit);
     }
 
@@ -8714,7 +8723,7 @@ impl PpcLoadedApp {
         let mut ptrs = native_allocator.ptrs;
         let mut free_ptr_blocks = native_allocator.free_ptr_blocks;
         let mut handles = std::mem::take(&mut self.handles);
-        let mut free_handle_blocks = std::mem::take(&mut self.free_handle_blocks);
+        let mut free_handle_blocks = native_allocator.free_handle_blocks;
         let mut handle_states: Vec<_> = handles
             .iter()
             .map(|record| process_memory_manager.native_handle_state(record.handle))
@@ -9581,7 +9590,6 @@ impl PpcLoadedApp {
         self.imports = imports;
         self.import_count = import_count;
         self.handles = handles;
-        self.free_handle_blocks = free_handle_blocks;
         self.controls = controls;
         self.aliases = aliases;
         self.gworlds = gworlds;
@@ -9665,7 +9673,7 @@ impl PpcLoadedApp {
             master_pointer_blocks_requested,
             &ptrs,
             &free_ptr_blocks,
-            &self.free_handle_blocks,
+            &free_handle_blocks,
         );
         ppc_synchronize_process_native_handles(
             process_memory_manager,
@@ -14169,7 +14177,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         cfm_library_fragments: Vec::new(),
         next_cfm_connection_id,
         handles,
-        free_handle_blocks: Vec::new(),
         controls: Vec::new(),
         aliases: Vec::new(),
         gworlds,
@@ -82910,6 +82917,7 @@ pub(crate) mod tests {
         title: &[u8],
         item_specs: &[u8],
     ) -> u32 {
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         loaded.memory.add_region(scratch, vec![0; 0x200]);
         assert!(ppc_write_pstring_bytes(&mut loaded.memory, scratch, title));
         assert!(ppc_write_pstring_bytes(
@@ -82922,7 +82930,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             menu_id,
             scratch,
         );
@@ -82947,7 +82955,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 menu,
                 0,
             ),
@@ -82963,6 +82971,7 @@ pub(crate) mod tests {
         title: &[u8],
         item_specs: &[u8],
     ) -> u32 {
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let menu = install_test_menu(loaded, scratch, menu_id, title, item_specs);
         let current_menu_list = ppc_current_menu_list(&mut loaded.memory);
         assert_eq!(
@@ -82982,7 +82991,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 menu,
                 -1,
             ),
@@ -83472,6 +83481,7 @@ pub(crate) mod tests {
     fn native_insert_menu_preserves_regular_and_hierarchical_partitions() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         let regular_title = scratch;
         let hierarchical_title = scratch + 0x20;
@@ -83504,7 +83514,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             128,
             regular_title,
         );
@@ -83513,7 +83523,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             200,
             hierarchical_title,
         );
@@ -83549,7 +83559,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 regular,
                 0,
             ),
@@ -83561,7 +83571,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 hierarchical,
                 -1,
             ),
@@ -83710,7 +83720,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(regular_only, 0);
         assert_eq!(
@@ -83741,7 +83751,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 hierarchical,
                 0,
             ),
@@ -83799,6 +83809,7 @@ pub(crate) mod tests {
     fn native_draw_hilite_and_flash_menu_bar_use_live_shared_menu_colors() {
         let pef = synthetic_pef_with_import(b"DrawMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         install_test_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 128, b"File", b"Open");
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
         loaded.cpu.gpr[4] = 8;
@@ -83828,7 +83839,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(color_handle, 0);
         assert_eq!(
@@ -84126,6 +84137,7 @@ pub(crate) mod tests {
     fn native_delete_menu_prefers_hierarchical_id_collisions() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(scratch, vec![0; 0x40]);
         assert!(ppc_write_pstring_bytes(
@@ -84143,7 +84155,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             200,
             scratch,
         );
@@ -84152,7 +84164,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             200,
             scratch + 0x20,
         );
@@ -84163,7 +84175,7 @@ pub(crate) mod tests {
                     &mut loaded.heap_cursor,
                     loaded.heap_limit,
                     &mut loaded.handles,
-                    &mut loaded.free_handle_blocks,
+                    &mut free_handle_blocks,
                     handle,
                     before_id,
                 ),
@@ -84223,6 +84235,7 @@ pub(crate) mod tests {
     fn native_insert_menu_does_not_evict_entries_from_a_full_partition() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(scratch, vec![0; 0x40]);
         assert!(ppc_write_pstring_bytes(
@@ -84240,7 +84253,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             200,
             scratch,
         );
@@ -84249,7 +84262,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             201,
             scratch + 0x20,
         );
@@ -84274,7 +84287,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(current, 0);
         ppc_set_current_menu_list(&mut loaded.memory, current);
@@ -84285,7 +84298,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 insertion,
                 200,
             ),
@@ -84501,6 +84514,7 @@ pub(crate) mod tests {
     fn hilite_menu_selects_one_title_and_zero_restores_the_bar_at_supported_depths() {
         let pef = synthetic_pef_with_import(b"HiliteMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let title = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(title, vec![0; 16]);
         assert!(ppc_write_pstring_bytes(&mut loaded.memory, title, b"File"));
@@ -84509,7 +84523,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             128,
             title,
         );
@@ -84520,7 +84534,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 menu,
                 0,
             ),
@@ -85024,6 +85038,7 @@ pub(crate) mod tests {
     fn native_popup_draws_from_the_live_shared_menu_color_table() {
         let pef = synthetic_pef_with_import(b"PopUpMenuSelect");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let menu =
             install_test_popup_menu(&mut loaded, PPC_DATA_BASE + 0x1000, 300, b"Popup", b"Color");
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -85051,7 +85066,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(color_handle, 0);
         assert_eq!(
@@ -85605,6 +85620,7 @@ pub(crate) mod tests {
     fn native_menu_select_routes_hierarchical_child_through_its_custom_mdef() {
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         let root = install_test_menu(&mut loaded, scratch, 140, b"File", b"Custom child");
         assert!(ppc_write_pstring_bytes(
@@ -85622,7 +85638,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             141,
             scratch + 0x100,
         );
@@ -85651,7 +85667,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 child,
                 -1,
             ),
@@ -86121,6 +86137,7 @@ pub(crate) mod tests {
     fn tracked_submenu_aligns_after_a_variable_height_icon_row() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         install_test_menu(
             &mut loaded,
@@ -86145,7 +86162,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             201,
             scratch + 0x200,
         );
@@ -86167,7 +86184,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 submenu,
                 -1,
             ),
@@ -86457,6 +86474,7 @@ pub(crate) mod tests {
     fn menu_tracking_opens_selects_and_restores_hierarchical_submenu() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         install_test_menu(
             &mut loaded,
@@ -86480,7 +86498,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             201,
             scratch + 0x100,
         );
@@ -86503,7 +86521,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 submenu,
                 -1,
             ),
@@ -86745,6 +86763,7 @@ pub(crate) mod tests {
     fn menu_tracking_selects_nested_submenus_and_restores_every_depth() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         install_test_menu(
             &mut loaded,
@@ -86779,7 +86798,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             201,
             scratch + 0x200,
         );
@@ -86788,7 +86807,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             202,
             scratch + 0x300,
         );
@@ -86812,7 +86831,7 @@ pub(crate) mod tests {
                     &mut loaded.heap_cursor,
                     loaded.heap_limit,
                     &mut loaded.handles,
-                    &mut loaded.free_handle_blocks,
+                    &mut free_handle_blocks,
                     menu,
                     -1,
                 ),
@@ -87382,6 +87401,7 @@ pub(crate) mod tests {
     fn menu_tracking_rejects_disabled_items_and_dividers_and_clears_cancellation() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(scratch, vec![0; 0x100]);
         assert!(ppc_write_pstring_bytes(
@@ -87399,7 +87419,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             128,
             scratch,
         );
@@ -87422,7 +87442,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 menu_handle,
                 0,
             ),
@@ -87956,7 +87976,7 @@ pub(crate) mod tests {
                     Some(4)
                 );
                 assert_eq!(
-                    native
+                    allocator
                         .free_handle_blocks
                         .last()
                         .map(|record| record.capacity),
@@ -88092,7 +88112,7 @@ pub(crate) mod tests {
             &memory_manager,
         );
         assert_eq!(standalone.handles, attached.handles);
-        assert_eq!(standalone.free_handle_blocks, attached.free_handle_blocks);
+        assert_eq!(standalone.free_handle_blocks(), attached.free_handle_blocks());
         assert_eq!(standalone.memory.read_u32_be(handle), Some(0));
         assert_eq!(attached.memory.read_u32_be(handle), Some(0));
     }
@@ -88168,6 +88188,12 @@ pub(crate) mod tests {
                     ptr: PPC_HEAP_BASE + 0x200,
                     size: 32,
                 });
+                allocator.free_handle_blocks.push(ProcessHandleRecord {
+                    handle: PPC_HEAP_BASE + 0x300,
+                    ptr: PPC_HEAP_BASE + 0x400,
+                    size: 24,
+                    capacity: 48,
+                });
             });
         assert!(native.heap_maximized());
         assert_eq!(native.master_pointer_blocks_requested(), 7);
@@ -88183,6 +88209,14 @@ pub(crate) mod tests {
         );
         assert!(detached.ptrs().is_empty());
         assert!(detached.free_ptr_blocks().is_empty());
+        assert_eq!(
+            native
+                .free_handle_blocks()
+                .last()
+                .map(|record| record.capacity),
+            Some(48)
+        );
+        assert!(detached.free_handle_blocks().is_empty());
         assert!(native.handle_states()[0].high_locked);
         assert!(!detached.handle_states()[0].high_locked);
         native.cpu.gpr[3] = handle;
@@ -88238,7 +88272,7 @@ pub(crate) mod tests {
                     allocator.heap.master_pointer_blocks_requested,
                     &ptrs,
                     &free_ptr_blocks,
-                    &native.free_handle_blocks,
+                    &allocator.free_handle_blocks,
                 );
                 assert_eq!(prior_ptr, PPC_HEAP_BASE);
                 let probe = native.run_with_process_memory_manager(
@@ -88376,7 +88410,7 @@ pub(crate) mod tests {
                     allocator.heap.master_pointer_blocks_requested,
                     &ptrs,
                     &free_ptr_blocks,
-                    &native.free_handle_blocks,
+                    &allocator.free_handle_blocks,
                 );
                 assert_ne!(blocking_ptr, 0);
                 native.cpu.pc = native.entry_pc;
@@ -88813,6 +88847,7 @@ pub(crate) mod tests {
     fn get_menu_bar_returns_an_ordered_caller_owned_snapshot() {
         let pef = synthetic_pef_with_import(b"GetMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let menu_handles = [0x1111_0000, 0x2222_0000];
         let current = ppc_alloc_menu_list_handle(
             &menu_handles,
@@ -88820,7 +88855,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(current, 0);
         ppc_set_current_menu_list(&mut loaded.memory, current);
@@ -88867,6 +88902,7 @@ pub(crate) mod tests {
     fn set_menu_bar_installs_a_copy_independent_of_the_source_handle() {
         let pef = synthetic_pef_with_import(b"SetMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let menu_handles = [0x1111_0000, 0x2222_0000];
         let source = ppc_alloc_menu_list_handle(
             &menu_handles,
@@ -88874,7 +88910,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(source, 0);
         loaded.cpu.gpr[3] = source;
@@ -88902,13 +88938,14 @@ pub(crate) mod tests {
     fn clear_menu_bar_empties_and_preserves_the_current_menu_list() {
         let pef = synthetic_pef_with_import(b"ClearMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let current = ppc_alloc_menu_list_handle(
             &[0x1111_0000, 0x2222_0000],
             &mut loaded.memory,
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(current, 0);
         ppc_set_current_menu_list(&mut loaded.memory, current);
@@ -88929,6 +88966,7 @@ pub(crate) mod tests {
     fn native_menu_bar_snapshot_clear_and_restore_round_trips_both_partitions() {
         let pef = synthetic_pef_with_import(b"GetMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let original = PpcMenuListDefinition {
             last_right: 87,
             mb_res_id: 0x108,
@@ -88954,7 +88992,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(current, 0);
         ppc_set_current_menu_list(&mut loaded.memory, current);
@@ -89462,6 +89500,7 @@ pub(crate) mod tests {
     fn native_getnewmbar_rebuilds_menu_color_state_from_loaded_menus() {
         let pef = synthetic_pef_with_import(b"GetNewMBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let ref_num = loaded.current_resource_refnum;
         let stale = test_menu_color_entry(999, 1, 0x11);
         let file = test_menu_color_entry(601, 0, 0x22);
@@ -89471,7 +89510,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(color_handle, 0);
         assert_eq!(
@@ -89700,6 +89739,7 @@ pub(crate) mod tests {
     fn native_menu_deletion_filters_the_shared_menu_color_table() {
         let pef = synthetic_pef_with_import(b"DeleteMenuItem");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let menu_handle = install_test_menu(
             &mut loaded,
             PPC_DATA_BASE + 0x6000,
@@ -89716,7 +89756,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_eq!(
             ppc_replace_menu_bytes(
@@ -91688,6 +91728,7 @@ pub(crate) mod tests {
     #[test]
     fn classic_control_hit_testing_and_disposal_follow_the_window_list() {
         let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = ppc_heap_alloc(
             &mut loaded.memory,
             &mut loaded.heap_cursor,
@@ -91729,7 +91770,7 @@ pub(crate) mod tests {
         ppc_dispose_control(
             &mut loaded.memory,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             &mut loaded.controls,
             handle,
         );
@@ -98917,8 +98958,8 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert!(loaded.handles.is_empty());
-        assert_eq!(loaded.free_handle_blocks.len(), 1);
-        assert_eq!(loaded.free_handle_blocks[0].capacity, 64);
+        assert_eq!(loaded.free_handle_blocks().len(), 1);
+        assert_eq!(loaded.free_handle_blocks()[0].capacity, 64);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -98932,7 +98973,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.heap_cursor, heap_cursor);
         assert_eq!(loaded.handles[0].size, 16);
         assert_eq!(loaded.handles[0].capacity, 64);
-        assert!(loaded.free_handle_blocks.is_empty());
+        assert!(loaded.free_handle_blocks().is_empty());
         for offset in 0..16 {
             assert_eq!(loaded.memory.read_u8(ptr + offset), Some(0));
         }
@@ -142365,7 +142406,7 @@ pub(crate) mod tests {
             .iter()
             .any(|record| record.handle == resource_handle));
         assert!(loaded
-            .free_handle_blocks
+            .free_handle_blocks()
             .iter()
             .any(|record| record.handle == resource_handle));
         assert!(!loaded
@@ -142438,7 +142479,7 @@ pub(crate) mod tests {
             .all(|record| record.handle != released_handle));
         assert!(loaded.handle_states().is_empty());
         assert_eq!(loaded.memory.read_u32_be(released_handle), Some(0));
-        assert_eq!(loaded.free_handle_blocks.len(), 1);
+        assert_eq!(loaded.free_handle_blocks().len(), 1);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResource;
@@ -142464,7 +142505,7 @@ pub(crate) mod tests {
         );
         assert_eq!(loaded.vfs_resources[0].handle, new_handle);
         assert_eq!(loaded.handles.len(), 1);
-        assert!(loaded.free_handle_blocks.is_empty());
+        assert!(loaded.free_handle_blocks().is_empty());
         assert_eq!(loaded.heap_cursor, allocated_heap_cursor);
         let new_ptr = loaded.memory.read_u32_be(new_handle).unwrap();
         assert_eq!(new_ptr, released_ptr);
@@ -145645,6 +145686,7 @@ pub(crate) mod tests {
     fn native_menu_manager_mutates_items_dimensions_and_the_current_menu_list() {
         let pef = synthetic_pef_with_import(b"NewMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let scratch = PPC_DATA_BASE + 0x1000;
         let title = scratch;
         let definitions = scratch + 0x40;
@@ -145667,7 +145709,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             128,
             title,
         );
@@ -145731,7 +145773,7 @@ pub(crate) mod tests {
                 &mut loaded.heap_cursor,
                 loaded.heap_limit,
                 &mut loaded.handles,
-                &mut loaded.free_handle_blocks,
+                &mut free_handle_blocks,
                 menu,
                 0,
             ),
@@ -146747,7 +146789,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u32_be(icon_handle), Some(0));
         assert!(loaded.handles.is_empty());
-        assert_eq!(loaded.free_handle_blocks.len(), 3);
+        assert_eq!(loaded.free_handle_blocks().len(), 3);
     }
 
     #[test]
@@ -152522,6 +152564,7 @@ pub(crate) mod tests {
     fn hle_import_runner_draw_menu_bar_matches_at_supported_depths() {
         let pef = synthetic_pef_with_import(b"DrawMenuBar");
         let mut loaded = load_pef_application(&pef).unwrap();
+        let mut free_handle_blocks = loaded.free_handle_blocks();
         let title = PPC_DATA_BASE + 0x7f00;
         let item = title + 8;
         let set_entries_color = title + 24;
@@ -152534,7 +152577,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
             128,
             title,
         );
@@ -152557,7 +152600,7 @@ pub(crate) mod tests {
             &mut loaded.heap_cursor,
             loaded.heap_limit,
             &mut loaded.handles,
-            &mut loaded.free_handle_blocks,
+            &mut free_handle_blocks,
         );
         assert_ne!(menu_list, 0);
         ppc_set_current_menu_list(&mut loaded.memory, menu_list);
