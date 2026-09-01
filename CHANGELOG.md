@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.15](https://github.com/benletchford/systemless/compare/v0.27.14...v0.27.15) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ppc:** implement the documented Wide FixMath routines ([ce64c8a](https://github.com/benletchford/systemless/commit/ce64c8a4dc3526d9a28508e6719cdf745cc20920))
+
 ## [0.27.14](https://github.com/benletchford/systemless/compare/v0.27.13...v0.27.14) (2026-09-01)
 
 
