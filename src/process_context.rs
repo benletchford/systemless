@@ -6185,12 +6185,31 @@ mod tests {
         classic
             .channels
             .push(crate::sound::SndChannel::new(0x3000, false));
+        native.play_file_buffer(
+            0x4000,
+            vec![0x80],
+            crate::sound::OUTPUT_RATE << 16,
+            Some((
+                crate::callback_manager::CallbackTaskArchitecture::PowerPc,
+                0x5000,
+            )),
+        );
+        native.mix_frame(1);
 
         assert!(classic.ptr_eq(&native));
-        assert_eq!(native.channels.len(), 2);
+        assert_eq!(native.channels.len(), 3);
         assert_eq!(native.channels[0].guest_ptr, 0x2000);
         assert_eq!(classic.sys_beep_volume(), 0x0080_0040);
+        assert!(matches!(
+            classic.pending_sound_callbacks.as_slice(),
+            [crate::sound::PendingSoundCallback::FileCompletion {
+                architecture: crate::callback_manager::CallbackTaskArchitecture::PowerPc,
+                callback_addr: 0x5000,
+                chan_ptr: 0x4000,
+            }]
+        ));
         assert_eq!(detached.channels.len(), 1);
+        assert!(detached.pending_sound_callbacks.is_empty());
         assert_eq!(detached.sys_beep_volume(), 0x0100_0100);
     }
 

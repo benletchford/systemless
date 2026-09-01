@@ -4,11 +4,11 @@ use crate::callback_manager::CallbackTaskArchitecture;
 use crate::cpu::{M68kCpu, Register, StepResult};
 use crate::debug_overlay::{DebugOverlayFrameStats, DebugOverlaySnapshot};
 use crate::loader::ppc::{
-    PpcDecodedAiffPlaybackRecord, PpcDrawSprocketTraceEntry,
-    PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry, PpcImportBinding,
-    PpcImportDispatcherTarget, PpcInputSnapshot, PpcInputSprocketSimpleStateTraceEntry,
-    PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay, PpcQ3SoftwareRenderStats, PpcRgbColor,
-    PpcSoundCompletionRecord, PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
+    PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
+    PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
+    PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay,
+    PpcQ3SoftwareRenderStats, PpcRgbColor, PpcSoundCompletionRecord, PpcSoundDoubleBackRecord,
+    PpcSoundDoubleBufferPlaybackRecord,
 };
 use crate::loader::{
     decode_retro68_relocations, ApplicationSizeResource, Code0Header, CodeSegmentHeader,
@@ -75,22 +75,6 @@ fn ppc_halted_by_exit_to_shell(
                     binding.dispatcher_target == PpcImportDispatcherTarget::ExitToShell
                 })
         })
-}
-
-fn ppc_decoded_playback_duration_ticks(decoded: &PpcDecodedAiffPlaybackRecord) -> Option<u32> {
-    if decoded.sample_rate_fixed == 0 {
-        return None;
-    }
-    let sample_count = u128::try_from(decoded.samples.len()).ok()?;
-    if sample_count == 0 {
-        return Some(0);
-    }
-    let numerator = sample_count.checked_mul(1203)?.checked_mul(1u128 << 16)?;
-    let denominator = u128::from(decoded.sample_rate_fixed).checked_mul(20)?;
-    let ticks = numerator
-        .checked_add(denominator.saturating_sub(1))?
-        .checked_div(denominator)?;
-    Some(u32::try_from(ticks).unwrap_or(u32::MAX))
 }
 
 fn ppc_resource_sidecar_parent(
@@ -2652,6 +2636,22 @@ impl FixtureRunner {
     }
 
     pub fn has_pending_sound_work(&self) -> bool {
+        let has_routable_process_callback = self
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .iter()
+            .any(|callback| match callback {
+                crate::sound::PendingSoundCallback::Command { .. }
+                | crate::sound::PendingSoundCallback::FileCompletion {
+                    architecture: CallbackTaskArchitecture::M68k,
+                    ..
+                } => true,
+                crate::sound::PendingSoundCallback::FileCompletion {
+                    architecture: CallbackTaskArchitecture::PowerPc,
+                    ..
+                } => self.ppc_app.is_some(),
+            });
         self.active_interrupt_callback
             .map(|callback| {
                 matches!(
@@ -2662,11 +2662,7 @@ impl FixtureRunner {
                 )
             })
             .unwrap_or(false)
-            || !self
-                .dispatcher
-                .sound_manager
-                .pending_sound_callbacks
-                .is_empty()
+            || has_routable_process_callback
             || !self.dispatcher.sound_manager.pending_callbacks.is_empty()
             || self
                 .ppc_app
@@ -2689,7 +2685,6 @@ impl FixtureRunner {
     /// keep up with wall-clock time (e.g. during expensive PICT draws).
     pub fn force_advance_guest_tick(&mut self) {
         self.advance_guest_tick();
-        self.queue_due_ppc_sound_completions();
     }
 
     pub fn set_output_path(&mut self, path: std::path::PathBuf) {
@@ -6049,7 +6044,6 @@ impl FixtureRunner {
                 self.redraw_chrome_outside_idle_journal();
             }
         } else {
-            self.queue_due_ppc_sound_completions();
             if finish_frame {
                 self.finish_host_frame(audio_samples, false);
             }
@@ -6937,43 +6931,6 @@ impl FixtureRunner {
 
     fn service_ppc_sound_adapter(&mut self, ppc_app: &mut PpcLoadedApp) {
         self.sync_ppc_double_buffer_playbacks(ppc_app);
-
-        let pending_timing = ppc_app
-            .sound
-            .file_playbacks
-            .iter()
-            .enumerate()
-            .filter(|(_, playback)| {
-                playback.active && !playback.paused && !playback.quiet_now && !playback.timing_valid
-            })
-            .filter_map(|(index, _)| {
-                ppc_app
-                    .sound
-                    .decoded_file_playbacks
-                    .iter()
-                    .find(|decoded| decoded.file_playback_index as usize == index)
-                    .cloned()
-                    .map(|decoded| (index, decoded))
-            })
-            .collect::<Vec<_>>();
-        for (index, decoded) in pending_timing {
-            if trace_sound_runner_enabled() {
-                let non_silent = decoded
-                    .samples
-                    .iter()
-                    .filter(|sample| **sample != 0x80)
-                    .count();
-                eprintln!(
-                    "[PPC-SOUND] process file play index={index} chan=${:08X} rate=${:08X} samples={} non_silent={non_silent}",
-                    decoded.channel,
-                    decoded.sample_rate_fixed,
-                    decoded.samples.len()
-                );
-            }
-            self.ensure_ppc_sound_playback_timing(ppc_app, index, &decoded);
-        }
-
-        self.adjust_ppc_sound_pause_timing(ppc_app);
     }
 
     fn sync_ppc_double_buffer_playbacks(&mut self, ppc_app: &mut PpcLoadedApp) {
@@ -7156,189 +7113,61 @@ impl FixtureRunner {
         });
     }
 
-    fn ensure_ppc_sound_playback_timing(
-        &mut self,
-        ppc_app: &mut PpcLoadedApp,
-        index: usize,
-        decoded: &PpcDecodedAiffPlaybackRecord,
-    ) {
-        let Some(playback) = ppc_app.sound.file_playbacks.get_mut(index) else {
-            return;
-        };
-        if playback.timing_valid {
-            return;
-        }
-        let duration_ticks = ppc_decoded_playback_duration_ticks(decoded).unwrap_or(1);
-        let duration_instructions =
-            u64::from(duration_ticks).saturating_mul(u64::from(self.instructions_per_tick));
-        playback.timing_valid = true;
-        playback.start_tick = self.dispatcher.tick_count;
-        playback.start_instruction_count = self.total_instructions;
-        playback.due_tick = playback.start_tick.saturating_add(duration_ticks);
-        playback.due_instruction_count = playback
-            .start_instruction_count
-            .saturating_add(duration_instructions);
-        playback.pause_timing_valid = false;
-        playback.pause_started_tick = 0;
-        playback.pause_started_instruction_count = 0;
-    }
-
-    fn adjust_ppc_sound_pause_timing(&mut self, ppc_app: &mut PpcLoadedApp) {
-        let current_tick = self.dispatcher.tick_count;
-        let current_instructions = self.total_instructions;
-        for playback in &mut ppc_app.sound.file_playbacks {
-            if !playback.active || playback.quiet_now || !playback.timing_valid {
-                playback.pause_timing_valid = false;
-                continue;
-            }
-            if playback.paused {
-                if !playback.pause_timing_valid {
-                    playback.pause_timing_valid = true;
-                    playback.pause_started_tick = current_tick;
-                    playback.pause_started_instruction_count = current_instructions;
-                }
-                continue;
-            }
-            if playback.pause_timing_valid {
-                let paused_ticks = current_tick.saturating_sub(playback.pause_started_tick);
-                let paused_instructions =
-                    current_instructions.saturating_sub(playback.pause_started_instruction_count);
-                playback.due_tick = playback.due_tick.saturating_add(paused_ticks);
-                playback.due_instruction_count = playback
-                    .due_instruction_count
-                    .saturating_add(paused_instructions);
-                playback.pause_timing_valid = false;
-                playback.pause_started_tick = 0;
-                playback.pause_started_instruction_count = 0;
-            }
-        }
-    }
-
-    fn queue_due_ppc_sound_completions(&mut self) {
-        let current_tick = self.dispatcher.tick_count;
-        let current_instructions = self.total_instructions;
-        let completed = {
-            let Some(ppc_app) = self.ppc_app.as_mut() else {
-                return;
-            };
-
-            let mut completed = Vec::new();
-            for (index, playback) in ppc_app.sound.file_playbacks.iter_mut().enumerate() {
-                if !playback.active
-                    || playback.paused
-                    || playback.quiet_now
-                    || !playback.timing_valid
-                    || current_tick < playback.due_tick
-                    || current_instructions < playback.due_instruction_count
-                {
-                    continue;
-                }
-
-                playback.active = false;
-                playback.paused = false;
-                let scheduled_tick = playback.due_tick;
-                let scheduled_instruction_count = playback.due_instruction_count;
-                if playback.async_play && playback.completion != 0 {
-                    ppc_app
-                        .sound
-                        .pending_completions
-                        .push(PpcSoundCompletionRecord {
-                            file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
-                            channel: playback.channel,
-                            completion: playback.completion,
-                            command: playback.completion_command,
-                            tick: current_tick,
-                            instruction_count: current_instructions,
-                            scheduled_tick,
-                            scheduled_instruction_count,
-                        });
-                }
-                completed.push((index, playback.channel));
-            }
-            completed
-        };
-
-        if completed.is_empty() {
-            return;
-        }
-        for (_, channel) in &completed {
-            if let Some(chan) = self.dispatcher.sound_manager.find_channel_mut(*channel) {
-                chan.quiet();
-            }
-        }
-        self.fire_pending_ppc_sound_completions();
-    }
-
     fn sync_ppc_sound_completions_from_dispatcher(&mut self) {
-        let Some(ppc_app) = self.ppc_app.as_ref() else {
-            self.fire_pending_ppc_sound_completions();
-            return;
-        };
-
-        // The process Sound Manager owns playback and its cursor. Native
-        // records retain only callback metadata; observe the canonical
-        // channel to decide when its completion routine is due. Sound 1994,
-        // pp. 2-134--2-151.
-        let completed = ppc_app
-            .sound
-            .file_playbacks
-            .iter()
-            .enumerate()
-            .filter(|(_, playback)| playback.active && !playback.quiet_now && playback.timing_valid)
-            .filter_map(|(index, playback)| {
-                let still_active = self
-                    .dispatcher
-                    .sound_manager
-                    .channels
-                    .iter()
-                    .find(|channel| channel.guest_ptr == playback.channel)
-                    .is_some_and(|channel| channel.has_active_playback());
-                (!still_active).then_some((index, playback.channel))
-            })
-            .collect::<Vec<_>>();
-        if completed.is_empty() {
-            self.fire_pending_ppc_sound_completions();
+        if self.ppc_app.is_none() {
             return;
         }
 
-        {
-            let Some(ppc_app) = self.ppc_app.as_mut() else {
-                return;
+        // Playback and its exhaustion boundary are process Sound Manager
+        // state. Only ABI frame construction remains with the CPU adapter.
+        // Inside Macintosh: Sound (1994), pp. 2-134--2-151.
+        let mut completions = Vec::new();
+        let pending = &mut self.dispatcher.sound_manager.pending_sound_callbacks;
+        let mut index = 0;
+        while index < pending.len() {
+            match pending[index] {
+                crate::sound::PendingSoundCallback::FileCompletion {
+                    architecture: CallbackTaskArchitecture::PowerPc,
+                    callback_addr,
+                    chan_ptr,
+                } => {
+                    pending.remove(index);
+                    completions.push((callback_addr, chan_ptr));
+                }
+                _ => index += 1,
+            }
+        }
+
+        let Some(ppc_app) = self.ppc_app.as_mut() else {
+            return;
+        };
+        for (completion, channel) in completions {
+            let Some((index, playback)) = ppc_app
+                .sound
+                .file_playbacks
+                .iter_mut()
+                .enumerate()
+                .rev()
+                .find(|(_, playback)| playback.channel == channel && playback.active)
+            else {
+                continue;
             };
-            for (index, channel) in completed {
-                let Some(playback) = ppc_app.sound.file_playbacks.get_mut(index) else {
-                    continue;
-                };
-                if !playback.active || playback.quiet_now {
-                    continue;
-                }
-                playback.active = false;
-                playback.paused = false;
-                if playback.async_play && playback.completion != 0 {
-                    let scheduled_tick = if playback.timing_valid {
-                        playback.due_tick
-                    } else {
-                        self.dispatcher.tick_count
-                    };
-                    let scheduled_instruction_count = if playback.timing_valid {
-                        playback.due_instruction_count
-                    } else {
-                        self.total_instructions
-                    };
-                    ppc_app
-                        .sound
-                        .pending_completions
-                        .push(PpcSoundCompletionRecord {
-                            file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
-                            channel,
-                            completion: playback.completion,
-                            command: playback.completion_command,
-                            tick: self.dispatcher.tick_count,
-                            instruction_count: self.total_instructions,
-                            scheduled_tick,
-                            scheduled_instruction_count,
-                        });
-                }
+            playback.active = false;
+            playback.paused = false;
+            if completion != 0 {
+                ppc_app
+                    .sound
+                    .pending_completions
+                    .push(PpcSoundCompletionRecord {
+                        file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
+                        channel,
+                        completion,
+                        command: playback.completion_command,
+                        tick: self.dispatcher.tick_count,
+                        instruction_count: self.total_instructions,
+                        scheduled_tick: self.dispatcher.tick_count,
+                        scheduled_instruction_count: self.total_instructions,
+                    });
             }
         }
         self.fire_pending_ppc_sound_completions();
@@ -8251,6 +8080,7 @@ impl FixtureRunner {
     /// Run pending Sound Manager interrupt work without advancing TickCount
     /// or continuing into foreground guest code after the callback returns.
     pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
+        self.sync_ppc_sound_completions_from_dispatcher();
         self.run_steps_internal(max_steps, None, 0, true, true, true)
     }
 
@@ -9297,20 +9127,30 @@ impl FixtureRunner {
             return false;
         }
 
-        if self
+        let callback_index = self
             .dispatcher
             .sound_manager
             .pending_sound_callbacks
-            .is_empty()
-        {
+            .iter()
+            .position(|callback| {
+                matches!(
+                    callback,
+                    crate::sound::PendingSoundCallback::Command { .. }
+                        | crate::sound::PendingSoundCallback::FileCompletion {
+                            architecture: CallbackTaskArchitecture::M68k,
+                            ..
+                        }
+                )
+            });
+        let Some(callback_index) = callback_index else {
             return false;
-        }
+        };
 
         let cb = self
             .dispatcher
             .sound_manager
             .pending_sound_callbacks
-            .remove(0);
+            .remove(callback_index);
         match cb {
             crate::sound::PendingSoundCallback::Command {
                 callback_addr,
@@ -9359,6 +9199,7 @@ impl FixtureRunner {
                 true
             }
             crate::sound::PendingSoundCallback::FileCompletion {
+                architecture: _,
                 callback_addr,
                 chan_ptr,
             } => {
@@ -16022,59 +15863,6 @@ mod tests {
     }
 
     #[test]
-    fn ppc_file_playback_timing_follows_late_process_playback_data() {
-        let playback = |channel| PpcSoundFilePlaybackRecord {
-            channel,
-            ref_num: 128,
-            resource_id: -1,
-            buffer_size: 20_480,
-            buffer: 0,
-            selection: 0,
-            completion: 0,
-            completion_command: None,
-            async_play: true,
-            paused: false,
-            active: true,
-            quiet_now: false,
-            timing_valid: false,
-            start_tick: 0,
-            start_instruction_count: 0,
-            due_tick: 0,
-            due_instruction_count: 0,
-            pause_timing_valid: false,
-            pause_started_tick: 0,
-            pause_started_instruction_count: 0,
-            aiff: None,
-            decoded_aiff: None,
-        };
-        let decoded = |file_playback_index, channel| PpcDecodedAiffPlaybackRecord {
-            file_playback_index,
-            channel,
-            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-            samples: vec![0x80, 0x90, 0x70, 0x80],
-        };
-        let mut sound = PpcSoundState::default();
-        sound.file_playbacks = vec![playback(0x0500_1000), playback(0x0500_2000)];
-        sound.decoded_file_playbacks = vec![decoded(1, 0x0500_2000)];
-        let app = halted_ppc_app_with_sound(sound);
-        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
-        runner.init_app(&app);
-
-        let mut ppc_app = runner.ppc_app.take().expect("PPC app should be loaded");
-        runner.service_ppc_sound_adapter(&mut ppc_app);
-        assert!(!ppc_app.sound.file_playbacks[0].timing_valid);
-        assert!(ppc_app.sound.file_playbacks[1].timing_valid);
-
-        ppc_app
-            .sound
-            .decoded_file_playbacks
-            .push(decoded(0, 0x0500_1000));
-        runner.service_ppc_sound_adapter(&mut ppc_app);
-        assert!(ppc_app.sound.file_playbacks[0].timing_valid);
-        assert!(ppc_app.sound.file_playbacks[1].timing_valid);
-    }
-
-    #[test]
     fn ppc_decoded_file_playback_feeds_host_audio_buffer() {
         let channel = 0x0500_1000;
         let callback_entry = PPC_CODE_BASE + 0x40;
@@ -16101,14 +15889,6 @@ mod tests {
                 paused: false,
                 active: true,
                 quiet_now: false,
-                timing_valid: false,
-                start_tick: 0,
-                start_instruction_count: 0,
-                due_tick: 0,
-                due_instruction_count: 0,
-                pause_timing_valid: false,
-                pause_started_tick: 0,
-                pause_started_instruction_count: 0,
                 aiff: None,
                 decoded_aiff: Some(PpcDecodedAiffSamples {
                     sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
@@ -16141,6 +15921,7 @@ mod tests {
                 channel,
                 samples.clone(),
                 crate::sound::OUTPUT_RATE << 16,
+                Some((CallbackTaskArchitecture::PowerPc, completion)),
             );
             let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
             let mut callback_bytes = Vec::new();
@@ -16210,10 +15991,10 @@ mod tests {
         assert_eq!(invocation.callback_rtoc, PPC_DATA_BASE);
         assert_eq!(invocation.tick, 0);
         assert_eq!(invocation.instruction_count, 1);
-        assert_eq!(invocation.scheduled_tick, 1);
+        assert_eq!(invocation.scheduled_tick, invocation.tick);
         assert_eq!(
             invocation.scheduled_instruction_count,
-            1 + u64::from(INSTRUCTIONS_PER_TICK)
+            invocation.instruction_count
         );
         assert_eq!(invocation.cycles, 2);
         assert_eq!(
@@ -16227,7 +16008,7 @@ mod tests {
     }
 
     #[test]
-    fn ppc_decoded_file_playback_completes_from_guest_ticks_without_audio_mix() {
+    fn ppc_decoded_file_playback_waits_for_process_audio_cursor() {
         let channel = 0x0500_1000;
         let callback_entry = PPC_CODE_BASE + 0x40;
         let samples = vec![0x80, 0x90, 0x70, 0x80];
@@ -16251,14 +16032,6 @@ mod tests {
                 paused: false,
                 active: true,
                 quiet_now: false,
-                timing_valid: false,
-                start_tick: 0,
-                start_instruction_count: 0,
-                due_tick: 0,
-                due_instruction_count: 0,
-                pause_timing_valid: false,
-                pause_started_tick: 0,
-                pause_started_instruction_count: 0,
                 aiff: None,
                 decoded_aiff: Some(PpcDecodedAiffSamples {
                     sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
@@ -16291,6 +16064,7 @@ mod tests {
                 channel,
                 samples.clone(),
                 crate::sound::OUTPUT_RATE << 16,
+                Some((CallbackTaskArchitecture::PowerPc, callback_entry)),
             );
             ppc_app
                 .memory
@@ -16315,14 +16089,6 @@ mod tests {
             let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
             let playback = &ppc_app.sound.file_playbacks[0];
             assert!(playback.active);
-            assert!(playback.timing_valid);
-            assert_eq!(playback.start_tick, 0);
-            assert_eq!(playback.start_instruction_count, 1);
-            assert_eq!(playback.due_tick, 1);
-            assert_eq!(
-                playback.due_instruction_count,
-                1 + u64::from(INSTRUCTIONS_PER_TICK)
-            );
             assert!(ppc_app.sound.completion_invocations.is_empty());
         }
 
@@ -16334,6 +16100,14 @@ mod tests {
         assert_eq!(runner.dispatcher().tick_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 0);
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(ppc_app.sound.file_playbacks[0].active);
+        assert!(ppc_app.sound.completion_invocations.is_empty());
+
+        let (steps, running) = runner.run_steps_with_audio(1, None, samples.len());
+        assert_eq!(steps, 1);
+        assert!(running);
+        assert_eq!(runner.drain_audio(), samples);
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(!ppc_app.sound.file_playbacks[0].paused);
@@ -16348,14 +16122,10 @@ mod tests {
         assert_eq!(invocation.callback_entry, callback_entry);
         assert_eq!(invocation.callback_rtoc, PPC_DATA_BASE);
         assert_eq!(invocation.tick, 1);
-        assert_eq!(
-            invocation.instruction_count,
-            1 + u64::from(INSTRUCTIONS_PER_TICK)
-        );
-        assert_eq!(invocation.scheduled_tick, 1);
+        assert_eq!(invocation.scheduled_tick, invocation.tick);
         assert_eq!(
             invocation.scheduled_instruction_count,
-            1 + u64::from(INSTRUCTIONS_PER_TICK)
+            invocation.instruction_count
         );
         assert_eq!(invocation.cycles, 2);
         assert_eq!(
@@ -16369,152 +16139,53 @@ mod tests {
     }
 
     #[test]
-    fn ppc_decoded_file_playback_pause_resume_shifts_guest_due_time() {
+    fn ppc_decoded_file_playback_pause_resume_uses_process_cursor() {
         let channel = 0x0500_1000;
-        let callback_entry = PPC_CODE_BASE + 0x40;
         let samples = vec![0x80, 0x90, 0x70, 0x80];
-        let mut preview = [0; 16];
-        preview[..samples.len()].copy_from_slice(&samples);
-        let mut app = halted_ppc_app_with_sound(PpcSoundState {
-            manager: Default::default(),
-            queued_commands: Vec::new(),
-            immediate_commands: Vec::new(),
-            double_buffer_playbacks: Vec::new(),
-            file_playbacks: vec![PpcSoundFilePlaybackRecord {
-                channel,
-                ref_num: 128,
-                resource_id: -1,
-                buffer_size: 20_480,
-                buffer: 0,
-                selection: 0,
-                completion: callback_entry,
-                completion_command: None,
-                async_play: true,
-                paused: false,
-                active: true,
-                quiet_now: false,
-                timing_valid: false,
-                start_tick: 0,
-                start_instruction_count: 0,
-                due_tick: 0,
-                due_instruction_count: 0,
-                pause_timing_valid: false,
-                pause_started_tick: 0,
-                pause_started_instruction_count: 0,
-                aiff: None,
-                decoded_aiff: Some(PpcDecodedAiffSamples {
-                    sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-                    sample_count: samples.len() as u32,
-                    preview_len: samples.len() as u8,
-                    preview,
-                }),
-            }],
-            decoded_file_playbacks: vec![PpcDecodedAiffPlaybackRecord {
-                file_playback_index: 0,
-                channel,
-                sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
-                samples,
-            }],
-            pending_completions: Vec::new(),
-            pending_doublebacks: Vec::new(),
-            completion_invocations: Vec::new(),
-            sys_beep_count: 0,
-            last_sys_beep_duration: 0,
-            start_count: 1,
-            pause_count: 0,
-            stop_count: 0,
-            double_buffer_play_count: 0,
-            last_double_buffer_channel: 0,
-            last_double_buffer_header: 0,
+        let mut sound = PpcSoundState::default();
+        sound.file_playbacks.push(PpcSoundFilePlaybackRecord {
+            channel,
+            ref_num: 128,
+            resource_id: -1,
+            buffer_size: 20_480,
+            buffer: 0,
+            selection: 0,
+            completion: 0,
+            completion_command: None,
+            async_play: true,
+            paused: true,
+            active: true,
+            quiet_now: false,
+            aiff: None,
+            decoded_aiff: None,
         });
-        {
-            let ppc_app = app.ppc.as_mut().expect("PPC app");
-            ppc_app
-                .memory
-                .write_u32_be(PPC_CODE_BASE, 0x4800_0000)
-                .expect("rewrite entry as infinite branch");
-            let stw_r3_0_r2 = (36u32 << 26) | (3u32 << 21) | (2u32 << 16);
-            let mut callback_bytes = Vec::new();
-            callback_bytes.extend_from_slice(&stw_r3_0_r2.to_be_bytes());
-            callback_bytes.extend_from_slice(&0x4e80_0020u32.to_be_bytes());
-            ppc_app.memory.add_region(callback_entry, callback_bytes);
-            ppc_app.memory.add_region(PPC_DATA_BASE, vec![0; 0x100]);
-            ppc_app.rtoc = PPC_DATA_BASE;
-            ppc_app.cpu.gpr[2] = PPC_DATA_BASE;
-        }
-
+        sound.manager.play_file_buffer(
+            channel,
+            samples.clone(),
+            crate::sound::OUTPUT_RATE << 16,
+            Some((CallbackTaskArchitecture::PowerPc, 0)),
+        );
+        sound.manager.set_file_paused(channel, true);
+        let app = halted_ppc_app_with_sound(sound);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
-        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
-        assert_eq!(steps, 1);
-        assert!(running);
-        assert_eq!(
-            runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0].due_tick,
-            1
-        );
 
-        runner.ppc_app.as_mut().unwrap().sound.file_playbacks[0].paused = true;
-        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
-        assert_eq!(steps, 1);
-        assert!(running);
-        {
-            let playback = &runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0];
-            assert!(playback.paused);
-            assert!(playback.active);
-            assert!(playback.pause_timing_valid);
-            assert_eq!(playback.pause_started_tick, 0);
-            assert_eq!(playback.pause_started_instruction_count, 2);
-        }
+        runner.mix_host_audio(samples.len());
+        let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
+        assert!(ppc_app.sound.file_playbacks[0].active);
+        assert!(ppc_app.sound.pending_completions.is_empty());
 
-        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
-        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
-        assert!(running);
-        assert_eq!(runner.dispatcher().tick_count, 1);
-        assert!(runner
-            .ppc_app
-            .as_ref()
-            .unwrap()
-            .sound
-            .completion_invocations
-            .is_empty());
-
+        runner
+            .dispatcher
+            .sound_manager
+            .set_file_paused(channel, false);
         runner.ppc_app.as_mut().unwrap().sound.file_playbacks[0].paused = false;
-        let (steps, running) = runner.run_steps_with_audio(1, None, 0);
-        assert_eq!(steps, 1);
-        assert!(running);
-        let shifted_due_instruction_count = {
-            let playback = &runner.ppc_app.as_ref().unwrap().sound.file_playbacks[0];
-            assert!(!playback.paused);
-            assert!(playback.active);
-            assert!(!playback.pause_timing_valid);
-            assert_eq!(playback.due_tick, 2);
-            assert!(
-                playback.due_instruction_count > 1 + u64::from(INSTRUCTIONS_PER_TICK),
-                "resume must shift due instructions past the original due time"
-            );
-            playback.due_instruction_count
-        };
+        runner.mix_host_audio(samples.len());
 
-        let (steps, running) = runner.run_steps_with_audio(INSTRUCTIONS_PER_TICK as usize, None, 0);
-
-        assert_eq!(steps, INSTRUCTIONS_PER_TICK as usize);
-        assert!(running);
-        assert!(runner.dispatcher().tick_count >= 2);
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(ppc_app.sound.pending_completions.is_empty());
-        let mut memory = ppc_app.memory.clone();
-        assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
-        assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
-        let invocation = ppc_app.sound.completion_invocations[0];
-        assert!(invocation.tick >= 2);
-        assert!(invocation.instruction_count >= shifted_due_instruction_count);
-        assert_eq!(invocation.scheduled_tick, 2);
-        assert_eq!(
-            invocation.scheduled_instruction_count,
-            shifted_due_instruction_count
-        );
-        assert_eq!(invocation.unsupported_import_index, None);
+        assert!(ppc_app.sound.completion_invocations.is_empty());
     }
 
     #[test]
@@ -20089,6 +19760,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(crate::sound::PendingSoundCallback::FileCompletion {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
             });
@@ -20418,6 +20090,38 @@ mod tests {
         assert_eq!(runner.bus.read_word(task_ptr + 10), 1);
         assert_eq!(runner.cpu.read_reg(Register::PC), interrupted_pc);
         assert_eq!(runner.cpu.read_reg(Register::A7), interrupted_sp);
+    }
+
+    #[test]
+    fn classic_sound_callback_router_leaves_powerpc_completion_pending() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner
+            .dispatcher
+            .sound_manager
+            .pending_sound_callbacks
+            .push(crate::sound::PendingSoundCallback::FileCompletion {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                callback_addr: 0x0050_1000,
+                chan_ptr: 0x0050_2000,
+            });
+
+        assert!(!runner.fire_sound_callbacks());
+        assert!(!runner.has_pending_sound_work());
+        let (steps, running) = runner.run_pending_sound_work(8);
+        assert_eq!(steps, 0);
+        assert!(running);
+        assert!(matches!(
+            runner
+                .dispatcher
+                .sound_manager
+                .pending_sound_callbacks
+                .as_slice(),
+            [crate::sound::PendingSoundCallback::FileCompletion {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                callback_addr: 0x0050_1000,
+                chan_ptr: 0x0050_2000,
+            }]
+        ));
     }
 
     #[test]
