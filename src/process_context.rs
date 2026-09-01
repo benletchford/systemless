@@ -468,6 +468,67 @@ impl ProcessMemoryManager {
             })
     }
 
+    /// Change the logical size of a native or classic relocatable block.
+    ///
+    /// The handle remains stable while the Memory Manager may move its data
+    /// block and update the master pointer. Inside Macintosh: Memory (1992),
+    /// pp. 2-40--2-41.
+    pub(crate) fn set_process_handle_size(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        new_size: u32,
+    ) -> i16 {
+        self.assert_classic_memory_bus_attached(bus);
+        if handle == 0 {
+            return Self::NIL_HANDLE_ERR;
+        }
+
+        if let Some(record) = self.native_allocation(handle) {
+            let Ok(new_len) = usize::try_from(new_size) else {
+                self.set_native_mem_error(Self::MEM_FULL_ERR);
+                return Self::MEM_FULL_ERR;
+            };
+            let copy_len = record.size.min(new_size) as usize;
+            let mut bytes = vec![0; new_len];
+            if copy_len > 0 {
+                bytes[..copy_len].copy_from_slice(&bus.read_bytes(record.ptr, copy_len));
+            }
+            return self
+                .replace_native_handle_bytes(bus, handle, record.ptr, &bytes)
+                .map_or_else(|error| error, |_| Self::NO_ERR);
+        }
+
+        let old_ptr = bus.read_long(handle);
+        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
+        if old_size == new_size
+            || (old_ptr != 0
+                && MacMemoryBus::allocation_bucket_size(new_size)
+                    == MacMemoryBus::allocation_bucket_size(old_size))
+        {
+            if new_size < old_size {
+                bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
+            }
+            bus.set_alloc_size(old_ptr, new_size);
+            return Self::NO_ERR;
+        }
+
+        let new_ptr = bus.alloc(new_size);
+        if new_ptr == 0 && new_size > 0 {
+            return Self::MEM_FULL_ERR;
+        }
+        let copy_len = old_size.min(new_size) as usize;
+        if copy_len > 0 {
+            let bytes = bus.read_bytes(old_ptr, copy_len);
+            bus.write_bytes(new_ptr, &bytes);
+        }
+        bus.free(old_ptr);
+        bus.write_long(handle, new_ptr);
+        self.ptr_to_handle.remove(&old_ptr);
+        self.ptr_to_handle.insert(new_ptr, handle);
+        Self::NO_ERR
+    }
+
     pub(crate) fn register_native_handle_records(
         &mut self,
         handles: impl IntoIterator<Item = (ProcessHandleRecord, u8)>,
@@ -1237,6 +1298,8 @@ impl ProcessMemoryManager {
             capacity: new_capacity,
         };
         self.set_native_allocation_record(updated);
+        self.ptr_to_handle.remove(&current_ptr);
+        self.ptr_to_handle.insert(new_ptr, handle);
         self.native_handle_ptrs.remove(&current_ptr);
         self.native_handle_ptrs.insert(new_ptr);
         let allocator = self
@@ -1890,6 +1953,66 @@ mod tests {
                 .map(|allocator| allocator.heap.heap_cursor),
             Some(heap_cursor + 48)
         );
+    }
+
+    #[test]
+    fn process_handle_resize_updates_native_allocation_through_68k_bus() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        native.write_u32_be(handle, old_ptr).unwrap();
+        native.write_bytes(old_ptr, b"original").unwrap();
+
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        manager.register_native_handle_records([(
+            ProcessHandleRecord {
+                handle,
+                ptr: old_ptr,
+                size: 8,
+                capacity: 16,
+            },
+            0,
+        )]);
+
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        manager.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(
+            manager.set_process_handle_size(&mut bus, handle, 48),
+            ProcessMemoryManager::NO_ERR
+        );
+        assert_eq!(bus.read_long(handle), heap_cursor);
+        assert_eq!(bus.read_bytes(heap_cursor, 8), b"original");
+        assert_eq!(bus.read_bytes(heap_cursor + 8, 40), vec![0; 40]);
+        assert_eq!(
+            manager.native_allocation(handle),
+            Some(ProcessHandleRecord {
+                handle,
+                ptr: heap_cursor,
+                size: 48,
+                capacity: 48,
+            })
+        );
+        assert_eq!(manager.recover_handle(heap_cursor), Some(handle));
+        assert_eq!(manager.recover_handle(old_ptr), None);
     }
 
     #[test]

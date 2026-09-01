@@ -750,6 +750,18 @@ impl super::TrapDispatcher {
         memory_manager.process_handle_size(bus, handle)
     }
 
+    fn set_process_handle_size(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        new_size: u32,
+    ) -> u32 {
+        let memory_manager = self.process_memory_manager();
+        let mut memory_manager = memory_manager.borrow_mut();
+        memory_manager.attach_classic_memory_bus(bus);
+        memory_manager.set_process_handle_size(bus, handle, new_size) as i32 as u32
+    }
+
     pub(crate) fn dispatch_memory<C: CpuOps>(
         &mut self,
         is_tool: bool,
@@ -1549,7 +1561,6 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
                 let old_ptr = bus.read_long(handle);
-                let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
                 if self.loaded_handles.contains_key(&handle) {
                     let master_was_nil = old_ptr == 0;
                     let old_ptr = if old_ptr != 0 {
@@ -1570,36 +1581,9 @@ impl super::TrapDispatcher {
                         }
                         cpu.write_reg(Register::D0, 0); // noErr
                     }
-                } else if old_size == new_size
-                    || (old_ptr != 0
-                        && MacMemoryBus::allocation_bucket_size(new_size)
-                            == MacMemoryBus::allocation_bucket_size(old_size))
-                {
-                    // Same allocation bucket — the block can stay put,
-                    // but GetHandleSize and any later grow/move must see
-                    // the new logical byte count.
-                    if new_size < old_size {
-                        bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
-                    }
-                    bus.set_alloc_size(old_ptr, new_size);
-                    cpu.write_reg(Register::D0, 0);
                 } else {
-                    let new_ptr = bus.alloc(new_size);
-                    if new_ptr == 0 && new_size > 0 {
-                        cpu.write_reg(Register::D0, (-108i32) as u32); // memFullErr
-                    } else {
-                        // Copy min(old, new) bytes
-                        let copy_len = old_size.min(new_size);
-                        let bytes = bus.read_bytes(old_ptr, copy_len as usize);
-                        bus.write_bytes(new_ptr, &bytes);
-                        bus.free(old_ptr);
-                        bus.write_long(handle, new_ptr);
-                        // Update the ptr→handle map: the handle's data
-                        // pointer just moved.
-                        self.untrack_handle_ptr(old_ptr);
-                        self.track_handle_ptr(new_ptr, handle);
-                        cpu.write_reg(Register::D0, 0); // noErr
-                    }
+                    let result = self.set_process_handle_size(bus, handle, new_size);
+                    cpu.write_reg(Register::D0, result);
                 }
                 Ok(())
             }
@@ -4536,7 +4520,7 @@ mod tests {
     use super::super::test_helpers::{setup, MockCpu, TEST_SP};
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
-    use crate::memory::MemoryBus;
+    use crate::memory::{GuestAddressSpace, MemoryBus};
     use crate::process_context::{
         ProcessContext, ProcessHandleRecord, ProcessNativeHeapState, ProcessPtrRecord,
     };
@@ -4689,6 +4673,79 @@ mod tests {
             .unwrap();
         assert_eq!(memory_manager.borrow().classic_allocation_size(handle), None);
         assert_eq!(memory_manager.borrow().classic_allocation_size(data_ptr), None);
+    }
+
+    #[test]
+    fn set_handle_size_trap_updates_native_process_allocation_immediately() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let handle = HEAP_BASE;
+        let old_ptr = HEAP_BASE + 0x10;
+        let heap_cursor = HEAP_BASE + 0x40;
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+        bus.write_long(handle, old_ptr);
+        bus.write_bytes(old_ptr, b"original");
+
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let memory_manager = context
+            .event_queue_menu_tracking_and_memory_manager()
+            .2
+            .clone();
+        {
+            let mut manager = memory_manager.borrow_mut();
+            manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: HEAP_BASE,
+                    heap_cursor,
+                    heap_limit: HEAP_BASE + 0x1000,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            manager.register_native_handle_records([(
+                ProcessHandleRecord {
+                    handle,
+                    ptr: old_ptr,
+                    size: 8,
+                    capacity: 16,
+                },
+                0,
+            )]);
+        }
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 48);
+        dispatcher.current_trap_word = 0xA024;
+        dispatcher
+            .dispatch_memory(false, 0x24, &mut cpu, &mut bus)
+            .expect("SetHandleSize should be handled")
+            .unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        assert_eq!(bus.read_long(handle), heap_cursor);
+        assert_eq!(bus.read_bytes(heap_cursor, 8), b"original");
+        assert_eq!(
+            memory_manager.borrow().native_allocation(handle),
+            Some(ProcessHandleRecord {
+                handle,
+                ptr: heap_cursor,
+                size: 48,
+                capacity: 48,
+            })
+        );
+        assert_eq!(
+            memory_manager.borrow().recover_handle(heap_cursor),
+            Some(handle)
+        );
     }
 
     #[test]
