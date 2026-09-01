@@ -9890,6 +9890,21 @@ impl PpcLoadedApp {
         self.list_manager = list_manager;
         self.event_queue = event_queue;
         self.draw_sprocket = draw_sprocket;
+        ppc_synchronize_process_native_allocator(
+            process_memory_manager,
+            heap_cursor,
+            heap_limit,
+            last_mem_error,
+            &ptrs,
+            &free_ptr_blocks,
+            &free_handle_blocks,
+        );
+        ppc_synchronize_process_native_handles(
+            process_memory_manager,
+            &handles,
+            &handle_states,
+        );
+
         if trace_recent_on_halt && !matches!(result, PpcRunResult::CycleLimit { .. }) {
             let indirect = self.cpu.gpr[12];
             eprintln!(
