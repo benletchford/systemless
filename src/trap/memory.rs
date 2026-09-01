@@ -4519,11 +4519,9 @@ mod tests {
         dispatcher.attach_process_context(&mut context);
 
         cpu.write_reg(Register::D0, 24);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
-                event_queue,
                 menu_tracking,
                 memory_manager,
                 |dispatcher| {
@@ -4542,11 +4540,9 @@ mod tests {
         );
 
         cpu.write_reg(Register::D0, 13);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
-                event_queue,
                 menu_tracking,
                 memory_manager,
                 |dispatcher| {
@@ -4588,11 +4584,9 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 13);
 
         cpu.write_reg(Register::A0, ptr);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
-                event_queue,
                 menu_tracking,
                 memory_manager,
                 |dispatcher| {
@@ -4606,11 +4600,9 @@ mod tests {
         assert_eq!(memory_manager.borrow().classic_allocation_size(ptr), None);
 
         cpu.write_reg(Register::A0, handle);
-        let (event_queue, menu_tracking, memory_manager) =
-            context.event_queue_menu_tracking_and_memory_manager();
+        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
         dispatcher
             .with_process_state_and_memory_manager(
-                event_queue,
                 menu_tracking,
                 memory_manager,
                 |dispatcher| {
@@ -4642,8 +4634,8 @@ mod tests {
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
         let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
+            .menu_tracking_and_memory_manager()
+            .1
             .clone();
         {
             let mut manager = memory_manager.borrow_mut();
@@ -4718,8 +4710,8 @@ mod tests {
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
         let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
+            .menu_tracking_and_memory_manager()
+            .1
             .clone();
         {
             let mut manager = memory_manager.borrow_mut();
@@ -4796,8 +4788,8 @@ mod tests {
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
         let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
+            .menu_tracking_and_memory_manager()
+            .1
             .clone();
         {
             let mut manager = memory_manager.borrow_mut();
@@ -4883,8 +4875,8 @@ mod tests {
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
         let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
+            .menu_tracking_and_memory_manager()
+            .1
             .clone();
         {
             let mut manager = memory_manager.borrow_mut();
@@ -4954,8 +4946,8 @@ mod tests {
         let mut context = ProcessContext::default();
         context.attach_classic_memory_bus(&mut bus);
         let memory_manager = context
-            .event_queue_menu_tracking_and_memory_manager()
-            .2
+            .menu_tracking_and_memory_manager()
+            .1
             .clone();
         {
             let mut manager = memory_manager.borrow_mut();

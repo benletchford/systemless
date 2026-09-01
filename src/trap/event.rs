@@ -356,7 +356,7 @@ impl super::TrapDispatcher {
             remaining.push_back(event);
         }
 
-        *self.event_queue = remaining;
+        **self.event_queue = remaining;
         result
     }
 
