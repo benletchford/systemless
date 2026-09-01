@@ -15133,7 +15133,7 @@ impl super::TrapDispatcher {
                         let missing_advance = self.missing_glyph_advance();
 
                         let metrics = crate::quickdraw::text::get_font_metrics(font_id, font_size);
-                        let line_height = metrics.ascent + metrics.descent + metrics.leading.max(2);
+                        let line_height = metrics.ascent + metrics.descent + metrics.leading;
                         let box_width = box_right - box_left;
 
                         // Measure a run of bytes (no &self borrow needed)

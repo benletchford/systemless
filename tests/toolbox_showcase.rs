@@ -27,7 +27,8 @@ const ITEM_PAGE_WINDOWS: i16 = 3;
 const ITEM_PAGE_DRAWING: i16 = 4;
 const ITEM_PAGE_PREFERENCES: i16 = 5;
 const ITEM_PAGE_DIALOGS: i16 = 6;
-const ITEM_PAGE_PALETTES: i16 = 7;
+const ITEM_PAGE_TEXTEDIT: i16 = 7;
+const ITEM_PAGE_PALETTES: i16 = 8;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
@@ -340,6 +341,10 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_PALETTES),
         "Palettes page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_TEXTEDIT),
+        "TextEdit page must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -711,7 +716,26 @@ fn test_toolbox_showcase() {
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "09-dialogs.png");
 
-    // 10. Activate a mixed-usage palette, draw with palette entries, then
+    // 10. Switch to TextEdit page and exercise live buffer, justification & layout.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_TEXTEDIT),
+        "failed to queue selection of TextEdit page"
+    );
+    step_until(&mut runner, "switch to TextEdit page", |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_PAGES,
+            ITEM_PAGE_TEXTEDIT,
+        )
+    });
+    // Click Center alignment radio: local (178, 445)
+    click_point(&mut runner, win_top + 178, win_left + 445);
+    run_ticks(&mut runner, "center alignment to settle", 2);
+
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "10-textedit.png");
+
+    // 11. Activate a mixed-usage palette, draw with palette entries, then
     // animate three explicit device indexes without redrawing the swatches.
     assert!(
         runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_PALETTES),
@@ -742,6 +766,22 @@ fn test_toolbox_showcase() {
         indexed_picture_left, indexed_picture_right,
         "DrawPicture and CopyBits must preserve the indexed PICT gradient across CTables"
     );
+    let initial_device_rgb = screen_rgb(
+        &mut runner,
+        (win_top + 130) as u16,
+        (win_left + 100) as u16,
+    );
+    assert_ne!(
+        initial_device_rgb, [0, 0, 0],
+        "mixed-usage palette must populate the indexed device CLUT with non-zero RGB"
+    );
+    let sample_x = win_left + 350;
+    let sample_y = win_top + 130;
+    let pict_band_sample = screen_rgb(&mut runner, sample_y as u16, sample_x as u16);
+    assert!(
+        pict_band_sample != [0, 0, 0],
+        "indexed PICT band must resolve to non-black indexed pixels via offscreen GWorld and destination palette"
+    );
     let same_device_left = screen_rgb(
         &mut runner,
         (win_top + 310) as u16,
@@ -755,7 +795,7 @@ fn test_toolbox_showcase() {
     let same_device_right = screen_rgb(
         &mut runner,
         (win_top + 310) as u16,
-        (win_left + 490) as u16,
+        (win_left + 505) as u16,
     );
     assert!(
         same_device_left != [0, 0, 0]
@@ -784,9 +824,9 @@ fn test_toolbox_showcase() {
         (win_left + 100) as u16,
     );
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, "10-palette.png");
+    assert_reference_frame(&mut runner, "11-palette.png");
 
-    // Animate Palette button: local Rect (342, 40, 366, 230).
+    // 12. Animate Palette button: local Rect (342, 40, 366, 230).
     click_point(&mut runner, win_top + 354, win_left + 135);
     run_ticks(&mut runner, "palette animation to settle", 1);
     let animated_palette_rgb = screen_rgb(
@@ -799,9 +839,9 @@ fn test_toolbox_showcase() {
         "AnimateEntry must recolor an already-indexed swatch without a redraw"
     );
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, "11-palette-animated.png");
+    assert_reference_frame(&mut runner, "12-palette-animated.png");
 
-    // 12. Menu-bar hover selection: press mouse down in File, hover/drag
+    // 13. Menu-bar hover selection: press mouse down in File, hover/drag
     // to Pages menu, and release over the Graphics item to select it.
     runner.set_mouse_position(10, 146); // Options menu bar cell
     runner.push_mouse_down(10, 146);
@@ -812,7 +852,7 @@ fn test_toolbox_showcase() {
 
     runner.set_mouse_position(28, 56); // Hover down to Graphics item
     run_ticks(&mut runner, "Menu tracking hover to Graphics item", 2);
-    assert_reference_frame(&mut runner, "12-menu-hover.png");
+    assert_reference_frame(&mut runner, "13-menu-hover.png");
     runner.push_mouse_up(28, 56); // Release mouse to trigger selection
 
     step_until(&mut runner, "hover-select switch to Graphics page", |r| {
@@ -843,6 +883,11 @@ fn test_toolbox_showcase() {
         MENU_PAGES,
         ITEM_PAGE_PALETTES
     ));
+    assert!(!menu_item_checked(
+        &snapshot,
+        MENU_PAGES,
+        ITEM_PAGE_TEXTEDIT
+    ));
     assert_eq!(
         runner.window_count(),
         1,
@@ -855,5 +900,5 @@ fn test_toolbox_showcase() {
     run_ticks(&mut runner, "returned Graphics page to settle", 1);
     assert_graphics_page_rendered(&mut runner);
     runner.set_mouse_position(550, 760);
-    assert_reference_frame(&mut runner, "13-graphics-return.png");
+    assert_reference_frame(&mut runner, "14-graphics-return.png");
 }

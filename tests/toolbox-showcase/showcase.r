@@ -87,6 +87,7 @@ resource 'MENU' (mPages, preload) {
         "Drawing & 3D Bevels", noIcon, noKey, noMark, plain;
         "Game Preferences", noIcon, noKey, noMark, plain;
         "Dialogs & Alerts", noIcon, noKey, noMark, plain;
+        "TextEdit", noIcon, noKey, noMark, plain;
         "Palettes", noIcon, noKey, noMark, plain
     }
 };

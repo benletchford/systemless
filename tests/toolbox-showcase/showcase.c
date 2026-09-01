@@ -25,6 +25,7 @@
 #include <QDOffscreen.h>
 #include <Quickdraw.h>
 #include <Resources.h>
+#include <TextEdit.h>
 #include <ToolUtils.h>
 #include <Windows.h>
 
@@ -70,7 +71,8 @@
 #define iDrawing 4
 #define iPreferences 5
 #define iDialogs 6
-#define iPalettes 7
+#define iTextEdit 7
+#define iPalettes 8
 
 /* State menu items */
 #define iButtonState 1
@@ -115,7 +117,8 @@
 #define pageDrawing 4
 #define pagePreferences 5
 #define pageDialogs 6
-#define pagePalettes 7
+#define pageTextEdit 7
+#define pagePalettes 8
 
 static QDGlobals qd;
 static WindowPtr gMainWindow;
@@ -149,6 +152,26 @@ static ControlHandle gPaletteAnimate;
 static PaletteHandle gShowcasePalette;
 static PaletteHandle gOriginalPalette;
 static Boolean gPaletteAnimated = false;
+
+/* Page 8: TextEdit */
+static TEHandle gTE;
+static Rect gTERect;
+static short gTEJust = teJustLeft;
+static ControlHandle gTEJustLeft;
+static ControlHandle gTEJustCenter;
+static ControlHandle gTEJustRight;
+static ControlHandle gTEBtnCut;
+static ControlHandle gTEBtnCopy;
+static ControlHandle gTEBtnPaste;
+static ControlHandle gTEBtnReset;
+
+static const char kTESampleText[] =
+    "TextEdit manages styled and plain text formatting, automatic word wrapping, "
+    "selection highlighting, and clipboard scrap operations.\r\r"
+    "Click to move the insertion point or drag across characters to select text.";
+
+static const char kTECalloutText[] =
+    "TETextBox renders transient wrapped paragraphs with specified justification.";
 
 /*
  * Record an indexed PixMap into a PICT, replay it through a canonical
@@ -1277,9 +1300,162 @@ static void AnimateShowcasePalette(void)
     AnimateEntry(gMainWindow, 4, &color);
 }
 
+/*
+ * Page 8: TextEdit: Multiline Buffer, Justification, Scrap & Selection
+ */
+static void DrawTextEditPage(void)
+{
+    Rect r;
+    Rect well;
+    Rect calloutRect;
+    Str255 numStr;
+    RGBColor white;
+    RGBColor black;
+
+    white.red = white.green = white.blue = 0xffff;
+    black.red = black.green = black.blue = 0x0000;
+
+    DrawHeading("\pTextEdit: Multiline Buffer, Justification, Scrap & Selection");
+
+    /* Section 1: Interactive TextEdit View */
+    SetRect(&r, 20, 48, 340, 225);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 62);
+    DrawString("\pInteractive TERec Buffer (Geneva 9pt)");
+    TextFace(0);
+
+    /* Sunken Well around live TextEdit field */
+    SetRect(&well, 28, 70, 332, 217);
+    DrawBeveledBox(&well, true);
+
+    /* Erase TextEdit content rect and draw updated text */
+    if (gTE != nil) {
+        RGBBackColor(&white);
+        RGBForeColor(&black);
+        EraseRect(&gTERect);
+        TEUpdate(&gTERect, gTE);
+    }
+
+    /* Section 2: Static TETextBox Callout */
+    SetRect(&r, 350, 48, 535, 140);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(358, 62);
+    DrawString("\pTETextBox Callout (Centered)");
+    TextFace(0);
+
+    SetRect(&well, 358, 70, 527, 132);
+    DrawBeveledBox(&well, true);
+
+    SetRect(&calloutRect, 362, 74, 523, 128);
+    TextFont(applFont);
+    TextSize(9);
+    RGBBackColor(&white);
+    RGBForeColor(&black);
+    EraseRect(&calloutRect);
+    TETextBox((const void *)kTECalloutText, sizeof(kTECalloutText) - 1, &calloutRect, teJustCenter);
+
+    /* Section 3: Alignment Controls */
+    SetRect(&r, 350, 146, 535, 225);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(358, 160);
+    DrawString("\pParagraph Alignment (TESetJust)");
+    TextFace(0);
+
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(358, 206);
+    DrawString("\pMode: ");
+    if (gTEJust == teJustLeft) {
+        DrawString("\pteJustLeft (0 - flush left)");
+    } else if (gTEJust == teJustCenter) {
+        DrawString("\pteJustCenter (1 - centered)");
+    } else if (gTEJust == teJustRight) {
+        DrawString("\pteJustRight (-1 - flush right)");
+    }
+
+    /* Section 4: Scrap Operations */
+    SetRect(&r, 20, 233, 340, 310);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(28, 247);
+    DrawString("\pClipboard Scrap (TECut / TECopy / TEPaste)");
+    TextFace(0);
+
+    TextFont(3);
+    TextSize(9);
+    MoveTo(28, 300);
+    DrawString("\pInteracts with internal TextEdit scrap buffer.");
+
+    /* Section 5: TERec Live Metrics Inspector */
+    SetRect(&r, 350, 233, 535, 310);
+    DrawBeveledBox(&r, false);
+
+    TextFont(applFont);
+    TextSize(9);
+    TextFace(bold);
+    MoveTo(358, 248);
+    DrawString("\pTERec Inspector:");
+    TextFace(0);
+
+    if (gTE != nil) {
+        MoveTo(358, 264);
+        DrawString("\pLength: ");
+        NumToString((**gTE).teLength, numStr);
+        DrawString(numStr);
+        DrawString("\p bytes | Lines: ");
+        NumToString((**gTE).nLines, numStr);
+        DrawString(numStr);
+
+        MoveTo(358, 280);
+        DrawString("\pSelection: [");
+        NumToString((**gTE).selStart, numStr);
+        DrawString(numStr);
+        DrawString("\p..");
+        NumToString((**gTE).selEnd, numStr);
+        DrawString(numStr);
+        DrawString("\p]");
+
+        MoveTo(358, 296);
+        DrawString("\pFont: Geneva | Size: 9pt | Active: Yes");
+    }
+
+    /* Footer Note */
+    RGBBackColor(&white);
+    RGBForeColor(&black);
+    MoveTo(20, 335);
+    TextFont(applFont);
+    TextSize(9);
+    DrawString("\pClick to position caret; drag to select. Type text or use buttons to edit.");
+
+    DrawControls(gMainWindow);
+}
+
 static void DrawMainWindow(void)
 {
+    RGBColor white;
+    RGBColor black;
+
+    white.red = white.green = white.blue = 0xffff;
+    black.red = black.green = black.blue = 0x0000;
+
     SetPort(gMainWindow);
+    RGBBackColor(&white);
+    RGBForeColor(&black);
     EraseRect(&gMainWindow->portRect);
     switch (gPage) {
         case pageGraphics:
@@ -1303,6 +1479,9 @@ static void DrawMainWindow(void)
         case pagePalettes:
             DrawPalettesPage();
             break;
+        case pageTextEdit:
+            DrawTextEditPage();
+            break;
     }
 }
 
@@ -1324,6 +1503,7 @@ static void ShowAllControls(short page)
     Boolean isPrefs = (page == pagePreferences);
     Boolean isDialogs = (page == pageDialogs);
     Boolean isPalettes = (page == pagePalettes);
+    Boolean isTextEdit = (page == pageTextEdit);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -1380,6 +1560,25 @@ static void ShowAllControls(short page)
     } else {
         HideControl(gPaletteAnimate);
     }
+
+    /* Page 8: TextEdit */
+    if (isTextEdit) {
+        ShowControl(gTEJustLeft);
+        ShowControl(gTEJustCenter);
+        ShowControl(gTEJustRight);
+        ShowControl(gTEBtnCut);
+        ShowControl(gTEBtnCopy);
+        ShowControl(gTEBtnPaste);
+        ShowControl(gTEBtnReset);
+    } else {
+        HideControl(gTEJustLeft);
+        HideControl(gTEJustCenter);
+        HideControl(gTEJustRight);
+        HideControl(gTEBtnCut);
+        HideControl(gTEBtnCopy);
+        HideControl(gTEBtnPaste);
+        HideControl(gTEBtnReset);
+    }
 }
 
 static void SyncMenuState(void)
@@ -1392,7 +1591,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 7; i++) {
+        for (i = 1; i <= 8; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -1430,6 +1629,12 @@ static void SyncMenuState(void)
         SetControlValue(gPrefRendFlat, gRenderer == iRendFlat ? 1 : 0);
         SetControlValue(gPrefRendBevel, gRenderer == iRendBevel ? 1 : 0);
         SetControlValue(gPrefRendContrast, gRenderer == iRendContrast ? 1 : 0);
+    }
+
+    if (gTEJustLeft != nil) {
+        SetControlValue(gTEJustLeft, gTEJust == teJustLeft ? 1 : 0);
+        SetControlValue(gTEJustCenter, gTEJust == teJustCenter ? 1 : 0);
+        SetControlValue(gTEJustRight, gTEJust == teJustRight ? 1 : 0);
     }
 }
 
@@ -1477,6 +1682,9 @@ static void SetPage(short page)
 {
     Rect bounds;
 
+    if (gPage == pageTextEdit && page != pageTextEdit) {
+        if (gTE != nil) TEDeactivate(gTE);
+    }
     if (gPage == pagePalettes && page != pagePalettes) {
         SetPalette(gMainWindow, gOriginalPalette, true);
         ActivatePalette(gMainWindow);
@@ -1485,6 +1693,9 @@ static void SetPage(short page)
     if (page == pagePalettes) {
         SetPalette(gMainWindow, gShowcasePalette, true);
         ActivatePalette(gMainWindow);
+    }
+    if (page == pageTextEdit) {
+        if (gTE != nil) TEActivate(gTE);
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -1542,6 +1753,8 @@ static void Initialize(void)
         ExitToShell();
     }
     SetPort(gMainWindow);
+    TextFont(applFont);
+    TextSize(9);
     ShowWindow(gMainWindow);
 
     gOriginalPalette = GetPalette(gMainWindow);
@@ -1617,6 +1830,37 @@ static void Initialize(void)
     gPaletteAnimate = NewControl(gMainWindow, &r, "\pAnimate Palette", false, 0, 0, 1,
                                  pushButProc, 0);
 
+    /* Page 8: TextEdit Controls */
+    SetRect(&gTERect, 34, 76, 326, 211);
+    gTE = TENew(&gTERect, &gTERect);
+    if (gTE != nil) {
+        TESetText((const void *)kTESampleText, sizeof(kTESampleText) - 1, gTE);
+        TESetSelect(0, 0, gTE);
+    }
+
+    SetRect(&r, 360, 168, 412, 188);
+    gTEJustLeft = NewControl(gMainWindow, &r, "\pLeft", false, 1, 0, 1,
+                             radioButProc, 0);
+    SetRect(&r, 416, 168, 474, 188);
+    gTEJustCenter = NewControl(gMainWindow, &r, "\pCenter", false, 0, 0, 1,
+                               radioButProc, 0);
+    SetRect(&r, 478, 168, 530, 188);
+    gTEJustRight = NewControl(gMainWindow, &r, "\pRight", false, 0, 0, 1,
+                              radioButProc, 0);
+
+    SetRect(&r, 28, 256, 100, 280);
+    gTEBtnCut = NewControl(gMainWindow, &r, "\pCut", false, 0, 0, 1,
+                           pushButProc, 0);
+    SetRect(&r, 106, 256, 178, 280);
+    gTEBtnCopy = NewControl(gMainWindow, &r, "\pCopy", false, 0, 0, 1,
+                            pushButProc, 0);
+    SetRect(&r, 184, 256, 256, 280);
+    gTEBtnPaste = NewControl(gMainWindow, &r, "\pPaste", false, 0, 0, 1,
+                             pushButProc, 0);
+    SetRect(&r, 262, 256, 332, 280);
+    gTEBtnReset = NewControl(gMainWindow, &r, "\pReset", false, 0, 0, 1,
+                             pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -1680,18 +1924,28 @@ static void DoMenuChoice(long choice)
     HiliteMenu(0);
 }
 
-static void DoContentClick(WindowPtr window, Point where)
+static void DoContentClick(WindowPtr window, EventRecord *event)
 {
     ControlHandle control;
     short part;
     short trackedPart;
     short value;
+    Point where;
 
     if (window != gMainWindow) {
         return;
     }
     SetPort(window);
+    where = event->where;
     GlobalToLocal(&where);
+
+    if (gPage == pageTextEdit && gTE != nil && PtInRect(where, &gTERect)) {
+        Boolean shift = (event->modifiers & shiftKey) != 0;
+        TEClick(where, shift, gTE);
+        DrawMainWindow();
+        return;
+    }
+
     part = FindControl(where, window, &control);
     if (part == 0) {
         return;
@@ -1775,6 +2029,27 @@ static void DoContentClick(WindowPtr window, Point where)
     } else if (control == gPaletteAnimate) {
         AnimateShowcasePalette();
         return;
+    } else if (control == gTEJustLeft) {
+        gTEJust = teJustLeft;
+        TESetAlignment(teJustLeft, gTE);
+        SyncMenuState();
+    } else if (control == gTEJustCenter) {
+        gTEJust = teJustCenter;
+        TESetAlignment(teJustCenter, gTE);
+        SyncMenuState();
+    } else if (control == gTEJustRight) {
+        gTEJust = teJustRight;
+        TESetAlignment(teJustRight, gTE);
+        SyncMenuState();
+    } else if (control == gTEBtnCut) {
+        TECut(gTE);
+    } else if (control == gTEBtnCopy) {
+        TECopy(gTE);
+    } else if (control == gTEBtnPaste) {
+        TEPaste(gTE);
+    } else if (control == gTEBtnReset) {
+        TESetText((const void *)kTESampleText, sizeof(kTESampleText) - 1, gTE);
+        TESetSelect(0, 14, gTE);
     }
     DrawMainWindow();
 }
@@ -1794,7 +2069,7 @@ static void DoEvent(EventRecord *event)
                 if (window != FrontWindow()) {
                     SelectWindow(window);
                 } else {
-                    DoContentClick(window, event->where);
+                    DoContentClick(window, event);
                 }
             } else if (part == inDrag) {
                 DragWindow(window, event->where, &qd.screenBits.bounds);
@@ -1814,6 +2089,9 @@ static void DoEvent(EventRecord *event)
             key = (char)(event->message & charCodeMask);
             if ((event->modifiers & cmdKey) != 0) {
                 DoMenuChoice(MenuKey(key));
+            } else if (gPage == pageTextEdit && gTE != nil) {
+                TEKey(key, gTE);
+                DrawMainWindow();
             }
             break;
 
@@ -1838,10 +2116,13 @@ void main(void)
     while (!gQuit) {
         if (WaitNextEvent(everyEvent, &event, 1, nil)) {
             DoEvent(&event);
+        } else if (gPage == pageTextEdit && gTE != nil) {
+            TEIdle(gTE);
         }
     }
     SetPalette(gMainWindow, nil, true);
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
     if (gOriginalPalette != nil) DisposePalette(gOriginalPalette);
+    if (gTE != nil) TEDispose(gTE);
     ExitToShell();
 }

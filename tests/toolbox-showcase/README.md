@@ -7,7 +7,7 @@ the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects seven interactive views:
+test protocol. Its Pages menu selects eight interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -23,7 +23,12 @@ test protocol. Its Pages menu selects seven interactive views:
    action buttons. Its settings stay synchronized with hierarchical menus.
 6. Dialogs & Alerts exercises resource-backed modal dialogs, controls,
    editable text, and a system alert.
-7. Palettes activates a resource-backed mixed-usage palette, draws through
+7. TextEdit exercises an interactive multiline `TERec` buffer, character
+   insertion and selection, paragraph alignment (`teJustLeft`, `teJustCenter`,
+   `teJustRight`), clipboard scrap operations (`TECut`, `TECopy`, `TEPaste`),
+   transient wrapped text formatting (`TETextBox`), and live record metrics
+   inspection.
+8. Palettes activates a resource-backed mixed-usage palette, draws through
    `PmForeColor` and `PmBackColor`, translates an unrelated indexed PICT
    through a canonical offscreen GWorld into the active screen palette,
    preserves positional indexes copied from a same-identity device ColorTable
@@ -39,7 +44,8 @@ already being tracked.
 These calls follow the contracts in *Inside Macintosh: Macintosh Toolbox
 Essentials* (1992), Event Manager pp. 2-50–2-71, Menu Manager pp. 3-48–3-65,
 Window Manager pp. 4-63–4-93, Control Manager pp. 5-78–5-96, and Dialog
-Manager pp. 6-43–6-84. The drawing surface follows *Inside Macintosh: Imaging
+Manager pp. 6-43–6-84. TextEdit follows *Inside Macintosh: Text* (1993),
+pp. 2-63–2-114. The drawing surface follows *Inside Macintosh: Imaging
 With QuickDraw* (1994), pp. 3-38, 3-55–3-95, and 4-68. Palette activation,
 usage categories, indexed drawing, and animation follow *Inside Macintosh,
 Volume VI* (1991), pp. 20-8–20-22.
@@ -84,18 +90,20 @@ exact Systemless framebuffer references while performing the same sequence:
 8. Invoke the system alert, capturing its live modal state on implementations
    that block for a response, then dismiss it or record its return.
 9. Verify the final dialog status after both modal sessions.
-10. Activate the Palettes page, verify the indexed PICT → GWorld → screen
+10. Choose TextEdit (item 7), switch paragraph alignment to center, and capture
+    the interactive buffer, `TETextBox` callout, and inspector readouts.
+11. Activate the Palettes page (item 8), verify the indexed PICT → GWorld → screen
     transfer retains distinct colors across unrelated CTables, verify a
     same-device transfer retains its positional indexes through a transient
     black device ColorTable, verify `RGBForeColor` resolves through the
     indexed screen GDevice inverse table when the logical and hardware CLUTs
     differ, and capture the initial tolerant and animated-explicit color
     environment.
-11. Click Animate Palette and capture the same indexed pixels recolored by
+12. Click Animate Palette and capture the same indexed pixels recolored by
     `AnimateEntry` without repainting the swatches.
-12. Open File, drag across the menu bar to Pages, and capture Graphics
+13. Open File, drag across the menu bar to Pages, and capture Graphics
     highlighted before releasing.
-13. Confirm the release selected Graphics, restored the default color
+14. Confirm the release selected Graphics, restored the default color
     environment, and disposed the auxiliary window.
 
 For a manual launch from the public repository:
@@ -109,7 +117,7 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the thirteen interaction steps above. Use an 800×600,
+PowerPC slice, then follow the fourteen interaction steps above. Use an 800×600,
 8-bit display for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
 and final page provide the comparison points between runs.
@@ -137,7 +145,7 @@ slices and BasiliskII's 8-bit capture exercise the actual indexed paths.
 
 ### 68K oracle
 
-| Checkpoint | Systemless | BasiliskII |
+| Checkpoint | Shared Systemless baseline | BasiliskII |
 | --- | --- | --- |
 | 1. Graphics | <img src="reference/systemless/01-graphics.png" alt="Shared Graphics baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> |
 | 2. Controls and State menu | <img src="reference/systemless/02-controls.png" alt="Shared Controls baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> |
@@ -148,10 +156,11 @@ slices and BasiliskII's 8-bit capture exercise the actual indexed paths.
 | 7. Modal dialog | <img src="reference/systemless/07-modal-dialog.png" alt="Shared modal dialog baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in BasiliskII" width="360"> |
 | 8. Alert | <img src="reference/systemless/08-alert.png" alt="Shared alert baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/08-alert.png" alt="System alert in BasiliskII" width="360"> |
 | 9. Dialog result | <img src="reference/systemless/09-dialogs.png" alt="Shared dialog result baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/09-dialogs.png" alt="Dialogs page after modal interactions in BasiliskII" width="360"> |
-| 10. Palette activation | <img src="reference/systemless/10-palette.png" alt="Shared palette baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="360"> |
-| 11. Palette animation | <img src="reference/systemless/11-palette-animated.png" alt="Shared palette animation baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/11-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="360"> |
-| 12. Menu-bar hover | <img src="reference/systemless/12-menu-hover.png" alt="Shared menu-bar hover baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/12-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
-| 13. Palette restoration | <img src="reference/systemless/13-graphics-return.png" alt="Shared palette restoration baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
+| 10. TextEdit | <img src="reference/systemless/10-textedit.png" alt="Shared TextEdit baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/10-textedit.png" alt="TextEdit interactive buffer in BasiliskII" width="360"> |
+| 11. Palette activation | <img src="reference/systemless/11-palette.png" alt="Shared palette baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/11-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="360"> |
+| 12. Palette animation | <img src="reference/systemless/12-palette-animated.png" alt="Shared palette animation baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="360"> |
+| 13. Menu-bar hover | <img src="reference/systemless/13-menu-hover.png" alt="Shared menu-bar hover baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
+| 14. Palette restoration | <img src="reference/systemless/14-graphics-return.png" alt="Shared palette restoration baseline in Systemless" width="360"> | <img src="reference/basiliskii-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
 
 ### PowerPC oracle
 
@@ -166,13 +175,14 @@ slices and BasiliskII's 8-bit capture exercise the actual indexed paths.
 | 7. Modal dialog | <img src="reference/systemless/07-modal-dialog.png" alt="Shared modal dialog baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |
 | 8. Alert | <img src="reference/systemless/08-alert.png" alt="Shared alert baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
 | 9. Dialog result | <img src="reference/systemless/09-dialogs.png" alt="Shared dialog result baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="360"> |
-| 10. Palette activation | <img src="reference/systemless/10-palette.png" alt="Shared palette baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
-| 11. Palette animation | <img src="reference/systemless/11-palette-animated.png" alt="Shared palette animation baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/11-palette-animated.png" alt="Animated explicit CLUT entries in SheepShaver" width="360"> |
-| 12. Menu-bar hover | <img src="reference/systemless/12-menu-hover.png" alt="Shared menu-bar hover baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/12-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
-| 13. Palette restoration | <img src="reference/systemless/13-graphics-return.png" alt="Shared palette restoration baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/13-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
+| 10. TextEdit | <img src="reference/systemless/10-textedit.png" alt="Shared TextEdit baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/10-textedit.png" alt="TextEdit interactive buffer in SheepShaver" width="360"> |
+| 11. Palette activation | <img src="reference/systemless/11-palette.png" alt="Shared palette baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/11-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
+| 12. Palette animation | <img src="reference/systemless/12-palette-animated.png" alt="Shared palette animation baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/12-palette-animated.png" alt="Animated explicit CLUT entries in SheepShaver" width="360"> |
+| 13. Menu-bar hover | <img src="reference/systemless/13-menu-hover.png" alt="Shared menu-bar hover baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
+| 14. Palette restoration | <img src="reference/systemless/14-graphics-return.png" alt="Shared palette restoration baseline in Systemless" width="360"> | <img src="reference/sheepshaver-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all thirteen rendered
+state rather than relying on fixed delays, and compares all fourteen rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 
