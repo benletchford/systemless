@@ -76,6 +76,7 @@ use crate::process_context::{
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers, SharedProcessCursorState,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessMemoryManager,
+    SharedProcessMenuTracking,
 };
 use crate::quickdraw::fonts::heuristics::{
     get_italic_end_extend, get_italic_slant, get_italic_underline_extend_left,
@@ -2895,7 +2896,7 @@ pub struct PpcToolboxStartupState {
     pub menu_bar_draw_count: u32,
     pub host_menu_bar_hidden: bool,
     pub(crate) pending_native_menu_selection: SharedNativeMenuSelection,
-    pub(crate) menu_tracking: Option<ProcessMenuTrackingState>,
+    pub(crate) menu_tracking: SharedProcessMenuTracking,
     /// Custom popup MDEF state before its returned rectangle creates a pane.
     menu_definition_tracking: Option<MenuDefinitionTracking>,
     /// GetNewMBar result and remaining menus while custom mSizeMsg callbacks run.
@@ -2965,7 +2966,7 @@ impl Default for PpcToolboxStartupState {
             menu_bar_draw_count: 0,
             host_menu_bar_hidden: false,
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
-            menu_tracking: None,
+            menu_tracking: SharedProcessMenuTracking::default(),
             menu_definition_tracking: None,
             pending_menu_bar_build: None,
             menu_select_call: None,
@@ -3845,7 +3846,7 @@ impl PpcLoadedApp {
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_event_queue(&mut self.event_queue);
-        context.adopt_menu_tracking(&mut self.toolbox_startup.menu_tracking);
+        context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
         context.attach_memory_manager(&mut attached_memory_manager);
         let attached_memory_manager =
@@ -3873,42 +3874,19 @@ impl PpcLoadedApp {
         context.attach_apple_event_handlers(&mut self.apple_events.handlers);
     }
 
-    /// Temporarily install the canonical retained Menu Manager continuation in
-    /// this adapter, restoring it to the process owner on return or unwind.
-    pub(crate) fn with_menu_tracking<R>(
-        &mut self,
-        menu_tracking: &mut Option<ProcessMenuTrackingState>,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        std::mem::swap(&mut self.toolbox_startup.menu_tracking, menu_tracking);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
-        std::mem::swap(&mut self.toolbox_startup.menu_tracking, menu_tracking);
-        match outcome {
-            Ok(result) => result,
-            Err(payload) => std::panic::resume_unwind(payload),
-        }
-    }
-
-    /// Temporarily install the retained Menu Manager continuation needed by
-    /// one native execution slice. The Event Manager queue stays attached to
-    /// its process owner for the adapter's entire lifetime.
-    pub(crate) fn with_process_state<R>(
-        &mut self,
-        menu_tracking: &mut Option<ProcessMenuTrackingState>,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.with_menu_tracking(menu_tracking, f)
+    /// Run one native operation with every process manager continuously attached.
+    pub(crate) fn with_process_state<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        f(self)
     }
 
     /// Run one native slice while publishing its live relocatable blocks to
     /// the process Memory Manager before another CPU adapter can execute.
     pub(crate) fn with_process_state_and_memory_manager<R>(
         &mut self,
-        menu_tracking: &mut Option<ProcessMenuTrackingState>,
         memory_manager: &SharedProcessMemoryManager,
         f: impl FnOnce(&mut Self, &mut ProcessMemoryManager) -> R,
     ) -> R {
-        self.with_process_state(menu_tracking, |app| {
+        self.with_process_state(|app| {
             let mut memory_manager = memory_manager.borrow_mut();
             app.apply_process_memory_manager(&memory_manager);
             app.publish_process_memory_manager(&mut memory_manager, None);
@@ -16650,14 +16628,14 @@ fn dispatch_supported_import(
                 let mut state = toolbox_startup.menu_tracking.take().unwrap();
                 if state.flash_delay > 0 {
                     state.flash_delay -= 1;
-                    toolbox_startup.menu_tracking = Some(state);
+                    *toolbox_startup.menu_tracking = Some(state);
                     return Some(PpcImportAction::Yield(u64::MAX));
                 }
                 state.flash_remaining -= 1;
                 state.flash_delay = STANDARD_MENU_FLASH_PHASE_DELAY;
                 let result = state.flash_result;
                 if state.flash_remaining == 0 {
-                    toolbox_startup.menu_tracking = Some(state);
+                    *toolbox_startup.menu_tracking = Some(state);
                     let result = ppc_complete_menu_bar_tracking_with_colors(
                         memory,
                         gworlds,
@@ -16680,7 +16658,7 @@ fn dispatch_supported_import(
                         state.flash_remaining & 1 == 0,
                     );
                 }
-                toolbox_startup.menu_tracking = Some(state);
+                *toolbox_startup.menu_tracking = Some(state);
                 Some(PpcImportAction::Yield(u64::MAX))
             } else if toolbox_startup
                 .menu_tracking
@@ -16836,7 +16814,7 @@ fn dispatch_supported_import(
                             vfs_resources,
                             *current_resource_refnum,
                         );
-                        toolbox_startup.menu_tracking = Some(state);
+                        *toolbox_startup.menu_tracking = Some(state);
                     }
                 }
                 if let Some(state) = toolbox_startup.menu_tracking.as_ref() {
@@ -57046,7 +57024,7 @@ fn ppc_set_depth(
         .menu_tracking
         .as_ref()
         .is_some_and(|state| state.kind == MenuTrackingKind::MenuBar);
-    toolbox_startup.menu_tracking = None;
+    *toolbox_startup.menu_tracking = None;
     toolbox_startup.popup_menu_call = None;
     toolbox_startup.go_away_tracking = None;
     toolbox_startup.drag_window_tracking = None;
@@ -71961,7 +71939,7 @@ fn ppc_continue_custom_popup_menu_tracking(
             return PpcImportAction::Return(0);
         }
         state.definition = startup.menu_definition_tracking.take();
-        startup.menu_tracking = Some(state);
+        *startup.menu_tracking = Some(state);
         startup.active_menu_definition_mut().unwrap().draw();
         let invocation = startup
             .active_menu_definition()
@@ -72106,7 +72084,7 @@ fn ppc_dispatch_pop_up_menu_select(
         if live_front.map(MenuTrackingSurface::from) != state.front_buffer {
             // A changed PixMap/depth makes the saved coordinates unsafe to
             // write. Abandon the overlay without touching either buffer.
-            startup.menu_tracking = None;
+            *startup.menu_tracking = None;
             startup.popup_menu_call = None;
             return PpcImportAction::Return(0);
         }
@@ -72125,7 +72103,7 @@ fn ppc_dispatch_pop_up_menu_select(
             };
             if state.flash_delay > 0 {
                 state.flash_delay -= 1;
-                startup.menu_tracking = Some(state);
+                *startup.menu_tracking = Some(state);
                 return PpcImportAction::Yield(u64::MAX);
             }
             state.flash_remaining -= 1;
@@ -72149,7 +72127,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 visible_item,
             );
-            startup.menu_tracking = Some(state);
+            *startup.menu_tracking = Some(state);
             return PpcImportAction::Yield(u64::MAX);
         }
 
@@ -72189,7 +72167,7 @@ fn ppc_dispatch_pop_up_menu_select(
                 &state,
                 highlighted_item,
             );
-            startup.menu_tracking = Some(state);
+            *startup.menu_tracking = Some(state);
             return PpcImportAction::Yield(u64::MAX);
         }
 
@@ -72201,7 +72179,7 @@ fn ppc_dispatch_pop_up_menu_select(
             &state,
             highlighted_item,
         );
-        startup.menu_tracking = Some(state);
+        *startup.menu_tracking = Some(state);
         return PpcImportAction::Yield(u64::MAX);
     }
 
@@ -72256,7 +72234,7 @@ fn ppc_dispatch_pop_up_menu_select(
         &state,
         highlighted_item,
     );
-    startup.menu_tracking = Some(state);
+    *startup.menu_tracking = Some(state);
     startup.popup_menu_call = Some(call);
     PpcImportAction::Yield(u64::MAX)
 }
@@ -73508,7 +73486,7 @@ fn ppc_begin_custom_menu_bar_tracking(
         StandardMenuPaneKind::PullDown,
         &state,
     )?;
-    startup.menu_tracking = Some(state);
+    *startup.menu_tracking = Some(state);
     startup.menu_select_call = Some(PpcMenuSelectCall {
         initial_point,
         return_address: cpu.lr,
@@ -73618,7 +73596,7 @@ fn ppc_continue_custom_menu_bar_tracking(
                         resources,
                         current_resource_refnum,
                     );
-                    startup.menu_tracking = Some(state);
+                    *startup.menu_tracking = Some(state);
                 }
                 if startup.active_menu_definition().is_none() {
                     startup.menu_select_call = None;
@@ -73912,7 +73890,7 @@ fn ppc_track_menu_while_held_with_resources(
             .filter(|(menu_handle, _)| *menu_handle != previous.menu_handle);
         if let Some((menu_handle, title_left)) = switched {
             ppc_restore_menu_tracking(memory, Some(front.into()), &previous);
-            startup.menu_tracking = ppc_begin_menu_bar_tracking_with_resources(
+            *startup.menu_tracking = ppc_begin_menu_bar_tracking_with_resources(
                 memory,
                 front,
                 menu_handle,
@@ -73922,7 +73900,7 @@ fn ppc_track_menu_while_held_with_resources(
             );
             startup.popup_menu_call = None;
         } else {
-            startup.menu_tracking = Some(previous);
+            *startup.menu_tracking = Some(previous);
         }
     } else {
         let Some((menu_handle, title_left)) =
@@ -73940,7 +73918,7 @@ fn ppc_track_menu_while_held_with_resources(
         ) else {
             return;
         };
-        startup.menu_tracking = Some(state);
+        *startup.menu_tracking = Some(state);
         startup.popup_menu_call = None;
     }
     let active_menu_id = startup.menu_tracking.as_ref().and_then(|state| {
@@ -73978,7 +73956,7 @@ fn ppc_track_menu_while_held_with_resources(
             resources,
             current_resource_refnum,
         );
-        startup.menu_tracking = Some(state);
+        *startup.menu_tracking = Some(state);
     }
 }
 
@@ -74083,7 +74061,7 @@ fn ppc_finish_menu_bar_tracking(
             &[],
             0,
         );
-        startup.menu_tracking = Some(state);
+        *startup.menu_tracking = Some(state);
     }
     ppc_finish_menu_bar_tracking_with_colors(
         memory,
@@ -86825,7 +86803,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         let command_text_advance = ppc_text_bytes_advance_for_font(
             b"Command",
             PPC_QD_TEXT_FONT_DEFAULT,
@@ -87560,7 +87538,7 @@ pub(crate) mod tests {
             ppc_memory_read_bytes(&mut loaded.memory, front.base_addr, framebuffer_len),
             Some(before.clone())
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
 
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
@@ -88051,7 +88029,7 @@ pub(crate) mod tests {
                 &loaded.process_file_system.vfs_resources,
                 loaded.current_resource_refnum,
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(
                 tracking
                     .item_appearances
@@ -88242,7 +88220,7 @@ pub(crate) mod tests {
             &loaded.process_file_system.vfs_resources,
             loaded.current_resource_refnum,
         );
-        let root = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         assert_eq!(root.item_appearances[0].height, 34);
         let parent_top = root.popup_top + root.item_appearances[0].height;
         ppc_track_menu_while_held_with_resources(
@@ -88345,7 +88323,7 @@ pub(crate) mod tests {
                     ..PpcInputSnapshot::default()
                 },
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(tracking.front_buffer, Some(front.into()));
             assert_eq!(tracking.popup_left, STANDARD_MENU_BAR_FIRST_TITLE_LEFT);
             assert_eq!(tracking.saved_width, tracking.popup_width + 1);
@@ -88592,7 +88570,7 @@ pub(crate) mod tests {
                     ..PpcInputSnapshot::default()
                 },
             );
-            let root = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             let parent_hover = PpcInputSnapshot {
                 mouse_button: true,
                 mouse_v: root.popup_top + 8,
@@ -88607,7 +88585,7 @@ pub(crate) mod tests {
                 12,
                 parent_hover,
             );
-            let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             let child = tracking.submenus.first().expect("submenu did not open");
             assert_eq!(tracking.highlighted_item, 1);
             assert_eq!(child.menu_handle, submenu);
@@ -88908,9 +88886,9 @@ pub(crate) mod tests {
                 );
             };
             track(&mut loaded, (10, 12));
-            let root = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let root = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             track(&mut loaded, (root.popup_top + 8, root.popup_left + 20));
-            let first = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let first = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(first.submenus.len(), 1);
             assert_eq!(first.submenus[0].menu_handle, options);
             let options_pane = first.submenus[0].clone();
@@ -88918,7 +88896,7 @@ pub(crate) mod tests {
                 &mut loaded,
                 (options_pane.popup_top + 8, options_pane.popup_left + 20),
             );
-            let nested = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let nested = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(nested.submenus.len(), 2);
             assert_eq!(nested.submenus[0].highlighted_item, 1);
             assert_eq!(nested.submenus[1].menu_handle, speed);
@@ -88930,14 +88908,14 @@ pub(crate) mod tests {
                     options_pane.popup_left + 20,
                 ),
             );
-            let switched = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let switched = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(switched.submenus.len(), 1);
             assert_eq!(switched.submenus[0].highlighted_item, 2);
             track(
                 &mut loaded,
                 (options_pane.popup_top + 8, options_pane.popup_left + 20),
             );
-            let reopened = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let reopened = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(reopened.submenus.len(), 2);
             let speed_pane = reopened.submenus[1].clone();
 
@@ -88945,7 +88923,7 @@ pub(crate) mod tests {
                 &mut loaded,
                 (speed_pane.popup_top + 8, speed_pane.popup_left + 20),
             );
-            let cycle = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let cycle = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(cycle.submenus.len(), 2, "circular submenu grew the chain");
             assert_eq!(cycle.submenus[1].highlighted_item, 1);
             assert_eq!(
@@ -89172,7 +89150,7 @@ pub(crate) mod tests {
                 ..PpcInputSnapshot::default()
             },
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         assert_eq!(tracking.front_buffer, Some(live.into()));
         let selected = PpcInputSnapshot {
             mouse_button: true,
@@ -89758,7 +89736,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn process_owner_hands_one_retained_menu_continuation_between_adapters() {
+    fn process_owner_shares_one_retained_menu_continuation_between_adapters() {
         let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
@@ -89769,15 +89747,13 @@ pub(crate) mod tests {
         let mut tracking = crate::menu_manager::test_process_menu_tracking(0x0012_3456);
         tracking.highlighted_item = 2;
         context.set_menu_tracking(Some(tracking));
-        classic.with_menu_tracking(context.menu_tracking_slot_mut(), |classic| {
-            assert_eq!(
-                classic
-                    .menu_tracking
-                    .as_ref()
-                    .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
-                Some((0x0012_3456, 2))
-            );
-        });
+        assert_eq!(
+            classic
+                .menu_tracking
+                .as_ref()
+                .map(|tracking| (tracking.menu_handle, tracking.highlighted_item)),
+            Some((0x0012_3456, 2))
+        );
         assert_eq!(
             context
                 .menu_tracking()
@@ -89785,16 +89761,15 @@ pub(crate) mod tests {
             Some((0x0012_3456, 2))
         );
 
-        native.with_menu_tracking(context.menu_tracking_slot_mut(), |native| {
-            native.cpu.gpr[3] = 0;
-            run_test_import(native, PpcImportDispatcherTarget::MenuSelect);
-            native
-                .toolbox_startup
-                .menu_tracking
-                .as_mut()
-                .unwrap()
-                .highlighted_item = 4;
-        });
+        native.cpu.gpr[3] = 0;
+        run_test_import(&mut native, PpcImportDispatcherTarget::MenuSelect);
+        native
+            .toolbox_startup
+            .menu_tracking
+            .as_mut()
+            .unwrap()
+            .highlighted_item = 4;
+        assert_eq!(classic.menu_tracking.as_ref().unwrap().highlighted_item, 4);
         assert_eq!(
             context
                 .menu_tracking()
@@ -89807,17 +89782,15 @@ pub(crate) mod tests {
         classic_cpu.write_reg(Register::A7, TEST_SP);
         classic_bus.write_long(TEST_SP, 0);
         classic_bus.write_long(TEST_SP + 4, u32::MAX);
-        classic.with_menu_tracking(context.menu_tracking_slot_mut(), |classic| {
-            assert!(classic
-                .dispatch_menu(true, 0x13D, &mut classic_cpu, &mut classic_bus)
-                .unwrap()
-                .is_ok());
-        });
+        assert!(classic
+            .dispatch_menu(true, 0x13D, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
         assert_eq!(classic_bus.read_long(TEST_SP + 4), 0);
         assert_eq!(
             context.menu_tracking().map(|tracking| tracking.menu_handle),
             Some(0x0012_3456),
-            "the classic slice must return the continuation to its process owner"
+            "the classic slice must retain the process-owned continuation"
         );
 
         context.take_menu_tracking();
@@ -89983,55 +89956,73 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn ppc_with_menu_tracking_returns_mutations_to_process_context() {
+    fn attached_ppc_menu_tracking_mutates_process_context_immediately() {
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
-        let mut context_tracking =
-            Some(crate::menu_manager::test_process_menu_tracking(0x0012_3456));
+        let mut context = ProcessContext::default();
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x0012_3456,
+        )));
+        native.attach_process_context(&mut context);
+        let detached = native.clone();
 
-        native.with_menu_tracking(&mut context_tracking, |app| {
-            app.toolbox_startup
-                .menu_tracking
-                .as_mut()
-                .unwrap()
-                .highlighted_item = 3;
-        });
+        native
+            .toolbox_startup
+            .menu_tracking
+            .as_mut()
+            .unwrap()
+            .highlighted_item = 3;
 
         assert_eq!(
-            context_tracking
-                .as_ref()
+            context
+                .menu_tracking()
                 .map(|tracking| tracking.highlighted_item),
             Some(3)
         );
-        assert!(native.toolbox_startup.menu_tracking.is_none());
+        assert_eq!(native.toolbox_startup.menu_tracking.as_ref().unwrap().highlighted_item, 3);
+        assert!(!native
+            .toolbox_startup
+            .menu_tracking
+            .ptr_eq(&detached.toolbox_startup.menu_tracking));
+        assert_eq!(
+            detached
+                .toolbox_startup
+                .menu_tracking
+                .as_ref()
+                .unwrap()
+                .highlighted_item,
+            1
+        );
     }
 
     #[test]
-    fn ppc_with_menu_tracking_restores_process_context_on_panic() {
+    fn attached_ppc_menu_tracking_remains_shared_through_panic() {
         let pef = synthetic_pef_with_import(b"MenuSelect");
         let mut native = load_pef_application(&pef).unwrap();
-        let mut context_tracking =
-            Some(crate::menu_manager::test_process_menu_tracking(0x0012_3456));
+        let mut context = ProcessContext::default();
+        context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(
+            0x0012_3456,
+        )));
+        native.attach_process_context(&mut context);
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            native.with_menu_tracking(&mut context_tracking, |app| {
-                app.toolbox_startup
-                    .menu_tracking
-                    .as_mut()
-                    .unwrap()
-                    .highlighted_item = 5;
-                panic!("simulated panic inside PPC guest execution");
-            });
+            native
+                .toolbox_startup
+                .menu_tracking
+                .as_mut()
+                .unwrap()
+                .highlighted_item = 5;
+            panic!("simulated panic inside PPC guest execution");
         }));
 
         assert!(panic_result.is_err());
         assert_eq!(
-            context_tracking
-                .as_ref()
+            context
+                .menu_tracking()
                 .map(|tracking| tracking.highlighted_item),
             Some(5)
         );
-        assert!(native.toolbox_startup.menu_tracking.is_none());
+        assert_eq!(native.toolbox_startup.menu_tracking.as_ref().unwrap().highlighted_item, 5);
     }
 
     #[test]
@@ -90048,7 +90039,7 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         let expected_cursor = native.heap_cursor() + 16;
         {
             let mut manager = memory_manager.borrow_mut();
@@ -90077,7 +90068,6 @@ pub(crate) mod tests {
         }
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |_native, memory_manager| {
                 assert_eq!(
@@ -90256,7 +90246,7 @@ pub(crate) mod tests {
         let mut attached = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         attached.attach_process_context(&mut context);
-        let memory_manager = context.menu_tracking_and_memory_manager().1.clone();
+        let memory_manager = context.memory_manager_handle().clone();
 
         standalone.cpu.gpr[3] = 24;
         attached.cpu.gpr[3] = 24;
@@ -90389,7 +90379,7 @@ pub(crate) mod tests {
         native.memory.add_region(ptr & !0x0fff, vec![0; 0x1000]);
         native.memory.write_u32_be(handle, ptr).unwrap();
         native.memory.write_u8(ptr, 0x5a).unwrap();
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
         // HLock and HGetState operate on the live relocatable block while the
         // stable handle continues to identify its master pointer. Inside
         // Macintosh: Memory (1992), pp. 1-18--1-19 and 2-45--2-49.
@@ -90397,7 +90387,6 @@ pub(crate) mod tests {
         let detached = memory_manager.detached_clone();
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |native, memory_manager| {
                 native.cpu.pc = native.entry_pc;
@@ -90461,7 +90450,7 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let process_memory_manager = context.menu_tracking_and_memory_manager().1.clone();
+        let process_memory_manager = context.memory_manager_handle().clone();
         assert!(native
             .process_memory_manager
             .ptr_eq(&process_memory_manager));
@@ -90563,10 +90552,9 @@ pub(crate) mod tests {
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |native, memory_manager| {
                 let prior_ptr = memory_manager.new_native_ptr(&mut native.memory, 24, false);
@@ -90651,10 +90639,9 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |native, memory_manager| {
                 native.run_with_process_memory_manager(64, false, false, memory_manager);
@@ -90844,10 +90831,9 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let mut classic_dispatcher = TrapDispatcher::new();
         classic_dispatcher.attach_process_context(&mut context);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |native, memory_manager| {
                 let allocator = memory_manager.native_allocator_snapshot().unwrap();
@@ -90997,10 +90983,9 @@ pub(crate) mod tests {
 
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
-        let (menu_tracking, memory_manager) = context.menu_tracking_and_memory_manager();
+        let memory_manager = context.memory_manager_handle();
 
         native.with_process_state_and_memory_manager(
-            menu_tracking,
             memory_manager,
             |native, memory_manager| {
                 native.cpu.gpr[3] = source;
@@ -91309,7 +91294,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
 
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
@@ -147044,7 +147029,7 @@ pub(crate) mod tests {
             [loaded.cpu.gpr[4], loaded.cpu.gpr[5], loaded.cpu.gpr[6]],
             original_args
         );
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         let parked_lr = loaded.cpu.lr;
         assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
         assert_eq!(
@@ -147279,7 +147264,7 @@ pub(crate) mod tests {
             });
             let probe = loaded.run_with_hle_imports(64);
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-            let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             loaded.set_input_snapshot(PpcInputSnapshot {
                 mouse_button: false,
                 mouse_v: tracking.popup_top + 16 + 4,
@@ -147360,7 +147345,7 @@ pub(crate) mod tests {
             let probe = loaded.run_with_hle_imports(64);
 
             assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
-            let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(tracking.kind, MenuTrackingKind::PopUp);
             assert_eq!(
                 loaded.toolbox_startup.popup_menu_call,
@@ -147511,7 +147496,7 @@ pub(crate) mod tests {
                 Some(expected_bottom),
             );
         }
-        loaded.toolbox_startup.menu_tracking = Some(tracking);
+        *loaded.toolbox_startup.menu_tracking = Some(tracking);
     }
 
     #[test]
@@ -147712,7 +147697,7 @@ pub(crate) mod tests {
                 "{depth}bpp disabled title did not open",
             );
             assert_eq!(loaded.memory.read_u16_be(PPC_THE_MENU_ADDR), Some(130));
-            let disabled_tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+            let disabled_tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
             assert_eq!(
                 disabled_tracking.highlighted_item, 0,
                 "{depth}bpp disabled menu item became highlighted",
@@ -147775,7 +147760,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let switched = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let switched = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         loaded
             .memory
             .write_u16_be(crate::memory::globals::addr::MENU_FLASH, 1)
@@ -147841,7 +147826,7 @@ pub(crate) mod tests {
             loaded.run_with_hle_imports(64).result,
             PpcRunResult::CycleLimit { .. }
         ));
-        let tracking = loaded.toolbox_startup.menu_tracking.clone().unwrap();
+        let tracking = loaded.toolbox_startup.menu_tracking.snapshot().unwrap();
         loaded.set_input_snapshot(PpcInputSnapshot {
             mouse_button: false,
             mouse_v: tracking.popup_top + 6,
@@ -155164,7 +155149,7 @@ pub(crate) mod tests {
             item_appearances: Vec::new(),
             submenus: Vec::new(),
         };
-        loaded.toolbox_startup.menu_tracking = Some(tracking.clone());
+        *loaded.toolbox_startup.menu_tracking = Some(tracking.clone());
         loaded.memory.write_u16_be(PPC_THE_MENU_ADDR, 128).unwrap();
 
         loaded.cpu.gpr[3] = PPC_MAIN_GDEVICE;
@@ -155196,7 +155181,7 @@ pub(crate) mod tests {
             stack_pointer: loaded.cpu.gpr[1],
             return_address: loaded.cpu.lr,
         });
-        loaded.toolbox_startup.menu_tracking = Some(popup_tracking);
+        *loaded.toolbox_startup.menu_tracking = Some(popup_tracking);
         loaded
             .memory
             .write_u16_be(PPC_THE_MENU_ADDR, 0x2468)
