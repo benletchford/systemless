@@ -1,5 +1,11 @@
 //! PowerPC Virtual File System, Volume, Scrap, and List records.
 
+use crate::process_context::{
+    ProcessForkBytes, ProcessOpenFileRecord, ProcessResourceFileRecord,
+    ProcessStdioStreamRecord, ProcessVfsFileRecord, ProcessVfsResourceFileRecord,
+    ProcessVfsResourceRecord,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcVfsDirectory {
     pub dir_id: u32,
@@ -30,54 +36,11 @@ pub struct PpcVfsVolumeRecord {
     pub modified_date: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcFileRecord {
-    pub ref_num: i16,
-    pub path: String,
-    pub position: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PpcStdioStreamRecord {
-    pub(crate) ref_num: Option<i16>,
-    pub(crate) path: Option<String>,
-    pub(crate) position: u32,
-    pub(crate) standard: bool,
-    pub(crate) readable: bool,
-    pub(crate) writable: bool,
-    pub(crate) append: bool,
-    pub(crate) closed: bool,
-    pub(crate) eof: bool,
-    pub(crate) error: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcVfsFileRecord {
-    pub path: String,
-    pub data: Vec<u8>,
-    pub creator: u32,
-    pub file_type: u32,
-    pub finder_flags: u16,
-    pub dirty: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcResourceFileRecord {
-    pub ref_num: i16,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcVfsResourceFileRecord {
-    pub path: String,
-    pub creator: u32,
-    pub file_type: u32,
-    pub finder_flags: u16,
-    pub resource_len: u32,
-    pub raw_data: Option<Vec<u8>>,
-    pub map_attrs: u16,
-    pub dirty: bool,
-}
+pub type PpcFileRecord = ProcessOpenFileRecord;
+pub(crate) type PpcStdioStreamRecord = ProcessStdioStreamRecord;
+pub type PpcVfsFileRecord = ProcessVfsFileRecord;
+pub type PpcResourceFileRecord = ProcessResourceFileRecord;
+pub type PpcVfsResourceFileRecord = ProcessVfsResourceFileRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcVfsResourceForkExport {
@@ -91,7 +54,7 @@ pub struct PpcVfsResourceForkExport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PpcVfsFileExport {
     pub path: String,
-    pub data: Vec<u8>,
+    pub data: ProcessForkBytes,
     pub creator: u32,
     pub file_type: u32,
     pub finder_flags: u16,
@@ -105,19 +68,7 @@ pub struct PpcVfsDirectoryExport {
     pub finder_flags: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PpcVfsResourceRecord {
-    pub ref_num: i16,
-    pub path: String,
-    pub res_type: u32,
-    pub res_id: i16,
-    pub name: Vec<u8>,
-    pub data: Vec<u8>,
-    pub raw_data: Option<Vec<u8>>,
-    pub raw_attrs: Option<u16>,
-    pub attrs: u16,
-    pub handle: u32,
-}
+pub type PpcVfsResourceRecord = ProcessVfsResourceRecord;
 
 #[derive(Debug, Clone, Default)]
 pub struct PpcScrapState {

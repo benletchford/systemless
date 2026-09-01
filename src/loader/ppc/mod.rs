@@ -70,14 +70,11 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState, ProcessForkBytes,
-    ProcessHandleRecord,
+    ProcessAppleEventHandler, ProcessContext, ProcessFileSystemState, ProcessHandleRecord,
     ProcessHandleStateRecord, ProcessMemoryManager, ProcessNativeAllocatorState,
-    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessOpenFileRecord, ProcessPtrRecord,
-    ProcessResourceFileRecord, ProcessStdioStreamRecord, ProcessVfsFileRecord,
-    ProcessVfsFileRecords, ProcessVfsResourceFileRecord, ProcessVfsResourceFileRecords,
-    ProcessVfsResourceRecord, SharedProcessAppleEventHandlers, SharedProcessFileSystem,
-    SharedProcessMemoryManager,
+    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
+    ProcessResourceManagerState, ProcessVfsFileRecords, ProcessVfsResourceFileRecords,
+    SharedProcessAppleEventHandlers, SharedProcessFileSystem, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -113,6 +110,13 @@ pub use quicktime::*;
 pub use sound::*;
 pub use sprockets::*;
 pub use vfs::*;
+
+pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
+    let mut state = ProcessFileSystemState::default();
+    state.stdio_streams = ppc_initial_stdio_streams();
+    state.next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
+    SharedProcessFileSystem::from_state(state)
+}
 
 pub const PPC_CODE_BASE: u32 = 0x0100_0000;
 pub const PPC_IMPORT_TVECTOR_BASE: u32 = 0x01e0_0000;
@@ -8177,9 +8181,10 @@ impl PpcLoadedApp {
         self.vfs_resource_files.replace(resource_files);
         self.vfs_resources = resources;
         let file_system = &mut *self.process_file_system;
+        let resource_manager: &mut ProcessResourceManagerState = &mut file_system.resource_manager;
         ppc_publish_resource_fork_bytes(
-            &mut file_system.vfs_resource_files,
-            &file_system.vfs_resources,
+            &mut resource_manager.vfs_resource_files,
+            &resource_manager.vfs_resources,
             false,
         );
         self.refresh_apple_event_launch_capability();
@@ -8221,39 +8226,47 @@ impl PpcLoadedApp {
     /// forks before handing the tree to a real Mac environment.
     pub fn prepare_vfs_resource_forks_for_native_export(&mut self) -> usize {
         let file_system = &mut *self.process_file_system;
-        let paths = file_system
-            .vfs_resource_files
+        let ProcessFileSystemState {
+            vfs_files,
+            resource_manager,
+            ..
+        } = file_system;
+        let resource_manager: &mut ProcessResourceManagerState = resource_manager;
+        let ProcessResourceManagerState {
+            vfs_resource_files,
+            vfs_resources,
+            ..
+        } = resource_manager;
+        let paths = vfs_resource_files
             .iter()
             .map(|file| file.path.clone())
             .collect::<Vec<_>>();
         for path in &paths {
             ppc_materialize_resource_records_for_path(
-                &file_system.vfs_resource_files,
-                &mut file_system.vfs_resources,
+                vfs_resource_files,
+                vfs_resources,
                 path,
             );
         }
         for path in &paths {
             ppc_materialize_quilt_resources_for_existing_path(
-                &file_system.vfs_files,
-                &file_system.vfs_resource_files,
-                &mut file_system.vfs_resources,
+                vfs_files,
+                vfs_resource_files,
+                vfs_resources,
                 path,
             );
         }
 
         let mut prepared_count = 0usize;
         for path in paths {
-            let has_parseable_fork = file_system
-                .vfs_resource_files
+            let has_parseable_fork = vfs_resource_files
                 .iter()
                 .find(|file| file.path.eq_ignore_ascii_case(&path))
                 .and_then(|file| file.raw_data.as_deref())
                 .and_then(|bytes| ResourceFork::parse(bytes))
                 .is_some();
             let mut path_resource_count = 0usize;
-            for resource in file_system
-                .vfs_resources
+            for resource in vfs_resources
                 .iter_mut()
                 .filter(|resource| resource.path.eq_ignore_ascii_case(&path))
             {
@@ -8265,7 +8278,7 @@ impl PpcLoadedApp {
                 continue;
             }
             ppc_mark_resource_file_contents_dirty(
-                &mut file_system.vfs_resource_files,
+                vfs_resource_files,
                 &path,
             );
             prepared_count += 1;
@@ -8317,11 +8330,12 @@ impl PpcLoadedApp {
     pub fn take_dirty_vfs_resource_forks(&mut self) -> Vec<PpcVfsResourceForkExport> {
         let mut exports = Vec::new();
         let file_system = &mut *self.process_file_system;
-        let ProcessFileSystemState {
+        let resource_manager: &mut ProcessResourceManagerState = file_system;
+        let ProcessResourceManagerState {
             vfs_resource_files,
             vfs_resources,
             ..
-        } = file_system;
+        } = resource_manager;
         ppc_publish_resource_fork_bytes(vfs_resource_files, vfs_resources, true);
         let dirty_indices = vfs_resource_files
             .iter()
@@ -145084,9 +145098,11 @@ pub(crate) mod tests {
 
         {
             let file_system = &mut *loaded.process_file_system;
+            let resource_manager: &mut ProcessResourceManagerState =
+                &mut file_system.resource_manager;
             ppc_publish_resource_fork_bytes(
-                &mut file_system.vfs_resource_files,
-                &file_system.vfs_resources,
+                &mut resource_manager.vfs_resource_files,
+                &resource_manager.vfs_resources,
                 true,
             );
         }

@@ -14,8 +14,9 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    ProcessContext, ProcessForkMap, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
-    SharedProcessValue,
+    ProcessContext, ProcessForkMap, ProcessLoadedResources, ProcessResourceFileMap,
+    ProcessResourceManagerState, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
+    SharedProcessResourceManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1769,10 +1770,8 @@ impl TrapTableProfile {
 pub struct TrapDispatcher {
     /// Synthetic keyboard and mouse entries exposed by the ADB Manager.
     pub(crate) adb: crate::adb::AdbManager,
-    /// Loaded resources by handle -> (ptr, type, id)
-    pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
-    /// Fast index from (resource-file refnum, type, id) to its live handle.
-    pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
+    /// Process-owned Resource Manager state shared by attached CPU adapters.
+    process_resource_manager: SharedProcessResourceManager,
     /// Per-page hold refcounts for `HoldMemory`/`UnholdMemory`.
     /// Keys are 4 KiB page numbers in logical address space.
     /// Inside Macintosh: Memory (1992), 3-25 to 3-27.
@@ -1801,23 +1800,6 @@ pub struct TrapDispatcher {
     /// Process Memory Manager retained by a standalone 68K adapter until it
     /// attaches to the runner-owned process context.
     standalone_memory_manager: SharedProcessMemoryManager,
-    /// Detached resource handles that should no longer be treated as resource-backed.
-    pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
-    /// Resource-file refnum for each resource-backed handle.
-    pub(crate) resource_handle_files: HashMap<u32, u16>,
-    /// Resource-file refnum for detached resource handles.
-    pub(crate) detached_handle_files: HashMap<u32, u16>,
-    /// Resource fork reference (loaded into memory)
-    pub(crate) resources: Option<LoadedResources>,
-    /// On-disk resource reference order for each parsed resource file.
-    /// Inside Macintosh Volume I (1985), p. I-129.
-    pub(crate) resource_file_order: HashMap<u16, Vec<([u8; 4], i16)>>,
-    /// Canonical resource bytes keyed by (resource-file refnum, type, id).
-    /// Used to reload unloaded resources without reparsing the whole fork.
-    pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
-    /// Resource-map entries whose data is currently resident in a guest
-    /// master pointer. Parser backing allocations do not imply residency.
-    pub(crate) resident_resources: HashSet<(u16, [u8; 4], i16)>,
     /// Movie Toolbox handles returned by NewMovieFromFile/NewMovie-style traps.
     pub(crate) movie_states: HashMap<u32, MovieState>,
     /// Maps a movie-controller component instance to the Movie it drives, set
@@ -2843,28 +2825,7 @@ pub struct TrapDispatcher {
     pub res_purge: bool,
 }
 
-/// Resources loaded into guest memory.
-#[derive(Clone, Default)]
-pub(crate) struct ResourceFileMap {
-    /// Map of (type, id) -> memory address of resource data.
-    pub loaded: HashMap<([u8; 4], i16), u32>,
-    /// Map of (type, name) -> (id, memory address) for named resources.
-    /// Name lookups on classic Mac OS are not a uniqueness constraint:
-    /// several resources may share a display name. This map intentionally
-    /// keeps the historical lookup path, while `names_by_id` below preserves
-    /// the exact name returned by GetResInfo for each resource ID.
-    pub named: HashMap<([u8; 4], String), (i16, u32)>,
-    /// Map of (type, id) -> resource name for GetResInfo.
-    pub names_by_id: HashMap<([u8; 4], i16), String>,
-    /// Map of (type, id) -> resource attribute bits from the resource map.
-    pub attrs: HashMap<([u8; 4], i16), u8>,
-    /// Resource-map-level attribute bits (mapReadOnly = 0x80,
-    /// mapCompact = 0x40, mapChanged = 0x20) per IM:I-126. Read/written
-    /// by GetResFileAttrs ($A9F6) and SetResFileAttrs ($A9F7). Stored
-    /// as u16 since both traps marshal the full INTEGER even though
-    /// only the low byte has documented bits.
-    pub map_attrs: u16,
-}
+pub(crate) type ResourceFileMap = ProcessResourceFileMap;
 
 /// Synthetic Movie Toolbox state for Movie handles returned by
 /// NewMovieFromFile/NewMovie-style traps.
@@ -2928,20 +2889,26 @@ impl MovieState {
     }
 }
 
-pub(crate) struct LoadedResources {
-    /// Resources grouped by resource-file reference number.
-    pub files: HashMap<u16, ResourceFileMap>,
-    /// Debug names keyed by resource-file reference number.
-    pub names: HashMap<u16, String>,
-    /// Open/search order for resource files. The app's own resources use refnum 0.
-    pub search_order: Vec<u16>,
-    /// Current resource file selected by UseResFile / CurResFile.
-    pub current_file: u16,
+pub(crate) type LoadedResources = ProcessLoadedResources;
+
+impl std::ops::Deref for TrapDispatcher {
+    type Target = ProcessResourceManagerState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.process_resource_manager
+    }
+}
+
+impl std::ops::DerefMut for TrapDispatcher {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.process_resource_manager
+    }
 }
 
 impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.adopt_menu_tracking(&mut self.menu_tracking);
         let mut memory_manager = None;
@@ -3884,8 +3851,7 @@ impl TrapDispatcher {
 
         let mut dispatcher = Self {
             adb: crate::adb::AdbManager::new(),
-            loaded_handles: HashMap::new(),
-            resource_handles_by_key: HashMap::new(),
+            process_resource_manager: SharedProcessResourceManager::default(),
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
             vm_locked_page_counts: HashMap::new(),
@@ -3893,13 +3859,6 @@ impl TrapDispatcher {
             data_cache_enabled: true,
             process_memory_manager: None,
             standalone_memory_manager: SharedProcessMemoryManager::default(),
-            detached_handles: HashMap::new(),
-            resource_handle_files: HashMap::new(),
-            detached_handle_files: HashMap::new(),
-            resources: None,
-            resource_backing_data: HashMap::new(),
-            resource_file_order: HashMap::new(),
-            resident_resources: HashSet::new(),
             movie_states: HashMap::new(),
             movie_by_controller: HashMap::new(),
             movie_error: 0,

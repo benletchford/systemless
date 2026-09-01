@@ -387,11 +387,20 @@ impl ProcessVfsResourceFileRecords {
     }
 
     fn adopt(&mut self, source: &mut Self) {
+        let cached_forks = source
+            .resource_forks
+            .iter()
+            .map(|(path, bytes)| (path.clone(), bytes.to_vec()))
+            .collect::<Vec<_>>();
         for record in source.records.drain(..) {
             self.push(record);
         }
+        for (path, bytes) in cached_forks {
+            self.update_fork(&path, &bytes);
+        }
         source.resource_forks.clear();
     }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,6 +417,74 @@ pub struct ProcessVfsResourceRecord {
     pub handle: u32,
 }
 
+/// Guest-memory view of one open classic resource file.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProcessResourceFileMap {
+    pub(crate) loaded: HashMap<([u8; 4], i16), u32>,
+    pub(crate) named: HashMap<([u8; 4], String), (i16, u32)>,
+    pub(crate) names_by_id: HashMap<([u8; 4], i16), String>,
+    pub(crate) attrs: HashMap<([u8; 4], i16), u8>,
+    pub(crate) map_attrs: u16,
+}
+
+/// Open classic resource-file chain for one process.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ProcessLoadedResources {
+    pub(crate) files: HashMap<u16, ProcessResourceFileMap>,
+    pub(crate) names: HashMap<u16, String>,
+    pub(crate) search_order: Vec<u16>,
+    pub(crate) current_file: u16,
+}
+
+/// Process-owned Resource Manager bookkeeping used by CPU adapters.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessResourceManagerState {
+    pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
+    pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
+    pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
+    pub(crate) resource_handle_files: HashMap<u32, u16>,
+    pub(crate) detached_handle_files: HashMap<u32, u16>,
+    pub(crate) resources: Option<ProcessLoadedResources>,
+    pub(crate) resource_file_order: HashMap<u16, Vec<([u8; 4], i16)>>,
+    pub(crate) resource_backing_data: HashMap<(u16, [u8; 4], i16), Vec<u8>>,
+    pub(crate) resident_resources: HashSet<(u16, [u8; 4], i16)>,
+    pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
+    pub(crate) vfs_resource_files: ProcessVfsResourceFileRecords,
+    pub(crate) vfs_resources: Vec<ProcessVfsResourceRecord>,
+}
+
+fn process_resource_manager_is_empty(manager: &ProcessResourceManagerState) -> bool {
+    manager.loaded_handles.is_empty()
+        && manager.resource_handles_by_key.is_empty()
+        && manager.detached_handles.is_empty()
+        && manager.resource_handle_files.is_empty()
+        && manager.detached_handle_files.is_empty()
+        && manager.resources.is_none()
+        && manager.resource_file_order.is_empty()
+        && manager.resource_backing_data.is_empty()
+        && manager.resident_resources.is_empty()
+        && manager.resource_files.is_empty()
+        && manager.vfs_resource_files.is_empty()
+        && manager.vfs_resources.is_empty()
+}
+
+impl ProcessResourceManagerState {
+    fn adopt(&mut self, source: &mut Self) {
+        self.loaded_handles = std::mem::take(&mut source.loaded_handles);
+        self.resource_handles_by_key = std::mem::take(&mut source.resource_handles_by_key);
+        self.detached_handles = std::mem::take(&mut source.detached_handles);
+        self.resource_handle_files = std::mem::take(&mut source.resource_handle_files);
+        self.detached_handle_files = std::mem::take(&mut source.detached_handle_files);
+        self.resources = std::mem::take(&mut source.resources);
+        self.resource_file_order = std::mem::take(&mut source.resource_file_order);
+        self.resource_backing_data = std::mem::take(&mut source.resource_backing_data);
+        self.resident_resources = std::mem::take(&mut source.resident_resources);
+        self.resource_files = std::mem::take(&mut source.resource_files);
+        self.vfs_resource_files.adopt(&mut source.vfs_resource_files);
+        self.vfs_resources = std::mem::take(&mut source.vfs_resources);
+    }
+}
+
 /// Canonical File Manager and Resource Manager storage for one process.
 ///
 /// These managers belong to the process, not to the currently executing
@@ -421,9 +498,7 @@ pub struct ProcessFileSystemState {
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
-    pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
-    pub(crate) vfs_resource_files: ProcessVfsResourceFileRecords,
-    pub(crate) vfs_resources: Vec<ProcessVfsResourceRecord>,
+    pub(crate) resource_manager: SharedProcessResourceManager,
     pub(crate) next_file_ref_num: i16,
 }
 
@@ -434,11 +509,38 @@ impl Default for ProcessFileSystemState {
             stdio_streams: HashMap::new(),
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
-            resource_files: Vec::new(),
-            vfs_resource_files: ProcessVfsResourceFileRecords::default(),
-            vfs_resources: Vec::new(),
+            resource_manager: SharedProcessResourceManager::default(),
             next_file_ref_num: 128,
         }
+    }
+}
+
+impl ProcessFileSystemState {
+    #[cfg(test)]
+    pub(crate) fn with_resources(
+        mut self,
+        resource_files: Vec<ProcessResourceFileRecord>,
+        vfs_resource_files: Vec<ProcessVfsResourceFileRecord>,
+        vfs_resources: Vec<ProcessVfsResourceRecord>,
+    ) -> Self {
+        self.resource_files = resource_files;
+        self.vfs_resource_files.replace(vfs_resource_files);
+        self.vfs_resources = vfs_resources;
+        self
+    }
+}
+
+impl std::ops::Deref for ProcessFileSystemState {
+    type Target = ProcessResourceManagerState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.resource_manager
+    }
+}
+
+impl std::ops::DerefMut for ProcessFileSystemState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.resource_manager
     }
 }
 
@@ -457,6 +559,8 @@ pub(crate) struct SharedProcessFileSystem(Rc<UnsafeCell<ProcessFileSystemState>>
 /// serialized runner ownership used for guest RAM and the Memory Manager.
 #[derive(Debug)]
 pub struct SharedProcessValue<T>(Rc<UnsafeCell<T>>);
+
+pub(crate) type SharedProcessResourceManager = SharedProcessValue<ProcessResourceManagerState>;
 
 impl<T: Default> Default for SharedProcessValue<T> {
     fn default() -> Self {
@@ -509,6 +613,29 @@ impl<T: Default> SharedProcessValue<T> {
     #[cfg(test)]
     pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl SharedProcessValue<ProcessResourceManagerState> {
+    fn attach_resource_manager_to(&mut self, target: &Self) {
+        if Rc::ptr_eq(&self.0, &target.0) {
+            return;
+        }
+        let source_is_empty = process_resource_manager_is_empty(self);
+        let target_is_empty = process_resource_manager_is_empty(target);
+        assert!(
+            source_is_empty || target_is_empty,
+            "cannot attach two populated process Resource Managers"
+        );
+        if target_is_empty && !source_is_empty {
+            // SAFETY: adapters attach before being exposed through the runner,
+            // and the target allocation must stay stable because its nested
+            // fork maps may already be shared with the classic dispatcher.
+            unsafe {
+                (&mut *target.0.get()).adopt(&mut *self.0.get());
+            }
+        }
+        self.0 = Rc::clone(&target.0);
     }
 }
 
@@ -580,11 +707,9 @@ impl SharedProcessFileSystem {
                 target.stdio_streams = std::mem::take(&mut source.stdio_streams);
                 target.deleted_vfs_file_paths =
                     std::mem::take(&mut source.deleted_vfs_file_paths);
-                target.resource_files = std::mem::take(&mut source.resource_files);
-                target
-                    .vfs_resource_files
-                    .adopt(&mut source.vfs_resource_files);
-                target.vfs_resources = std::mem::take(&mut source.vfs_resources);
+                source
+                    .resource_manager
+                    .attach_resource_manager_to(&target.resource_manager);
                 target.next_file_ref_num = source.next_file_ref_num;
             }
         }
@@ -3250,6 +3375,10 @@ impl ProcessContext {
         adapter.attach_to(&self.file_system);
     }
 
+    pub(crate) fn attach_resource_manager(&self, adapter: &mut SharedProcessResourceManager) {
+        adapter.attach_resource_manager_to(&self.file_system.resource_manager);
+    }
+
     pub(crate) fn attach_classic_file_system(
         &self,
         data_forks: &mut SharedProcessValue<ProcessForkMap>,
@@ -3260,7 +3389,10 @@ impl ProcessContext {
             ProcessForkMap::is_empty,
         );
         resource_forks.attach_to(
-            &self.file_system.vfs_resource_files.resource_forks,
+            &self
+                .file_system
+                .vfs_resource_files
+                .resource_forks,
             ProcessForkMap::is_empty,
         );
     }
@@ -4649,5 +4781,59 @@ mod tests {
         assert_eq!(detached_data.get("Existing").unwrap(), b"before");
         assert!(!detached_data.contains_key("Created"));
         assert!(detached_resources.is_empty());
+    }
+
+    #[test]
+    fn attached_resource_managers_share_state_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut native = SharedProcessFileSystem::default();
+        let mut first = SharedProcessResourceManager::default();
+        first
+            .resource_backing_data
+            .insert((7, *b"TEST", 128), b"before".to_vec());
+        let mut second = SharedProcessResourceManager::default();
+
+        context.attach_resource_manager(&mut first);
+        context.attach_resource_manager(&mut second);
+        context.attach_file_system(&mut native);
+        let detached = second.clone();
+        second
+            .resource_backing_data
+            .get_mut(&(7, *b"TEST", 128))
+            .unwrap()
+            .extend_from_slice(b"-after");
+        second.resident_resources.insert((7, *b"TEST", 128));
+        native.vfs_resources.push(ProcessVfsResourceRecord {
+            ref_num: 7,
+            path: "Shared".to_string(),
+            res_type: u32::from_be_bytes(*b"TEST"),
+            res_id: 128,
+            name: b"Shared".to_vec(),
+            data: b"native".to_vec(),
+            raw_data: None,
+            raw_attrs: None,
+            attrs: 0,
+            handle: 0,
+        });
+
+        assert!(first.ptr_eq(&second));
+        assert_eq!(
+            first
+                .resource_backing_data
+                .get(&(7, *b"TEST", 128))
+                .unwrap(),
+            b"before-after"
+        );
+        assert!(first.resident_resources.contains(&(7, *b"TEST", 128)));
+        assert_eq!(first.vfs_resources[0].data, b"native");
+        assert_eq!(
+            detached
+                .resource_backing_data
+                .get(&(7, *b"TEST", 128))
+                .unwrap(),
+            b"before"
+        );
+        assert!(detached.resident_resources.is_empty());
+        assert!(detached.vfs_resources.is_empty());
     }
 }

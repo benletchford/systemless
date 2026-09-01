@@ -15806,7 +15806,8 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Vec::new(),
             vbl_tasks: Vec::new(),
-            process_file_system: SharedProcessFileSystem::from_state(ProcessFileSystemState {
+            process_file_system: SharedProcessFileSystem::from_state(
+                ProcessFileSystemState {
                 files: Vec::new(),
                 stdio_streams: ppc_initial_stdio_streams(),
                 vfs_files: vec![PpcVfsFileRecord {
@@ -15821,8 +15822,12 @@ mod tests {
                 deleted_vfs_file_paths: vec![
                     "System Folder/Preferences/Old Prefs".to_string(),
                 ],
-                resource_files: Vec::new(),
-                vfs_resource_files: vec![PpcVfsResourceFileRecord {
+                resource_manager: Default::default(),
+                next_file_ref_num: 128,
+            }
+            .with_resources(
+                Vec::new(),
+                vec![PpcVfsResourceFileRecord {
                     path: "System Folder/Preferences/Test App HighScores".to_string(),
                     creator: u32::from_be_bytes(*b"Nano"),
                     file_type: u32::from_be_bytes(*b"pref"),
@@ -15831,9 +15836,8 @@ mod tests {
                     raw_data: None,
                     map_attrs: 0,
                     dirty: true,
-                }]
-                .into(),
-                vfs_resources: vec![PpcVfsResourceRecord {
+                }],
+                vec![PpcVfsResourceRecord {
                     ref_num: 128,
                     path: "System Folder/Preferences/Test App HighScores".to_string(),
                     res_type: u32::from_be_bytes(*b"pref"),
@@ -15845,8 +15849,8 @@ mod tests {
                     attrs: 0,
                     handle: 0,
                 }],
-                next_file_ref_num: 128,
-            }),
+            ),
+            ),
             current_gworld: PPC_MAIN_GWORLD,
             current_gdevice: PPC_MAIN_GDEVICE,
             quickdraw_fore_color: PpcRgbColor {
