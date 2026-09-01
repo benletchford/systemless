@@ -17,8 +17,8 @@ use crate::process_context::{
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessCursorState, SharedProcessEventQueue, SharedProcessInputState,
-    SharedProcessMemoryManager, SharedProcessMenuTracking, SharedProcessResourceManager,
-    SharedProcessSoundManager, SharedProcessValue,
+    SharedProcessFileSystem, SharedProcessMemoryManager, SharedProcessMenuTracking,
+    SharedProcessResourceManager, SharedProcessSoundManager, SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1734,6 +1734,7 @@ pub struct TrapDispatcher {
     pub(crate) adb: crate::adb::AdbManager,
     /// Process-owned Resource Manager state shared by attached CPU adapters.
     process_resource_manager: SharedProcessResourceManager,
+    process_file_system: SharedProcessFileSystem,
     /// Per-page hold refcounts for `HoldMemory`/`UnholdMemory`.
     /// Keys are 4 KiB page numbers in logical address space.
     /// Inside Macintosh: Memory (1992), 3-25 to 3-27.
@@ -2045,7 +2046,7 @@ pub struct TrapDispatcher {
     /// Files 1992, 2-205 (`ioFlAttrib` field), 9302..9352 (HSetFLock/HRstFLock).
     /// Public to mirror `vfs`/`vfs_rsrc` so frontends and tests can
     /// inspect or seed lock state directly.
-    pub locked_files: std::collections::HashSet<String>,
+    pub locked_files: SharedProcessValue<std::collections::HashSet<String>>,
     /// Next available file reference number
     pub(crate) next_refnum: u16,
     /// Current MMU addressing mode (0=24-bit, 1=32-bit)
@@ -2069,11 +2070,11 @@ pub struct TrapDispatcher {
     /// Next synthetic catalog directory ID for VFS directories.
     pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
     /// Next stable negative volume reference for an extracted read-only volume.
-    pub(crate) next_vfs_volume_ref_num: i16,
+    pub(crate) next_vfs_volume_ref_num: SharedProcessValue<i16>,
     /// Next synthetic file ID for VFS files.
-    pub(crate) next_vfs_file_id: u32,
+    pub(crate) next_vfs_file_id: SharedProcessValue<u32>,
     /// Monotonic source for VFS creation and modification timestamps.
-    pub(crate) next_vfs_timestamp: u32,
+    pub(crate) next_vfs_timestamp: SharedProcessValue<u32>,
     /// Next working directory reference number.
     pub(crate) next_working_dir_refnum: i16,
     /// Normalized VFS path of the launched application, if known.
@@ -2862,6 +2863,7 @@ impl TrapDispatcher {
 
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        context.attach_file_system(&mut self.process_file_system);
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_cursor_state(&mut self.cursor_state);
@@ -2875,9 +2877,14 @@ impl TrapDispatcher {
             &mut self.vfs_directory_paths,
             &mut self.vfs_volumes,
             &mut self.vfs_volume_names,
+            &mut self.locked_files,
             &mut self.next_vfs_dir_id,
+            &mut self.next_vfs_volume_ref_num,
+            &mut self.next_vfs_file_id,
+            &mut self.next_vfs_timestamp,
             &mut self.default_dir_id,
         );
+        self.process_file_system.publish_classic_vfs_catalogue();
         let mut memory_manager = None;
         context.attach_memory_manager(&mut memory_manager);
         self.attach_memory_manager_handle(
@@ -3755,6 +3762,7 @@ impl TrapDispatcher {
         let mut dispatcher = Self {
             adb: crate::adb::AdbManager::new(),
             process_resource_manager: SharedProcessResourceManager::default(),
+            process_file_system: SharedProcessFileSystem::default(),
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
             vm_locked_page_counts: HashMap::new(),
@@ -3836,16 +3844,16 @@ impl TrapDispatcher {
             file_positions: HashMap::new(),
             recent_file_read: None,
             pending_file_completions: VecDeque::new(),
-            locked_files: HashSet::new(),
+            locked_files: SharedProcessValue::default(),
             next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
             default_video_rec: 0x0000,        // no default video device selected
             default_os_rec: 0x0001,           // Macintosh Operating System
             default_startup_rec: 0x0000_0000, // zero-filled first-device startup default
             next_vfs_dir_id: SharedProcessValue::from_value(16),
-            next_vfs_volume_ref_num: -2,
-            next_vfs_file_id: 32,
-            next_vfs_timestamp: 1,
+            next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
+            next_vfs_file_id: SharedProcessValue::from_value(32),
+            next_vfs_timestamp: SharedProcessValue::from_value(1),
             next_working_dir_refnum: 32,
             launched_app_path: None,
             pending_launch_app: None,
@@ -4637,14 +4645,14 @@ impl TrapDispatcher {
         }
 
         let root_dir_id = self.ensure_vfs_directory(&normalized);
-        let mut ref_num = self.next_vfs_volume_ref_num;
+        let mut ref_num = *self.next_vfs_volume_ref_num;
         while ref_num == 0
             || ref_num == Self::boot_volume_ref_num()
             || self.vfs_volumes.contains_key(&ref_num)
         {
             ref_num = ref_num.saturating_sub(1);
         }
-        self.next_vfs_volume_ref_num = ref_num.saturating_sub(1);
+        *self.next_vfs_volume_ref_num = ref_num.saturating_sub(1);
         self.vfs_volumes.insert(
             ref_num,
             VfsVolume {
@@ -4670,6 +4678,7 @@ impl TrapDispatcher {
             },
         );
         self.vfs_volume_names.insert(key, ref_num);
+        self.process_file_system.publish_classic_vfs_volume(ref_num);
         ref_num
     }
 
@@ -4714,8 +4723,8 @@ impl TrapDispatcher {
     }
 
     fn allocate_vfs_timestamp(&mut self) -> u32 {
-        let timestamp = self.next_vfs_timestamp;
-        self.next_vfs_timestamp = self.next_vfs_timestamp.saturating_add(1);
+        let timestamp = *self.next_vfs_timestamp;
+        *self.next_vfs_timestamp = self.next_vfs_timestamp.saturating_add(1);
         timestamp
     }
 
@@ -4766,8 +4775,14 @@ impl TrapDispatcher {
         if normalized.is_empty() {
             return 2;
         }
-        if let Some(dir) = self.vfs_directories.get(&normalized) {
-            return dir.dir_id;
+        if let Some(dir_id) = self
+            .vfs_directories
+            .get(&normalized)
+            .map(|directory| directory.dir_id)
+        {
+            self.process_file_system
+                .publish_classic_vfs_directory(&normalized);
+            return dir_id;
         }
 
         let parent_path = Self::vfs_parent_path(&normalized).to_string();
@@ -4783,13 +4798,20 @@ impl TrapDispatcher {
                 name: Self::vfs_basename(&normalized).to_string(),
             },
         );
-        self.vfs_directory_paths.insert(dir_id, normalized);
+        self.vfs_directory_paths.insert(dir_id, normalized.clone());
+        self.process_file_system
+            .publish_classic_vfs_directory(&normalized);
         dir_id
     }
 
     pub(crate) fn ensure_vfs_file_metadata(&mut self, path: &str) {
         let normalized = Self::normalize_vfs_path(path);
-        if normalized.is_empty() || self.vfs_metadata.contains_key(&normalized) {
+        if normalized.is_empty() {
+            return;
+        }
+        if self.vfs_metadata.contains_key(&normalized) {
+            self.process_file_system
+                .publish_classic_vfs_metadata(&normalized);
             return;
         }
 
@@ -4797,9 +4819,9 @@ impl TrapDispatcher {
         let parent_dir_id = self.ensure_vfs_directory(&parent_path);
         let timestamp = self.allocate_vfs_timestamp();
         self.vfs_metadata.insert(
-            normalized,
+            normalized.clone(),
             VfsMetadata {
-                file_id: self.next_vfs_file_id,
+                file_id: *self.next_vfs_file_id,
                 parent_dir_id,
                 file_type: u32::from_be_bytes(*b"????"),
                 creator: u32::from_be_bytes(*b"????"),
@@ -4808,7 +4830,9 @@ impl TrapDispatcher {
                 modified_date: timestamp,
             },
         );
-        self.next_vfs_file_id = self.next_vfs_file_id.saturating_add(1);
+        *self.next_vfs_file_id = self.next_vfs_file_id.saturating_add(1);
+        self.process_file_system
+            .publish_classic_vfs_metadata(&normalized);
     }
 
     pub(crate) fn ensure_vfs_catalog(&mut self) {
@@ -4848,6 +4872,8 @@ impl TrapDispatcher {
             metadata.creator = u32::from_be_bytes(creator);
             metadata.finder_flags = finder_flags;
         }
+        self.process_file_system
+            .publish_classic_vfs_metadata(&normalized);
     }
 
     pub(crate) fn set_vfs_entry_finfo(
@@ -4864,6 +4890,8 @@ impl TrapDispatcher {
             metadata.creator = creator;
             metadata.finder_flags = finder_flags;
         }
+        self.process_file_system
+            .publish_classic_vfs_metadata(&normalized);
     }
 
     pub(crate) fn set_launched_app_path(&mut self, name: &str) {
@@ -4871,6 +4899,7 @@ impl TrapDispatcher {
         self.ensure_vfs_file_metadata(&normalized);
         if let Some(metadata) = self.vfs_metadata.get(&normalized).copied() {
             *self.default_dir_id = metadata.parent_dir_id;
+            self.process_file_system.default_dir_id = metadata.parent_dir_id;
             let app_volume_ref = self
                 .vfs_volume_for_path(&normalized)
                 .map(|volume| volume.ref_num)
@@ -4994,11 +5023,24 @@ impl TrapDispatcher {
                 metadata.created_date = timestamp;
             }
         }
+        self.process_file_system
+            .publish_classic_vfs_metadata(&normalized);
     }
 
     pub(crate) fn remove_vfs_entry_metadata(&mut self, name: &str) {
         let normalized = Self::normalize_vfs_path(name);
         self.vfs_metadata.remove(&normalized);
+    }
+
+    pub(crate) fn publish_vfs_entry_to_process(&mut self, name: &str) {
+        let normalized = Self::normalize_vfs_path(name);
+        self.process_file_system
+            .publish_classic_vfs_metadata(&normalized);
+    }
+
+    pub(crate) fn remove_vfs_entry_from_process(&mut self, name: &str) {
+        let normalized = Self::normalize_vfs_path(name);
+        self.process_file_system.remove_classic_vfs_path(&normalized);
     }
 
     pub fn remove_vfs_path(&mut self, name: &str) -> bool {
@@ -5046,6 +5088,8 @@ impl TrapDispatcher {
                 removed = true;
             }
         }
+
+        self.process_file_system.remove_classic_vfs_path(&normalized);
 
         removed
     }

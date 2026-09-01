@@ -17,7 +17,9 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::GuestAddressSpace as PpcSectionMem;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_model::GuestMenuSnapshot;
-use crate::process_context::{ProcessContext, ProcessMemoryManager};
+use crate::process_context::{
+    ProcessContext, ProcessMemoryManager, SharedProcessFileSystem,
+};
 use crate::trap::dispatch::TrapTableProfile;
 use crate::trap::TrapDispatcher;
 use crate::ui_theme::{ThemeMetricsMode, UiTheme, UiThemeId};
@@ -1599,6 +1601,14 @@ impl FixtureRunner {
     /// [`FixtureRunnerConfig`] or through
     /// [`set_menu_bar_policy`](Self::set_menu_bar_policy).
     pub fn new(ram_size: usize, config: FixtureRunnerConfig) -> Self {
+        Self::new_with_file_system(ram_size, config, SharedProcessFileSystem::default())
+    }
+
+    fn new_with_file_system(
+        ram_size: usize,
+        config: FixtureRunnerConfig,
+        file_system: SharedProcessFileSystem,
+    ) -> Self {
         // A 24-bit address space can expose at most 16 MiB. Keep all allocated
         // guest structures, the stack, and framebuffer below that boundary so
         // masking the flag byte cannot alias a high-memory layout onto low RAM.
@@ -1611,7 +1621,7 @@ impl FixtureRunner {
             matches!(config.screen_depth, 1 | 2 | 4 | 8),
             "screen_depth must be 1, 2, 4, or 8"
         );
-        let mut process_context = ProcessContext::default();
+        let mut process_context = ProcessContext::with_file_system(file_system);
         let mut dispatcher = TrapDispatcher::new();
         dispatcher.attach_process_context(&mut process_context);
         dispatcher.set_menu_bar_policy(config.menu_bar_policy);
@@ -2774,7 +2784,7 @@ impl FixtureRunner {
             return 0;
         };
         let materialized_count = ppc_app.prepare_vfs_resource_forks_for_native_export();
-        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
         materialized_count
     }
@@ -2791,11 +2801,13 @@ impl FixtureRunner {
         self.dispatcher
             .vfs_rsrc
             .insert(normalized.clone(), file.resource_fork.clone());
-        self.dispatcher.ensure_vfs_file_metadata(&normalized);
+        self.dispatcher.set_vfs_entry_finfo(
+            &normalized,
+            file.file_type,
+            file.creator,
+            file.finder_flags,
+        );
         if let Some(metadata) = self.dispatcher.vfs_metadata.get_mut(&normalized) {
-            metadata.file_type = file.file_type;
-            metadata.creator = file.creator;
-            metadata.finder_flags = file.finder_flags;
             if file.created_date != 0 {
                 metadata.created_date = file.created_date;
             }
@@ -3029,21 +3041,9 @@ impl FixtureRunner {
         let mouse_pos = self.dispatcher.input_state.mouse_pos;
         let mouse_button = self.dispatcher.input_state.mouse_button;
         let output_dir = self.dispatcher.output_dir.clone();
-        let vfs = self.dispatcher.vfs.clone();
-        let vfs_rsrc = self.dispatcher.vfs_rsrc.clone();
-        let vfs_metadata = self.dispatcher.vfs_metadata.clone();
-        let vfs_directories = self.dispatcher.vfs_directories.clone();
-        let vfs_directory_paths = self.dispatcher.vfs_directory_paths.clone();
-        let vfs_volumes = self.dispatcher.vfs_volumes.clone();
-        let vfs_volume_names = self.dispatcher.vfs_volume_names.clone();
-        let next_vfs_volume_ref_num = self.dispatcher.next_vfs_volume_ref_num;
-        let locked_files = self.dispatcher.locked_files.clone();
-        let next_vfs_dir_id = self.dispatcher.next_vfs_dir_id.clone();
-        let next_vfs_file_id = self.dispatcher.next_vfs_file_id;
-        let next_vfs_timestamp = self.dispatcher.next_vfs_timestamp;
-        let next_working_dir_refnum = self.dispatcher.next_working_dir_refnum;
+        let file_system = self.process_context.detached_vfs_snapshot();
 
-        let mut replacement = FixtureRunner::new(ram_size, config);
+        let mut replacement = FixtureRunner::new_with_file_system(ram_size, config, file_system);
         replacement.dispatcher.menu_bar_policy = menu_bar_policy;
         replacement.dispatcher.menu_bar_hidden = menu_bar_hidden;
         replacement.dispatcher.initial_kiosk_guest_hide_observed =
@@ -3060,19 +3060,6 @@ impl FixtureRunner {
         replacement.total_instructions = total_instructions;
 
         replacement.dispatcher.output_dir = output_dir;
-        replacement.dispatcher.vfs = vfs;
-        replacement.dispatcher.vfs_rsrc = vfs_rsrc;
-        replacement.dispatcher.vfs_metadata = vfs_metadata;
-        replacement.dispatcher.vfs_directories = vfs_directories;
-        replacement.dispatcher.vfs_directory_paths = vfs_directory_paths;
-        replacement.dispatcher.vfs_volumes = vfs_volumes;
-        replacement.dispatcher.vfs_volume_names = vfs_volume_names;
-        replacement.dispatcher.next_vfs_volume_ref_num = next_vfs_volume_ref_num;
-        replacement.dispatcher.locked_files = locked_files;
-        replacement.dispatcher.next_vfs_dir_id = next_vfs_dir_id;
-        replacement.dispatcher.next_vfs_file_id = next_vfs_file_id;
-        replacement.dispatcher.next_vfs_timestamp = next_vfs_timestamp;
-        replacement.dispatcher.next_working_dir_refnum = next_working_dir_refnum;
         replacement.dispatcher.set_launched_app_path(&normalized);
 
         let app = replacement
@@ -5968,7 +5955,7 @@ impl FixtureRunner {
         let profile_sync_start = profile_ppc.then(Instant::now);
         if finish_frame {
             self.sync_ppc_front_buffer_to_host(&mut ppc_app);
-            self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+            self.persist_ppc_vfs_to_host(&mut ppc_app);
         }
         self.service_ppc_sound_adapter(&mut ppc_app);
         let profile_sync_us = elapsed_profile_micros(profile_sync_start);
@@ -6616,7 +6603,7 @@ impl FixtureRunner {
         let pc = ppc_app.cpu.pc;
         self.render_ppc_completed_frames(&mut ppc_app, pc);
         self.sync_ppc_front_buffer_to_host(&mut ppc_app);
-        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
     }
 
@@ -7587,7 +7574,7 @@ impl FixtureRunner {
                 break;
             }
         }
-        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.service_ppc_sound_adapter(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
     }
@@ -7668,21 +7655,17 @@ impl FixtureRunner {
                 break;
             }
         }
-        self.sync_ppc_vfs_to_dispatcher(&mut ppc_app);
+        self.persist_ppc_vfs_to_host(&mut ppc_app);
         self.service_ppc_sound_adapter(&mut ppc_app);
         self.ppc_app = Some(ppc_app);
     }
 
-    fn sync_ppc_vfs_to_dispatcher(&mut self, ppc_app: &mut PpcLoadedApp) {
+    fn persist_ppc_vfs_to_host(&mut self, ppc_app: &mut PpcLoadedApp) {
         for path in ppc_app.take_deleted_vfs_file_paths() {
             let normalized = crate::trap::dispatch::TrapDispatcher::normalize_vfs_path(&path);
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher.vfs.remove(&normalized);
-            self.dispatcher.vfs_rsrc.remove(&normalized);
-            self.dispatcher.locked_files.remove(&normalized);
-            self.dispatcher.remove_vfs_entry_metadata(&normalized);
             if let Some(dir) = &self.dispatcher.output_dir {
                 let host_path = dir.join(&normalized);
                 let _ = std::fs::remove_file(&host_path);
@@ -7698,13 +7681,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher.ensure_vfs_directory(&normalized);
-            self.dispatcher.set_vfs_entry_finfo(
-                &normalized,
-                directory.file_type,
-                directory.creator,
-                directory.finder_flags,
-            );
             if let Some(dir) = &self.dispatcher.output_dir {
                 let _ = std::fs::create_dir_all(dir.join(&normalized));
             }
@@ -7715,13 +7691,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher.set_vfs_entry_finfo(
-                &normalized,
-                file.file_type,
-                file.creator,
-                file.finder_flags,
-            );
-            self.dispatcher.touch_vfs_entry(&normalized);
             if let Some(dir) = &self.dispatcher.output_dir {
                 let host_path = dir.join(&normalized);
                 if let Some(parent) = host_path.parent() {
@@ -7736,13 +7705,6 @@ impl FixtureRunner {
             if normalized.is_empty() {
                 continue;
             }
-            self.dispatcher.set_vfs_entry_finfo(
-                &normalized,
-                fork.file_type,
-                fork.creator,
-                fork.finder_flags,
-            );
-            self.dispatcher.touch_vfs_entry(&normalized);
             if let Some(dir) = &self.dispatcher.output_dir {
                 if let Some((parent, file_name)) = ppc_resource_sidecar_parent(dir, &normalized) {
                     let rsrc_dir = parent.join(".rsrc");

@@ -3854,6 +3854,7 @@ impl PpcLoadedApp {
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_file_system(&mut self.process_file_system);
+        self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_event_queue(&mut self.event_queue);
@@ -8080,6 +8081,7 @@ impl PpcLoadedApp {
         self.vfs_directories = vfs_directories;
         self.next_vfs_dir_id = next_vfs_dir_id;
         self.default_dir_id = default_dir_id;
+        self.process_file_system.publish_native_vfs_catalogue();
         self.param_text = param_text;
         self.scrap = scrap;
         self.list_manager = list_manager;
@@ -8265,6 +8267,7 @@ impl PpcLoadedApp {
     }
 
     pub fn take_deleted_vfs_file_paths(&mut self) -> Vec<String> {
+        self.process_file_system.publish_native_vfs_catalogue();
         std::mem::take(&mut self.deleted_vfs_file_paths)
     }
 
@@ -88813,6 +88816,125 @@ pub(crate) mod tests {
         assert_eq!(first.vfs_directories.last().unwrap().path, "Shared Folder");
         assert_eq!(first.next_vfs_dir_id, PPC_FIRST_DYNAMIC_DIR_ID + 1);
         assert_eq!(first.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
+    }
+
+    #[test]
+    fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
+        let pef = synthetic_pef_with_import(b"GetEOF");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        native.vfs_directories.push(PpcVfsDirectory {
+            dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Shared Folder".to_string(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"fold"),
+            finder_flags: 0x0400,
+            dirty: true,
+        });
+        native.vfs_files.push(PpcVfsFileRecord {
+            path: "Shared Folder/Native Data".to_string(),
+            data: b"native".to_vec().into(),
+            creator: u32::from_be_bytes(*b"TEST"),
+            file_type: u32::from_be_bytes(*b"DATA"),
+            finder_flags: 0x0200,
+            dirty: true,
+        });
+        native.vfs_volumes.push(PpcVfsVolumeRecord {
+            ref_num: -2,
+            name: "Read Only".to_string(),
+            root_dir_id: PPC_FIRST_DYNAMIC_DIR_ID,
+            attributes: 0x0080,
+            file_count: 1,
+            allocation_block_count: 16,
+            allocation_block_size: 4096,
+            clump_size: 4096,
+            free_blocks: 0,
+            bitmap_start: 3,
+            allocation_pointer: 4,
+            allocation_start: 5,
+            next_catalog_id: PPC_FIRST_DYNAMIC_DIR_ID + 1,
+            created_date: 1,
+            modified_date: 2,
+        });
+        native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        native.process_file_system.publish_native_vfs_catalogue();
+
+        assert_eq!(
+            classic.directory_path_for_id(PPC_FIRST_DYNAMIC_DIR_ID),
+            Some("Shared Folder")
+        );
+        let metadata = classic
+            .vfs_file_metadata("Shared Folder/Native Data")
+            .unwrap();
+        assert_eq!(metadata.parent_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
+        assert_eq!(metadata.creator, u32::from_be_bytes(*b"TEST"));
+        assert_eq!(metadata.file_type, u32::from_be_bytes(*b"DATA"));
+        assert_eq!(metadata.finder_flags, 0x0200);
+        assert_eq!(*classic.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
+        assert_eq!(classic.vfs_volume_for_ref_num(-2).unwrap().name, "Read Only");
+
+        let classic_dir_id = classic.ensure_vfs_directory("Classic Folder");
+        classic
+            .vfs
+            .insert("Classic Folder/Classic Data".to_string(), b"classic".to_vec());
+        classic.set_vfs_entry_metadata(
+            "Classic Folder/Classic Data",
+            *b"TEXT",
+            *b"ttxt",
+            0x0100,
+        );
+        assert!(native.vfs_directories.iter().any(|directory| {
+            directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
+        }));
+        let classic_file = native
+            .vfs_files
+            .iter()
+            .find(|file| file.path == "Classic Folder/Classic Data")
+            .unwrap();
+        assert_eq!(classic_file.data, b"classic");
+        assert_eq!(classic_file.file_type, u32::from_be_bytes(*b"TEXT"));
+        assert_eq!(classic_file.creator, u32::from_be_bytes(*b"ttxt"));
+        assert_eq!(classic_file.finder_flags, 0x0100);
+        classic
+            .vfs
+            .get_mut("Classic Folder/Classic Data")
+            .unwrap()
+            .extend_from_slice(b"-shared");
+        assert_eq!(
+            native
+                .vfs_files
+                .iter()
+                .find(|file| file.path == "Classic Folder/Classic Data")
+                .unwrap()
+                .data,
+            b"classic-shared"
+        );
+
+        classic
+            .locked_files
+            .insert("Shared Folder/Native Data".to_string());
+        native
+            .deleted_vfs_file_paths
+            .push("Shared Folder/Native Data".to_string());
+        native.process_file_system.publish_native_vfs_catalogue();
+        assert!(!classic
+            .vfs_metadata
+            .contains_key("Shared Folder/Native Data"));
+        assert!(!classic
+            .locked_files
+            .contains("Shared Folder/Native Data"));
+
+        assert!(classic.remove_vfs_path("Classic Folder/Classic Data"));
+        assert!(!native
+            .vfs_files
+            .iter()
+            .any(|file| file.path == "Classic Folder/Classic Data"));
     }
 
     #[test]
