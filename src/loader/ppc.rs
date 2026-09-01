@@ -24793,7 +24793,13 @@ fn dispatch_supported_import(
             ppc_complete_pb(memory, cpu.gpr[3], PPC_NO_ERR),
         ))),
         PpcImportDispatcherTarget::SndNewChannel => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_snd_new_channel(cpu, memory, heap_cursor, heap_limit, last_mem_error),
+            ppc_snd_new_channel(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            ),
         ))),
         PpcImportDispatcherTarget::SndDisposeChannel => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_snd_dispose_channel(cpu, sound)),
@@ -27253,6 +27259,7 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::CallUniversalProc => ppc_call_universal_proc(
             cpu,
+            process_memory_manager,
             memory,
             heap_cursor,
             heap_limit,
@@ -27260,7 +27267,14 @@ fn dispatch_supported_import(
             GuestIsa::PowerPc,
         ),
         PpcImportDispatcherTarget::CallOSTrapUniversalProc => {
-            ppc_call_os_trap_universal_proc(cpu, memory, heap_cursor, heap_limit, toolbox_startup)
+            ppc_call_os_trap_universal_proc(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+            )
         }
         PpcImportDispatcherTarget::NGetTrapAddress
         | PpcImportDispatcherTarget::GetToolTrapAddress
@@ -27451,11 +27465,14 @@ fn dispatch_supported_import(
             Some(ppc_dispatch_quickdraw_compatibility(
                 binding,
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
+                free_ptr_blocks,
+                free_handle_blocks,
                 handle_states,
                 vfs_resources,
                 *current_resource_refnum,
@@ -28189,11 +28206,14 @@ fn ppc_dispatch_dialog_compatibility(
 fn ppc_dispatch_quickdraw_compatibility(
     binding: &PpcImportBinding,
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -28289,8 +28309,17 @@ fn ppc_dispatch_quickdraw_compatibility(
             bytes[4..6].copy_from_slice(&rect.1.to_be_bytes());
             bytes[6..8].copy_from_slice(&rect.2.to_be_bytes());
             bytes[8..10].copy_from_slice(&rect.3.to_be_bytes());
-            let handle =
-                ppc_alloc_handle_with_bytes(memory, heap_cursor, heap_limit, handles, &bytes);
+            let handle = ppc_process_alloc_handle_with_bytes(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                free_ptr_blocks,
+                free_handle_blocks,
+                handle_states,
+                &bytes,
+            );
             *last_mem_error = if handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -28303,13 +28332,17 @@ fn ppc_dispatch_quickdraw_compatibility(
             if let Some((handle, _, frame, commands)) = toolbox_startup.open_picture.take() {
                 let picture = pict::finish_recording(frame, commands);
                 let size = u32::try_from(picture.len()).unwrap_or(u32::MAX);
-                let result = ppc_set_handle_size(
+                let result = process_memory_manager.set_native_handle_size(memory, handle, size);
+                ppc_apply_process_native_resource_handle(
+                    process_memory_manager,
                     memory,
                     heap_cursor,
-                    heap_limit,
+                    last_mem_error,
+                    free_ptr_blocks,
+                    free_handle_blocks,
                     handles,
+                    handle_states,
                     handle,
-                    size,
                 );
                 if result == PPC_NO_ERR {
                     if let Some(ptr) = memory.read_u32_be(handle) {
@@ -28434,8 +28467,18 @@ fn ppc_dispatch_quickdraw_compatibility(
         "NewPalette" => {
             let entry_count = u32::from(cpu.gpr[3] as u16);
             let byte_count = 16u32.saturating_add(entry_count.saturating_mul(16));
-            let handle =
-                ppc_alloc_handle(memory, heap_cursor, heap_limit, handles, byte_count, true);
+            let handle = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                free_ptr_blocks,
+                free_handle_blocks,
+                handle_states,
+                byte_count,
+                true,
+            );
             *last_mem_error = if handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -28468,7 +28511,18 @@ fn ppc_dispatch_quickdraw_compatibility(
             PpcImportAction::Return(handle)
         }
         "NewGDevice" => {
-            let handle = ppc_alloc_handle(memory, heap_cursor, heap_limit, handles, 62, true);
+            let handle = ppc_process_alloc_handle(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                handles,
+                free_ptr_blocks,
+                free_handle_blocks,
+                handle_states,
+                62,
+                true,
+            );
             *last_mem_error = if handle == 0 {
                 PPC_MEM_FULL_ERR
             } else {
@@ -43938,6 +43992,7 @@ fn ppc_install_legacy_call_universal_proc_arguments(cpu: &mut PpcCpu) {
 
 fn ppc_call_universal_proc(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -44025,6 +44080,7 @@ fn ppc_call_universal_proc(
         }
         GuestIsa::M68k => ppc_begin_m68k_universal_proc(
             cpu,
+            Some(process_memory_manager),
             memory,
             heap_cursor,
             heap_limit,
@@ -44044,19 +44100,31 @@ const PPC_MIXED_MODE_M68K_RETURN_OFFSET: u32 = 50;
 const PPC_MIXED_MODE_M68K_STACK_SIZE: u32 = 64 * 1024;
 
 fn ppc_mixed_mode_m68k_storage(
+    mut process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     startup: &mut PpcToolboxStartupState,
 ) -> Option<(u32, u32)> {
     if startup.mixed_mode_m68k_gateway == 0 {
-        startup.mixed_mode_m68k_gateway = ppc_heap_alloc(
-            memory,
-            heap_cursor,
-            heap_limit,
-            PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
-            true,
-        );
+        startup.mixed_mode_m68k_gateway =
+            if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+                ppc_process_heap_alloc(
+                    memory_manager,
+                    memory,
+                    heap_cursor,
+                    PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
+                    true,
+                )
+            } else {
+                ppc_heap_alloc(
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    PPC_MIXED_MODE_M68K_GATEWAY_SIZE,
+                    true,
+                )
+            };
         if startup.mixed_mode_m68k_gateway == 0 {
             return None;
         }
@@ -44066,13 +44134,23 @@ fn ppc_mixed_mode_m68k_storage(
         )?;
     }
     if startup.mixed_mode_m68k_stack_top == 0 {
-        let base = ppc_heap_alloc(
-            memory,
-            heap_cursor,
-            heap_limit,
-            PPC_MIXED_MODE_M68K_STACK_SIZE,
-            true,
-        );
+        let base = if let Some(memory_manager) = process_memory_manager.as_deref_mut() {
+            ppc_process_heap_alloc(
+                memory_manager,
+                memory,
+                heap_cursor,
+                PPC_MIXED_MODE_M68K_STACK_SIZE,
+                true,
+            )
+        } else {
+            ppc_heap_alloc(
+                memory,
+                heap_cursor,
+                heap_limit,
+                PPC_MIXED_MODE_M68K_STACK_SIZE,
+                true,
+            )
+        };
         if base == 0 {
             return None;
         }
@@ -44087,6 +44165,7 @@ fn ppc_mixed_mode_m68k_storage(
 #[allow(clippy::too_many_arguments)]
 fn ppc_begin_m68k_universal_proc(
     cpu: &PpcCpu,
+    process_memory_manager: Option<&mut ProcessNativeMemoryManager>,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -44295,7 +44374,13 @@ fn ppc_begin_m68k_universal_proc(
     }
 
     let (gateway, stack_top) =
-        ppc_mixed_mode_m68k_storage(memory, heap_cursor, heap_limit, startup)?;
+        ppc_mixed_mode_m68k_storage(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            heap_limit,
+            startup,
+        )?;
     let return_pc = gateway.checked_add(PPC_MIXED_MODE_M68K_RETURN_OFFSET)?;
     if stack_top < 4 {
         return None;
@@ -44525,6 +44610,7 @@ fn ppc_push_m68k_stack_value(
 
 fn ppc_call_os_trap_universal_proc(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
@@ -44535,6 +44621,7 @@ fn ppc_call_os_trap_universal_proc(
     }
     ppc_call_universal_proc(
         cpu,
+        process_memory_manager,
         memory,
         heap_cursor,
         heap_limit,
@@ -44548,9 +44635,9 @@ fn ppc_call_os_trap_universal_proc(
 
 fn ppc_snd_new_channel(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
-    heap_limit: u32,
     last_mem_error: &mut i16,
 ) -> i16 {
     let channel_out_ptr = cpu.gpr[3];
@@ -44578,10 +44665,10 @@ fn ppc_snd_new_channel(
         };
         (existing_channel, preserved_user_info, q_length.max(1))
     } else {
-        let channel = ppc_heap_alloc(
+        let channel = ppc_process_heap_alloc(
+            process_memory_manager,
             memory,
             heap_cursor,
-            heap_limit,
             PPC_GUEST_SND_CHANNEL_SIZE,
             true,
         );
@@ -62019,6 +62106,7 @@ fn ppc_process_apple_event(
             let saved_stack_top = toolbox_startup.mixed_mode_m68k_stack_top;
             let action = ppc_begin_m68k_universal_proc(
                 cpu,
+                Some(process_memory_manager),
                 memory,
                 heap_cursor,
                 heap_limit,
@@ -71198,7 +71286,7 @@ fn ppc_begin_m68k_menu_definition(
         return None;
     }
     let (gateway, stack_top) =
-        ppc_mixed_mode_m68k_storage(memory, heap_cursor, heap_limit, startup)?;
+        ppc_mixed_mode_m68k_storage(None, memory, heap_cursor, heap_limit, startup)?;
     if stack_top < 4 {
         return None;
     }
@@ -82676,6 +82764,34 @@ fn ppc_process_alloc_handle_with_bytes(
     bytes: &[u8],
 ) -> u32 {
     let handle = memory_manager.copy_bytes_to_new_native_handle(memory, bytes);
+    ppc_apply_process_native_resource_handle(
+        memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        free_ptr_blocks,
+        free_handle_blocks,
+        handles,
+        handle_states,
+        handle,
+    );
+    handle
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_process_alloc_handle(
+    memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    size: u32,
+    clear: bool,
+) -> u32 {
+    let handle = memory_manager.new_native_handle(memory, size, clear);
     ppc_apply_process_native_resource_handle(
         memory_manager,
         memory,
@@ -97881,6 +97997,7 @@ pub(crate) mod tests {
             };
             let action = ppc_begin_m68k_universal_proc(
                 &loaded.cpu,
+                None,
                 &mut loaded.memory,
                 test_heap_cursor!(loaded),
                 test_heap_limit!(loaded),
