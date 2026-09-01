@@ -8921,7 +8921,7 @@ impl FixtureRunner {
         {
             let task_ptr = task.task_ptr;
             let tm_addr = task.callback;
-            self.dispatcher.timer_current_subtick = current_subtick;
+            self.dispatcher.callback_scheduling.current_subtick = current_subtick;
             // Mark only the task being delivered as fired. Other tasks that
             // expire on the same tick must remain active for a later interrupt.
             task.active = false;
@@ -9013,7 +9013,7 @@ impl FixtureRunner {
             }
             self.cpu.write_reg(Register::PC, tramp);
         } else {
-            self.dispatcher.timer_current_subtick = current_subtick;
+            self.dispatcher.callback_scheduling.current_subtick = current_subtick;
         }
     }
 
@@ -13420,6 +13420,7 @@ mod tests {
             sound,
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -15670,6 +15671,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: SharedProcessFileSystem::from_state(
                 ProcessFileSystemState {
                 files: Vec::new(),
@@ -16688,6 +16690,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -16840,6 +16843,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -17251,6 +17255,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),
@@ -17562,6 +17567,7 @@ mod tests {
             sound: Default::default(),
             timer_tasks: Default::default(),
             vbl_tasks: Default::default(),
+            callback_scheduling: Default::default(),
             process_file_system: ppc_initial_process_file_system(),
             current_gworld: SharedProcessValue::from_value(PPC_MAIN_GWORLD),
             current_gdevice: SharedProcessValue::from_value(PPC_MAIN_GDEVICE),

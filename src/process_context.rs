@@ -1,6 +1,6 @@
 //! Process-scoped state shared by classic and native CPU adapters.
 
-use crate::callback_manager::{ProcessTimerTask, ProcessVblTask};
+use crate::callback_manager::{ProcessCallbackScheduling, ProcessTimerTask, ProcessVblTask};
 use crate::display::{
     default_arrow_cursor_image, default_display_gamma, standard_mac_8bpp_clut, CursorImage,
     DisplayGamma,
@@ -1226,6 +1226,7 @@ pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMen
 pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
+pub(crate) type SharedProcessCallbackScheduling = SharedProcessValue<ProcessCallbackScheduling>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessKeyRepeatState {
@@ -4137,6 +4138,7 @@ pub(crate) struct ProcessContext {
     sound_manager: SharedProcessSoundManager,
     timer_tasks: SharedProcessTimerTasks,
     vbl_tasks: SharedProcessVblTasks,
+    callback_scheduling: SharedProcessCallbackScheduling,
     cursor_state: SharedProcessCursorState,
     current_graphics_port: SharedProcessValue<u32>,
     current_graphics_device: SharedProcessValue<u32>,
@@ -4161,6 +4163,7 @@ impl Default for ProcessContext {
             sound_manager: SharedProcessSoundManager::default(),
             timer_tasks: SharedProcessTimerTasks::default(),
             vbl_tasks: SharedProcessVblTasks::default(),
+            callback_scheduling: SharedProcessCallbackScheduling::default(),
             cursor_state: SharedProcessCursorState::default(),
             current_graphics_port: SharedProcessValue::from_value(0),
             current_graphics_device: SharedProcessValue::from_value(0),
@@ -4227,9 +4230,11 @@ impl ProcessContext {
         &self,
         timer_tasks: &mut SharedProcessTimerTasks,
         vbl_tasks: &mut SharedProcessVblTasks,
+        scheduling: &mut SharedProcessCallbackScheduling,
     ) {
         timer_tasks.attach_to(&self.timer_tasks, Vec::is_empty);
         vbl_tasks.attach_to(&self.vbl_tasks, Vec::is_empty);
+        scheduling.attach_to(&self.callback_scheduling, |state| state == &Default::default());
     }
 
     pub(crate) fn attach_cursor_state(&self, adapter: &mut SharedProcessCursorState) {

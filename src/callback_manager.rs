@@ -1,5 +1,20 @@
 //! Process-owned Time Manager and Vertical Retrace Manager task records.
 
+use std::collections::HashMap;
+
+/// Scheduling metadata shared by every callback gateway in one process.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessCallbackScheduling {
+    /// Exact intended wake-up for extended Time Manager records.
+    pub(crate) extended_wakeups: HashMap<u32, u64>,
+    /// Exact Time Manager clock while callbacks are delivered.
+    pub(crate) current_subtick: u64,
+    /// Guest address of the dormant system VBL queue element.
+    pub(crate) system_vbl_queue_anchor: u32,
+    /// Slot number of the primary video monitor.
+    pub(crate) primary_vbl_slot: i16,
+}
+
 /// CPU architecture responsible for delivering an installed callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackTaskArchitecture {
