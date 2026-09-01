@@ -76,7 +76,8 @@ use crate::process_context::{
     ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers,
-    SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessEventQueue,
+    SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
+    SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
     SharedProcessMenuTracking, SharedProcessTimerTasks, SharedProcessValue,
     SharedProcessVblTasks,
@@ -3392,7 +3393,7 @@ pub struct PpcLoadedApp {
     pub quickdraw_text_size: i16,
     pub(crate) cursor_state: SharedProcessCursorState,
     pub launched_app_path: Option<String>,
-    pub param_text: [Vec<u8>; 4],
+    pub param_text: SharedProcessDialogText,
     pub scrap: PpcScrapState,
     pub list_manager: PpcListManagerState,
     pub halt_pc: u32,
@@ -3890,6 +3891,7 @@ impl PpcLoadedApp {
             &mut self.callback_scheduling,
         );
         context.attach_scrap_state(&mut self.scrap.desktop);
+        context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
         context.attach_display_color_state(
@@ -12761,7 +12763,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         quickdraw_text_size: PPC_QD_TEXT_SIZE_SYSTEM,
         cursor_state: SharedProcessCursorState::default(),
         launched_app_path: None,
-        param_text: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+        param_text: SharedProcessDialogText::default(),
         scrap: PpcScrapState::default(),
         list_manager: PpcListManagerState::default(),
         halt_pc: PPC_HALT_PC,
@@ -160035,7 +160037,7 @@ pub(crate) mod tests {
     fn hle_import_runner_param_text_nil_preserves_previous_slots() {
         let pef = synthetic_pef_with_import(b"ParamText");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.param_text = [
+        *loaded.param_text = [
             b"old0".to_vec(),
             b"old1".to_vec(),
             b"old2".to_vec(),
@@ -160057,6 +160059,59 @@ pub(crate) mod tests {
         assert_eq!(loaded.param_text[1], b"old1");
         assert_eq!(loaded.param_text[2], b"old2");
         assert_eq!(loaded.param_text[3], b"old3");
+    }
+
+    #[test]
+    fn attached_dialog_parameter_text_mutations_cross_isa_immediately() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"ParamText")).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let native_text = PPC_DATA_BASE + 0x2900;
+        native.memory.add_region(native_text, vec![0; 32]);
+        write_ppc_pstring(&mut native.memory, native_text, b"Native");
+        native.cpu.gpr[3] = native_text;
+        native.cpu.gpr[4] = 0;
+        native.cpu.gpr[5] = 0;
+        native.cpu.gpr[6] = 0;
+        run_test_import(&mut native, PpcImportDispatcherTarget::ParamText);
+        assert_eq!(classic.apply_param_text("Hello ^0"), "Hello Native");
+
+        let classic_text = 0x0002_9000;
+        classic_bus.write_pstring(classic_text, b"Classic");
+        classic_bus.write_long(TEST_SP, 0);
+        classic_bus.write_long(TEST_SP + 4, 0);
+        classic_bus.write_long(TEST_SP + 8, 0);
+        classic_bus.write_long(TEST_SP + 12, classic_text);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_dialog(true, 0x18B, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(native.param_text[0], b"Classic");
+        assert_eq!(native.param_text[1], b"");
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_dialog_parameter_text() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"ParamText")).unwrap();
+        original.param_text[0] = b"Original".to_vec();
+        let mut detached = original.clone();
+        let text = PPC_DATA_BASE + 0x2900;
+        detached.memory.add_region(text, vec![0; 32]);
+        write_ppc_pstring(&mut detached.memory, text, b"Detached");
+        detached.cpu.gpr[3] = text;
+        detached.cpu.gpr[4] = 0;
+        detached.cpu.gpr[5] = 0;
+        detached.cpu.gpr[6] = 0;
+        run_test_import(&mut detached, PpcImportDispatcherTarget::ParamText);
+
+        assert_eq!(original.param_text[0], b"Original");
+        assert_eq!(detached.param_text[0], b"Detached");
     }
 
     #[test]
