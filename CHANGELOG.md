@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.16](https://github.com/benletchford/systemless/compare/v0.27.15...v0.27.16) (2026-09-01)
+
+
+### Bug Fixes
+
+* **quickdraw:** preserve indexed palette provenance ([#1137](https://github.com/benletchford/systemless/issues/1137)) ([a6de7e4](https://github.com/benletchford/systemless/commit/a6de7e4cb9b1dd09c310788cbc65d68d1d230528))
+
 ## [0.27.15](https://github.com/benletchford/systemless/compare/v0.27.14...v0.27.15) (2026-09-01)
 
 
