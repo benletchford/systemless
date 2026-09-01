@@ -1149,7 +1149,7 @@ impl super::TrapDispatcher {
                                 .unlock_process_handle(handle);
                         }
                         _ => {
-                            if self.res_purge {
+                            if self.policy.res_purge {
                                 let _ = self.write_resource_backing_if_changed(bus, handle);
                             }
                         }

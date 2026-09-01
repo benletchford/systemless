@@ -2660,14 +2660,6 @@ pub struct TrapDispatcher {
     /// Most recent pack ID passed to InitPack.
     /// Kept as lightweight bookkeeping for future pack-specific heuristics.
     pub last_init_pack_id: Option<i16>,
-    /// Whether SetResLoad(TRUE) is active (default: true).
-    /// When false, resource-retrieval functions return empty handles.
-    /// Inside Macintosh Volume I, I-118
-    pub res_load: bool,
-    /// Whether SetResPurge(TRUE) is active (default: false).
-    /// When true, resources are written to disk before purging if modified.
-    /// Inside Macintosh Volume I, I-126
-    pub res_purge: bool,
 }
 
 pub(crate) type ResourceFileMap = ProcessResourceFileMap;
@@ -3998,8 +3990,6 @@ impl TrapDispatcher {
             dialog_popup_candidate_items: HashSet::new(),
             scrap: SharedProcessScrapState::default(),
             last_init_pack_id: None,
-            res_load: true,
-            res_purge: false,
         };
         dispatcher.ensure_vfs_directory("System Folder");
         dispatcher.ensure_vfs_directory("System Folder/Preferences");
@@ -5866,7 +5856,7 @@ impl TrapDispatcher {
             // resPreload; ordinary resource data stays on disk until requested.
             // SetResLoad(FALSE) also suppresses preloading.
             // Inside Macintosh Volume I (1985), I-111, I-115, I-118.
-            let ptr = if self.res_load && res.attrs & RES_PRELOAD_ATTR != 0 {
+            let ptr = if self.policy.res_load && res.attrs & RES_PRELOAD_ATTR != 0 {
                 let ptr = bus.alloc(res.data.len() as u32);
                 if ptr != 0 {
                     bus.write_bytes(ptr, &res.data);

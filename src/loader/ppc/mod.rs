@@ -3324,8 +3324,6 @@ pub struct PpcLoadedApp {
     pub tick_count: u32,
     pub clock_cycles_per_tick: u32,
     pub clock_cycle_phase: u32,
-    pub last_resource_error: i16,
-    pub resource_load_enabled: bool,
     pub native_exception_handler: u32,
     pub(crate) native_exception_stack: Vec<PpcNativeExceptionContext>,
     pub(crate) stdc_qsort_stack: Vec<PpcQsortState>,
@@ -3472,6 +3470,20 @@ fn ppc_set_current_resource_refnum(
 }
 
 impl PpcLoadedApp {
+    #[cfg(test)]
+    fn set_test_resource_error(&mut self, error: i16) {
+        let _ = self
+            .memory
+            .write_u16_be(crate::memory::globals::addr::RES_ERR, error as u16);
+    }
+
+    #[cfg(test)]
+    fn test_resource_error(&mut self) -> i16 {
+        self.memory
+            .read_u16_be(crate::memory::globals::addr::RES_ERR)
+            .unwrap_or(0) as i16
+    }
+
     /// Return the process Resource Manager's current resource file.
     pub fn current_resource_refnum(&self) -> i16 {
         *self.process_file_system.current_resource_file
@@ -7171,8 +7183,11 @@ impl PpcLoadedApp {
             .process_file_system
             .current_resource_file
             .shared_handle();
-        let mut last_resource_error = self.last_resource_error;
-        let mut resource_load_enabled = self.resource_load_enabled;
+        let mut last_resource_error = self
+            .memory
+            .read_u16_be(crate::memory::globals::addr::RES_ERR)
+            .unwrap_or(0) as i16;
+        let mut resource_policy = self.process_file_system.policy.shared_handle();
         let native_exception_handler = Cell::new(self.native_exception_handler);
         let mut native_exception_stack = std::mem::take(&mut self.native_exception_stack);
         let mut stdc_qsort_stack = std::mem::take(&mut self.stdc_qsort_stack);
@@ -7613,6 +7628,13 @@ impl PpcLoadedApp {
                     None
                 };
 
+                // ResErr is canonical process low memory. Refresh it at each
+                // import boundary so a preceding 68K callback is visible to
+                // native Resource Manager entry points immediately.
+                last_resource_error = memory
+                    .read_u16_be(crate::memory::globals::addr::RES_ERR)
+                    .unwrap_or(last_resource_error as u16) as i16;
+
                 let native_heap = process_memory_manager
                     .native_heap_state()
                     .expect("native allocator registered during execution");
@@ -7695,7 +7717,7 @@ impl PpcLoadedApp {
                         clock_cycles_per_tick,
                         &mut current_resource_refnum,
                         &mut last_resource_error,
-                        &mut resource_load_enabled,
+                        &mut resource_policy.res_load,
                         &native_exception_handler,
                         &mut stdc_qsort_stack,
                         &mut dialog_callback_stack,
@@ -7791,6 +7813,10 @@ impl PpcLoadedApp {
                 // observes the result immediately, not at slice teardown.
                 process_memory_manager.set_native_heap_limit(heap_limit);
                 process_memory_manager.set_native_mem_error(last_mem_error);
+                let _ = memory.write_u16_be(
+                    crate::memory::globals::addr::RES_ERR,
+                    last_resource_error as u16,
+                );
 
                 // Resource records are the native Resource Manager's parsed
                 // view, while the classic adapter opens the same process fork
@@ -8060,8 +8086,6 @@ impl PpcLoadedApp {
         drop(fetch_observer);
 
         self.tick_count = tick_count;
-        self.last_resource_error = last_resource_error;
-        self.resource_load_enabled = resource_load_enabled;
         self.native_exception_handler = native_exception_handler.get();
         self.native_exception_stack = native_exception_stack;
         self.stdc_qsort_stack = stdc_qsort_stack;
@@ -12697,8 +12721,6 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         tick_count: 0,
         clock_cycles_per_tick: 1,
         clock_cycle_phase: 0,
-        last_resource_error: 0,
-        resource_load_enabled: true,
         native_exception_handler: 0,
         native_exception_stack: Vec::new(),
         stdc_qsort_stack: Vec::new(),
@@ -88312,7 +88334,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -88478,7 +88500,7 @@ pub(crate) mod tests {
                     == Some(black)
             })
         }));
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -90463,7 +90485,7 @@ pub(crate) mod tests {
             record(2, 103, b"Shadowed", 5),
             record(2, 107, b"Beta", 6),
         ]);
-        loaded.resource_load_enabled = false;
+        loaded.policy.res_load = false;
         loaded.cpu.gpr[3] = menu;
         loaded.cpu.gpr[4] = u32::from_be_bytes(*b"DRVR");
         loaded.cpu.gpr[5] = 1;
@@ -90491,7 +90513,7 @@ pub(crate) mod tests {
                 (0, 0, 0, 0)
             );
         }
-        assert!(loaded.resource_load_enabled);
+        assert!(loaded.policy.res_load);
         for resource in &loaded.process_file_system.vfs_resources {
             if resource.name == b"Shadowed" {
                 assert_eq!(
@@ -91050,14 +91072,14 @@ pub(crate) mod tests {
             1
         );
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
     fn native_getmenu_loads_and_resolves_mdefs_when_resload_is_disabled() {
         let pef = synthetic_pef_with_import(b"GetMenu");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.resource_load_enabled = false;
+        loaded.policy.res_load = false;
         let ref_num = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.extend([
             PpcVfsResourceRecord {
@@ -91142,7 +91164,7 @@ pub(crate) mod tests {
             Some(custom_mdef),
             "a repeated GetMenu must preserve both resource Handle identities"
         );
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -91287,7 +91309,7 @@ pub(crate) mod tests {
         run_test_import(&mut loaded, PpcImportDispatcherTarget::GetMenu);
 
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -93054,7 +93076,7 @@ pub(crate) mod tests {
         assert_eq!(test_heap_limit!(loaded), PPC_STACK_BASE);
         assert_eq!(loaded.last_mem_error(), 0);
         assert_eq!(*loaded.process_file_system.current_resource_file, 0);
-        assert_eq!(loaded.last_resource_error, 0);
+        assert_eq!(loaded.test_resource_error(), 0);
         assert_eq!(loaded.cfm_connections.len(), 0);
         assert_eq!(loaded.next_cfm_connection_id, PPC_FIRST_CFM_CONNECTION_ID);
         assert_eq!(test_handle_records!(loaded).len(), 0);
@@ -101122,7 +101144,7 @@ pub(crate) mod tests {
         let pef = synthetic_pef_with_import(b"UseResFile");
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.cpu.gpr[3] = 5;
-        loaded.last_resource_error = -192;
+        loaded.set_test_resource_error(-192);
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -101130,14 +101152,14 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 5);
         assert_eq!(*loaded.process_file_system.current_resource_file, 5);
-        assert_eq!(loaded.last_resource_error, 0);
+        assert_eq!(loaded.test_resource_error(), 0);
     }
 
     #[test]
     fn hle_import_runner_handles_signed_res_error() {
         let pef = synthetic_pef_with_import(b"ResError");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.last_resource_error = -192;
+        loaded.set_test_resource_error(-192);
 
         let probe = loaded.run_with_hle_imports(64);
 
@@ -128976,7 +128998,7 @@ pub(crate) mod tests {
         assert_eq!(ptr, test_handle_records!(loaded)[0].ptr);
         assert_eq!(loaded.memory.read_u16_be(ptr), Some(0x000c));
         assert_eq!(loaded.memory.read_u16_be(ptr + 10), Some(0x00ff));
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -129010,7 +129032,7 @@ pub(crate) mod tests {
         for (offset, byte) in pict.iter().copied().enumerate() {
             assert_eq!(loaded.memory.read_u8(ptr + offset as u32), Some(byte));
         }
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -129057,7 +129079,7 @@ pub(crate) mod tests {
             Some(pattern.clone())
         );
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -130960,7 +130982,7 @@ pub(crate) mod tests {
             ppc_read_pstring_bytes(&mut loaded.memory, title),
             Some(b"Document".to_vec())
         );
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.gpr[3] = storage_ptr;
         run_test_import(&mut loaded, PpcImportDispatcherTarget::ShowWindow);
@@ -131035,7 +131057,7 @@ pub(crate) mod tests {
 
             assert_eq!(probe.unsupported_import_index, None, "{label}");
             assert_eq!(loaded.cpu.gpr[3], 0, "{label}");
-            assert_eq!(loaded.last_resource_error, expected_error, "{label}");
+            assert_eq!(loaded.test_resource_error(), expected_error, "{label}");
             assert_eq!(loaded.gworlds, gworlds, "{label}");
             assert_eq!(
                 ppc_memory_read_bytes(&mut loaded.memory, storage_ptr, PPC_CGRAF_PORT_SIZE,),
@@ -142299,7 +142321,7 @@ pub(crate) mod tests {
             map_attrs: 0,
             dirty: false,
         });
-        loaded.last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        loaded.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
         loaded.cpu.gpr[3] = spec_ptr;
         loaded.cpu.gpr[4] = 1; // fsRdPerm
 
@@ -142309,7 +142331,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_FIRST_FILE_REF_NUM));
         assert_eq!(*loaded.process_file_system.current_resource_file, PPC_FIRST_FILE_REF_NUM);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142352,7 +142374,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_FIRST_FILE_REF_NUM as u16 as u32);
         assert_eq!(*loaded.process_file_system.current_resource_file, PPC_FIRST_FILE_REF_NUM);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142453,7 +142475,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_FIRST_FILE_REF_NUM as u16 as u32);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142551,7 +142573,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_FIRST_FILE_REF_NUM as u16 as u32);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142732,7 +142754,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142848,7 +142870,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.resource_files.len(), 1);
         assert_eq!(
             loaded.resource_files[0].path,
@@ -142958,7 +142980,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             loaded.resource_files[0].path,
             "Game Data/Control Files/Options Button Control"
@@ -143396,7 +143418,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         let handle = loaded.cpu.gpr[3];
         assert_ne!(handle, 0);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[2].handle, handle);
         assert_eq!(
             loaded.memory.read_u32_be(handle),
@@ -143417,7 +143439,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -143431,7 +143453,7 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_ne!(loaded.cpu.gpr[3], 0);
         assert_eq!(loaded.process_file_system.vfs_resources[1].handle, loaded.cpu.gpr[3]);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -143524,7 +143546,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_ne!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -143552,7 +143574,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.vfs_resource_files.len(), 1);
         assert_eq!(
             loaded.vfs_resource_files[0].path,
@@ -143606,7 +143628,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources.len(), 1);
         assert_eq!(loaded.process_file_system.vfs_resources[0].ref_num, PPC_FIRST_FILE_REF_NUM);
         assert_eq!(
@@ -143623,7 +143645,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert!(loaded.resource_files.is_empty());
         assert_eq!(*loaded.process_file_system.current_resource_file, 0);
 
@@ -143653,7 +143675,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], handle);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -143685,7 +143707,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
-        assert_eq!(loaded.last_resource_error, PPC_FNF_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_FNF_ERR);
         assert!(loaded.resource_files.is_empty());
         assert!(loaded.vfs_resource_files.is_empty());
 
@@ -143700,7 +143722,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.vfs_resource_files.len(), 1);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -143727,7 +143749,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::FSpOpenResFile;
@@ -143749,13 +143771,13 @@ pub(crate) mod tests {
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UpdateResFile;
         loaded.cpu.gpr[3] = PPC_FIRST_FILE_REF_NUM as u16 as u32;
-        loaded.last_resource_error = PPC_RES_F_NOT_FOUND_ERR;
+        loaded.set_test_resource_error(PPC_RES_F_NOT_FOUND_ERR);
 
         let probe = loaded.run_with_hle_imports(64);
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(*loaded.process_file_system.current_resource_file, PPC_FIRST_FILE_REF_NUM + 1);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -143765,7 +143787,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_F_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_F_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -143797,7 +143819,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
-        assert_eq!(loaded.last_resource_error, PPC_RES_F_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_F_NOT_FOUND_ERR);
         assert!(loaded.resource_files.is_empty());
         assert!(loaded.vfs_resource_files.is_empty());
     }
@@ -144235,7 +144257,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             loaded.process_file_system.vfs_resources,
             vec![PpcVfsResourceRecord {
@@ -144260,7 +144282,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].data, b"old");
         assert_eq!(loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR, 0);
 
@@ -144279,7 +144301,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_ne!(loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR, 0);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -144290,7 +144312,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].data, b"new!");
         assert_eq!(loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR, 0);
 
@@ -144309,7 +144331,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_ne!(loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR, 0);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -144320,7 +144342,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].data, b"sync");
         assert_eq!(loaded.process_file_system.vfs_resources[0].attrs & PPC_RES_CHANGED_ATTR, 0);
 
@@ -144332,7 +144354,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert!(loaded.process_file_system.vfs_resources.is_empty());
     }
 
@@ -144377,12 +144399,12 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], current_handle);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Get1Resource;
         loaded.set_current_resource_refnum(9);
-        loaded.last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        loaded.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
         loaded.cpu.gpr[3] = u32::from_be_bytes(*b"pref");
         loaded.cpu.gpr[4] = 100;
 
@@ -144391,7 +144413,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResource;
@@ -144404,7 +144426,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], fallback_handle);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResAttrs;
@@ -144415,7 +144437,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], PPC_RES_CHANGED_ATTR as u32);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::HomeResFile;
@@ -144426,7 +144448,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 5);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::GetResInfo;
@@ -144442,7 +144464,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(100));
         assert_eq!(
             loaded.memory.read_u32_be(type_ptr),
@@ -144464,7 +144486,7 @@ pub(crate) mod tests {
         let output = PPC_DATA_BASE + 0x2100;
         loaded.memory.add_region(output, vec![0xcc; 0x200]);
         loaded.set_current_resource_refnum(5);
-        loaded.last_resource_error = PPC_RES_NOT_FOUND_ERR;
+        loaded.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
         loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
             ref_num: 7,
             path: "fallback".to_string(),
@@ -144501,12 +144523,12 @@ pub(crate) mod tests {
             ppc_read_pstring_bytes(&mut loaded.memory, output).as_deref(),
             Some(&b"two"[..])
         );
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_ne!(loaded.process_file_system.vfs_resources[1].handle, 0);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
 
         loaded.cpu.pc = loaded.entry_pc;
-        loaded.last_resource_error = PPC_RES_ATTR_ERR;
+        loaded.set_test_resource_error(PPC_RES_ATTR_ERR);
         loaded.cpu.gpr[3] = output;
         loaded.cpu.gpr[4] = 128;
         loaded.cpu.gpr[5] = 3;
@@ -144516,10 +144538,10 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u8(output), Some(0));
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
-        loaded.last_resource_error = PPC_RES_ATTR_ERR;
+        loaded.set_test_resource_error(PPC_RES_ATTR_ERR);
         loaded.cpu.gpr[3] = output;
         loaded.cpu.gpr[4] = 404;
         loaded.cpu.gpr[5] = 1;
@@ -144529,10 +144551,10 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.memory.read_u8(output), Some(0));
-        assert_eq!(loaded.last_resource_error, PPC_RES_ATTR_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_ATTR_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
-        loaded.last_resource_error = PPC_NO_ERR;
+        loaded.set_test_resource_error(PPC_NO_ERR);
         loaded.cpu.gpr[3] = PPC_DATA_BASE + 0x5000;
         loaded.cpu.gpr[4] = 128;
         loaded.cpu.gpr[5] = 1;
@@ -144541,7 +144563,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_PARAM_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_PARAM_ERR);
     }
 
     #[test]
@@ -144575,7 +144597,7 @@ pub(crate) mod tests {
             ppc_read_pstring_bytes(&mut loaded.memory, pointer).as_deref(),
             Some(&b"Hello"[..])
         );
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -144609,7 +144631,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_PARAM_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_PARAM_ERR);
         assert_eq!(loaded.memory.read_u16_be(id_ptr), Some(0xcccc));
         assert_eq!(loaded.memory.read_u32_be(type_ptr), Some(0xcccc_cccc));
         assert_eq!(loaded.memory.read_u32_be(name_ptr), Some(0xcccc_cccc));
@@ -144642,7 +144664,7 @@ pub(crate) mod tests {
         let handle = loaded.cpu.gpr[3];
         assert_ne!(handle, 0);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
         assert_eq!(test_handle_records!(loaded).len(), 1);
         let ptr = loaded.memory.read_u32_be(handle).unwrap();
@@ -144705,7 +144727,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert!(loaded.resource_files.is_empty());
         assert_eq!(*loaded.process_file_system.current_resource_file, 0);
         assert_eq!(loaded.process_file_system.vfs_resources[0].ref_num, PPC_CLOSED_RESOURCE_REF_NUM);
@@ -144781,7 +144803,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], released_handle);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
         assert!(loaded
             .handles()
@@ -144862,7 +144884,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
         assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
         assert!(test_handle_records!(loaded)
@@ -144911,7 +144933,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, 0);
         assert_eq!(loaded.memory.read_u32_be(handle), Some(ptr));
         assert!(test_handle_records!(loaded)
@@ -144926,7 +144948,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
         assert_eq!(loaded.cpu.gpr[3], PPC_RES_CHANGED_ATTR as u32);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -144984,7 +145006,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
 
         let handle = ppc_alloc_handle_with_bytes(
             &mut loaded.memory,
@@ -145013,7 +145035,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
 
         loaded.cpu.pc = loaded.entry_pc;
@@ -145023,7 +145045,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
     }
 
@@ -145311,7 +145333,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].attrs, 0x40);
         assert_eq!(loaded.process_file_system.vfs_resources[0].raw_data, None);
         assert_eq!(loaded.process_file_system.vfs_resources[0].raw_attrs, None);
@@ -145408,7 +145430,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 3);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Count1Resources;
@@ -145419,7 +145441,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 2);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UniqueID;
@@ -145430,7 +145452,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 131);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::Unique1ID;
@@ -145441,7 +145463,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 129);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.imports[0].dispatcher_target = PpcImportDispatcherTarget::UpdateResFile;
@@ -145451,7 +145473,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             loaded
                 .vfs_resources
@@ -145481,7 +145503,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_F_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_F_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -145512,7 +145534,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].res_id, 101);
         assert_eq!(loaded.process_file_system.vfs_resources[0].name, b"NewName");
 
@@ -145525,7 +145547,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             loaded.process_file_system.vfs_resources[0].attrs,
             PPC_RES_PROTECTED_ATTR | PPC_RES_CHANGED_ATTR
@@ -145542,7 +145564,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_RES_ATTR_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_ATTR_ERR);
         assert_eq!(loaded.process_file_system.vfs_resources[0].res_id, 101);
         assert_eq!(loaded.process_file_system.vfs_resources[0].name, b"NewName");
     }
@@ -145589,7 +145611,7 @@ pub(crate) mod tests {
 
         assert_eq!(probe.unsupported_import_index, None);
         let handle = loaded.cpu.gpr[3];
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             ppc_handle_bytes(&mut loaded.memory, &test_handle_records!(loaded), handle),
             Some(b"current".to_vec())
@@ -145603,7 +145625,7 @@ pub(crate) mod tests {
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -145689,7 +145711,7 @@ pub(crate) mod tests {
         );
         assert!(entries.iter().all(|entry| entry.1 != 0));
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
     }
 
     #[test]
@@ -145698,7 +145720,7 @@ pub(crate) mod tests {
         let mut loaded = load_pef_application(&pef).unwrap();
         let buffer = PPC_DATA_BASE + 0x1000;
         loaded.memory.add_region(buffer, vec![0; 16]);
-        loaded.resource_load_enabled = false;
+        loaded.policy.res_load = false;
         let current_resource_refnum = *loaded.process_file_system.current_resource_file;
         loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
             ref_num: current_resource_refnum,
@@ -145727,7 +145749,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[6] = 4;
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, buffer, 4),
             Some(b"cdef".to_vec())
@@ -145746,7 +145768,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[5] = buffer + 8;
         loaded.cpu.gpr[6] = 2;
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.last_resource_error, PPC_RESOURCE_IN_MEMORY_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RESOURCE_IN_MEMORY_ERR);
         assert_eq!(
             ppc_memory_read_bytes(&mut loaded.memory, buffer + 8, 2),
             Some(b"ab".to_vec())
@@ -145756,7 +145778,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[4] = 7;
         loaded.cpu.gpr[6] = 2;
         loaded.run_with_hle_imports(64);
-        assert_eq!(loaded.last_resource_error, PPC_INPUT_OUT_OF_BOUNDS_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_INPUT_OUT_OF_BOUNDS_ERR);
     }
 
     #[test]
@@ -145815,7 +145837,7 @@ pub(crate) mod tests {
         loaded.cpu.gpr[5] = name_ptr;
         let probe = loaded.run_with_hle_imports(64);
         assert_eq!(probe.unsupported_import_index, None);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_eq!(loaded.vfs_files[0].path, "Preferences");
         assert_eq!(loaded.vfs_resource_files[0].path, "Preferences");
         assert!(loaded.vfs_resource_files[0].dirty);
@@ -146071,7 +146093,7 @@ pub(crate) mod tests {
         assert_eq!(*loaded.current_gworld, dialog);
         assert!(loaded.heap_cursor() > dialog);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         assert_ne!(
             loaded.memory.read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET),
             Some(0)
@@ -146205,7 +146227,7 @@ pub(crate) mod tests {
         assert_ne!(dialog, 0);
         assert_eq!(*loaded.current_gworld, dialog);
         assert_eq!(loaded.last_mem_error(), PPC_NO_ERR);
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
         let items_ptr = loaded.memory.read_u32_be(items).unwrap();
         assert_eq!(loaded.memory.read_u32_be(items_ptr + 2), Some(0));
     }
@@ -149134,6 +149156,95 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn attached_resource_policy_mutations_cross_isa_immediately() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        classic_bus.write_word(TEST_SP, 0x00ff);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_toolbox(true, 0x19b, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert!(!native.policy.res_load);
+
+        native.cpu.gpr[3] = 1;
+        run_test_import(&mut native, PpcImportDispatcherTarget::SetResLoad);
+        assert!(classic.policy.res_load);
+
+        classic_bus.write_word(TEST_SP, 0x0100);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_toolbox(true, 0x193, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert!(native.policy.res_purge);
+    }
+
+    #[test]
+    fn attached_resource_errors_use_canonical_low_memory_cross_isa() {
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+
+        classic_bus.write_word(
+            crate::memory::globals::addr::RES_ERR,
+            PPC_RES_NOT_FOUND_ERR as u16,
+        );
+        run_test_import(&mut native, PpcImportDispatcherTarget::ResError);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_RES_NOT_FOUND_ERR));
+
+        native.cpu.gpr[3] = 0xdead_beef;
+        run_test_import(&mut native, PpcImportDispatcherTarget::LoadResource);
+        assert_eq!(
+            classic_bus.read_word(crate::memory::globals::addr::RES_ERR) as i16,
+            PPC_RES_NOT_FOUND_ERR
+        );
+
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_resource(true, 0x1af, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(TEST_SP) as i16, PPC_RES_NOT_FOUND_ERR);
+    }
+
+    #[test]
+    fn cloned_native_adapter_detaches_resource_policy_and_error_state() {
+        let mut original =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        original.policy.res_load = false;
+        original.policy.res_purge = true;
+        original.set_test_resource_error(PPC_RES_NOT_FOUND_ERR);
+        let mut detached = original.clone();
+
+        detached.policy.res_load = true;
+        detached.policy.res_purge = false;
+        detached.set_test_resource_error(PPC_RES_F_NOT_FOUND_ERR);
+
+        assert!(!original.policy.res_load);
+        assert!(original.policy.res_purge);
+        assert_eq!(original.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
+        assert!(detached.policy.res_load);
+        assert!(!detached.policy.res_purge);
+        assert_eq!(
+            detached.test_resource_error(),
+            PPC_RES_F_NOT_FOUND_ERR
+        );
+    }
+
+    #[test]
     fn cloned_native_adapter_detaches_process_cursor_state() {
         let loaded = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         let mut detached = loaded.clone();
@@ -149529,7 +149640,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
         let cursor_ptr = loaded.memory.read_u32_be(handle).unwrap();
         assert_eq!(loaded.memory.read_u8(cursor_ptr + 20), Some(20));
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -149547,7 +149658,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]
@@ -149578,7 +149689,7 @@ pub(crate) mod tests {
         assert_eq!(loaded.process_file_system.vfs_resources[0].handle, handle);
         let cursor_ptr = loaded.memory.read_u32_be(handle).unwrap();
         assert_eq!(loaded.memory.read_u8(cursor_ptr + 20), Some(20));
-        assert_eq!(loaded.last_resource_error, PPC_NO_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_NO_ERR);
 
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.cpu.gpr[3] = 2;
@@ -149608,7 +149719,7 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
-        assert_eq!(loaded.last_resource_error, PPC_RES_NOT_FOUND_ERR);
+        assert_eq!(loaded.test_resource_error(), PPC_RES_NOT_FOUND_ERR);
     }
 
     #[test]

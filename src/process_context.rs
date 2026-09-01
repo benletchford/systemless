@@ -589,6 +589,8 @@ pub struct ProcessResourceManagerState {
     /// `ProcessLoadedResources::current_file` remains the classic file-chain
     /// cursor, while this is the architecture-neutral `CurResFile` value.
     pub(crate) current_resource_file: SharedProcessValue<i16>,
+    /// Resource loading and purge policy shared by every CPU gateway.
+    pub(crate) policy: SharedProcessValue<ProcessResourcePolicyState>,
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
     pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
@@ -601,6 +603,23 @@ pub struct ProcessResourceManagerState {
     pub(crate) resource_files: Vec<ProcessResourceFileRecord>,
     pub(crate) vfs_resource_files: ProcessVfsResourceFileRecords,
     pub(crate) vfs_resources: Vec<ProcessVfsResourceRecord>,
+}
+
+/// Process-wide Resource Manager switches that are not represented in a
+/// resource map. Inside Macintosh Volume I (1985), pp. I-118 and I-126.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessResourcePolicyState {
+    pub(crate) res_load: bool,
+    pub(crate) res_purge: bool,
+}
+
+impl Default for ProcessResourcePolicyState {
+    fn default() -> Self {
+        Self {
+            res_load: true,
+            res_purge: false,
+        }
+    }
 }
 
 fn process_resource_manager_runtime_is_empty(manager: &ProcessResourceManagerState) -> bool {
@@ -642,6 +661,9 @@ impl ProcessResourceManagerState {
         source
             .current_resource_file
             .attach_copy_to(&self.current_resource_file, |refnum| *refnum == 0);
+        source.policy.attach_copy_to(&self.policy, |policy| {
+            *policy == ProcessResourcePolicyState::default()
+        });
 
         self.vfs_resource_files
             .merge_from(&mut source.vfs_resource_files);
