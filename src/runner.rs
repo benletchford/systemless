@@ -13931,7 +13931,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -14387,7 +14386,7 @@ mod tests {
             items.items.iter().any(|item| item.text == APPENDED_TEXT),
             "native decoding must observe the item appended by the 68k callback"
         );
-        assert_eq!(native.last_mem_error, 0);
+        assert_eq!(native.last_mem_error(), 0);
         assert_eq!(runner.bus.read_word(crate::memory::globals::addr::MEM_ERR), 0);
 
         let target_v = root_rect.0 + 24;
@@ -16037,7 +16036,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -16950,7 +16948,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17108,7 +17105,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17498,7 +17494,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE + 8,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
@@ -17782,7 +17777,6 @@ mod tests {
             stack_size: PPC_STACK_SIZE,
             stack_pointer: PPC_STACK_TOP - 64,
             heap_cursor: PPC_HEAP_BASE + 8 * 16,
-            last_mem_error: 0,
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
