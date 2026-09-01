@@ -704,10 +704,10 @@ impl ProcessResourceManagerState {
 pub struct ProcessFileSystemState {
     pub(crate) files: Vec<ProcessOpenFileRecord>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
-    pub(crate) vfs_volumes: Vec<ProcessVfsVolumeRecord>,
-    pub(crate) vfs_directories: Vec<ProcessVfsDirectory>,
-    pub(crate) next_vfs_dir_id: u32,
-    pub(crate) default_dir_id: u32,
+    pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
+    pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
+    pub(crate) next_vfs_dir_id: SharedProcessValue<u32>,
+    pub(crate) default_dir_id: SharedProcessValue<u32>,
     pub(crate) classic_vfs_metadata: SharedProcessValue<HashMap<String, ProcessVfsMetadata>>,
     pub(crate) classic_vfs_directories:
         SharedProcessValue<HashMap<String, ProcessClassicVfsDirectory>>,
@@ -715,11 +715,9 @@ pub struct ProcessFileSystemState {
     pub(crate) classic_vfs_volumes: SharedProcessValue<HashMap<i16, ProcessVfsVolumeRecord>>,
     pub(crate) classic_vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
     pub(crate) classic_locked_files: SharedProcessValue<HashSet<String>>,
-    pub(crate) classic_next_vfs_dir_id: SharedProcessValue<u32>,
     pub(crate) classic_next_vfs_volume_ref_num: SharedProcessValue<i16>,
     pub(crate) classic_next_vfs_file_id: SharedProcessValue<u32>,
     pub(crate) classic_next_vfs_timestamp: SharedProcessValue<u32>,
-    pub(crate) classic_default_dir_id: SharedProcessValue<u32>,
     pub(crate) vfs_files: ProcessVfsFileRecords,
     pub(crate) deleted_vfs_file_paths: Vec<String>,
     pub(crate) resource_manager: SharedProcessResourceManager,
@@ -731,21 +729,19 @@ impl Default for ProcessFileSystemState {
         Self {
             files: Vec::new(),
             stdio_streams: HashMap::new(),
-            vfs_volumes: Vec::new(),
-            vfs_directories: Vec::new(),
-            next_vfs_dir_id: 0,
-            default_dir_id: 0,
+            vfs_volumes: SharedProcessValue::default(),
+            vfs_directories: SharedProcessValue::default(),
+            next_vfs_dir_id: SharedProcessValue::from_value(0),
+            default_dir_id: SharedProcessValue::from_value(0),
             classic_vfs_metadata: SharedProcessValue::default(),
             classic_vfs_directories: SharedProcessValue::default(),
             classic_vfs_directory_paths: SharedProcessValue::default(),
             classic_vfs_volumes: SharedProcessValue::default(),
             classic_vfs_volume_names: SharedProcessValue::default(),
             classic_locked_files: SharedProcessValue::default(),
-            classic_next_vfs_dir_id: SharedProcessValue::from_value(16),
             classic_next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
             classic_next_vfs_file_id: SharedProcessValue::from_value(32),
             classic_next_vfs_timestamp: SharedProcessValue::from_value(1),
-            classic_default_dir_id: SharedProcessValue::from_value(2),
             vfs_files: ProcessVfsFileRecords::default(),
             deleted_vfs_file_paths: Vec::new(),
             resource_manager: SharedProcessResourceManager::default(),
@@ -787,10 +783,11 @@ impl ProcessFileSystemState {
             }
             self.vfs_directories.push(directory);
         }
-        self.next_vfs_dir_id = self.next_vfs_dir_id.max(source.next_vfs_dir_id);
-        if self.default_dir_id == 0 || (target_catalogue_was_pristine && source.default_dir_id != 0)
+        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(*source.next_vfs_dir_id);
+        if *self.default_dir_id == 0
+            || (target_catalogue_was_pristine && *source.default_dir_id != 0)
         {
-            self.default_dir_id = source.default_dir_id;
+            *self.default_dir_id = *source.default_dir_id;
         }
 
         self.vfs_files.merge_from(&mut source.vfs_files);
@@ -847,18 +844,12 @@ impl ProcessFileSystemState {
             self.classic_locked_files
                 .extend(std::mem::take(&mut *source.classic_locked_files));
         }
-        *self.classic_next_vfs_dir_id =
-            (*self.classic_next_vfs_dir_id).max(*source.classic_next_vfs_dir_id);
         *self.classic_next_vfs_volume_ref_num =
             (*self.classic_next_vfs_volume_ref_num).min(*source.classic_next_vfs_volume_ref_num);
         *self.classic_next_vfs_file_id =
             (*self.classic_next_vfs_file_id).max(*source.classic_next_vfs_file_id);
         *self.classic_next_vfs_timestamp =
             (*self.classic_next_vfs_timestamp).max(*source.classic_next_vfs_timestamp);
-        if *self.classic_default_dir_id == 2 && *source.classic_default_dir_id != 2 {
-            *self.classic_default_dir_id = *source.classic_default_dir_id;
-        }
-
         source
             .resource_manager
             .attach_resource_manager_to(&self.resource_manager);
@@ -868,19 +859,17 @@ impl ProcessFileSystemState {
         let mut snapshot = Self::default();
         snapshot.vfs_volumes = self.vfs_volumes.clone();
         snapshot.vfs_directories = self.vfs_directories.clone();
-        snapshot.next_vfs_dir_id = self.next_vfs_dir_id;
-        snapshot.default_dir_id = self.default_dir_id;
+        snapshot.next_vfs_dir_id = self.next_vfs_dir_id.clone();
+        snapshot.default_dir_id = self.default_dir_id.clone();
         snapshot.classic_vfs_metadata = self.classic_vfs_metadata.clone();
         snapshot.classic_vfs_directories = self.classic_vfs_directories.clone();
         snapshot.classic_vfs_directory_paths = self.classic_vfs_directory_paths.clone();
         snapshot.classic_vfs_volumes = self.classic_vfs_volumes.clone();
         snapshot.classic_vfs_volume_names = self.classic_vfs_volume_names.clone();
         snapshot.classic_locked_files = self.classic_locked_files.clone();
-        snapshot.classic_next_vfs_dir_id = self.classic_next_vfs_dir_id.clone();
         snapshot.classic_next_vfs_volume_ref_num = self.classic_next_vfs_volume_ref_num.clone();
         snapshot.classic_next_vfs_file_id = self.classic_next_vfs_file_id.clone();
         snapshot.classic_next_vfs_timestamp = self.classic_next_vfs_timestamp.clone();
-        snapshot.classic_default_dir_id = self.classic_default_dir_id.clone();
         snapshot.vfs_files = self.vfs_files.clone();
         snapshot.resource_manager.vfs_resource_files = self.vfs_resource_files.clone();
         snapshot
@@ -900,8 +889,8 @@ impl ProcessFileSystemState {
     }
 
     pub(crate) fn publish_native_vfs_catalogue(&mut self) {
-        let directories = self.vfs_directories.clone();
-        let volumes = self.vfs_volumes.clone();
+        let directories = (*self.vfs_directories).clone();
+        let volumes = (*self.vfs_volumes).clone();
         let files = self.vfs_files.iter().cloned().collect::<Vec<_>>();
         let resource_files = self.vfs_resource_files.iter().cloned().collect::<Vec<_>>();
         let deleted_paths = self.deleted_vfs_file_paths.clone();
@@ -937,16 +926,13 @@ impl ProcessFileSystemState {
                 );
             }
         }
-        *self.classic_next_vfs_dir_id = (*self.classic_next_vfs_dir_id)
-            .max(self.next_vfs_dir_id)
-            .max(
-                directories
-                    .iter()
-                    .map(|directory| directory.dir_id.saturating_add(1))
-                    .max()
-                    .unwrap_or(16),
-            );
-        *self.classic_default_dir_id = self.default_dir_id;
+        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(
+            directories
+                .iter()
+                .map(|directory| directory.dir_id.saturating_add(1))
+                .max()
+                .unwrap_or(16),
+        );
 
         for volume in volumes {
             self.classic_vfs_volume_names
@@ -1038,7 +1024,7 @@ impl ProcessFileSystemState {
             finder_flags: metadata.map(|metadata| metadata.finder_flags).unwrap_or(0),
             dirty: false,
         });
-        self.next_vfs_dir_id = self.next_vfs_dir_id.max(directory.dir_id.saturating_add(1));
+        *self.next_vfs_dir_id = (*self.next_vfs_dir_id).max(directory.dir_id.saturating_add(1));
     }
 
     pub(crate) fn publish_classic_vfs_catalogue(&mut self) {
@@ -1062,7 +1048,6 @@ impl ProcessFileSystemState {
         for ref_num in volumes {
             self.publish_classic_vfs_volume(ref_num);
         }
-        self.default_dir_id = *self.classic_default_dir_id;
     }
 
     pub(crate) fn publish_classic_vfs_metadata(&mut self, path: &str) {
@@ -4473,8 +4458,8 @@ impl ProcessContext {
             HashMap::is_empty,
         );
         locked_files.attach_to(&self.file_system.classic_locked_files, HashSet::is_empty);
-        next_dir_id.attach_to(&self.file_system.classic_next_vfs_dir_id, |value| {
-            matches!(*value, 16 | 18)
+        next_dir_id.attach_to(&self.file_system.next_vfs_dir_id, |value| {
+            matches!(*value, 0 | 16 | 18)
         });
         next_volume_ref_num.attach_to(&self.file_system.classic_next_vfs_volume_ref_num, |value| {
             *value == -2
@@ -4485,8 +4470,8 @@ impl ProcessContext {
         next_timestamp.attach_to(&self.file_system.classic_next_vfs_timestamp, |value| {
             *value == 1
         });
-        default_dir_id.attach_to(&self.file_system.classic_default_dir_id, |value| {
-            *value == 2
+        default_dir_id.attach_to(&self.file_system.default_dir_id, |value| {
+            matches!(*value, 0 | 2)
         });
     }
 
@@ -5962,7 +5947,7 @@ mod tests {
             dirty: false,
         });
         let mut first = SharedProcessFileSystem::from_state(ProcessFileSystemState {
-            vfs_volumes: vec![ProcessVfsVolumeRecord {
+            vfs_volumes: SharedProcessValue::from_value(vec![ProcessVfsVolumeRecord {
                 ref_num: -1,
                 name: "Macintosh HD".to_string(),
                 root_dir_id: 2,
@@ -5978,8 +5963,8 @@ mod tests {
                 next_catalog_id: 17,
                 created_date: 1,
                 modified_date: 2,
-            }],
-            vfs_directories: vec![ProcessVfsDirectory {
+            }]),
+            vfs_directories: SharedProcessValue::from_value(vec![ProcessVfsDirectory {
                 dir_id: 2,
                 parent_dir_id: 1,
                 path: String::new(),
@@ -5987,9 +5972,9 @@ mod tests {
                 file_type: 0,
                 finder_flags: 0,
                 dirty: false,
-            }],
-            next_vfs_dir_id: 16,
-            default_dir_id: 2,
+            }]),
+            next_vfs_dir_id: SharedProcessValue::from_value(16),
+            default_dir_id: SharedProcessValue::from_value(2),
             ..ProcessFileSystemState::default()
         });
         let mut second = SharedProcessFileSystem::default();
@@ -6009,8 +5994,8 @@ mod tests {
             dirty: true,
         });
         first.vfs_volumes[0].file_count = 2;
-        first.next_vfs_dir_id = 17;
-        first.default_dir_id = 16;
+        *first.next_vfs_dir_id = 17;
+        *first.default_dir_id = 16;
 
         assert!(files.ptr_eq(&first));
         assert!(first.ptr_eq(&second));

@@ -123,9 +123,9 @@ pub(crate) fn ppc_initial_process_file_system() -> SharedProcessFileSystem {
     let mut state = ProcessFileSystemState::default();
     state.stdio_streams = ppc_initial_stdio_streams();
     state.next_file_ref_num = PPC_FIRST_FILE_REF_NUM;
-    state.vfs_directories = initial_ppc_vfs_directories();
-    state.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
-    state.default_dir_id = PPC_ROOT_DIR_ID;
+    *state.vfs_directories = initial_ppc_vfs_directories();
+    *state.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+    *state.default_dir_id = PPC_ROOT_DIR_ID;
     SharedProcessFileSystem::from_state(state)
 }
 
@@ -7270,10 +7270,10 @@ impl PpcLoadedApp {
         let mut quickdraw_text_size = self.quickdraw_text_size;
         let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
         let mut cursor_state = std::mem::take(&mut self.cursor_state);
-        let vfs_volumes = std::mem::take(&mut self.vfs_volumes);
-        let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
-        let mut next_vfs_dir_id = self.next_vfs_dir_id;
-        let mut default_dir_id = self.default_dir_id;
+        let vfs_volumes = self.vfs_volumes.shared_handle();
+        let mut vfs_directories = self.vfs_directories.shared_handle();
+        let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
+        let mut default_dir_id = self.default_dir_id.shared_handle();
         let mut param_text = std::mem::take(&mut self.param_text);
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
@@ -7814,7 +7814,7 @@ impl PpcLoadedApp {
                         &vfs_volumes,
                         &mut vfs_directories,
                         &mut next_vfs_dir_id,
-                        default_dir_id,
+                        *default_dir_id,
                         self.launched_app_path.as_deref(),
                         &mut param_text,
                         &mut scrap,
@@ -7847,9 +7847,9 @@ impl PpcLoadedApp {
                     true,
                 );
 
-                default_dir_id = memory
+                *default_dir_id = memory
                     .read_u32_be(crate::memory::globals::addr::CUR_DIR_STORE)
-                    .unwrap_or(default_dir_id);
+                    .unwrap_or(*default_dir_id);
 
                 match action {
                     Some(action) => {
@@ -8173,10 +8173,6 @@ impl PpcLoadedApp {
         self.quickdraw_text_mode = quickdraw_text_mode;
         self.quickdraw_text_size = quickdraw_text_size;
         self.cursor_state = cursor_state;
-        self.vfs_volumes = vfs_volumes;
-        self.vfs_directories = vfs_directories;
-        self.next_vfs_dir_id = next_vfs_dir_id;
-        self.default_dir_id = default_dir_id;
         self.process_file_system.publish_native_vfs_catalogue();
         self.param_text = param_text;
         self.scrap = scrap;
@@ -8222,18 +8218,18 @@ impl PpcLoadedApp {
             .map(|directory| directory.dir_id)
             .max()
             .unwrap_or(PPC_ROOT_DIR_ID);
-        self.vfs_directories = directories;
-        self.default_dir_id = default_dir_id;
+        *self.vfs_directories = directories;
+        *self.default_dir_id = default_dir_id;
         let _ = self
             .memory
             .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, default_dir_id);
-        self.next_vfs_dir_id = next_dir_id
+        *self.next_vfs_dir_id = next_dir_id
             .max(max_seeded_dir_id.saturating_add(1))
             .max(PPC_FIRST_DYNAMIC_DIR_ID);
     }
 
     pub fn seed_vfs_volumes(&mut self, volumes: Vec<PpcVfsVolumeRecord>) {
-        self.vfs_volumes = volumes;
+        *self.vfs_volumes = volumes;
     }
 
     pub fn set_launched_app_path(&mut self, path: impl Into<String>) {
@@ -89427,8 +89423,8 @@ pub(crate) mod tests {
             finder_flags: 0x0400,
             dirty: true,
         });
-        second.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
-        second.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        *second.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        *second.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
 
         assert_eq!(first.vfs_files[0].data, b"first-second");
         assert_eq!(first.deleted_vfs_file_paths, ["Obsolete Data"]);
@@ -89444,6 +89440,11 @@ pub(crate) mod tests {
         let mut native = load_pef_application(&pef).unwrap();
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
+        let executing_directories = native.vfs_directories.shared_handle();
+        let executing_volumes = native.vfs_volumes.shared_handle();
+        let executing_next_dir_id = native.next_vfs_dir_id.shared_handle();
+        let executing_default_dir_id = native.default_dir_id.shared_handle();
+        let detached = native.clone();
         let mut classic = TrapDispatcher::new();
         classic.attach_process_context(&mut context);
 
@@ -89481,8 +89482,8 @@ pub(crate) mod tests {
             created_date: 1,
             modified_date: 2,
         });
-        native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
-        native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+        *native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
+        *native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
         native.process_file_system.publish_native_vfs_catalogue();
 
         assert_eq!(
@@ -89500,6 +89501,21 @@ pub(crate) mod tests {
         assert_eq!(classic.vfs_volume_for_ref_num(-2).unwrap().name, "Read Only");
 
         let classic_dir_id = classic.ensure_vfs_directory("Classic Folder");
+        let classic_volume_ref = classic.mount_vfs_volume(
+            "Classic Disk",
+            0,
+            0,
+            16,
+            4096,
+            4096,
+            8,
+            3,
+            4,
+            5,
+            PPC_FIRST_DYNAMIC_DIR_ID + 3,
+            10,
+            11,
+        );
         classic
             .vfs
             .insert("Classic Folder/Classic Data".to_string(), b"classic".to_vec());
@@ -89509,9 +89525,33 @@ pub(crate) mod tests {
             *b"ttxt",
             0x0100,
         );
+        classic.set_launched_app_path("Classic Folder/Classic Data");
         assert!(native.vfs_directories.iter().any(|directory| {
             directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
         }));
+        assert!(executing_directories.iter().any(|directory| {
+            directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
+        }));
+        assert!(executing_volumes.iter().any(|volume| {
+            volume.ref_num == classic_volume_ref && volume.name == "Classic Disk"
+        }));
+        assert_eq!(*executing_next_dir_id, *classic.next_vfs_dir_id);
+        assert_eq!(*executing_default_dir_id, classic_dir_id);
+        assert!(!detached
+            .vfs_directories
+            .iter()
+            .any(|directory| directory.path == "Classic Folder"));
+        assert!(!detached
+            .vfs_volumes
+            .iter()
+            .any(|volume| volume.name == "Classic Disk"));
+        assert_ne!(*detached.next_vfs_dir_id, *executing_next_dir_id);
+        assert_ne!(*detached.default_dir_id, *executing_default_dir_id);
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetEOF);
+        assert!(native.vfs_directories.ptr_eq(&executing_directories));
+        assert!(native.vfs_volumes.ptr_eq(&executing_volumes));
+        assert!(native.next_vfs_dir_id.ptr_eq(&executing_next_dir_id));
+        assert!(native.default_dir_id.ptr_eq(&executing_default_dir_id));
         let classic_file = native
             .vfs_files
             .iter()
@@ -89595,7 +89635,7 @@ pub(crate) mod tests {
         original.vfs_files[0].data.copy_from_slice(b"change");
         original.vfs_resources[0].data.copy_from_slice(b"changed!");
         original.vfs_directories.last_mut().unwrap().path = "Changed Folder".to_string();
-        original.next_vfs_dir_id += 1;
+        *original.next_vfs_dir_id += 1;
 
         assert!(!original
             .process_file_system
@@ -89606,7 +89646,10 @@ pub(crate) mod tests {
         assert_eq!(detached.vfs_resources[0].data, b"resource");
         assert_eq!(original.vfs_directories.last().unwrap().path, "Changed Folder");
         assert_eq!(detached.vfs_directories.last().unwrap().path, "Detached Folder");
-        assert_eq!(original.next_vfs_dir_id, detached.next_vfs_dir_id + 1);
+        assert_eq!(
+            *original.next_vfs_dir_id,
+            *detached.next_vfs_dir_id + 1
+        );
     }
 
     #[test]
@@ -96181,7 +96224,7 @@ pub(crate) mod tests {
             .memory
             .write_u32_be(parameter_block + 18, volume_name)
             .unwrap();
-        loaded.default_dir_id = 0x1234_5678;
+        *loaded.default_dir_id = 0x1234_5678;
         loaded.cpu.gpr[3] = parameter_block;
 
         let probe = loaded.run_with_hle_imports(64);
@@ -141019,7 +141062,7 @@ pub(crate) mod tests {
     fn hle_import_runner_pb_get_finfo_uses_default_directory() {
         let pef = synthetic_pef_with_import(b"PBGetFInfoSync");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
@@ -141295,7 +141338,7 @@ pub(crate) mod tests {
     fn hle_import_runner_pb_set_finfo_missing_target_returns_fnf() {
         let pef = synthetic_pef_with_import(b"PBSetFInfo");
         let mut loaded = load_pef_application(&pef).unwrap();
-        loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
         let pb = PPC_DATA_BASE + 0x1000;
         let name_ptr = pb + 128;
         loaded.memory.add_region(pb, vec![0; 256]);
@@ -141499,7 +141542,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(vref_ptr, vec![0xcc; 2]);
         loaded.memory.add_region(dir_id_ptr, vec![0xcc; 4]);
         loaded.memory.add_region(proc_id_ptr, vec![0xcc; 4]);
-        loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
         loaded.cpu.gpr[3] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
         loaded.cpu.gpr[4] = vref_ptr;
         loaded.cpu.gpr[5] = dir_id_ptr;
@@ -141531,7 +141574,7 @@ pub(crate) mod tests {
         loaded.memory.add_region(name_ptr, vec![0xcc; 32]);
         loaded.memory.add_region(vref_ptr, vec![0xcc; 2]);
         loaded.memory.add_region(dir_id_ptr, vec![0xcc; 4]);
-        loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
+        *loaded.default_dir_id = PPC_PREFERENCES_DIR_ID;
         loaded.cpu.gpr[3] = name_ptr;
         loaded.cpu.gpr[4] = vref_ptr;
         loaded.cpu.gpr[5] = dir_id_ptr;
