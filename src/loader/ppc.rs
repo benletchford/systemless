@@ -20997,14 +20997,30 @@ fn dispatch_supported_import(
             }
         }
         PpcImportDispatcherTarget::NewGWorld => {
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            ppc_synchronize_process_native_handles(
+                process_memory_manager,
+                handles,
+                handle_states,
+            );
             let result = ppc_new_gworld(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
                 free_handle_blocks,
+                handle_states,
                 ptrs,
                 free_ptr_blocks,
                 gworlds,
@@ -24457,12 +24473,14 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::DSpAltBufferNew => Some(PpcImportAction::Return(
             ppc_i16_result(ppc_dsp_alt_buffer_new(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
                 free_handle_blocks,
+                handle_states,
                 ptrs,
                 free_ptr_blocks,
                 gworlds,
@@ -52040,14 +52058,17 @@ fn ppc_color_table_clut_from_bytes(bytes: &[u8]) -> Option<PpcGWorldClut> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ppc_new_gworld(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
@@ -52193,32 +52214,21 @@ fn ppc_new_gworld(
     // reuses the requested GDevice record, not its mutable ColorTable handle;
     // snapshot that table so later screen palette changes do not reinterpret
     // pixels already rendered into the offscreen world.
+    let heap_cursor_before = *heap_cursor;
+    let native_manager_before = process_memory_manager.detached_clone();
     let ctable_handle = ctable_bytes
         .as_deref()
-        .map(|bytes| {
-            ppc_alloc_recyclable_handle_with_bytes(
-                memory,
-                heap_cursor,
-                heap_limit,
-                handles,
-                free_handle_blocks,
-                bytes,
-            )
-        })
+        .map(|bytes| process_memory_manager.copy_bytes_to_new_native_handle(memory, bytes))
         .unwrap_or(0);
     // Keep all nonrelocatable GWorld storage in one tracked pointer block so
     // DisposeGWorld can return a middle-of-heap allocation for later reuse.
     // Allocate it after the relocatable color table so an otherwise-current
     // world can still contract the bump heap when it is disposed.
-    let base_addr = ppc_alloc_ptr(
-        memory,
-        heap_cursor,
-        heap_limit,
-        ptrs,
-        free_ptr_blocks,
-        raw_allocation_size,
-        true,
-    );
+    let base_addr = if depth <= 8 && ctable_handle == 0 {
+        0
+    } else {
+        process_memory_manager.new_native_ptr(memory, raw_allocation_size, true)
+    };
     let pixmap = base_addr.saturating_add(ppc_allocation_size(pixel_allocation_size).unwrap_or(0));
     let pixmap_handle = pixmap.saturating_add(ppc_allocation_size(PPC_PIXMAP_SIZE).unwrap_or(0));
     let port = pixmap_handle.saturating_add(ppc_allocation_size(4).unwrap_or(0));
@@ -52228,18 +52238,14 @@ fn ppc_new_gworld(
         || (depth <= 8 && ctable_handle == 0)
         || port == 0
     {
+        if ctable_handle != 0 {
+            let _ = memory.write_u32_be(ctable_handle, 0);
+        }
+        process_memory_manager.restore_native_snapshot(native_manager_before);
+        process_memory_manager.set_native_mem_error(PPC_MEM_FULL_ERR);
+        *heap_cursor = heap_cursor_before;
+        ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = PPC_MEM_FULL_ERR;
-        if let Some(index) = ptrs.iter().position(|record| record.ptr == base_addr) {
-            free_ptr_blocks.push(ptrs.remove(index));
-        }
-        if let Some(index) = handles
-            .iter()
-            .position(|record| record.handle == ctable_handle && ctable_handle != 0)
-        {
-            let record = handles.remove(index);
-            let _ = memory.write_u32_be(record.handle, 0);
-            free_handle_blocks.push(record);
-        }
         return PPC_MEM_FULL_ERR;
     }
 
@@ -52252,10 +52258,35 @@ fn ppc_new_gworld(
         || ppc_write_gworld_port(memory, port, pixmap_handle, top, left, bottom, right).is_none()
         || memory.write_u32_be(gworld_out_ptr, port).is_none()
     {
+        if ctable_handle != 0 {
+            let _ = memory.write_u32_be(ctable_handle, 0);
+        }
+        process_memory_manager.restore_native_snapshot(native_manager_before);
+        process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+        *heap_cursor = heap_cursor_before;
+        ppc_update_zone_free_bytes(memory, heap_cursor_before, heap_limit);
         *last_mem_error = PPC_PARAM_ERR;
         return PPC_PARAM_ERR;
     }
 
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    if ctable_handle != 0 {
+        ppc_apply_process_native_handle(
+            process_memory_manager,
+            handles,
+            handle_states,
+            ctable_handle,
+        );
+    }
+    process_memory_manager.set_native_mem_error(PPC_NO_ERR);
     *last_mem_error = PPC_NO_ERR;
     gworlds.push(PpcGWorldRecord {
         port,
@@ -52283,7 +52314,10 @@ fn ppc_new_gworld(
             pixel_capacity: ppc_allocation_size(pixel_allocation_size)
                 .unwrap_or(pixel_allocation_size),
             ctable_handle,
-            allocation_end: base_addr.saturating_add(raw_allocation_size),
+            allocation_end: base_addr
+                .checked_add(ppc_allocation_size(raw_allocation_size).unwrap_or(0))
+                .filter(|end| *end == *heap_cursor)
+                .unwrap_or(0),
         },
     );
     if ppc_gworld_trace_enabled() {
@@ -57564,12 +57598,14 @@ fn ppc_dsp_context_global_to_local(cpu: &PpcCpu, memory: &mut PpcSectionMem) -> 
 #[allow(clippy::too_many_arguments)]
 fn ppc_dsp_alt_buffer_new(
     cpu: &PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
     ptrs: &mut Vec<PpcPtrRecord>,
     free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
@@ -57619,14 +57655,26 @@ fn ppc_dsp_alt_buffer_new(
     world_cpu.gpr[6] = 0;
     world_cpu.gpr[7] = current_gdevice;
     world_cpu.gpr[8] = 0;
+    ppc_synchronize_process_native_allocator(
+        process_memory_manager,
+        *heap_cursor,
+        heap_limit,
+        *last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_synchronize_process_native_handles(process_memory_manager, handles, handle_states);
     ppc_new_gworld(
         &mut world_cpu,
+        process_memory_manager,
         memory,
         heap_cursor,
         heap_limit,
         last_mem_error,
         handles,
         free_handle_blocks,
+        handle_states,
         ptrs,
         free_ptr_blocks,
         gworlds,
@@ -134026,6 +134074,86 @@ pub(crate) mod tests {
         assert_eq!(
             loaded.memory.read_u32_be(remapped.pixmap + 42),
             Some(private_handle)
+        );
+    }
+
+    #[test]
+    fn new_gworld_allocations_are_immediately_process_owned_and_cross_isa_visible() {
+        let pef = synthetic_pef_with_import(b"NewGWorld");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        let scratch = PPC_DATA_BASE + 0x1000;
+        let bounds_ptr = scratch;
+        let gworld_out_ptr = scratch + 8;
+        native.memory.add_region(scratch, vec![0; 16]);
+        ppc_write_rect(&mut native.memory, bounds_ptr, 0, 0, 4, 4).unwrap();
+        native.cpu.gpr[3] = gworld_out_ptr;
+        native.cpu.gpr[4] = 8;
+        native.cpu.gpr[5] = bounds_ptr;
+        native.cpu.gpr[6] = 0;
+        native.cpu.gpr[7] = 0;
+        native.cpu.gpr[8] = 0;
+
+        run_test_import(&mut native, PpcImportDispatcherTarget::NewGWorld);
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        let port = native.memory.read_u32_be(gworld_out_ptr).unwrap();
+        let world = *native
+            .gworlds
+            .iter()
+            .find(|world| world.port == port)
+            .unwrap();
+        let ctable_handle = native.memory.read_u32_be(world.pixmap + 42).unwrap();
+        let ctable = context
+            .memory_manager_mut()
+            .native_allocation(ctable_handle)
+            .unwrap();
+        let allocator = context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap();
+        assert!(allocator
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == world.base_addr));
+        assert_eq!(
+            context.memory_manager_mut().recover_handle(ctable.ptr),
+            Some(ctable_handle)
+        );
+        assert!(!detached
+            .native_allocator()
+            .unwrap()
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == world.base_addr));
+        assert_eq!(detached.native_allocation(ctable_handle), None);
+
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        classic_bus.write_byte(world.base_addr, 0xa5);
+        assert_eq!(native.memory.read_u8(world.base_addr), Some(0xa5));
+        native.memory.write_u8(world.base_addr + 1, 0x5a).unwrap();
+        assert_eq!(classic_bus.read_byte(world.base_addr + 1), 0x5a);
+
+        native.cpu.gpr[3] = port;
+        run_test_import(&mut native, PpcImportDispatcherTarget::DisposeGWorld);
+        let allocator = context
+            .memory_manager_mut()
+            .native_allocator_snapshot()
+            .unwrap();
+        assert!(!allocator
+            .ptrs
+            .iter()
+            .any(|record| record.ptr == world.base_addr));
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .native_allocation(ctable_handle),
+            None
         );
     }
 
