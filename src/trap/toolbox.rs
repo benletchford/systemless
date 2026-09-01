@@ -5256,8 +5256,8 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
-                        self.mouse_pos.0,
-                        self.mouse_pos.1,
+                        self.input_state.mouse_pos.0,
+                        self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
                     );
                     bus.write_word(sp + 6, 0);
@@ -5288,7 +5288,7 @@ impl super::TrapDispatcher {
                 // the host dispatcher's last injected position.
                 let global_v = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2) as i16;
                 let global_h = bus.read_word(crate::memory::globals::addr::MOUSE_LOC2 + 2) as i16;
-                self.mouse_pos = (global_v, global_h);
+                self.input_state.mouse_pos = (global_v, global_h);
 
                 let a5 = cpu.read_reg(Register::A5);
                 let global_ptr = bus.read_long(a5);
@@ -5331,7 +5331,7 @@ impl super::TrapDispatcher {
             (true, 0x173) => {
                 let sp = cpu.read_reg(Register::A7);
                 let has_mouse_up_event = self.event_queue.iter().any(|e| e.what == 2);
-                let result = self.mouse_button && !has_mouse_up_event;
+                let result = self.input_state.mouse_button && !has_mouse_up_event;
                 if result {
                     self.debug_still_down_true_count =
                         self.debug_still_down_true_count.saturating_add(1);
@@ -5343,7 +5343,7 @@ impl super::TrapDispatcher {
                     let pc = cpu.read_reg(Register::PC);
                     eprintln!(
                         "[INPUT] StillDown -> false (mouse_button={} has_mouse_up_event={}) PC=${:08X}",
-                        self.mouse_button, has_mouse_up_event, pc
+                        self.input_state.mouse_button, has_mouse_up_event, pc
                     );
                 }
                 bus.write_word(sp, if result { 0xFFFF } else { 0 });
@@ -5363,7 +5363,7 @@ impl super::TrapDispatcher {
                 let trap_pc = cpu.read_reg(Register::PC).wrapping_sub(2);
                 let mb_state = bus.read_byte(0x0172);
                 let queued_mouse_down = self.event_queue.iter().any(|event| event.what == 1);
-                let mut pressed = mb_state == 0x00 || self.mouse_button;
+                let mut pressed = mb_state == 0x00 || self.input_state.mouse_button;
                 // Diagnostic: force pressed=true at a specific PC via
                 // SYSTEMLESS_FORCE_BUTTON_TRUE_AT_PC=0xADDR.
                 if let Some(target) = force_button_true_at_pc() {
@@ -5378,7 +5378,7 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] Button pc=${:08X} -> {} (MBState=${:02X} mouse_button={} queued_mouse_down={})",
-                        trap_pc, pressed, mb_state, self.mouse_button, queued_mouse_down
+                        trap_pc, pressed, mb_state, self.input_state.mouse_button, queued_mouse_down
                     );
                 }
                 if pressed {
@@ -10203,22 +10203,22 @@ impl super::TrapDispatcher {
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] GetKeys tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.tick_count, trap_pc, keys_ptr, self.key_map
+                        self.tick_count, trap_pc, keys_ptr, self.input_state.key_map
                     );
                 }
-                if trace_getkeys_nonzero_enabled() && self.key_map.iter().any(|&byte| byte != 0) {
+                if trace_getkeys_nonzero_enabled() && self.input_state.key_map.iter().any(|&byte| byte != 0) {
                     eprintln!(
                         "[INPUT] GetKeys nonzero tick={} pc=${:08X} ptr=${:08X} key_map={:02X?}",
-                        self.tick_count, trap_pc, keys_ptr, self.key_map
+                        self.tick_count, trap_pc, keys_ptr, self.input_state.key_map
                     );
                 }
-                if self.key_map.iter().any(|&byte| byte != 0) {
+                if self.input_state.key_map.iter().any(|&byte| byte != 0) {
                     self.debug_getkeys_nonzero_count =
                         self.debug_getkeys_nonzero_count.saturating_add(1);
-                    self.debug_last_getkeys_nonzero_key_map = self.key_map;
+                    self.debug_last_getkeys_nonzero_key_map = self.input_state.key_map;
                 }
                 if keys_ptr != 0 {
-                    bus.write_bytes(keys_ptr, &self.key_map);
+                    bus.write_bytes(keys_ptr, &self.input_state.key_map);
                 }
                 cpu.write_reg(Register::A7, sp + 4);
                 Ok(())
@@ -10234,7 +10234,7 @@ impl super::TrapDispatcher {
             (true, 0x177) => {
                 let sp = cpu.read_reg(Register::A7);
                 // Same logic as StillDown: button down and no pending mouseUp.
-                let still_down = if self.mouse_button {
+                let still_down = if self.input_state.mouse_button {
                     !self.event_queue.iter().any(|e| e.what == 2)
                 } else {
                     false
@@ -10243,13 +10243,13 @@ impl super::TrapDispatcher {
                     // Remove the first mouseUp event from the queue (if any)
                     if let Some(idx) = self.event_queue.iter().position(|e| e.what == 2) {
                         self.event_queue.remove(idx);
-                        self.mouse_button = false;
+                        self.input_state.mouse_button = false;
                     }
                 }
                 if super::dispatch::trace_input_enabled() {
                     eprintln!(
                         "[INPUT] WaitMouseUp -> {} (mouse_button={})",
-                        still_down, self.mouse_button
+                        still_down, self.input_state.mouse_button
                     );
                 }
                 if still_down {
@@ -18233,7 +18233,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_outside_returns_mouse_moved_os_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
-        disp.mouse_pos = (50, 25);
+        disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -18261,7 +18261,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_inside_takes_null_sleep_path() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
-        disp.mouse_pos = (20, 25);
+        disp.input_state.mouse_pos = (20, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -18285,7 +18285,7 @@ mod tests {
     fn wait_next_event_empty_mouse_rgn_suppresses_mouse_moved_event() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
-        disp.mouse_pos = (50, 25);
+        disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let empty_mouse_rgn = test_region_handle(&mut bus, 0, 0, 0, 0);
@@ -18309,7 +18309,7 @@ mod tests {
     fn wait_next_event_mouse_rgn_respects_event_mask() {
         let (mut disp, mut cpu, mut bus) = setup();
         disp.sent_open_app_event = true;
-        disp.mouse_pos = (50, 25);
+        disp.input_state.mouse_pos = (50, 25);
         let sp = TEST_SP;
         let event_ptr = 0x200000u32;
         let mouse_rgn = test_region_handle(&mut bus, 10, 20, 30, 40);
@@ -18630,7 +18630,7 @@ mod tests {
         let pt_ptr = 0x200000u32;
         bus.write_long(sp, pt_ptr);
 
-        disp.mouse_pos = (50, 100);
+        disp.input_state.mouse_pos = (50, 100);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 50);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
@@ -18658,7 +18658,7 @@ mod tests {
         bus.write_word(port + 10, (-120i16) as u16);
         bus.write_word(port + 16, 0);
         bus.write_word(port + 18, 0);
-        disp.mouse_pos = (95, 145);
+        disp.input_state.mouse_pos = (95, 145);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 95);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 145);
 
@@ -18682,7 +18682,7 @@ mod tests {
         bus.write_word(port + 10, (-10i16) as u16);
         bus.write_word(port + 16, 80);
         bus.write_word(port + 18, 90);
-        disp.mouse_pos = (100, 100);
+        disp.input_state.mouse_pos = (100, 100);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 100);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 100);
 
@@ -18714,7 +18714,7 @@ mod tests {
         // BasiliskII's ROM GetMouse reads Mouse ($0830) and converts that
         // global point through the current GrafPort. Inside Macintosh
         // Volume I, I-259; Volume II, Appendix A, p. A-10.
-        disp.mouse_pos = (404, 526);
+        disp.input_state.mouse_pos = (404, 526);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2, 300);
         bus.write_word(crate::memory::globals::addr::MOUSE_LOC2 + 2, 400);
         bus.write_word(port + 8, (-80i16) as u16);
@@ -18733,7 +18733,7 @@ mod tests {
             "GetMouse must honor a guest-updated Mouse global before converting to local coordinates"
         );
         assert_eq!(
-            disp.mouse_pos,
+            disp.input_state.mouse_pos,
             (300, 400),
             "GetMouse must synchronize the dispatcher with the guest-updated Mouse global"
         );
@@ -18747,7 +18747,7 @@ mod tests {
         let sp = TEST_SP;
         bus.write_word(sp, 0x0000);
 
-        disp.mouse_button = true;
+        disp.input_state.mouse_button = true;
 
         let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -18802,7 +18802,7 @@ mod tests {
         let sp = TEST_SP;
         bus.write_word(sp, 0xFFFF);
 
-        disp.mouse_button = false;
+        disp.input_state.mouse_button = false;
 
         let result = disp.dispatch_toolbox(true, 0x173, &mut cpu, &mut bus);
         assert!(result.is_some());
@@ -18944,7 +18944,7 @@ mod tests {
 
         // Internal state is released, but $0172 is still "pressed"
         // (runner hasn't advanced a tick yet).
-        assert!(!disp.mouse_button);
+        assert!(!disp.input_state.mouse_button);
         bus.write_word(sp, 0);
         let result = disp.dispatch_toolbox(true, 0x174, &mut cpu, &mut bus);
         assert!(result.unwrap().is_ok());

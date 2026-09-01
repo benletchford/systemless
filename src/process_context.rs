@@ -567,6 +567,34 @@ pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
+pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessKeyRepeatState {
+    pub(crate) key_code: u8,
+    pub(crate) char_code: u8,
+    pub(crate) next_tick: u32,
+}
+
+/// Canonical mouse and keyboard device state for one Macintosh process.
+///
+/// Event Manager calls, direct low-memory polling, and either ISA observe the
+/// same mouse position, button state, and 128-key map. Inside Macintosh Volume
+/// I (1985), pp. I-259--I-263 and I-273--I-275.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProcessInputState {
+    pub(crate) mouse_pos: (i16, i16),
+    pub(crate) mouse_button: bool,
+    pub(crate) key_map: [u8; 16],
+    pub(crate) caps_lock_physically_pressed: bool,
+    pub(crate) key_repeat: Option<ProcessKeyRepeatState>,
+}
+
+impl ProcessInputState {
+    pub(crate) fn is_pristine(&self) -> bool {
+        self == &Self::default()
+    }
+}
 
 /// Canonical QuickDraw cursor state for one Macintosh process.
 ///
@@ -3412,6 +3440,7 @@ pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
     memory_manager: SharedProcessMemoryManager,
     event_queue: SharedProcessEventQueue,
+    input_state: SharedProcessInputState,
     menu_tracking: SharedProcessMenuTracking,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
@@ -3471,6 +3500,10 @@ impl ProcessContext {
         // EventAvail observes it in place. Inside Macintosh Volume I (1985),
         // pp. I-244--I-245 and I-257--I-259; Processes (1994), pp. 2-15--2-16.
         adapter.attach_to(&self.event_queue, EventQueue::is_pristine);
+    }
+
+    pub(crate) fn attach_input_state(&self, adapter: &mut SharedProcessInputState) {
+        adapter.attach_to(&self.input_state, ProcessInputState::is_pristine);
     }
 
     pub(crate) fn attach_menu_tracking(&self, adapter: &mut SharedProcessMenuTracking) {
@@ -4975,6 +5008,39 @@ mod tests {
         assert_eq!(detached.len(), 1);
         assert_eq!(detached.front().unwrap().message, 0x1111);
         assert!(!detached.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_input_states_share_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessInputState::default();
+        classic.mouse_pos = (12, 34);
+        classic.key_map[2] = 0x40;
+        let mut native = SharedProcessInputState::default();
+
+        context.attach_input_state(&mut classic);
+        context.attach_input_state(&mut native);
+        let detached = native.clone();
+
+        native.mouse_button = true;
+        native.mouse_pos = (56, 78);
+        native.caps_lock_physically_pressed = true;
+        native.key_repeat = Some(ProcessKeyRepeatState {
+            key_code: 0x24,
+            char_code: b'\r',
+            next_tick: 90,
+        });
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(classic.mouse_pos, (56, 78));
+        assert!(classic.mouse_button);
+        assert_eq!(classic.key_map[2], 0x40);
+        assert!(classic.caps_lock_physically_pressed);
+        assert_eq!(classic.key_repeat.unwrap().next_tick, 90);
+        assert_eq!(detached.mouse_pos, (12, 34));
+        assert!(!detached.mouse_button);
+        assert!(!detached.caps_lock_physically_pressed);
+        assert!(detached.key_repeat.is_none());
     }
 
     #[test]

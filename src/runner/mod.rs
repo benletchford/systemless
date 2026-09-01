@@ -1822,7 +1822,7 @@ impl FixtureRunner {
             cursor_mask_nonzero_bytes,
             cursor_hotspot,
             cursor_position: dispatcher.mouse_position(),
-            mouse_button: dispatcher.mouse_button,
+            mouse_button: dispatcher.input_state.mouse_button,
             fullscreen_locked: dispatcher.fullscreen_locked,
             mbar_height: self.bus.read_word(addr::MBAR_HEIGHT),
             screen_width,
@@ -2508,10 +2508,10 @@ impl FixtureRunner {
     }
 
     /// Write the three mouse-position low-memory globals (MTemp $0828,
-    /// RawMouse $082C, Mouse $0830) from `self.dispatcher.mouse_pos`.
+    /// RawMouse $082C, Mouse $0830) from the process input state.
     /// Inside Macintosh Volume I, I-258.
     fn sync_mouse_position_lowmem(&mut self) {
-        let (v, h) = self.dispatcher.mouse_pos;
+        let (v, h) = self.dispatcher.input_state.mouse_pos;
         self.bus.write_word(0x0828, v as u16);
         self.bus.write_word(0x082A, h as u16);
         self.bus.write_word(0x082C, v as u16);
@@ -2526,7 +2526,7 @@ impl FixtureRunner {
     /// MTemp ($0828), RawMouse ($082C), Mouse ($0830): current position
     /// Inside Macintosh Volume I, I-258; Inside Macintosh Volume II, II-371
     fn sync_mouse_lowmem(&mut self) {
-        let mb_state: u8 = if self.dispatcher.mouse_button {
+        let mb_state: u8 = if self.dispatcher.input_state.mouse_button {
             0x00
         } else {
             0x80
@@ -3026,8 +3026,8 @@ impl FixtureRunner {
         let launch_tick = self.guest_tick();
         let launch_time = self.bus.read_long(addr::TIME);
         let launch_rnd_seed = self.bus.read_long(addr::RND_SEED);
-        let mouse_pos = self.dispatcher.mouse_pos;
-        let mouse_button = self.dispatcher.mouse_button;
+        let mouse_pos = self.dispatcher.input_state.mouse_pos;
+        let mouse_button = self.dispatcher.input_state.mouse_button;
         let output_dir = self.dispatcher.output_dir.clone();
         let vfs = self.dispatcher.vfs.clone();
         let vfs_rsrc = self.dispatcher.vfs_rsrc.clone();
@@ -3094,8 +3094,8 @@ impl FixtureRunner {
         if let Some(ppc_app) = replacement.ppc_app.as_mut() {
             ppc_app.set_tick_count(launch_tick);
         }
-        replacement.dispatcher.mouse_pos = mouse_pos;
-        replacement.dispatcher.mouse_button = mouse_button;
+        replacement.dispatcher.input_state.mouse_pos = mouse_pos;
+        replacement.dispatcher.input_state.mouse_button = mouse_button;
         replacement
             .bus
             .write_byte(addr::MB_STATE, if mouse_button { 0x00 } else { 0x80 });
@@ -4266,7 +4266,7 @@ impl FixtureRunner {
             self.dispatcher.tick_count == sleep.tick && self.bus.read_long(0x016A) == sleep.tick;
         let host_unchanged = sleep.host == IdleCycleHostSnapshot::capture(&self.dispatcher);
         let can_observe_events = self.active_interrupt_callback.is_none()
-            && self.dispatcher.key_repeat.is_none()
+            && self.dispatcher.input_state.key_repeat.is_none()
             && self.dispatcher.pending_launch_app.is_none()
             && !self.dispatcher.system_task_has_periodic_work();
         let event_stream_empty = can_observe_events
@@ -5763,13 +5763,11 @@ impl FixtureRunner {
         }
 
         self.dispatcher.instruction_count = self.total_instructions;
-        let input = self.ppc_input_snapshot();
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return (0, !self.halted);
         };
 
         ppc_app.toolbox_startup.host_menu_bar_hidden = self.dispatcher.menu_bar_hidden;
-        ppc_app.set_input_snapshot(input);
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let cycles_per_tick = self.instructions_per_tick.max(1);
         let remaining_cycles =
@@ -6941,10 +6939,10 @@ impl FixtureRunner {
 
     fn ppc_input_snapshot(&self) -> PpcInputSnapshot {
         PpcInputSnapshot {
-            key_map: self.dispatcher.key_map,
-            mouse_button: self.dispatcher.mouse_button,
-            mouse_v: self.dispatcher.mouse_pos.0,
-            mouse_h: self.dispatcher.mouse_pos.1,
+            key_map: self.dispatcher.input_state.key_map,
+            mouse_button: self.dispatcher.input_state.mouse_button,
+            mouse_v: self.dispatcher.input_state.mouse_pos.0,
+            mouse_h: self.dispatcher.input_state.mouse_pos.1,
         }
     }
 
@@ -8483,7 +8481,7 @@ impl FixtureRunner {
                 .with_process_state(|d| {
                     d.has_unmatched_queued_mouse_down()
                 });
-        let pressed = self.dispatcher.mouse_button || has_pending_unmatched_down;
+        let pressed = self.dispatcher.input_state.mouse_button || has_pending_unmatched_down;
         let mb_state: u8 = if pressed { 0x00 } else { 0x80 };
         self.bus.write_byte(0x0172, mb_state);
         if input_tick_trace_enabled() {
@@ -12407,7 +12405,7 @@ mod tests {
             .memory
             .read_bytes_into(addr::KEY_MAP_LM, &mut host_key_map)
             .unwrap();
-        assert_eq!(host_key_map, runner.dispatcher.key_map);
+        assert_eq!(host_key_map, runner.dispatcher.input_state.key_map);
         assert_eq!(ppc_app.memory.read_u8(addr::MB_STATE), Some(0));
         for point_addr in [addr::M_TEMP, addr::MOUSE_LOC, addr::MOUSE_LOC2] {
             assert_eq!(ppc_app.memory.read_u16_be(point_addr), Some((-7i16) as u16));
@@ -13557,6 +13555,7 @@ mod tests {
             imports: Vec::new(),
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -15782,6 +15781,7 @@ mod tests {
             imports: Vec::new(),
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -16687,6 +16687,7 @@ mod tests {
             }],
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -16837,6 +16838,7 @@ mod tests {
             }],
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -17235,6 +17237,7 @@ mod tests {
             imports: Vec::new(),
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -17544,6 +17547,7 @@ mod tests {
             imports: Vec::new(),
             section_bases: Vec::new(),
             input: PpcInputSnapshot::default(),
+            process_input: Default::default(),
             event_queue: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
@@ -22256,8 +22260,8 @@ mod tests {
         runner.bus.write_word(ctrl_ptr + 20, 0);
         runner.bus.write_word(ctrl_ptr + 22, 100);
         runner.dispatcher.control_proc_ids.insert(ctrl_ptr, 16);
-        runner.dispatcher.mouse_button = true;
-        runner.dispatcher.mouse_pos = (210, 248);
+        runner.dispatcher.input_state.mouse_button = true;
+        runner.dispatcher.input_state.mouse_pos = (210, 248);
 
         runner.bus.write_long(sp, action_proc);
         runner.bus.write_word(sp + 4, 210);
@@ -24384,7 +24388,7 @@ mod tests {
 
         runner.set_mouse_position(123, 456);
 
-        assert_eq!(runner.dispatcher.mouse_pos, (123, 456));
+        assert_eq!(runner.dispatcher.input_state.mouse_pos, (123, 456));
         for off in [0x0828u32, 0x082C, 0x0830] {
             assert_eq!(runner.bus.read_word(off), 123u16, "v at ${:04X}", off);
             assert_eq!(runner.bus.read_word(off + 2), 456u16, "h at ${:04X}", off);

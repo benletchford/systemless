@@ -336,7 +336,7 @@ impl super::TrapDispatcher {
     }
 
     fn current_mouse_local_point(&self, bus: &MacMemoryBus) -> (i16, i16) {
-        let (v, h) = self.mouse_pos;
+        let (v, h) = self.input_state.mouse_pos;
         if self.current_port == 0 {
             return (v, h);
         }
@@ -1572,7 +1572,7 @@ impl super::TrapDispatcher {
         // the initiating mouseDown remains queued, avoiding a zero-initialized
         // MBState falsely retaining synthetic/test calls forever.
         // Inside Macintosh Volume II (1985), p. II-371.
-        self.mouse_button
+        self.input_state.mouse_button
             || (bus.read_byte(crate::memory::globals::addr::MB_STATE) == 0x00
                 && self.has_unmatched_queued_mouse_down())
     }
@@ -1583,7 +1583,7 @@ impl super::TrapDispatcher {
         if (v, h) != (0, 0) {
             (v, h)
         } else {
-            self.mouse_pos
+            self.input_state.mouse_pos
         }
     }
 

@@ -252,7 +252,7 @@ impl super::TrapDispatcher {
         }
 
         if Self::region_bbox(bus, mouse_rgn).is_none()
-            || Self::region_contains_point(bus, mouse_rgn, self.mouse_pos.0, self.mouse_pos.1)
+            || Self::region_contains_point(bus, mouse_rgn, self.input_state.mouse_pos.0, self.input_state.mouse_pos.1)
         {
             return None;
         }
@@ -260,8 +260,8 @@ impl super::TrapDispatcher {
         Some(super::dispatch::QueuedEvent {
             what: Self::OS_EVENT,
             message: Self::MOUSE_MOVED_MESSAGE,
-            where_v: self.mouse_pos.0,
-            where_h: self.mouse_pos.1,
+            where_v: self.input_state.mouse_pos.0,
+            where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
         })
     }
@@ -288,8 +288,8 @@ impl super::TrapDispatcher {
         super::dispatch::QueuedEvent {
             what,
             message,
-            where_v: self.mouse_pos.0,
-            where_h: self.mouse_pos.1,
+            where_v: self.input_state.mouse_pos.0,
+            where_h: self.input_state.mouse_pos.1,
             modifiers: self.current_event_modifiers(),
         }
     }
@@ -414,18 +414,18 @@ impl super::TrapDispatcher {
         if !Self::posted_event_is_enabled(system_event_mask, Self::AUTO_KEY_EVENT) {
             return;
         }
-        let Some(repeat) = self.key_repeat else {
+        let Some(repeat) = self.input_state.key_repeat else {
             return;
         };
         if !Self::key_generates_auto_key(repeat.key_code) || !self.key_is_down(repeat.key_code) {
-            self.key_repeat = None;
+            self.input_state.key_repeat = None;
             return;
         }
         if !Self::tick_has_reached(self.tick_count, repeat.next_tick) {
             return;
         }
 
-        if let Some(state) = self.key_repeat.as_mut() {
+        if let Some(state) = self.input_state.key_repeat.as_mut() {
             state.next_tick = self.tick_count.wrapping_add(Self::AUTO_KEY_RATE_TICKS);
         }
 
@@ -434,8 +434,8 @@ impl super::TrapDispatcher {
         self.event_queue.push_back(super::dispatch::QueuedEvent {
             what: Self::AUTO_KEY_EVENT,
             message,
-            where_v: self.mouse_pos.0,
-            where_h: self.mouse_pos.1,
+            where_v: self.input_state.mouse_pos.0,
+            where_h: self.input_state.mouse_pos.1,
             modifiers,
         });
     }
@@ -645,8 +645,8 @@ impl super::TrapDispatcher {
                 return (
                     0,
                     0,
-                    self.mouse_pos.0,
-                    self.mouse_pos.1,
+                    self.input_state.mouse_pos.0,
+                    self.input_state.mouse_pos.1,
                     self.current_event_modifiers(),
                     false,
                 );
@@ -660,7 +660,7 @@ impl super::TrapDispatcher {
                 );
             }
             if event.what == 2 {
-                self.mouse_button = false;
+                self.input_state.mouse_button = false;
             }
             self.begin_app_owned_modal_dialog_button_tracking(bus, &event);
             if matches!(event.what, 3 | 4 | 5) {
@@ -706,8 +706,8 @@ impl super::TrapDispatcher {
         (
             0,
             0,
-            self.mouse_pos.0,
-            self.mouse_pos.1,
+            self.input_state.mouse_pos.0,
+            self.input_state.mouse_pos.1,
             self.current_event_modifiers(),
             false,
         )
@@ -750,12 +750,12 @@ impl super::TrapDispatcher {
 
         // Update low-memory mouse globals
         // Reference: Executor docs/globals.cpp — MTemp=$0828, MouseLocation=$082C, MouseLocation2=$0830
-        let mb_state: u8 = if self.mouse_button { 0x00 } else { 0x80 };
+        let mb_state: u8 = if self.input_state.mouse_button { 0x00 } else { 0x80 };
         bus.write_byte(0x0172, mb_state);
         // MTemp, MouseLocation, MouseLocation2 are 12 contiguous bytes at $0828
         // (3 × Point = 3 × (i16 v, i16 h)). Single packed write.
-        let v = self.mouse_pos.0 as u16;
-        let h = self.mouse_pos.1 as u16;
+        let v = self.input_state.mouse_pos.0 as u16;
+        let h = self.input_state.mouse_pos.1 as u16;
         let mouse_globals: [u8; 12] = [
             (v >> 8) as u8,
             v as u8,
@@ -812,7 +812,7 @@ impl super::TrapDispatcher {
             // push_mouse_up() already updates the physical state immediately,
             // but keeping this assignment is harmless and mirrors event delivery.
             if ev.what == 2 {
-                self.mouse_button = false;
+                self.input_state.mouse_button = false;
             }
 
             (
@@ -827,8 +827,8 @@ impl super::TrapDispatcher {
             (
                 0,
                 0,
-                self.mouse_pos.0,
-                self.mouse_pos.1,
+                self.input_state.mouse_pos.0,
+                self.input_state.mouse_pos.1,
                 self.current_event_modifiers(),
                 false,
             )
@@ -1251,8 +1251,8 @@ impl super::TrapDispatcher {
                         event_ptr,
                         0,
                         0,
-                        self.mouse_pos.0,
-                        self.mouse_pos.1,
+                        self.input_state.mouse_pos.0,
+                        self.input_state.mouse_pos.1,
                         self.current_event_modifiers(),
                     );
                     cpu.write_reg(Register::D0, 0xFFFF);
@@ -1546,13 +1546,13 @@ mod tests {
         disp.sent_open_app_event = true;
 
         disp.push_key_down(0x30, 9); // Tab
-        let first_repeat_tick = disp.key_repeat.expect("Tab should arm autoKey").next_tick;
+        let first_repeat_tick = disp.input_state.key_repeat.expect("Tab should arm autoKey").next_tick;
         disp.tick_count = disp.tick_count.wrapping_add(5);
         disp.push_key_down(0x30, 9); // host repeat while still held
 
         assert_eq!(disp.event_queue.len(), 1, "only one keyDown may be queued");
         assert_eq!(
-            disp.key_repeat
+            disp.input_state.key_repeat
                 .expect("autoKey should remain armed")
                 .next_tick,
             first_repeat_tick,

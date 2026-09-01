@@ -6591,7 +6591,7 @@ mod redraw_chrome_tests {
         // Move mouse to the top of the screen — the very scenario
         // the task brief calls out. mouse_pos updates to (v=2, h=400)
         // which is well inside the would-be menu-bar band.
-        disp.mouse_pos = (2, 400);
+        disp.input_state.mouse_pos = (2, 400);
         bus.write_word(0x0828, 2u16); // MTemp.v
         bus.write_word(0x082A, 400u16); // MTemp.h
         bus.write_word(0x082C, 2u16); // RawMouse.v
