@@ -7941,28 +7941,15 @@ impl super::TrapDispatcher {
         old_ptr: u32,
         new_size: u32,
     ) -> u32 {
-        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
-        let aligned_old = (old_size + 3) & !3;
-        let aligned_new = (new_size + 3) & !3;
-        if aligned_new <= aligned_old {
-            // Fits in the existing aligned bucket; just retag the
-            // logical size. Mirrors the SetHandleSize fast path.
-            bus.set_alloc_size(old_ptr, new_size);
-            return old_ptr;
-        }
-        let new_ptr = bus.alloc(new_size);
-        if new_ptr == 0 {
+        let resized = {
+            let memory_manager = self.process_memory_manager();
+            let mut memory_manager = memory_manager.borrow_mut();
+            memory_manager.attach_classic_memory_bus(bus);
+            memory_manager.resize_process_resource_handle(bus, handle, old_ptr, new_size)
+        };
+        let Ok((old_ptr, new_ptr)) = resized else {
             return 0;
-        }
-        let copy_len = old_size.min(new_size) as usize;
-        if copy_len > 0 {
-            let bytes = bus.read_bytes(old_ptr, copy_len);
-            bus.write_bytes(new_ptr, &bytes);
-        }
-        bus.free(old_ptr);
-        bus.write_long(handle, new_ptr);
-        self.untrack_handle_ptr(old_ptr);
-        self.track_handle_ptr(new_ptr, handle);
+        };
         if let Some(entry) = self.loaded_handles.get_mut(&handle) {
             entry.0 = new_ptr;
         }
@@ -8720,7 +8707,9 @@ mod tests {
     use super::QUICKTIME_NUM_VERSION_6_0_FINAL;
     use crate::cpu::{CpuOps, Register};
     use crate::memory::globals::addr;
-    use crate::memory::MemoryBus;
+    use crate::memory::{GuestAddressSpace, MemoryBus};
+    use crate::process_context::{ProcessContext, ProcessNativeHeapState};
+    use ppc::PpcMemory;
     use std::collections::HashMap;
 
     use super::super::test_helpers::MockCpu;
@@ -9516,6 +9505,101 @@ mod tests {
             "GetResource should return the resized live handle, not a duplicate"
         );
         assert_eq!(bus.read_long(returned_handle), new_ptr);
+    }
+
+    #[test]
+    fn sethandlesize_resizes_native_resource_through_process_manager() {
+        const NATIVE_HEAP_BASE: u32 = 0x22_0000;
+        const NATIVE_HEAP_LIMIT: u32 = 0x30_0000;
+
+        let (mut disp, mut cpu, mut bus) = setup();
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        let shared = bus
+            .shared_ram_region(0, 4 * 1024 * 1024)
+            .expect("test RAM should be shareable");
+        let mut native = GuestAddressSpace::new();
+        context.attach_memory(0, shared, &mut native);
+        let foreign = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(foreign) };
+        disp.attach_process_context(&mut context);
+
+        let memory_manager = disp.process_memory_manager();
+        let handle = {
+            let mut memory_manager = memory_manager.borrow_mut();
+            memory_manager.publish_native_allocator(
+                ProcessNativeHeapState {
+                    heap_base: NATIVE_HEAP_BASE,
+                    heap_cursor: NATIVE_HEAP_BASE,
+                    heap_limit: NATIVE_HEAP_LIMIT,
+                    last_mem_error: 0,
+                    heap_maximized: false,
+                    master_pointer_blocks_requested: 0,
+                },
+                &[],
+                &[],
+                &[],
+            );
+            let handle = memory_manager
+                .new_native_resource_handle(&mut native, Some(&[1, 2, 3, 4]));
+            assert_ne!(handle, 0);
+            assert_ne!(memory_manager.new_native_ptr(&mut native, 32, true), 0);
+            handle
+        };
+        let original = memory_manager.borrow().native_allocation(handle).unwrap();
+        let detached = memory_manager.borrow().detached_clone();
+        disp.loaded_handles
+            .insert(handle, (original.ptr, *b"TEST", 77));
+
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 64);
+        let resize = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
+
+        assert!(resize.is_some(), "SetHandleSize should be handled");
+        assert!(resize.unwrap().is_ok(), "SetHandleSize should succeed");
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let resized = memory_manager.borrow().native_allocation(handle).unwrap();
+        assert_eq!(resized.size, 64);
+        assert_ne!(resized.ptr, original.ptr);
+        assert_eq!(native.read_u32_be(handle), Some(resized.ptr));
+        assert_eq!(
+            (0..4)
+                .map(|offset| native.read_u8(resized.ptr + offset).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(memory_manager.borrow().recover_handle(resized.ptr), Some(handle));
+        assert_eq!(memory_manager.borrow().recover_handle(original.ptr), None);
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(resized.ptr)
+        );
+
+        assert_eq!(
+            memory_manager
+                .borrow_mut()
+                .empty_process_handle(&mut bus, handle),
+            0
+        );
+        disp.empty_resource_handle_residency(handle);
+        assert_eq!(native.read_u32_be(handle), Some(0));
+        cpu.write_reg(Register::A0, handle);
+        cpu.write_reg(Register::D0, 16);
+        let refill = disp.dispatch_memory(false, 0x24, &mut cpu, &mut bus);
+        assert!(refill.is_some(), "SetHandleSize should refill an empty handle");
+        assert!(refill.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::D0), 0);
+        let refilled = memory_manager.borrow().native_allocation(handle).unwrap();
+        assert_eq!(refilled.size, 16);
+        assert_ne!(refilled.ptr, 0);
+        assert_eq!(native.read_u32_be(handle), Some(refilled.ptr));
+        assert_eq!(memory_manager.borrow().state_for_handle(handle), Some(0x60));
+        assert_eq!(
+            disp.loaded_handles.get(&handle).map(|entry| entry.0),
+            Some(refilled.ptr)
+        );
+        assert_eq!(detached.native_allocation(handle), Some(original));
+        assert_ne!(detached.native_allocation(handle), Some(refilled));
     }
 
     #[test]

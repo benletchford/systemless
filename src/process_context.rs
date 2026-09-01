@@ -735,6 +735,100 @@ impl ProcessMemoryManager {
         Self::NO_ERR
     }
 
+    /// Resize a Resource Manager handle through the allocator that owns it.
+    ///
+    /// Resource metadata remains the Resource Manager's responsibility, but
+    /// moving the relocatable block, updating the stable master pointer, and
+    /// changing the reverse pointer index form one process Memory Manager
+    /// transaction. This is especially important when 68K code resizes a
+    /// resource handle allocated by the native PowerPC heap. Inside
+    /// Macintosh: Memory (1992), pp. 2-40--2-41, and More Macintosh Toolbox
+    /// (1993), pp. 1-84--1-85.
+    pub(crate) fn resize_process_resource_handle(
+        &mut self,
+        bus: &mut MacMemoryBus,
+        handle: u32,
+        backing_ptr: u32,
+        new_size: u32,
+    ) -> Result<(u32, u32), i16> {
+        self.assert_classic_memory_bus_attached(bus);
+        if handle == 0 {
+            return Err(Self::NIL_HANDLE_ERR);
+        }
+
+        if let Some(record) = self.native_allocation(handle) {
+            if record.ptr == 0 {
+                if new_size == 0 {
+                    self.set_native_mem_error(Self::NO_ERR);
+                    return Ok((0, 0));
+                }
+                let Ok(len) = usize::try_from(new_size) else {
+                    self.set_native_mem_error(Self::MEM_FULL_ERR);
+                    return Err(Self::MEM_FULL_ERR);
+                };
+                return self.replace_native_handle_bytes_with_relocation(
+                    bus,
+                    handle,
+                    0,
+                    &vec![0; len],
+                    true,
+                );
+            }
+            if backing_ptr != 0 && backing_ptr != record.ptr {
+                self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+                return Err(Self::NIL_HANDLE_ERR);
+            }
+            let old_ptr = record.ptr;
+            let result = self.set_process_handle_size(bus, handle, new_size);
+            if result != Self::NO_ERR {
+                return Err(result);
+            }
+            let new_ptr = self
+                .native_allocation(handle)
+                .map(|record| record.ptr)
+                .ok_or(Self::NIL_HANDLE_ERR)?;
+            return Ok((old_ptr, new_ptr));
+        }
+
+        if bus.get_alloc_size(handle) != Some(4) {
+            return Err(Self::MEM_WZ_ERR);
+        }
+        let live_ptr = bus.read_long(handle);
+        let old_ptr = if live_ptr != 0 { live_ptr } else { backing_ptr };
+        if old_ptr == 0 && new_size == 0 {
+            return Ok((0, 0));
+        }
+        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
+        let old_capacity = MacMemoryBus::allocation_bucket_size(old_size);
+        let new_capacity = MacMemoryBus::allocation_bucket_size(new_size);
+        if old_ptr != 0 && new_capacity <= old_capacity {
+            if new_size < old_size {
+                bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
+            }
+            bus.set_alloc_size(old_ptr, new_size);
+            return Ok((old_ptr, old_ptr));
+        }
+
+        let new_ptr = bus.alloc(new_size);
+        if new_ptr == 0 && new_size > 0 {
+            return Err(Self::MEM_FULL_ERR);
+        }
+        let copy_len = old_size.min(new_size) as usize;
+        if copy_len > 0 {
+            let bytes = bus.read_bytes(old_ptr, copy_len);
+            bus.write_bytes(new_ptr, &bytes);
+        }
+        bus.free(old_ptr);
+        bus.write_long(handle, new_ptr);
+        if old_ptr != 0 {
+            self.ptr_to_handle.remove(&old_ptr);
+        }
+        if new_ptr != 0 {
+            self.ptr_to_handle.insert(new_ptr, handle);
+        }
+        Ok((old_ptr, new_ptr))
+    }
+
     /// Replace a native or classic relocatable block without changing its handle.
     ///
     /// The replacement has undefined contents and is left unlocked and
