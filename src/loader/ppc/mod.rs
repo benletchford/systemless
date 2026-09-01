@@ -3382,6 +3382,9 @@ pub struct PpcLoadedApp {
     pub color_manager_clut: SharedProcessValue<[[u16; 3]; 256]>,
     pub device_gamma: SharedProcessValue<crate::display::DisplayGamma>,
     pub device_gamma_explicit: SharedProcessValue<bool>,
+    /// Whether QuickDraw draw state is canonical in the attached process's
+    /// current CGrafPort record and must be reloaded at each import boundary.
+    pub(crate) process_quickdraw_port_state_attached: bool,
     pub quickdraw_fore_color: PpcRgbColor,
     pub(crate) quickdraw_fore_indices: HashMap<u32, u8>,
     pub quickdraw_back_color: PpcRgbColor,
@@ -3909,6 +3912,7 @@ impl PpcLoadedApp {
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.activate_quickdraw_selection(&mut self.current_gworld, &mut self.current_gdevice);
+        self.process_quickdraw_port_state_attached = true;
         context.attach_display_color_state(
             &mut self.screen_clut,
             &mut self.color_manager_clut,
@@ -7263,6 +7267,7 @@ impl PpcLoadedApp {
         let mut quickdraw_pen_v = self.quickdraw_pen_v;
         let mut quickdraw_text_mode = self.quickdraw_text_mode;
         let mut quickdraw_text_size = self.quickdraw_text_size;
+        let process_quickdraw_port_state_attached = self.process_quickdraw_port_state_attached;
         let mut cursor_state = std::mem::take(&mut self.cursor_state);
         let vfs_volumes = std::mem::take(&mut self.vfs_volumes);
         let mut vfs_directories = std::mem::take(&mut self.vfs_directories);
@@ -7641,6 +7646,18 @@ impl PpcLoadedApp {
                 let mut heap_cursor = native_heap.heap_cursor;
                 let mut heap_limit = native_heap.heap_limit;
                 let mut last_mem_error = native_heap.last_mem_error;
+                if process_quickdraw_port_state_attached {
+                    ppc_restore_process_port_draw_state(
+                        memory,
+                        *current_gworld,
+                        &mut quickdraw_fore_color,
+                        &mut quickdraw_back_color,
+                        &mut quickdraw_pen_h,
+                        &mut quickdraw_pen_v,
+                        &mut quickdraw_text_mode,
+                        &mut quickdraw_text_size,
+                    );
+                }
                 let action = if binding.dispatcher_target == PpcImportDispatcherTarget::GetKeys {
                     Some(dispatch_getkeys_import(
                         cpu,
@@ -12779,6 +12796,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         color_manager_clut: SharedProcessValue::from_value(color_manager_clut),
         device_gamma: SharedProcessValue::from_value(crate::display::default_display_gamma()),
         device_gamma_explicit: SharedProcessValue::from_value(false),
+        process_quickdraw_port_state_attached: false,
         quickdraw_fore_color: PPC_RGB_BLACK,
         quickdraw_fore_indices: HashMap::new(),
         quickdraw_back_color: PPC_RGB_WHITE,
@@ -57137,6 +57155,40 @@ fn ppc_restore_port_colors(
     }
 }
 
+fn ppc_restore_process_port_draw_state(
+    memory: &mut PpcSectionMem,
+    port: u32,
+    fore_color: &mut PpcRgbColor,
+    back_color: &mut PpcRgbColor,
+    pen_h: &mut i16,
+    pen_v: &mut i16,
+    text_mode: &mut i16,
+    text_size: &mut i16,
+) {
+    let Some((port_fore_color, port_back_color)) = ppc_port_rgb_colors(memory, port) else {
+        return;
+    };
+
+    // A graphics port is the complete drawing environment, and each port
+    // owns its pen, colors, and text settings. Reload the documented
+    // CGrafPort fields whenever attached execution crosses an HLE boundary so
+    // a preceding 68K callback is visible without an adapter-to-adapter copy.
+    // Inside Macintosh: Imaging With QuickDraw (1994), pp. 2-30--2-33,
+    // 4-8--4-10, and 4-48.
+    *fore_color = port_fore_color;
+    *back_color = port_back_color;
+    if let Some((h, v)) = ppc_gworld_pen(memory, port) {
+        *pen_h = h;
+        *pen_v = v;
+    }
+    if let Some(value) = memory.read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_MODE_OFFSET)) {
+        *text_mode = value as i16;
+    }
+    if let Some(value) = memory.read_u16_be(port.wrapping_add(PPC_CGRAF_PORT_TX_SIZE_OFFSET)) {
+        *text_size = value as i16;
+    }
+}
+
 fn ppc_rgb2hsl(memory: &mut PpcSectionMem, rgb_ptr: u32, hsl_ptr: u32) -> bool {
     // Inside Macintosh Volume VI (1991), pp. 19-10--19-11: RGBColor and
     // HSLColor both carry unsigned 16-bit components; hue is a fraction of a
@@ -83874,6 +83926,27 @@ pub(crate) mod tests {
         drain_test_m68k_guest_calls(loaded);
     }
 
+    fn initialize_test_cgraf_port(bus: &mut MacMemoryBus, port: u32) {
+        bus.write_word(port + 6, 0xc000);
+        for offset in [36, 38, 40] {
+            bus.write_word(port + offset, 0);
+        }
+        for offset in [42, 44, 46] {
+            bus.write_word(port + offset, u16::MAX);
+        }
+        bus.write_word(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET, 1);
+        bus.write_word(port + PPC_CGRAF_PORT_PN_SIZE_OFFSET + 2, 1);
+        bus.write_word(port + PPC_CGRAF_PORT_PN_MODE_OFFSET, PPC_QD_PEN_MODE_PAT_COPY as u16);
+        bus.write_word(
+            port + PPC_CGRAF_PORT_TX_MODE_OFFSET,
+            PPC_QD_TEXT_MODE_SRC_OR as u16,
+        );
+        bus.write_word(
+            port + PPC_CGRAF_PORT_TX_SIZE_OFFSET,
+            PPC_QD_TEXT_SIZE_SYSTEM as u16,
+        );
+    }
+
     fn run_test_import_with_process_memory_manager(
         loaded: &mut PpcLoadedApp,
         target: PpcImportDispatcherTarget,
@@ -89074,6 +89147,176 @@ pub(crate) mod tests {
         assert!(!native.current_gdevice.ptr_eq(&detached.current_gdevice));
         assert_eq!(*detached.current_gworld, PPC_MAIN_GWORLD);
         assert_eq!(*detached.current_gdevice, PPC_MAIN_GDEVICE);
+    }
+
+    #[test]
+    fn attached_quickdraw_port_draw_state_crosses_isa_immediately() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        let process_port = 0x0003_0000;
+        initialize_test_cgraf_port(&mut classic_bus, process_port);
+        *native.current_gworld = process_port;
+
+        let classic_color = 0x0002_8000;
+        classic_bus.write_word(classic_color, 0x1111);
+        classic_bus.write_word(classic_color + 2, 0x2222);
+        classic_bus.write_word(classic_color + 4, 0x3333);
+        classic_bus.write_word(TEST_SP, 23);
+        classic_bus.write_word(TEST_SP + 2, 17);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x093, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        classic_bus.write_word(TEST_SP, 2);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x089, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        classic_bus.write_word(TEST_SP, 18);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x08a, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        classic_bus.write_long(TEST_SP, classic_color);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x214, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+
+        let native_output = PPC_DATA_BASE + 0x2800;
+        native.memory.add_region(native_output, vec![0; 16]);
+        native.cpu.gpr[3] = native_output;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetPen);
+        assert_eq!(native.memory.read_u16_be(native_output), Some(23));
+        assert_eq!(native.memory.read_u16_be(native_output + 2), Some(17));
+        native.cpu.gpr[3] = native_output;
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetForeColor);
+        assert_eq!(
+            ppc_read_rgb_color(&mut native.memory, native_output),
+            Some(PpcRgbColor {
+                red: 0x1111,
+                green: 0x2222,
+                blue: 0x3333,
+            })
+        );
+        assert_eq!(native.quickdraw_text_mode, 2);
+        assert_eq!(native.quickdraw_text_size, 18);
+
+        native.cpu.gpr[3] = 41;
+        native.cpu.gpr[4] = 29;
+        run_test_import(&mut native, PpcImportDispatcherTarget::MoveTo);
+        let native_color = PpcRgbColor {
+            red: 0xaaaa,
+            green: 0xbbbb,
+            blue: 0xcccc,
+        };
+        ppc_write_rgb_color(&mut native.memory, native_output, native_color).unwrap();
+        native.cpu.gpr[3] = native_output;
+        run_test_import(&mut native, PpcImportDispatcherTarget::RGBForeColor);
+        native.cpu.gpr[3] = 4;
+        run_test_import(&mut native, PpcImportDispatcherTarget::TextMode);
+
+        let classic_output = 0x0002_8100;
+        classic_bus.write_long(TEST_SP, classic_output);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x09a, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(classic_output), 29);
+        assert_eq!(classic_bus.read_word(classic_output + 2), 41);
+        classic_bus.write_long(TEST_SP, classic_output);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x219, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(classic_output), native_color.red);
+        assert_eq!(classic_bus.read_word(classic_output + 2), native_color.green);
+        assert_eq!(classic_bus.read_word(classic_output + 4), native_color.blue);
+        assert_eq!(classic.tx_mode, 4);
+    }
+
+    #[test]
+    fn attached_quickdraw_port_state_is_per_port_and_detaches_with_clone() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native =
+            load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+        let low_memory = classic_bus
+            .shared_ram_region(0, 0x0010_0000)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        let main_port = 0x0003_0000;
+        let second_port = 0x0003_1000;
+        initialize_test_cgraf_port(&mut classic_bus, main_port);
+        initialize_test_cgraf_port(&mut classic_bus, second_port);
+        classic.cport_ports.insert(main_port);
+        classic.cport_ports.insert(second_port);
+        *native.current_gworld = main_port;
+        native.cpu.gpr[3] = second_port;
+        run_test_import(&mut native, PpcImportDispatcherTarget::SetPort);
+        native.cpu.gpr[3] = 71;
+        native.cpu.gpr[4] = 53;
+        run_test_import(&mut native, PpcImportDispatcherTarget::MoveTo);
+
+        native.cpu.gpr[3] = main_port;
+        run_test_import(&mut native, PpcImportDispatcherTarget::SetPort);
+        native.cpu.gpr[3] = 19;
+        native.cpu.gpr[4] = 11;
+        run_test_import(&mut native, PpcImportDispatcherTarget::MoveTo);
+
+        classic_bus.write_long(TEST_SP, second_port);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x073, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        let classic_output = 0x0002_8200;
+        classic_bus.write_long(TEST_SP, classic_output);
+        classic_cpu.write_reg(Register::A7, TEST_SP);
+        assert!(classic
+            .dispatch_quickdraw(true, 0x09a, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.read_word(classic_output), 53);
+        assert_eq!(classic_bus.read_word(classic_output + 2), 71);
+
+        let mut detached = native.clone();
+        detached
+            .memory
+            .write_u16_be(second_port + PPC_CGRAF_PORT_PN_LOC_OFFSET, 101)
+            .unwrap();
+        detached
+            .memory
+            .write_u16_be(second_port + PPC_CGRAF_PORT_PN_LOC_OFFSET + 2, 103)
+            .unwrap();
+        let detached_output = PPC_DATA_BASE + 0x2a00;
+        detached.memory.add_region(detached_output, vec![0; 4]);
+        detached.cpu.gpr[3] = detached_output;
+        run_test_import(&mut detached, PpcImportDispatcherTarget::GetPen);
+        assert_eq!(detached.memory.read_u16_be(detached_output), Some(101));
+        assert_eq!(detached.memory.read_u16_be(detached_output + 2), Some(103));
+
+        native.cpu.gpr[3] = detached_output;
+        native.memory.add_region(detached_output, vec![0; 4]);
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetPen);
+        assert_eq!(native.memory.read_u16_be(detached_output), Some(53));
+        assert_eq!(native.memory.read_u16_be(detached_output + 2), Some(71));
     }
 
     #[test]

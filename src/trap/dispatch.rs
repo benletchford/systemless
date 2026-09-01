@@ -2380,6 +2380,9 @@ pub struct TrapDispatcher {
     pub(crate) current_gdevice: SharedProcessValue<u32>,
     /// Current GrafPort/GWorld pointer
     pub(crate) current_port: SharedProcessValue<u32>,
+    /// Whether the attached process's current CGrafPort record is canonical
+    /// for draw state shared with the native QuickDraw adapter.
+    pub(crate) process_quickdraw_port_state_attached: bool,
     /// Per-port pen/color/text state restored by SetPort and SetGWorld.
     pub(crate) port_draw_states: HashMap<u32, PortDrawState>,
     /// Bit 0/1 mark CGrafPort fgColor/bkColor fields that QuickDraw has
@@ -2770,6 +2773,7 @@ impl TrapDispatcher {
         context.attach_dialog_text(&mut self.param_text);
         context.attach_cursor_state(&mut self.cursor_state);
         context.attach_quickdraw_selection(&mut self.current_port, &mut self.current_gdevice);
+        self.process_quickdraw_port_state_attached = true;
         context.attach_display_color_state(
             &mut self.device_clut,
             &mut self.color_manager_clut,
@@ -3902,6 +3906,7 @@ impl TrapDispatcher {
             main_gdevice_handle: 0,
             current_gdevice: SharedProcessValue::from_value(0),
             current_port: SharedProcessValue::from_value(0),
+            process_quickdraw_port_state_attached: false,
             port_draw_states: HashMap::new(),
             resolved_port_color_fields: HashMap::new(),
             gworld_devices: HashMap::new(),
