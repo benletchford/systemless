@@ -10913,8 +10913,8 @@ mod tests {
         SndChannel, SndCommand, OUTPUT_RATE,
     };
     use crate::trap::dispatch::{
-        DialogItem, DialogTrackingState, PendingFileCompletion, PendingWaitNextEventReturn,
-        QueuedEvent, TimerTask, VblTask,
+        DialogItem, DialogTrackingState, LoadedResources, PendingFileCompletion,
+        PendingWaitNextEventReturn, QueuedEvent, ResourceFileMap, TimerTask, VblTask,
     };
     use ppc::{PpcCpu, PpcNativeReturnGpr3};
     use std::cell::RefCell;
@@ -13331,7 +13331,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
@@ -13497,6 +13496,75 @@ mod tests {
             .channels
             .iter()
             .any(|channel| channel.guest_ptr == 0x0050_1000));
+    }
+
+    #[test]
+    fn ppc_initialization_shares_current_resource_file_and_detaches_clones() {
+        let app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.dispatcher.resources = Some(LoadedResources {
+            files: HashMap::from([
+                (5, ResourceFileMap::default()),
+                (9, ResourceFileMap::default()),
+            ]),
+            names: HashMap::new(),
+            search_order: vec![5, 9],
+            current_file: 5,
+        });
+        runner.init_app(&app);
+
+        assert_eq!(runner.dispatcher.current_resource_refnum(), 5);
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_ref()
+                .expect("PPC app")
+                .current_resource_refnum(),
+            5
+        );
+
+        runner
+            .dispatcher
+            .set_current_resource_refnum(&mut runner.bus, 9);
+        assert_eq!(
+            runner
+                .ppc_app
+                .as_ref()
+                .expect("PPC app")
+                .current_resource_refnum(),
+            9
+        );
+        assert_eq!(runner.bus.read_word(0x0A5A), 9);
+
+        runner
+            .ppc_app
+            .as_mut()
+            .expect("PPC app")
+            .set_current_resource_refnum(5);
+        assert_eq!(runner.dispatcher.current_resource_refnum(), 5);
+        assert_eq!(runner.bus.read_word(0x0A5A), 5);
+
+        let mut detached = runner.ppc_app.as_ref().expect("PPC app").clone();
+        runner
+            .ppc_app
+            .as_mut()
+            .expect("PPC app")
+            .set_current_resource_refnum(9);
+        assert_eq!(detached.current_resource_refnum(), 5);
+        detached.set_current_resource_refnum(7);
+        assert_eq!(runner.dispatcher.current_resource_refnum(), 9);
+        assert_eq!(runner.bus.read_word(0x0A5A), 9);
+
+        runner
+            .ppc_app
+            .as_mut()
+            .expect("PPC app")
+            .set_current_resource_refnum(5);
+        assert!(runner
+            .dispatcher
+            .close_resource_file_refnum(&mut runner.bus, 5));
+        assert_eq!(runner.dispatcher.current_resource_refnum(), 9);
+        assert_eq!(runner.bus.read_word(0x0A5A), 9);
     }
 
     #[test]
@@ -15507,7 +15575,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
@@ -16526,7 +16593,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
@@ -16679,7 +16745,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
@@ -17064,7 +17129,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
@@ -17343,7 +17407,6 @@ mod tests {
             tick_count: 0,
             clock_cycles_per_tick: 1,
             clock_cycle_phase: 0,
-            current_resource_refnum: 0,
             last_resource_error: 0,
             resource_load_enabled: true,
             native_exception_handler: 0,
