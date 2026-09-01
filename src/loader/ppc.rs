@@ -16192,6 +16192,24 @@ fn ppc_apply_process_native_allocator(
     ppc_update_zone_free_bytes(memory, *heap_cursor, allocator.heap.heap_limit);
 }
 
+fn ppc_apply_process_native_handle(
+    memory_manager: &ProcessMemoryManager,
+    handles: &mut Vec<PpcHandleRecord>,
+    handle: u32,
+) {
+    let Some(updated) = memory_manager.native_allocation(handle) else {
+        return;
+    };
+    if let Some(record) = handles
+        .iter_mut()
+        .find(|record| record.handle == handle)
+    {
+        *record = updated;
+    } else {
+        handles.push(updated);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn dispatch_supported_import(
     binding: &PpcImportBinding,
@@ -16453,27 +16471,207 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::PtrToHand => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_ptr_to_hand(
-                cpu,
-                memory,
-                heap_cursor,
-                heap_limit,
-                handles,
-                free_handle_blocks,
-            ))))
+            let result = if let Some(memory_manager) = process_memory_manager {
+                let source_ptr = cpu.gpr[3];
+                let destination_handle_ptr = cpu.gpr[4];
+                let size = cpu.gpr[5];
+                let result = if destination_handle_ptr == 0
+                    || !ppc_memory_can_write_bytes(memory, destination_handle_ptr, 4)
+                {
+                    PPC_PARAM_ERR
+                } else if let Some(bytes) = ppc_memory_read_bytes(memory, source_ptr, size) {
+                    ppc_synchronize_process_native_allocator(
+                        memory_manager,
+                        *heap_cursor,
+                        heap_limit,
+                        *last_mem_error,
+                        *heap_maximized,
+                        *master_pointer_blocks_requested,
+                        ptrs,
+                        free_ptr_blocks,
+                        free_handle_blocks,
+                    );
+                    ppc_synchronize_process_native_handles(
+                        memory_manager,
+                        handles,
+                        handle_states,
+                    );
+                    let handle =
+                        memory_manager.copy_bytes_to_new_native_handle(memory, &bytes);
+                    ppc_apply_process_native_allocator(
+                        memory_manager,
+                        memory,
+                        heap_cursor,
+                        last_mem_error,
+                        ptrs,
+                        free_ptr_blocks,
+                        free_handle_blocks,
+                    );
+                    ppc_apply_process_native_handle(memory_manager, handles, handle);
+                    if handle == 0 {
+                        let _ = memory.write_u32_be(destination_handle_ptr, 0);
+                        *last_mem_error
+                    } else if memory
+                        .write_u32_be(destination_handle_ptr, handle)
+                        .is_none()
+                    {
+                        memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                        PPC_PARAM_ERR
+                    } else {
+                        PPC_NO_ERR
+                    }
+                } else {
+                    let _ = memory.write_u32_be(destination_handle_ptr, 0);
+                    PPC_PARAM_ERR
+                };
+                memory_manager.set_native_mem_error(result);
+                result
+            } else {
+                ppc_ptr_to_hand(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    free_handle_blocks,
+                )
+            };
+            *last_mem_error = result;
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::HandToHand => {
-            Some(PpcImportAction::Return(ppc_i16_result(ppc_hand_to_hand(
-                cpu,
-                memory,
-                heap_cursor,
-                heap_limit,
-                handles,
-                free_handle_blocks,
-            ))))
+            let result = if let Some(memory_manager) = process_memory_manager {
+                let handle_variable = cpu.gpr[3];
+                let result = if handle_variable == 0
+                    || !ppc_memory_can_write_bytes(memory, handle_variable, 4)
+                {
+                    PPC_PARAM_ERR
+                } else if let Some(source_handle) = memory.read_u32_be(handle_variable) {
+                    if let Some(source) = handles
+                        .iter()
+                        .find(|record| record.handle == source_handle)
+                        .copied()
+                        .or_else(|| ppc_system_handle_record(memory, source_handle))
+                    {
+                        if let Some(bytes) = ppc_memory_read_bytes(memory, source.ptr, source.size) {
+                            ppc_synchronize_process_native_allocator(
+                                memory_manager,
+                                *heap_cursor,
+                                heap_limit,
+                                *last_mem_error,
+                                *heap_maximized,
+                                *master_pointer_blocks_requested,
+                                ptrs,
+                                free_ptr_blocks,
+                                free_handle_blocks,
+                            );
+                            ppc_synchronize_process_native_handles(
+                                memory_manager,
+                                handles,
+                                handle_states,
+                            );
+                            let copy =
+                                memory_manager.copy_bytes_to_new_native_handle(memory, &bytes);
+                            ppc_apply_process_native_allocator(
+                                memory_manager,
+                                memory,
+                                heap_cursor,
+                                last_mem_error,
+                                ptrs,
+                                free_ptr_blocks,
+                                free_handle_blocks,
+                            );
+                            ppc_apply_process_native_handle(memory_manager, handles, copy);
+                            if copy == 0 {
+                                *last_mem_error
+                            } else if memory.write_u32_be(handle_variable, copy).is_none() {
+                                memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+                                PPC_PARAM_ERR
+                            } else {
+                                PPC_NO_ERR
+                            }
+                        } else {
+                            PPC_PARAM_ERR
+                        }
+                    } else {
+                        PPC_NIL_HANDLE_ERR
+                    }
+                } else {
+                    PPC_PARAM_ERR
+                };
+                memory_manager.set_native_mem_error(result);
+                result
+            } else {
+                ppc_hand_to_hand(
+                    cpu,
+                    memory,
+                    heap_cursor,
+                    heap_limit,
+                    handles,
+                    free_handle_blocks,
+                )
+            };
+            *last_mem_error = result;
+            Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
         PpcImportDispatcherTarget::HandAndHand => {
-            let result = ppc_hand_and_hand(cpu, memory, heap_cursor, heap_limit, handles);
+            let result = if let Some(memory_manager) = process_memory_manager {
+                let source_handle = cpu.gpr[3];
+                let destination_handle = cpu.gpr[4];
+                let source = handles
+                    .iter()
+                    .find(|record| record.handle == source_handle)
+                    .copied()
+                    .or_else(|| ppc_system_handle_record(memory, source_handle));
+                let result = if let Some(source) = source {
+                    if let Some(bytes) = ppc_memory_read_bytes(memory, source.ptr, source.size) {
+                        ppc_synchronize_process_native_allocator(
+                            memory_manager,
+                            *heap_cursor,
+                            heap_limit,
+                            *last_mem_error,
+                            *heap_maximized,
+                            *master_pointer_blocks_requested,
+                            ptrs,
+                            free_ptr_blocks,
+                            free_handle_blocks,
+                        );
+                        ppc_synchronize_process_native_handles(
+                            memory_manager,
+                            handles,
+                            handle_states,
+                        );
+                        let result = memory_manager.append_bytes_to_native_handle(
+                            memory,
+                            destination_handle,
+                            &bytes,
+                        );
+                        ppc_apply_process_native_allocator(
+                            memory_manager,
+                            memory,
+                            heap_cursor,
+                            last_mem_error,
+                            ptrs,
+                            free_ptr_blocks,
+                            free_handle_blocks,
+                        );
+                        ppc_apply_process_native_handle(
+                            memory_manager,
+                            handles,
+                            destination_handle,
+                        );
+                        result
+                    } else {
+                        PPC_PARAM_ERR
+                    }
+                } else {
+                    PPC_NIL_HANDLE_ERR
+                };
+                memory_manager.set_native_mem_error(result);
+                result
+            } else {
+                ppc_hand_and_hand(cpu, memory, heap_cursor, heap_limit, handles)
+            };
             *last_mem_error = result;
             Some(PpcImportAction::Return(ppc_i16_result(result)))
         }
@@ -88004,6 +88202,83 @@ pub(crate) mod tests {
                     .free_handle_blocks
                     .iter()
                     .any(|record| record.handle == handle));
+            },
+        );
+    }
+
+    #[test]
+    fn ppc_handle_copy_imports_mutate_process_memory_immediately() {
+        let pef = synthetic_pef_with_import(b"PtrToHand");
+        let mut native = load_pef_application(&pef).unwrap();
+        let scratch = PPC_DATA_BASE + 0x2100;
+        let source = scratch;
+        let output = scratch + 0x20;
+        let handle_variable = scratch + 0x24;
+        native.memory.add_region(scratch, vec![0; 0x100]);
+        native.memory.write_bytes(source, b"native").unwrap();
+        let mut classic_bus = crate::memory::MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.memory.shared_view() };
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let (event_queue, menu_tracking, memory_manager) =
+            context.event_queue_menu_tracking_and_memory_manager_mut();
+
+        native.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |native, memory_manager| {
+                native.cpu.gpr[3] = source;
+                native.cpu.gpr[4] = output;
+                native.cpu.gpr[5] = 6;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 0);
+                let destination = native.memory.read_u32_be(output).unwrap();
+                let original = memory_manager.native_allocation(destination).unwrap();
+                assert_eq!(classic_bus.read_bytes(original.ptr, 6), b"native");
+
+                native
+                    .memory
+                    .write_u32_be(handle_variable, destination)
+                    .unwrap();
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HandToHand;
+                native.cpu.gpr[3] = handle_variable;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 0);
+                let source_copy = native.memory.read_u32_be(handle_variable).unwrap();
+                assert_ne!(source_copy, destination);
+                let copy = memory_manager.native_allocation(source_copy).unwrap();
+                assert_eq!(classic_bus.read_bytes(copy.ptr, 6), b"native");
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HandAndHand;
+                native.cpu.gpr[3] = source_copy;
+                native.cpu.gpr[4] = destination;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 0);
+                let appended = memory_manager.native_allocation(destination).unwrap();
+                assert_eq!(appended.size, 12);
+                assert_eq!(classic_bus.read_long(destination), appended.ptr);
+                assert_eq!(classic_bus.read_bytes(appended.ptr, 12), b"nativenative");
+                assert_eq!(
+                    native
+                        .handles
+                        .iter()
+                        .find(|record| record.handle == destination)
+                        .copied(),
+                    Some(appended)
+                );
+                assert_eq!(
+                    memory_manager
+                        .native_allocator()
+                        .map(|allocator| allocator.heap.last_mem_error),
+                    Some(PPC_NO_ERR)
+                );
             },
         );
     }

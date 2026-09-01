@@ -402,6 +402,74 @@ impl ProcessMemoryManager {
         record.handle
     }
 
+    /// Allocate a native relocatable block containing a copy of `bytes`.
+    ///
+    /// `PtrToHand` and `HandToHand` both create a new relocatable block and
+    /// copy existing bytes into it. Inside Macintosh: Memory (1992),
+    /// pp. 2-60--2-63.
+    pub(crate) fn copy_bytes_to_new_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        bytes: &[u8],
+    ) -> u32 {
+        let Ok(size) = u32::try_from(bytes.len()) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return 0;
+        };
+        let handle = self.new_native_handle(memory, size, false);
+        let Some(record) = self.native_allocation(handle) else {
+            return 0;
+        };
+        if bytes.iter().copied().enumerate().any(|(offset, byte)| {
+            PpcMemory::write_u8(memory, record.ptr + offset as u32, byte).is_none()
+        }) {
+            let _ = self.dispose_native_handle(memory, handle);
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return 0;
+        }
+        handle
+    }
+
+    /// Append bytes to a native relocatable block through its stable handle.
+    ///
+    /// `HandAndHand` leaves the source unchanged and grows the destination
+    /// before appending the source bytes. Inside Macintosh: Memory (1992),
+    /// pp. 2-64--2-65.
+    pub(crate) fn append_bytes_to_native_handle(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        handle: u32,
+        bytes: &[u8],
+    ) -> i16 {
+        let Some(record) = self.native_allocation(handle) else {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
+            return Self::NIL_HANDLE_ERR;
+        };
+        let Ok(byte_count) = u32::try_from(bytes.len()) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let Some(new_size) = record.size.checked_add(byte_count) else {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        };
+        let result = self.set_native_handle_size(memory, handle, new_size);
+        if result != Self::NO_ERR {
+            return result;
+        }
+        let destination = self
+            .native_allocation(handle)
+            .expect("successful native handle resize remains registered");
+        if bytes.iter().copied().enumerate().any(|(offset, byte)| {
+            PpcMemory::write_u8(memory, destination.ptr + record.size + offset as u32, byte)
+                .is_none()
+        }) {
+            self.set_native_mem_error(Self::PARAM_ERR);
+            return Self::PARAM_ERR;
+        }
+        Self::NO_ERR
+    }
+
     pub(crate) fn dispose_native_handle(
         &mut self,
         memory: &mut GuestAddressSpace,
@@ -1278,6 +1346,58 @@ mod tests {
         assert_eq!(bus.read_bytes(record.ptr, 6), b"native");
         bus.write_byte(record.ptr + 6, b'!');
         assert_eq!(native.read_u8(record.ptr + 6), Some(b'!'));
+    }
+
+    #[test]
+    fn process_memory_manager_copies_and_appends_native_handle_bytes_cross_isa() {
+        const HEAP_BASE: u32 = 0x0300_0000;
+        let mut native = GuestAddressSpace::new();
+        native.add_region(HEAP_BASE, vec![0; 0x1000]);
+        let mut manager = ProcessMemoryManager::default();
+        manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: HEAP_BASE,
+                heap_cursor: HEAP_BASE,
+                heap_limit: HEAP_BASE + 0x1000,
+                last_mem_error: 0,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let mut bus = MacMemoryBus::new(0x2000);
+        let shared = unsafe { native.shared_view() };
+        unsafe { bus.attach_guest_address_space(shared) };
+
+        let handle = manager.copy_bytes_to_new_native_handle(&mut native, b"native");
+        let original = manager.native_allocation(handle).unwrap();
+        assert_eq!(bus.read_bytes(original.ptr, 6), b"native");
+
+        let blocking_ptr = manager.new_native_ptr(&mut native, 16, false);
+        assert_ne!(blocking_ptr, 0);
+        assert_eq!(
+            manager.append_bytes_to_native_handle(
+                &mut native,
+                handle,
+                b" process memory manager",
+            ),
+            ProcessMemoryManager::NO_ERR
+        );
+
+        let appended = manager.native_allocation(handle).unwrap();
+        assert_ne!(appended.ptr, original.ptr);
+        assert_eq!(bus.read_long(handle), appended.ptr);
+        assert_eq!(
+            bus.read_bytes(appended.ptr, appended.size as usize),
+            b"native process memory manager"
+        );
+        bus.write_byte(appended.ptr + appended.size - 1, b'!');
+        assert_eq!(
+            native.read_u8(appended.ptr + appended.size - 1),
+            Some(b'!')
+        );
     }
 
     #[test]
