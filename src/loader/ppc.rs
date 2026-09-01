@@ -27359,10 +27359,13 @@ fn dispatch_supported_import(
             Some(ppc_dispatch_apple_event_compatibility(
                 binding,
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
                 free_handle_blocks,
                 handle_states,
@@ -27472,12 +27475,16 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ObjectSupportCompatibility => {
             Some(ppc_dispatch_object_support_compatibility(
                 cpu,
+                process_memory_manager,
                 memory,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
+                ptrs,
+                free_ptr_blocks,
                 handles,
                 free_handle_blocks,
+                handle_states,
             ))
         }
         PpcImportDispatcherTarget::GlideSstQueryBoards => {
@@ -27523,13 +27530,100 @@ fn ppc_write_ae_desc(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ppc_dispatch_apple_event_compatibility(
-    binding: &PpcImportBinding,
-    cpu: &mut PpcCpu,
+fn ppc_create_process_owned_ae_desc(
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
+    handles: &mut Vec<PpcHandleRecord>,
+    free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
+    result: u32,
+    descriptor_type: u32,
+    bytes: &[u8],
+) -> i16 {
+    if result == 0 || !ppc_memory_can_write_bytes(memory, result, 8) {
+        return PPC_PARAM_ERR;
+    }
+    ppc_synchronize_process_native_allocator(
+        process_memory_manager,
+        *heap_cursor,
+        heap_limit,
+        *last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_synchronize_process_native_handles(process_memory_manager, handles, handle_states);
+    let snapshot = process_memory_manager.detached_clone();
+    // Interapplication Communication (1993), pp. 3-13 and 4-39: an AEDesc's
+    // data lives in a handle allocated in the client process's application
+    // heap, and AEDisposeDesc deallocates that storage.
+    let handle = process_memory_manager.copy_bytes_to_new_native_handle(memory, bytes);
+    if handle == 0 {
+        let error = process_memory_manager
+            .native_heap_state()
+            .map_or(PPC_MEM_FULL_ERR, |heap| heap.last_mem_error);
+        process_memory_manager.restore_native_snapshot(snapshot);
+        process_memory_manager.set_native_mem_error(error);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            free_handle_blocks,
+        );
+        return *last_mem_error;
+    }
+    if !ppc_write_ae_desc(memory, result, descriptor_type, handle) {
+        let _ = memory.write_u32_be(handle, 0);
+        process_memory_manager.restore_native_snapshot(snapshot);
+        process_memory_manager.set_native_mem_error(PPC_PARAM_ERR);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            ptrs,
+            free_ptr_blocks,
+            free_handle_blocks,
+        );
+        return PPC_PARAM_ERR;
+    }
+    ppc_apply_process_native_allocator(
+        process_memory_manager,
+        memory,
+        heap_cursor,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_apply_process_native_handle(
+        process_memory_manager,
+        handles,
+        handle_states,
+        handle,
+    );
+    PPC_NO_ERR
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_apple_event_compatibility(
+    binding: &PpcImportBinding,
+    cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    heap_limit: u32,
+    last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
@@ -27545,23 +27639,21 @@ fn ppc_dispatch_apple_event_compatibility(
             if cpu.gpr[6] == 0 || !ppc_memory_can_write_bytes(memory, cpu.gpr[6], 8) {
                 PPC_PARAM_ERR
             } else {
-                let handle = ppc_alloc_recyclable_handle_with_bytes(
+                ppc_create_process_owned_ae_desc(
+                    process_memory_manager,
                     memory,
                     heap_cursor,
                     heap_limit,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
                     handles,
                     free_handle_blocks,
+                    handle_states,
+                    cpu.gpr[6],
+                    cpu.gpr[3],
                     &bytes,
-                );
-                if handle == 0 {
-                    *last_mem_error = PPC_MEM_FULL_ERR;
-                    PPC_MEM_FULL_ERR
-                } else if ppc_write_ae_desc(memory, cpu.gpr[6], cpu.gpr[3], handle) {
-                    *last_mem_error = PPC_NO_ERR;
-                    PPC_NO_ERR
-                } else {
-                    PPC_PARAM_ERR
-                }
+                )
             }
         }
         "AECreateAppleEvent" => {
@@ -27569,28 +27661,21 @@ fn ppc_dispatch_apple_event_compatibility(
             if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
                 PPC_PARAM_ERR
             } else {
-                let handle = ppc_alloc_recyclable_handle_with_bytes(
+                ppc_create_process_owned_ae_desc(
+                    process_memory_manager,
                     memory,
                     heap_cursor,
                     heap_limit,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
                     handles,
                     free_handle_blocks,
-                    &[],
-                );
-                if handle == 0 {
-                    *last_mem_error = PPC_MEM_FULL_ERR;
-                    PPC_MEM_FULL_ERR
-                } else if ppc_write_ae_desc(
-                    memory,
+                    handle_states,
                     result_ptr,
                     u32::from_be_bytes(*b"aevt"),
-                    handle,
-                ) {
-                    *last_mem_error = PPC_NO_ERR;
-                    PPC_NO_ERR
-                } else {
-                    PPC_PARAM_ERR
-                }
+                    &[],
+                )
             }
         }
         "AEDisposeDesc" => {
@@ -27600,7 +27685,19 @@ fn ppc_dispatch_apple_event_compatibility(
             } else {
                 let handle = memory.read_u32_be(desc + 4).unwrap_or(0);
                 if handle != 0 {
-                    let _ = ppc_dispose_tracked_handle(handle, memory, handles, handle_states);
+                    let _ = ppc_dispose_process_native_handle(
+                        process_memory_manager,
+                        memory,
+                        heap_cursor,
+                        heap_limit,
+                        last_mem_error,
+                        ptrs,
+                        free_ptr_blocks,
+                        handles,
+                        free_handle_blocks,
+                        handle_states,
+                        handle,
+                    );
                 }
                 let _ = memory.write_u32_be(desc, 0);
                 let _ = memory.write_u32_be(desc + 4, 0);
@@ -30872,12 +30969,16 @@ fn ppc_dispatch_stdc_qsort(
 #[allow(clippy::too_many_arguments)]
 fn ppc_dispatch_object_support_compatibility(
     cpu: &mut PpcCpu,
+    process_memory_manager: &mut ProcessMemoryManager,
     memory: &mut PpcSectionMem,
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
+    ptrs: &mut Vec<PpcPtrRecord>,
+    free_ptr_blocks: &mut Vec<PpcPtrRecord>,
     handles: &mut Vec<PpcHandleRecord>,
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
+    handle_states: &mut Vec<PpcHandleStateRecord>,
 ) -> PpcImportAction {
     let result_ptr = cpu.gpr[8];
     if result_ptr == 0 || !ppc_memory_can_write_bytes(memory, result_ptr, 8) {
@@ -30887,24 +30988,21 @@ fn ppc_dispatch_object_support_compatibility(
     data.extend_from_slice(&cpu.gpr[3].to_be_bytes());
     data.extend_from_slice(&cpu.gpr[5].to_be_bytes());
     data.extend_from_slice(&cpu.gpr[6].to_be_bytes());
-    let handle = ppc_alloc_recyclable_handle_with_bytes(
+    let result = ppc_create_process_owned_ae_desc(
+        process_memory_manager,
         memory,
         heap_cursor,
         heap_limit,
+        last_mem_error,
+        ptrs,
+        free_ptr_blocks,
         handles,
         free_handle_blocks,
+        handle_states,
+        result_ptr,
+        u32::from_be_bytes(*b"obj "),
         &data,
     );
-    if handle == 0 {
-        *last_mem_error = PPC_MEM_FULL_ERR;
-        return PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR));
-    }
-    *last_mem_error = PPC_NO_ERR;
-    let result = if ppc_write_ae_desc(memory, result_ptr, u32::from_be_bytes(*b"obj "), handle) {
-        PPC_NO_ERR
-    } else {
-        PPC_PARAM_ERR
-    };
     PpcImportAction::Return(ppc_i16_result(result))
 }
 
@@ -160429,6 +160527,22 @@ pub(crate) mod tests {
         cpu.gpr[6] = 0x1100;
         let mut heap_cursor = 0x3000;
         let mut last_mem_error = PPC_NO_ERR;
+        let mut memory_manager = ProcessMemoryManager::default();
+        memory_manager.publish_native_allocator(
+            ProcessNativeHeapState {
+                heap_base: heap_cursor,
+                heap_cursor,
+                heap_limit: 0x5000,
+                last_mem_error,
+                heap_maximized: false,
+                master_pointer_blocks_requested: 0,
+            },
+            &[],
+            &[],
+            &[],
+        );
+        let mut ptrs = Vec::new();
+        let mut free_ptrs = Vec::new();
         let mut handles = Vec::new();
         let mut free_handles = Vec::new();
         let mut handle_states = Vec::new();
@@ -160441,10 +160555,13 @@ pub(crate) mod tests {
             ppc_dispatch_apple_event_compatibility(
                 &create,
                 &mut cpu,
+                &mut memory_manager,
                 &mut memory,
                 &mut heap_cursor,
                 0x5000,
                 &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptrs,
                 &mut handles,
                 &mut free_handles,
                 &mut handle_states,
@@ -160471,10 +160588,13 @@ pub(crate) mod tests {
             ppc_dispatch_apple_event_compatibility(
                 &dispose,
                 &mut cpu,
+                &mut memory_manager,
                 &mut memory,
                 &mut heap_cursor,
                 0x5000,
                 &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptrs,
                 &mut handles,
                 &mut free_handles,
                 &mut handle_states,
@@ -160484,6 +160604,202 @@ pub(crate) mod tests {
         assert_eq!(memory.read_u32_be(0x1100), Some(0));
         assert_eq!(memory.read_u32_be(0x1104), Some(0));
         assert!(handles.is_empty());
+    }
+
+    #[test]
+    fn apple_event_descriptor_handles_are_immediately_process_owned_and_cross_isa_visible() {
+        let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateDesc");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        let scratch = PPC_DATA_BASE + 0x2000;
+        let source = scratch;
+        let descriptor = scratch + 0x20;
+        native.memory.add_region(scratch, vec![0; 0x40]);
+        native.memory.write_bytes(source, b"payload").unwrap();
+        native.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+        native.cpu.gpr[4] = source;
+        native.cpu.gpr[5] = 7;
+        native.cpu.gpr[6] = descriptor;
+
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::AppleEventCompatibility,
+        );
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        let handle = native.memory.read_u32_be(descriptor + 4).unwrap();
+        let allocation = context
+            .memory_manager_mut()
+            .native_allocation(handle)
+            .unwrap();
+        assert_eq!(allocation.size, 7);
+        assert_eq!(
+            context.memory_manager_mut().recover_handle(allocation.ptr),
+            Some(handle)
+        );
+        assert_eq!(detached.native_allocation(handle), None);
+
+        let shared = unsafe { native.memory.shared_view() };
+        let mut classic_bus = MacMemoryBus::new(0x2000);
+        unsafe { classic_bus.attach_guest_address_space(shared) };
+        context.attach_classic_memory_bus(&mut classic_bus);
+        assert_eq!(classic_bus.read_bytes(allocation.ptr, 7), b"payload");
+        classic_bus.write_byte(allocation.ptr, b'P');
+        assert_eq!(native.memory.read_u8(allocation.ptr), Some(b'P'));
+        native.memory.write_u8(allocation.ptr + 6, b'!').unwrap();
+        assert_eq!(classic_bus.read_byte(allocation.ptr + 6), b'!');
+
+        native.imports[0].symbol_name = "AEDisposeDesc".to_string();
+        native.cpu.gpr[3] = descriptor;
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::AppleEventCompatibility,
+        );
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        assert_eq!(native.memory.read_u32_be(descriptor), Some(0));
+        assert_eq!(native.memory.read_u32_be(descriptor + 4), Some(0));
+        assert_eq!(native.memory.read_u32_be(handle), Some(0));
+        let manager = context.memory_manager_mut();
+        assert_eq!(manager.native_allocation(handle), None);
+        assert_eq!(manager.recover_handle(allocation.ptr), None);
+        assert!(manager
+            .native_allocator_snapshot()
+            .unwrap()
+            .free_handle_blocks
+            .iter()
+            .any(|record| record.handle == handle));
+        assert_eq!(detached.native_allocation(handle), None);
+    }
+
+    #[test]
+    fn apple_event_descriptor_allocation_failure_is_atomic() {
+        let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateDesc");
+        let mut native = load_pef_application(&pef).unwrap();
+        native.set_heap_cursor(native.heap_limit().saturating_sub(8));
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let scratch = PPC_DATA_BASE + 0x2200;
+        let descriptor = scratch + 0x20;
+        native.memory.add_region(scratch, vec![0xaa; 0x40]);
+        native.memory.write_bytes(scratch, b"payload").unwrap();
+        let (before_allocator, before_handles) = {
+            let manager = context.memory_manager_mut();
+            (
+                manager.native_allocator_snapshot().unwrap(),
+                manager.native_handle_records().to_vec(),
+            )
+        };
+        native.cpu.gpr[3] = u32::from_be_bytes(*b"TEXT");
+        native.cpu.gpr[4] = scratch;
+        native.cpu.gpr[5] = 7;
+        native.cpu.gpr[6] = descriptor;
+
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::AppleEventCompatibility,
+        );
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_MEM_FULL_ERR);
+        assert_eq!(native.memory.read_u32_be(descriptor), Some(0xaaaa_aaaa));
+        assert_eq!(native.memory.read_u32_be(descriptor + 4), Some(0xaaaa_aaaa));
+        let manager = context.memory_manager_mut();
+        let after_allocator = manager.native_allocator_snapshot().unwrap();
+        assert_eq!(after_allocator.heap.heap_cursor, before_allocator.heap.heap_cursor);
+        assert_eq!(after_allocator.heap.heap_limit, before_allocator.heap.heap_limit);
+        assert_eq!(after_allocator.ptrs, before_allocator.ptrs);
+        assert_eq!(
+            after_allocator.free_ptr_blocks,
+            before_allocator.free_ptr_blocks
+        );
+        assert_eq!(
+            after_allocator.free_handle_blocks,
+            before_allocator.free_handle_blocks
+        );
+        assert_eq!(manager.native_handle_records(), before_handles);
+    }
+
+    #[test]
+    fn object_specifier_descriptors_are_immediately_process_owned() {
+        let pef =
+            synthetic_pef_with_library_import(b"ObjectSupportLib", b"CreateObjSpecifier");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = context.memory_manager_mut().detached_clone();
+        let descriptor = PPC_DATA_BASE + 0x2400;
+        native.memory.add_region(descriptor, vec![0; 8]);
+        native.cpu.gpr[3] = u32::from_be_bytes(*b"docu");
+        native.cpu.gpr[5] = u32::from_be_bytes(*b"name");
+        native.cpu.gpr[6] = 0x1234_5678;
+        native.cpu.gpr[8] = descriptor;
+
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::ObjectSupportCompatibility,
+        );
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        assert_eq!(
+            native.memory.read_u32_be(descriptor),
+            Some(u32::from_be_bytes(*b"obj "))
+        );
+        let handle = native.memory.read_u32_be(descriptor + 4).unwrap();
+        let allocation = context
+            .memory_manager_mut()
+            .native_allocation(handle)
+            .unwrap();
+        assert_eq!(
+            ppc_memory_read_bytes(&mut native.memory, allocation.ptr, allocation.size),
+            Some(
+                [
+                    u32::from_be_bytes(*b"docu").to_be_bytes(),
+                    u32::from_be_bytes(*b"name").to_be_bytes(),
+                    0x1234_5678u32.to_be_bytes(),
+                ]
+                .concat()
+            )
+        );
+        assert_eq!(
+            context.memory_manager_mut().recover_handle(allocation.ptr),
+            Some(handle)
+        );
+        assert_eq!(detached.native_allocation(handle), None);
+    }
+
+    #[test]
+    fn apple_event_records_use_process_owned_empty_handles() {
+        let pef = synthetic_pef_with_library_import(b"InterfaceLib", b"AECreateAppleEvent");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let descriptor = PPC_DATA_BASE + 0x2500;
+        native.memory.add_region(descriptor, vec![0; 8]);
+        native.cpu.gpr[8] = descriptor;
+
+        run_test_import(
+            &mut native,
+            PpcImportDispatcherTarget::AppleEventCompatibility,
+        );
+
+        assert_eq!(native.cpu.gpr[3] as u16 as i16, PPC_NO_ERR);
+        assert_eq!(
+            native.memory.read_u32_be(descriptor),
+            Some(u32::from_be_bytes(*b"aevt"))
+        );
+        let handle = native.memory.read_u32_be(descriptor + 4).unwrap();
+        let allocation = context
+            .memory_manager_mut()
+            .native_allocation(handle)
+            .unwrap();
+        assert_eq!(allocation.size, 0);
+        assert_eq!(native.memory.read_u32_be(handle), Some(allocation.ptr));
+        assert_eq!(
+            context.memory_manager_mut().recover_handle(allocation.ptr),
+            Some(handle)
+        );
     }
 
     #[test]
