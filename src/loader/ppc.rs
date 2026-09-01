@@ -70,9 +70,9 @@ use crate::menu_manager::{
 };
 use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
-    ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord, ProcessMemoryManager,
-    ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessPtrRecord,
-    SharedProcessMemoryManager,
+    ProcessAppleEventHandler, ProcessContext, ProcessHandleRecord, ProcessHandleStateRecord,
+    ProcessMemoryManager, ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessPtrRecord,
+    SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
 };
 use crate::quickdraw::fonts::heuristics::get_italic_slant;
 use crate::quickdraw::fonts::{
@@ -195,6 +195,7 @@ const PPC_HIGH_LEVEL_EVENT_MASK: u16 = 0x0400;
 const PPC_HIGH_LEVEL_EVENT: u16 = 23;
 const PPC_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
 const PPC_OPEN_APPLICATION_EVENT: u32 = u32::from_be_bytes(*b"oapp");
+const PPC_TYPE_WILDCARD: u32 = u32::from_be_bytes(*b"****");
 pub const PPC_BAD_FORMAT: i16 = -206;
 pub const PPC_CHANNEL_NOT_BUSY: i16 = -211;
 pub const PPC_GESTALT_UNDEF_SELECTOR_ERR: i16 = -5551;
@@ -2834,15 +2835,6 @@ pub(crate) struct PpcNativeExceptionContext {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PpcAppleEventHandlerRecord {
-    event_class: u32,
-    event_id: u32,
-    callback: PpcCallbackTarget,
-    refcon: u32,
-    is_system_handler: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PpcAppleEventDispatchAllocation {
     resume_guest_call_depth: usize,
     descriptors: u32,
@@ -2854,7 +2846,7 @@ struct PpcAppleEventDispatchAllocation {
 pub(crate) struct PpcAppleEventState {
     application_high_level_event_aware: bool,
     sent_open_application_event: bool,
-    handlers: Vec<PpcAppleEventHandlerRecord>,
+    handlers: SharedProcessAppleEventHandlers,
     pending_dispatches: Vec<PpcAppleEventDispatchAllocation>,
 }
 
@@ -5669,6 +5661,7 @@ impl PpcLoadedApp {
             .attach_native_menu_selection(&mut self.toolbox_startup.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
         context.attach_guest_calls(&mut self.toolbox_startup.guest_calls);
+        context.attach_apple_event_handlers(&mut self.apple_events.handlers);
     }
 
     /// Temporarily borrow the canonical event queue from [`ProcessContext`] into this
@@ -23329,21 +23322,25 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::AEInstallEventHandler => {
             Some(ppc_install_apple_event_handler(cpu, memory, apple_events))
         }
-        PpcImportDispatcherTarget::AEProcessAppleEvent => Some(ppc_process_apple_event(
-            cpu,
-            process_memory_manager,
-            memory,
-            heap_cursor,
-            heap_limit,
-            last_mem_error,
-            ptrs,
-            free_ptr_blocks,
-            handles,
-            free_handle_blocks,
-            handle_states,
-            apple_events,
-            toolbox_startup.guest_calls.depth(),
-        )),
+        PpcImportDispatcherTarget::AEProcessAppleEvent => {
+            let guest_call_depth = toolbox_startup.guest_calls.depth();
+            Some(ppc_process_apple_event(
+                cpu,
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                heap_limit,
+                last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                handles,
+                free_handle_blocks,
+                handle_states,
+                apple_events,
+                toolbox_startup,
+                guest_call_depth,
+            ))
+        }
         PpcImportDispatcherTarget::LNew => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 4-70--4-72:
             // construct the public ListRec, cell-data handle, bounds, default
@@ -61733,25 +61730,32 @@ fn ppc_install_apple_event_handler(
     // Inside Macintosh: Interapplication Communication (1993),
     // pp. 4-62--4-64. PowerPC UPPs can be routine descriptors or TVectors;
     // resolve them when installed so dispatch preserves their TOC value.
-    let Some(callback) = ppc_resolve_callback_target(memory, cpu.gpr[5], cpu.gpr[2], None) else {
+    let Some(procedure) = resolve_guest_procedure(
+        memory,
+        cpu.gpr[5],
+        cpu.gpr[2],
+        None,
+        GuestIsa::PowerPc,
+        GuestIsa::PowerPc,
+    ) else {
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     };
-    if memory.read_u32_be(callback.entry).is_none() {
+    let mapped = match procedure.isa {
+        GuestIsa::PowerPc => memory.read_u32_be(procedure.entry).is_some(),
+        GuestIsa::M68k => memory.read_u16_be(procedure.entry).is_some(),
+    };
+    if cpu.gpr[5] & 1 != 0 || !mapped {
         return PpcImportAction::Return(ppc_i16_result(PPC_PARAM_ERR));
     }
-    let record = PpcAppleEventHandlerRecord {
-        event_class: cpu.gpr[3],
-        event_id: cpu.gpr[4],
-        callback,
-        refcon: cpu.gpr[6],
-        is_system_handler: cpu.gpr[7] & 0xff != 0,
-    };
-    apple_events.handlers.retain(|existing| {
-        existing.event_class != record.event_class
-            || existing.event_id != record.event_id
-            || existing.is_system_handler != record.is_system_handler
-    });
-    apple_events.handlers.push(record);
+    apple_events.handlers.install(
+        cpu.gpr[7] & 0xff != 0,
+        cpu.gpr[3],
+        cpu.gpr[4],
+        ProcessAppleEventHandler {
+            procedure,
+            refcon: cpu.gpr[6],
+        },
+    );
     PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
 }
 
@@ -61769,6 +61773,7 @@ fn ppc_process_apple_event(
     free_handle_blocks: &mut Vec<PpcHandleRecord>,
     handle_states: &mut Vec<PpcHandleStateRecord>,
     apple_events: &mut PpcAppleEventState,
+    toolbox_startup: &mut PpcToolboxStartupState,
     resume_guest_call_depth: usize,
 ) -> PpcImportAction {
     // AEProcessAppleEvent receives the EventRecord returned by the Event
@@ -61789,19 +61794,7 @@ fn ppc_process_apple_event(
     let Some(handler) =
         apple_events
             .handlers
-            .iter()
-            .rev()
-            .find(|handler| {
-                handler.event_class == event_class
-                    && handler.event_id == event_id
-                    && !handler.is_system_handler
-            })
-            .or_else(|| {
-                apple_events.handlers.iter().rev().find(|handler| {
-                    handler.event_class == event_class && handler.event_id == event_id
-                })
-            })
-            .copied()
+            .handler_for(event_class, event_id, PPC_TYPE_WILDCARD)
     else {
         return PpcImportAction::Return(ppc_i16_result(PPC_ERR_AE_EVENT_NOT_HANDLED));
     };
@@ -61890,13 +61883,77 @@ fn ppc_process_apple_event(
             event_handle,
             reply_handle,
         });
-    PpcImportAction::CallNative {
-        entry: handler.callback.entry,
-        rtoc: handler.callback.rtoc,
-        return_pc: PPC_GUEST_CALL_RETURN_PC,
-        final_pc: cpu.lr,
-        restore_rtoc: cpu.gpr[2],
-        return_gpr3: PpcNativeReturnGpr3::Preserve,
+    match handler.procedure.isa {
+        GuestIsa::PowerPc => PpcImportAction::CallNative {
+            entry: handler.procedure.entry,
+            rtoc: handler.procedure.rtoc,
+            return_pc: PPC_GUEST_CALL_RETURN_PC,
+            final_pc: cpu.lr,
+            restore_rtoc: cpu.gpr[2],
+            return_gpr3: PpcNativeReturnGpr3::Preserve,
+        },
+        GuestIsa::M68k => {
+            // AEEventHandlerProc is a Pascal function returning a two-byte
+            // OSErr with three four-byte arguments. Interapplication
+            // Communication (1993), pp. 4-12 and 4-66--4-68; PowerPC System
+            // Software (1994), pp. 2-12--2-16.
+            let proc_info = if handler.procedure.proc_info == 0 {
+                0x0000_0fe0
+            } else {
+                handler.procedure.proc_info
+            };
+            let saved_gateway = toolbox_startup.mixed_mode_m68k_gateway;
+            let saved_stack_top = toolbox_startup.mixed_mode_m68k_stack_top;
+            let action = ppc_begin_m68k_universal_proc(
+                cpu,
+                memory,
+                heap_cursor,
+                heap_limit,
+                toolbox_startup,
+                handler.procedure,
+                proc_info,
+                None,
+                vec![descriptors, descriptors + 8, handler.refcon],
+                cpu.lr,
+                PpcNativeReturnGpr3::Preserve,
+            );
+            ppc_synchronize_process_native_allocator(
+                process_memory_manager,
+                *heap_cursor,
+                heap_limit,
+                *last_mem_error,
+                ptrs,
+                free_ptr_blocks,
+                free_handle_blocks,
+            );
+            if let Some(action) = action {
+                action
+            } else {
+                apple_events.pending_dispatches.pop();
+                toolbox_startup.mixed_mode_m68k_gateway = saved_gateway;
+                toolbox_startup.mixed_mode_m68k_stack_top = saved_stack_top;
+                for handle in [event_handle, reply_handle] {
+                    let _ = memory.write_u32_be(handle, 0);
+                }
+                process_memory_manager.restore_native_snapshot(snapshot);
+                process_memory_manager.set_native_mem_error(PPC_MEM_FULL_ERR);
+                ppc_apply_process_native_allocator(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    ptrs,
+                    free_ptr_blocks,
+                    free_handle_blocks,
+                );
+                handles.retain(|record| {
+                    record.handle != event_handle && record.handle != reply_handle
+                });
+                ppc_forget_handle_state(event_handle, handle_states);
+                ppc_forget_handle_state(reply_handle, handle_states);
+                PpcImportAction::Return(ppc_i16_result(PPC_MEM_FULL_ERR))
+            }
+        }
     }
 }
 
@@ -150743,19 +150800,26 @@ pub(crate) mod tests {
             .memory
             .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
             .unwrap();
-        let mut apple_events = PpcAppleEventState {
-            handlers: vec![PpcAppleEventHandlerRecord {
-                event_class: PPC_CORE_EVENT_CLASS,
-                event_id: PPC_OPEN_APPLICATION_EVENT,
-                callback: PpcCallbackTarget {
-                    entry: PPC_CODE_BASE,
-                    rtoc: PPC_DATA_BASE,
-                    proc_info: 0,
-                    routine_flags: 0,
-                },
+        let handlers = SharedProcessAppleEventHandlers::default();
+        handlers.install(
+            false,
+            PPC_CORE_EVENT_CLASS,
+            PPC_OPEN_APPLICATION_EVENT,
+            ProcessAppleEventHandler {
+                procedure: resolve_guest_procedure(
+                    &mut native.memory,
+                    PPC_CODE_BASE,
+                    PPC_DATA_BASE,
+                    None,
+                    GuestIsa::PowerPc,
+                    GuestIsa::PowerPc,
+                )
+                .unwrap(),
                 refcon: 0xfeed_beef,
-                is_system_handler: false,
-            }],
+            },
+        );
+        let mut apple_events = PpcAppleEventState {
+            handlers,
             ..PpcAppleEventState::default()
         };
         let mut heap_cursor = native.heap_cursor();
@@ -150782,6 +150846,7 @@ pub(crate) mod tests {
                 &mut free_handle_blocks,
                 &mut handle_states,
                 &mut apple_events,
+                &mut native.toolbox_startup,
                 0,
             )
         };
@@ -150881,6 +150946,149 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn classic_apple_event_handler_bundle_is_process_owned_cross_isa_and_disposed() {
+        let (mut classic, mut classic_cpu, mut classic_bus) = setup_with_port();
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        classic.attach_process_context(&mut context);
+        native.attach_process_context(&mut context);
+
+        let ram_end = classic_bus.ram_size();
+        let low_memory_end = 0x0010_0000.min(ram_end);
+        let low_memory = classic_bus
+            .shared_ram_region(0, low_memory_end)
+            .expect("classic adapter owns low memory");
+        context.attach_memory(0, low_memory, &mut native.memory);
+        for (base, end) in native
+            .memory
+            .ordinary_mapping_holes(low_memory_end, ram_end)
+        {
+            let memory = classic_bus
+                .shared_ram_region(base, end - base)
+                .expect("classic adapter owns the native mapping hole");
+            context.attach_memory(base, memory, &mut native.memory);
+        }
+
+        let sp = TEST_SP;
+        let event_class = u32::from_be_bytes(*b"aevt");
+        let event_id = u32::from_be_bytes(*b"oapp");
+        let handler = 0x0040_8000;
+        classic_cpu.write_reg(Register::D0, 0x091F);
+        classic_bus.write_word(sp, 0);
+        classic_bus.write_long(sp + 2, 0xfeed_beef);
+        classic_bus.write_long(sp + 6, handler);
+        classic_bus.write_long(sp + 10, event_id);
+        classic_bus.write_long(sp + 14, event_class);
+        classic_bus.write_word(sp + 18, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(
+            native
+                .apple_events
+                .handlers
+                .get(false, event_class, event_id)
+                .map(|registered| (
+                    registered.procedure.isa,
+                    registered.procedure.original_pointer,
+                    registered.refcon,
+                )),
+            Some((GuestIsa::M68k, handler, 0xfeed_beef))
+        );
+
+        let native_event_class = u32::from_be_bytes(*b"misc");
+        let native_event_id = u32::from_be_bytes(*b"slct");
+        native.cpu.gpr[3] = native_event_class;
+        native.cpu.gpr[4] = native_event_id;
+        native.cpu.gpr[5] = PPC_CODE_BASE;
+        native.cpu.gpr[6] = 0x1234_5678;
+        native.cpu.gpr[7] = 1;
+        assert_eq!(
+            ppc_install_apple_event_handler(
+                &native.cpu,
+                &mut native.memory,
+                &mut native.apple_events,
+            ),
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        );
+        assert_eq!(
+            classic
+                .ae_handlers
+                .get(true, native_event_class, native_event_id)
+                .map(|registered| (registered.procedure.isa, registered.refcon)),
+            Some((GuestIsa::PowerPc, 0x1234_5678))
+        );
+
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_cpu.write_reg(Register::PC, 0x00f0_1234);
+        classic_cpu.write_reg(Register::D0, 0x021B);
+        classic_bus.write_long(sp, 0x0032_0000);
+        classic_bus.write_word(sp + 4, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+
+        let state = classic
+            .ae_call_state
+            .clone()
+            .expect("classic AppleEvent handler is in flight");
+        let (event_desc, reply_desc) = state
+            .owned_descriptors
+            .expect("classic AppleEvent callback descriptors are process-owned");
+        let event_handle = classic_bus.read_long(event_desc + 4);
+        let event_data = classic_bus.read_long(event_handle);
+        assert_eq!(native.memory.read_u32_be(event_desc), Some(event_class));
+        assert_eq!(native.memory.read_u32_be(event_desc + 4), Some(event_handle));
+        assert_eq!(native.memory.read_u32_be(event_handle), Some(event_data));
+        classic_bus.write_byte(event_data, b'C');
+        assert_eq!(native.memory.read_u8(event_data), Some(b'C'));
+        native.memory.write_u8(event_data + 7, b'!').unwrap();
+        assert_eq!(classic_bus.read_byte(event_data + 7), b'!');
+
+        classic_bus.write_word(state.expected_sp_after_rtd, 0);
+        classic_cpu.write_reg(Register::A7, state.expected_sp_after_rtd);
+        classic_cpu.write_reg(Register::D0, 0xFEFE);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(classic_bus.get_alloc_size(event_desc), None);
+        assert_eq!(classic_bus.get_alloc_size(reply_desc), None);
+        assert_eq!(classic_bus.get_alloc_size(event_handle), None);
+        assert_eq!(classic_bus.get_alloc_size(event_data), None);
+        assert!(classic.ae_call_state.is_none());
+
+        native.cpu.gpr[3] = event_class;
+        native.cpu.gpr[4] = event_id;
+        native.cpu.gpr[5] = PPC_CODE_BASE;
+        native.cpu.gpr[6] = 0xcafe_babe;
+        native.cpu.gpr[7] = 0;
+        assert_eq!(
+            ppc_install_apple_event_handler(
+                &native.cpu,
+                &mut native.memory,
+                &mut native.apple_events,
+            ),
+            PpcImportAction::Return(ppc_i16_result(PPC_NO_ERR))
+        );
+        classic_cpu.write_reg(Register::A7, sp);
+        classic_cpu.write_reg(Register::PC, 0x00f0_5678);
+        classic_cpu.write_reg(Register::D0, 0x021B);
+        classic_bus.write_long(sp, 0x0032_0000);
+        classic_bus.write_word(sp + 4, 0);
+        assert!(classic
+            .dispatch_toolbox(true, 0x016, &mut classic_cpu, &mut classic_bus)
+            .unwrap()
+            .is_ok());
+        let pending = classic.guest_calls.pending_powerpc_from_m68k().unwrap();
+        assert_eq!(pending.target.isa, GuestIsa::PowerPc);
+        assert_eq!(pending.target.entry, PPC_CODE_BASE);
+        assert_eq!(pending.arguments.as_slice()[2], 0xcafe_babe);
+    }
+
+    #[test]
     fn apple_event_handler_bundle_allocation_failure_is_atomic() {
         let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
         native.set_heap_cursor(native.heap_limit().saturating_sub(8));
@@ -150904,19 +151112,26 @@ pub(crate) mod tests {
             .memory
             .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
             .unwrap();
-        let mut apple_events = PpcAppleEventState {
-            handlers: vec![PpcAppleEventHandlerRecord {
-                event_class: PPC_CORE_EVENT_CLASS,
-                event_id: PPC_OPEN_APPLICATION_EVENT,
-                callback: PpcCallbackTarget {
-                    entry: PPC_CODE_BASE,
-                    rtoc: PPC_DATA_BASE,
-                    proc_info: 0,
-                    routine_flags: 0,
-                },
+        let handlers = SharedProcessAppleEventHandlers::default();
+        handlers.install(
+            false,
+            PPC_CORE_EVENT_CLASS,
+            PPC_OPEN_APPLICATION_EVENT,
+            ProcessAppleEventHandler {
+                procedure: resolve_guest_procedure(
+                    &mut native.memory,
+                    PPC_CODE_BASE,
+                    PPC_DATA_BASE,
+                    None,
+                    GuestIsa::PowerPc,
+                    GuestIsa::PowerPc,
+                )
+                .unwrap(),
                 refcon: 0,
-                is_system_handler: false,
-            }],
+            },
+        );
+        let mut apple_events = PpcAppleEventState {
+            handlers,
             ..PpcAppleEventState::default()
         };
         let before_allocator = context
@@ -150952,6 +151167,7 @@ pub(crate) mod tests {
                 &mut free_handle_blocks,
                 &mut handle_states,
                 &mut apple_events,
+                &mut native.toolbox_startup,
                 0,
             )
         };
@@ -150975,6 +151191,76 @@ pub(crate) mod tests {
             before_allocator.free_handle_blocks
         );
         assert_eq!(manager.native_handle_records(), before_handles);
+    }
+
+    #[test]
+    fn native_apple_event_dispatch_enters_registered_classic_handler() {
+        let mut native = load_pef_application(&synthetic_pef_with_import(b"TestImport")).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let event_record = PPC_DATA_BASE + 0x2800;
+        native.memory.add_region(event_record, vec![0; 16]);
+        native
+            .memory
+            .write_u16_be(event_record, PPC_HIGH_LEVEL_EVENT)
+            .unwrap();
+        native
+            .memory
+            .write_u32_be(event_record + 2, PPC_CORE_EVENT_CLASS)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 10, (PPC_OPEN_APPLICATION_EVENT >> 16) as u16)
+            .unwrap();
+        native
+            .memory
+            .write_u16_be(event_record + 12, PPC_OPEN_APPLICATION_EVENT as u16)
+            .unwrap();
+        let classic_handler = 0x0000_4000;
+        native.apple_events.handlers.install(
+            false,
+            PPC_CORE_EVENT_CLASS,
+            PPC_OPEN_APPLICATION_EVENT,
+            ProcessAppleEventHandler {
+                procedure: crate::guest_procedure::GuestProcedure::raw_m68k(classic_handler),
+                refcon: 0xfeed_beef,
+            },
+        );
+        let mut heap_cursor = native.heap_cursor();
+        let heap_limit = native.heap_limit();
+        let mut last_mem_error = native.last_mem_error();
+        let mut ptrs = native.ptrs();
+        let mut free_ptr_blocks = native.free_ptr_blocks();
+        let mut handles = native.handles();
+        let mut free_handle_blocks = native.free_handle_blocks();
+        let mut handle_states = native.handle_states();
+        native.cpu.gpr[3] = event_record;
+
+        let action = {
+            let mut manager = context.memory_manager_mut();
+            ppc_process_apple_event(
+                &mut native.cpu,
+                &mut manager,
+                &mut native.memory,
+                &mut heap_cursor,
+                heap_limit,
+                &mut last_mem_error,
+                &mut ptrs,
+                &mut free_ptr_blocks,
+                &mut handles,
+                &mut free_handle_blocks,
+                &mut handle_states,
+                &mut native.apple_events,
+                &mut native.toolbox_startup,
+                0,
+            )
+        };
+
+        assert_eq!(action, PpcImportAction::Halt);
+        assert!(native.guest_calls.has_m68k_execution());
+        let pending = native.guest_calls.activate_m68k().unwrap();
+        assert_eq!(pending.entry, classic_handler);
+        assert_eq!(native.apple_events.pending_dispatches.len(), 1);
     }
 
     #[test]

@@ -1392,18 +1392,13 @@ impl super::TrapDispatcher {
         (base, base.wrapping_add(stack_size))
     }
 
-    fn apple_event_handler_for(&self, event_class: u32, event_id: u32) -> Option<(u32, u32)> {
-        // Inside Macintosh Volume VI, 6-28 to 6-29: AEInstallEventHandler
-        // entries may use typeWildCard ('****') for event class, event ID,
-        // or both; wildcard entries match all possible values.
-        [
-            (event_class, event_id),
-            (event_class, AE_TYPE_WILDCARD),
-            (AE_TYPE_WILDCARD, event_id),
-            (AE_TYPE_WILDCARD, AE_TYPE_WILDCARD),
-        ]
-        .into_iter()
-        .find_map(|key| self.ae_handlers.get(&key).copied())
+    fn apple_event_handler_for(
+        &self,
+        event_class: u32,
+        event_id: u32,
+    ) -> Option<crate::process_context::ProcessAppleEventHandler> {
+        self.ae_handlers
+            .handler_for(event_class, event_id, AE_TYPE_WILDCARD)
     }
 
     fn ae_object_accessor_for(
@@ -1618,18 +1613,18 @@ impl super::TrapDispatcher {
                 if existing != 0 {
                     existing
                 } else {
-                    let handle = bus.alloc(4);
-                    bus.write_long(handle, 0);
-                    handle
+                    self.new_empty_process_classic_handle(bus).unwrap_or(0)
                 }
             } else {
                 0
             }
         } else {
-            let handle = bus.alloc(4);
-            bus.write_long(handle, 0);
-            self.write_bytes_to_handle(bus, handle, &desc.data);
-            handle
+            self.new_process_classic_handle(bus, desc.data.len() as u32)
+                .map(|(handle, ptr)| {
+                    bus.write_bytes(ptr, &desc.data);
+                    handle
+                })
+                .unwrap_or(0)
         };
         bus.write_long(desc_ptr, desc.desc_type);
         bus.write_long(desc_ptr + 4, data_handle);
@@ -1687,8 +1682,22 @@ impl super::TrapDispatcher {
         write_null_aedesc(bus, desc_ptr);
     }
 
+    fn dispose_owned_ae_callback_descriptor(&mut self, bus: &mut MacMemoryBus, desc_ptr: u32) {
+        if desc_ptr == 0 {
+            return;
+        }
+        let data_handle = bus.read_long(desc_ptr + 4);
+        self.ae_events.remove(&desc_ptr);
+        self.ae_descriptors.remove(&desc_ptr);
+        if data_handle != 0 {
+            self.ae_descriptor_backing.remove(&data_handle);
+            let _ = self.dispose_process_handle(bus, data_handle, true);
+        }
+        self.dispose_process_ptr(bus, desc_ptr);
+    }
+
     fn ae_descriptor_record(&mut self, bus: &mut MacMemoryBus, desc: AeDescriptor) -> u32 {
-        let desc_ptr = bus.alloc(8);
+        let desc_ptr = self.new_process_classic_ptr(bus, 8);
         self.write_ae_descriptor_value(bus, desc_ptr, desc);
         desc_ptr
     }
@@ -1896,6 +1905,7 @@ impl super::TrapDispatcher {
             return_pc: resolve_state.return_pc,
             expected_sp_after_rtd: resolve_state.result_slot,
             result_override: None,
+            owned_descriptors: None,
             resolve_state: Some(resolve_state),
         });
 
@@ -6720,6 +6730,10 @@ impl super::TrapDispatcher {
                     let result = state
                         .result_override
                         .unwrap_or_else(|| bus.read_word(sp) as i16);
+                    if let Some((event_desc, reply_desc)) = state.owned_descriptors {
+                        self.dispose_owned_ae_callback_descriptor(bus, event_desc);
+                        self.dispose_owned_ae_callback_descriptor(bus, reply_desc);
+                    }
                     if let Some(resolve_state) = state.resolve_state {
                         self.ae_continue_resolve_after_accessor(bus, cpu, resolve_state, result);
                         return Some(Ok(()));
@@ -6889,12 +6903,37 @@ impl super::TrapDispatcher {
                 //   SP+18  result OSErr slot (2 bytes; pre-pushed)
                 // Inside Macintosh Volume VI, 6-43.
                 if routine == 31 && param_bytes == 18 {
+                    let is_sys_handler = Self::stack_bool_slot(bus, sp);
                     let handler_refcon = bus.read_long(sp + 2);
                     let handler_ptr = bus.read_long(sp + 6);
                     let event_id = bus.read_long(sp + 10);
                     let event_class = bus.read_long(sp + 14);
-                    self.ae_handlers
-                        .insert((event_class, event_id), (handler_ptr, handler_refcon));
+                    let procedure = (handler_ptr != 0 && handler_ptr & 1 == 0)
+                        .then(|| {
+                            crate::guest_procedure::resolve_guest_procedure(
+                                bus,
+                                handler_ptr,
+                                0,
+                                None,
+                                crate::guest_procedure::GuestIsa::M68k,
+                                crate::guest_procedure::GuestIsa::M68k,
+                            )
+                        })
+                        .flatten();
+                    let err = if let Some(procedure) = procedure {
+                        self.ae_handlers.install(
+                            is_sys_handler,
+                            event_class,
+                            event_id,
+                            crate::process_context::ProcessAppleEventHandler {
+                                procedure,
+                                refcon: handler_refcon,
+                            },
+                        );
+                        0
+                    } else {
+                        -50i16
+                    };
                     eprintln!(
                         "[AE] InstallEventHandler class='{}' id='{}' handler=${:08X} refcon=${:08X}",
                         format_fourcc(event_class),
@@ -6902,19 +6941,25 @@ impl super::TrapDispatcher {
                         handler_ptr,
                         handler_refcon,
                     );
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
                 }
                 if routine == 33 && param_bytes == 18 {
+                    let is_sys_handler = Self::stack_bool_slot(bus, sp);
                     let handler_refcon_ptr = bus.read_long(sp + 2);
                     let handler_ptr = bus.read_long(sp + 6);
                     let event_id = bus.read_long(sp + 10);
                     let event_class = bus.read_long(sp + 14);
-                    let found = self.ae_handlers.get(&(event_class, event_id)).copied();
-                    let err = if let Some((handler, refcon)) = found {
+                    let found = self.ae_handlers.get(is_sys_handler, event_class, event_id);
+                    let err = if let Some(handler) = found {
                         if handler_ptr != 0 {
-                            bus.write_long(handler_ptr, handler);
+                            bus.write_long(handler_ptr, handler.procedure.original_pointer);
                         }
                         if handler_refcon_ptr != 0 {
-                            bus.write_long(handler_refcon_ptr, refcon);
+                            bus.write_long(handler_refcon_ptr, handler.refcon);
                         }
                         0
                     } else {
@@ -6924,6 +6969,27 @@ impl super::TrapDispatcher {
                         if handler_refcon_ptr != 0 {
                             bus.write_long(handler_refcon_ptr, 0);
                         }
+                        AE_ERR_HANDLER_NOT_FOUND
+                    };
+                    let new_sp = sp + param_bytes;
+                    bus.write_word(new_sp, err as u16);
+                    cpu.write_reg(Register::A7, new_sp);
+                    cpu.write_reg(Register::D0, err as i32 as u32);
+                    return Some(Ok(()));
+                }
+                if routine == 32 && param_bytes == 14 {
+                    let is_sys_handler = Self::stack_bool_slot(bus, sp);
+                    let handler_ptr = bus.read_long(sp + 2);
+                    let event_id = bus.read_long(sp + 6);
+                    let event_class = bus.read_long(sp + 10);
+                    let err = if self.ae_handlers.remove(
+                        is_sys_handler,
+                        event_class,
+                        event_id,
+                        handler_ptr,
+                    ) {
+                        0
+                    } else {
                         AE_ERR_HANDLER_NOT_FOUND
                     };
                     let new_sp = sp + param_bytes;
@@ -7990,6 +8056,7 @@ impl super::TrapDispatcher {
                             return_pc,
                             expected_sp_after_rtd: result_slot,
                             result_override: None,
+                            owned_descriptors: None,
                             resolve_state: None,
                         });
                         cpu.write_reg(Register::PC, handler_ptr);
@@ -8163,9 +8230,11 @@ impl super::TrapDispatcher {
                             bus.read_word(event_record + 14)
                         );
                     }
-                    if let Some((handler_ptr, refcon)) =
+                    if let Some(handler) =
                         self.apple_event_handler_for(oapp_class, oapp_id)
                     {
+                        let handler_ptr = handler.procedure.original_pointer;
+                        let refcon = handler.refcon;
                         // Lazily allocate the trampoline on first use.
                         // Six bytes encode `MOVE.W #$FEFE, D0; _Pack8`,
                         // pad to 8 for alignment.
@@ -8188,11 +8257,30 @@ impl super::TrapDispatcher {
                         // AEGetAttribute* exposes to the handler. The
                         // null reply descriptor matches the no-reply
                         // path for a synthetic open-application event.
-                        let event_desc = bus.alloc(8);
+                        let return_allocation_failure =
+                            |cpu: &mut dyn CpuOps, bus: &mut MacMemoryBus| {
+                                let new_sp = sp + param_bytes;
+                                bus.write_word(new_sp, (-108i16) as u16);
+                                cpu.write_reg(Register::A7, new_sp);
+                                cpu.write_reg(Register::D0, -108i32 as u32);
+                                Some(Ok(()))
+                            };
+                        let event_desc = self.new_process_classic_ptr(bus, 8);
+                        if event_desc == 0 {
+                            return return_allocation_failure(cpu, bus);
+                        }
                         self.write_synthetic_apple_event_descriptor(
                             bus, event_desc, oapp_class, oapp_id,
                         );
-                        let reply_desc = bus.alloc(8);
+                        if bus.read_long(event_desc + 4) == 0 {
+                            self.dispose_owned_ae_callback_descriptor(bus, event_desc);
+                            return return_allocation_failure(cpu, bus);
+                        }
+                        let reply_desc = self.new_process_classic_ptr(bus, 8);
+                        if reply_desc == 0 {
+                            self.dispose_owned_ae_callback_descriptor(bus, event_desc);
+                            return return_allocation_failure(cpu, bus);
+                        }
                         bus.write_long(reply_desc, AE_TYPE_NULL);
                         bus.write_long(reply_desc + 4, 0);
 
@@ -8221,6 +8309,7 @@ impl super::TrapDispatcher {
                             return_pc,
                             expected_sp_after_rtd: sp + 4,
                             result_override: None,
+                            owned_descriptors: Some((event_desc, reply_desc)),
                             resolve_state: None,
                         });
                         self.fired_oapp_handler = true;
@@ -8230,7 +8319,39 @@ impl super::TrapDispatcher {
                             handler_ptr, trampoline,
                         );
 
-                        cpu.write_reg(Register::PC, handler_ptr);
+                        match handler.procedure.isa {
+                            crate::guest_procedure::GuestIsa::M68k => {
+                                cpu.write_reg(Register::PC, handler.procedure.entry);
+                            }
+                            crate::guest_procedure::GuestIsa::PowerPc => {
+                                let arguments = crate::guest_call::PowerPcArguments::from_slice(&[
+                                    event_desc,
+                                    reply_desc,
+                                    refcon,
+                                ])
+                                .expect("AppleEvent handler has three arguments");
+                                let started = self.guest_calls.begin_m68k_to_powerpc(
+                                    crate::guest_call::GuestCallTarget {
+                                        isa: handler.procedure.isa,
+                                        entry: handler.procedure.entry,
+                                        rtoc: handler.procedure.rtoc,
+                                    },
+                                    arguments,
+                                    trampoline,
+                                    sp + 4,
+                                    Some(crate::guest_call::M68kResultTarget::Memory {
+                                        address: sp + 4,
+                                        size: 2,
+                                    }),
+                                );
+                                if !started {
+                                    self.ae_call_state = self.ae_call_state_stack.pop();
+                                    self.dispose_owned_ae_callback_descriptor(bus, event_desc);
+                                    self.dispose_owned_ae_callback_descriptor(bus, reply_desc);
+                                    return return_allocation_failure(cpu, bus);
+                                }
+                            }
+                        }
                         return Some(Ok(()));
                     }
                 }
@@ -8267,9 +8388,11 @@ impl super::TrapDispatcher {
                         }
                     }
                     if let Some(event) = self.ae_events.get(&event_desc).cloned() {
-                        if let Some((handler_ptr, refcon)) =
+                        if let Some(handler) =
                             self.apple_event_handler_for(event.event_class, event.event_id)
                         {
+                            let handler_ptr = handler.procedure.original_pointer;
+                            let refcon = handler.refcon;
                             let trampoline = match self.ae_trampoline_addr {
                                 Some(addr) => addr,
                                 None => {
@@ -8301,6 +8424,7 @@ impl super::TrapDispatcher {
                                 return_pc,
                                 expected_sp_after_rtd: sp + param_bytes,
                                 result_override: Some(0),
+                                owned_descriptors: None,
                                 resolve_state: None,
                             });
                             if trace_ae_enabled() {
@@ -8313,7 +8437,41 @@ impl super::TrapDispatcher {
                                 );
                             }
 
-                            cpu.write_reg(Register::PC, handler_ptr);
+                            match handler.procedure.isa {
+                                crate::guest_procedure::GuestIsa::M68k => {
+                                    cpu.write_reg(Register::PC, handler.procedure.entry);
+                                }
+                                crate::guest_procedure::GuestIsa::PowerPc => {
+                                    let arguments =
+                                        crate::guest_call::PowerPcArguments::from_slice(&[
+                                            event_desc,
+                                            reply_desc,
+                                            refcon,
+                                        ])
+                                        .expect("AppleEvent handler has three arguments");
+                                    if !self.guest_calls.begin_m68k_to_powerpc(
+                                        crate::guest_call::GuestCallTarget {
+                                            isa: handler.procedure.isa,
+                                            entry: handler.procedure.entry,
+                                            rtoc: handler.procedure.rtoc,
+                                        },
+                                        arguments,
+                                        trampoline,
+                                        sp + param_bytes,
+                                        Some(crate::guest_call::M68kResultTarget::Memory {
+                                            address: sp + param_bytes,
+                                            size: 2,
+                                        }),
+                                    ) {
+                                        self.ae_call_state = self.ae_call_state_stack.pop();
+                                        let new_sp = sp + param_bytes;
+                                        bus.write_word(new_sp, (-108i16) as u16);
+                                        cpu.write_reg(Register::A7, new_sp);
+                                        cpu.write_reg(Register::D0, -108i32 as u32);
+                                        return Some(Ok(()));
+                                    }
+                                }
+                            }
                             return Some(Ok(()));
                         }
                     }
@@ -29667,7 +29825,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let sp = TEST_SP;
 
-        cpu.write_reg(Register::D0, 0x0720); // 7 words params, routine $20
+        cpu.write_reg(Register::D0, 0x07FF); // 7 words params, unimplemented routine $FF
         for i in 0..14 {
             bus.write_byte(sp + i, 0);
         }
@@ -29716,7 +29874,7 @@ mod tests {
         let sp = TEST_SP;
         let event_class = u32::from_be_bytes(*b"aevt");
         let event_id = u32::from_be_bytes(*b"oapp");
-        let handler_ptr = 0x00AB_CDEFu32;
+        let handler_ptr = 0x00AB_CDEEu32;
         let handler_refcon = 0x0102_0304u32;
 
         // Selector $091F => AEInstallEventHandler.
@@ -29735,8 +29893,10 @@ mod tests {
         assert_eq!(bus.read_word(sp + 18), 0); // noErr
         assert_eq!(cpu.read_reg(Register::A7), sp + 18);
         assert_eq!(
-            disp.ae_handlers.get(&(event_class, event_id)),
-            Some(&(handler_ptr, handler_refcon))
+            disp.ae_handlers
+                .get(false, event_class, event_id)
+                .map(|handler| (handler.procedure.original_pointer, handler.refcon)),
+            Some((handler_ptr, handler_refcon))
         );
     }
 
@@ -29752,7 +29912,7 @@ mod tests {
         cpu.write_reg(Register::D0, 0x091F);
         bus.write_word(sp, 0); // isSysHandler
         bus.write_long(sp + 2, 0x1111_2222); // refcon #1
-        bus.write_long(sp + 6, 0x00AA_0001); // handler #1
+        bus.write_long(sp + 6, 0x00AA_0000); // handler #1
         bus.write_long(sp + 10, event_id);
         bus.write_long(sp + 14, event_class);
         bus.write_word(sp + 18, 0xBEEF);
@@ -29773,8 +29933,10 @@ mod tests {
         assert!(second.unwrap().is_ok());
 
         assert_eq!(
-            disp.ae_handlers.get(&(event_class, event_id)),
-            Some(&(0x00BB_0002u32, 0x3333_4444u32))
+            disp.ae_handlers
+                .get(false, event_class, event_id)
+                .map(|handler| (handler.procedure.original_pointer, handler.refcon)),
+            Some((0x00BB_0002u32, 0x3333_4444u32))
         );
     }
 
@@ -30227,6 +30389,13 @@ mod tests {
         assert_ne!(bus.read_long(sp - 4), 0, "reply AEDesc pointer");
 
         let passed_event_desc = bus.read_long(sp);
+        let passed_reply_desc = bus.read_long(sp - 4);
+        assert_eq!(
+            state.owned_descriptors,
+            Some((passed_event_desc, passed_reply_desc))
+        );
+        assert_eq!(bus.get_alloc_size(passed_event_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(passed_reply_desc), Some(8));
         assert_ne!(
             passed_event_desc, event_record_ptr,
             "handler must receive an AppleEvent AEDesc, not the source EventRecord"
@@ -30274,6 +30443,15 @@ mod tests {
             .ae_call_state
             .clone()
             .expect("expected in-flight AE call state");
+        let (event_desc, reply_desc) = state
+            .owned_descriptors
+            .expect("AEProcessAppleEvent owns its callback descriptors");
+        let event_handle = bus.read_long(event_desc + 4);
+        let event_data = bus.read_long(event_handle);
+        assert_eq!(bus.get_alloc_size(event_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(reply_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(event_handle), Some(4));
+        assert_eq!(bus.get_alloc_size(event_data), Some(8));
         assert_eq!(state.return_pc, return_pc);
         assert_eq!(state.expected_sp_after_rtd, sp + 4);
     }
@@ -30519,15 +30697,27 @@ mod tests {
         let handler_refcon = 0x0000_0FA2u32;
         let event_desc = 0x0030_0000u32;
         let reply_desc = 0x0030_0100u32;
+        let outer_event_desc = disp.new_process_classic_ptr(&mut bus, 8);
+        let outer_reply_desc = disp.new_process_classic_ptr(&mut bus, 8);
+        super::write_null_aedesc(&mut bus, outer_event_desc);
+        super::write_null_aedesc(&mut bus, outer_reply_desc);
         let outer_state = crate::trap::dispatch::AeCallState {
             return_pc: 0x00F0_9999,
             expected_sp_after_rtd: 0x0010_0100,
             result_override: None,
+            owned_descriptors: Some((outer_event_desc, outer_reply_desc)),
             resolve_state: None,
         };
 
-        disp.ae_handlers
-            .insert((event_class, event_id), (handler_ptr, handler_refcon));
+        disp.ae_handlers.install(
+            false,
+            event_class,
+            event_id,
+            crate::process_context::ProcessAppleEventHandler {
+                procedure: crate::guest_procedure::GuestProcedure::raw_m68k(handler_ptr),
+                refcon: handler_refcon,
+            },
+        );
         disp.ae_events.insert(
             event_desc,
             crate::trap::dispatch::SyntheticAppleEvent {
@@ -30578,7 +30768,18 @@ mod tests {
             restored.expected_sp_after_rtd,
             outer_state.expected_sp_after_rtd
         );
+        assert_eq!(bus.get_alloc_size(outer_event_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(outer_reply_desc), Some(8));
         assert!(disp.ae_call_state_stack.is_empty());
+
+        bus.write_word(outer_state.expected_sp_after_rtd, 0);
+        cpu.write_reg(Register::A7, outer_state.expected_sp_after_rtd);
+        cpu.write_reg(Register::D0, 0xFEFE);
+        let outer_trampoline = disp.dispatch_toolbox(true, 0x016, &mut cpu, &mut bus);
+        assert!(outer_trampoline.unwrap().is_ok());
+        assert_eq!(bus.get_alloc_size(outer_event_desc), None);
+        assert_eq!(bus.get_alloc_size(outer_reply_desc), None);
+        assert!(disp.ae_call_state.is_none());
     }
 
     #[test]
@@ -31363,6 +31564,16 @@ mod tests {
             .clone()
             .expect("expected in-flight AE call state");
 
+        let (event_desc, reply_desc) = state
+            .owned_descriptors
+            .expect("AEProcessAppleEvent owns its callback descriptors");
+        let event_handle = bus.read_long(event_desc + 4);
+        let event_data = bus.read_long(event_handle);
+        assert_eq!(bus.get_alloc_size(event_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(reply_desc), Some(8));
+        assert_eq!(bus.get_alloc_size(event_handle), Some(4));
+        assert_eq!(bus.get_alloc_size(event_data), Some(8));
+
         // Simulate handler writing function result then returning through
         // trampoline (`MOVE.W #$FEFE, D0; _Pack8`).
         bus.write_word(state.expected_sp_after_rtd, handler_result);
@@ -31379,6 +31590,54 @@ mod tests {
             cpu.read_reg(Register::D0),
             handler_result as i16 as i32 as u32
         );
+        assert!(disp.ae_call_state.is_none());
+        assert_eq!(bus.get_alloc_size(event_desc), None);
+        assert_eq!(bus.get_alloc_size(reply_desc), None);
+        assert_eq!(bus.get_alloc_size(event_handle), None);
+        assert_eq!(bus.get_alloc_size(event_data), None);
+        assert!(!disp.ae_events.contains_key(&event_desc));
+        assert!(!disp.ae_descriptors.contains_key(&event_desc));
+    }
+
+    #[test]
+    fn pack8_aeprocessappleevent_callback_allocation_failure_is_atomic() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let sp = TEST_SP;
+        let event_class = u32::from_be_bytes(*b"aevt");
+        let event_id = u32::from_be_bytes(*b"oapp");
+
+        cpu.write_reg(Register::D0, 0x091F);
+        bus.write_word(sp, 0);
+        bus.write_long(sp + 2, 0x1111_2222);
+        bus.write_long(sp + 6, 0x0040_9000);
+        bus.write_long(sp + 10, event_id);
+        bus.write_long(sp + 14, event_class);
+        bus.write_word(sp + 18, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        disp.ae_trampoline_addr = Some(0x0012_3456);
+        let heap_limit = bus.application_memory_limit();
+        let transient_descriptor = heap_limit - 12;
+        bus.reserve_heap_until(transient_descriptor);
+        cpu.write_reg(Register::A7, sp);
+        cpu.write_reg(Register::PC, 0x00f0_5678);
+        cpu.write_reg(Register::D0, 0x021B);
+        bus.write_long(sp, 0x0032_1000);
+        bus.write_word(sp + 4, 0);
+        assert!(disp
+            .dispatch_toolbox(true, 0x016, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+
+        assert_eq!(cpu.read_reg(Register::A7), sp + 4);
+        assert_eq!(cpu.read_reg(Register::D0), -108i32 as u32);
+        assert_eq!(bus.read_word(sp + 4), (-108i16) as u16);
+        assert_eq!(bus.get_alloc_size(transient_descriptor), None);
+        assert!(disp.ae_events.is_empty());
+        assert!(disp.ae_descriptors.is_empty());
         assert!(disp.ae_call_state.is_none());
     }
 

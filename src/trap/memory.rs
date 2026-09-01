@@ -670,21 +670,21 @@ impl super::TrapDispatcher {
         0
     }
 
-    fn new_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
+    pub(super) fn new_process_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
         memory_manager.new_classic_ptr(bus, size)
     }
 
-    fn dispose_process_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
+    pub(super) fn dispose_process_ptr(&mut self, bus: &mut MacMemoryBus, ptr: u32) {
         let memory_manager = self.process_memory_manager();
         let mut memory_manager = memory_manager.borrow_mut();
         memory_manager.attach_classic_memory_bus(bus);
         memory_manager.dispose_process_ptr(bus, ptr);
     }
 
-    fn new_process_classic_handle(
+    pub(super) fn new_process_classic_handle(
         &mut self,
         bus: &mut MacMemoryBus,
         size: u32,
@@ -697,7 +697,7 @@ impl super::TrapDispatcher {
             .map_err(|error| error as i32 as u32)
     }
 
-    fn new_empty_process_classic_handle(
+    pub(super) fn new_empty_process_classic_handle(
         &mut self,
         bus: &mut MacMemoryBus,
     ) -> std::result::Result<u32, u32> {
@@ -709,7 +709,7 @@ impl super::TrapDispatcher {
             .map_err(|error| error as i32 as u32)
     }
 
-    fn dispose_process_handle(
+    pub(super) fn dispose_process_handle(
         &mut self,
         bus: &mut MacMemoryBus,
         handle: u32,

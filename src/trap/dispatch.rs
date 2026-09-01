@@ -13,7 +13,9 @@ use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
-use crate::process_context::{ProcessContext, SharedProcessMemoryManager};
+use crate::process_context::{
+    ProcessContext, SharedProcessAppleEventHandlers, SharedProcessMemoryManager,
+};
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -971,6 +973,11 @@ pub(crate) struct AeCallState {
     /// OSErr; AESend reports delivery status, so same-process sends use
     /// noErr here while the handler result remains a reply-event concern.
     pub result_override: Option<i16>,
+    /// Descriptor records created by the Apple Event Manager solely for this
+    /// handler invocation. The manager disposes these application-heap
+    /// objects after the handler returns. Interapplication Communication
+    /// (1993), pp. 4-33 and 4-39.
+    pub(crate) owned_descriptors: Option<(u32, u32)>,
     /// Optional Object Support Library continuation. When AEResolve calls a
     /// guest object accessor, the accessor returns through the same Pack8
     /// trampoline as AE handlers; this state tells the trampoline whether to
@@ -1827,11 +1834,8 @@ pub struct TrapDispatcher {
     pub(crate) dialogs_drawn_by_app: std::collections::HashSet<u32>,
     /// Map of Segment ID -> Loaded Address (for LoadSeg)
     pub(crate) segment_map: HashMap<i16, u32>,
-    /// AppleEvent handlers registered by the guest via Pack8 routine 31
-    /// (AEInstallEventHandler). Key is `(eventClass, eventID)` packed
-    /// as 4-char-codes; value is `(handler_proc_ptr, handler_refcon)`.
-    /// Inside Macintosh Volume VI, 6-43.
-    pub ae_handlers: HashMap<(u32, u32), (u32, u32)>,
+    /// Process-owned application and system AppleEvent dispatch tables.
+    pub(crate) ae_handlers: SharedProcessAppleEventHandlers,
     /// Synthetic AppleEvent descriptors currently visible to guest
     /// handlers. Key is the guest address of the AEDesc record.
     pub(crate) ae_events: HashMap<u32, SyntheticAppleEvent>,
@@ -2945,6 +2949,7 @@ impl TrapDispatcher {
         );
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
+        context.attach_apple_event_handlers(&mut self.ae_handlers);
     }
 
     pub(crate) fn process_memory_manager(&self) -> SharedProcessMemoryManager {
@@ -3899,7 +3904,7 @@ impl TrapDispatcher {
             movie_sticky_error: 0,
             dialogs_drawn_by_app: std::collections::HashSet::new(),
             segment_map: HashMap::new(),
-            ae_handlers: HashMap::new(),
+            ae_handlers: SharedProcessAppleEventHandlers::default(),
             ae_events: HashMap::new(),
             ae_descriptors: HashMap::new(),
             ae_descriptor_backing: HashMap::new(),

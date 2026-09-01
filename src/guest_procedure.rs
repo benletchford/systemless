@@ -60,7 +60,7 @@ pub(crate) struct GuestProcedure {
 }
 
 impl GuestProcedure {
-    fn raw_m68k(pointer: u32) -> Self {
+    pub(crate) fn raw_m68k(pointer: u32) -> Self {
         Self {
             original_pointer: pointer,
             representation: GuestProcedureRepresentation::RawCode,
