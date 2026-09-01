@@ -3,6 +3,8 @@
 //! Holds per-channel playback state and produces mixed PCM output each frame.
 //! Reference: *Inside Macintosh: Sound* (1994).
 
+use crate::callback_manager::CallbackTaskArchitecture;
+
 /// Output sample rate in Hz.
 pub const OUTPUT_RATE: u32 = 22050;
 /// Classic Sound Manager `rate22khz` fixed-point value (22254.54545 Hz).
@@ -179,7 +181,11 @@ pub enum PendingSoundCallback {
     /// Completion routine associated with SndStartFilePlay.
     /// Signature (Sound 1994, 2-151):
     ///   PROCEDURE MyFilePlayCompletionRoutine(chan: SndChannelPtr);
-    FileCompletion { callback_addr: u32, chan_ptr: u32 },
+    FileCompletion {
+        architecture: CallbackTaskArchitecture,
+        callback_addr: u32,
+        chan_ptr: u32,
+    },
 }
 
 /// Per-channel state.
@@ -207,6 +213,9 @@ pub struct SndChannel {
     pending_callback_cmds: Vec<SndCommand>,
     /// Completion routine for the current asynchronous SndStartFilePlay.
     file_completion_addr: u32,
+    /// CPU adapter responsible for constructing the completion routine's ABI
+    /// frame. Playback and the completion boundary remain process-owned.
+    file_completion_architecture: Option<CallbackTaskArchitecture>,
     /// Whether file playback is currently paused.
     file_paused: bool,
     /// Active double-buffer state, if SndPlayDoubleBuffer is in use.
@@ -248,6 +257,7 @@ impl SndChannel {
             rate_fixed: UNITY_RATE_FIXED,
             pending_callback_cmds: Vec::new(),
             file_completion_addr: 0,
+            file_completion_architecture: None,
             file_paused: false,
             double_buffer: None,
             debug_double_buffer_loads: 0,
@@ -291,6 +301,7 @@ impl SndChannel {
         self.playback_kind = None;
         self.pending_callback_cmds.clear();
         self.file_completion_addr = 0;
+        self.file_completion_architecture = None;
         self.file_paused = false;
         self.rate_fixed = UNITY_RATE_FIXED;
         self.double_buffer = None;
@@ -325,6 +336,8 @@ impl SndChannel {
         });
         self.playback_kind = Some(kind);
         self.file_completion_addr = file_completion_addr;
+        self.file_completion_architecture =
+            (file_completion_addr != 0).then_some(CallbackTaskArchitecture::M68k);
         self.file_paused = false;
     }
 
@@ -541,11 +554,21 @@ impl SoundManager {
         guest_ptr: u32,
         samples: Vec<u8>,
         sample_rate_fixed: u32,
+        completion: Option<(CallbackTaskArchitecture, u32)>,
     ) {
         self.debug_file_play_count = self.debug_file_play_count.saturating_add(1);
         let channel = self.ensure_channel_mut(guest_ptr);
         channel.quiet();
-        channel.play_buffer(samples, sample_rate_fixed, PlaybackKind::File, 0);
+        let completion_addr = completion.map_or(0, |(_, address)| address);
+        channel.play_buffer(
+            samples,
+            sample_rate_fixed,
+            PlaybackKind::File,
+            completion_addr,
+        );
+        if let Some((architecture, _)) = completion {
+            channel.file_completion_architecture = Some(architecture);
+        }
     }
 
     /// Record one architecture-neutral `SndPlayDoubleBuffer` submission.
@@ -784,6 +807,7 @@ impl SoundManager {
                     let callback_addr = chan.callback_addr;
                     let chan_ptr = chan.guest_ptr;
                     let file_completion_addr = chan.file_completion_addr;
+                    let file_completion_architecture = chan.file_completion_architecture.take();
                     let callback_cmds = chan.take_pending_callback_cmds();
                     chan.playing = None;
                     chan.playback_kind = None;
@@ -814,12 +838,15 @@ impl SoundManager {
                                 });
                         }
                     }
-                    if playback_kind == Some(PlaybackKind::File) && file_completion_addr != 0 {
-                        self.pending_sound_callbacks
-                            .push(PendingSoundCallback::FileCompletion {
-                                callback_addr: file_completion_addr,
-                                chan_ptr,
-                            });
+                    if playback_kind == Some(PlaybackKind::File) {
+                        if let Some(architecture) = file_completion_architecture {
+                            self.pending_sound_callbacks
+                                .push(PendingSoundCallback::FileCompletion {
+                                    architecture,
+                                    callback_addr: file_completion_addr,
+                                    chan_ptr,
+                                });
+                        }
                     }
                 }
             }
@@ -2548,9 +2575,11 @@ mod tests {
         assert_eq!(sm.pending_sound_callbacks.len(), 1);
         match &sm.pending_sound_callbacks[0] {
             PendingSoundCallback::FileCompletion {
+                architecture,
                 callback_addr,
                 chan_ptr,
             } => {
+                assert_eq!(*architecture, CallbackTaskArchitecture::M68k);
                 assert_eq!(
                     *callback_addr, 0xABCD_1234,
                     "file_completion_addr propagates"

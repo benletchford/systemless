@@ -43577,7 +43577,12 @@ fn ppc_snd_play(
     }
     sound
         .manager
-        .play_file_buffer(channel, samples.clone(), summary.sample_rate_fixed);
+        .play_file_buffer(
+            channel,
+            samples.clone(),
+            summary.sample_rate_fixed,
+            Some((CallbackTaskArchitecture::PowerPc, 0)),
+        );
     sound
         .decoded_file_playbacks
         .push(PpcDecodedAiffPlaybackRecord {
@@ -43599,14 +43604,6 @@ fn ppc_snd_play(
         paused: false,
         active: true,
         quiet_now: false,
-        timing_valid: false,
-        start_tick: 0,
-        start_instruction_count: 0,
-        due_tick: 0,
-        due_instruction_count: 0,
-        pause_timing_valid: false,
-        pause_started_tick: 0,
-        pause_started_instruction_count: 0,
         aiff: None,
         decoded_aiff: Some(summary),
     });
@@ -43904,14 +43901,6 @@ fn ppc_snd_start_file_play(
         paused: false,
         active: true,
         quiet_now: false,
-        timing_valid: false,
-        start_tick: 0,
-        start_instruction_count: 0,
-        due_tick: 0,
-        due_instruction_count: 0,
-        pause_timing_valid: false,
-        pause_started_tick: 0,
-        pause_started_instruction_count: 0,
         aiff,
         decoded_aiff: decoded_aiff_summary,
     };
@@ -43930,6 +43919,14 @@ fn ppc_snd_start_file_play(
             channel,
             decoded_sound.samples.clone(),
             decoded_sound.summary.sample_rate_fixed,
+            Some((
+                CallbackTaskArchitecture::PowerPc,
+                if record.async_play {
+                    record.completion
+                } else {
+                    0
+                },
+            )),
         );
         sound
             .decoded_file_playbacks
@@ -46960,14 +46957,6 @@ fn ppc_qt_start_movie_audio(quicktime: &PpcQuickTimeState, sound: &mut PpcSoundS
         paused: false,
         active: true,
         quiet_now: false,
-        timing_valid: false,
-        start_tick: 0,
-        start_instruction_count: 0,
-        due_tick: 0,
-        due_instruction_count: 0,
-        pause_timing_valid: false,
-        pause_started_tick: 0,
-        pause_started_instruction_count: 0,
         aiff: None,
         decoded_aiff: Some(summary),
     });
@@ -160005,14 +159994,6 @@ pub(crate) mod tests {
                 paused: true,
                 active: true,
                 quiet_now: false,
-                timing_valid: false,
-                start_tick: 0,
-                start_instruction_count: 0,
-                due_tick: 0,
-                due_instruction_count: 0,
-                pause_timing_valid: false,
-                pause_started_tick: 0,
-                pause_started_instruction_count: 0,
                 aiff: None,
                 decoded_aiff: None,
             });
@@ -160373,14 +160354,6 @@ pub(crate) mod tests {
                 paused: false,
                 active: true,
                 quiet_now: false,
-                timing_valid: false,
-                start_tick: 0,
-                start_instruction_count: 0,
-                due_tick: 0,
-                due_instruction_count: 0,
-                pause_timing_valid: false,
-                pause_started_tick: 0,
-                pause_started_instruction_count: 0,
                 aiff: None,
                 decoded_aiff: None,
             })
@@ -162757,14 +162730,6 @@ pub(crate) mod tests {
             paused,
             active,
             quiet_now,
-            timing_valid: false,
-            start_tick: 0,
-            start_instruction_count: 0,
-            due_tick: 0,
-            due_instruction_count: 0,
-            pause_timing_valid: false,
-            pause_started_tick: 0,
-            pause_started_instruction_count: 0,
             aiff: None,
             decoded_aiff: None,
         }

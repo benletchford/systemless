@@ -4529,12 +4529,14 @@ mod tests {
         disp.sound_manager
             .pending_sound_callbacks
             .push(PendingSoundCallback::FileCompletion {
+                architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x00FE_DCBA,
                 chan_ptr,
             });
         disp.sound_manager
             .pending_sound_callbacks
             .push(PendingSoundCallback::FileCompletion {
+                architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x0000_2222,
                 chan_ptr: other_chan_ptr,
             });
@@ -4569,7 +4571,8 @@ mod tests {
             &disp.sound_manager.pending_sound_callbacks[0],
             PendingSoundCallback::FileCompletion {
                 callback_addr: 0x0000_2222,
-                chan_ptr: ptr
+                chan_ptr: ptr,
+                ..
             } if *ptr == other_chan_ptr
         ));
         assert_eq!(disp.sound_manager.pending_callbacks.len(), 1);
