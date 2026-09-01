@@ -60800,6 +60800,20 @@ fn ppc_materialize_vfs_resource_handle(
     load_data: bool,
     last_resource_error: &mut i16,
 ) -> u32 {
+    let ptrs = process_memory_manager
+        .native_allocator_snapshot()
+        .map_or_else(Vec::new, |allocator| allocator.ptrs);
+    ppc_synchronize_process_native_allocator(
+        process_memory_manager,
+        *heap_cursor,
+        heap_limit,
+        *last_mem_error,
+        &ptrs,
+        free_ptr_blocks,
+        free_handle_blocks,
+    );
+    ppc_synchronize_process_native_handles(process_memory_manager, handles, handle_states);
+
     if vfs_resources[index].handle == 0 {
         // Inside Macintosh Volume I (1985), I-118 through I-120:
         // SetResLoad(FALSE) still returns a resource Handle, but its master
@@ -88854,6 +88868,15 @@ pub(crate) mod tests {
                     handle: 0,
                 }];
                 let mut last_resource_error = PPC_NO_ERR;
+                let legacy_ptr = ppc_heap_alloc(
+                    &mut native.memory,
+                    &mut heap_cursor,
+                    heap_limit,
+                    32,
+                    true,
+                );
+                assert_ne!(legacy_ptr, 0);
+                let cursor_after_legacy_allocation = heap_cursor;
 
                 let handle = ppc_materialize_vfs_resource_handle(
                     memory_manager,
@@ -88871,6 +88894,7 @@ pub(crate) mod tests {
                     &mut last_resource_error,
                 );
                 assert_ne!(handle, 0);
+                assert!(handle >= cursor_after_legacy_allocation);
                 assert_eq!(memory_manager.native_allocation(handle).unwrap().ptr, 0);
                 assert_eq!(memory_manager.state_for_handle(handle), Some(0x60));
                 assert_eq!(classic_dispatcher.handle_state_bits(handle), Some(0x60));
