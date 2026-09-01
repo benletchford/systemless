@@ -5,6 +5,7 @@ use crate::guest_call::SharedGuestCallStack;
 use crate::memory::bus::SharedRamRegion;
 use crate::memory::GuestAddressSpace;
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
+use std::collections::HashMap;
 
 #[derive(Debug)]
 struct ProcessMemoryRegion {
@@ -25,6 +26,67 @@ pub(crate) struct PendingHandleByteReplacement {
     pub(crate) replacement: Vec<u8>,
 }
 
+/// Architecture-neutral Memory Manager metadata for one Macintosh process.
+///
+/// Guest addresses, rather than CPU adapter records, identify relocatable
+/// blocks. Keeping the reverse master-pointer index and handle state here
+/// gives 68K traps and native imports one canonical registry as allocation
+/// itself moves behind this process-level boundary. Inside Macintosh: Memory
+/// (1992), pp. 2-12, 2-40--2-41.
+#[derive(Debug, Default)]
+pub(crate) struct ProcessMemoryManager {
+    ptr_to_handle: HashMap<u32, u32>,
+    handle_state_bits: HashMap<u32, u8>,
+}
+
+impl ProcessMemoryManager {
+    pub(crate) fn merge_metadata(
+        &mut self,
+        ptr_to_handle: HashMap<u32, u32>,
+        handle_state_bits: HashMap<u32, u8>,
+    ) {
+        self.ptr_to_handle.extend(ptr_to_handle);
+        self.handle_state_bits.extend(handle_state_bits);
+    }
+
+    pub(crate) fn adopt_metadata(
+        &mut self,
+        ptr_to_handle: &mut HashMap<u32, u32>,
+        handle_state_bits: &mut HashMap<u32, u8>,
+    ) {
+        assert!(
+            self.ptr_to_handle.is_empty() || ptr_to_handle.is_empty(),
+            "cannot attach two active pointer-to-handle registries"
+        );
+        assert!(
+            self.handle_state_bits.is_empty() || handle_state_bits.is_empty(),
+            "cannot attach two active handle-state registries"
+        );
+        if self.ptr_to_handle.is_empty() {
+            std::mem::swap(&mut self.ptr_to_handle, ptr_to_handle);
+        }
+        if self.handle_state_bits.is_empty() {
+            std::mem::swap(&mut self.handle_state_bits, handle_state_bits);
+        }
+    }
+
+    pub(crate) fn metadata_mut(
+        &mut self,
+    ) -> (&mut HashMap<u32, u32>, &mut HashMap<u32, u8>) {
+        (&mut self.ptr_to_handle, &mut self.handle_state_bits)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
+        self.ptr_to_handle.get(&ptr).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_state(&self, handle: u32) -> u8 {
+        self.handle_state_bits.get(&handle).copied().unwrap_or(0)
+    }
+}
+
 /// Canonical owner for state that belongs to one emulated process rather than
 /// to either of its CPU ABI adapters.
 ///
@@ -33,6 +95,7 @@ pub(crate) struct PendingHandleByteReplacement {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessContext {
     memory: Vec<ProcessMemoryRegion>,
+    memory_manager: ProcessMemoryManager,
     event_queue: EventQueue,
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
@@ -41,6 +104,15 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
+    pub(crate) fn adopt_memory_manager_metadata(
+        &mut self,
+        ptr_to_handle: &mut HashMap<u32, u32>,
+        handle_state_bits: &mut HashMap<u32, u8>,
+    ) {
+        self.memory_manager
+            .adopt_metadata(ptr_to_handle, handle_state_bits);
+    }
+
     /// Install a canonical process-memory allocation and attach a CPU
     /// address-space adapter to it.
     ///
@@ -158,16 +230,32 @@ impl ProcessContext {
         (&mut self.event_queue, &mut self.menu_tracking)
     }
 
+    pub(crate) fn event_queue_menu_tracking_and_memory_manager_mut(
+        &mut self,
+    ) -> (
+        &mut EventQueue,
+        &mut Option<ProcessMenuTrackingState>,
+        &mut ProcessMemoryManager,
+    ) {
+        (
+            &mut self.event_queue,
+            &mut self.menu_tracking,
+            &mut self.memory_manager,
+        )
+    }
+
     pub(crate) fn event_queue_menu_tracking_and_memory_effects_mut(
         &mut self,
     ) -> (
         &mut EventQueue,
         &mut Option<ProcessMenuTrackingState>,
+        &mut ProcessMemoryManager,
         &mut Vec<PendingHandleByteReplacement>,
     ) {
         (
             &mut self.event_queue,
             &mut self.menu_tracking,
+            &mut self.memory_manager,
             &mut self.pending_memory_effects,
         )
     }
@@ -393,7 +481,8 @@ mod tests {
         assert_eq!(taken[0].replacement, vec![1, 2, 3, 4]);
         assert!(!context.has_pending_memory_effects());
 
-        let (queue, menu, effects) = context.event_queue_menu_tracking_and_memory_effects_mut();
+        let (queue, menu, _memory_manager, effects) =
+            context.event_queue_menu_tracking_and_memory_effects_mut();
         queue.push_back(QueuedEvent {
             what: 1,
             message: 0x1234,

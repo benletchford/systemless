@@ -2945,6 +2945,10 @@ impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.menu_tracking);
+        context.adopt_memory_manager_metadata(
+            &mut self.ptr_to_handle,
+            &mut self.handle_state_bits,
+        );
         context.attach_native_menu_selection(&mut self.pending_native_menu_selection);
         context.attach_guest_calls(&mut self.guest_calls);
     }
@@ -3004,6 +3008,45 @@ impl TrapDispatcher {
         }
     }
 
+    /// Temporarily install canonical process Memory Manager metadata in this
+    /// 68K ABI adapter, returning it even if dispatch unwinds.
+    pub(crate) fn with_memory_manager<R>(
+        &mut self,
+        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        // Some launch and callback-completion helpers still run between CPU
+        // slices while allocator routing is being moved behind this boundary.
+        // Treat their adapter-local entries as deltas, then leave the adapter
+        // empty again when the serialized slice returns.
+        memory_manager.merge_metadata(
+            std::mem::take(&mut self.ptr_to_handle),
+            std::mem::take(&mut self.handle_state_bits),
+        );
+        let (ptr_to_handle, handle_state_bits) = memory_manager.metadata_mut();
+        std::mem::swap(&mut self.ptr_to_handle, ptr_to_handle);
+        std::mem::swap(&mut self.handle_state_bits, handle_state_bits);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
+        std::mem::swap(&mut self.handle_state_bits, handle_state_bits);
+        std::mem::swap(&mut self.ptr_to_handle, ptr_to_handle);
+        match outcome {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    }
+
+    pub(crate) fn with_process_state_and_memory_manager<R>(
+        &mut self,
+        event_queue: &mut EventQueue,
+        menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        memory_manager: &mut crate::process_context::ProcessMemoryManager,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_process_state(event_queue, menu_tracking, |dispatcher| {
+            dispatcher.with_memory_manager(memory_manager, f)
+        })
+    }
+
     /// Install all directly owned process state needed by one 68k execution
     /// slice, returning it to [`ProcessContext`] before another CPU can run.
     pub(crate) fn with_process_state<R>(
@@ -3023,12 +3066,16 @@ impl TrapDispatcher {
         &mut self,
         event_queue: &mut EventQueue,
         menu_tracking: &mut Option<ProcessMenuTrackingState>,
+        memory_manager: &mut crate::process_context::ProcessMemoryManager,
         memory_effects: &mut Vec<crate::process_context::PendingHandleByteReplacement>,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        self.with_process_state(event_queue, menu_tracking, |dispatcher| {
-            dispatcher.with_memory_effects(memory_effects, f)
-        })
+        self.with_process_state_and_memory_manager(
+            event_queue,
+            menu_tracking,
+            memory_manager,
+            |dispatcher| dispatcher.with_memory_effects(memory_effects, f),
+        )
     }
 
     pub(crate) const AUTO_KEY_THRESHOLD_TICKS: u32 = 16;
@@ -11249,12 +11296,14 @@ mod tests {
         let mut dispatcher = TrapDispatcher::new();
         let mut context_queue = EventQueue::default();
         let mut context_tracking = Some(crate::menu_manager::test_process_menu_tracking(0x9abc));
+        let mut memory_manager = crate::process_context::ProcessMemoryManager::default();
         let mut context_effects = Vec::new();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             dispatcher.with_process_state_and_memory_effects(
                 &mut context_queue,
                 &mut context_tracking,
+                &mut memory_manager,
                 &mut context_effects,
                 |disp| {
                     disp.event_queue.push_back(QueuedEvent {
@@ -11265,6 +11314,8 @@ mod tests {
                         modifiers: 0,
                     });
                     disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
+                    disp.ptr_to_handle.insert(0x4444, 0x5555);
+                    disp.handle_state_bits.insert(0x5555, 0xc0);
                     disp.pending_memory_effects.push(
                         crate::process_context::PendingHandleByteReplacement {
                             handle: 0x5555,
@@ -11279,6 +11330,10 @@ mod tests {
 
         assert!(panic_result.is_err());
         assert_eq!(context_queue.front().map(|event| event.message), Some(0x3333));
+        assert_eq!(memory_manager.handle_for_ptr(0x4444), Some(0x5555));
+        assert_eq!(memory_manager.handle_state(0x5555), 0xc0);
+        assert!(dispatcher.ptr_to_handle.is_empty());
+        assert!(dispatcher.handle_state_bits.is_empty());
         assert_eq!(
             context_tracking
                 .as_ref()

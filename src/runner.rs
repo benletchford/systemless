@@ -5816,11 +5816,13 @@ impl FixtureRunner {
                     }
 
                     self.dispatcher.yield_for_ui = yield_for_ui;
-                    let (event_queue, menu_tracking) =
-                        self.process_context.event_queue_and_menu_tracking_mut();
-                    let dispatch_result = self.dispatcher.with_process_state(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager_mut();
+                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
+                        memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
@@ -6535,11 +6537,12 @@ impl FixtureRunner {
                         self.cpu.core.take_aline_exception(&mut self.bus);
                         continue;
                     }
-                    let (event_queue, menu_tracking, memory_effects) =
+                    let (event_queue, menu_tracking, memory_manager, memory_effects) =
                         self.process_context.event_queue_menu_tracking_and_memory_effects_mut();
                     let dispatch_err = self.dispatcher.with_process_state_and_memory_effects(
                         event_queue,
                         menu_tracking,
+                        memory_manager,
                         memory_effects,
                         |dispatcher| {
                             dispatcher
@@ -10868,11 +10871,13 @@ impl FixtureRunner {
                         count += 1;
                         continue;
                     }
-                    let (event_queue, menu_tracking) =
-                        self.process_context.event_queue_and_menu_tracking_mut();
-                    let dispatch_result = self.dispatcher.with_process_state(
+                    let (event_queue, menu_tracking, memory_manager) = self
+                        .process_context
+                        .event_queue_menu_tracking_and_memory_manager_mut();
+                    let dispatch_result = self.dispatcher.with_process_state_and_memory_manager(
                         event_queue,
                         menu_tracking,
+                        memory_manager,
                         |dispatcher| dispatcher.dispatch(opcode, &mut self.cpu, &mut self.bus),
                     );
                     match dispatch_result {
