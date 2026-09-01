@@ -19,6 +19,12 @@ struct SharedRegionMapping {
     writable: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OrdinaryRegionMapping {
+    base: u32,
+    len: usize,
+}
+
 /// A sparse guest address space that can be executed by either CPU backend.
 ///
 /// The region implementation remains private so loaders and runtime services
@@ -27,6 +33,7 @@ struct SharedRegionMapping {
 #[derive(Debug, Default)]
 pub struct GuestAddressSpace {
     regions: PpcSectionMem,
+    ordinary_regions: Vec<OrdinaryRegionMapping>,
     shared_regions: Vec<SharedRegionMapping>,
     readonly_allocation_exclusions: Vec<(u32, u32)>,
 }
@@ -107,6 +114,7 @@ impl Clone for GuestAddressSpace {
     fn clone(&self) -> Self {
         Self {
             regions: self.regions.clone(),
+            ordinary_regions: self.ordinary_regions.clone(),
             shared_regions: self
                 .shared_regions
                 .iter()
@@ -140,12 +148,54 @@ impl GuestAddressSpace {
 
     /// Map a writable region. Newer mappings take precedence over overlaps.
     pub fn add_region(&mut self, base: u32, bytes: Vec<u8>) {
+        self.ordinary_regions.push(OrdinaryRegionMapping {
+            base,
+            len: bytes.len(),
+        });
         self.regions.add_region(base, bytes);
     }
 
     /// Map a read-only region. Newer mappings take precedence over overlaps.
     pub fn add_readonly_region(&mut self, base: u32, bytes: Vec<u8>) {
+        self.ordinary_regions.push(OrdinaryRegionMapping {
+            base,
+            len: bytes.len(),
+        });
         self.regions.add_readonly_region(base, bytes);
+    }
+
+    /// Return the disjoint holes not occupied by ordinary sparse mappings in
+    /// the supplied half-open range.
+    pub(crate) fn ordinary_mapping_holes(&self, start: u32, end: u32) -> Vec<(u32, u32)> {
+        if start >= end {
+            return Vec::new();
+        }
+
+        let mut occupied = self
+            .ordinary_regions
+            .iter()
+            .filter_map(|mapping| {
+                let mapping_start = u64::from(mapping.base).max(u64::from(start));
+                let mapping_end = u64::from(mapping.base)
+                    .saturating_add(mapping.len as u64)
+                    .min(u64::from(end));
+                (mapping_start < mapping_end).then_some((mapping_start, mapping_end))
+            })
+            .collect::<Vec<_>>();
+        occupied.sort_unstable_by_key(|&(mapping_start, _)| mapping_start);
+
+        let mut holes = Vec::new();
+        let mut cursor = u64::from(start);
+        for (mapping_start, mapping_end) in occupied {
+            if cursor < mapping_start {
+                holes.push((cursor as u32, mapping_start as u32));
+            }
+            cursor = cursor.max(mapping_end);
+        }
+        if cursor < u64::from(end) {
+            holes.push((cursor as u32, end));
+        }
+        holes
     }
 
     /// Overlay a runner-owned RAM range without copying it.
@@ -210,14 +260,16 @@ impl GuestAddressSpace {
 
     /// Whether an ordinary sparse mapping already occupies any byte in the
     /// supplied non-wrapping range. Shared overlays are intentionally ignored.
-    pub(crate) fn ordinary_mapping_overlaps(&mut self, base: u32, len: u32) -> bool {
+    pub(crate) fn ordinary_mapping_overlaps(&self, base: u32, len: u32) -> bool {
         if len == 0 || u64::from(base) + u64::from(len) > (1u64 << 32) {
             return false;
         }
-        (0..u64::from(len)).any(|offset| {
-            let address = u32::try_from(u64::from(base) + offset)
-                .expect("validated guest address remains in range");
-            self.regions.read_u8(address).is_some()
+        let start = u64::from(base);
+        let end = start + u64::from(len);
+        self.ordinary_regions.iter().any(|mapping| {
+            let mapping_start = u64::from(mapping.base);
+            let mapping_end = mapping_start.saturating_add(mapping.len as u64);
+            start < mapping_end && mapping_start < end
         })
     }
 
@@ -875,5 +927,26 @@ mod tests {
             // Unmapped addresses belong to neither domain.
             assert!(!shared.is_ordinary_sparse_mapped(0x9000));
         }
+    }
+
+    #[test]
+    fn ordinary_mapping_holes_track_writable_and_readonly_regions() {
+        let mut memory = GuestAddressSpace::new();
+        memory.add_region(0x1200, vec![0; 0x100]);
+        memory.add_readonly_region(0x1400, vec![0; 0x200]);
+        memory.add_region(0x1500, vec![0; 0x200]);
+
+        assert_eq!(
+            memory.ordinary_mapping_holes(0x1000, 0x1800),
+            vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
+        );
+        assert!(memory.ordinary_mapping_overlaps(0x1280, 0x100));
+        assert!(!memory.ordinary_mapping_overlaps(0x1300, 0x100));
+
+        let detached = memory.clone();
+        assert_eq!(
+            detached.ordinary_mapping_holes(0x1000, 0x1800),
+            vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
+        );
     }
 }

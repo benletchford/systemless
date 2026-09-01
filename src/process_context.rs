@@ -32,7 +32,7 @@ pub(crate) struct PendingHandleByteReplacement {
 /// its mutable borrow.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessContext {
-    memory: Option<ProcessMemoryRegion>,
+    memory: Vec<ProcessMemoryRegion>,
     event_queue: EventQueue,
     menu_tracking: Option<ProcessMenuTrackingState>,
     pending_native_menu_selection: SharedNativeMenuSelection,
@@ -41,32 +41,39 @@ pub(crate) struct ProcessContext {
 }
 
 impl ProcessContext {
-    /// Install the canonical process-memory allocation and attach a CPU
+    /// Install a canonical process-memory allocation and attach a CPU
     /// address-space adapter to it.
     ///
     /// Repeated attachment is allowed for another adapter (or a relaunched
-    /// native fragment), but it must describe the same allocation range.
+    /// native fragment), but each range must either match an existing region
+    /// exactly or remain disjoint from every region already owned here.
     pub(crate) fn attach_memory(
         &mut self,
         base: u32,
         bytes: SharedRamRegion,
         adapter: &mut GuestAddressSpace,
     ) {
-        if let Some(memory) = &self.memory {
-            assert_eq!(memory.base, base, "cannot replace process memory base");
-            assert_eq!(
-                memory.bytes.len(),
-                bytes.len(),
-                "cannot replace process memory size"
-            );
-        } else {
-            self.memory = Some(ProcessMemoryRegion { base, bytes });
-        }
-
-        let memory = self
+        let len = bytes.len();
+        let memory_index = self
             .memory
-            .as_ref()
-            .expect("process memory was just installed");
+            .iter()
+            .position(|memory| memory.base == base && memory.bytes.len() == len)
+            .unwrap_or_else(|| {
+                let start = u64::from(base);
+                let end = start.saturating_add(len as u64);
+                assert!(
+                    self.memory.iter().all(|memory| {
+                        let memory_start = u64::from(memory.base);
+                        let memory_end = memory_start.saturating_add(memory.bytes.len() as u64);
+                        end <= memory_start || memory_end <= start
+                    }),
+                    "cannot overlap process memory regions"
+                );
+                self.memory.push(ProcessMemoryRegion { base, bytes });
+                self.memory.len() - 1
+            });
+
+        let memory = &self.memory[memory_index];
         // SAFETY: `ProcessContext` and all attached CPU adapters are private
         // children of one runner. Every execution entry point requires an
         // exclusive mutable runner borrow, so adapter access is serialized.
@@ -76,10 +83,11 @@ impl ProcessContext {
     }
 
     #[cfg(test)]
-    pub(crate) fn memory_range(&self) -> Option<(u32, usize)> {
+    pub(crate) fn memory_ranges(&self) -> Vec<(u32, usize)> {
         self.memory
-            .as_ref()
+            .iter()
             .map(|memory| (memory.base, memory.bytes.len()))
+            .collect()
     }
 
     pub(crate) fn event_queue(&self) -> &EventQueue {
@@ -192,10 +200,41 @@ mod tests {
 
         context.attach_memory(0, region, &mut native);
 
-        assert_eq!(context.memory_range(), Some((0, 0x1000)));
+        assert_eq!(context.memory_ranges(), vec![(0, 0x1000)]);
         assert_eq!(native.read_u32_be(0x100), Some(0x1234_5678));
         native.write_u32_be(0x100, 0x89ab_cdef).unwrap();
         assert_eq!(bus.read_long(0x100), 0x89ab_cdef);
+    }
+
+    #[test]
+    fn process_context_owns_multiple_regions_and_clones_detach_from_all_of_them() {
+        let mut context = ProcessContext::default();
+        let mut bus = MacMemoryBus::new(0x5000);
+        bus.write_long(0x100, 0x1122_3344);
+        bus.write_long(0x3100, 0x5566_7788);
+        let low = bus.shared_ram_region(0, 0x1000).unwrap();
+        let high = bus.shared_ram_region(0x3000, 0x1000).unwrap();
+        let mut native = GuestAddressSpace::new();
+
+        context.attach_memory(0, low, &mut native);
+        context.attach_memory(0x3000, high, &mut native);
+        assert_eq!(
+            context.memory_ranges(),
+            vec![(0, 0x1000), (0x3000, 0x1000)]
+        );
+
+        let mut detached = native.clone();
+        native.write_u32_be(0x100, 0x99aa_bbcc).unwrap();
+        native.write_u32_be(0x3100, 0xddee_ff00).unwrap();
+        assert_eq!(bus.read_long(0x100), 0x99aa_bbcc);
+        assert_eq!(bus.read_long(0x3100), 0xddee_ff00);
+        assert_eq!(detached.read_u32_be(0x100), Some(0x1122_3344));
+        assert_eq!(detached.read_u32_be(0x3100), Some(0x5566_7788));
+
+        detached.write_u32_be(0x100, 0x0102_0304).unwrap();
+        detached.write_u32_be(0x3100, 0x0506_0708).unwrap();
+        assert_eq!(bus.read_long(0x100), 0x99aa_bbcc);
+        assert_eq!(bus.read_long(0x3100), 0xddee_ff00);
     }
 
     #[test]

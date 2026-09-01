@@ -4102,12 +4102,26 @@ impl FixtureRunner {
     }
 
     fn share_ppc_process_memory(&mut self, ppc_app: &mut PpcLoadedApp) {
+        let ram_end = self.bus.ram_size();
+        let low_memory_end = PROCESS_LOW_MEMORY_SIZE.min(ram_end);
         let process_low_memory = self
             .bus
-            .shared_ram_region(0, PROCESS_LOW_MEMORY_SIZE)
+            .shared_ram_region(0, low_memory_end)
             .expect("FixtureRunner owns the complete process low-memory range");
         self.process_context
             .attach_memory(0, process_low_memory, &mut ppc_app.memory);
+        for (base, end) in ppc_app
+            .memory
+            .ordinary_mapping_holes(low_memory_end, ram_end)
+        {
+            let len = end - base;
+            let process_memory = self
+                .bus
+                .shared_ram_region(base, len)
+                .expect("FixtureRunner owns every process RAM hole");
+            self.process_context
+                .attach_memory(base, process_memory, &mut ppc_app.memory);
+        }
         let Some((base, region)) = self.bus.shared_synthetic_reservation() else {
             return;
         };
@@ -12691,6 +12705,66 @@ mod tests {
             runner.bus.write_long(address, 0x89ab_cdef);
             assert_eq!(ppc_app.memory.read_u32_be(address), Some(0x89ab_cdef));
         }
+    }
+
+    #[test]
+    fn ppc_process_memory_holes_share_runner_ram_without_overlaying_pef_mappings() {
+        const FIRST_HOLE: u32 = 0x0018_0000;
+        const PEF_MAPPING: u32 = 0x0020_0000;
+        const SECOND_HOLE: u32 = PEF_MAPPING + 4;
+
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        let ppc_app = app.ppc.as_mut().expect("synthetic PPC app");
+        ppc_app
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+        ppc_app
+            .memory
+            .add_readonly_region(PEF_MAPPING, 0x1234_5678u32.to_be_bytes().to_vec());
+
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.init_app(&app);
+        runner.bus.write_long(PEF_MAPPING, 0xaabb_ccdd);
+        assert_eq!(
+            runner.process_context.memory_ranges(),
+            vec![
+                (0, PROCESS_LOW_MEMORY_SIZE as usize),
+                (PROCESS_LOW_MEMORY_SIZE, 0x0010_0000),
+                (SECOND_HOLE, (8 * 1024 * 1024 - SECOND_HOLE) as usize),
+            ]
+        );
+
+        let mut ppc_app = runner.ppc_app.take().expect("PPC app installed");
+        ppc_app
+            .memory
+            .write_u32_be(FIRST_HOLE, 0x0102_0304)
+            .unwrap();
+        assert_eq!(runner.bus.read_long(FIRST_HOLE), 0x0102_0304);
+        runner.bus.write_long(SECOND_HOLE, 0x0506_0708);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(SECOND_HOLE),
+            Some(0x0506_0708)
+        );
+
+        assert_eq!(
+            ppc_app.memory.read_u32_be(PEF_MAPPING),
+            Some(0x1234_5678)
+        );
+        // SAFETY: the test parks `ppc_app`, accesses it only through the bus
+        // while attached, and detaches before borrowing its memory again.
+        let shared = unsafe { ppc_app.memory.shared_view() };
+        unsafe {
+            runner.bus.attach_guest_address_space(shared);
+        }
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
+        runner.bus.write_long(PEF_MAPPING, 0);
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0x1234_5678);
+        runner.bus.detach_guest_address_space();
+        assert_eq!(runner.bus.read_long(PEF_MAPPING), 0xaabb_ccdd);
+        assert_eq!(
+            ppc_app.memory.read_u32_be(PEF_MAPPING),
+            Some(0x1234_5678)
+        );
     }
 
     #[test]
