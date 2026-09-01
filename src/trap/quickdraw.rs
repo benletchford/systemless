@@ -17330,6 +17330,28 @@ impl super::TrapDispatcher {
         );
     }
 
+    fn restore_system_palette_for_window(&mut self, bus: &mut MacMemoryBus, window: u32) {
+        let current_clut = *self.device_clut;
+        let mut restored_clut = Self::standard_mac_8bpp_clut();
+
+        // Removing a window palette releases its ordinary allocations, but
+        // protected and reserved cells remain owned until their corresponding
+        // Color Manager operation releases them. This matches the native PPC
+        // Palette Manager path and Inside Macintosh: Advanced Color Imaging,
+        // pp. 1-8 and 1-14.
+        for index in 0..256 {
+            if self.clut_protected[index] || self.clut_reserved[index] {
+                restored_clut[index] = current_clut[index];
+            }
+        }
+
+        let color_environment_changed = restored_clut != current_clut;
+        self.install_application_clut(bus, restored_clut);
+        if color_environment_changed {
+            self.invalidate_windows_for_palette_change(bus, window);
+        }
+    }
+
     /// Trap-facing activation path that requires an exact window-to-palette
     /// association instead of falling back to the default-window palette.
     pub(crate) fn activate_associated_palette_for_window(
@@ -17342,6 +17364,17 @@ impl super::TrapDispatcher {
         }
 
         let palette_handle = self.window_palette_handle_exact(window);
+        if palette_handle == 0 {
+            // With neither a window palette nor an application-default
+            // palette, Palette Manager restores the System palette. This is
+            // also what the native PPC adapter does. Keep the exact lookup:
+            // an application-default palette is not silently substituted by
+            // this trap-facing path.
+            if self.window_palette_handle_exact(PALETTE_DEFAULT_WINDOW) == 0 {
+                self.restore_system_palette_for_window(bus, window);
+            }
+            return;
+        }
         self.apply_palette_to_active_device(
             bus,
             window,
@@ -19553,16 +19586,15 @@ impl super::TrapDispatcher {
         } else {
             (*self.device_clut, self.screen_mode.4 == 8)
         };
+        let logical_screen_clut = *self.color_manager_clut;
 
         if foreground {
             let rgb = [self.fg_color.0, self.fg_color.1, self.fg_color.2];
             let pixel = if use_screen_itable && screen_itable {
-                // The screen GDevice's inverse table is a logical color
-                // matcher, not a nearest-color scan of the live video DAC.
-                // Games can replace or fade the hardware CLUT while the
-                // cached screen lookup remains unchanged.
-                // Inside Macintosh Volume V (1986), pp. V-137..V-143.
-                Self::standard_screen_itable_index(rgb)
+                // The screen GDevice's inverse table follows its logical
+                // ColorTable, not the independently animated video DAC.
+                // Inside Macintosh: Advanced Color Imaging, "Inverse Tables".
+                Self::screen_itable_index(&logical_screen_clut, rgb)
             } else {
                 Self::nearest_palette_index(&resolution_clut, rgb)
             };
@@ -19572,7 +19604,7 @@ impl super::TrapDispatcher {
         if background {
             let rgb = [self.bg_color.0, self.bg_color.1, self.bg_color.2];
             let pixel = if use_screen_itable && screen_itable {
-                Self::standard_screen_itable_index(rgb)
+                Self::screen_itable_index(&logical_screen_clut, rgb)
             } else {
                 Self::nearest_palette_index(&resolution_clut, rgb)
             };
@@ -26830,7 +26862,8 @@ mod tests {
         hardware_clut[117] = [0x1010, 0x0A0A, 0x6969];
         hardware_clut[213] = [0x7B7B, 0x7373, 0x8484];
 
-        let pixel = TrapDispatcher::standard_screen_itable_index([0, 0, 0x6666]);
+        let logical_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        let pixel = TrapDispatcher::screen_itable_index(&logical_clut, [0, 0, 0x6666]);
 
         assert_eq!(pixel, 213);
         assert_eq!(hardware_clut[pixel as usize], [0x7B7B, 0x7373, 0x8484]);
@@ -26839,6 +26872,36 @@ mod tests {
             117,
             "a live-hardware nearest-color scan reproduces the regressed saturated-blue pixel"
         );
+    }
+
+    #[test]
+    fn rgb_fore_color_uses_replaced_logical_screen_table_not_hardware_palette() {
+        let (mut d, mut cpu, mut bus) = setup_with_port();
+        let port = 0x181000u32;
+        bus.write_long(port + 2, 0);
+        bus.write_word(port + 6, 0xC000);
+        d.set_current_port_state(&mut bus, &mut cpu, port, None);
+
+        let gray = [0x9F9F; 3];
+        *d.color_manager_clut = TrapDispatcher::standard_mac_8bpp_clut();
+        d.color_manager_clut[86] = [0, 0, 0x9B9B];
+        d.color_manager_clut[144] = gray;
+        *d.device_clut = *d.color_manager_clut;
+        d.device_clut[86] = gray;
+        d.device_clut[144] = [0, 0, 0x9B9B];
+
+        let color = bus.alloc(6);
+        bus.write_word(color, gray[0]);
+        bus.write_word(color + 2, gray[1]);
+        bus.write_word(color + 4, gray[2]);
+        cpu.write_reg(Register::A7, TEST_SP);
+        bus.write_long(TEST_SP, color);
+
+        let result = d.dispatch_quickdraw(true, 0x214, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(bus.read_long(port + 80), 144);
+        assert_eq!(d.device_clut[144], [0, 0, 0x9B9B]);
     }
 
     #[test]
@@ -38798,6 +38861,27 @@ mod tests {
         assert!(result.unwrap().is_ok());
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(d.device_clut, before);
+    }
+
+    #[test]
+    fn activatepalette_without_window_or_default_palette_restores_system_colors() {
+        let (mut d, mut cpu, mut bus) = setup();
+        let window = 0x0020_4080u32;
+        d.front_window = window;
+        *d.current_port = window;
+        d.device_clut[42] = [0x1234, 0x5678, 0x9ABC];
+        d.color_manager_clut[42] = [0x1234, 0x5678, 0x9ABC];
+        bus.write_long(TEST_SP, window);
+
+        let result = d.dispatch_quickdraw(true, 0x294, &mut cpu, &mut bus);
+
+        assert!(result.unwrap().is_ok());
+        assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
+        assert_eq!(d.device_clut, TrapDispatcher::standard_mac_8bpp_clut());
+        assert_eq!(
+            d.color_manager_clut,
+            TrapDispatcher::standard_mac_8bpp_clut()
+        );
     }
 
     #[test]

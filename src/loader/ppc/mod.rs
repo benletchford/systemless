@@ -17147,7 +17147,12 @@ fn dispatch_supported_import(
                 if main_8bpp {
                     quickdraw_fore_indices.insert(
                         *current_gworld,
-                        ppc_color_to_index(memory, *current_gdevice, screen_clut, color) as u8,
+                        ppc_color_to_index(
+                            memory,
+                            *current_gdevice,
+                            color_manager_clut,
+                            color,
+                        ) as u8,
                     );
                 } else {
                     quickdraw_fore_indices.remove(current_gworld);
@@ -17180,7 +17185,12 @@ fn dispatch_supported_import(
                 if main_8bpp {
                     toolbox_startup.quickdraw_back_indices.insert(
                         *current_gworld,
-                        ppc_color_to_index(memory, *current_gdevice, screen_clut, color) as u8,
+                        ppc_color_to_index(
+                            memory,
+                            *current_gdevice,
+                            color_manager_clut,
+                            color,
+                        ) as u8,
                     );
                 } else {
                     toolbox_startup
@@ -17306,7 +17316,9 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::Color2Index => {
             let pixel = ppc_read_rgb_color(memory, cpu.gpr[3])
-                .map(|color| ppc_color_to_index(memory, *current_gdevice, screen_clut, color))
+                .map(|color| {
+                    ppc_color_to_index(memory, *current_gdevice, color_manager_clut, color)
+                })
                 .unwrap_or(0);
             Some(PpcImportAction::Return(pixel))
         }
@@ -63169,7 +63181,7 @@ fn ppc_index_to_color(
 fn ppc_color_to_index(
     memory: &mut PpcSectionMem,
     current_gdevice: u32,
-    screen_clut: &[[u16; 3]; 256],
+    logical_screen_clut: &[[u16; 3]; 256],
     color: PpcRgbColor,
 ) -> u32 {
     let pixmap = ppc_current_gdevice_record(memory, current_gdevice)
@@ -63185,18 +63197,17 @@ fn ppc_color_to_index(
     }
 
     if current_gdevice == PPC_MAIN_GDEVICE && depth == 8 {
-        // Match the main screen's cached logical inverse table rather than
-        // scanning the live hardware CLUT, which may be independently faded
-        // or replaced. Inside Macintosh Volume V (1986), pp. V-137..V-143.
-        return u32::from(TrapDispatcher::standard_screen_itable_index([
-            color.red,
-            color.green,
-            color.blue,
-        ]));
+        // Match the main screen's logical ColorTable rather than scanning the
+        // independently animated hardware CLUT. A real ColorTable replacement
+        // changes this lookup; a hardware-only fade does not.
+        return u32::from(TrapDispatcher::screen_itable_index(
+            logical_screen_clut,
+            [color.red, color.green, color.blue],
+        ));
     }
 
     let entry_count = 1usize << usize::from(depth.clamp(1, 8));
-    let fallback = *screen_clut;
+    let fallback = *logical_screen_clut;
     let clut = pixmap
         .and_then(|pixmap| memory.read_u32_be(pixmap.checked_add(42)?))
         .filter(|handle| *handle != 0)
@@ -132487,6 +132498,40 @@ pub(crate) mod tests {
                 assert!(!loaded.quickdraw_fore_indices.contains_key(&PPC_MAIN_GWORLD));
             }
         }
+    }
+
+    #[test]
+    fn rgb_fore_color_uses_replaced_logical_screen_table_not_hardware_palette() {
+        let pef = synthetic_pef_with_import(b"RGBForeColor");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let gray = [0x9F9F; 3];
+        loaded.color_manager_clut[86] = [0, 0, 0x9B9B];
+        loaded.color_manager_clut[144] = gray;
+        loaded.screen_clut[86] = gray;
+        loaded.screen_clut[144] = [0, 0, 0x9B9B];
+
+        let color_ptr = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(color_ptr, vec![0; 6]);
+        ppc_write_rgb_color(
+            &mut loaded.memory,
+            color_ptr,
+            PpcRgbColor {
+                red: gray[0],
+                green: gray[1],
+                blue: gray[2],
+            },
+        )
+        .unwrap();
+        loaded.cpu.gpr[3] = color_ptr;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.unsupported_import_index, None);
+        assert_eq!(
+            loaded.quickdraw_fore_indices.get(&PPC_MAIN_GWORLD),
+            Some(&144)
+        );
+        assert_eq!(loaded.screen_clut[144], [0, 0, 0x9B9B]);
     }
 
     #[test]
