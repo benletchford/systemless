@@ -4521,8 +4521,7 @@ mod tests {
         cpu.write_reg(Register::D0, 24);
         let memory_manager = context.memory_manager_handle();
         dispatcher
-            .with_process_state_and_memory_manager(
-                memory_manager,
+            .with_process_state(
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA11E;
                     dispatcher
@@ -4541,8 +4540,7 @@ mod tests {
         cpu.write_reg(Register::D0, 13);
         let memory_manager = context.memory_manager_handle();
         dispatcher
-            .with_process_state_and_memory_manager(
-                memory_manager,
+            .with_process_state(
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA022;
                     dispatcher
@@ -4584,8 +4582,7 @@ mod tests {
         cpu.write_reg(Register::A0, ptr);
         let memory_manager = context.memory_manager_handle();
         dispatcher
-            .with_process_state_and_memory_manager(
-                memory_manager,
+            .with_process_state(
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA01F;
                     dispatcher
@@ -4599,8 +4596,7 @@ mod tests {
         cpu.write_reg(Register::A0, handle);
         let memory_manager = context.memory_manager_handle();
         dispatcher
-            .with_process_state_and_memory_manager(
-                memory_manager,
+            .with_process_state(
                 |dispatcher| {
                     dispatcher.current_trap_word = 0xA023;
                     dispatcher

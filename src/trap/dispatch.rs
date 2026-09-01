@@ -2979,16 +2979,6 @@ impl TrapDispatcher {
         self.process_memory_manager().has_handle_state(handle)
     }
 
-    /// Attach the canonical process Memory Manager to this 68K adapter.
-    pub(crate) fn with_memory_manager<R>(
-        &mut self,
-        memory_manager: &SharedProcessMemoryManager,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.attach_memory_manager_handle(memory_manager.clone());
-        f(self)
-    }
-
     /// Replace bytes in a native relocatable block through the process-level
     /// Memory Manager attached for the current serialized 68K dispatch.
     pub(crate) fn replace_process_native_handle_bytes(
@@ -3017,14 +3007,6 @@ impl TrapDispatcher {
                 false
             }
         }
-    }
-
-    pub(crate) fn with_process_state_and_memory_manager<R>(
-        &mut self,
-        memory_manager: &SharedProcessMemoryManager,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        self.with_memory_manager(memory_manager, f)
     }
 
     /// Run one 68K operation with every process manager continuously attached.
@@ -11169,7 +11151,7 @@ mod tests {
     }
 
     #[test]
-    fn with_process_state_restores_all_canonical_slots_on_panic() {
+    fn attached_process_state_remains_canonical_through_panic() {
         let mut dispatcher = TrapDispatcher::new();
         let mut context = ProcessContext::default();
         context.set_menu_tracking(Some(crate::menu_manager::test_process_menu_tracking(0x9abc)));
@@ -11177,22 +11159,19 @@ mod tests {
         let memory_manager = context.memory_manager_handle().clone();
 
         let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            dispatcher.with_process_state_and_memory_manager(
-                &memory_manager,
-                |disp| {
-                    disp.event_queue.push_back(QueuedEvent {
-                        what: 1,
-                        message: 0x3333,
-                        where_v: 1,
-                        where_h: 2,
-                        modifiers: 0,
-                    });
-                    disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
-                    disp.track_handle_ptr(0x4444, 0x5555);
-                    disp.set_handle_state_bits(0x5555, 0xc0);
-                    panic!("simulated panic inside a complete guest execution slice");
-                },
-            );
+            dispatcher.with_process_state(|disp| {
+                disp.event_queue.push_back(QueuedEvent {
+                    what: 1,
+                    message: 0x3333,
+                    where_v: 1,
+                    where_h: 2,
+                    modifiers: 0,
+                });
+                disp.menu_tracking.as_mut().unwrap().highlighted_item = 7;
+                disp.track_handle_ptr(0x4444, 0x5555);
+                disp.set_handle_state_bits(0x5555, 0xc0);
+                panic!("simulated panic inside a complete guest execution slice");
+            });
         }));
 
         assert!(panic_result.is_err());
