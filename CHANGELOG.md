@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.14](https://github.com/benletchford/systemless/compare/v0.27.13...v0.27.14) (2026-09-01)
+
+
+### Bug Fixes
+
+* **ppc:** implement the remaining scalar FixMath routines ([#1129](https://github.com/benletchford/systemless/issues/1129)) ([777fdce](https://github.com/benletchford/systemless/commit/777fdcee9fe44ec827dad3f6fb1693f971a18bc1))
+
 ## [0.27.13](https://github.com/benletchford/systemless/compare/v0.27.12...v0.27.13) (2026-09-01)
 
 
