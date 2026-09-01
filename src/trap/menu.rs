@@ -790,7 +790,6 @@ impl super::TrapDispatcher {
 
         self.ptr_to_handle
             .get(&candidate)
-            .copied()
             .or_else(|| {
                 self.menus
                     .iter()

@@ -16850,16 +16850,36 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HLock => {
-            let _ = ppc_mark_handle_locked(memory, handles, handle_states, cpu.gpr[3], false);
+            let handle = cpu.gpr[3];
+            if ppc_mark_handle_locked(memory, handles, handle_states, handle, false) {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        handle,
+                        ppc_process_handle_state_bits(handle_states, handle),
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HLockHi => {
-            let _ = ppc_mark_handle_locked(memory, handles, handle_states, cpu.gpr[3], true);
+            let handle = cpu.gpr[3];
+            if ppc_mark_handle_locked(memory, handles, handle_states, handle, true) {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        handle,
+                        ppc_process_handle_state_bits(handle_states, handle),
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HGetState => Some(PpcImportAction::Return({
-            let value =
+            let adapter_value =
                 ppc_handle_state_byte(memory, handles, handle_states, vfs_resources, cpu.gpr[3]);
+            let value = process_memory_manager
+                .as_deref()
+                .and_then(|memory_manager| memory_manager.state_for_handle(cpu.gpr[3]))
+                .unwrap_or(adapter_value);
             if ppc_hle_trace_enabled() {
                 let ptr = memory.read_u32_be(cpu.gpr[3]).unwrap_or(0);
                 eprintln!(
@@ -16882,6 +16902,14 @@ fn dispatch_supported_import(
                 cpu.gpr[3],
                 cpu.gpr[4] as u8,
             );
+            if ok {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        cpu.gpr[3],
+                        ppc_process_handle_state_bits(handle_states, cpu.gpr[3]),
+                    );
+                }
+            }
             if ppc_hle_trace_enabled() {
                 let ptr = memory.read_u32_be(cpu.gpr[3]).unwrap_or(0);
                 eprintln!(
@@ -16897,16 +16925,40 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HUnlock => {
-            ppc_mark_handle_unlocked(memory, handles, handle_states, cpu.gpr[3]);
+            let handle = cpu.gpr[3];
+            if ppc_mark_handle_unlocked(memory, handles, handle_states, handle) {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        handle,
+                        ppc_process_handle_state_bits(handle_states, handle),
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::MoveHHi => Some(PpcImportAction::ReturnPreserve),
         PpcImportDispatcherTarget::HNoPurge => {
-            let _ = ppc_mark_handle_no_purge(memory, handles, handle_states, cpu.gpr[3]);
+            let handle = cpu.gpr[3];
+            if ppc_mark_handle_no_purge(memory, handles, handle_states, handle) {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        handle,
+                        ppc_process_handle_state_bits(handle_states, handle),
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::HPurge => {
-            ppc_mark_handle_purgeable(memory, handles, handle_states, cpu.gpr[3]);
+            let handle = cpu.gpr[3];
+            if ppc_mark_handle_purgeable(memory, handles, handle_states, handle) {
+                if let Some(memory_manager) = process_memory_manager {
+                    memory_manager.set_state_for_handle(
+                        handle,
+                        ppc_process_handle_state_bits(handle_states, handle),
+                    );
+                }
+            }
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::TickCount => Some(PpcImportAction::Return(*tick_count)),
@@ -87952,7 +88004,7 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
             context.event_queue_menu_tracking_and_memory_manager_mut();
-        memory_manager.metadata_mut().1.insert(handle, 0xa0);
+        memory_manager.metadata_maps().1.insert(handle, 0xa0);
         let mut canonical = memory_manager.native_allocation(handle).unwrap();
         canonical.size = 24;
         canonical.capacity = 40;
@@ -88126,6 +88178,8 @@ pub(crate) mod tests {
         native.cpu.gpr[3] = 24;
         let mut context = ProcessContext::default();
         native.attach_process_context(&mut context);
+        let mut classic_dispatcher = TrapDispatcher::new();
+        classic_dispatcher.attach_process_context(&mut context);
         let (event_queue, menu_tracking, memory_manager) =
             context.event_queue_menu_tracking_and_memory_manager_mut();
 
@@ -88138,6 +88192,31 @@ pub(crate) mod tests {
                 let handle = native.cpu.gpr[3];
                 let original = memory_manager.native_allocation(handle).unwrap();
                 assert_eq!(original.size, 24);
+                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0x40));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HLock;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(memory_manager.handle_state(handle), 0xc0);
+                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0xc0));
+
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HNoPurge;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(memory_manager.handle_state(handle), 0x80);
+                assert_eq!(classic_dispatcher.handle_state_bits.get(&handle), Some(0x80));
+
+                memory_manager.set_state_for_handle(handle, 0xa0);
+                native.cpu.pc = native.entry_pc;
+                native.cpu.lr = PPC_HALT_PC;
+                native.imports[0].dispatcher_target = PpcImportDispatcherTarget::HGetState;
+                native.cpu.gpr[3] = handle;
+                native.run_with_process_memory_manager(64, false, false, memory_manager);
+                assert_eq!(native.cpu.gpr[3], 0xa0);
                 assert!((0..32)
                     .all(|offset| native.memory.read_u8(original.ptr + offset) == Some(0)));
                 native

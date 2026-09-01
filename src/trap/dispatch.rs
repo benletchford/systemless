@@ -13,7 +13,7 @@ use crate::machine_profile::reference_machine_profile;
 use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
-use crate::process_context::ProcessContext;
+use crate::process_context::{ProcessContext, SharedProcessMap};
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
 use crate::{Error, Result};
@@ -1766,10 +1766,10 @@ pub struct TrapDispatcher {
     pub(crate) loaded_handles: HashMap<u32, (u32, [u8; 4], i16)>,
     /// Fast index from (resource-file refnum, type, id) to its live handle.
     pub(crate) resource_handles_by_key: HashMap<(u16, [u8; 4], i16), u32>,
-    /// Mutable Memory Manager state bits by handle.
+    /// Adapter for process-owned Memory Manager state bits by handle.
     /// Resource ownership is derived from `loaded_handles`; this map stores
     /// only flags guest code may change (lock, purgeable, etc.).
-    pub(crate) handle_state_bits: HashMap<u32, u8>,
+    pub(crate) handle_state_bits: SharedProcessMap<u8>,
     /// Per-page hold refcounts for `HoldMemory`/`UnholdMemory`.
     /// Keys are 4 KiB page numbers in logical address space.
     /// Inside Macintosh: Memory (1992), 3-25 to 3-27.
@@ -1793,14 +1793,13 @@ pub struct TrapDispatcher {
     /// previous state and installs the requested new state.
     /// Inside Macintosh: Memory (1992), p. 4-30.
     pub(crate) data_cache_enabled: bool,
-    /// Map from a relocatable block's data pointer to the handle that
-    /// owns it. Populated by NewHandle / SetHandleSize / ReallocateHandle
-    /// and drained by DisposeHandle. Used by RecoverHandle to look up the
-    /// handle for a master-pointer dereferenced address.
+    /// Adapter for the process-owned map from relocatable-block pointers to
+    /// their handles. Used by RecoverHandle to recreate a handle from its
+    /// dereferenced master pointer.
     /// Inside Macintosh Volume V, V-579
-    pub(crate) ptr_to_handle: HashMap<u32, u32>,
-    /// Process-level Memory Manager attached only for one serialized CPU
-    /// dispatch interval.
+    pub(crate) ptr_to_handle: SharedProcessMap<u32>,
+    /// Exclusive process Memory Manager access for allocation operations
+    /// during one serialized CPU dispatch interval.
     process_memory_manager: Option<NonNull<crate::process_context::ProcessMemoryManager>>,
     /// Detached resource handles that should no longer be treated as resource-backed.
     pub(crate) detached_handles: HashMap<u32, ([u8; 4], i16)>,
@@ -2947,7 +2946,7 @@ impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.adopt_menu_tracking(&mut self.menu_tracking);
-        context.adopt_memory_manager_metadata(
+        context.attach_memory_manager_metadata(
             &mut self.ptr_to_handle,
             &mut self.handle_state_bits,
         );
@@ -2989,8 +2988,8 @@ impl TrapDispatcher {
         }
     }
 
-    /// Temporarily install canonical process Memory Manager metadata in this
-    /// 68K ABI adapter, returning it even if dispatch unwinds.
+    /// Attach canonical process Memory Manager metadata to this 68K adapter
+    /// for a serialized dispatch interval.
     pub(crate) fn with_memory_manager<R>(
         &mut self,
         memory_manager: &mut crate::process_context::ProcessMemoryManager,
@@ -3000,25 +2999,14 @@ impl TrapDispatcher {
             self.process_memory_manager.is_none(),
             "cannot attach two process Memory Managers"
         );
-        // Some launch and callback-completion helpers still run between CPU
-        // slices while allocator routing is being moved behind this boundary.
-        // Treat their adapter-local entries as deltas, then leave the adapter
-        // empty again when the serialized slice returns.
-        memory_manager.merge_metadata(
-            std::mem::take(&mut self.ptr_to_handle),
-            std::mem::take(&mut self.handle_state_bits),
+        memory_manager.attach_metadata_adapters(
+            &mut self.ptr_to_handle,
+            &mut self.handle_state_bits,
         );
         let process_memory_manager = NonNull::from(&mut *memory_manager);
-        let (ptr_to_handle, handle_state_bits) = memory_manager.take_metadata();
-        self.ptr_to_handle = ptr_to_handle;
-        self.handle_state_bits = handle_state_bits;
         self.process_memory_manager = Some(process_memory_manager);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(self)));
         self.process_memory_manager = None;
-        memory_manager.merge_metadata(
-            std::mem::take(&mut self.ptr_to_handle),
-            std::mem::take(&mut self.handle_state_bits),
-        );
         match outcome {
             Ok(result) => result,
             Err(payload) => std::panic::resume_unwind(payload),
@@ -3852,13 +3840,13 @@ impl TrapDispatcher {
             adb: crate::adb::AdbManager::new(),
             loaded_handles: HashMap::new(),
             resource_handles_by_key: HashMap::new(),
-            handle_state_bits: HashMap::new(),
+            handle_state_bits: SharedProcessMap::default(),
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
             vm_locked_page_counts: HashMap::new(),
             instruction_cache_enabled: true,
             data_cache_enabled: true,
-            ptr_to_handle: HashMap::new(),
+            ptr_to_handle: SharedProcessMap::default(),
             process_memory_manager: None,
             detached_handles: HashMap::new(),
             resource_handle_files: HashMap::new(),
@@ -11304,8 +11292,10 @@ mod tests {
         assert_eq!(context_queue.front().map(|event| event.message), Some(0x3333));
         assert_eq!(memory_manager.handle_for_ptr(0x4444), Some(0x5555));
         assert_eq!(memory_manager.handle_state(0x5555), 0xc0);
-        assert!(dispatcher.ptr_to_handle.is_empty());
-        assert!(dispatcher.handle_state_bits.is_empty());
+        assert_eq!(dispatcher.ptr_to_handle.get(&0x4444), Some(0x5555));
+        assert_eq!(dispatcher.handle_state_bits.get(&0x5555), Some(0xc0));
+        memory_manager.metadata_maps().0.insert(0x6666, 0x7777);
+        assert_eq!(dispatcher.ptr_to_handle.get(&0x6666), Some(0x7777));
         assert_eq!(
             context_tracking
                 .as_ref()
@@ -11315,5 +11305,17 @@ mod tests {
         assert!(dispatcher.event_queue.is_empty());
         assert!(dispatcher.menu_tracking.is_none());
         assert!(dispatcher.process_memory_manager.is_none());
+    }
+
+    #[test]
+    fn detached_dispatchers_keep_independent_memory_manager_metadata() {
+        let first = TrapDispatcher::new();
+        let second = TrapDispatcher::new();
+
+        first.ptr_to_handle.insert(0x2200, 0x1100);
+        first.handle_state_bits.insert(0x1100, 0x80);
+
+        assert_eq!(second.ptr_to_handle.get(&0x2200), None);
+        assert_eq!(second.handle_state_bits.get(&0x1100), None);
     }
 }

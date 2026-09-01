@@ -7373,7 +7373,6 @@ impl super::TrapDispatcher {
                         } else {
                             self.ptr_to_handle
                                 .get(&old_base)
-                                .copied()
                                 .filter(|&handle| bus.read_long(handle) == old_base)
                                 .unwrap_or(0)
                         };
@@ -18574,7 +18573,6 @@ impl super::TrapDispatcher {
             } else {
                 self.ptr_to_handle
                     .get(&pixel_buf)
-                    .copied()
                     .filter(|&handle| bus.read_long(handle) == pixel_buf)
                     .unwrap_or(0)
             };
@@ -18727,7 +18725,6 @@ impl super::TrapDispatcher {
             let base_handle = self
                 .ptr_to_handle
                 .get(&base)
-                .copied()
                 .filter(|&handle| bus.read_long(handle) == base)
                 .unwrap_or(0);
             if base_handle != 0 {
@@ -41975,7 +41972,7 @@ mod tests {
         assert_ne!(base_1, 0);
         let pm_1 = bus.read_long(pmh_1);
         let base_handle_1 = TrapDispatcher::offscreen_pixmap_base_handle(&bus, pm_1);
-        assert_eq!(d.ptr_to_handle.get(&base_1), Some(&base_handle_1));
+        assert_eq!(d.ptr_to_handle.get(&base_1), Some(base_handle_1));
 
         cpu.write_reg(Register::D0, 0x000D);
         cpu.write_reg(Register::A7, TEST_SP);
@@ -43487,7 +43484,7 @@ mod tests {
         let flags = cpu.read_reg(Register::D0);
         assert_ne!(new_base, old_base);
         assert_eq!(d.ptr_to_handle.get(&old_base), None);
-        assert_eq!(d.ptr_to_handle.get(&new_base), Some(&base_handle));
+        assert_eq!(d.ptr_to_handle.get(&new_base), Some(base_handle));
         assert_eq!(flags & (1 << 20), 1 << 20);
         assert_eq!(flags & (1 << 19), 0);
         for i in 0..16 {

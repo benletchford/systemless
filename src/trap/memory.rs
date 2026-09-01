@@ -922,10 +922,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // HLock ($A029) / HUnlock ($A02A) / MoveHHi ($A064)
-            // Locks or unlocks a relocatable block in its heap zone.
-            // PROCEDURE HLock (h: Handle); PROCEDURE HUnlock (h: Handle);
-            // Inside Macintosh Volume II, II-34
+            // HLock ($A029), HUnlock ($A02A), and MoveHHi ($A064)
+            // Changes whether or where a relocatable block can move.
+            // PROCEDURE HLock/HUnlock/MoveHHi (h: Handle);
+            // Inside Macintosh: Memory (1992), pp. 2-45--2-46, 2-56.
             (false, 0x29) | (false, 0x2A) | (false, 0x64) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle != 0 {
@@ -954,12 +954,12 @@ impl super::TrapDispatcher {
                     }
                     match trap_num {
                         0x29 => {
-                            let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                            *bits |= 0x80; // lock bit
+                            self.handle_state_bits
+                                .update(handle, |bits| Some(bits.unwrap_or(0) | 0x80));
                         }
                         0x2A => {
-                            let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                            *bits &= !0x80;
+                            self.handle_state_bits
+                                .update(handle, |bits| Some(bits.unwrap_or(0) & !0x80));
                         }
                         _ => {
                             if self.res_purge {
@@ -1595,12 +1595,10 @@ impl super::TrapDispatcher {
                     }
                     // Reallocation resets only the lock and purge flags. Any
                     // resource marker remains a property of the handle.
-                    if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
-                        *bits &= !0xC0;
-                        if *bits == 0 {
-                            self.handle_state_bits.remove(&handle);
-                        }
-                    }
+                    self.handle_state_bits.update(handle, |bits| {
+                        let bits = bits.unwrap_or(0) & !0xC0;
+                        (bits != 0).then_some(bits)
+                    });
                     write_memory_result(cpu, bus, NO_ERR);
                 }
                 Ok(())
@@ -1830,7 +1828,6 @@ impl super::TrapDispatcher {
                 let handle = self
                     .ptr_to_handle
                     .get(&ptr)
-                    .copied()
                     .filter(|&handle| bus.read_long(handle) == ptr)
                     .unwrap_or(0);
                 if handle == 0 {
@@ -2107,41 +2104,39 @@ impl super::TrapDispatcher {
 
             // ========== Handle state management ==========
 
-            // HPurge ($A049) - mark handle as purgeable
-            // Inside Macintosh Volume II, II-41
-            // HPurge ($A049): Sets purgeable bit (0x40) in handle_state_bits per IM:II II-41
+            // HPurge ($A049)
+            // Makes a relocatable block purgeable.
+            // PROCEDURE HPurge (h: Handle);
+            // Inside Macintosh: Memory (1992), pp. 2-46--2-48.
             (false, 0x49) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle != 0 {
-                    let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                    *bits |= 0x40;
+                    self.handle_state_bits
+                        .update(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
                 }
                 Ok(())
             }
 
-            // HNoPurge ($A04A) - mark handle as non-purgeable
-            // Inside Macintosh Volume II, II-41
-            // HNoPurge ($A04A): Clears purgeable bit (0x40) in handle_state_bits per IM:II II-41
+            // HNoPurge ($A04A)
+            // Makes a relocatable block unpurgeable.
+            // PROCEDURE HNoPurge (h: Handle);
+            // Inside Macintosh: Memory (1992), p. 2-48.
             (false, 0x4A) => {
                 let handle = cpu.read_reg(Register::A0);
-                if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
-                    *bits &= !0x40;
-                    if *bits == 0 {
-                        self.handle_state_bits.remove(&handle);
-                    }
-                }
+                self.handle_state_bits.update(handle, |bits| {
+                    let bits = bits.unwrap_or(0) & !0x40;
+                    (bits != 0).then_some(bits)
+                });
                 Ok(())
             }
 
-            // HLock ($A029) / HUnlock ($A02A) already handled above
-
             // HGetState ($A069)
-            // Returns a signed byte containing the flags of the master pointer for the given handle.
+            // Returns the properties of a relocatable block.
             // FUNCTION HGetState (h: Handle): SignedByte;
-            // Memory 1992, 2-54
+            // Inside Macintosh: Memory (1992), pp. 2-48--2-49.
             (false, 0x69) => {
                 let handle = cpu.read_reg(Register::A0);
-                let mut state = self.handle_state_bits.get(&handle).copied().unwrap_or(0);
+                let mut state = self.handle_state_bits.get(&handle).unwrap_or(0);
                 if self.loaded_handles.contains_key(&handle) {
                     state |= 0x20; // resource bit
                 }
@@ -2149,8 +2144,10 @@ impl super::TrapDispatcher {
                 Ok(())
             }
 
-            // HSetState ($A06A) - set handle state flags
-            // HSetState ($A06A): Sets lock/purge bits (0xC0 mask) in handle_state_bits
+            // HSetState ($A06A)
+            // Restores the properties of a relocatable block.
+            // PROCEDURE HSetState (h: Handle; flags: SignedByte);
+            // Inside Macintosh: Memory (1992), p. 2-49.
             (false, 0x6A) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle != 0 {
@@ -3964,126 +3961,34 @@ impl super::TrapDispatcher {
             }
 
             // HSetRBit ($A067)
-            //
-            // PROCEDURE HSetRBit(h: Handle);
-            // Inside Macintosh: Memory (1992), pp. 2-49 to 2-50.
-            //
-            // IM:Memory 1992 p. 2-49 verbatim: "You can use the HSetRBit
-            // procedure to set the resource flag of a relocatable block.
-            // The Resource Manager uses this routine extensively, but you
-            // should never need to use it. ... The HSetRBit procedure sets
-            // the resource flag of the relocatable block to which h is a
-            // handle. It does nothing if the flag is already set."
-            //
-            // Per IM:Memory 1992 p. 2-49 the resource flag is bit 5 of the
-            // master pointer's flag byte (also exposed as
-            // `kHandleIsResourceMask = 0x20` in MPW MacMemory.h). HGetState
-            // ($A069) returns this byte so callers observe the bit
-            // transition; the IM warning on p. 2-43 ("do not rely on the
-            // structure of master pointers") makes HGetState the canonical
-            // read path because the byte layout differs between 24-bit
-            // and 32-bit addressing modes.
-            //
-            // Assembly calling convention (IM:Memory 1992 p. 2-50):
-            //   Registers on entry: A0 = handle
-            //   Registers on exit:  D0 = result code (OSErr)
-            //     noErr        =    0  success
-            //     nilHandleErr = -109  NIL master pointer / handle
-            //     memWZErr     = -111  free block
-            //
-            // MPW Universal Headers (MacMemory.h):
-            //   #pragma parameter HSetRBit(__A0)
-            //   EXTERN_API(void) HSetRBit(Handle h) ONEWORDINLINE(0xA067);
-            // The void declaration elides D0 from C callers; a caller
-            // that needs to witness D0 (the nilHandleErr return) declares
-            // an inline thunk like
-            //   #pragma parameter __D0 kx_HSetRBit_D0(__A0)
-            //   pascal short kx_HSetRBit_D0(Handle h) = { 0xA067 };
-            //
-            // Systemless HLE: tracks resource-flag state in the dispatcher's
-            // `handle_state_bits` HashMap rather than poking master
-            // pointer bytes. This is functionally transparent because
-            // applications must use HGetState/HSetState/HSetRBit/HClrRBit
-            // for state observation (per the IM warning) — the HashMap
-            // is in sync with HSetRBit/HClrRBit writes and HGetState
-            // reads from it, so round-trip semantics match BII byte-for-
-            // byte on the documented surface.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::test_memorydispatch_hsetrbit_sets_resource_flag
-            //   src/trap/memory.rs::test_memorydispatch_hsetrbit_nil_handle_returns_error
-            //   src/trap/memory.rs::hsetrbit_then_hgetstate_round_trips_resource_bit
-            //
-            // HSetRBit ($A067): Sets resource flag (0x20) in handle_state_bits; nilHandleErr for NIL; per IM:Memory 1992 2-49..2-50
+            // Sets the resource flag of a relocatable block.
+            // PROCEDURE HSetRBit (h: Handle);
+            // Inside Macintosh: Memory (1992), pp. 2-49--2-50.
             (false, 0x67) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                    *bits |= 0x20; // resource bit
+                    self.handle_state_bits
+                        .update(handle, |bits| Some(bits.unwrap_or(0) | 0x20));
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
                 Ok(())
             }
 
             // HClrRBit ($A068)
-            //
-            // PROCEDURE HClrRBit(h: Handle);
-            // Inside Macintosh: Memory (1992), pp. 2-50 to 2-51.
-            //
-            // IM:Memory 1992 p. 2-50 verbatim: "You can use the HClrRBit
-            // procedure to clear the resource flag of a relocatable
-            // block. The Resource Manager uses this routine extensively,
-            // but you probably won't need to use it. ... The HClrRBit
-            // procedure clears the resource flag of a relocatable block.
-            // It does nothing if the flag is already cleared."
-            //
-            // Symmetric with HSetRBit ($A067): clears the same bit-5 of
-            // the master pointer's flag byte (0x20 mask). The Resource
-            // Manager uses HClrRBit when the resource handle is being
-            // detached from its 'rsrc' fork so it no longer needs to be
-            // treated as a resource block.
-            //
-            // Assembly calling convention (IM:Memory 1992 p. 2-51):
-            //   Registers on entry: A0 = handle
-            //   Registers on exit:  D0 = result code (OSErr)
-            //     noErr        =    0  success
-            //     nilHandleErr = -109  NIL master pointer / handle
-            //     memWZErr     = -111  free block
-            //
-            // MPW Universal Headers (MacMemory.h):
-            //   #pragma parameter HClrRBit(__A0)
-            //   EXTERN_API(void) HClrRBit(Handle h) ONEWORDINLINE(0xA068);
-            // The void declaration elides D0 from C callers (mirrors
-            // HSetRBit); callers use the same inline-thunk pattern with
-            //   #pragma parameter __D0 kx_HClrRBit_D0(__A0)
-            //   pascal short kx_HClrRBit_D0(Handle h) = { 0xA068 };
-            //
-            // Systemless HLE: clears 0x20 in `handle_state_bits[handle]` and
-            // removes the entry entirely when no flag bits remain. The
-            // HashMap mirrors what HGetState ($A069) returns; BasiliskII
-            // System 7.5.3 ROM updates the master pointer flag byte
-            // directly. Both engines agree on the observable HGetState
-            // round-trip behavior — set → 0x20, clear → 0x00.
-            //
-            // Regression coverage:
-            //   src/trap/memory.rs::test_memorydispatch_hclrrbit_clears_resource_flag
-            //   src/trap/memory.rs::test_memorydispatch_hclrrbit_nil_handle_returns_error
-            //   src/trap/memory.rs::hclrrbit_after_hsetrbit_round_trips_resource_bit_to_zero
-            //
-            // HClrRBit ($A068): Clears resource flag (0x20) in handle_state_bits; nilHandleErr for NIL; per IM:Memory 1992 2-50..2-51
+            // Clears the resource flag of a relocatable block.
+            // PROCEDURE HClrRBit (h: Handle);
+            // Inside Macintosh: Memory (1992), pp. 2-50--2-51.
             (false, 0x68) => {
                 let handle = cpu.read_reg(Register::A0);
                 if handle == 0 {
                     cpu.write_reg(Register::D0, (-109i32) as u32); // nilHandleErr
                 } else {
-                    if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
-                        *bits &= !0x20; // clear resource bit
-                        if *bits == 0 {
-                            self.handle_state_bits.remove(&handle);
-                        }
-                    }
+                    self.handle_state_bits.update(handle, |bits| {
+                        let bits = bits.unwrap_or(0) & !0x20;
+                        (bits != 0).then_some(bits)
+                    });
                     cpu.write_reg(Register::D0, 0); // noErr
                 }
                 Ok(())
@@ -4686,6 +4591,32 @@ mod tests {
             .unwrap();
         assert_eq!(memory_manager.classic_allocation_size(handle), None);
         assert_eq!(memory_manager.classic_allocation_size(data_ptr), None);
+    }
+
+    #[test]
+    fn classic_handle_metadata_is_process_visible_before_slice_return() {
+        let (mut dispatcher, mut cpu, mut bus) = setup();
+        let mut context = ProcessContext::default();
+        context.attach_classic_memory_bus(&mut bus);
+        dispatcher.attach_process_context(&mut context);
+
+        cpu.write_reg(Register::D0, 12);
+        dispatcher.current_trap_word = 0xA022;
+        dispatcher
+            .dispatch_memory(false, 0x22, &mut cpu, &mut bus)
+            .expect("NewHandle should be handled")
+            .unwrap();
+        let handle = cpu.read_reg(Register::A0);
+        let ptr = bus.read_long(handle);
+        assert_eq!(context.handle_for_ptr(ptr), Some(handle));
+
+        cpu.write_reg(Register::A0, handle);
+        dispatcher.current_trap_word = 0xA029;
+        dispatcher
+            .dispatch_memory(false, 0x29, &mut cpu, &mut bus)
+            .expect("HLock should be handled")
+            .unwrap();
+        assert_eq!(context.memory_manager_mut().handle_state(handle), 0x80);
     }
 
     #[test]
@@ -5667,7 +5598,6 @@ mod tests {
             dispatcher
                 .handle_state_bits
                 .get(&handle)
-                .copied()
                 .unwrap_or(0)
                 & 0x20,
             0x20,
@@ -5721,7 +5651,6 @@ mod tests {
             dispatcher
                 .handle_state_bits
                 .get(&handle)
-                .copied()
                 .unwrap_or(0)
                 & 0x20,
             0,
@@ -9703,10 +9632,10 @@ mod tests {
             assert_eq!(bus.get_alloc_size(new_ptr), Some(17));
             assert_eq!(bus.read_bytes(new_ptr, 17), vec![0xA5; 17]);
             assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), None);
-            assert_eq!(dispatcher.ptr_to_handle.get(&new_ptr), Some(&handle));
+            assert_eq!(dispatcher.ptr_to_handle.get(&new_ptr), Some(handle));
             assert_eq!(
                 dispatcher.handle_state_bits.get(&handle),
-                Some(&0x20),
+                Some(0x20),
                 "lock/purge bits clear while the resource bit survives"
             );
         }
@@ -9735,8 +9664,8 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), super::MEM_FULL_ERR);
         assert_eq!(bus.read_long(handle), old_ptr);
         assert_eq!(bus.get_alloc_size(old_ptr), Some(32));
-        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), Some(&handle));
-        assert_eq!(dispatcher.handle_state_bits.get(&handle), Some(&0xC0));
+        assert_eq!(dispatcher.ptr_to_handle.get(&old_ptr), Some(handle));
+        assert_eq!(dispatcher.handle_state_bits.get(&handle), Some(0xC0));
     }
 
     #[test]

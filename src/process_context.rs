@@ -6,7 +6,9 @@ use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use ppc::PpcMemory;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 #[derive(Debug)]
 struct ProcessMemoryRegion {
@@ -55,6 +57,64 @@ pub(crate) struct ProcessNativeAllocatorState {
     pub(crate) free_handle_blocks: Vec<ProcessHandleRecord>,
 }
 
+/// Shared process metadata indexed by a guest address.
+///
+/// CPU adapters retain clones of this handle, not copies of its map, so
+/// Memory Manager mutations are visible before an execution slice returns.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedProcessMap<V>(Rc<RefCell<HashMap<u32, V>>>);
+
+impl<V> Default for SharedProcessMap<V> {
+    fn default() -> Self {
+        Self(Rc::new(RefCell::new(HashMap::new())))
+    }
+}
+
+impl<V: Copy> SharedProcessMap<V> {
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+
+    pub(crate) fn insert(&self, key: u32, value: V) -> Option<V> {
+        self.0.borrow_mut().insert(key, value)
+    }
+
+    pub(crate) fn remove(&self, key: &u32) -> Option<V> {
+        self.0.borrow_mut().remove(key)
+    }
+
+    pub(crate) fn get(&self, key: &u32) -> Option<V> {
+        self.0.borrow().get(key).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_key(&self, key: &u32) -> bool {
+        self.0.borrow().contains_key(key)
+    }
+
+    pub(crate) fn extend(&self, entries: impl IntoIterator<Item = (u32, V)>) {
+        self.0.borrow_mut().extend(entries);
+    }
+
+    pub(crate) fn take_entries(&self) -> Vec<(u32, V)> {
+        self.0.borrow_mut().drain().collect()
+    }
+
+    pub(crate) fn update(&self, key: u32, update: impl FnOnce(Option<V>) -> Option<V>) {
+        let mut entries = self.0.borrow_mut();
+        let value = update(entries.get(&key).copied());
+        if let Some(value) = value {
+            entries.insert(key, value);
+        } else {
+            entries.remove(&key);
+        }
+    }
+}
+
 /// Architecture-neutral Memory Manager metadata for one Macintosh process.
 ///
 /// Guest addresses, rather than CPU adapter records, identify relocatable
@@ -65,8 +125,8 @@ pub(crate) struct ProcessNativeAllocatorState {
 #[derive(Debug, Default)]
 pub(crate) struct ProcessMemoryManager {
     classic_allocator: Option<SharedClassicHeapAllocator>,
-    ptr_to_handle: HashMap<u32, u32>,
-    handle_state_bits: HashMap<u32, u8>,
+    ptr_to_handle: SharedProcessMap<u32>,
+    handle_state_bits: SharedProcessMap<u8>,
     native_handle_ptrs: HashSet<u32>,
     native_handles: HashSet<u32>,
     native_allocations: HashMap<u32, ProcessHandleRecord>,
@@ -101,48 +161,33 @@ impl ProcessMemoryManager {
             .and_then(|allocator| allocator.allocation_size(address))
     }
 
-    pub(crate) fn merge_metadata(
+    pub(crate) fn attach_metadata_adapters(
         &mut self,
-        ptr_to_handle: HashMap<u32, u32>,
-        handle_state_bits: HashMap<u32, u8>,
+        ptr_to_handle: &mut SharedProcessMap<u32>,
+        handle_state_bits: &mut SharedProcessMap<u8>,
     ) {
-        self.ptr_to_handle.extend(ptr_to_handle);
-        self.handle_state_bits.extend(handle_state_bits);
-    }
-
-    pub(crate) fn adopt_metadata(
-        &mut self,
-        ptr_to_handle: &mut HashMap<u32, u32>,
-        handle_state_bits: &mut HashMap<u32, u8>,
-    ) {
-        assert!(
-            self.ptr_to_handle.is_empty() || ptr_to_handle.is_empty(),
-            "cannot attach two active pointer-to-handle registries"
-        );
-        assert!(
-            self.handle_state_bits.is_empty() || handle_state_bits.is_empty(),
-            "cannot attach two active handle-state registries"
-        );
-        if self.ptr_to_handle.is_empty() {
-            std::mem::swap(&mut self.ptr_to_handle, ptr_to_handle);
+        if self.ptr_to_handle.ptr_eq(ptr_to_handle)
+            && self.handle_state_bits.ptr_eq(handle_state_bits)
+        {
+            return;
         }
-        if self.handle_state_bits.is_empty() {
-            std::mem::swap(&mut self.handle_state_bits, handle_state_bits);
+        if self.ptr_to_handle.is_empty() && self.handle_state_bits.is_empty() {
+            self.ptr_to_handle = ptr_to_handle.clone();
+            self.handle_state_bits = handle_state_bits.clone();
+            return;
         }
+        self.ptr_to_handle.extend(ptr_to_handle.take_entries());
+        self.handle_state_bits
+            .extend(handle_state_bits.take_entries());
+        *ptr_to_handle = self.ptr_to_handle.clone();
+        *handle_state_bits = self.handle_state_bits.clone();
     }
 
     #[cfg(test)]
-    pub(crate) fn metadata_mut(
-        &mut self,
-    ) -> (&mut HashMap<u32, u32>, &mut HashMap<u32, u8>) {
-        (&mut self.ptr_to_handle, &mut self.handle_state_bits)
-    }
-
-    pub(crate) fn take_metadata(&mut self) -> (HashMap<u32, u32>, HashMap<u32, u8>) {
-        (
-            std::mem::take(&mut self.ptr_to_handle),
-            std::mem::take(&mut self.handle_state_bits),
-        )
+    pub(crate) fn metadata_maps(
+        &self,
+    ) -> (&SharedProcessMap<u32>, &SharedProcessMap<u8>) {
+        (&self.ptr_to_handle, &self.handle_state_bits)
     }
 
     pub(crate) fn register_native_handle_records(
@@ -169,7 +214,15 @@ impl ProcessMemoryManager {
     }
 
     pub(crate) fn state_for_handle(&self, handle: u32) -> Option<u8> {
-        self.handle_state_bits.get(&handle).copied()
+        self.handle_state_bits
+            .get(&handle)
+            .or_else(|| self.native_handles.contains(&handle).then_some(0))
+    }
+
+    pub(crate) fn set_state_for_handle(&mut self, handle: u32, state: u8) {
+        if handle != 0 {
+            self.handle_state_bits.insert(handle, state);
+        }
     }
 
     pub(crate) fn native_allocation(&self, handle: u32) -> Option<ProcessHandleRecord> {
@@ -822,12 +875,12 @@ impl ProcessMemoryManager {
 
     #[cfg(test)]
     pub(crate) fn handle_for_ptr(&self, ptr: u32) -> Option<u32> {
-        self.ptr_to_handle.get(&ptr).copied()
+        self.ptr_to_handle.get(&ptr)
     }
 
     #[cfg(test)]
     pub(crate) fn handle_state(&self, handle: u32) -> u8 {
-        self.handle_state_bits.get(&handle).copied().unwrap_or(0)
+        self.state_for_handle(handle).unwrap_or(0)
     }
 }
 
@@ -860,13 +913,13 @@ impl ProcessContext {
         self.memory_manager.handle_for_ptr(ptr)
     }
 
-    pub(crate) fn adopt_memory_manager_metadata(
+    pub(crate) fn attach_memory_manager_metadata(
         &mut self,
-        ptr_to_handle: &mut HashMap<u32, u32>,
-        handle_state_bits: &mut HashMap<u32, u8>,
+        ptr_to_handle: &mut SharedProcessMap<u32>,
+        handle_state_bits: &mut SharedProcessMap<u8>,
     ) {
         self.memory_manager
-            .adopt_metadata(ptr_to_handle, handle_state_bits);
+            .attach_metadata_adapters(ptr_to_handle, handle_state_bits);
     }
 
     /// Install a canonical process-memory allocation and attach a CPU
@@ -1466,7 +1519,7 @@ mod tests {
     #[test]
     fn native_handle_registration_tracks_relocation_without_discarding_classic_handles() {
         let mut manager = ProcessMemoryManager::default();
-        manager.merge_metadata(HashMap::from([(0x2200, 0x1100)]), HashMap::new());
+        manager.metadata_maps().0.insert(0x2200, 0x1100);
 
         manager.register_native_handle_records([
             (

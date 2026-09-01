@@ -29958,7 +29958,7 @@ mod tests {
         assert_eq!(bus.read_long(table_data + 4), 16);
         assert_eq!(bus.read_long(table_data + 8), 8);
         assert_eq!(bus.read_long(table_data + 12), 8);
-        assert_eq!(disp.ptr_to_handle.get(&table_data), Some(&table_handle));
+        assert_eq!(disp.ptr_to_handle.get(&table_data), Some(table_handle));
 
         bus.write_long(key_ptr, desired_class);
         bus.write_long(key_ptr + 4, container_type);
@@ -30677,7 +30677,7 @@ mod tests {
         assert_ne!(data_handle, 0);
         assert_ne!(data_ptr, 0);
         assert_eq!(bus.read_long(data_ptr), value);
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr), Some(&data_handle));
+        assert_eq!(disp.ptr_to_handle.get(&data_ptr), Some(data_handle));
     }
 
     #[test]
@@ -31901,7 +31901,7 @@ mod tests {
         let updated_ptr = bus.read_long(base_handle);
         assert_ne!(updated_ptr, original_ptr);
         assert!(!disp.ptr_to_handle.contains_key(&original_ptr));
-        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(base_handle));
         assert_eq!(bus.read_word(sp + 16), 2);
         assert_eq!(cpu.read_reg(Register::D0), 2);
         assert_eq!(cpu.read_reg(Register::A7), sp + 16);
@@ -31925,7 +31925,7 @@ mod tests {
 
         let updated_ptr = bus.read_long(base_handle);
         assert_eq!(updated_ptr, original_ptr);
-        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(&base_handle));
+        assert_eq!(disp.ptr_to_handle.get(&updated_ptr), Some(base_handle));
         assert_eq!(bus.read_word(sp + 16), 2);
         assert_eq!(bus.get_alloc_size(updated_ptr), Some(2));
         assert_eq!(bus.read_bytes(updated_ptr, 2), b"aa");

@@ -1483,7 +1483,6 @@ impl super::TrapDispatcher {
         let live_ptr = self
             .ptr_to_handle
             .get(&ptr)
-            .copied()
             .map(|handle| bus.read_long(handle))
             .filter(|handle_ptr| *handle_ptr != 0)
             .unwrap_or(ptr);
@@ -6105,15 +6104,14 @@ impl super::TrapDispatcher {
                         let handle = bus.read_long(sp + 4);
                         let result_code = temporary_memory_handle_status(bus, handle);
                         if result_code == NO_ERR {
-                            let bits = self.handle_state_bits.entry(handle).or_insert(0);
-                            if selector == 0x001E {
-                                *bits |= 0x80;
-                            } else {
-                                *bits &= !0x80;
-                                if *bits == 0 {
-                                    self.handle_state_bits.remove(&handle);
-                                }
-                            }
+                            self.handle_state_bits.update(handle, |bits| {
+                                let bits = if selector == 0x001E {
+                                    bits.unwrap_or(0) | 0x80
+                                } else {
+                                    bits.unwrap_or(0) & !0x80
+                                };
+                                (bits != 0).then_some(bits)
+                            });
                         }
                         write_temp_memory_result_code(bus, result_code_ptr, result_code);
                         cpu.write_reg(Register::D0, result_code);
@@ -9451,8 +9449,8 @@ mod tests {
             disp.loaded_handles.get(&handle).map(|(ptr, _, _)| *ptr),
             Some(new_ptr)
         );
-        assert_eq!(disp.ptr_to_handle.get(&data_ptr).copied(), None);
-        assert_eq!(disp.ptr_to_handle.get(&new_ptr).copied(), Some(handle));
+        assert_eq!(disp.ptr_to_handle.get(&data_ptr), None);
+        assert_eq!(disp.ptr_to_handle.get(&new_ptr), Some(handle));
 
         let file = disp.resources.as_ref().unwrap().files.get(&0).unwrap();
         assert_eq!(file.loaded.get(&(*b"TEST", 77)).copied(), Some(new_ptr));
@@ -9584,7 +9582,7 @@ mod tests {
         assert!(recovered.unwrap().is_ok(), "RecoverHandle should succeed");
         assert_eq!(cpu.read_reg(Register::A0), loaded_handle);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.ptr_to_handle.get(&data_ptr),
             Some(loaded_handle)
         );
     }
@@ -10049,7 +10047,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 4);
         assert_eq!(bus.read_long(handle), data_ptr);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.ptr_to_handle.get(&data_ptr),
             Some(handle),
             "LoadResource should restore RecoverHandle-style ownership"
         );
@@ -10091,7 +10089,7 @@ mod tests {
             "LoadResource should restore the purged resource's master pointer"
         );
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.ptr_to_handle.get(&data_ptr),
             Some(handle),
             "LoadResource should restore RecoverHandle-style ptr ownership"
         );
@@ -10228,7 +10226,7 @@ mod tests {
             "ReleaseResource should remove the stale resource handle index"
         );
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.ptr_to_handle.get(&data_ptr),
             None,
             "released resource data should not be recoverable until reload"
         );
@@ -10259,7 +10257,7 @@ mod tests {
         );
         assert_eq!(bus.read_long(reloaded_handle), data_ptr);
         assert_eq!(
-            disp.ptr_to_handle.get(&data_ptr).copied(),
+            disp.ptr_to_handle.get(&data_ptr),
             Some(reloaded_handle),
             "GetResource should restore RecoverHandle ownership through the fresh handle"
         );
@@ -18295,7 +18293,7 @@ mod tests {
             "TempNewHandle should write noErr to resultCode"
         );
         assert_eq!(bus.get_alloc_size(ptr), Some(64));
-        assert_eq!(disp.ptr_to_handle.get(&ptr).copied(), Some(handle));
+        assert_eq!(disp.ptr_to_handle.get(&ptr), Some(handle));
     }
 
     #[test]
@@ -18316,7 +18314,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(err_ptr), 0, "TempHLock resultCode");
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            disp.handle_state_bits.get(&handle).unwrap_or(0) & 0x80,
             0x80,
             "TempHLock should set the lock bit"
         );
@@ -18331,7 +18329,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::A7), TEST_SP + 10);
         assert_eq!(bus.read_word(err_ptr), 0, "TempHUnlock resultCode");
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x80,
+            disp.handle_state_bits.get(&handle).unwrap_or(0) & 0x80,
             0,
             "TempHUnlock should clear the lock bit"
         );

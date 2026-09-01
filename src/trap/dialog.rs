@@ -367,12 +367,13 @@ impl super::TrapDispatcher {
         }
 
         if purgeable {
-            *self.handle_state_bits.entry(handle).or_insert(0) |= 0x40;
-        } else if let Some(bits) = self.handle_state_bits.get_mut(&handle) {
-            *bits &= !0x40;
-            if *bits == 0 {
-                self.handle_state_bits.remove(&handle);
-            }
+            self.handle_state_bits
+                .update(handle, |bits| Some(bits.unwrap_or(0) | 0x40));
+        } else {
+            self.handle_state_bits.update(handle, |bits| {
+                let bits = bits.unwrap_or(0) & !0x40;
+                (bits != 0).then_some(bits)
+            });
         }
     }
 
@@ -17516,7 +17517,7 @@ mod tests {
             res_id
         );
         assert_eq!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            disp.handle_state_bits.get(&handle).unwrap_or(0) & 0x40,
             0,
             "{} {} should be nonpurgeable",
             String::from_utf8_lossy(&res_type),
@@ -17527,7 +17528,7 @@ mod tests {
     fn assert_resource_purgeable(disp: &TrapDispatcher, res_type: [u8; 4], res_id: i16) {
         let handle = loaded_resource_handle_for_test(disp, res_type, res_id);
         assert_ne!(
-            disp.handle_state_bits.get(&handle).copied().unwrap_or(0) & 0x40,
+            disp.handle_state_bits.get(&handle).unwrap_or(0) & 0x40,
             0,
             "{} {} should be purgeable",
             String::from_utf8_lossy(&res_type),
