@@ -1,0 +1,219 @@
+//! PowerPC Sound Manager, Timer, and VBL task state and records.
+
+use super::imports::PpcHleImportTraceEntry;
+use ppc::{PpcFetchHistogram, PpcRunResult};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSndCommandRecord {
+    pub channel: u32,
+    pub command: u16,
+    pub param1: i16,
+    pub param2: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcAiffMetadata {
+    pub form_type: u32,
+    pub channel_count: u16,
+    pub sample_frame_count: u32,
+    pub sample_size: u16,
+    pub sample_rate_hz: u32,
+    pub compression_type: u32,
+    pub sound_data_offset: u32,
+    pub sound_data_size: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcDecodedAiffSamples {
+    pub sample_rate_fixed: u32,
+    pub sample_count: u32,
+    pub preview_len: u8,
+    pub preview: [u8; 16],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcDecodedAiffPlaybackRecord {
+    pub file_playback_index: u32,
+    pub channel: u32,
+    pub sample_rate_fixed: u32,
+    pub samples: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSoundFilePlaybackRecord {
+    pub channel: u32,
+    pub ref_num: i16,
+    pub resource_id: i16,
+    pub buffer_size: u32,
+    pub buffer: u32,
+    pub selection: u32,
+    pub completion: u32,
+    pub completion_command: Option<PpcSndCommandRecord>,
+    pub async_play: bool,
+    pub paused: bool,
+    pub active: bool,
+    pub quiet_now: bool,
+    pub timing_valid: bool,
+    pub start_tick: u32,
+    pub start_instruction_count: u64,
+    pub due_tick: u32,
+    pub due_instruction_count: u64,
+    pub pause_timing_valid: bool,
+    pub pause_started_tick: u32,
+    pub pause_started_instruction_count: u64,
+    pub aiff: Option<PpcAiffMetadata>,
+    pub decoded_aiff: Option<PpcDecodedAiffSamples>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcDecodedBufferCommandRecord {
+    pub channel: u32,
+    pub sample_rate_fixed: u32,
+    pub samples: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSoundDoubleBufferPlaybackRecord {
+    pub channel: u32,
+    pub header: u32,
+    pub buffers: [u32; 2],
+    pub callback: u32,
+    pub sample_rate_fixed: u32,
+    pub num_channels: u16,
+    pub sample_size: u16,
+    pub compression_id: i16,
+    pub packet_size: u16,
+    pub current_buffer_index: u8,
+    pub callback_pending_mask: u8,
+    pub active: bool,
+    pub host_initialized: bool,
+    pub host_buffer_loaded: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSoundDoubleBackRecord {
+    pub channel: u32,
+    pub header: u32,
+    pub exhausted_buffer: u32,
+    pub exhausted_buffer_index: u32,
+    pub callback: u32,
+    pub tick: u32,
+    pub instruction_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSoundCompletionRecord {
+    pub file_playback_index: u32,
+    pub channel: u32,
+    pub completion: u32,
+    pub command: Option<PpcSndCommandRecord>,
+    pub tick: u32,
+    pub instruction_count: u64,
+    pub scheduled_tick: u32,
+    pub scheduled_instruction_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcSoundCompletionInvocationRecord {
+    pub file_playback_index: u32,
+    pub channel: u32,
+    pub completion: u32,
+    pub callback_entry: u32,
+    pub callback_rtoc: u32,
+    pub tick: u32,
+    pub instruction_count: u64,
+    pub scheduled_tick: u32,
+    pub scheduled_instruction_count: u64,
+    pub cycles: u64,
+    pub end_pc: u32,
+    pub end_sp: u32,
+    pub end_r3: u32,
+    pub result: PpcRunResult,
+    pub unsupported_import_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PpcSoundCompletionCallProbe {
+    pub invocation: PpcSoundCompletionInvocationRecord,
+    pub import_trace: Vec<PpcHleImportTraceEntry>,
+    pub fetch_histogram: Option<PpcFetchHistogram>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PpcSoundState {
+    pub queued_commands: Vec<PpcSndCommandRecord>,
+    pub immediate_commands: Vec<PpcSndCommandRecord>,
+    pub decoded_buffer_commands: Vec<PpcDecodedBufferCommandRecord>,
+    pub double_buffer_playbacks: Vec<PpcSoundDoubleBufferPlaybackRecord>,
+    pub file_playbacks: Vec<PpcSoundFilePlaybackRecord>,
+    pub decoded_file_playbacks: Vec<PpcDecodedAiffPlaybackRecord>,
+    pub pending_completions: Vec<PpcSoundCompletionRecord>,
+    pub pending_doublebacks: Vec<PpcSoundDoubleBackRecord>,
+    pub completion_invocations: Vec<PpcSoundCompletionInvocationRecord>,
+    pub sys_beep_count: u32,
+    pub last_sys_beep_duration: i16,
+    pub start_count: u32,
+    pub pause_count: u32,
+    pub stop_count: u32,
+    pub double_buffer_play_count: u32,
+    pub last_double_buffer_channel: u32,
+    pub last_double_buffer_header: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcVblTaskRecord {
+    pub task_ptr: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcTimerTaskRecord {
+    pub task_ptr: u32,
+    pub callback: u32,
+    pub active: bool,
+    pub fire_at_tick: u32,
+    pub last_fired_tick: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcTimerCallbackInvocationRecord {
+    pub task_ptr: u32,
+    pub callback: u32,
+    pub callback_entry: u32,
+    pub callback_rtoc: u32,
+    pub tick: u32,
+    pub cycles: u64,
+    pub end_pc: u32,
+    pub end_sp: u32,
+    pub end_r3: u32,
+    pub result: PpcRunResult,
+    pub unsupported_import_index: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PpcTimerCallbackProbe {
+    pub invocation: PpcTimerCallbackInvocationRecord,
+    pub import_trace: Vec<PpcHleImportTraceEntry>,
+    pub fetch_histogram: Option<PpcFetchHistogram>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PpcVblCallbackInvocationRecord {
+    pub task_ptr: u32,
+    pub callback: u32,
+    pub callback_entry: u32,
+    pub callback_rtoc: u32,
+    pub tick: u32,
+    pub cycles: u64,
+    pub end_pc: u32,
+    pub end_sp: u32,
+    pub end_r3: u32,
+    pub result: PpcRunResult,
+    pub unsupported_import_index: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PpcVblCallbackProbe {
+    pub invocation: PpcVblCallbackInvocationRecord,
+    pub import_trace: Vec<PpcHleImportTraceEntry>,
+    pub fetch_histogram: Option<PpcFetchHistogram>,
+}
