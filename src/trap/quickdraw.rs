@@ -9114,16 +9114,10 @@ impl super::TrapDispatcher {
             // popping any argument frame, caller pops the 2-byte slot
             // (A7 += 2) — net A7 zero across the C-level call.
             //
-            // Per IM:V V-145 QDError returns the error result from the
-            // last QuickDraw or Color Manager call. Systemless HLE is a
-            // hardcoded noErr stub that does not track per-call error
-            // state; after clean InitGraf/InitFonts/InitWindows/OpenPort
-            // with no failing operations preceding the call, BII System
-            // 7.5.3 ROM Color QuickDraw also returns noErr.
-            //
-            // BII tracks per-call error codes through qdGlobals and can
-            // return non-zero error states, whereas Systemless always
-            // returns noErr.
+            // Per IM:V V-145 QDError returns the error result from the last
+            // applicable QuickDraw or Color Manager call. The process owns
+            // that result so a Mixed Mode caller observes errors posted by
+            // either CPU adapter immediately.
             //
             // Contract-test coverage in this file (mod tests):
             //   quickdraw::tests::qderror_returns_noerr_in_function_result_slot_without_stack_pop
@@ -9131,7 +9125,7 @@ impl super::TrapDispatcher {
             //   quickdraw::tests::qderror_pascal_function_preserves_stack_across_five_calls
             (true, 0x240) => {
                 let sp = cpu.read_reg(Register::A7);
-                bus.write_word(sp, 0u16); // noErr — no QD errors tracked
+                bus.write_word(sp, *self.quickdraw_error as u16);
                 Ok(())
             }
 
