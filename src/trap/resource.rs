@@ -5328,6 +5328,8 @@ impl super::TrapDispatcher {
                 if self.locked_files.remove(&old_key) {
                     self.locked_files.insert(new_key.clone());
                 }
+                self.remove_vfs_entry_from_process(&old_key);
+                self.publish_vfs_entry_to_process(&new_key);
                 // Open access paths must follow the rename so a
                 // subsequent FSRead/FSWrite still resolves to the file.
                 let open_refnums: Vec<u16> = self
