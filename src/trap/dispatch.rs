@@ -2164,7 +2164,7 @@ pub struct TrapDispatcher {
     /// Whether `window_list` is the process-owned registry rather than a
     /// standalone dispatcher fixture. Attached dispatchers derive the cached
     /// front window even when the process list becomes empty.
-    process_window_list_attached: bool,
+    pub(crate) process_window_list_attached: bool,
     /// Set once the game has entered fullscreen (window covers entire screen
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
     /// the game temporarily restores MBarHeight (e.g. on cursor-at-top).

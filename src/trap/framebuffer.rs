@@ -4824,6 +4824,13 @@ impl super::TrapDispatcher {
         if !skip_chrome && menu_bar_height > 0 {
             let list_snapshot = self.window_list.to_vec();
             for &w in list_snapshot.iter().rev() {
+                // Native PowerPC windows participate in the process-wide
+                // WindowList, but their adapter already rendered their WDEF
+                // chrome into the native front buffer. Only repaint windows
+                // whose classic adapter owns the per-window WDEF metadata.
+                if self.process_window_list_attached && !self.window_proc_ids.contains_key(&w) {
+                    continue;
+                }
                 if bus.read_byte(w + 110u32) == 0 {
                     continue;
                 }

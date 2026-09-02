@@ -23308,6 +23308,7 @@ fn dispatch_supported_import(
                     handles,
                     controls,
                     gworlds,
+                    window_list,
                     current_gworld,
                     current_gdevice,
                     dialog,
@@ -66797,17 +66798,11 @@ fn ppc_dispatch_legacy_window(
                 handles,
                 controls,
                 gworlds,
+                window_list,
                 current_gworld,
                 current_gdevice,
                 window,
             );
-            window_list.retain(|candidate| *candidate != window);
-            if was_current {
-                *current_gworld = ppc_front_visible_process_window(memory, window_list)
-                    .unwrap_or(PPC_MAIN_GWORLD);
-                *current_gdevice =
-                    ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
-            }
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
@@ -67213,6 +67208,7 @@ fn ppc_dispose_window(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     window: u32,
@@ -67254,15 +67250,9 @@ fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
+    window_list.retain(|candidate| *candidate != window);
     if *current_gworld == window {
-        *current_gworld = gworlds
-            .iter()
-            .rev()
-            .map(|record| record.port)
-            .find(|port| {
-                !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                    && ppc_window_is_visible(memory, *port)
-            })
+        *current_gworld = ppc_front_visible_process_window(memory, window_list)
             .unwrap_or(PPC_MAIN_GWORLD);
         *current_gdevice = ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
     }
@@ -161156,6 +161146,7 @@ pub(crate) mod tests {
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let dialog = *loaded.current_gworld;
+        assert_eq!(loaded.window_list.first().copied(), Some(dialog));
         assert_eq!(
             loaded
                 .memory
@@ -161182,6 +161173,8 @@ pub(crate) mod tests {
         ));
         assert_eq!(loaded.cpu.gpr[3], 1);
         assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
+        assert!(!loaded.window_list.contains(&dialog));
+        assert_eq!(loaded.memory.read_u32_be(0x09D6), Some(0));
     }
 
     #[test]
