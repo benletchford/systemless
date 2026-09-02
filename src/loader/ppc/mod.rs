@@ -20729,6 +20729,7 @@ fn dispatch_supported_import(
                 vfs_resources,
                 *current_resource_refnum,
                 last_resource_error,
+                param_text,
             );
             if dialog != 0 {
                 *current_gworld = dialog;
@@ -20761,6 +20762,7 @@ fn dispatch_supported_import(
                     last_mem_error,
                     handles,
                     controls,
+                    param_text,
                     dialog,
                     vfs_resources,
                     *current_resource_refnum,
@@ -20806,6 +20808,7 @@ fn dispatch_supported_import(
                     last_mem_error,
                     handles,
                     controls,
+                    param_text,
                     dialog,
                     vfs_resources,
                     *current_resource_refnum,
@@ -23307,6 +23310,7 @@ fn dispatch_supported_import(
                     *current_resource_refnum,
                     last_resource_error,
                     alert_id,
+                    param_text,
                 );
                 if created == 0 {
                     return Some(PpcImportAction::Return(ppc_i16_result(-1)));
@@ -42049,6 +42053,33 @@ fn ppc_param_text(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, param_text: &mut
             .collect::<Vec<_>>();
         eprintln!("[PPC-TRACE] ParamText strings={:?}", strings);
     }
+}
+
+fn ppc_apply_param_text<'a>(
+    text: &'a [u8],
+    param_text: &[Vec<u8>; 4],
+) -> std::borrow::Cow<'a, [u8]> {
+    if !text.contains(&b'^') {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut expanded = Vec::with_capacity(text.len());
+    let mut offset = 0;
+    while offset < text.len() {
+        if text[offset] == b'^' {
+            if let Some(index) = text
+                .get(offset + 1)
+                .and_then(|byte| byte.checked_sub(b'0'))
+                .filter(|index| usize::from(*index) < param_text.len())
+            {
+                expanded.extend_from_slice(&param_text[usize::from(index)]);
+                offset += 2;
+                continue;
+            }
+        }
+        expanded.push(text[offset]);
+        offset += 1;
+    }
+    std::borrow::Cow::Owned(expanded)
 }
 
 fn ppc_random(memory: &mut PpcSectionMem) -> u16 {
@@ -61721,6 +61752,7 @@ fn ppc_new_alert_dialog(
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
     alert_id: i16,
+    param_text: &[Vec<u8>; 4],
 ) -> u32 {
     let Some(alert_index) = ppc_vfs_resource_index(
         vfs_resources,
@@ -61826,6 +61858,7 @@ fn ppc_new_alert_dialog(
             last_mem_error,
             handles,
             controls,
+            param_text,
             dialog,
             vfs_resources,
             current_resource_refnum,
@@ -61862,6 +61895,7 @@ fn ppc_get_new_dialog(
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
     last_resource_error: &mut i16,
+    param_text: &[Vec<u8>; 4],
 ) -> u32 {
     let dialog_id = cpu.gpr[3] as u16 as i16;
     let Some(dlog_index) = ppc_vfs_resource_index(
@@ -61965,6 +61999,7 @@ fn ppc_get_new_dialog(
             last_mem_error,
             handles,
             controls,
+            param_text,
             dialog,
             vfs_resources,
             current_resource_refnum,
@@ -62118,6 +62153,7 @@ fn ppc_initialize_dialog_items(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
+    param_text: &[Vec<u8>; 4],
     dialog: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -62226,7 +62262,21 @@ fn ppc_initialize_dialog_items(
                     0
                 }
             }
-            PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_EDIT_TEXT => {
+            PPC_DIALOG_ITEM_STATIC_TEXT => {
+                // Macintosh Toolbox Essentials (1992), pp. 6-129--6-130:
+                // ParamText replaces ^0..^3 in static-text items of every
+                // subsequently created dialog or alert.
+                let text = ppc_apply_param_text(&item.payload, param_text);
+                ppc_process_alloc_handle_with_bytes(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    handles,
+                    &text,
+                )
+            }
+            PPC_DIALOG_ITEM_EDIT_TEXT => {
                 ppc_process_alloc_handle_with_bytes(
                     process_memory_manager,
                     memory,
@@ -161795,6 +161845,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn ppc_param_text_expands_only_numbered_placeholders() {
+        let params = [
+            b"first".to_vec(),
+            Vec::new(),
+            b"third".to_vec(),
+            b"fourth".to_vec(),
+        ];
+
+        assert_eq!(
+            ppc_apply_param_text(b"^0/^1/^2/^3", &params).as_ref(),
+            b"first//third/fourth"
+        );
+        assert_eq!(
+            ppc_apply_param_text(b"^^0 ^9 trailing^", &params).as_ref(),
+            b"^first ^9 trailing^"
+        );
+        assert!(matches!(
+            ppc_apply_param_text(b"plain", &params),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
     fn hle_import_runner_handles_legacy_lowercase_param_text_symbol() {
         let pef = synthetic_pef_with_import(b"paramtext");
         let mut loaded = load_pef_application(&pef).unwrap();
@@ -161903,6 +161976,83 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(-1));
+    }
+
+    #[test]
+    fn hle_alert_materializes_expanded_param_text() {
+        let pef = synthetic_pef_with_import(b"Alert");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let alert_id = 128i16;
+        let mut alert = vec![0; 14];
+        for (offset, value) in [(0, 130i16), (2, 150), (4, 260), (6, 450)] {
+            alert[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        alert[8..10].copy_from_slice(&alert_id.to_be_bytes());
+        alert[10..12].copy_from_slice(&0x8888u16.to_be_bytes());
+
+        let mut ditl = vec![0; 34];
+        ditl[0..2].copy_from_slice(&1i16.to_be_bytes());
+        for (offset, value) in [(6, 20i16), (8, 20), (10, 70), (12, 280)] {
+            ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        ditl[14] = PPC_DIALOG_ITEM_STATIC_TEXT | PPC_DIALOG_ITEM_DISABLED;
+        ditl[15] = 2;
+        ditl[16..18].copy_from_slice(b"^0");
+        for (offset, value) in [(22, 90i16), (24, 210), (26, 110), (28, 280)] {
+            ditl[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        ditl[30] = PPC_DIALOG_ITEM_BUTTON;
+        ditl[31] = 2;
+        ditl[32..34].copy_from_slice(b"OK");
+
+        for (res_type, data) in [(*b"ALRT", alert), (*b"DITL", ditl)] {
+            let current_resource_refnum = *loaded.process_file_system.current_resource_file;
+            loaded.process_file_system.vfs_resources.push(PpcVfsResourceRecord {
+                ref_num: current_resource_refnum,
+                path: String::new(),
+                res_type: u32::from_be_bytes(res_type),
+                res_id: alert_id,
+                name: Vec::new(),
+                data,
+                raw_data: None,
+                raw_attrs: None,
+                attrs: 0,
+                handle: 0,
+            });
+        }
+        loaded.param_text[0] = b"Configured for this display".to_vec();
+        loaded.cpu.gpr[3] = alert_id as u16 as u32;
+        loaded.cpu.gpr[4] = 0;
+
+        let probe = loaded.run_with_hle_imports(128);
+
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let dialog = *loaded.current_gworld;
+        let items_handle = loaded
+            .memory
+            .read_u32_be(dialog + PPC_DIALOG_ITEMS_OFFSET)
+            .unwrap();
+        let items_ptr = loaded.memory.read_u32_be(items_handle).unwrap();
+        let text_handle = loaded.memory.read_u32_be(items_ptr + 2).unwrap();
+        assert_eq!(
+            ppc_handle_bytes(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                text_handle
+            ),
+            Some(b"Configured for this display".to_vec())
+        );
+
+        loaded.param_text[0] = b"later value".to_vec();
+        assert_eq!(
+            ppc_handle_bytes(
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                text_handle
+            ),
+            Some(b"Configured for this display".to_vec()),
+            "ParamText applies when the alert is created"
+        );
     }
 
     #[test]
