@@ -137,7 +137,7 @@ software:
 - QuickDraw ports, regions, text, shapes, PICT, CopyBits, color tables,
   offscreen GWorlds, cursors, and 1bpp/4bpp/8bpp framebuffers.
 - Event, Menu, Window, Control, Dialog, TextEdit, Cursor, Process, Sound,
-  SANE, and common Toolbox utility traps.
+  Standard File, SANE, and common Toolbox utility traps.
 - Cooperative Thread Manager contexts, yielding, current-thread queries,
   critical sections, and thread-entry result delivery.
 - Sound Manager playback, channel state, command queues, callbacks, file

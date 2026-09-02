@@ -49,6 +49,10 @@ test protocol. Its Pages menu selects ten interactive views:
     `TEContinuousStyle`, resolves Geneva and Monaco through `GetFNum`/`RealFont`,
     and compares `CharWidth`, `TextWidth`, and `MeasureText` results from the
     same Font Manager state that renders the record.
+12. Standard File exercises modern and legacy Open and Save entry points,
+    filters the Open list to `TEXT`, navigates into the fixture folder,
+    accepts a returned `FSSpec`, edits a Save name, and cancels both legacy
+    paths while checking `StandardFileReply` and `SFReply` fields.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -68,6 +72,8 @@ Sound follows *Inside Macintosh: Sound* (1994), pp. 2-19–2-29, 2-92–2-101,
 The styled TextEdit
 and Font Manager checks track public issue #1266 and follow *Inside Macintosh:
 Text* (1993), pp. 2-78, 2-98–2-102, 3-81–3-82, and 4-52–4-53.
+Standard File follows
+*Inside Macintosh: Files* (1992), pp. 3-42–3-54.
 
 ## Rebuild and verify
 
@@ -135,6 +141,14 @@ exact Systemless framebuffer references while performing the same sequence:
     the callback checkmark, then dispose the channel.
 19. Activate Styled Text & Fonts (item 11), verify the rendered multistyled
     TextEdit and its Font Manager/measurement readouts, and capture the page.
+20. Activate Standard File (item 12). Capture the page, open the modern
+    filtered dialog, enter `Standard File Fixtures`, and accept its `TEXT`
+    document with Return. Then cancel `SFGetFile`, accept `StandardPutFile`
+    after replacing its default name, and cancel `SFPutFile`. The integration
+    checkpoints are `20-standard-file-page.png`,
+    `21-standard-file-open.png`, and `22-standard-file-complete.png`; the
+    semantic assertions cover returned `FSSpec`/`SFReply` fields and the
+    `FSpCreate`/`FSpDelete` round trip.
 
 For a manual launch from the public repository:
 
@@ -147,13 +161,22 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the nineteen interaction steps above. Use an 800×600
+PowerPC slice, then follow the twenty interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
 and final page provide the comparison points between runs. Sound checkpoints
 17 and 18 include classic-Mac captures from BasiliskII and SheepShaver; their
 Systemless references document the expected PCM and callback state.
+
+The committed Standard File oracle frames show the page before interaction,
+the filtered Open dialog with `Standard File Fixtures` selected, and the final
+page after Open, legacy Open cancellation, editable Save acceptance, and
+legacy Save cancellation. On the classic systems, the accepted Open result
+names `Text Document` with type `TEXT`, the Save name is the single edited
+name, and canceled calls leave `sfGood`/`good` false. Standard File window
+placement and font rasterization remain presentation variance between system
+software versions.
 
 ## Reference screenshots
 
@@ -204,6 +227,9 @@ indexed paths.
 | 17. Sound controls | <img src="reference/systemless-68k/17-sound-controls.png" alt="Sound controls in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/17-sound-controls.png" alt="Sound controls in BasiliskII" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-68k/18-sound-complete.png" alt="Sound completion in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/18-sound-complete.png" alt="Sound completion in BasiliskII" width="360"> |
 | 19. Styled Text & Fonts | <img src="reference/systemless-68k/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in BasiliskII running the 68K slice" width="360"> |
+| 20. Standard File page | <img src="reference/systemless-68k/20-standard-file-page.png" alt="Standard File page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/20-standard-file-page.png" alt="Standard File page in BasiliskII running the 68K slice" width="360"> |
+| 21. Standard File Open dialog | <img src="reference/systemless-68k/21-standard-file-open.png" alt="Filtered Standard File Open dialog in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/21-standard-file-open.png" alt="Filtered Standard File Open dialog in BasiliskII" width="360"> |
+| 22. Standard File complete | <img src="reference/systemless-68k/22-standard-file-complete.png" alt="Completed Standard File interactions in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/22-standard-file-complete.png" alt="Completed Standard File interactions in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -228,9 +254,12 @@ indexed paths.
 | 17. Sound controls | <img src="reference/systemless-ppc/17-sound-controls.png" alt="Sound controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/17-sound-controls.png" alt="Sound controls in SheepShaver" width="360"> |
 | 18. Sound completion | <img src="reference/systemless-ppc/18-sound-complete.png" alt="Sound completion in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/18-sound-complete.png" alt="Sound completion in SheepShaver" width="360"> |
 | 19. Styled Text & Fonts | <img src="reference/systemless-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/19-styled-text.png" alt="Styled TextEdit and Font Manager measurements in SheepShaver running the PowerPC slice" width="360"> |
+| 20. Standard File page | <img src="reference/systemless-ppc/20-standard-file-page.png" alt="Standard File page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/20-standard-file-page.png" alt="Standard File page in SheepShaver running the PowerPC slice" width="360"> |
+| 21. Standard File Open dialog | <img src="reference/systemless-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/21-standard-file-open.png" alt="Filtered Standard File Open dialog in SheepShaver" width="360"> |
+| 22. Standard File complete | <img src="reference/systemless-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/22-standard-file-complete.png" alt="Completed Standard File interactions in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all nineteen rendered
+state rather than relying on fixed delays, and compares all twenty-two rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 

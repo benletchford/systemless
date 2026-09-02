@@ -2890,6 +2890,68 @@ struct PpcGrowWindowTrackingState {
     saved_pixels: Vec<(i32, i32, u16)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PpcStandardFileMode {
+    GetModern,
+    GetLegacy,
+    PutModern,
+    PutLegacy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PpcStandardFileCall {
+    mode: PpcStandardFileMode,
+    reply: u32,
+    return_address: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcStandardFileEntry {
+    name: Vec<u8>,
+    path: String,
+    dir_id: u32,
+    file_type: u32,
+    finder_flags: u16,
+    is_directory: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcStandardFileGetTrackingState {
+    call: PpcStandardFileCall,
+    entries: Vec<PpcStandardFileEntry>,
+    current_dir_id: u32,
+    file_types: Option<Vec<u32>>,
+    selected: usize,
+    bounds: (i16, i16, i16, i16),
+    front_buffer: PpcFrontBuffer,
+    saved_pixels: Vec<(i32, i32, u16)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcStandardFileFilteringState {
+    import_pc: u32,
+    restore_rtoc: u32,
+    callback: PpcCallbackTarget,
+    callback_with_data: bool,
+    tracking: PpcStandardFileGetTrackingState,
+    next_entry: usize,
+    filter_pb: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PpcStandardFilePutTrackingState {
+    call: PpcStandardFileCall,
+    vref: i16,
+    dir_id: u32,
+    prompt: Vec<u8>,
+    name: Vec<u8>,
+    sel_start: usize,
+    sel_end: usize,
+    bounds: (i16, i16, i16, i16),
+    front_buffer: PpcFrontBuffer,
+    saved_pixels: Vec<(i32, i32, u16)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PpcPaletteAllocation {
     palette: u32,
@@ -2966,6 +3028,11 @@ pub struct PpcToolboxStartupState {
     go_away_tracking: Option<PpcGoAwayTrackingState>,
     drag_window_tracking: Option<PpcDragWindowTrackingState>,
     grow_window_tracking: Option<PpcGrowWindowTrackingState>,
+    /// Retained native Standard File calls are resumed at the same import
+    /// frame after the host supplies a mouse or keyboard event.
+    standard_file_get_filtering: Option<PpcStandardFileFilteringState>,
+    standard_file_get_tracking: Option<PpcStandardFileGetTrackingState>,
+    standard_file_put_tracking: Option<PpcStandardFilePutTrackingState>,
     pub text_edit_initialized: bool,
     pub dialogs_initialized: bool,
     pub dialog_resume_proc: u32,
@@ -3027,6 +3094,9 @@ impl Default for PpcToolboxStartupState {
             go_away_tracking: None,
             drag_window_tracking: None,
             grow_window_tracking: None,
+            standard_file_get_filtering: None,
+            standard_file_get_tracking: None,
+            standard_file_put_tracking: None,
             text_edit_initialized: false,
             dialogs_initialized: false,
             dialog_resume_proc: 0,
@@ -14854,7 +14924,13 @@ fn dispatcher_target_for_import(
         ) => PpcImportDispatcherTarget::SlotCompatibility,
         (
             "InterfaceLib",
-            "CustomPutFile" | "SFGetFile" | "SFPGetFile" | "SFPutFile" | "StandardPutFile",
+            "CustomGetFile"
+                | "CustomPutFile"
+                | "SFGetFile"
+                | "SFPGetFile"
+                | "SFPPutFile"
+                | "SFPutFile"
+                | "StandardPutFile",
         ) => PpcImportDispatcherTarget::StandardFileCompatibility,
         (
             "InterfaceLib",
@@ -20384,8 +20460,25 @@ fn dispatch_supported_import(
             ))))
         }
         PpcImportDispatcherTarget::StandardGetFile => {
-            ppc_standard_get_file(cpu, memory);
-            Some(PpcImportAction::ReturnPreserve)
+            Some(ppc_dispatch_standard_file(
+                "StandardGetFile",
+                PpcStandardFileMode::GetModern,
+                cpu,
+                memory,
+                toolbox_startup,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                gworlds,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+                event_queue,
+            ))
         }
         PpcImportDispatcherTarget::GetScrap => {
             // Inside Macintosh: More Macintosh Toolbox (1993), pp. 2-38--2-40:
@@ -26289,9 +26382,34 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SlotCompatibility => {
             Some(ppc_dispatch_slot_compatibility(binding, cpu, memory))
         }
-        PpcImportDispatcherTarget::StandardFileCompatibility => Some(
-            ppc_dispatch_standard_file_compatibility(binding, cpu, memory),
-        ),
+        PpcImportDispatcherTarget::StandardFileCompatibility => {
+            let mode = match binding.symbol_name.as_str() {
+                "StandardPutFile" | "CustomPutFile" => PpcStandardFileMode::PutModern,
+                "SFPPutFile" | "SFPutFile" => PpcStandardFileMode::PutLegacy,
+                "CustomGetFile" => PpcStandardFileMode::GetModern,
+                "SFGetFile" | "SFPGetFile" => PpcStandardFileMode::GetLegacy,
+                _ => return Some(PpcImportAction::ReturnPreserve),
+            };
+            Some(ppc_dispatch_standard_file(
+                binding.symbol_name.as_str(),
+                mode,
+                cpu,
+                memory,
+                toolbox_startup,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                gworlds,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+                event_queue,
+            ))
+        }
         PpcImportDispatcherTarget::SoundInputCompatibility => {
             Some(ppc_dispatch_sound_input_compatibility(binding, cpu, memory))
         }
@@ -28323,26 +28441,6 @@ fn ppc_dispatch_slot_compatibility(
         let _ = memory.write_u32_be(cpu.gpr[3], 0);
     }
     PpcImportAction::Return(ppc_i16_result(PPC_SM_NO_MORE_SRSRCS_ERR))
-}
-
-fn ppc_dispatch_standard_file_compatibility(
-    binding: &PpcImportBinding,
-    cpu: &mut PpcCpu,
-    memory: &mut PpcSectionMem,
-) -> PpcImportAction {
-    let reply = match binding.symbol_name.as_str() {
-        "StandardPutFile" | "CustomPutFile" => cpu.gpr[5],
-        "SFPutFile" => cpu.gpr[7],
-        "SFGetFile" | "SFPGetFile" => cpu.gpr[9],
-        _ => 0,
-    };
-    if reply != 0 {
-        // Both SFReply and StandardFileReply start with the user's Boolean
-        // confirmation. A headless host presents the operation as Cancelled.
-        let _ = memory.write_u8(reply, 0);
-        let _ = memory.write_u8(reply + 1, 0);
-    }
-    PpcImportAction::ReturnPreserve
 }
 
 fn ppc_dispatch_sound_input_compatibility(
@@ -80873,23 +80971,1373 @@ fn ppc_h_set_finfo(
     }
 }
 
-fn ppc_standard_get_file(cpu: &PpcCpu, memory: &mut PpcSectionMem) {
-    let reply = cpu.gpr[6];
-    if reply == 0 || !ppc_memory_can_write_bytes(memory, reply, 88) {
+const PPC_STANDARD_FILE_GET_DIALOG_WIDTH: i16 = 356;
+const PPC_STANDARD_FILE_GET_DIALOG_HEIGHT: i16 = 178;
+const PPC_STANDARD_FILE_GET_LIST_RECT: (i16, i16, i16, i16) = (35, 18, 163, 236);
+const PPC_STANDARD_FILE_GET_SCROLL_RECT: (i16, i16, i16, i16) = (35, 235, 163, 251);
+const PPC_STANDARD_FILE_GET_DESKTOP_RECT: (i16, i16, i16, i16) = (66, 258, 87, 338);
+const PPC_STANDARD_FILE_GET_CANCEL_RECT: (i16, i16, i16, i16) = (110, 258, 131, 338);
+const PPC_STANDARD_FILE_GET_OPEN_RECT: (i16, i16, i16, i16) = (138, 258, 159, 338);
+const PPC_STANDARD_FILE_GET_ROW_HEIGHT: i16 = 14;
+const PPC_STANDARD_FILE_PUT_DIALOG_WIDTH: i16 = 360;
+const PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT: i16 = 148;
+const PPC_STANDARD_FILE_PUT_CANCEL_RECT: (i16, i16, i16, i16) = (103, 166, 125, 246);
+const PPC_STANDARD_FILE_PUT_SAVE_RECT: (i16, i16, i16, i16) = (103, 258, 125, 338);
+const PPC_STANDARD_FILE_PUT_NAME_RECT: (i16, i16, i16, i16) = (52, 24, 72, 330);
+
+fn ppc_standard_file_reply_ptr(mode: PpcStandardFileMode, cpu: &PpcCpu) -> u32 {
+    match mode {
+        PpcStandardFileMode::GetModern => cpu.gpr[6],
+        PpcStandardFileMode::GetLegacy => cpu.gpr[9],
+        PpcStandardFileMode::PutModern => cpu.gpr[5],
+        PpcStandardFileMode::PutLegacy => cpu.gpr[7],
+    }
+}
+
+fn ppc_standard_file_call(mode: PpcStandardFileMode, cpu: &PpcCpu) -> PpcStandardFileCall {
+    PpcStandardFileCall {
+        mode,
+        reply: ppc_standard_file_reply_ptr(mode, cpu),
+        return_address: cpu.lr,
+    }
+}
+
+fn ppc_standard_file_get_type_list(
+    memory: &mut PpcSectionMem,
+    num_types: i16,
+    type_list_ptr: u32,
+) -> Option<Option<Vec<u32>>> {
+    // Inside Macintosh: Files (1992), pp. 3-50--3-51: -1 means all types,
+    // zero means no selectable file types, and positive values name OSTypes.
+    if num_types < -1 {
+        return None;
+    }
+    if num_types == -1 {
+        return Some(None);
+    }
+    if num_types == 0 {
+        return Some(Some(Vec::new()));
+    }
+    if type_list_ptr == 0 {
+        return None;
+    }
+    let count = usize::try_from(num_types).ok()?.min(64);
+    let mut result = Vec::with_capacity(count);
+    for index in 0..count {
+        let offset = u32::try_from(index).ok()?.checked_mul(4)?;
+        result.push(memory.read_u32_be(type_list_ptr.checked_add(offset)?)?);
+    }
+    Some(Some(result))
+}
+
+fn ppc_standard_file_get_entries(
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    dir_id: u32,
+    file_types: Option<&[u32]>,
+) -> Vec<PpcStandardFileEntry> {
+    let Some(parent_path) = ppc_directory_path_for_id(vfs_directories, dir_id) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for directory in vfs_directories
+        .iter()
+        .filter(|directory| directory.parent_dir_id == dir_id)
+    {
+        entries.push(PpcStandardFileEntry {
+            name: encode_mac_roman_lossy(ppc_vfs_basename(&directory.path))
+                .into_iter()
+                .take(63)
+                .collect(),
+            path: directory.path.clone(),
+            dir_id: directory.dir_id,
+            file_type: 0,
+            finder_flags: directory.finder_flags,
+            is_directory: true,
+        });
+    }
+    for file in vfs_files {
+        let Some(name) = ppc_child_name_for_parent(parent_path, &file.path) else {
+            continue;
+        };
+        if file_types.is_some_and(|types| !types.contains(&file.file_type)) {
+            continue;
+        }
+        entries.push(PpcStandardFileEntry {
+            name: encode_mac_roman_lossy(name).into_iter().take(63).collect(),
+            path: file.path.clone(),
+            dir_id,
+            file_type: file.file_type,
+            finder_flags: file.finder_flags,
+            is_directory: false,
+        });
+    }
+    for fork in vfs_resource_files {
+        // A resource-only record is visible, but a second resource record for
+        // a data-backed file must not duplicate the catalog row.
+        if vfs_files
+            .iter()
+            .any(|file| file.path.eq_ignore_ascii_case(&fork.path))
+        {
+            continue;
+        }
+        let Some(name) = ppc_child_name_for_parent(parent_path, &fork.path) else {
+            continue;
+        };
+        if file_types.is_some_and(|types| !types.contains(&fork.file_type)) {
+            continue;
+        }
+        entries.push(PpcStandardFileEntry {
+            name: encode_mac_roman_lossy(name).into_iter().take(63).collect(),
+            path: fork.path.clone(),
+            dir_id,
+            file_type: fork.file_type,
+            finder_flags: fork.finder_flags,
+            is_directory: false,
+        });
+    }
+    entries.sort_by(|left, right| {
+        (
+            String::from_utf8_lossy(&left.name).to_ascii_lowercase(),
+            u8::from(!left.is_directory),
+            left.path.to_ascii_lowercase(),
+        )
+            .cmp(&(
+                String::from_utf8_lossy(&right.name).to_ascii_lowercase(),
+                u8::from(!right.is_directory),
+                right.path.to_ascii_lowercase(),
+            ))
+    });
+    entries
+}
+
+fn ppc_standard_file_save_pixels(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    bounds: (i16, i16, i16, i16),
+) -> Vec<(i32, i32, u16)> {
+    let top = i32::from(bounds.0).max(0).min(front.height as i32);
+    let left = i32::from(bounds.1).max(0).min(front.width as i32);
+    let bottom = i32::from(bounds.2).max(0).min(front.height as i32);
+    let right = i32::from(bounds.3).max(0).min(front.width as i32);
+    let mut pixels = Vec::new();
+    for y in top..bottom {
+        for x in left..right {
+            if let Some(pixel) = ppc_quickdraw_read_pixel(memory, front, (x, y)) {
+                pixels.push((x, y, pixel));
+            }
+        }
+    }
+    pixels
+}
+
+fn ppc_standard_file_restore_pixels(
+    memory: &mut PpcSectionMem,
+    pixels: &[(i32, i32, u16)],
+    front: PpcFrontBuffer,
+) {
+    for (x, y, value) in pixels.iter().copied() {
+        let _ = ppc_quickdraw_write_raw_pixel(memory, front, (x, y), value);
+    }
+}
+
+fn ppc_standard_file_point_in_rect(
+    point: (i16, i16),
+    rect: (i16, i16, i16, i16),
+) -> bool {
+    point.0 >= rect.0 && point.0 < rect.2 && point.1 >= rect.1 && point.1 < rect.3
+}
+
+fn ppc_standard_file_centered_bounds(
+    front: PpcFrontBuffer,
+    width: i16,
+    height: i16,
+    requested_origin: Option<(i16, i16)>,
+) -> (i16, i16, i16, i16) {
+    let (centered_top, centered_left) = (
+        (front.height as i16).saturating_sub(height) / 2,
+        (front.width as i16).saturating_sub(width) / 2,
+    );
+    let (requested_top, requested_left) = requested_origin.unwrap_or((centered_top, centered_left));
+    let top = requested_top
+        .max(0)
+        .min((front.height as i16).saturating_sub(height).max(0));
+    let left = requested_left
+        .max(0)
+        .min((front.width as i16).saturating_sub(width).max(0));
+    (top, left, top.saturating_add(height), left.saturating_add(width))
+}
+
+fn ppc_standard_file_point_from_gpr(point: u32) -> (i16, i16) {
+    ((point >> 16) as u16 as i16, point as u16 as i16)
+}
+
+fn ppc_standard_file_requested_origin(symbol_name: &str, cpu: &PpcCpu) -> Option<(i16, i16)> {
+    let point = match symbol_name {
+        "SFGetFile" | "SFPGetFile" | "SFPutFile" | "SFPPutFile" => cpu.gpr[3],
+        "CustomGetFile" => cpu.gpr[8],
+        "CustomPutFile" => cpu.gpr[7],
+        _ => return None,
+    };
+    let origin = ppc_standard_file_point_from_gpr(point);
+    if origin == (-1, -1) {
+        None
+    } else {
+        Some(origin)
+    }
+}
+
+fn ppc_standard_file_prompt(memory: &mut PpcSectionMem, prompt_ptr: u32) -> Vec<u8> {
+    if prompt_ptr == 0 {
+        return b"Save as:".to_vec();
+    }
+    let prompt = ppc_read_pstring_bytes(memory, prompt_ptr).unwrap_or_default();
+    if prompt.is_empty() {
+        b"Save as:".to_vec()
+    } else {
+        prompt
+    }
+}
+
+const PPC_STANDARD_FILE_FILTER_PB_SIZE: u32 = 256;
+const PPC_STANDARD_FILE_FILTER_NAME_OFFSET: u32 = 128;
+
+fn ppc_standard_file_filter_pointer(symbol_name: &str, cpu: &PpcCpu) -> (u32, bool) {
+    match symbol_name {
+        "StandardGetFile" | "CustomGetFile" => (cpu.gpr[3], symbol_name == "CustomGetFile"),
+        "SFGetFile" | "SFPGetFile" => (cpu.gpr[5], false),
+        _ => (0, false),
+    }
+}
+
+fn ppc_standard_file_write_filter_pb(
+    memory: &mut PpcSectionMem,
+    filter_pb: u32,
+    entry: &PpcStandardFileEntry,
+) -> bool {
+    if !ppc_memory_can_write_bytes(memory, filter_pb, PPC_STANDARD_FILE_FILTER_PB_SIZE) {
+        return false;
+    }
+    let name_ptr = filter_pb.saturating_add(PPC_STANDARD_FILE_FILTER_NAME_OFFSET);
+    ppc_write_pstring_bytes(memory, name_ptr, &entry.name)
+        && memory.write_u32_be(filter_pb + 18, name_ptr).is_some()
+        && memory
+            .write_u16_be(filter_pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .is_some()
+        && memory.write_u16_be(filter_pb + 28, 0).is_some()
+        && memory.write_u32_be(filter_pb + 48, entry.dir_id).is_some()
+        && ppc_write_finfo(memory, filter_pb + 32, entry.file_type, 0, entry.finder_flags).is_some()
+}
+
+fn ppc_standard_file_filter_next_action(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    state: &mut PpcStandardFileFilteringState,
+) -> Option<PpcImportAction> {
+    while state
+        .tracking
+        .entries
+        .get(state.next_entry)
+        .is_some_and(|entry| entry.is_directory)
+    {
+        state.next_entry = state.next_entry.saturating_add(1);
+    }
+    let entry = state.tracking.entries.get(state.next_entry)?;
+    if entry.is_directory {
+        return None;
+    }
+    if !ppc_standard_file_write_filter_pb(memory, state.filter_pb, entry) {
+        return None;
+    }
+    let arguments = if state.callback_with_data {
+        vec![state.filter_pb, 0]
+    } else {
+        vec![state.filter_pb]
+    };
+    ppc_install_native_call_arguments(cpu, memory, &arguments)?;
+    Some(PpcImportAction::CallNative {
+        entry: state.callback.entry,
+        rtoc: state.callback.rtoc,
+        return_pc: PPC_GUEST_CALL_RETURN_PC,
+        final_pc: state.import_pc,
+        restore_rtoc: state.restore_rtoc,
+        return_gpr3: PpcNativeReturnGpr3::Mask(0xff),
+    })
+}
+
+fn ppc_standard_file_dispose_filter_pb(
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    memory: &mut PpcSectionMem,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    filter_pb: u32,
+) {
+    if filter_pb != 0 {
+        let _ = process_memory_manager.dispose_native_ptr(filter_pb);
+        ppc_apply_process_native_allocator(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+        );
+    }
+}
+
+fn ppc_standard_file_draw_button(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    gworlds: &[PpcGWorldRecord],
+    bounds: (i16, i16, i16, i16),
+    rect: (i16, i16, i16, i16),
+    label: &[u8],
+) {
+    let global = (
+        bounds.0.saturating_add(rect.0),
+        bounds.1.saturating_add(rect.1),
+        bounds.0.saturating_add(rect.2),
+        bounds.1.saturating_add(rect.3),
+    );
+    let _ = ppc_fill_front_rect(memory, front, global, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, global, PPC_RGB_BLACK, 1);
+    ppc_draw_dialog_text(memory, gworlds, global, label, PPC_RGB_BLACK);
+}
+
+fn ppc_standard_file_draw_scrollbar(
+    memory: &mut PpcSectionMem,
+    front: PpcFrontBuffer,
+    gworlds: &[PpcGWorldRecord],
+    bounds: (i16, i16, i16, i16),
+) {
+    let rect = (
+        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.0),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.1),
+        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.2),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_SCROLL_RECT.3),
+    );
+    let _ = ppc_fill_front_rect(memory, front, rect, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, rect, PPC_RGB_BLACK, 1);
+    let middle = rect.0.saturating_add((rect.2 - rect.0) / 2);
+    let _ = ppc_fill_front_rect(
+        memory,
+        front,
+        (middle, rect.1, middle.saturating_add(1), rect.3),
+        PPC_RGB_BLACK,
+    );
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (rect.0, rect.1, middle, rect.3),
+        b"^",
+        PPC_RGB_BLACK,
+    );
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (middle, rect.1, rect.2, rect.3),
+        b"v",
+        PPC_RGB_BLACK,
+    );
+}
+
+fn ppc_standard_file_draw_get_dialog(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFileGetTrackingState,
+) {
+    let front = tracking.front_buffer;
+    let bounds = tracking.bounds;
+    let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (
+            bounds.0.saturating_add(14),
+            bounds.1.saturating_add(18),
+            bounds.0.saturating_add(32),
+            bounds.1.saturating_add(330),
+        ),
+        b"Open File",
+        PPC_RGB_BLACK,
+    );
+    let list = (
+        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.0),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.1),
+        bounds.0.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.2),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_GET_LIST_RECT.3),
+    );
+    let _ = ppc_fill_front_rect(memory, front, list, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, list, PPC_RGB_BLACK, 1);
+    let visible_rows = 8usize;
+    let first_visible = tracking.selected.saturating_sub(visible_rows - 1);
+    for row in 0..visible_rows {
+        let index = first_visible + row;
+        let Some(entry) = tracking.entries.get(index) else {
+            break;
+        };
+        let row_top = list.0.saturating_add(2).saturating_add(
+            i16::try_from(row)
+                .unwrap_or(i16::MAX)
+                .saturating_mul(PPC_STANDARD_FILE_GET_ROW_HEIGHT),
+        );
+        let row_bottom = row_top
+            .saturating_add(PPC_STANDARD_FILE_GET_ROW_HEIGHT)
+            .min(list.2.saturating_sub(1));
+        let selected = index == tracking.selected;
+        let row_rect = (
+            row_top,
+            list.1.saturating_add(2),
+            row_bottom,
+            list.3.saturating_sub(2),
+        );
+        if selected {
+            let _ = ppc_fill_front_rect(memory, front, row_rect, PPC_RGB_BLACK);
+        }
+        let mut text = entry.name.clone();
+        if entry.is_directory {
+            text.extend_from_slice(b" >");
+        }
+        ppc_draw_dialog_text(
+            memory,
+            gworlds,
+            (
+                row_top.saturating_add(1),
+                list.1.saturating_add(5),
+                row_bottom,
+                list.3.saturating_sub(3),
+            ),
+            &text,
+            if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+        );
+    }
+    let filter = tracking
+        .file_types
+        .as_ref()
+        .and_then(|types| types.first().copied())
+        .map(|value| value.to_be_bytes())
+        .unwrap_or(*b"ALL ");
+    let mut filter_label = b"Filter: ".to_vec();
+    filter_label.extend_from_slice(&filter);
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (
+            bounds.0.saturating_add(14),
+            bounds.1.saturating_add(190),
+            bounds.0.saturating_add(34),
+            bounds.1.saturating_add(330),
+        ),
+        &filter_label,
+        PPC_RGB_BLACK,
+    );
+    ppc_standard_file_draw_scrollbar(memory, front, gworlds, bounds);
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_DESKTOP_RECT,
+        b"Desktop",
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_CANCEL_RECT,
+        b"Cancel",
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_GET_OPEN_RECT,
+        b"Open",
+    );
+}
+
+fn ppc_standard_file_draw_put_dialog(
+    memory: &mut PpcSectionMem,
+    gworlds: &[PpcGWorldRecord],
+    tracking: &PpcStandardFilePutTrackingState,
+) {
+    let front = tracking.front_buffer;
+    let bounds = tracking.bounds;
+    let _ = ppc_fill_front_rect(memory, front, bounds, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, bounds, PPC_RGB_BLACK, 2);
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (
+            bounds.0.saturating_add(14),
+            bounds.1.saturating_add(18),
+            bounds.0.saturating_add(32),
+            bounds.1.saturating_add(330),
+        ),
+        b"Save File",
+        PPC_RGB_BLACK,
+    );
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (
+            bounds.0.saturating_add(32),
+            bounds.1.saturating_add(18),
+            bounds.0.saturating_add(50),
+            bounds.1.saturating_add(330),
+        ),
+        &tracking.prompt,
+        PPC_RGB_BLACK,
+    );
+    let name = (
+        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.0),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.1),
+        bounds.0.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.2),
+        bounds.1.saturating_add(PPC_STANDARD_FILE_PUT_NAME_RECT.3),
+    );
+    let _ = ppc_fill_front_rect(memory, front, name, PPC_RGB_WHITE);
+    let _ = ppc_frame_front_rect(memory, front, name, PPC_RGB_BLACK, 1);
+    let selected = tracking.sel_start < tracking.sel_end;
+    if selected {
+        let _ = ppc_fill_front_rect(
+            memory,
+            front,
+            (
+                name.0,
+                name.1.saturating_add(2),
+                name.2,
+                name.3.saturating_sub(2),
+            ),
+            PPC_RGB_BLACK,
+        );
+    }
+    ppc_draw_dialog_text(
+        memory,
+        gworlds,
+        (name.0.saturating_add(2), name.1, name.2, name.3),
+        &tracking.name,
+        if selected { PPC_RGB_WHITE } else { PPC_RGB_BLACK },
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_CANCEL_RECT,
+        b"Cancel",
+    );
+    ppc_standard_file_draw_button(
+        memory,
+        front,
+        gworlds,
+        bounds,
+        PPC_STANDARD_FILE_PUT_SAVE_RECT,
+        b"Save",
+    );
+}
+
+fn ppc_standard_file_write_cancel_reply(
+    memory: &mut PpcSectionMem,
+    mode: PpcStandardFileMode,
+    reply: u32,
+) {
+    if reply == 0 {
         return;
     }
-    // Inside Macintosh: Files (1992), pp. 3-14 and 3-50: cancelling the
-    // dialog clears sfGood and makes the remaining StandardFileReply fields
-    // invalid. Native execution has no host file chooser, so report that
-    // documented outcome while keeping the application event loop alive.
-    for offset in 0..88 {
-        let _ = memory.write_u8(reply + offset, 0);
+    // sfGood/good is the only defined result after cancellation; preserve
+    // the caller-owned tail just as Standard File does on classic systems.
+    let _ = memory.write_u8(reply, 0);
+    let _ = mode;
+}
+
+fn ppc_standard_file_working_directory_ref(
+    vref: i16,
+    dir_id: u32,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+) -> i16 {
+    let root_dir_id = if vref == PPC_BOOT_VOLUME_REF_NUM {
+        PPC_ROOT_DIR_ID
+    } else {
+        vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == vref)
+            .map(|volume| volume.root_dir_id)
+            .unwrap_or(PPC_ROOT_DIR_ID)
+    };
+    if dir_id == root_dir_id {
+        return vref;
     }
-    if ppc_hle_trace_enabled() {
-        eprintln!(
-            "[PPC-TRACE] StandardGetFile filter=${:08X} num_types={} type_list=${:08X} reply=${:08X} -> cancel",
-            cpu.gpr[3], cpu.gpr[4] as u16 as i16, cpu.gpr[5], reply
+    if let Some(existing) = working_directories.values().find(|record| {
+        record.volume_ref_num == vref && record.dir_id == dir_id && record.proc_id == 0
+    }) {
+        return existing.ref_num;
+    }
+    let mut ref_num = (*next_working_directory_ref_num).max(1);
+    while ref_num == PPC_BOOT_VOLUME_REF_NUM || working_directories.contains_key(&ref_num) {
+        ref_num = ref_num.saturating_add(1);
+    }
+    *next_working_directory_ref_num = ref_num.saturating_add(1);
+    working_directories.insert(
+        ref_num,
+        ProcessWorkingDirectory {
+            ref_num,
+            volume_ref_num: vref,
+            dir_id,
+            proc_id: 0,
+        },
+    );
+    ref_num
+}
+
+fn ppc_standard_file_write_get_reply(
+    memory: &mut PpcSectionMem,
+    mode: PpcStandardFileMode,
+    reply: u32,
+    entry: &PpcStandardFileEntry,
+    legacy_wd_ref: i16,
+) {
+    if reply == 0 {
+        return;
+    }
+    match mode {
+        PpcStandardFileMode::GetModern => {
+            if memory.write_u8(reply, 1).is_none() {
+                return;
+            }
+            let _ = memory.write_u8(reply + 1, 0);
+            let _ = memory.write_u32_be(reply + 2, entry.file_type);
+            let _ = ppc_write_fsspec(
+                memory,
+                reply + 6,
+                PPC_BOOT_VOLUME_REF_NUM,
+                entry.dir_id,
+                &entry.name,
+            );
+            let _ = memory.write_u16_be(reply + 76, 0);
+            let _ = memory.write_u16_be(reply + 78, entry.finder_flags);
+            let _ = memory.write_u8(reply + 80, 0);
+            let _ = memory.write_u8(reply + 81, 0);
+            let _ = memory.write_u32_be(reply + 82, 0);
+            let _ = memory.write_u16_be(reply + 86, 0);
+        }
+        PpcStandardFileMode::GetLegacy => {
+            if memory.write_u8(reply, 1).is_none() {
+                return;
+            }
+            let _ = memory.write_u8(reply + 1, 0);
+            let _ = memory.write_u32_be(reply + 2, entry.file_type);
+            let _ = memory.write_u16_be(reply + 6, legacy_wd_ref as u16);
+            let _ = memory.write_u16_be(reply + 8, 0);
+            let _ = ppc_write_pstring_bytes(memory, reply + 10, &entry.name);
+        }
+        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {}
+    }
+}
+
+fn ppc_standard_file_write_put_reply(
+    memory: &mut PpcSectionMem,
+    mode: PpcStandardFileMode,
+    reply: u32,
+    vref: i16,
+    dir_id: u32,
+    name: &[u8],
+    replacing: bool,
+) {
+    if reply == 0 {
+        return;
+    }
+    match mode {
+        PpcStandardFileMode::PutModern => {
+            if memory.write_u8(reply, 1).is_none() {
+                return;
+            }
+            let _ = memory.write_u8(reply + 1, u8::from(replacing));
+            let _ = memory.write_u32_be(reply + 2, 0);
+            let _ = ppc_write_fsspec(memory, reply + 6, vref, dir_id, name);
+            let _ = memory.write_u16_be(reply + 76, 0);
+            let _ = memory.write_u16_be(reply + 78, 0);
+            let _ = memory.write_u8(reply + 80, 0);
+            let _ = memory.write_u8(reply + 81, 0);
+            let _ = memory.write_u32_be(reply + 82, 0);
+            let _ = memory.write_u16_be(reply + 86, 0);
+        }
+        PpcStandardFileMode::PutLegacy => {
+            if memory.write_u8(reply, 1).is_none() {
+                return;
+            }
+            let _ = memory.write_u8(reply + 1, 0);
+            let _ = memory.write_u32_be(reply + 2, 0);
+            let _ = memory.write_u16_be(reply + 6, vref as u16);
+            let _ = memory.write_u16_be(reply + 8, 0);
+            let _ = ppc_write_pstring_bytes(memory, reply + 10, name);
+        }
+        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {}
+    }
+}
+
+fn ppc_standard_file_finish_get(
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    tracking: PpcStandardFileGetTrackingState,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    accepted: bool,
+) -> PpcImportAction {
+    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    if accepted
+        && tracking
+            .entries
+            .get(tracking.selected)
+            .is_some_and(|entry| !entry.is_directory)
+    {
+        let legacy_wd_ref = if tracking.call.mode == PpcStandardFileMode::GetLegacy {
+            ppc_standard_file_working_directory_ref(
+                PPC_BOOT_VOLUME_REF_NUM,
+                tracking.entries.get(tracking.selected).unwrap().dir_id,
+                vfs_volumes,
+                working_directories,
+                next_working_directory_ref_num,
+            )
+        } else {
+            PPC_BOOT_VOLUME_REF_NUM
+        };
+        ppc_standard_file_write_get_reply(
+            memory,
+            tracking.call.mode,
+            tracking.call.reply,
+            tracking.entries.get(tracking.selected).unwrap(),
+            legacy_wd_ref,
         );
+    } else {
+        ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
+    }
+    startup.standard_file_get_tracking = None;
+    PpcImportAction::ReturnPreserve
+}
+
+fn ppc_standard_file_finish_put(
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    tracking: PpcStandardFilePutTrackingState,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &[PpcVfsFileRecord],
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    accepted: bool,
+) -> PpcImportAction {
+    ppc_standard_file_restore_pixels(memory, &tracking.saved_pixels, tracking.front_buffer);
+    if accepted && !tracking.name.is_empty() {
+        let replacing = ppc_fsspec_target_exists(
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            tracking.dir_id,
+            &tracking.name,
+        );
+        let vref = if tracking.call.mode == PpcStandardFileMode::PutLegacy {
+            ppc_standard_file_working_directory_ref(
+                tracking.vref,
+                tracking.dir_id,
+                vfs_volumes,
+                working_directories,
+                next_working_directory_ref_num,
+            )
+        } else {
+            tracking.vref
+        };
+        ppc_standard_file_write_put_reply(
+            memory,
+            tracking.call.mode,
+            tracking.call.reply,
+            vref,
+            tracking.dir_id,
+            &tracking.name,
+            replacing,
+        );
+    } else {
+        ppc_standard_file_write_cancel_reply(memory, tracking.call.mode, tracking.call.reply);
+    }
+    startup.standard_file_put_tracking = None;
+    PpcImportAction::ReturnPreserve
+}
+
+fn ppc_standard_file_backspace_name(tracking: &mut PpcStandardFilePutTrackingState) {
+    let start = tracking.sel_start.min(tracking.name.len());
+    let end = tracking.sel_end.min(tracking.name.len()).max(start);
+    if start < end {
+        tracking.name.drain(start..end);
+        tracking.sel_start = start;
+        tracking.sel_end = start;
+    } else if start > 0 {
+        tracking.name.remove(start - 1);
+        tracking.sel_start = start - 1;
+        tracking.sel_end = start - 1;
+    } else {
+        tracking.sel_start = 0;
+        tracking.sel_end = 0;
+    }
+}
+
+fn ppc_standard_file_insert_name_character(
+    tracking: &mut PpcStandardFilePutTrackingState,
+    character: u8,
+) {
+    let start = tracking.sel_start.min(tracking.name.len());
+    let end = tracking.sel_end.min(tracking.name.len()).max(start);
+    let retained_len = tracking.name.len().saturating_sub(end - start);
+    if retained_len >= 63 {
+        tracking.sel_start = start.min(63);
+        tracking.sel_end = tracking.sel_start;
+        return;
+    }
+    tracking.name.splice(start..end, [character]);
+    tracking.name.truncate(63);
+    tracking.sel_start = start.saturating_add(1).min(tracking.name.len());
+    tracking.sel_end = tracking.sel_start;
+}
+
+fn ppc_standard_file_get_service(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &ProcessVfsFileRecords,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    event_queue: &mut EventQueue,
+    gworlds: &[PpcGWorldRecord],
+) -> PpcImportAction {
+    let Some(mut tracking) = startup.standard_file_get_tracking.take() else {
+        return PpcImportAction::ReturnPreserve;
+    };
+    if tracking.call.return_address != cpu.lr {
+        return ppc_standard_file_finish_get(
+            memory,
+            startup,
+            tracking,
+            vfs_volumes,
+            working_directories,
+            next_working_directory_ref_num,
+            false,
+        );
+    }
+    let event = event_queue
+        .iter()
+        .position(|event| matches!(event.what, 1 | 3 | 5))
+        .and_then(|index| event_queue.remove(index));
+    let mut open = false;
+    if let Some(event) = event {
+        if event.what == 1 {
+            let local = (
+                event.where_v.saturating_sub(tracking.bounds.0),
+                event.where_h.saturating_sub(tracking.bounds.1),
+            );
+            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_CANCEL_RECT) {
+                return ppc_standard_file_finish_get(
+                    memory,
+                    startup,
+                    tracking,
+                    vfs_volumes,
+                    working_directories,
+                    next_working_directory_ref_num,
+                    false,
+                );
+            }
+            if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_DESKTOP_RECT) {
+                tracking.current_dir_id = PPC_ROOT_DIR_ID;
+                tracking.entries = ppc_standard_file_get_entries(
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    PPC_ROOT_DIR_ID,
+                    tracking.file_types.as_deref(),
+                );
+                tracking.selected = 0;
+            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_OPEN_RECT) {
+                open = true;
+            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_LIST_RECT)
+                && !tracking.entries.is_empty()
+            {
+                let row = ((local.0 - PPC_STANDARD_FILE_GET_LIST_RECT.0 - 2)
+                    / PPC_STANDARD_FILE_GET_ROW_HEIGHT)
+                    .max(0) as usize;
+                let first_visible = tracking.selected.saturating_sub(7);
+                let index = first_visible.saturating_add(row);
+                if index < tracking.entries.len() {
+                    tracking.selected = index;
+                }
+            } else if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_GET_SCROLL_RECT)
+                && !tracking.entries.is_empty()
+            {
+                let halfway = (PPC_STANDARD_FILE_GET_SCROLL_RECT.2
+                    - PPC_STANDARD_FILE_GET_SCROLL_RECT.0)
+                    / 2;
+                tracking.selected = if local.0 < PPC_STANDARD_FILE_GET_SCROLL_RECT.0 + halfway {
+                    tracking.selected.saturating_sub(1)
+                } else {
+                    (tracking.selected + 1).min(tracking.entries.len() - 1)
+                };
+            }
+        } else {
+            let character = event.message as u8;
+            let key_code = (event.message >> 8) as u8;
+            if character == b'\r'
+                || character == 3
+                || key_code == PPC_KEY_RETURN
+                || key_code == PPC_KEY_NUMPAD_ENTER
+            {
+                open = true;
+            } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
+                return ppc_standard_file_finish_get(
+                    memory,
+                    startup,
+                    tracking,
+                    vfs_volumes,
+                    working_directories,
+                    next_working_directory_ref_num,
+                    false,
+                );
+            } else if key_code == 0x7e || character == 0x1e {
+                tracking.selected = tracking.selected.saturating_sub(1);
+            } else if key_code == 0x7d || character == 0x1f {
+                if !tracking.entries.is_empty() {
+                    tracking.selected = (tracking.selected + 1).min(tracking.entries.len() - 1);
+                }
+            }
+        }
+    }
+    if open {
+        if let Some(entry) = tracking.entries.get(tracking.selected) {
+            if entry.is_directory {
+                tracking.current_dir_id = entry.dir_id;
+                tracking.entries = ppc_standard_file_get_entries(
+                    vfs_directories,
+                    vfs_files,
+                    vfs_resource_files,
+                    entry.dir_id,
+                    tracking.file_types.as_deref(),
+                );
+                tracking.selected = 0;
+            } else {
+                return ppc_standard_file_finish_get(
+                    memory,
+                    startup,
+                    tracking,
+                    vfs_volumes,
+                    working_directories,
+                    next_working_directory_ref_num,
+                    true,
+                );
+            }
+        }
+    }
+    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    startup.standard_file_get_tracking = Some(tracking);
+    PpcImportAction::Yield(u64::MAX)
+}
+
+fn ppc_standard_file_get_start(
+    symbol_name: &str,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_files: &ProcessVfsFileRecords,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    default_dir_id: u32,
+    event_queue: &mut EventQueue,
+    gworlds: &[PpcGWorldRecord],
+    mode: PpcStandardFileMode,
+    requested_origin: Option<(i16, i16)>,
+) -> PpcImportAction {
+    if let Some(mut filtering) = startup.standard_file_get_filtering.take() {
+        if filtering.import_pc == cpu.pc && cpu.lr == cpu.pc {
+            let candidate_index = filtering.next_entry;
+            let accepted = cpu.gpr[3] & 0xff != 0;
+            if accepted {
+                filtering.next_entry = filtering.next_entry.saturating_add(1);
+            } else if candidate_index < filtering.tracking.entries.len()
+                && !filtering.tracking.entries[candidate_index].is_directory
+            {
+                filtering.tracking.entries.remove(candidate_index);
+            }
+            if let Some(action) = ppc_standard_file_filter_next_action(
+                cpu,
+                memory,
+                &mut filtering,
+            ) {
+                startup.standard_file_get_filtering = Some(filtering);
+                return action;
+            }
+            ppc_standard_file_dispose_filter_pb(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+                filtering.filter_pb,
+            );
+            let tracking = filtering.tracking;
+            ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+            startup.standard_file_get_tracking = Some(tracking);
+            return PpcImportAction::Yield(u64::MAX);
+        }
+        ppc_standard_file_dispose_filter_pb(
+            process_memory_manager,
+            memory,
+            heap_cursor,
+            last_mem_error,
+            filtering.filter_pb,
+        );
+        ppc_standard_file_restore_pixels(
+            memory,
+            &filtering.tracking.saved_pixels,
+            filtering.tracking.front_buffer,
+        );
+        ppc_standard_file_write_cancel_reply(
+            memory,
+            filtering.tracking.call.mode,
+            filtering.tracking.call.reply,
+        );
+        return PpcImportAction::ReturnPreserve;
+    }
+    if startup.standard_file_get_tracking.is_some() {
+        return ppc_standard_file_get_service(
+            cpu,
+            memory,
+            startup,
+            vfs_directories,
+            vfs_files,
+            vfs_resource_files,
+            vfs_volumes,
+            working_directories,
+            next_working_directory_ref_num,
+            event_queue,
+            gworlds,
+        );
+    }
+    let (num_types, type_list) = match mode {
+        PpcStandardFileMode::GetModern => (cpu.gpr[4] as u16 as i16, cpu.gpr[5]),
+        PpcStandardFileMode::GetLegacy => (cpu.gpr[6] as u16 as i16, cpu.gpr[7]),
+        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
+            return PpcImportAction::ReturnPreserve
+        }
+    };
+    let reply = ppc_standard_file_reply_ptr(mode, cpu);
+    let Some(file_types) = ppc_standard_file_get_type_list(memory, num_types, type_list) else {
+        ppc_standard_file_write_cancel_reply(memory, mode, reply);
+        return PpcImportAction::ReturnPreserve;
+    };
+    let current_dir_id = ppc_directory_path_for_id(vfs_directories, default_dir_id)
+        .map(|_| default_dir_id)
+        .unwrap_or(PPC_ROOT_DIR_ID);
+    let entries = ppc_standard_file_get_entries(
+        vfs_directories,
+        vfs_files,
+        vfs_resource_files,
+        current_dir_id,
+        file_types.as_deref(),
+    );
+    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
+        ppc_standard_file_write_cancel_reply(memory, mode, reply);
+        return PpcImportAction::ReturnPreserve;
+    };
+    let bounds = ppc_standard_file_centered_bounds(
+        front_buffer,
+        PPC_STANDARD_FILE_GET_DIALOG_WIDTH,
+        PPC_STANDARD_FILE_GET_DIALOG_HEIGHT,
+        requested_origin,
+    );
+    let mut tracking = PpcStandardFileGetTrackingState {
+        call: ppc_standard_file_call(mode, cpu),
+        entries,
+        current_dir_id,
+        file_types,
+        selected: 0,
+        bounds,
+        front_buffer,
+        saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
+    };
+    let (filter_ptr, callback_with_data) = ppc_standard_file_filter_pointer(symbol_name, cpu);
+    if filter_ptr != 0 {
+        if let Some(callback) = ppc_resolve_callback_target(memory, filter_ptr, cpu.gpr[2], None)
+            .filter(|callback| memory.read_u32_be(callback.entry).is_some())
+        {
+            let filter_pb = process_memory_manager.new_native_ptr(
+                memory,
+                PPC_STANDARD_FILE_FILTER_PB_SIZE,
+                true,
+            );
+            ppc_apply_process_native_allocator(
+                process_memory_manager,
+                memory,
+                heap_cursor,
+                last_mem_error,
+            );
+            if filter_pb != 0 {
+                let mut filtering = PpcStandardFileFilteringState {
+                    import_pc: cpu.pc,
+                    restore_rtoc: cpu.gpr[2],
+                    callback,
+                    callback_with_data,
+                    tracking,
+                    next_entry: 0,
+                    filter_pb,
+                };
+                if let Some(action) =
+                    ppc_standard_file_filter_next_action(cpu, memory, &mut filtering)
+                {
+                    startup.standard_file_get_filtering = Some(filtering);
+                    return action;
+                }
+                ppc_standard_file_dispose_filter_pb(
+                    process_memory_manager,
+                    memory,
+                    heap_cursor,
+                    last_mem_error,
+                    filter_pb,
+                );
+                tracking = filtering.tracking;
+            }
+        }
+    }
+    ppc_standard_file_draw_get_dialog(memory, gworlds, &tracking);
+    startup.standard_file_get_tracking = Some(tracking);
+    PpcImportAction::Yield(u64::MAX)
+}
+
+fn ppc_standard_file_put_start(
+    cpu: &PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    default_dir_id: u32,
+    gworlds: &[PpcGWorldRecord],
+    mode: PpcStandardFileMode,
+    prompt_ptr: u32,
+    requested_origin: Option<(i16, i16)>,
+) -> PpcImportAction {
+    let name_ptr = match mode {
+        PpcStandardFileMode::PutModern => cpu.gpr[4],
+        PpcStandardFileMode::PutLegacy => cpu.gpr[5],
+        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
+            return PpcImportAction::ReturnPreserve
+        }
+    };
+    let mut name = if name_ptr != 0 {
+        ppc_read_pstring_bytes(memory, name_ptr).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if name.is_empty() {
+        name.extend_from_slice(b"Untitled");
+    }
+    name.truncate(63);
+    let reply = ppc_standard_file_reply_ptr(mode, cpu);
+    let Some(front_buffer) = ppc_front_buffer_for_gworld(gworlds, PPC_MAIN_GWORLD) else {
+        ppc_standard_file_write_cancel_reply(memory, mode, reply);
+        return PpcImportAction::ReturnPreserve;
+    };
+    let bounds = ppc_standard_file_centered_bounds(
+        front_buffer,
+        PPC_STANDARD_FILE_PUT_DIALOG_WIDTH,
+        PPC_STANDARD_FILE_PUT_DIALOG_HEIGHT,
+        requested_origin,
+    );
+    let tracking = PpcStandardFilePutTrackingState {
+        call: ppc_standard_file_call(mode, cpu),
+        vref: PPC_BOOT_VOLUME_REF_NUM,
+        dir_id: default_dir_id,
+        prompt: ppc_standard_file_prompt(memory, prompt_ptr),
+        name: name.clone(),
+        sel_start: 0,
+        sel_end: name.len(),
+        bounds,
+        front_buffer,
+        saved_pixels: ppc_standard_file_save_pixels(memory, front_buffer, bounds),
+    };
+    ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+    startup.standard_file_put_tracking = Some(tracking);
+    PpcImportAction::Yield(u64::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ppc_dispatch_standard_file(
+    symbol_name: &str,
+    mode: PpcStandardFileMode,
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    startup: &mut PpcToolboxStartupState,
+    process_memory_manager: &mut ProcessNativeMemoryManager,
+    heap_cursor: &mut u32,
+    last_mem_error: &mut i16,
+    gworlds: &[PpcGWorldRecord],
+    vfs_directories: &mut Vec<PpcVfsDirectory>,
+    vfs_files: &ProcessVfsFileRecords,
+    vfs_resource_files: &[PpcVfsResourceFileRecord],
+    vfs_volumes: &[PpcVfsVolumeRecord],
+    default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    event_queue: &mut EventQueue,
+) -> PpcImportAction {
+    let requested_origin = ppc_standard_file_requested_origin(symbol_name, cpu);
+    match mode {
+        PpcStandardFileMode::GetModern | PpcStandardFileMode::GetLegacy => {
+            ppc_standard_file_get_start(
+                symbol_name,
+                cpu,
+                memory,
+                startup,
+                process_memory_manager,
+                heap_cursor,
+                last_mem_error,
+                vfs_directories,
+                vfs_files,
+                vfs_resource_files,
+                vfs_volumes,
+                working_directories,
+                next_working_directory_ref_num,
+                default_dir_id,
+                event_queue,
+                gworlds,
+                mode,
+                requested_origin,
+            )
+        }
+        PpcStandardFileMode::PutModern | PpcStandardFileMode::PutLegacy => {
+            if let Some(mut tracking) = startup.standard_file_put_tracking.take() {
+                if tracking.call.return_address != cpu.lr {
+                    return ppc_standard_file_finish_put(
+                        memory,
+                        startup,
+                        tracking,
+                        vfs_directories,
+                        vfs_files,
+                        vfs_resource_files,
+                        vfs_volumes,
+                        working_directories,
+                        next_working_directory_ref_num,
+                        false,
+                    );
+                }
+                let event = event_queue
+                    .iter()
+                    .position(|event| matches!(event.what, 1 | 3 | 5))
+                    .and_then(|index| event_queue.remove(index));
+                let mut accept = false;
+                if let Some(event) = event {
+                    if event.what == 1 {
+                        let local = (
+                            event.where_v.saturating_sub(tracking.bounds.0),
+                            event.where_h.saturating_sub(tracking.bounds.1),
+                        );
+                        if ppc_standard_file_point_in_rect(local, PPC_STANDARD_FILE_PUT_CANCEL_RECT)
+                        {
+                            return ppc_standard_file_finish_put(
+                                memory,
+                                startup,
+                                tracking,
+                                vfs_directories,
+                                vfs_files,
+                                vfs_resource_files,
+                                vfs_volumes,
+                                working_directories,
+                                next_working_directory_ref_num,
+                                false,
+                            );
+                        }
+                        accept = ppc_standard_file_point_in_rect(
+                            local,
+                            PPC_STANDARD_FILE_PUT_SAVE_RECT,
+                        );
+                    } else {
+                        let character = event.message as u8;
+                        let key_code = (event.message >> 8) as u8;
+                        if character == b'\r'
+                            || character == 3
+                            || key_code == PPC_KEY_RETURN
+                            || key_code == PPC_KEY_NUMPAD_ENTER
+                        {
+                            accept = true;
+                        } else if character == 0x1b || key_code == PPC_KEY_ESCAPE {
+                            return ppc_standard_file_finish_put(
+                                memory,
+                                startup,
+                                tracking,
+                                vfs_directories,
+                                vfs_files,
+                                vfs_resource_files,
+                                vfs_volumes,
+                                working_directories,
+                                next_working_directory_ref_num,
+                                false,
+                            );
+                        } else if character.eq_ignore_ascii_case(&b'a')
+                            && event.modifiers & 0x0100 != 0
+                        {
+                            tracking.sel_start = 0;
+                            tracking.sel_end = tracking.name.len();
+                        } else if character == 0x08 || key_code == 0x33 {
+                            ppc_standard_file_backspace_name(&mut tracking);
+                        } else if event.modifiers & 0x0100 == 0
+                            && (0x20..=0x7e).contains(&character)
+                            && !matches!(character, b'/' | b':')
+                            && tracking.sel_start <= tracking.sel_end
+                            && tracking.sel_end <= tracking.name.len()
+                        {
+                            ppc_standard_file_insert_name_character(&mut tracking, character);
+                        }
+                    }
+                }
+                if accept {
+                    return ppc_standard_file_finish_put(
+                        memory,
+                        startup,
+                        tracking,
+                        vfs_directories,
+                        vfs_files,
+                        vfs_resource_files,
+                        vfs_volumes,
+                        working_directories,
+                        next_working_directory_ref_num,
+                        true,
+                    );
+                }
+                ppc_standard_file_draw_put_dialog(memory, gworlds, &tracking);
+                startup.standard_file_put_tracking = Some(tracking);
+                PpcImportAction::Yield(u64::MAX)
+            } else {
+                let prompt_ptr = match symbol_name {
+                    "StandardPutFile" | "CustomPutFile" => cpu.gpr[3],
+                    "SFPutFile" | "SFPPutFile" => cpu.gpr[4],
+                    _ => 0,
+                };
+                ppc_standard_file_put_start(
+                    cpu,
+                    memory,
+                    startup,
+                    default_dir_id,
+                    gworlds,
+                    mode,
+                    prompt_ptr,
+                    requested_origin,
+                )
+            }
+        }
     }
 }
 
@@ -144703,7 +146151,420 @@ pub(crate) mod tests {
 
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
-        assert!((0..88).all(|offset| loaded.memory.read_u8(reply + offset) == Some(0)));
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(PPC_KEY_ESCAPE) << 8,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert_eq!(probe.handled_import_count, 1);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert_eq!(
+            loaded.memory.read_u8(reply + 1),
+            Some(0xff),
+            "cancellation must preserve caller-owned reply tail"
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_standard_get_file_keeps_empty_filtered_dialog_open() {
+        let pef = synthetic_pef_with_import(b"StandardGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1a00;
+        let type_list = PPC_DATA_BASE + 0x1b00;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(type_list, vec![0; 4]);
+        loaded
+            .memory
+            .write_u32_be(type_list, u32::from_be_bytes(*b"NONE"))
+            .unwrap();
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = type_list;
+        loaded.cpu.gpr[6] = reply;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
+        assert_eq!(loaded.memory.read_u8(reply), Some(0xaa));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(PPC_KEY_ESCAPE) << 8,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+    }
+
+    #[test]
+    fn hle_import_runner_standard_get_file_gui_navigates_and_filters_vfs_entries() {
+        let pef = synthetic_pef_with_import(b"StandardGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1000;
+        let type_list = PPC_DATA_BASE + 0x1100;
+        let fixtures_dir = 42;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(type_list, vec![0; 4]);
+        loaded
+            .memory
+            .write_u32_be(type_list, u32::from_be_bytes(*b"TEXT"))
+            .unwrap();
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: fixtures_dir,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Standard File Fixtures".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Standard File Fixtures/Text Document".to_string(),
+            data: (b"text".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0x4000,
+            dirty: false,
+        });
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Standard File Fixtures/Binary Data".to_string(),
+            data: (b"data".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"DATA"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 1;
+        loaded.cpu.gpr[5] = type_list;
+        loaded.cpu.gpr[6] = reply;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let bounds = loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .as_ref()
+            .expect("StandardGetFile must retain its dialog across the import yield")
+            .bounds;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: bounds.0
+                + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
+            where_h: bounds.1
+                + (PPC_STANDARD_FILE_GET_OPEN_RECT.1 + PPC_STANDARD_FILE_GET_OPEN_RECT.3) / 2,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert_eq!(
+            loaded
+                .toolbox_startup
+                .standard_file_get_tracking
+                .as_ref()
+                .map(|tracking| tracking.entries.len()),
+            Some(1),
+            "TEXT filter must hide the DATA fixture after entering its folder"
+        );
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_none());
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(
+            loaded.memory.read_u32_be(reply + 2),
+            Some(u32::from_be_bytes(*b"TEXT"))
+        );
+        assert_eq!(
+            loaded.memory.read_u16_be(reply + 6),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+        assert_eq!(loaded.memory.read_u32_be(reply + 8), Some(fixtures_dir));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"Text Document".to_vec())
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_sf_get_file_gui_cancel_uses_legacy_reply_abi() {
+        let pef = synthetic_pef_with_import(b"SFGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1200;
+        let type_list = PPC_DATA_BASE + 0x1300;
+        loaded.memory.add_region(reply, vec![0xaa; 75]);
+        loaded.memory.add_region(type_list, vec![0; 4]);
+        loaded
+            .memory
+            .write_u32_be(type_list, u32::from_be_bytes(*b"TEXT"))
+            .unwrap();
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Text Document".to_string(),
+            data: (b"text".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = type_list;
+        loaded.cpu.gpr[9] = reply;
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.toolbox_startup.standard_file_get_tracking.is_some());
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(PPC_KEY_ESCAPE) << 8,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert_eq!(loaded.memory.read_u8(reply + 1), Some(0xaa));
+    }
+
+    #[test]
+    fn hle_import_runner_sf_get_file_returns_resolvable_parent_working_directory() {
+        let pef = synthetic_pef_with_import(b"SFGetFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1800;
+        let type_list = PPC_DATA_BASE + 0x1900;
+        let fixtures_dir = 42;
+        loaded.memory.add_region(reply, vec![0xaa; 75]);
+        loaded.memory.add_region(type_list, vec![0; 4]);
+        loaded
+            .memory
+            .write_u32_be(type_list, u32::from_be_bytes(*b"TEXT"))
+            .unwrap();
+        loaded.vfs_directories.push(PpcVfsDirectory {
+            dir_id: fixtures_dir,
+            parent_dir_id: PPC_ROOT_DIR_ID,
+            path: "Standard File Fixtures".to_string(),
+            creator: PPC_DIRECTORY_CREATOR,
+            file_type: PPC_DIRECTORY_FILE_TYPE,
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.vfs_files.push(PpcVfsFileRecord {
+            path: "Standard File Fixtures/Text Document".to_string(),
+            data: (b"text".to_vec()).into(),
+            creator: u32::from_be_bytes(*b"SHWC"),
+            file_type: u32::from_be_bytes(*b"TEXT"),
+            finder_flags: 0,
+            dirty: false,
+        });
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = 0;
+        loaded.cpu.gpr[6] = 1;
+        loaded.cpu.gpr[7] = type_list;
+        loaded.cpu.gpr[9] = reply;
+
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        let bounds = loaded
+            .toolbox_startup
+            .standard_file_get_tracking
+            .as_ref()
+            .expect("SFGetFile must retain its dialog across the import yield")
+            .bounds;
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 1,
+            message: 0,
+            where_v: bounds.0
+                + (PPC_STANDARD_FILE_GET_OPEN_RECT.0 + PPC_STANDARD_FILE_GET_OPEN_RECT.2) / 2,
+            where_h: bounds.1
+                + (PPC_STANDARD_FILE_GET_OPEN_RECT.1 + PPC_STANDARD_FILE_GET_OPEN_RECT.3) / 2,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(
+            loaded.memory.read_u16_be(reply + 6),
+            Some(32),
+            "legacy SFReply must return a working-directory reference"
+        );
+        let wd_ref = loaded.memory.read_u16_be(reply + 6).unwrap() as i16;
+        assert_eq!(
+            loaded.working_directories.get(&wd_ref),
+            Some(&ProcessWorkingDirectory {
+                ref_num: wd_ref,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: fixtures_dir,
+                proc_id: 0,
+            })
+        );
+        assert_eq!(loaded.memory.read_u16_be(reply + 8), Some(0));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 10),
+            Some(b"Text Document".to_vec())
+        );
+    }
+
+    #[test]
+    fn hle_import_runner_standard_put_file_gui_edits_name_and_accepts() {
+        let pef = synthetic_pef_with_import(b"StandardPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1400;
+        let default_name = PPC_DATA_BASE + 0x1500;
+        loaded.memory.add_region(reply, vec![0xaa; 88]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = default_name;
+        loaded.cpu.gpr[5] = reply;
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_some());
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: 0x0000_0061,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0x0100,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(b'S'),
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: (u32::from(PPC_KEY_RETURN) << 8) | 0x0d,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(1));
+        assert_eq!(loaded.memory.read_u8(reply + 1), Some(0));
+        assert_eq!(
+            ppc_read_pstring_bytes(&mut loaded.memory, reply + 12),
+            Some(b"S".to_vec())
+        );
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_none());
+    }
+
+    #[test]
+    fn hle_import_runner_sf_put_file_gui_cancel_uses_legacy_reply_abi() {
+        let pef = synthetic_pef_with_import(b"SFPutFile");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let reply = PPC_DATA_BASE + 0x1600;
+        let default_name = PPC_DATA_BASE + 0x1700;
+        loaded.memory.add_region(reply, vec![0xaa; 75]);
+        loaded.memory.add_region(default_name, vec![0; 64]);
+        write_ppc_pstring(&mut loaded.memory, default_name, b"Untitled");
+        loaded.cpu.gpr[3] = 0;
+        loaded.cpu.gpr[4] = 0;
+        loaded.cpu.gpr[5] = default_name;
+        loaded.cpu.gpr[7] = reply;
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
+        assert!(loaded.toolbox_startup.standard_file_put_tracking.is_some());
+        loaded.set_event_queue([PpcQueuedEvent {
+            what: 3,
+            message: u32::from(PPC_KEY_ESCAPE) << 8,
+            where_v: 0,
+            where_h: 0,
+            modifiers: 0,
+        }]);
+        let probe = loaded.run_with_hle_imports(64);
+        assert!(matches!(probe.result, PpcRunResult::Halted { .. }));
+        assert_eq!(loaded.memory.read_u8(reply), Some(0));
+        assert_eq!(loaded.memory.read_u8(reply + 1), Some(0xaa));
+    }
+
+    #[test]
+    fn standard_file_name_edit_at_maximum_length_is_safe() {
+        let mut tracking = PpcStandardFilePutTrackingState {
+            call: PpcStandardFileCall {
+                mode: PpcStandardFileMode::PutModern,
+                reply: 0,
+                return_address: 0,
+            },
+            vref: PPC_BOOT_VOLUME_REF_NUM,
+            dir_id: PPC_ROOT_DIR_ID,
+            prompt: Vec::new(),
+            name: vec![b'x'; 63],
+            sel_start: 63,
+            sel_end: 63,
+            bounds: (0, 0, 0, 0),
+            front_buffer: PpcFrontBuffer {
+                base_addr: 0,
+                row_bytes: 0,
+                width: 0,
+                height: 0,
+                depth: 16,
+            },
+            saved_pixels: Vec::new(),
+        };
+
+        ppc_standard_file_insert_name_character(&mut tracking, b'y');
+        assert_eq!(tracking.name.len(), 63);
+        assert_eq!(tracking.sel_start, 63);
+        assert_eq!(tracking.sel_end, 63);
+
+        ppc_standard_file_backspace_name(&mut tracking);
+        assert_eq!(tracking.name.len(), 62);
+        assert_eq!(tracking.sel_start, 62);
+        assert_eq!(tracking.sel_end, 62);
+    }
+
+    #[test]
+    fn import_bindings_classify_all_standard_file_entry_points() {
+        for symbol in [
+            "CustomGetFile",
+            "CustomPutFile",
+            "SFGetFile",
+            "SFPGetFile",
+            "SFPPutFile",
+            "SFPutFile",
+            "StandardPutFile",
+        ] {
+            assert_eq!(
+                dispatcher_target_for_import("InterfaceLib", symbol),
+                PpcImportDispatcherTarget::StandardFileCompatibility,
+                "{symbol} must use the Standard File compatibility ABI"
+            );
+        }
     }
 
     #[test]
