@@ -161533,7 +161533,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn synthetic_pef() -> Vec<u8> {
+    pub(crate) fn synthetic_pef() -> Vec<u8> {
         synthetic_pef_with_import(b"TestImport")
     }
 

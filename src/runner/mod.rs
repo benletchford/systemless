@@ -1383,6 +1383,11 @@ pub struct FixtureRunner {
     /// the process guest-call stack's 68k-to-PowerPC nesting depth.
     parked_m68k_cpus: Vec<M68kCpu>,
     ppc_app: Option<PpcLoadedApp>,
+    /// Native execution adapter retained by a classic foreground process.
+    /// It runs only while the process guest-call stack contains a pending
+    /// 68K-to-PowerPC Mixed Mode transition.
+    ppc_companion: Option<PpcLoadedApp>,
+    staged_ppc_companion: Option<PpcLoadedApp>,
     bus: MacMemoryBus,
     dispatcher: TrapDispatcher,
     /// Canonical owner for state shared by this process's CPU ABI adapters.
@@ -1646,6 +1651,8 @@ impl FixtureRunner {
             cpu: M68kCpu::new(),
             parked_m68k_cpus: Vec::new(),
             ppc_app: None,
+            ppc_companion: None,
+            staged_ppc_companion: None,
             bus,
             dispatcher,
             process_context,
@@ -3249,7 +3256,9 @@ impl FixtureRunner {
     /// 0 and spins forever in the globals-decompression loop.
     pub fn init_app(&mut self, app: &LoadedApp) {
         self.parked_m68k_cpus.clear();
+        self.ppc_companion = None;
         if let Some(ppc_app) = app.ppc.clone() {
+            self.staged_ppc_companion = None;
             self.init_ppc_app(ppc_app);
             return;
         }
@@ -3638,6 +3647,23 @@ impl FixtureRunner {
         self.cpu.write_reg(Register::A6, sp);
         self.cpu
             .write_reg(Register::PC, app.entry_point(app.a5_base));
+    }
+
+    pub(crate) fn stage_ppc_companion(&mut self, ppc_companion: PpcLoadedApp) {
+        self.staged_ppc_companion = Some(ppc_companion);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_ppc_companion(&self) -> bool {
+        self.ppc_companion.is_some() || self.staged_ppc_companion.is_some()
+    }
+
+    fn init_ppc_companion(&mut self, mut ppc_companion: PpcLoadedApp) {
+        self.share_ppc_process_memory(&mut ppc_companion);
+        ppc_companion.attach_process_context(&mut self.process_context);
+        self.bus
+            .attach_guest_address_space(ppc_companion.memory.shared_view());
+        self.ppc_companion = Some(ppc_companion);
     }
 
     fn init_ppc_app(&mut self, mut ppc_app: PpcLoadedApp) {
@@ -4899,14 +4925,21 @@ impl FixtureRunner {
     ) -> (usize, bool) {
         if self.ppc_app.is_some() {
             if yield_for_ui {
-                return self.run_ppc_steps(max_steps, tick_cap, audio_samples, false, finish_frame);
+                return self.run_ppc_steps(
+                    max_steps,
+                    tick_cap,
+                    audio_samples,
+                    false,
+                    finish_frame,
+                    true,
+                );
             }
 
             let mut count = 0usize;
             let mut running = !self.halted;
             while count < max_steps && running {
                 let (steps, still_running) =
-                    self.run_ppc_steps(max_steps - count, tick_cap, 0, true, false);
+                    self.run_ppc_steps(max_steps - count, tick_cap, 0, true, false, true);
                 count = count.saturating_add(steps);
                 running = still_running;
                 if steps == 0 {
@@ -4922,6 +4955,30 @@ impl FixtureRunner {
                 }
             }
             return (count, running);
+        }
+
+        if self.ppc_companion.is_none()
+            && self.staged_ppc_companion.is_some()
+            && self.dispatcher.guest_calls.has_powerpc_from_m68k()
+        {
+            let companion = self
+                .staged_ppc_companion
+                .take()
+                .expect("checked staged native companion");
+            self.init_ppc_companion(companion);
+        }
+        if self.ppc_companion.as_ref().is_some_and(|companion| {
+            companion.guest_calls.pending_powerpc_from_m68k().is_some()
+                || companion.guest_calls.has_powerpc_from_m68k()
+        }) {
+            return self.run_ppc_steps(
+                max_steps,
+                tick_cap,
+                audio_samples,
+                false,
+                finish_frame,
+                false,
+            );
         }
 
         // An unfinished proof may never span a frontend scheduling boundary.
@@ -5699,6 +5756,11 @@ impl FixtureRunner {
             }
 
             self.dispatcher.instruction_count = self.total_instructions;
+            if (self.ppc_companion.is_some() || self.staged_ppc_companion.is_some())
+                && self.dispatcher.guest_calls.has_powerpc_from_m68k()
+            {
+                break;
+            }
         }
 
         self.cancel_idle_cycle_observation();
@@ -5716,6 +5778,7 @@ impl FixtureRunner {
         audio_samples: usize,
         coalesce_to_tick_cap: bool,
         finish_frame: bool,
+        foreground: bool,
     ) -> (usize, bool) {
         if max_steps == 0 || self.halted {
             return (0, !self.halted);
@@ -5739,7 +5802,12 @@ impl FixtureRunner {
         }
 
         self.dispatcher.instruction_count = self.total_instructions;
-        let Some(mut ppc_app) = self.ppc_app.take() else {
+        let ppc_adapter = if foreground {
+            &mut self.ppc_app
+        } else {
+            &mut self.ppc_companion
+        };
+        let Some(mut ppc_app) = ppc_adapter.take() else {
             return (0, !self.halted);
         };
 
@@ -5759,7 +5827,11 @@ impl FixtureRunner {
             self.halted_pc = Some(self.cpu.read_reg(Register::PC));
             self.halted_sp = Some(self.cpu.read_reg(Register::A7));
             self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
-            self.ppc_app = Some(ppc_app);
+            if foreground {
+                self.ppc_app = Some(ppc_app);
+            } else {
+                self.ppc_companion = Some(ppc_app);
+            }
             return (0, false);
         }
         if ppc_app.guest_calls.has_m68k_execution() {
@@ -5776,7 +5848,11 @@ impl FixtureRunner {
                 self.halted_sp = Some(self.cpu.read_reg(Register::A7));
                 self.halted_d0 = Some(self.cpu.read_reg(Register::D0));
             }
-            self.ppc_app = Some(ppc_app);
+            if foreground {
+                self.ppc_app = Some(ppc_app);
+            } else {
+                self.ppc_companion = Some(ppc_app);
+            }
             if finish_frame {
                 self.sync_ppc_deferred_host_state();
                 self.finish_host_frame(audio_samples, false);
@@ -5932,7 +6008,7 @@ impl FixtureRunner {
         }
         let q3_frame_start = self.q3_completed_frame_index;
         let profile_render_start = profile_ppc.then(Instant::now);
-        let render_stats = if finish_frame {
+        let render_stats = if foreground && finish_frame {
             self.render_ppc_completed_frames(&mut ppc_app, pc)
         } else {
             PpcQ3SoftwareRenderStats::default()
@@ -5940,7 +6016,7 @@ impl FixtureRunner {
         let profile_render_us = elapsed_profile_micros(profile_render_start);
         let next_q3_frame_index = self.q3_completed_frame_index;
         let profile_sync_start = profile_ppc.then(Instant::now);
-        if finish_frame {
+        if foreground && finish_frame {
             self.sync_ppc_front_buffer_to_host(&mut ppc_app);
             self.persist_ppc_vfs_to_host(&mut ppc_app);
         }
@@ -6038,8 +6114,12 @@ impl FixtureRunner {
             }
         }
 
-        self.ppc_app = Some(ppc_app);
-        if exited_via_ppc_exit_to_shell {
+        if foreground {
+            self.ppc_app = Some(ppc_app);
+        } else {
+            self.ppc_companion = Some(ppc_app);
+        }
+        if foreground && exited_via_ppc_exit_to_shell {
             if finish_frame {
                 self.redraw_chrome_outside_idle_journal();
             }
@@ -14135,6 +14215,118 @@ mod tests {
             Some(ARGUMENT + 7)
         );
         assert_eq!(ppc_app.memory.read_u32_be(ppc_app.cpu.gpr[1]), Some(0));
+    }
+
+    #[test]
+    fn standalone_classic_process_enters_powerpc_routine_descriptor_and_resumes_once() {
+        use crate::guest_procedure::{
+            ROUTINE_DESCRIPTOR_HEADER_SIZE, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP,
+            ROUTINE_DESCRIPTOR_VERSION, ROUTINE_FLAG_USE_NATIVE_ISA, ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_RECORD_ISA_OFFSET, ROUTINE_RECORD_POWERPC_ISA,
+            ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET,
+        };
+        use crate::mixed_mode::proc_info;
+
+        const DESCRIPTOR: u32 = 0x0030_0000;
+        const TVECTOR: u32 = 0x0030_0100;
+        const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
+        const CALLBACK_RTOC: u32 = 0x0030_0200;
+        const M68K_RETURN: u32 = 0x0030_0300;
+        const M68K_STACK: u32 = 0x0070_0000;
+        const ARGUMENT: u32 = 0x1234_0000;
+
+        let mut native = halted_ppc_app_with_sound(PpcSoundState::default())
+            .ppc
+            .take()
+            .expect("native execution adapter");
+        native
+            .memory
+            .add_region(PPC_STACK_BASE, vec![0; PPC_STACK_SIZE as usize]);
+        native.memory.add_region(
+            CALLBACK,
+            [
+                0x3863_0007u32, // addi r3,r3,7
+                0x4e80_0020,    // blr
+            ]
+            .into_iter()
+            .flat_map(u32::to_be_bytes)
+            .collect(),
+        );
+
+        let classic = LoadedApp {
+            ppc: None,
+            code0_header: Code0Header {
+                above_a5: 0,
+                below_a5: 0x2000,
+                jump_table_size: 0,
+                jump_table_offset: 0,
+            },
+            a5_base: 0x0040_0000,
+            jump_table: Vec::new(),
+            segment_bases: HashMap::new(),
+            loaded_image_end: 0,
+            initial_sp: 0x007f_ffc0,
+            size_resource: None,
+        };
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.stage_ppc_companion(native);
+        runner.init_app(&classic);
+        assert!(!runner.is_powerpc_app());
+
+        let proc_info = proc_info::PASCAL_STACK_BASED
+            | (proc_info::SIZE_FOUR << proc_info::RESULT_SIZE_PHASE)
+            | (proc_info::SIZE_FOUR << proc_info::STACK_PARAMETER_PHASE);
+        runner
+            .bus
+            .write_word(DESCRIPTOR, ROUTINE_DESCRIPTOR_MIXED_MODE_TRAP);
+        runner
+            .bus
+            .write_byte(DESCRIPTOR + 2, ROUTINE_DESCRIPTOR_VERSION);
+        runner.bus.write_word(DESCRIPTOR + 10, 0);
+        let record = DESCRIPTOR + ROUTINE_DESCRIPTOR_HEADER_SIZE;
+        runner.bus.write_long(record, proc_info);
+        runner.bus.write_byte(
+            record + ROUTINE_RECORD_ISA_OFFSET,
+            ROUTINE_RECORD_POWERPC_ISA,
+        );
+        runner.bus.write_word(
+            record + ROUTINE_RECORD_FLAGS_OFFSET,
+            ROUTINE_FLAG_USE_NATIVE_ISA,
+        );
+        runner
+            .bus
+            .write_long(record + ROUTINE_RECORD_PROC_DESCRIPTOR_OFFSET, TVECTOR);
+        runner.bus.write_long(TVECTOR, CALLBACK);
+        runner.bus.write_long(TVECTOR + 4, CALLBACK_RTOC);
+        runner.bus.write_long(M68K_STACK, M68K_RETURN);
+        runner.bus.write_long(M68K_STACK + 4, ARGUMENT);
+        runner.bus.write_word(M68K_RETURN, 0x201f); // MOVE.L (SP)+,D0
+        runner.bus.write_word(M68K_RETURN + 2, 0x4e71); // NOP
+        runner.cpu.write_reg(Register::PC, DESCRIPTOR);
+        runner.cpu.write_reg(Register::A7, M68K_STACK);
+
+        let (classic_steps, classic_running) = runner.run_steps(2, None);
+        assert!(classic_steps > 0);
+        assert!(classic_running);
+        assert_eq!(runner.cpu.read_reg(Register::PC), DESCRIPTOR + 2);
+        assert!(runner.dispatcher.guest_calls.has_powerpc_from_m68k());
+
+        let (native_steps, native_running) = runner.run_steps(64, None);
+        assert!(native_steps > 0);
+        assert!(native_running);
+        assert!(!runner.is_halted());
+        assert!(runner.dispatcher.guest_calls.is_empty());
+        assert_eq!(runner.cpu.read_reg(Register::PC), M68K_RETURN);
+        assert_eq!(runner.cpu.read_reg(Register::A7), M68K_STACK + 8);
+        assert_eq!(runner.bus.read_long(M68K_STACK + 8), ARGUMENT + 7);
+
+        let (resumed_steps, resumed_running) = runner.run_steps(1, None);
+        assert_eq!(resumed_steps, 1);
+        assert!(resumed_running);
+        assert_eq!(runner.cpu.read_reg(Register::D0), ARGUMENT + 7);
+        assert_eq!(runner.cpu.read_reg(Register::A7), M68K_STACK + 12);
+        assert_eq!(runner.cpu.read_reg(Register::PC), M68K_RETURN + 2);
+        assert!(runner.dispatcher.guest_calls.is_empty());
     }
 
     #[test]
