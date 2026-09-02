@@ -75,7 +75,7 @@ use crate::process_context::{
     ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState, ProcessMemoryManager,
     ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
     ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
-    ProcessVfsResourceFileRecords, SharedProcessAppleEventHandlers,
+    ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
     SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
@@ -7288,6 +7288,13 @@ impl PpcLoadedApp {
         let mut vfs_directories = self.vfs_directories.shared_handle();
         let mut next_vfs_dir_id = self.next_vfs_dir_id.shared_handle();
         let mut default_dir_id = self.default_dir_id.shared_handle();
+        let mut working_directories = self.working_directories.shared_handle();
+        let mut next_working_directory_ref_num = self
+            .next_working_directory_ref_num
+            .shared_handle();
+        let mut application_working_directory_ref_num = self
+            .application_working_directory_ref_num
+            .shared_handle();
         let mut param_text = std::mem::take(&mut self.param_text);
         let mut scrap = std::mem::take(&mut self.scrap);
         let mut list_manager = std::mem::take(&mut self.list_manager);
@@ -7831,6 +7838,9 @@ impl PpcLoadedApp {
                         &mut vfs_directories,
                         &mut next_vfs_dir_id,
                         *default_dir_id,
+                        &mut working_directories,
+                        &mut next_working_directory_ref_num,
+                        &mut application_working_directory_ref_num,
                         self.launched_app_path.as_deref(),
                         &mut param_text,
                         &mut scrap,
@@ -14817,7 +14827,7 @@ fn dispatcher_target_for_import(
             "InterfaceLib",
             "OpenDF" | "OpenRF" | "PBCatSearchSync" | "PBDirCreateSync" | "PBGetFPosSync"
             | "PBGetWDInfoSync" | "PBHGetVolParmsSync" | "PBHGetVolSync" | "PBHOpenRFSync"
-            | "PBHSetVolSync" | "PBOpenWDSync" | "create" | "fsopen",
+            | "PBHSetVolSync" | "PBCloseWDSync" | "PBOpenWDSync" | "create" | "fsopen",
         ) => PpcImportDispatcherTarget::FileCompatibility,
         (
             "InterfaceLib",
@@ -15072,6 +15082,9 @@ fn dispatch_supported_import(
     vfs_directories: &mut Vec<PpcVfsDirectory>,
     next_vfs_dir_id: &mut u32,
     default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    application_working_directory_ref_num: &mut i16,
     launched_app_path: Option<&str>,
     param_text: &mut [Vec<u8>; 4],
     scrap: &mut PpcScrapState,
@@ -23147,16 +23160,46 @@ fn dispatch_supported_import(
         // FUNCTION GetVol (volName: StringPtr; VAR vRefNum: Integer): OSErr;
         // Inside Macintosh: Files (1992), 2-134 (lines 7672-7695).
         PpcImportDispatcherTarget::GetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_vol(cpu, memory),
+            ppc_get_vol(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
         ))),
         PpcImportDispatcherTarget::GetWDInfo => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_get_wd_info(cpu, memory, default_dir_id),
+            ppc_get_wd_info(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
         ))),
         PpcImportDispatcherTarget::HGetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hget_vol(cpu, memory, default_dir_id),
+            ppc_hget_vol(
+                cpu,
+                memory,
+                default_dir_id,
+                *application_working_directory_ref_num,
+                working_directories,
+                vfs_volumes,
+            ),
         ))),
         PpcImportDispatcherTarget::HSetVol => Some(PpcImportAction::Return(ppc_i16_result(
-            ppc_hset_vol(cpu, memory, vfs_directories, default_dir_id),
+            ppc_hset_vol(
+                cpu,
+                memory,
+                vfs_directories,
+                vfs_volumes,
+                default_dir_id,
+                working_directories,
+                next_working_directory_ref_num,
+                application_working_directory_ref_num,
+            ),
         ))),
         PpcImportDispatcherTarget::FlushVol => Some(PpcImportAction::Return(ppc_i16_result(
             ppc_flush_vol(cpu, memory),
@@ -25891,7 +25934,12 @@ fn dispatch_supported_import(
             cpu,
             memory,
             files,
+            vfs_directories,
+            vfs_volumes,
             default_dir_id,
+            working_directories,
+            next_working_directory_ref_num,
+            application_working_directory_ref_num,
         )),
         PpcImportDispatcherTarget::AppleTalkCompatibility => {
             Some(ppc_dispatch_appletalk_compatibility(binding, cpu, memory))
@@ -27588,7 +27636,12 @@ fn ppc_dispatch_file_compatibility(
     cpu: &mut PpcCpu,
     memory: &mut PpcSectionMem,
     files: &mut Vec<PpcFileRecord>,
+    vfs_directories: &[PpcVfsDirectory],
+    vfs_volumes: &[PpcVfsVolumeRecord],
     default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    application_working_directory_ref_num: &mut i16,
 ) -> PpcImportAction {
     match binding.symbol_name.as_str() {
         "PBGetFPosSync" => {
@@ -27607,20 +27660,260 @@ fn ppc_dispatch_file_compatibility(
         }
         "PBHGetVolSync" => {
             let pb = cpu.gpr[3];
+            let working_directory = ppc_working_directory_info(
+                0,
+                *application_working_directory_ref_num,
+                default_dir_id,
+                working_directories,
+                vfs_volumes,
+            )
+            .unwrap_or(ProcessWorkingDirectory {
+                ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: default_dir_id,
+                proc_id: 0,
+            });
             if let Some(name) = memory.read_u32_be(pb + 18).filter(|name| *name != 0) {
                 let _ = ppc_write_pstring_bytes(
                     memory,
                     name,
-                    TrapDispatcher::boot_volume_name().as_bytes(),
+                    ppc_volume_name_for_ref_num(
+                        working_directory.volume_ref_num,
+                        vfs_volumes,
+                    ),
                 );
             }
-            let _ = memory.write_u16_be(pb + 22, PPC_BOOT_VOLUME_REF_NUM as u16);
-            let _ = memory.write_u32_be(pb + 28, 0);
-            let _ = memory.write_u16_be(pb + 32, PPC_BOOT_VOLUME_REF_NUM as u16);
-            let _ = memory.write_u32_be(pb + 48, default_dir_id);
+            let _ = memory.write_u16_be(pb + 22, working_directory.ref_num as u16);
+            let _ = memory.write_u32_be(pb + 28, working_directory.proc_id);
+            let _ = memory.write_u16_be(pb + 32, working_directory.volume_ref_num as u16);
+            let _ = memory.write_u32_be(pb + 48, working_directory.dir_id);
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, PPC_NO_ERR)))
         }
-        "PBHSetVolSync" | "PBHGetVolParmsSync" | "PBOpenWDSync" | "PBGetWDInfoSync" => {
+        "PBOpenWDSync" => {
+            let pb = cpu.gpr[3];
+            let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+            let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
+            let proc_id = memory.read_u32_be(pb + 28).unwrap_or(0);
+            let volume_ref_num = working_directories
+                .get(&requested_vref)
+                .map(|record| record.volume_ref_num)
+                .or_else(|| {
+                    (requested_vref == PPC_BOOT_VOLUME_REF_NUM
+                        || vfs_volumes
+                            .iter()
+                            .any(|volume| volume.ref_num == requested_vref))
+                    .then_some(requested_vref)
+                })
+                .unwrap_or(PPC_BOOT_VOLUME_REF_NUM);
+            let effective_dir_id = if requested_dir_id <= 1 {
+                working_directories
+                    .get(&requested_vref)
+                    .map(|record| record.dir_id)
+                    .unwrap_or_else(|| {
+                        ppc_resolve_directory_id(
+                            requested_vref,
+                            requested_dir_id,
+                            default_dir_id,
+                        )
+                    })
+            } else {
+                requested_dir_id
+            };
+            let result = if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
+                PPC_FNF_ERR
+            } else {
+                let root_dir_id = if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+                    PPC_ROOT_DIR_ID
+                } else {
+                    vfs_volumes
+                        .iter()
+                        .find(|volume| volume.ref_num == volume_ref_num)
+                        .map(|volume| volume.root_dir_id)
+                        .unwrap_or(PPC_ROOT_DIR_ID)
+                };
+                let wd_ref_num = if effective_dir_id == root_dir_id {
+                    volume_ref_num
+                } else if let Some(existing) = working_directories.values().find(|record| {
+                    record.volume_ref_num == volume_ref_num
+                        && record.dir_id == effective_dir_id
+                        && record.proc_id == proc_id
+                }) {
+                    existing.ref_num
+                } else {
+                    let mut ref_num = *next_working_directory_ref_num;
+                    while working_directories.contains_key(&ref_num) {
+                        ref_num = ref_num.saturating_add(1);
+                    }
+                    *next_working_directory_ref_num = ref_num.saturating_add(1);
+                    working_directories.insert(
+                        ref_num,
+                        ProcessWorkingDirectory {
+                            ref_num,
+                            volume_ref_num,
+                            dir_id: effective_dir_id,
+                            proc_id,
+                        },
+                    );
+                    ref_num
+                };
+                let _ = memory.write_u16_be(pb + 22, wd_ref_num as u16);
+                let _ = memory.write_u16_be(pb + 32, volume_ref_num as u16);
+                let _ = memory.write_u32_be(pb + 48, effective_dir_id);
+                PPC_NO_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
+        }
+        "PBGetWDInfoSync" => {
+            let pb = cpu.gpr[3];
+            let input_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+            let wd_index = memory.read_u16_be(pb + 26).unwrap_or(0) as i16;
+            let info = if wd_index > 0 {
+                let target_volume = (input_vref != 0).then(|| {
+                    working_directories
+                        .get(&input_vref)
+                        .map(|record| record.volume_ref_num)
+                        .unwrap_or(input_vref)
+                });
+                let mut records = working_directories
+                    .values()
+                    .copied()
+                    .filter(|record| {
+                        target_volume.is_none_or(|volume| record.volume_ref_num == volume)
+                    })
+                    .collect::<Vec<_>>();
+                records.sort_by_key(|record| record.ref_num);
+                records.get(wd_index as usize - 1).copied()
+            } else {
+                ppc_working_directory_info(
+                    input_vref,
+                    *application_working_directory_ref_num,
+                    default_dir_id,
+                    working_directories,
+                    vfs_volumes,
+                )
+            };
+            let result = if let Some(record) = info {
+                let returned_ref_num = if wd_index > 0 {
+                    record.volume_ref_num
+                } else {
+                    record.ref_num
+                };
+                let _ = memory.write_u16_be(pb + 22, returned_ref_num as u16);
+                let _ = memory.write_u32_be(pb + 28, record.proc_id);
+                let _ = memory.write_u16_be(pb + 32, record.volume_ref_num as u16);
+                let _ = memory.write_u32_be(pb + 48, record.dir_id);
+                PPC_NO_ERR
+            } else {
+                PPC_RF_NUM_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
+        }
+        "PBCloseWDSync" => {
+            let pb = cpu.gpr[3];
+            let wd_ref_num = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+            let is_volume_ref_num = wd_ref_num == PPC_BOOT_VOLUME_REF_NUM
+                || vfs_volumes
+                    .iter()
+                    .any(|volume| volume.ref_num == wd_ref_num);
+            let closed = working_directories.remove(&wd_ref_num);
+            let result = if is_volume_ref_num || closed.is_some() {
+                if *application_working_directory_ref_num == wd_ref_num {
+                    *application_working_directory_ref_num = closed
+                        .map(|record| record.volume_ref_num)
+                        .unwrap_or(wd_ref_num);
+                }
+                PPC_NO_ERR
+            } else {
+                PPC_RF_NUM_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
+        }
+        "PBHSetVolSync" => {
+            let pb = cpu.gpr[3];
+            let requested_vref = memory.read_u16_be(pb + 22).unwrap_or(0) as i16;
+            let requested_dir_id = memory.read_u32_be(pb + 48).unwrap_or(0);
+            let volume_ref_num = if requested_vref == 0 {
+                ppc_working_directory_info(
+                    0,
+                    *application_working_directory_ref_num,
+                    default_dir_id,
+                    working_directories,
+                    vfs_volumes,
+                )
+                .map(|record| record.volume_ref_num)
+                .unwrap_or(PPC_BOOT_VOLUME_REF_NUM)
+            } else if let Some(record) = working_directories.get(&requested_vref) {
+                record.volume_ref_num
+            } else if requested_vref == PPC_BOOT_VOLUME_REF_NUM
+                || vfs_volumes
+                    .iter()
+                    .any(|volume| volume.ref_num == requested_vref)
+            {
+                requested_vref
+            } else {
+                let result = ppc_complete_pb(memory, pb, PPC_NSV_ERR);
+                return PpcImportAction::Return(ppc_i16_result(result));
+            };
+            let effective_dir_id = if requested_dir_id <= 1 {
+                working_directories
+                    .get(&requested_vref)
+                    .map(|record| record.dir_id)
+                    .unwrap_or_else(|| {
+                        ppc_resolve_directory_id(
+                            requested_vref,
+                            requested_dir_id,
+                            default_dir_id,
+                        )
+                    })
+            } else {
+                requested_dir_id
+            };
+            let result = if ppc_directory_path_for_id(vfs_directories, effective_dir_id).is_none() {
+                PPC_FNF_ERR
+            } else {
+                let root_dir_id = if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+                    PPC_ROOT_DIR_ID
+                } else {
+                    vfs_volumes
+                        .iter()
+                        .find(|volume| volume.ref_num == volume_ref_num)
+                        .map(|volume| volume.root_dir_id)
+                        .unwrap_or(PPC_ROOT_DIR_ID)
+                };
+                *application_working_directory_ref_num = if effective_dir_id == root_dir_id {
+                    volume_ref_num
+                } else if let Some(existing) = working_directories.values().find(|record| {
+                    record.volume_ref_num == volume_ref_num
+                        && record.dir_id == effective_dir_id
+                        && record.proc_id == 0
+                }) {
+                    existing.ref_num
+                } else {
+                    let mut ref_num = *next_working_directory_ref_num;
+                    while working_directories.contains_key(&ref_num) {
+                        ref_num = ref_num.saturating_add(1);
+                    }
+                    *next_working_directory_ref_num = ref_num.saturating_add(1);
+                    working_directories.insert(
+                        ref_num,
+                        ProcessWorkingDirectory {
+                            ref_num,
+                            volume_ref_num,
+                            dir_id: effective_dir_id,
+                            proc_id: 0,
+                        },
+                    );
+                    ref_num
+                };
+                let _ = memory.write_u32_be(
+                    crate::memory::globals::addr::CUR_DIR_STORE,
+                    effective_dir_id,
+                );
+                PPC_NO_ERR
+            };
+            PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(memory, pb, result)))
+        }
+        "PBHGetVolParmsSync" => {
             PpcImportAction::Return(ppc_i16_result(ppc_complete_pb(
                 memory, cpu.gpr[3], PPC_NO_ERR,
             )))
@@ -75618,11 +75911,85 @@ fn ppc_sys_environs(memory: &mut PpcSectionMem, rec_ptr: u32) -> i16 {
     PPC_NO_ERR
 }
 
-fn ppc_hget_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, default_dir_id: u32) -> i16 {
+fn ppc_working_directory_info(
+    wd_ref_num: i16,
+    application_wd_ref_num: i16,
+    default_dir_id: u32,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> Option<ProcessWorkingDirectory> {
+    let effective_ref_num = if wd_ref_num == 0 {
+        application_wd_ref_num
+    } else {
+        wd_ref_num
+    };
+    if let Some(record) = working_directories.get(&effective_ref_num) {
+        return Some(*record);
+    }
+    if effective_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+        return Some(ProcessWorkingDirectory {
+            ref_num: effective_ref_num,
+            volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+            dir_id: if effective_ref_num == application_wd_ref_num {
+                default_dir_id
+            } else {
+                PPC_ROOT_DIR_ID
+            },
+            proc_id: 0,
+        });
+    }
+    vfs_volumes
+        .iter()
+        .find(|volume| volume.ref_num == effective_ref_num)
+        .map(|volume| ProcessWorkingDirectory {
+            ref_num: effective_ref_num,
+            volume_ref_num: volume.ref_num,
+            dir_id: if effective_ref_num == application_wd_ref_num {
+                default_dir_id
+            } else {
+                volume.root_dir_id
+            },
+            proc_id: 0,
+        })
+}
+
+fn ppc_volume_name_for_ref_num<'a>(
+    volume_ref_num: i16,
+    vfs_volumes: &'a [PpcVfsVolumeRecord],
+) -> &'a [u8] {
+    if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+        crate::trap::TrapDispatcher::boot_volume_name().as_bytes()
+    } else {
+        vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == volume_ref_num)
+            .map(|volume| volume.name.as_bytes())
+            .unwrap_or_else(|| crate::trap::TrapDispatcher::boot_volume_name().as_bytes())
+    }
+}
+
+fn ppc_hget_vol(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    default_dir_id: u32,
+    application_wd_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
     let name_ptr = cpu.gpr[3];
     let vref_ptr = cpu.gpr[4];
     let dir_id_ptr = cpu.gpr[5];
-    let volume_name = crate::trap::TrapDispatcher::boot_volume_name().as_bytes();
+    let Some(working_directory) = ppc_working_directory_info(
+        0,
+        application_wd_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
+        return PPC_RF_NUM_ERR;
+    };
+    let volume_name =
+        ppc_volume_name_for_ref_num(working_directory.volume_ref_num, vfs_volumes);
     if !ppc_optional_pstring_output_can_write(memory, name_ptr, volume_name)
         || !ppc_optional_output_can_write(memory, vref_ptr, 2)
         || !ppc_optional_output_can_write(memory, dir_id_ptr, 4)
@@ -75633,10 +76000,10 @@ fn ppc_hget_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, default_dir_id: u3
         let _ = ppc_write_pstring_bytes(memory, name_ptr, volume_name);
     }
     if vref_ptr != 0 {
-        let _ = memory.write_u16_be(vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
+        let _ = memory.write_u16_be(vref_ptr, working_directory.ref_num as u16);
     }
     if dir_id_ptr != 0 {
-        let _ = memory.write_u32_be(dir_id_ptr, default_dir_id);
+        let _ = memory.write_u32_be(dir_id_ptr, working_directory.dir_id);
     }
     PPC_NO_ERR
 }
@@ -75645,7 +76012,11 @@ fn ppc_hset_vol(
     cpu: &PpcCpu,
     memory: &mut PpcSectionMem,
     vfs_directories: &[PpcVfsDirectory],
+    vfs_volumes: &[PpcVfsVolumeRecord],
     default_dir_id: u32,
+    working_directories: &mut HashMap<i16, ProcessWorkingDirectory>,
+    next_working_directory_ref_num: &mut i16,
+    application_working_directory_ref_num: &mut i16,
 ) -> i16 {
     // Inside Macintosh: Files (1992), pp. 2-136--2-137. HSetVol accepts an
     // optional Pascal pathname plus a volume or working-directory reference
@@ -75653,9 +76024,27 @@ fn ppc_hset_vol(
     let name_ptr = cpu.gpr[3];
     let requested_vref = cpu.gpr[4] as u16 as i16;
     let requested_dir_id = cpu.gpr[5];
-    if requested_vref != 0 && requested_vref != PPC_BOOT_VOLUME_REF_NUM {
+    let volume_ref_num = if requested_vref == 0 {
+        ppc_working_directory_info(
+            0,
+            *application_working_directory_ref_num,
+            default_dir_id,
+            working_directories,
+            vfs_volumes,
+        )
+        .map(|record| record.volume_ref_num)
+        .unwrap_or(PPC_BOOT_VOLUME_REF_NUM)
+    } else if let Some(record) = working_directories.get(&requested_vref) {
+        record.volume_ref_num
+    } else if requested_vref == PPC_BOOT_VOLUME_REF_NUM
+        || vfs_volumes
+            .iter()
+            .any(|volume| volume.ref_num == requested_vref)
+    {
+        requested_vref
+    } else {
         return PPC_NSV_ERR;
-    }
+    };
     let name = if name_ptr == 0 {
         String::new()
     } else {
@@ -75665,7 +76054,16 @@ fn ppc_hset_vol(
         decode_mac_roman(&bytes)
     };
 
-    let base_dir_id = ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id);
+    let base_dir_id = if requested_dir_id <= 1 {
+        working_directories
+            .get(&requested_vref)
+            .map(|record| record.dir_id)
+            .unwrap_or_else(|| {
+                ppc_resolve_directory_id(requested_vref, requested_dir_id, default_dir_id)
+            })
+    } else {
+        requested_dir_id
+    };
     let target_dir_id = if name.is_empty() {
         base_dir_id
     } else {
@@ -75690,14 +76088,65 @@ fn ppc_hset_vol(
     if ppc_directory_path_for_id(vfs_directories, target_dir_id).is_none() {
         return PPC_FNF_ERR;
     }
+    let root_dir_id = if volume_ref_num == PPC_BOOT_VOLUME_REF_NUM {
+        PPC_ROOT_DIR_ID
+    } else {
+        vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == volume_ref_num)
+            .map(|volume| volume.root_dir_id)
+            .unwrap_or(PPC_ROOT_DIR_ID)
+    };
+    *application_working_directory_ref_num = if target_dir_id == root_dir_id {
+        volume_ref_num
+    } else if let Some(existing) = working_directories.values().find(|record| {
+        record.volume_ref_num == volume_ref_num
+            && record.dir_id == target_dir_id
+            && record.proc_id == 0
+    }) {
+        existing.ref_num
+    } else {
+        let mut ref_num = *next_working_directory_ref_num;
+        while working_directories.contains_key(&ref_num) {
+            ref_num = ref_num.saturating_add(1);
+        }
+        *next_working_directory_ref_num = ref_num.saturating_add(1);
+        working_directories.insert(
+            ref_num,
+            ProcessWorkingDirectory {
+                ref_num,
+                volume_ref_num,
+                dir_id: target_dir_id,
+                proc_id: 0,
+            },
+        );
+        ref_num
+    };
     let _ = memory.write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, target_dir_id);
     PPC_NO_ERR
 }
 
-fn ppc_get_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
+fn ppc_get_vol(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    default_dir_id: u32,
+    application_wd_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
     let name_ptr = cpu.gpr[3];
     let vref_ptr = cpu.gpr[4];
-    let volume_name = crate::trap::TrapDispatcher::boot_volume_name().as_bytes();
+    let Some(working_directory) = ppc_working_directory_info(
+        0,
+        application_wd_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
+        return PPC_RF_NUM_ERR;
+    };
+    let volume_name =
+        ppc_volume_name_for_ref_num(working_directory.volume_ref_num, vfs_volumes);
     if !ppc_optional_pstring_output_can_write(memory, name_ptr, volume_name)
         || !ppc_optional_output_can_write(memory, vref_ptr, 2)
     {
@@ -75707,12 +76156,19 @@ fn ppc_get_vol(cpu: &mut PpcCpu, memory: &mut PpcSectionMem) -> i16 {
         let _ = ppc_write_pstring_bytes(memory, name_ptr, volume_name);
     }
     if vref_ptr != 0 {
-        let _ = memory.write_u16_be(vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
+        let _ = memory.write_u16_be(vref_ptr, working_directory.ref_num as u16);
     }
     PPC_NO_ERR
 }
 
-fn ppc_get_wd_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, default_dir_id: u32) -> i16 {
+fn ppc_get_wd_info(
+    cpu: &mut PpcCpu,
+    memory: &mut PpcSectionMem,
+    default_dir_id: u32,
+    application_wd_ref_num: i16,
+    working_directories: &HashMap<i16, ProcessWorkingDirectory>,
+    vfs_volumes: &[PpcVfsVolumeRecord],
+) -> i16 {
     let wd_ref_num = cpu.gpr[3] as u16 as i16;
     let vref_ptr = cpu.gpr[4];
     let dir_id_ptr = cpu.gpr[5];
@@ -75723,16 +76179,20 @@ fn ppc_get_wd_info(cpu: &mut PpcCpu, memory: &mut PpcSectionMem, default_dir_id:
     {
         return PPC_PARAM_ERR;
     }
-    // Inside Macintosh: Files 1992, 2-182: GetWDInfo converts a working
-    // directory reference into its volume reference number, directory ID,
-    // and user identifier. The PPC VFS exposes its current directory through
-    // the boot-volume reference returned by GetVol.
-    if !matches!(wd_ref_num, 0 | PPC_BOOT_VOLUME_REF_NUM) {
+    // Inside Macintosh: Files 1992, 2-182: GetWDInfo converts a process
+    // working-directory reference into its volume, directory, and user ID.
+    let Some(working_directory) = ppc_working_directory_info(
+        wd_ref_num,
+        application_wd_ref_num,
+        default_dir_id,
+        working_directories,
+        vfs_volumes,
+    ) else {
         return PPC_RF_NUM_ERR;
-    }
-    let _ = memory.write_u16_be(vref_ptr, PPC_BOOT_VOLUME_REF_NUM as u16);
-    let _ = memory.write_u32_be(dir_id_ptr, default_dir_id);
-    let _ = memory.write_u32_be(proc_id_ptr, 0);
+    };
+    let _ = memory.write_u16_be(vref_ptr, working_directory.volume_ref_num as u16);
+    let _ = memory.write_u32_be(dir_id_ptr, working_directory.dir_id);
+    let _ = memory.write_u32_be(proc_id_ptr, working_directory.proc_id);
     PPC_NO_ERR
 }
 
@@ -89607,6 +90067,10 @@ pub(crate) mod tests {
         let executing_volumes = native.vfs_volumes.shared_handle();
         let executing_next_dir_id = native.next_vfs_dir_id.shared_handle();
         let executing_default_dir_id = native.default_dir_id.shared_handle();
+        let executing_working_directories = native.working_directories.shared_handle();
+        let executing_application_wd_ref_num = native
+            .application_working_directory_ref_num
+            .shared_handle();
         let detached = native.clone();
         let mut classic = TrapDispatcher::new();
         classic.attach_process_context(&mut context);
@@ -89689,6 +90153,39 @@ pub(crate) mod tests {
             0x0100,
         );
         classic.set_launched_app_path("Classic Folder/Classic Data");
+        let classic_wd_ref_num = *classic.app_wd_refnum;
+        assert!(classic
+            .working_directories
+            .ptr_eq(&native.working_directories));
+        assert!(classic
+            .app_wd_refnum
+            .ptr_eq(&native.application_working_directory_ref_num));
+        assert_eq!(*executing_application_wd_ref_num, classic_wd_ref_num);
+        assert_eq!(
+            executing_working_directories[&classic_wd_ref_num].dir_id,
+            classic_dir_id
+        );
+
+        let wd_vref_ptr = PPC_DATA_BASE + 0x2800;
+        let wd_dir_id_ptr = wd_vref_ptr + 4;
+        let wd_proc_id_ptr = wd_vref_ptr + 8;
+        native.memory.add_region(wd_vref_ptr, vec![0; 12]);
+        native.cpu.gpr[3] = classic_wd_ref_num as u16 as u32;
+        native.cpu.gpr[4] = wd_vref_ptr;
+        native.cpu.gpr[5] = wd_dir_id_ptr;
+        native.cpu.gpr[6] = wd_proc_id_ptr;
+        native
+            .memory
+            .write_u32_be(crate::memory::globals::addr::CUR_DIR_STORE, classic_dir_id)
+            .unwrap();
+        run_test_import(&mut native, PpcImportDispatcherTarget::GetWDInfo);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            native.memory.read_u16_be(wd_vref_ptr),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+        assert_eq!(native.memory.read_u32_be(wd_dir_id_ptr), Some(classic_dir_id));
+        assert_eq!(native.memory.read_u32_be(wd_proc_id_ptr), Some(0));
         assert!(native.vfs_directories.iter().any(|directory| {
             directory.dir_id == classic_dir_id && directory.path == "Classic Folder"
         }));
@@ -89710,6 +90207,11 @@ pub(crate) mod tests {
             .any(|volume| volume.name == "Classic Disk"));
         assert_ne!(*detached.next_vfs_dir_id, *executing_next_dir_id);
         assert_ne!(*detached.default_dir_id, *executing_default_dir_id);
+        assert!(detached.working_directories.is_empty());
+        assert_eq!(*detached.application_working_directory_ref_num, -1);
+        assert!(!detached
+            .working_directories
+            .ptr_eq(&executing_working_directories));
         run_test_import(&mut native, PpcImportDispatcherTarget::GetEOF);
         assert!(native.vfs_directories.ptr_eq(&executing_directories));
         assert!(native.vfs_volumes.ptr_eq(&executing_volumes));
@@ -89737,6 +90239,22 @@ pub(crate) mod tests {
                 .unwrap()
                 .data,
             b"classic-shared"
+        );
+
+        native.cpu.gpr[3] = 0;
+        native.cpu.gpr[4] = PPC_BOOT_VOLUME_REF_NUM as u16 as u32;
+        native.cpu.gpr[5] = PPC_FIRST_DYNAMIC_DIR_ID;
+        run_test_import(&mut native, PpcImportDispatcherTarget::HSetVol);
+        assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(*classic.default_dir_id, PPC_FIRST_DYNAMIC_DIR_ID);
+        let native_wd_ref_num = *classic.app_wd_refnum;
+        assert_eq!(
+            classic.working_directories[&native_wd_ref_num].dir_id,
+            PPC_FIRST_DYNAMIC_DIR_ID
+        );
+        assert_eq!(
+            *native.application_working_directory_ref_num,
+            native_wd_ref_num
         );
 
         classic
@@ -96416,6 +96934,102 @@ pub(crate) mod tests {
             ppc_read_pstring_bytes(&mut loaded.memory, volume_name),
             Some(TrapDispatcher::boot_volume_name().as_bytes().to_vec())
         );
+    }
+
+    #[test]
+    fn native_parameter_block_working_directory_lifecycle_uses_process_registry() {
+        assert_eq!(
+            dispatcher_target_for_import("InterfaceLib", "PBCloseWDSync"),
+            PpcImportDispatcherTarget::FileCompatibility
+        );
+        let pef = synthetic_pef_with_import(b"PBOpenWDSync");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let parameter_block = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(parameter_block, vec![0; 64]);
+        loaded
+            .memory
+            .write_u16_be(parameter_block + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(parameter_block + 28, 0x1234_5678)
+            .unwrap();
+        loaded
+            .memory
+            .write_u32_be(parameter_block + 48, PPC_PREFERENCES_DIR_ID)
+            .unwrap();
+        loaded.cpu.gpr[3] = parameter_block;
+
+        let open_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(open_probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        let wd_ref_num = loaded.memory.read_u16_be(parameter_block + 22).unwrap() as i16;
+        assert_ne!(wd_ref_num, PPC_BOOT_VOLUME_REF_NUM);
+        assert_eq!(
+            loaded.working_directories.get(&wd_ref_num),
+            Some(&ProcessWorkingDirectory {
+                ref_num: wd_ref_num,
+                volume_ref_num: PPC_BOOT_VOLUME_REF_NUM,
+                dir_id: PPC_PREFERENCES_DIR_ID,
+                proc_id: 0x1234_5678,
+            })
+        );
+
+        loaded.imports[0].symbol_name = "PBGetWDInfoSync".to_string();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = parameter_block;
+        loaded
+            .memory
+            .write_u16_be(parameter_block + 22, wd_ref_num as u16)
+            .unwrap();
+        loaded.memory.write_u16_be(parameter_block + 26, 0).unwrap();
+
+        let info_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(info_probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert_eq!(
+            loaded.memory.read_u16_be(parameter_block + 32),
+            Some(PPC_BOOT_VOLUME_REF_NUM as u16)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(parameter_block + 48),
+            Some(PPC_PREFERENCES_DIR_ID)
+        );
+        assert_eq!(
+            loaded.memory.read_u32_be(parameter_block + 28),
+            Some(0x1234_5678)
+        );
+
+        loaded.imports[0].symbol_name = "PBCloseWDSync".to_string();
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = parameter_block;
+        loaded
+            .memory
+            .write_u16_be(parameter_block + 22, wd_ref_num as u16)
+            .unwrap();
+
+        let close_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(close_probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        assert!(!loaded.working_directories.contains_key(&wd_ref_num));
+
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = loaded.halt_pc;
+        loaded.cpu.gpr[3] = parameter_block;
+        loaded
+            .memory
+            .write_u16_be(parameter_block + 22, PPC_BOOT_VOLUME_REF_NUM as u16)
+            .unwrap();
+
+        let volume_close_probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(volume_close_probe.unsupported_import_index, None);
+        assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
     }
 
     #[test]
