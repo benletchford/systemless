@@ -159906,7 +159906,7 @@ pub(crate) mod tests {
         assert!(loaded.sound.immediate_commands.is_empty());
         assert!(loaded.sound.file_playbacks.is_empty());
         assert!(loaded.sound.decoded_file_playbacks.is_empty());
-        assert!(loaded.sound.pending_completions.is_empty());
+        assert!(loaded.sound.manager.pending_sound_callbacks.is_empty());
         assert!(loaded.sound.completion_invocations.is_empty());
 
         loaded.cpu.pc = loaded.entry_pc;

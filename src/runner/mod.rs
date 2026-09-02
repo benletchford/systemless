@@ -2671,10 +2671,6 @@ impl FixtureRunner {
             .unwrap_or(false)
             || has_routable_process_callback
             || !self.dispatcher.sound_manager.pending_callbacks.is_empty()
-            || self
-                .ppc_app
-                .as_ref()
-                .is_some_and(|app| !app.sound.pending_completions.is_empty())
     }
 
     pub fn is_ui_tracking_active(&self) -> bool {
@@ -3889,7 +3885,7 @@ impl FixtureRunner {
             remaining_samples -= chunk;
             self.service_ppc_double_buffer_playbacks();
         }
-        self.sync_ppc_sound_completions_from_dispatcher();
+        self.fire_pending_ppc_sound_completions();
     }
 
     /// Repaint host chrome without recording it against an armed
@@ -7202,66 +7198,6 @@ impl FixtureRunner {
             });
     }
 
-    fn sync_ppc_sound_completions_from_dispatcher(&mut self) {
-        if self.ppc_app.is_none() {
-            return;
-        }
-
-        // Playback and its exhaustion boundary are process Sound Manager
-        // state. Only ABI frame construction remains with the CPU adapter.
-        // Inside Macintosh: Sound (1994), pp. 2-134--2-151.
-        let mut completions = Vec::new();
-        let pending = &mut self.dispatcher.sound_manager.pending_sound_callbacks;
-        let mut index = 0;
-        while index < pending.len() {
-            match pending[index] {
-                crate::sound::PendingSoundCallback::FileCompletion {
-                    architecture: CallbackTaskArchitecture::PowerPc,
-                    callback_addr,
-                    chan_ptr,
-                } => {
-                    pending.remove(index);
-                    completions.push((callback_addr, chan_ptr));
-                }
-                _ => index += 1,
-            }
-        }
-
-        let Some(ppc_app) = self.ppc_app.as_mut() else {
-            return;
-        };
-        for (completion, channel) in completions {
-            let Some((index, playback)) = ppc_app
-                .sound
-                .file_playbacks
-                .iter_mut()
-                .enumerate()
-                .rev()
-                .find(|(_, playback)| playback.channel == channel && playback.active)
-            else {
-                continue;
-            };
-            playback.active = false;
-            playback.paused = false;
-            if completion != 0 {
-                ppc_app
-                    .sound
-                    .pending_completions
-                    .push(PpcSoundCompletionRecord {
-                        file_playback_index: u32::try_from(index).unwrap_or(u32::MAX),
-                        channel,
-                        completion,
-                        command: playback.completion_command,
-                        tick: self.dispatcher.tick_count,
-                        instruction_count: self.total_instructions,
-                        scheduled_tick: self.dispatcher.tick_count,
-                        scheduled_instruction_count: self.total_instructions,
-                    });
-            }
-        }
-        self.fire_pending_ppc_sound_completions();
-    }
-
     fn service_ppc_double_buffer_playbacks(&mut self) {
         let Some(mut ppc_app) = self.ppc_app.take() else {
             return;
@@ -7457,7 +7393,24 @@ impl FixtureRunner {
         let Some(ppc_app) = self.ppc_app.as_ref() else {
             return;
         };
-        if ppc_app.sound.pending_completions.is_empty() {
+        // Playback and its exhaustion boundary remain process Sound Manager
+        // state until the PowerPC adapter constructs the callback ABI frame.
+        // Inside Macintosh: Sound (1994), pp. 2-134--2-151.
+        if ppc_app
+            .sound
+            .manager
+            .pending_sound_callbacks
+            .iter()
+            .all(|callback| {
+                !matches!(
+                    callback,
+                    crate::sound::PendingSoundCallback::FileCompletion {
+                        architecture: CallbackTaskArchitecture::PowerPc,
+                        ..
+                    }
+                )
+            })
+        {
             return;
         }
 
@@ -7470,8 +7423,61 @@ impl FixtureRunner {
         };
         self.prepare_ppc_execution_clock(&mut ppc_app);
         let mut fired_count = 0usize;
-        while !ppc_app.sound.pending_completions.is_empty() && fired_count < 16 {
-            let completion = ppc_app.sound.pending_completions.remove(0);
+        while fired_count < 16 {
+            let Some(pending_index) = ppc_app
+                .sound
+                .manager
+                .pending_sound_callbacks
+                .iter()
+                .position(|callback| {
+                    matches!(
+                        callback,
+                        crate::sound::PendingSoundCallback::FileCompletion {
+                            architecture: CallbackTaskArchitecture::PowerPc,
+                            ..
+                        }
+                    )
+                })
+            else {
+                break;
+            };
+            let crate::sound::PendingSoundCallback::FileCompletion {
+                callback_addr,
+                chan_ptr,
+                ..
+            } = ppc_app
+                .sound
+                .manager
+                .pending_sound_callbacks
+                .remove(pending_index)
+            else {
+                unreachable!("selected callback must be a native file completion");
+            };
+            let Some((file_playback_index, playback)) = ppc_app
+                .sound
+                .file_playbacks
+                .iter_mut()
+                .enumerate()
+                .rev()
+                .find(|(_, playback)| playback.channel == chan_ptr && playback.active)
+            else {
+                continue;
+            };
+            playback.active = false;
+            playback.paused = false;
+            if callback_addr == 0 {
+                continue;
+            }
+            let completion = PpcSoundCompletionRecord {
+                file_playback_index: u32::try_from(file_playback_index).unwrap_or(u32::MAX),
+                channel: chan_ptr,
+                completion: callback_addr,
+                command: playback.completion_command,
+                tick: self.dispatcher.tick_count,
+                instruction_count: self.total_instructions,
+                scheduled_tick: self.dispatcher.tick_count,
+                scheduled_instruction_count: self.total_instructions,
+            };
             let probe = ppc_app.with_process_memory_manager(
                 |app, memory_manager| {
                     app.run_sound_completion_callback_with_process_memory_manager(
@@ -8192,7 +8198,7 @@ impl FixtureRunner {
     /// Run pending Sound Manager interrupt work without advancing TickCount
     /// or continuing into foreground guest code after the callback returns.
     pub fn run_pending_sound_work(&mut self, max_steps: usize) -> (usize, bool) {
-        self.sync_ppc_sound_completions_from_dispatcher();
+        self.fire_pending_ppc_sound_completions();
         self.run_steps_internal(max_steps, None, 0, true, true, true)
     }
 
@@ -13437,6 +13443,33 @@ mod tests {
         })
     }
 
+    fn queue_ppc_sound_completion(sound: &mut PpcSoundState, channel: u32, completion: u32) {
+        sound.file_playbacks.push(PpcSoundFilePlaybackRecord {
+            channel,
+            ref_num: 0,
+            resource_id: 0,
+            buffer_size: 0,
+            buffer: 0,
+            selection: 0,
+            completion,
+            completion_command: None,
+            async_play: true,
+            paused: false,
+            active: true,
+            quiet_now: false,
+            aiff: None,
+            decoded_aiff: None,
+        });
+        sound
+            .manager
+            .pending_sound_callbacks
+            .push(PendingSoundCallback::FileCompletion {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                callback_addr: completion,
+                chan_ptr: channel,
+            });
+    }
+
     #[test]
     fn ppc_initialization_attaches_both_cpu_adapters_to_one_guest_call_stack() {
         let app = halted_ppc_app_with_sound(PpcSoundState::default());
@@ -15108,19 +15141,8 @@ mod tests {
     #[test]
     fn ppc_exit_to_shell_stops_before_tick_and_callback_phase() {
         const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
-        let sound = PpcSoundState {
-            pending_completions: vec![PpcSoundCompletionRecord {
-                file_playback_index: 0,
-                channel: 0x0300_1000,
-                completion: CALLBACK,
-                command: None,
-                tick: 0,
-                instruction_count: 0,
-                scheduled_tick: 0,
-                scheduled_instruction_count: 0,
-            }],
-            ..PpcSoundState::default()
-        };
+        let mut sound = PpcSoundState::default();
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, CALLBACK);
         let mut app = halted_ppc_app_with_sound(sound);
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app
@@ -15172,7 +15194,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app retained");
         assert_eq!(ppc_app.vbl_tasks.len(), 1);
         assert_eq!(ppc_app.timer_tasks[0].last_fired_tick, None);
-        assert_eq!(ppc_app.sound.pending_completions.len(), 1);
+        assert_eq!(ppc_app.sound.manager.pending_sound_callbacks.len(), 1);
         assert!(ppc_app.sound.completion_invocations.is_empty());
     }
 
@@ -15345,24 +15367,23 @@ mod tests {
 
     #[test]
     fn ppc_sound_completions_preserve_centered_viewport_event_coordinates() {
-        let callback = |completion| PpcSoundCompletionRecord {
-            file_playback_index: 0,
-            channel: 0x0300_1000,
-            completion,
-            command: None,
-            tick: 0,
-            instruction_count: 0,
-            scheduled_tick: 0,
-            scheduled_instruction_count: 0,
-        };
-        let app = halted_ppc_app_with_sound(PpcSoundState {
-            pending_completions: vec![
-                callback(PPC_SOUND_GET_EVENT_CALLBACK),
-                callback(PPC_SOUND_POST_EVENT_CALLBACK),
-                callback(PPC_SOUND_SET_EVENT_MASK_CALLBACK),
-            ],
-            ..PpcSoundState::default()
-        });
+        let mut sound = PpcSoundState::default();
+        queue_ppc_sound_completion(
+            &mut sound,
+            0x0300_1000,
+            PPC_SOUND_GET_EVENT_CALLBACK,
+        );
+        queue_ppc_sound_completion(
+            &mut sound,
+            0x0300_1000,
+            PPC_SOUND_POST_EVENT_CALLBACK,
+        );
+        queue_ppc_sound_completion(
+            &mut sound,
+            0x0300_1000,
+            PPC_SOUND_SET_EVENT_MASK_CALLBACK,
+        );
+        let app = halted_ppc_app_with_sound(sound);
 
         assert_ppc_sound_event_boundary(app, FixtureRunner::fire_pending_ppc_sound_completions);
     }
@@ -15573,19 +15594,8 @@ mod tests {
         use crate::memory::globals::addr;
 
         const CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
-        let sound = PpcSoundState {
-            pending_completions: vec![PpcSoundCompletionRecord {
-                file_playback_index: 0,
-                channel: 0x0300_1000,
-                completion: CALLBACK,
-                command: None,
-                tick: 0,
-                instruction_count: 0,
-                scheduled_tick: 0,
-                scheduled_instruction_count: 0,
-            }],
-            ..PpcSoundState::default()
-        };
+        let mut sound = PpcSoundState::default();
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, CALLBACK);
         let mut app = halted_ppc_app_with_sound(sound);
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
@@ -15627,20 +15637,9 @@ mod tests {
 
         const FIRST_CALLBACK: u32 = PPC_CODE_BASE + 0x1000;
         const SECOND_CALLBACK: u32 = PPC_CODE_BASE + 0x1100;
-        let completion = |completion| PpcSoundCompletionRecord {
-            file_playback_index: 0,
-            channel: 0x0300_1000,
-            completion,
-            command: None,
-            tick: 0,
-            instruction_count: 0,
-            scheduled_tick: 0,
-            scheduled_instruction_count: 0,
-        };
-        let sound = PpcSoundState {
-            pending_completions: vec![completion(FIRST_CALLBACK), completion(SECOND_CALLBACK)],
-            ..PpcSoundState::default()
-        };
+        let mut sound = PpcSoundState::default();
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, FIRST_CALLBACK);
+        queue_ppc_sound_completion(&mut sound, 0x0300_1000, SECOND_CALLBACK);
         let mut app = halted_ppc_app_with_sound(sound);
         let ppc_app = app.ppc.as_mut().expect("PPC app");
         ppc_app.cpu.alignment_policy = ppc::PpcAlignmentPolicy::EmulateData;
@@ -16149,7 +16148,6 @@ mod tests {
                 sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
                 samples: samples.clone(),
             }],
-            pending_completions: Vec::new(),
             completion_invocations: Vec::new(),
             sys_beep_count: 0,
             last_sys_beep_duration: 0,
@@ -16224,7 +16222,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(!ppc_app.sound.file_playbacks[0].paused);
-        assert!(ppc_app.sound.pending_completions.is_empty());
+        assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
         assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
@@ -16290,7 +16288,6 @@ mod tests {
                 sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
                 samples: samples.clone(),
             }],
-            pending_completions: Vec::new(),
             completion_invocations: Vec::new(),
             sys_beep_count: 0,
             last_sys_beep_duration: 0,
@@ -16354,7 +16351,7 @@ mod tests {
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
         assert!(!ppc_app.sound.file_playbacks[0].paused);
-        assert!(ppc_app.sound.pending_completions.is_empty());
+        assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
         assert_eq!(ppc_app.sound.completion_invocations.len(), 1);
@@ -16416,7 +16413,7 @@ mod tests {
         runner.mix_host_audio(samples.len());
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(ppc_app.sound.file_playbacks[0].active);
-        assert!(ppc_app.sound.pending_completions.is_empty());
+        assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
 
         runner
             .dispatcher
@@ -16427,7 +16424,7 @@ mod tests {
 
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
         assert!(!ppc_app.sound.file_playbacks[0].active);
-        assert!(ppc_app.sound.pending_completions.is_empty());
+        assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         assert!(ppc_app.sound.completion_invocations.is_empty());
     }
 
