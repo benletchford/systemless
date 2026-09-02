@@ -4327,12 +4327,12 @@ impl super::TrapDispatcher {
             // PBHGetVol ($A214): HFS variant aliased onto $A014
             (false, 0x14) => {
                 let pb = cpu.read_reg(Register::A0);
-                let volume_ref_num = self.resolve_volume_ref_num(self.app_wd_refnum);
+                let volume_ref_num = self.resolve_volume_ref_num(*self.app_wd_refnum);
                 let volume_name = self
                     .vfs_volume_for_ref_num(volume_ref_num)
                     .map(|volume| volume.name.as_str())
                     .unwrap_or(super::TrapDispatcher::boot_volume_name());
-                bus.write_word(pb + 22, self.app_wd_refnum as u16);
+                bus.write_word(pb + 22, *self.app_wd_refnum as u16);
                 let name_ptr = bus.read_long(pb + 18);
                 if name_ptr != 0 {
                     Self::write_pstring(bus, name_ptr, volume_name);
@@ -4342,7 +4342,7 @@ impl super::TrapDispatcher {
                 bus.write_long(pb + 28, 0); // ioWDProcID
                 bus.write_word(pb + 32, volume_ref_num as u16); // ioWDVRefNum
                 let dir_id = self
-                    .working_directory_info(self.app_wd_refnum)
+                    .working_directory_info(*self.app_wd_refnum)
                     .map(|wd| wd.dir_id)
                     .unwrap_or(*self.default_dir_id);
                 bus.write_long(pb + 48, dir_id); // ioWDDirID
@@ -4420,11 +4420,11 @@ impl super::TrapDispatcher {
                     if requested_vref != 0 {
                         volume_by_ref(requested_vref)
                     } else if relative_pathname {
-                        volume_by_ref(self.app_wd_refnum)
+                        volume_by_ref(*self.app_wd_refnum)
                     } else if !requested_name.is_empty() {
                         volume_by_name(&requested_name)
                     } else {
-                        volume_by_ref(self.app_wd_refnum)
+                        volume_by_ref(*self.app_wd_refnum)
                     }
                 } else if volume_index > 0 {
                     let mut mounted = self
@@ -4450,11 +4450,11 @@ impl super::TrapDispatcher {
                     } else if requested_vref != 0 {
                         volume_by_ref(requested_vref)
                     } else if relative_pathname {
-                        volume_by_ref(self.app_wd_refnum)
+                        volume_by_ref(*self.app_wd_refnum)
                     } else if !requested_name.is_empty() {
                         volume_by_name(&requested_name)
                     } else {
-                        volume_by_ref(self.app_wd_refnum)
+                        volume_by_ref(*self.app_wd_refnum)
                     }
                 };
                 let Some((volume_name, volume_ref_num, volume_attributes)) = volume_info else {
@@ -5940,7 +5940,7 @@ impl super::TrapDispatcher {
                 }
 
                 *self.default_dir_id = target_dir_id;
-                self.app_wd_refnum = if target_dir_id == 2 {
+                *self.app_wd_refnum = if target_dir_id == 2 {
                     target_volume_ref_num
                 } else {
                     self.open_working_directory(target_volume_ref_num, target_dir_id, 0)
@@ -5957,7 +5957,7 @@ impl super::TrapDispatcher {
                     name,
                     requested_vref,
                     requested_dir_id,
-                    self.app_wd_refnum,
+                    *self.app_wd_refnum,
                     *self.default_dir_id
                 );
                 bus.write_word(pb + 16, 0);
@@ -7322,18 +7322,10 @@ impl super::TrapDispatcher {
                     // Releases a working directory reference number.
                     // FUNCTION PBCloseWD(paramBlock: WDPBPtr; async: Boolean): OSErr;
                     // Files 1992, 2-202 to 2-203
-                    //
-                    // Behavioral note: for a phantom ioVRefNum=-999, real
-                    // Mac returns noErr (0) per IM:Files 10366 ("If you
-                    // specify a volume reference number in the ioVRefNum
-                    // field, PBCloseWD does nothing") — the close-side mirror
-                    // of PBGetWDInfo's polymorphic-input divergence (where
-                    // real Mac returned nsvErr -35 instead of rfNumErr
-                    // -51). Systemless returns rfNumErr (-51) on the
-                    // HashMap-miss fallback path below.
                     let wd_ref_num = bus.read_word(pb + 22) as i16;
                     eprintln!("[TRAP] FSDispatch PBCloseWD wdRefNum={}", wd_ref_num);
                     let err = if wd_ref_num == super::TrapDispatcher::boot_volume_ref_num()
+                        || self.vfs_volume_for_ref_num(wd_ref_num).is_some()
                         || self.close_working_directory(wd_ref_num)
                     {
                         0
@@ -15758,7 +15750,7 @@ mod tests {
         let pb = 0x300000u32;
         cpu.write_reg(Register::A0, pb);
         bus.write_long(pb + 18, 0);
-        bus.write_word(pb + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb + 22, *disp.app_wd_refnum as u16);
         bus.write_word(pb + 28, (-1i16) as u16);
 
         call(&mut disp, false, 0x07, &mut cpu, &mut bus).unwrap();
@@ -16638,7 +16630,7 @@ mod tests {
 
         let pb = 0x300000u32;
         let name_ptr = setup_param_block(&mut bus, &mut cpu, pb, b"stale output name");
-        bus.write_word(pb + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb + 22, *disp.app_wd_refnum as u16);
         bus.write_word(pb + 28, 2); // second file in Mission, not second catalog entry
 
         call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
@@ -16652,7 +16644,7 @@ mod tests {
 
         let pb2 = 0x300400u32;
         setup_param_block(&mut bus, &mut cpu, pb2, b"A Launcher");
-        bus.write_word(pb2 + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb2 + 22, *disp.app_wd_refnum as u16);
         bus.write_word(pb2 + 28, 99);
 
         call(&mut disp, false, 0x0C, &mut cpu, &mut bus).unwrap();
@@ -17219,7 +17211,7 @@ mod tests {
 
         let pb = 0x300000u32;
         cpu.write_reg(Register::A0, pb);
-        bus.write_word(pb + 22, disp.app_wd_refnum as u16);
+        bus.write_word(pb + 22, *disp.app_wd_refnum as u16);
 
         call(&mut disp, false, 0x15, &mut cpu, &mut bus).unwrap();
 
@@ -17255,7 +17247,7 @@ mod tests {
         assert_eq!(cpu.read_reg(Register::D0), 0);
         assert_eq!(bus.read_word(pb + 16), 0);
         assert_eq!(*disp.default_dir_id, root_dir_id);
-        assert_eq!(disp.resolve_volume_ref_num(disp.app_wd_refnum), volume_ref);
+        assert_eq!(disp.resolve_volume_ref_num(*disp.app_wd_refnum), volume_ref);
         assert_eq!(bus.read_word(addr::SF_SAVE_DISK), (-volume_ref) as u16);
     }
 

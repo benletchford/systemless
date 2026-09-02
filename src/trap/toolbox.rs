@@ -2841,7 +2841,7 @@ impl super::TrapDispatcher {
             reply_ptr,
             stack_ptr,
             pop_total,
-            vref: self.resolve_volume_ref_num(self.app_wd_refnum),
+            vref: self.resolve_volume_ref_num(*self.app_wd_refnum),
             old_wd_ref,
             dir_id: *self.default_dir_id,
             prompt: Self::standard_file_put_prompt(bus, prompt_ptr),
@@ -2856,9 +2856,9 @@ impl super::TrapDispatcher {
     }
 
     fn standard_file_old_reply_wd_ref(&mut self) -> i16 {
-        let vref = self.resolve_volume_ref_num(self.app_wd_refnum);
+        let vref = self.resolve_volume_ref_num(*self.app_wd_refnum);
         self.open_working_directory(vref, *self.default_dir_id, 0)
-            .unwrap_or_else(|| self.resolve_volume_ref_num(self.app_wd_refnum))
+            .unwrap_or_else(|| self.resolve_volume_ref_num(*self.app_wd_refnum))
     }
 
     fn service_standard_file_put_tracking<C: CpuOps>(
@@ -12527,7 +12527,7 @@ impl super::TrapDispatcher {
                         return Some(Ok(()));
                     }
                     let name = standard_file_default_name(bus, default_name_ptr);
-                    let vref = self.resolve_volume_ref_num(self.app_wd_refnum);
+                    let vref = self.resolve_volume_ref_num(*self.app_wd_refnum);
                     let dir_id = *self.default_dir_id;
                     if modern_reply {
                         let target_name = decode_mac_roman(&name);
@@ -28076,7 +28076,7 @@ mod tests {
         let reply_ptr = 0x320180u32;
         let default_name_ptr = 0x320300u32;
         *disp.default_dir_id = 18;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         bus.write_pstring(default_name_ptr, b"Twilight Save");
         bus.write_word(sp, 0x0005); // StandardPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -28109,7 +28109,7 @@ mod tests {
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         disp.vfs_rsrc
             .insert("Pilots/Existing Pilot".to_string(), vec![1, 2, 3]);
         disp.set_vfs_entry_metadata("Pilots/Existing Pilot", *b"PIL ", *b"EVO!", 0);
@@ -28144,7 +28144,7 @@ mod tests {
         let default_name_ptr = 0x320340u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         disp.yield_for_ui = true;
 
         bus.write_pstring(prompt_ptr, b"Pilot file:");
@@ -28206,7 +28206,7 @@ mod tests {
         let default_name_ptr = 0x320740u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         disp.yield_for_ui = true;
 
         bus.write_pstring(prompt_ptr, b"Pilot file:");
@@ -28279,7 +28279,7 @@ mod tests {
         let sp = TEST_SP;
         let reply_ptr = 0x320380u32;
         let original_name_ptr = 0x320500u32;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         bus.write_pstring(original_name_ptr, b"Old Save");
         bus.write_word(sp, 0x0001); // SFPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -28311,7 +28311,7 @@ mod tests {
         let original_name_ptr = 0x320680u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         bus.write_pstring(original_name_ptr, b"Old Pilot");
         bus.write_word(sp, 0x0001); // SFPutFile selector
         bus.write_long(sp + 2, reply_ptr); // VAR reply
@@ -28346,7 +28346,7 @@ mod tests {
         let prompt_ptr = 0x3208C0u32;
         let pilots_dir = disp.ensure_vfs_directory("Pilots");
         *disp.default_dir_id = pilots_dir;
-        disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
+        *disp.app_wd_refnum = crate::trap::dispatch::TrapDispatcher::boot_volume_ref_num();
         disp.yield_for_ui = true;
         bus.write_pstring(original_name_ptr, b"Old Pilot");
         bus.write_pstring(prompt_ptr, b"Pilot file:");

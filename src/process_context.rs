@@ -853,6 +853,18 @@ pub(crate) struct PendingFileCompletion {
     pub(crate) result: i16,
 }
 
+/// One open File Manager working directory for the process.
+///
+/// Working-directory reference numbers are process-wide access paths, not
+/// CPU-adapter state. Inside Macintosh: Files (1992), pp. 2-173--2-183.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessWorkingDirectory {
+    pub(crate) ref_num: i16,
+    pub(crate) volume_ref_num: i16,
+    pub(crate) dir_id: u32,
+    pub(crate) proc_id: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessFileSystemState {
     pub(crate) files: SharedProcessOpenFiles,
@@ -863,6 +875,10 @@ pub struct ProcessFileSystemState {
     /// optional completion-procedure delivery. Inside Macintosh: Files
     /// (1992), p. 2-238.
     pub(crate) pending_completions: SharedProcessValue<VecDeque<PendingFileCompletion>>,
+    pub(crate) working_directories:
+        SharedProcessValue<HashMap<i16, ProcessWorkingDirectory>>,
+    pub(crate) next_working_directory_ref_num: SharedProcessValue<i16>,
+    pub(crate) application_working_directory_ref_num: SharedProcessValue<i16>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
@@ -890,6 +906,9 @@ impl Default for ProcessFileSystemState {
             files: SharedProcessOpenFiles::default(),
             writable_refnums: SharedProcessValue::default(),
             pending_completions: SharedProcessValue::default(),
+            working_directories: SharedProcessValue::default(),
+            next_working_directory_ref_num: SharedProcessValue::from_value(32),
+            application_working_directory_ref_num: SharedProcessValue::from_value(-1),
             stdio_streams: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
             vfs_directories: SharedProcessValue::default(),
@@ -928,6 +947,23 @@ impl ProcessFileSystemState {
         if !Rc::ptr_eq(&self.pending_completions.0, &source.pending_completions.0) {
             self.pending_completions
                 .extend(std::mem::take(&mut *source.pending_completions));
+        }
+        if !Rc::ptr_eq(&self.working_directories.0, &source.working_directories.0) {
+            assert!(
+                self.working_directories.is_empty()
+                    || source.working_directories.is_empty()
+                    || *self.working_directories == *source.working_directories,
+                "cannot attach two different working-directory registries"
+            );
+            if self.working_directories.is_empty() {
+                *self.working_directories = std::mem::take(&mut *source.working_directories);
+            }
+        }
+        *self.next_working_directory_ref_num = (*self.next_working_directory_ref_num)
+            .max(*source.next_working_directory_ref_num);
+        if *self.application_working_directory_ref_num == -1 {
+            *self.application_working_directory_ref_num =
+                *source.application_working_directory_ref_num;
         }
         for (stream, record) in std::mem::take(&mut source.stdio_streams) {
             self.stdio_streams.entry(stream).or_insert(record);

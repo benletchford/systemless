@@ -16,7 +16,7 @@ use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
     PendingFileCompletion, ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap,
     ProcessKeyRepeatState, ProcessLoadedResources, ProcessResourceFileMap,
-    ProcessResourceManagerState,
+    ProcessResourceManagerState, ProcessWorkingDirectory,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
@@ -1023,13 +1023,7 @@ pub(crate) type VfsMetadata = ProcessVfsMetadata;
 pub(crate) type VfsDirectory = ProcessClassicVfsDirectory;
 pub(crate) type VfsVolume = ProcessVfsVolumeRecord;
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct WorkingDirectory {
-    pub ref_num: i16,
-    pub volume_ref_num: i16,
-    pub dir_id: u32,
-    pub proc_id: u32,
-}
+pub(crate) type WorkingDirectory = ProcessWorkingDirectory;
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingLaunchApplication {
@@ -1955,7 +1949,8 @@ pub struct TrapDispatcher {
     /// Mounted volume lookup by normalized, case-insensitive name.
     pub(crate) vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
     /// Open working directories keyed by working directory reference number.
-    pub(crate) working_directories: HashMap<i16, WorkingDirectory>,
+    pub(crate) working_directories:
+        SharedProcessValue<HashMap<i16, WorkingDirectory>>,
     /// Open file table: refnum -> filename
     pub(crate) open_files: SharedProcessOpenFiles,
     /// Synthetic Device Manager drivers opened by name via PBOpen/OpenDriver.
@@ -2009,7 +2004,7 @@ pub struct TrapDispatcher {
     /// Monotonic source for VFS creation and modification timestamps.
     pub(crate) next_vfs_timestamp: SharedProcessValue<u32>,
     /// Next working directory reference number.
-    pub(crate) next_working_dir_refnum: i16,
+    pub(crate) next_working_dir_refnum: SharedProcessValue<i16>,
     /// Normalized VFS path of the launched application, if known.
     pub(crate) launched_app_path: Option<String>,
     /// Foreground application launch queued by LaunchApplication. When
@@ -2019,7 +2014,7 @@ pub struct TrapDispatcher {
     /// Current default directory.
     pub(crate) default_dir_id: SharedProcessValue<u32>,
     /// Working directory reference number for the application's folder.
-    pub(crate) app_wd_refnum: i16,
+    pub(crate) app_wd_refnum: SharedProcessValue<i16>,
     /// Host directory to write output files to (if set)
     pub output_dir: Option<std::path::PathBuf>,
     /// Current foreground color (RGBColor: R, G, B)
@@ -2764,6 +2759,18 @@ impl TrapDispatcher {
         self.pending_file_completions = self
             .process_file_system
             .pending_completions
+            .shared_handle();
+        self.working_directories = self
+            .process_file_system
+            .working_directories
+            .shared_handle();
+        self.next_working_dir_refnum = self
+            .process_file_system
+            .next_working_directory_ref_num
+            .shared_handle();
+        self.app_wd_refnum = self
+            .process_file_system
+            .application_working_directory_ref_num
             .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_resource_manager(&mut self.process_resource_manager);
@@ -3686,6 +3693,13 @@ impl TrapDispatcher {
         let open_files = process_file_system.files.shared_handle();
         let write_refnums = process_file_system.writable_refnums.shared_handle();
         let pending_file_completions = process_file_system.pending_completions.shared_handle();
+        let working_directories = process_file_system.working_directories.shared_handle();
+        let next_working_dir_refnum = process_file_system
+            .next_working_directory_ref_num
+            .shared_handle();
+        let app_wd_refnum = process_file_system
+            .application_working_directory_ref_num
+            .shared_handle();
         let file_positions = process_file_system.files.positions();
 
         let mut dispatcher = Self {
@@ -3765,7 +3779,7 @@ impl TrapDispatcher {
             vfs_directory_paths: SharedProcessValue::from_value(vfs_directory_paths),
             vfs_volumes: SharedProcessValue::default(),
             vfs_volume_names: SharedProcessValue::default(),
-            working_directories: HashMap::new(),
+            working_directories,
             open_files,
             synthetic_drivers: HashMap::new(),
             legacy_sound_driver_channel: None,
@@ -3782,11 +3796,11 @@ impl TrapDispatcher {
             next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
             next_vfs_file_id: SharedProcessValue::from_value(32),
             next_vfs_timestamp: SharedProcessValue::from_value(1),
-            next_working_dir_refnum: 32,
+            next_working_dir_refnum,
             launched_app_path: None,
             pending_launch_app: None,
             default_dir_id: SharedProcessValue::from_value(2),
-            app_wd_refnum: BOOT_VOLUME_REF_NUM,
+            app_wd_refnum,
             output_dir: None,
             fg_color: (0, 0, 0),
             bg_color: (0xFFFF, 0xFFFF, 0xFFFF),
@@ -4797,7 +4811,7 @@ impl TrapDispatcher {
             if let Some(wd_ref) =
                 self.open_working_directory(app_volume_ref, metadata.parent_dir_id, 0)
             {
-                self.app_wd_refnum = wd_ref;
+                *self.app_wd_refnum = wd_ref;
             }
         }
         self.launched_app_path = Some(normalized);
@@ -5122,11 +5136,11 @@ impl TrapDispatcher {
             return Some(existing.ref_num);
         }
 
-        let mut ref_num = self.next_working_dir_refnum;
+        let mut ref_num = *self.next_working_dir_refnum;
         while self.working_directories.contains_key(&ref_num) {
             ref_num = ref_num.saturating_add(1);
         }
-        self.next_working_dir_refnum = ref_num.saturating_add(1);
+        *self.next_working_dir_refnum = ref_num.saturating_add(1);
         self.working_directories.insert(
             ref_num,
             WorkingDirectory {
@@ -5140,7 +5154,13 @@ impl TrapDispatcher {
     }
 
     pub(crate) fn close_working_directory(&mut self, wd_ref_num: i16) -> bool {
-        self.working_directories.remove(&wd_ref_num).is_some()
+        let Some(record) = self.working_directories.remove(&wd_ref_num) else {
+            return false;
+        };
+        if *self.app_wd_refnum == wd_ref_num {
+            *self.app_wd_refnum = record.volume_ref_num;
+        }
+        true
     }
 
     pub(crate) fn working_directory_info(&self, wd_ref_num: i16) -> Option<WorkingDirectory> {
