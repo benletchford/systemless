@@ -89433,6 +89433,62 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn open_file_sessions_cross_cpu_adapters_and_detach_with_clone() {
+        let pef = synthetic_pef_with_import(b"GetEOF");
+        let mut native = load_pef_application(&pef).unwrap();
+        native
+            .files
+            .push(crate::process_context::ProcessOpenFileRecord {
+                ref_num: PPC_FIRST_FILE_REF_NUM,
+                path: "Shared Data".to_string(),
+                position: 4,
+            });
+        native.next_file_ref_num = PPC_FIRST_FILE_REF_NUM + 1;
+
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+        let detached = native.clone();
+        let mut classic = TrapDispatcher::new();
+        classic.attach_process_context(&mut context);
+
+        assert!(classic.open_files.ptr_eq(&native.files));
+        assert_eq!(
+            classic
+                .open_files
+                .get(&(PPC_FIRST_FILE_REF_NUM as u16))
+                .map(String::as_str),
+            Some("Shared Data")
+        );
+
+        classic
+            .file_positions
+            .insert(PPC_FIRST_FILE_REF_NUM as u16, 9);
+        assert_eq!(native.files[0].position, 9);
+
+        native.files[0].position = 12;
+        assert_eq!(
+            classic
+                .file_positions
+                .get(&(PPC_FIRST_FILE_REF_NUM as u16)),
+            Some(&12)
+        );
+
+        let next_refnum = classic.allocate_process_file_refnum();
+        assert_eq!(next_refnum, (PPC_FIRST_FILE_REF_NUM + 1) as u16);
+        assert_eq!(native.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 2);
+        classic
+            .open_files
+            .insert(next_refnum, "Classic Data".to_string());
+        classic.file_positions.insert(next_refnum, 3);
+        assert_eq!(native.files.last().unwrap().path, "Classic Data");
+        assert_eq!(native.files.last().unwrap().position, 3);
+
+        assert_eq!(detached.files.len(), 1);
+        assert_eq!(detached.files[0].position, 4);
+        assert_eq!(detached.next_file_ref_num, PPC_FIRST_FILE_REF_NUM + 1);
+    }
+
+    #[test]
     fn catalogue_mutations_cross_cpu_adapters_without_runner_sync() {
         let pef = synthetic_pef_with_import(b"GetEOF");
         let mut native = load_pef_application(&pef).unwrap();

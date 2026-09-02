@@ -18,10 +18,11 @@ use crate::process_context::{
     ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
-    SharedProcessEventQueue,
-    SharedProcessFileSystem, SharedProcessInputState, SharedProcessMemoryManager,
-    SharedProcessListManager, SharedProcessMenuTracking, SharedProcessResourceManager, SharedProcessScrapState,
-    SharedProcessSoundManager, SharedProcessTextEditManager, SharedProcessValue,
+    SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
+    SharedProcessListManager, SharedProcessMemoryManager, SharedProcessMenuTracking,
+    SharedProcessOpenFilePositions, SharedProcessOpenFiles, SharedProcessResourceManager,
+    SharedProcessScrapState, SharedProcessSoundManager, SharedProcessTextEditManager,
+    SharedProcessValue,
 };
 use crate::trace::{TraceEvent, TraceSink, TraceSource};
 use crate::ui_theme::{UiTheme, UiThemeId};
@@ -1962,7 +1963,7 @@ pub struct TrapDispatcher {
     /// Open working directories keyed by working directory reference number.
     pub(crate) working_directories: HashMap<i16, WorkingDirectory>,
     /// Open file table: refnum -> filename
-    pub(crate) open_files: HashMap<u16, String>,
+    pub(crate) open_files: SharedProcessOpenFiles,
     /// Synthetic Device Manager drivers opened by name via PBOpen/OpenDriver.
     pub(crate) synthetic_drivers: HashMap<u16, String>,
     /// Guest SndChannel storage used by writes to the ROM Sound Driver
@@ -1972,7 +1973,7 @@ pub struct TrapDispatcher {
     /// Used to enforce opWrErr (-49) per IM:Files 9578.
     pub(crate) write_refnums: std::collections::HashSet<u16>,
     /// File position table: refnum -> current byte offset
-    pub(crate) file_positions: HashMap<u16, usize>,
+    pub(crate) file_positions: SharedProcessOpenFilePositions,
     /// Most recent successful PBRead/FSRead from a data fork.
     pub(crate) recent_file_read: Option<RecentFileRead>,
     /// Completed asynchronous File Manager requests awaiting `ioResult`
@@ -1986,8 +1987,6 @@ pub struct TrapDispatcher {
     /// Public to mirror `vfs`/`vfs_rsrc` so frontends and tests can
     /// inspect or seed lock state directly.
     pub locked_files: SharedProcessValue<std::collections::HashSet<String>>,
-    /// Next available file reference number
-    pub(crate) next_refnum: u16,
     /// Current MMU addressing mode (0=24-bit, 1=32-bit)
     /// Inside Macintosh Volume V, V-593
     pub(crate) mmu_mode: u8,
@@ -2765,6 +2764,8 @@ impl TrapDispatcher {
     /// Attach shared process resources to this dispatcher.
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_file_system(&mut self.process_file_system);
+        self.open_files = self.process_file_system.files.shared_handle();
+        self.file_positions = self.process_file_system.files.positions();
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
         context.attach_callback_tasks(
@@ -3681,10 +3682,14 @@ impl TrapDispatcher {
         );
         vfs_directory_paths.insert(2, String::new());
 
+        let process_file_system = SharedProcessFileSystem::default();
+        let open_files = process_file_system.files.shared_handle();
+        let file_positions = process_file_system.files.positions();
+
         let mut dispatcher = Self {
             adb: crate::adb::AdbManager::new(),
             process_resource_manager: SharedProcessResourceManager::default(),
-            process_file_system: SharedProcessFileSystem::default(),
+            process_file_system,
             vm_held_page_counts: HashMap::new(),
             vm_held_page_history: HashSet::new(),
             vm_locked_page_counts: HashMap::new(),
@@ -3759,15 +3764,14 @@ impl TrapDispatcher {
             vfs_volumes: SharedProcessValue::default(),
             vfs_volume_names: SharedProcessValue::default(),
             working_directories: HashMap::new(),
-            open_files: HashMap::new(),
+            open_files,
             synthetic_drivers: HashMap::new(),
             legacy_sound_driver_channel: None,
             write_refnums: HashSet::new(),
-            file_positions: HashMap::new(),
+            file_positions,
             recent_file_read: None,
             pending_file_completions: VecDeque::new(),
             locked_files: SharedProcessValue::default(),
-            next_refnum: 100,
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
             default_video_rec: 0x0000,        // no default video device selected
             default_os_rec: 0x0001,           // Macintosh Operating System
@@ -6199,6 +6203,30 @@ impl TrapDispatcher {
         }
     }
 
+    /// Allocate the next non-colliding process File Manager reference number.
+    pub(crate) fn allocate_process_file_refnum(&mut self) -> u16 {
+        let mut candidate = self.process_file_system.next_file_ref_num.max(100);
+        loop {
+            let refnum = u16::try_from(candidate).expect("positive File Manager refnum");
+            let resource_refnum_in_use = self
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.files.contains_key(&refnum));
+            if !self.open_files.contains_key(&refnum)
+                && !self.synthetic_drivers.contains_key(&refnum)
+                && !resource_refnum_in_use
+            {
+                self.process_file_system.next_file_ref_num = candidate
+                    .checked_add(1)
+                    .expect("File Manager reference numbers exhausted");
+                return refnum;
+            }
+            candidate = candidate
+                .checked_add(1)
+                .expect("File Manager reference numbers exhausted");
+        }
+    }
+
     /// Allocate a new loaded resource-file slot for the given VFS key.
     ///
     /// The caller is responsible for resolving duplicates before calling
@@ -6212,8 +6240,7 @@ impl TrapDispatcher {
         wants_write: bool,
     ) -> u16 {
         let rsrc_data = self.vfs_rsrc.get(vfs_key).unwrap().clone();
-        let refnum = self.next_refnum;
-        self.next_refnum += 1;
+        let refnum = self.allocate_process_file_refnum();
         if let Some(fork) = ResourceFork::parse(&rsrc_data) {
             self.merge_resources_from_fork(&fork, bus, refnum);
         } else {

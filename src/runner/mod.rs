@@ -15753,7 +15753,7 @@ mod tests {
             callback_scheduling: Default::default(),
             process_file_system: SharedProcessFileSystem::from_state(
                 ProcessFileSystemState {
-                files: Vec::new(),
+                files: Default::default(),
                 stdio_streams: ppc_initial_stdio_streams(),
                 vfs_volumes: crate::process_context::SharedProcessValue::default(),
                 vfs_directories: crate::process_context::SharedProcessValue::from_value(vec![PpcVfsDirectory {

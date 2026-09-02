@@ -3992,8 +3992,7 @@ impl super::TrapDispatcher {
                         cpu.write_reg(Register::D0, (-44i32) as u32);
                         return Some(Ok(()));
                     }
-                    let refnum = self.next_refnum;
-                    self.next_refnum += 1;
+                    let refnum = self.allocate_process_file_refnum();
                     self.open_files.insert(refnum, vfs_name.clone());
                     // Files 1992, 2-8: fsCurPerm (0) grants read/write when
                     // write access is available; fsWrPerm (2), fsRdWrPerm
@@ -4009,8 +4008,7 @@ impl super::TrapDispatcher {
                     cpu.write_reg(Register::D0, 0);
                     eprintln!("[TRAP] PBOpen -> refnum={} vfs=\"{}\"", refnum, vfs_name);
                 } else if Self::is_available_synthetic_driver_name(&filename) {
-                    let refnum = self.next_refnum;
-                    self.next_refnum += 1;
+                    let refnum = self.allocate_process_file_refnum();
                     self.synthetic_drivers.insert(refnum, filename.clone());
                     bus.write_word(pb + 24, refnum);
                     bus.write_word(pb + 16, 0);
@@ -4058,7 +4056,10 @@ impl super::TrapDispatcher {
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     if let Some(file_buf) = self.vfs.get(&filename) {
                         let file_len = file_buf.len();
-                        let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
+                        let cur_pos = usize::try_from(
+                            *self.file_positions.get(&ref_num).unwrap_or(&0),
+                        )
+                        .unwrap_or(usize::MAX);
                         match Self::resolve_file_mark_position(
                             pos_mode, pos_offset, cur_pos, file_len,
                         ) {
@@ -4203,7 +4204,10 @@ impl super::TrapDispatcher {
                 let (new_pos, host_sync_bytes) = {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
-                    let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
+                    let cur_pos = usize::try_from(
+                        *self.file_positions.get(&ref_num).unwrap_or(&0),
+                    )
+                    .unwrap_or(usize::MAX);
                     let Ok(start) =
                         Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
                     else {
@@ -4550,7 +4554,10 @@ impl super::TrapDispatcher {
 
                 if let Some(filename) = self.open_files.get(&ref_num).cloned() {
                     let file_len = self.vfs.get(&filename).map(|f| f.len()).unwrap_or(0);
-                    let cur_pos = *self.file_positions.get(&ref_num).unwrap_or(&0);
+                    let cur_pos = usize::try_from(
+                        *self.file_positions.get(&ref_num).unwrap_or(&0),
+                    )
+                    .unwrap_or(usize::MAX);
                     let Ok(requested_pos) =
                         Self::resolve_file_mark_position(pos_mode, pos_offset, cur_pos, file_len)
                     else {
@@ -4631,7 +4638,7 @@ impl super::TrapDispatcher {
                 let pb = cpu.read_reg(Register::A0);
                 let ref_num = bus.read_word(pb + 24);
                 if let Some(pos) = self.file_positions.get(&ref_num).copied() {
-                    bus.write_long(pb + 46, pos as u32); // ioPosOffset
+                    bus.write_long(pb + 46, pos); // ioPosOffset
                     bus.write_word(pb + 44, 0); // ioPosMode
                     bus.write_word(pb + 16, 0);
                     cpu.write_reg(Register::D0, 0);
@@ -5335,9 +5342,9 @@ impl super::TrapDispatcher {
                 let open_refnums: Vec<u16> = self
                     .open_files
                     .iter()
-                    .filter_map(|(refnum, name)| {
-                        if name == &old_key {
-                            Some(*refnum)
+                    .filter_map(|record| {
+                        if record.path == old_key {
+                            u16::try_from(record.ref_num).ok()
                         } else {
                             None
                         }
@@ -5643,9 +5650,9 @@ impl super::TrapDispatcher {
                     let stale_refs: Vec<u16> = self
                         .open_files
                         .iter()
-                        .filter_map(|(refnum, open_name)| {
-                            if open_name == &vfs_name {
-                                Some(*refnum)
+                        .filter_map(|record| {
+                            if record.path == vfs_name {
+                                u16::try_from(record.ref_num).ok()
                             } else {
                                 None
                             }
@@ -5704,8 +5711,8 @@ impl super::TrapDispatcher {
                     let open_refnum = self
                         .open_files
                         .iter()
-                        .find(|(_, path)| path.eq_ignore_ascii_case(&vfs_name))
-                        .map(|(refnum, _)| *refnum)
+                        .find(|record| record.path.eq_ignore_ascii_case(&vfs_name))
+                        .and_then(|record| u16::try_from(record.ref_num).ok())
                         .or_else(|| self.refnum_for_resource_file_name(&vfs_name));
                     if let Some(metadata) = self.vfs_file_metadata(&vfs_name) {
                         self.fill_file_catalog_info(bus, pb, &vfs_name, metadata);
@@ -6028,6 +6035,7 @@ impl super::TrapDispatcher {
                 };
 
                 if let Some(pos) = self.file_positions.get_mut(&ref_num) {
+                    let new_eof = u32::try_from(new_eof).unwrap_or(u32::MAX);
                     if *pos > new_eof {
                         *pos = new_eof;
                     }
@@ -6615,8 +6623,7 @@ impl super::TrapDispatcher {
                                 return Some(Ok(()));
                             }
 
-                            let refnum = self.next_refnum;
-                            self.next_refnum += 1;
+                            let refnum = self.allocate_process_file_refnum();
                             self.open_files.insert(refnum, vfs_name.clone());
                             if wants_write && !read_only {
                                 self.write_refnums.insert(refnum);
@@ -6683,8 +6690,7 @@ impl super::TrapDispatcher {
                         self.vfs
                             .entry(rsrc_key.clone())
                             .or_insert(rsrc_data.into());
-                        let refnum = self.next_refnum;
-                        self.next_refnum += 1;
+                        let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, rsrc_key.clone());
                         if wants_write {
                             self.write_refnums.insert(refnum);
@@ -7542,7 +7548,7 @@ impl super::TrapDispatcher {
                             .get(&ref_num)
                             .copied()
                             .unwrap_or(0)
-                            .min(file_len);
+                            .min(u32::try_from(file_len).unwrap_or(u32::MAX));
                         let mut flags = if is_resource_fork { 0x0200 } else { 0 };
                         if self.write_refnums.contains(&ref_num) {
                             flags |= 0x0100;
@@ -7563,7 +7569,7 @@ impl super::TrapDispatcher {
                         bus.write_word(pb + 38, 0); // ioFCBStBlk
                         bus.write_long(pb + 40, file_len as u32); // ioFCBEOF
                         bus.write_long(pb + 44, file_len as u32); // ioFCBPLen
-                        bus.write_long(pb + 48, current_pos as u32); // ioFCBCrPs
+                        bus.write_long(pb + 48, current_pos); // ioFCBCrPs
                         bus.write_word(pb + 52, file_volume_ref as u16); // ioFCBVRefNum
                         bus.write_long(pb + 54, 0); // ioFCBClpSiz
                         bus.write_long(pb + 58, parent_dir_id); // ioFCBParID
@@ -7658,8 +7664,7 @@ impl super::TrapDispatcher {
                     if let Some(vfs_name) =
                         self.find_vfs_file_for_hfs_lookup(vref, dir_id, &filename)
                     {
-                        let refnum = self.next_refnum;
-                        self.next_refnum += 1;
+                        let refnum = self.allocate_process_file_refnum();
                         self.open_files.insert(refnum, vfs_name.clone());
                         self.file_positions.insert(refnum, 0);
                         bus.write_word(pb + 24, refnum); // ioRefNum
