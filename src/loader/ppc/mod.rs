@@ -8257,6 +8257,13 @@ impl PpcLoadedApp {
     }
 
     pub fn seed_vfs_volumes(&mut self, volumes: Vec<PpcVfsVolumeRecord>) {
+        *self.next_vfs_volume_ref_num = volumes
+            .iter()
+            .map(|volume| volume.ref_num)
+            .min()
+            .unwrap_or(PPC_BOOT_VOLUME_REF_NUM)
+            .saturating_sub(1)
+            .min(-2);
         *self.vfs_volumes = volumes;
     }
 
@@ -90065,6 +90072,8 @@ pub(crate) mod tests {
         native.attach_process_context(&mut context);
         let executing_directories = native.vfs_directories.shared_handle();
         let executing_volumes = native.vfs_volumes.shared_handle();
+        let executing_next_volume_ref_num =
+            native.next_vfs_volume_ref_num.shared_handle();
         let executing_next_dir_id = native.next_vfs_dir_id.shared_handle();
         let executing_default_dir_id = native.default_dir_id.shared_handle();
         let executing_working_directories = native.working_directories.shared_handle();
@@ -90111,6 +90120,13 @@ pub(crate) mod tests {
         });
         *native.next_vfs_dir_id = PPC_FIRST_DYNAMIC_DIR_ID + 1;
         *native.default_dir_id = PPC_FIRST_DYNAMIC_DIR_ID;
+
+        // Volume records are canonical process state, so the classic adapter
+        // observes this native mutation before any catalogue publication pass.
+        assert_eq!(
+            classic.vfs_volume_for_ref_num(-2).map(|volume| volume.name.as_str()),
+            Some("Read Only")
+        );
         native.process_file_system.publish_native_vfs_catalogue();
 
         assert_eq!(
@@ -90142,6 +90158,15 @@ pub(crate) mod tests {
             PPC_FIRST_DYNAMIC_DIR_ID + 3,
             10,
             11,
+        );
+        assert_eq!(
+            native
+                .process_file_system
+                .vfs_volumes
+                .iter()
+                .find(|volume| volume.ref_num == classic_volume_ref)
+                .map(|volume| volume.name.as_str()),
+            Some("Classic Disk")
         );
         classic
             .vfs
@@ -90195,8 +90220,10 @@ pub(crate) mod tests {
         assert!(executing_volumes.iter().any(|volume| {
             volume.ref_num == classic_volume_ref && volume.name == "Classic Disk"
         }));
+        assert_eq!(*executing_next_volume_ref_num, classic_volume_ref - 1);
         assert_eq!(*executing_next_dir_id, *classic.next_vfs_dir_id);
         assert_eq!(*executing_default_dir_id, classic_dir_id);
+        assert_eq!(*detached.next_vfs_volume_ref_num, -2);
         assert!(!detached
             .vfs_directories
             .iter()
@@ -90215,6 +90242,9 @@ pub(crate) mod tests {
         run_test_import(&mut native, PpcImportDispatcherTarget::GetEOF);
         assert!(native.vfs_directories.ptr_eq(&executing_directories));
         assert!(native.vfs_volumes.ptr_eq(&executing_volumes));
+        assert!(native
+            .next_vfs_volume_ref_num
+            .ptr_eq(&executing_next_volume_ref_num));
         assert!(native.next_vfs_dir_id.ptr_eq(&executing_next_dir_id));
         assert!(native.default_dir_id.ptr_eq(&executing_default_dir_id));
         let classic_file = native

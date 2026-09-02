@@ -2962,7 +2962,7 @@ fn ppc_diagnostic_vfs(
 
     let mut volumes = dispatcher
         .vfs_volumes
-        .values()
+        .iter()
         .map(|volume| PpcVfsVolumeRecord {
             ref_num: volume.ref_num,
             name: volume.name.clone(),

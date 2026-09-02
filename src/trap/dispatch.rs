@@ -1945,9 +1945,7 @@ pub struct TrapDispatcher {
     /// Reverse directory lookup by catalog ID.
     pub(crate) vfs_directory_paths: SharedProcessValue<HashMap<u32, String>>,
     /// Read-only disk-image volumes mounted alongside the synthetic boot volume.
-    pub(crate) vfs_volumes: SharedProcessValue<HashMap<i16, VfsVolume>>,
-    /// Mounted volume lookup by normalized, case-insensitive name.
-    pub(crate) vfs_volume_names: SharedProcessValue<HashMap<String, i16>>,
+    pub(crate) vfs_volumes: SharedProcessValue<Vec<VfsVolume>>,
     /// Open working directories keyed by working directory reference number.
     pub(crate) working_directories:
         SharedProcessValue<HashMap<i16, WorkingDirectory>>,
@@ -2772,6 +2770,11 @@ impl TrapDispatcher {
             .process_file_system
             .application_working_directory_ref_num
             .shared_handle();
+        self.vfs_volumes = self.process_file_system.vfs_volumes.shared_handle();
+        self.next_vfs_volume_ref_num = self
+            .process_file_system
+            .next_vfs_volume_ref_num
+            .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
@@ -2805,11 +2808,8 @@ impl TrapDispatcher {
             &mut self.vfs_metadata,
             &mut self.vfs_directories,
             &mut self.vfs_directory_paths,
-            &mut self.vfs_volumes,
-            &mut self.vfs_volume_names,
             &mut self.locked_files,
             &mut self.next_vfs_dir_id,
-            &mut self.next_vfs_volume_ref_num,
             &mut self.next_vfs_file_id,
             &mut self.next_vfs_timestamp,
             &mut self.default_dir_id,
@@ -3700,6 +3700,10 @@ impl TrapDispatcher {
         let app_wd_refnum = process_file_system
             .application_working_directory_ref_num
             .shared_handle();
+        let vfs_volumes = process_file_system.vfs_volumes.shared_handle();
+        let next_vfs_volume_ref_num = process_file_system
+            .next_vfs_volume_ref_num
+            .shared_handle();
         let file_positions = process_file_system.files.positions();
 
         let mut dispatcher = Self {
@@ -3777,8 +3781,7 @@ impl TrapDispatcher {
             vfs_metadata: SharedProcessValue::default(),
             vfs_directories: SharedProcessValue::from_value(vfs_directories),
             vfs_directory_paths: SharedProcessValue::from_value(vfs_directory_paths),
-            vfs_volumes: SharedProcessValue::default(),
-            vfs_volume_names: SharedProcessValue::default(),
+            vfs_volumes,
             working_directories,
             open_files,
             synthetic_drivers: HashMap::new(),
@@ -3793,7 +3796,7 @@ impl TrapDispatcher {
             default_os_rec: 0x0001,           // Macintosh Operating System
             default_startup_rec: 0x0000_0000, // zero-filled first-device startup default
             next_vfs_dir_id: SharedProcessValue::from_value(16),
-            next_vfs_volume_ref_num: SharedProcessValue::from_value(-2),
+            next_vfs_volume_ref_num,
             next_vfs_file_id: SharedProcessValue::from_value(32),
             next_vfs_timestamp: SharedProcessValue::from_value(1),
             next_working_dir_refnum,
@@ -4540,58 +4543,61 @@ impl TrapDispatcher {
         if normalized.is_empty() || normalized.eq_ignore_ascii_case(BOOT_VOLUME_NAME) {
             return Self::boot_volume_ref_num();
         }
-        let key = normalized.to_ascii_lowercase();
-        if let Some(ref_num) = self.vfs_volume_names.get(&key).copied() {
-            return ref_num;
+        if let Some(volume) = self
+            .vfs_volumes
+            .iter()
+            .find(|volume| volume.name.eq_ignore_ascii_case(&normalized))
+        {
+            return volume.ref_num;
         }
 
         let root_dir_id = self.ensure_vfs_directory(&normalized);
         let mut ref_num = *self.next_vfs_volume_ref_num;
         while ref_num == 0
             || ref_num == Self::boot_volume_ref_num()
-            || self.vfs_volumes.contains_key(&ref_num)
+            || self
+                .vfs_volumes
+                .iter()
+                .any(|volume| volume.ref_num == ref_num)
         {
             ref_num = ref_num.saturating_sub(1);
         }
         *self.next_vfs_volume_ref_num = ref_num.saturating_sub(1);
-        self.vfs_volumes.insert(
+        self.vfs_volumes.push(VfsVolume {
             ref_num,
-            VfsVolume {
-                ref_num,
-                name: normalized,
-                root_dir_id,
-                // Extracted images are immutable media. Report the VCB's
-                // hardware-lock bit so PBHGetVInfo agrees with mutations,
-                // which return wPrErr (hardware volume lock). Inside
-                // Macintosh: Files, pp. 2-127, 2-144, and 2-329.
-                attributes: attributes | 0x0080,
-                file_count,
-                allocation_block_count,
-                allocation_block_size,
-                clump_size,
-                free_blocks,
-                bitmap_start,
-                allocation_pointer,
-                allocation_start,
-                next_catalog_id,
-                created_date,
-                modified_date,
-            },
-        );
-        self.vfs_volume_names.insert(key, ref_num);
-        self.process_file_system.publish_classic_vfs_volume(ref_num);
+            name: normalized,
+            root_dir_id,
+            // Extracted images are immutable media. Report the VCB's
+            // hardware-lock bit so PBHGetVInfo agrees with mutations,
+            // which return wPrErr (hardware volume lock). Inside
+            // Macintosh: Files, pp. 2-127, 2-144, and 2-329.
+            attributes: attributes | 0x0080,
+            file_count,
+            allocation_block_count,
+            allocation_block_size,
+            clump_size,
+            free_blocks,
+            bitmap_start,
+            allocation_pointer,
+            allocation_start,
+            next_catalog_id,
+            created_date,
+            modified_date,
+        });
         ref_num
     }
 
     pub(crate) fn vfs_volume_by_name(&self, name: &str) -> Option<&VfsVolume> {
-        let key = Self::normalize_vfs_path(name).to_ascii_lowercase();
-        self.vfs_volume_names
-            .get(&key)
-            .and_then(|ref_num| self.vfs_volumes.get(ref_num))
+        let normalized = Self::normalize_vfs_path(name);
+        self.vfs_volumes
+            .iter()
+            .find(|volume| volume.name.eq_ignore_ascii_case(&normalized))
     }
 
     pub(crate) fn vfs_volume_for_ref_num(&self, ref_num: i16) -> Option<&VfsVolume> {
-        self.vfs_volumes.get(&ref_num)
+        self.vfs_volumes
+            .iter()
+            .find(|volume| volume.ref_num == ref_num)
     }
 
     pub(crate) fn vfs_volume_for_path(&self, path: &str) -> Option<&VfsVolume> {
@@ -5038,7 +5044,11 @@ impl TrapDispatcher {
         if vref == Self::boot_volume_ref_num() {
             return vref;
         }
-        if self.vfs_volumes.contains_key(&vref) {
+        if self
+            .vfs_volumes
+            .iter()
+            .any(|volume| volume.ref_num == vref)
+        {
             return vref;
         }
         if let Some(working_directory) = self.working_directories.get(&vref) {
@@ -5052,7 +5062,7 @@ impl TrapDispatcher {
         // ioDirID is 0 or 1, and they treat vRefNum=0 + ioDirID=0 as the
         // current default directory. Files 1992, 2-151 to 2-153.
         if dir_id <= 1 {
-            if let Some(volume) = self.vfs_volumes.get(&vref) {
+            if let Some(volume) = self.vfs_volume_for_ref_num(vref) {
                 return volume.root_dir_id;
             }
             if let Some(working_directory) = self.working_directories.get(&vref) {
