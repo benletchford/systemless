@@ -17,7 +17,7 @@ use crate::sound::SoundManager;
 use crate::text_edit::ProcessTextEditManagerState;
 use ppc::PpcMemory;
 use std::cell::{RefCell, RefMut, UnsafeCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -846,12 +846,23 @@ impl ProcessResourceManagerState {
 /// native and classic adapters converge on the same mutations during nested
 /// Mixed Mode calls. Inside Macintosh: Files (1992), pp. 1-7--1-9; Inside
 /// Macintosh Volume I (1985), pp. I-109--I-110.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PendingFileCompletion {
+    pub(crate) parameter_block: u32,
+    pub(crate) completion_addr: u32,
+    pub(crate) result: i16,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessFileSystemState {
     pub(crate) files: SharedProcessOpenFiles,
     /// Access paths granted write permission, shared by both CPU adapters.
     /// Inside Macintosh: Files (1992), pp. 2-7--2-8.
     pub(crate) writable_refnums: SharedProcessValue<HashSet<u16>>,
+    /// Completed asynchronous requests awaiting `ioResult` publication and
+    /// optional completion-procedure delivery. Inside Macintosh: Files
+    /// (1992), p. 2-238.
+    pub(crate) pending_completions: SharedProcessValue<VecDeque<PendingFileCompletion>>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
@@ -878,6 +889,7 @@ impl Default for ProcessFileSystemState {
         Self {
             files: SharedProcessOpenFiles::default(),
             writable_refnums: SharedProcessValue::default(),
+            pending_completions: SharedProcessValue::default(),
             stdio_streams: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
             vfs_directories: SharedProcessValue::default(),
@@ -912,6 +924,10 @@ impl ProcessFileSystemState {
         if !Rc::ptr_eq(&self.writable_refnums.0, &source.writable_refnums.0) {
             self.writable_refnums
                 .extend(std::mem::take(&mut *source.writable_refnums));
+        }
+        if !Rc::ptr_eq(&self.pending_completions.0, &source.pending_completions.0) {
+            self.pending_completions
+                .extend(std::mem::take(&mut *source.pending_completions));
         }
         for (stream, record) in std::mem::take(&mut source.stdio_streams) {
             self.stdio_streams.entry(stream).or_insert(record);
@@ -6174,6 +6190,56 @@ mod tests {
         assert_eq!(detached.vfs_volumes[0].file_count, 1);
         assert_eq!(detached.next_vfs_dir_id, 16);
         assert_eq!(detached.default_dir_id, 2);
+    }
+
+    #[test]
+    fn attached_file_systems_share_completion_fifo_while_clones_detach() {
+        let first_completion = PendingFileCompletion {
+            parameter_block: 0x1000,
+            completion_addr: 0x2000,
+            result: 0,
+        };
+        let second_completion = PendingFileCompletion {
+            parameter_block: 0x3000,
+            completion_addr: 0x4000,
+            result: -39,
+        };
+        let third_completion = PendingFileCompletion {
+            parameter_block: 0x5000,
+            completion_addr: 0x6000,
+            result: -51,
+        };
+
+        let mut process_state = ProcessFileSystemState::default();
+        process_state.pending_completions.push_back(first_completion);
+        let context = ProcessContext::with_file_system(
+            SharedProcessFileSystem::from_state(process_state),
+        );
+
+        let mut adapter_state = ProcessFileSystemState::default();
+        adapter_state
+            .pending_completions
+            .push_back(second_completion);
+        let mut first = SharedProcessFileSystem::from_state(adapter_state);
+        let mut second = SharedProcessFileSystem::default();
+        context.attach_file_system(&mut first);
+        context.attach_file_system(&mut second);
+
+        assert!(first
+            .pending_completions
+            .ptr_eq(&second.pending_completions));
+        second.pending_completions.push_back(third_completion);
+        let mut detached = second.clone();
+
+        assert_eq!(first.pending_completions.pop_front(), Some(first_completion));
+        assert_eq!(first.pending_completions.pop_front(), Some(second_completion));
+        assert_eq!(first.pending_completions.pop_front(), Some(third_completion));
+        assert!(second.pending_completions.is_empty());
+        assert_eq!(
+            detached.pending_completions.pop_front(),
+            Some(first_completion)
+        );
+        assert_eq!(detached.pending_completions.len(), 2);
     }
 
     #[test]

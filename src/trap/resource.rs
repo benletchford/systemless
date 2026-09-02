@@ -4135,7 +4135,7 @@ impl super::TrapDispatcher {
                 if async_call {
                     let result = cpu.read_reg(Register::D0) as i16;
                     self.pending_file_completions.push_back(
-                        super::dispatch::PendingFileCompletion {
+                        crate::process_context::PendingFileCompletion {
                             parameter_block: pb,
                             completion_addr,
                             result,
@@ -15095,7 +15095,7 @@ mod tests {
         assert_eq!(bus.read_bytes(read_buf, 4), vec![10, 20, 30, 40]);
         assert_eq!(
             disp.pending_file_completions.pop_front(),
-            Some(super::super::dispatch::PendingFileCompletion {
+            Some(crate::process_context::PendingFileCompletion {
                 parameter_block: pb,
                 completion_addr,
                 result: 0,

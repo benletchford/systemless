@@ -14,8 +14,9 @@ use crate::managers::resource::ResourceFork;
 use crate::memory::{MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::process_context::{
-    ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap, ProcessKeyRepeatState,
-    ProcessLoadedResources, ProcessResourceFileMap, ProcessResourceManagerState,
+    PendingFileCompletion, ProcessClassicVfsDirectory, ProcessContext, ProcessForkMap,
+    ProcessKeyRepeatState, ProcessLoadedResources, ProcessResourceFileMap,
+    ProcessResourceManagerState,
     ProcessVfsMetadata, ProcessVfsVolumeRecord, SharedProcessAppleEventHandlers,
     SharedProcessControlManager, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessEventQueue, SharedProcessFileSystem, SharedProcessInputState,
@@ -109,13 +110,6 @@ pub(crate) struct RecentFileRead {
     pub(crate) buffer: u32,
     pub(crate) start: usize,
     pub(crate) bytes_read: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PendingFileCompletion {
-    pub(crate) parameter_block: u32,
-    pub(crate) completion_addr: u32,
-    pub(crate) result: i16,
 }
 
 // Env-var lookups are cached via OnceLock. Tests/diagnostics that want
@@ -1979,7 +1973,7 @@ pub struct TrapDispatcher {
     pub(crate) recent_file_read: Option<RecentFileRead>,
     /// Completed asynchronous File Manager requests awaiting `ioResult`
     /// publication and optional completion-procedure delivery.
-    pub(crate) pending_file_completions: VecDeque<PendingFileCompletion>,
+    pub(crate) pending_file_completions: SharedProcessValue<VecDeque<PendingFileCompletion>>,
     /// Set of VFS keys whose `ioFlAttrib` lock bit is set.
     /// Maintained by SetFilLock/HSetFLock ($A041/$A241) and
     /// RstFilLock/HRstFLock ($A042/$A242); read by
@@ -2767,6 +2761,10 @@ impl TrapDispatcher {
         context.attach_file_system(&mut self.process_file_system);
         self.open_files = self.process_file_system.files.shared_handle();
         self.write_refnums = self.process_file_system.writable_refnums.shared_handle();
+        self.pending_file_completions = self
+            .process_file_system
+            .pending_completions
+            .shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
@@ -3687,6 +3685,7 @@ impl TrapDispatcher {
         let process_file_system = SharedProcessFileSystem::default();
         let open_files = process_file_system.files.shared_handle();
         let write_refnums = process_file_system.writable_refnums.shared_handle();
+        let pending_file_completions = process_file_system.pending_completions.shared_handle();
         let file_positions = process_file_system.files.positions();
 
         let mut dispatcher = Self {
@@ -3773,7 +3772,7 @@ impl TrapDispatcher {
             write_refnums,
             file_positions,
             recent_file_read: None,
-            pending_file_completions: VecDeque::new(),
+            pending_file_completions,
             locked_files: SharedProcessValue::default(),
             mmu_mode: 1,                      // true32b — 32-bit addressing by default
             default_video_rec: 0x0000,        // no default video device selected
@@ -11058,6 +11057,28 @@ mod tests {
         assert!(context.event_queue().menu_bar_is_invalid());
         assert_eq!(dispatcher.event_queue.len(), 2);
         assert!(dispatcher.event_queue.menu_bar_is_invalid());
+    }
+
+    #[test]
+    fn attached_dispatchers_share_file_completion_queue_immediately() {
+        let completion = PendingFileCompletion {
+            parameter_block: 0x1000,
+            completion_addr: 0x2000,
+            result: -39,
+        };
+        let mut context = ProcessContext::default();
+        let mut first = TrapDispatcher::new();
+        let mut second = TrapDispatcher::new();
+
+        first.attach_process_context(&mut context);
+        second.attach_process_context(&mut context);
+        assert!(first
+            .pending_file_completions
+            .ptr_eq(&second.pending_file_completions));
+
+        first.pending_file_completions.push_back(completion);
+        assert_eq!(second.pending_file_completions.pop_front(), Some(completion));
+        assert!(first.pending_file_completions.is_empty());
     }
 
     #[test]
