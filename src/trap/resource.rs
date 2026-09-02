@@ -4201,6 +4201,13 @@ impl super::TrapDispatcher {
                     return Some(Ok(()));
                 }
 
+                if !self.write_refnums.contains(&ref_num) {
+                    bus.write_long(pb + 40, 0);
+                    bus.write_word(pb + 16, (-61i16) as u16); // wrPermErr
+                    cpu.write_reg(Register::D0, (-61i32) as u32);
+                    return Some(Ok(()));
+                }
+
                 let (new_pos, host_sync_bytes) = {
                     let file_buf = self.vfs.entry(filename.clone()).or_default();
                     let file_len = file_buf.len();
@@ -5661,6 +5668,7 @@ impl super::TrapDispatcher {
                     for refnum in stale_refs {
                         self.open_files.remove(&refnum);
                         self.file_positions.remove(&refnum);
+                        self.write_refnums.remove(&refnum);
                     }
 
                     if let Some(ref dir) = self.output_dir {
@@ -6021,6 +6029,12 @@ impl super::TrapDispatcher {
                 if self.vfs_path_is_read_only(&filename) {
                     bus.write_word(pb + 16, (-44i16) as u16); // wPrErr
                     cpu.write_reg(Register::D0, (-44i32) as u32);
+                    return Some(Ok(()));
+                }
+
+                if !self.write_refnums.contains(&ref_num) {
+                    bus.write_word(pb + 16, (-61i16) as u16); // wrPermErr
+                    cpu.write_reg(Register::D0, (-61i32) as u32);
                     return Some(Ok(()));
                 }
 
@@ -14940,6 +14954,18 @@ mod tests {
             0,
             "ioFCBFlags bit 8 stays clear for a read-only access path"
         );
+
+        let write_buffer = 0x310000;
+        bus.write_word(pb + 24, refnum);
+        bus.write_long(pb + 32, write_buffer);
+        bus.write_long(pb + 36, 1);
+        bus.write_byte(write_buffer, 9);
+        call(&mut disp, false, 0x03, &mut cpu, &mut bus).unwrap();
+
+        assert_eq!(cpu.read_reg(Register::D0) as i32, -61);
+        assert_eq!(bus.read_word(pb + 16) as i16, -61);
+        assert_eq!(bus.read_long(pb + 40), 0);
+        assert_eq!(disp.vfs.get("Read Only Stack").unwrap(), &[1, 2, 3, 4]);
     }
 
     #[test]
@@ -15263,6 +15289,7 @@ mod tests {
 
         disp.vfs.insert("WriteMe".to_string(), Vec::new());
         disp.open_files.insert(100, "WriteMe".to_string());
+        disp.write_refnums.insert(100);
         disp.file_positions.insert(100, 0);
 
         let pb = 0x300000u32;
@@ -15339,6 +15366,7 @@ mod tests {
         disp.vfs
             .insert("WriteMe".to_string(), vec![0x11, 0x22, 0x33, 0x44]);
         disp.open_files.insert(100, "WriteMe".to_string());
+        disp.write_refnums.insert(100);
         disp.file_positions.insert(100, 4);
 
         let pb = 0x300000u32;
@@ -15374,6 +15402,7 @@ mod tests {
         disp.vfs
             .insert("WriteMe".to_string(), vec![0x11, 0x22, 0x33, 0x44]);
         disp.open_files.insert(100, "WriteMe".to_string());
+        disp.write_refnums.insert(100);
         disp.file_positions.insert(100, 1);
 
         let pb = 0x300000u32;
@@ -15409,6 +15438,7 @@ mod tests {
         disp.vfs_rsrc
             .insert("InstallerTemp".to_string(), Vec::new());
         disp.open_files.insert(101, rsrc_key);
+        disp.write_refnums.insert(101);
         disp.file_positions.insert(101, 0);
 
         let pb = 0x300000u32;
@@ -17550,6 +17580,7 @@ mod tests {
         disp.vfs
             .insert("EOFSet".to_string(), vec![0xAA, 0xBB, 0xCC, 0xDD]);
         disp.open_files.insert(100, "EOFSet".to_string());
+        disp.write_refnums.insert(100);
         disp.file_positions.insert(100, 4);
 
         let pb = 0x300000u32;

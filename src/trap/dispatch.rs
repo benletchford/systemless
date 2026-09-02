@@ -1969,9 +1969,10 @@ pub struct TrapDispatcher {
     /// Guest SndChannel storage used by writes to the ROM Sound Driver
     /// reference number (-4). Allocated lazily on the first StartSound write.
     pub(crate) legacy_sound_driver_channel: Option<u32>,
-    /// Refnums opened with write permission (fsRdWrPerm=3 or fsWrPerm=2).
-    /// Used to enforce opWrErr (-49) per IM:Files 9578.
-    pub(crate) write_refnums: std::collections::HashSet<u16>,
+    /// Process-owned refnums whose access paths grant write permission.
+    /// Files 1992, pp. 2-7--2-8 and 2-121 defines permission as access-path
+    /// state and `wrPermErr` (-61) for writes through a read-only path.
+    pub(crate) write_refnums: SharedProcessValue<std::collections::HashSet<u16>>,
     /// File position table: refnum -> current byte offset
     pub(crate) file_positions: SharedProcessOpenFilePositions,
     /// Most recent successful PBRead/FSRead from a data fork.
@@ -2765,6 +2766,7 @@ impl TrapDispatcher {
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
         context.attach_file_system(&mut self.process_file_system);
         self.open_files = self.process_file_system.files.shared_handle();
+        self.write_refnums = self.process_file_system.writable_refnums.shared_handle();
         self.file_positions = self.process_file_system.files.positions();
         context.attach_resource_manager(&mut self.process_resource_manager);
         context.attach_sound_manager(&mut self.sound_manager);
@@ -3684,6 +3686,7 @@ impl TrapDispatcher {
 
         let process_file_system = SharedProcessFileSystem::default();
         let open_files = process_file_system.files.shared_handle();
+        let write_refnums = process_file_system.writable_refnums.shared_handle();
         let file_positions = process_file_system.files.positions();
 
         let mut dispatcher = Self {
@@ -3767,7 +3770,7 @@ impl TrapDispatcher {
             open_files,
             synthetic_drivers: HashMap::new(),
             legacy_sound_driver_channel: None,
-            write_refnums: HashSet::new(),
+            write_refnums,
             file_positions,
             recent_file_read: None,
             pending_file_completions: VecDeque::new(),

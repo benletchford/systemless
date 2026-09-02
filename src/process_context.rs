@@ -849,6 +849,9 @@ impl ProcessResourceManagerState {
 #[derive(Debug, Clone)]
 pub struct ProcessFileSystemState {
     pub(crate) files: SharedProcessOpenFiles,
+    /// Access paths granted write permission, shared by both CPU adapters.
+    /// Inside Macintosh: Files (1992), pp. 2-7--2-8.
+    pub(crate) writable_refnums: SharedProcessValue<HashSet<u16>>,
     pub(crate) stdio_streams: HashMap<u32, ProcessStdioStreamRecord>,
     pub(crate) vfs_volumes: SharedProcessValue<Vec<ProcessVfsVolumeRecord>>,
     pub(crate) vfs_directories: SharedProcessValue<Vec<ProcessVfsDirectory>>,
@@ -874,6 +877,7 @@ impl Default for ProcessFileSystemState {
     fn default() -> Self {
         Self {
             files: SharedProcessOpenFiles::default(),
+            writable_refnums: SharedProcessValue::default(),
             stdio_streams: HashMap::new(),
             vfs_volumes: SharedProcessValue::default(),
             vfs_directories: SharedProcessValue::default(),
@@ -904,6 +908,10 @@ impl ProcessFileSystemState {
         );
         if self.files.is_empty() {
             self.files = std::mem::take(&mut source.files);
+        }
+        if !Rc::ptr_eq(&self.writable_refnums.0, &source.writable_refnums.0) {
+            self.writable_refnums
+                .extend(std::mem::take(&mut *source.writable_refnums));
         }
         for (stream, record) in std::mem::take(&mut source.stdio_streams) {
             self.stdio_streams.entry(stream).or_insert(record);
