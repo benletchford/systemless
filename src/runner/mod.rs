@@ -1737,6 +1737,12 @@ impl FixtureRunner {
         self.pending_q3_gpu_frame.take()
     }
 
+    /// Returns the number of non-empty QuickDraw 3D frames completed by the
+    /// guest and consumed by either the software or external renderer.
+    pub fn completed_qd3d_frame_count(&self) -> usize {
+        self.q3_completed_frame_index
+    }
+
     /// Returns true once guest execution has stopped.
     pub fn is_halted(&self) -> bool {
         self.halted
