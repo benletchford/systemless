@@ -10,7 +10,7 @@ use crate::event_queue::EventQueue;
 use crate::guest_call::SharedGuestCallStack;
 use crate::guest_procedure::GuestProcedure;
 use crate::list_manager::ProcessListManagerState;
-use crate::memory::bus::{SharedClassicHeapAllocator, SharedRamRegion};
+use crate::memory::bus::SharedRamRegion;
 use crate::memory::{GuestAddressSpace, MacMemoryBus, MemoryBus};
 use crate::menu_manager::{ProcessMenuTrackingState, SharedNativeMenuSelection};
 use crate::sound::SoundManager;
@@ -1785,6 +1785,266 @@ impl<V: Copy> SharedProcessMap<V> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ClassicHeapAllocatorState {
+    /// Identity of the process Memory Manager that claimed this allocator.
+    owner_id: Option<usize>,
+    /// Heap allocation pointer (grows upward from 0x200000).
+    heap_ptr: u32,
+    /// Free list: maps aligned_size to recycled addresses.
+    free_blocks: HashMap<u32, Vec<u32>>,
+    /// Logical allocation sizes keyed by guest address.
+    alloc_sizes: HashMap<u32, u32>,
+    /// Direct-loaded application image spans that heap allocations must skip.
+    reserved_heap_ranges: Vec<(u32, u32)>,
+    /// Capacity retained when a best-fit recycled block exceeds its request.
+    alloc_bucket_sizes: HashMap<u32, u32>,
+}
+
+impl Default for ClassicHeapAllocatorState {
+    fn default() -> Self {
+        Self {
+            owner_id: None,
+            heap_ptr: 0x20_0000,
+            free_blocks: HashMap::new(),
+            alloc_sizes: HashMap::new(),
+            reserved_heap_ranges: Vec::new(),
+            alloc_bucket_sizes: HashMap::new(),
+        }
+    }
+}
+
+/// Process-owned classic Memory Manager metadata shared by the 68K adapter
+/// and native imports. `MacMemoryBus` only retains an adapter view so it can
+/// materialize and access the guest bytes at the addresses selected here.
+/// Detached process managers clone this state rather than sharing it. Inside
+/// Macintosh: Memory (1992), pp. 2-19--2-21, 2-35--2-44.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SharedClassicHeapAllocator(Rc<RefCell<ClassicHeapAllocatorState>>);
+
+impl SharedClassicHeapAllocator {
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn detached_clone_for_owner(&self, owner_id: usize) -> Self {
+        let mut state = self.0.borrow().clone();
+        state.owner_id = Some(owner_id);
+        Self(Rc::new(RefCell::new(state)))
+    }
+
+    pub(crate) fn claim_owner(&self, owner_id: usize) {
+        let mut state = self.0.borrow_mut();
+        match state.owner_id {
+            Some(existing) => assert_eq!(
+                existing, owner_id,
+                "cannot attach a classic heap owned by another process"
+            ),
+            None => state.owner_id = Some(owner_id),
+        }
+    }
+
+    pub(crate) fn transfer_owner(&self, source_owner_id: usize, target_owner_id: usize) {
+        let mut state = self.0.borrow_mut();
+        assert_eq!(
+            state.owner_id,
+            Some(source_owner_id),
+            "classic heap owner changed before process-manager handoff"
+        );
+        state.owner_id = Some(target_owner_id);
+    }
+
+    pub(crate) fn is_pristine(&self) -> bool {
+        let state = self.0.borrow();
+        state.heap_ptr == 0x20_0000
+            && state.free_blocks.is_empty()
+            && state.alloc_sizes.is_empty()
+            && state.reserved_heap_ranges.is_empty()
+            && state.alloc_bucket_sizes.is_empty()
+    }
+
+    pub(crate) fn replace_pristine_state_from(&self, source: &Self) {
+        assert!(
+            self.is_pristine(),
+            "cannot replace active process-owned classic heap state"
+        );
+        self.replace_state_from(source);
+    }
+
+    pub(crate) fn replace_state_from(&self, source: &Self) {
+        let owner_id = self.0.borrow().owner_id;
+        let mut replacement = source.0.borrow().clone();
+        replacement.owner_id = owner_id;
+        *self.0.borrow_mut() = replacement;
+    }
+
+    pub(crate) fn allocation_size(&self, address: u32) -> Option<u32> {
+        self.0.borrow().alloc_sizes.get(&address).copied()
+    }
+
+    pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
+        ((size + 3) & !3).max(4)
+    }
+
+    fn can_reuse_bucket_for_request(bucket: u32, requested: u32) -> bool {
+        let max_bucket = if requested <= 1024 {
+            4096
+        } else {
+            requested.saturating_mul(2).saturating_add(4096)
+        };
+        bucket <= max_bucket
+    }
+
+    pub(crate) fn reserve_until(&self, end_addr: u32) {
+        let aligned = (end_addr + 3) & !3;
+        let mut state = self.0.borrow_mut();
+        state.heap_ptr = state.heap_ptr.max(aligned);
+    }
+
+    pub(crate) fn reserve_range(&self, start_addr: u32, end_addr: u32) {
+        let start = start_addr & !3;
+        let end = (end_addr.saturating_add(3)) & !3;
+        if start >= end {
+            return;
+        }
+        let mut state = self.0.borrow_mut();
+        state.reserved_heap_ranges.push((start, end));
+        state.reserved_heap_ranges.sort_unstable();
+    }
+
+    fn bump_allocation_address(
+        state: &ClassicHeapAllocatorState,
+        size: u32,
+        alignment: u32,
+    ) -> Option<(u32, u32)> {
+        let mut ptr = (state.heap_ptr + alignment - 1) & !(alignment - 1);
+        loop {
+            let new_ptr = ptr.checked_add(size)?;
+            let overlap = state
+                .reserved_heap_ranges
+                .iter()
+                .find(|&&(start, end)| ptr < end && new_ptr > start);
+            if let Some(&(_, end)) = overlap {
+                ptr = (end + alignment - 1) & !(alignment - 1);
+                continue;
+            }
+            return Some((ptr, new_ptr));
+        }
+    }
+
+    pub(crate) fn allocate(&self, size: u32, alignment: u32, heap_limit: u32) -> u32 {
+        let alignment = if alignment > 4 && alignment.is_power_of_two() {
+            alignment
+        } else {
+            4
+        };
+        let aligned_size = Self::allocation_bucket_size(size);
+        let mut state = self.0.borrow_mut();
+
+        if let Some(blocks) = state.free_blocks.get_mut(&aligned_size) {
+            let index = if alignment == 4 {
+                blocks.len().checked_sub(1)
+            } else {
+                blocks.iter().position(|addr| addr % alignment == 0)
+            };
+            if let Some(index) = index {
+                let addr = blocks.swap_remove(index);
+                state.alloc_sizes.insert(addr, size);
+                let event = if alignment == 4 {
+                    "reuse-exact"
+                } else {
+                    "reuse-exact-aligned"
+                };
+                crate::memory::bus::trace_alloc_event(event, addr, size, aligned_size);
+                return addr;
+            }
+        }
+
+        let best = state
+            .free_blocks
+            .iter()
+            .filter(|(&bucket, blocks)| {
+                bucket > aligned_size
+                    && !blocks.is_empty()
+                    && Self::can_reuse_bucket_for_request(bucket, aligned_size)
+                    && (alignment == 4 || blocks.iter().any(|addr| addr % alignment == 0))
+            })
+            .map(|(&bucket, _)| bucket)
+            .min();
+        if let Some(bucket) = best {
+            let blocks = state
+                .free_blocks
+                .get_mut(&bucket)
+                .expect("free bucket exists");
+            let index = if alignment == 4 {
+                blocks.len() - 1
+            } else {
+                blocks
+                    .iter()
+                    .position(|addr| addr % alignment == 0)
+                    .expect("aligned free block exists")
+            };
+            let addr = blocks.swap_remove(index);
+            state.alloc_sizes.insert(addr, size);
+            state.alloc_bucket_sizes.insert(addr, bucket);
+            let event = if alignment == 4 {
+                "reuse-best"
+            } else {
+                "reuse-best-aligned"
+            };
+            crate::memory::bus::trace_alloc_event(event, addr, size, bucket);
+            return addr;
+        }
+
+        let Some((ptr, new_ptr)) = Self::bump_allocation_address(&state, aligned_size, alignment)
+        else {
+            return 0;
+        };
+        if new_ptr >= heap_limit {
+            eprintln!(
+                "[ALLOC] Out of memory: requesting {} bytes aligned to {}, heap at ${:08X}, limit ${:08X}",
+                size, alignment, ptr, heap_limit
+            );
+            return 0;
+        }
+        state.heap_ptr = new_ptr;
+        state.alloc_sizes.insert(ptr, size);
+        let event = if alignment == 4 {
+            "bump"
+        } else {
+            "bump-aligned"
+        };
+        crate::memory::bus::trace_alloc_event(event, ptr, size, aligned_size);
+        ptr
+    }
+
+    pub(crate) fn heap_bump_ptr(&self) -> u32 {
+        self.0.borrow().heap_ptr
+    }
+
+    pub(crate) fn set_allocation_size(&self, address: u32, size: u32) {
+        let mut state = self.0.borrow_mut();
+        if state.alloc_sizes.contains_key(&address) {
+            state.alloc_sizes.insert(address, size);
+        }
+    }
+
+    pub(crate) fn free(&self, address: u32) {
+        if address == 0 {
+            return;
+        }
+        let mut state = self.0.borrow_mut();
+        if let Some(size) = state.alloc_sizes.remove(&address) {
+            let bucket = state
+                .alloc_bucket_sizes
+                .remove(&address)
+                .unwrap_or_else(|| Self::allocation_bucket_size(size));
+            state.free_blocks.entry(bucket).or_default().push(address);
+            crate::memory::bus::trace_alloc_event("free", address, size, bucket);
+        }
+    }
+}
+
 /// Architecture-neutral Memory Manager metadata for one Macintosh process.
 ///
 /// Guest addresses, rather than CPU adapter records, identify relocatable
@@ -1801,6 +2061,7 @@ pub(crate) struct ProcessMemoryManager {
 /// imports and by the classic Memory Manager bridge.
 #[derive(Debug, Default)]
 pub(crate) struct ProcessNativeMemoryManager {
+    classic_owner: Rc<()>,
     classic_allocator: Option<SharedClassicHeapAllocator>,
     ptr_to_handle: SharedProcessMap<u32>,
     handle_state_bits: SharedProcessMap<u8>,
@@ -1862,8 +2123,14 @@ impl ProcessNativeMemoryManager {
     const PARAM_ERR: i16 = -50;
 
     pub(crate) fn detached_clone(&self) -> Self {
+        let classic_owner = Rc::new(());
+        let classic_owner_id = Rc::as_ptr(&classic_owner) as usize;
         Self {
-            classic_allocator: None,
+            classic_owner,
+            classic_allocator: self
+                .classic_allocator
+                .as_ref()
+                .map(|allocator| allocator.detached_clone_for_owner(classic_owner_id)),
             ptr_to_handle: self.ptr_to_handle.detached_clone(),
             handle_state_bits: self.handle_state_bits.detached_clone(),
             handle_high_locked: self.handle_high_locked.detached_clone(),
@@ -1876,6 +2143,19 @@ impl ProcessNativeMemoryManager {
     }
 
     pub(crate) fn restore_native_snapshot(&mut self, snapshot: Self) {
+        match (&self.classic_allocator, snapshot.classic_allocator) {
+            (Some(current), Some(snapshot)) => current.replace_state_from(&snapshot),
+            (None, Some(snapshot)) => {
+                self.classic_allocator = Some(
+                    snapshot.detached_clone_for_owner(Rc::as_ptr(&self.classic_owner) as usize),
+                );
+            }
+            (Some(current), None) => {
+                current.replace_state_from(&SharedClassicHeapAllocator::default());
+                self.classic_allocator = None;
+            }
+            (None, None) => {}
+        }
         self.ptr_to_handle.replace_from(&snapshot.ptr_to_handle);
         self.handle_state_bits
             .replace_from(&snapshot.handle_state_bits);
@@ -2061,11 +2341,24 @@ impl ProcessNativeMemoryManager {
     /// Adopt the classic heap used by the process's 68K memory-bus adapter.
     ///
     /// The first attached bus contributes its live launch-time allocator;
-    /// later adapters attach to that same process-owned state. Inside
-    /// Macintosh: Memory (1992), pp. 2-19--2-21.
+    /// later adapters attach to that same process-owned state. A populated
+    /// adapter must already expose this process's guest RAM; this handoff moves
+    /// allocator metadata, not guest bytes. Inside Macintosh: Memory (1992),
+    /// pp. 2-19--2-21.
     pub(crate) fn attach_classic_memory_bus(&mut self, bus: &mut MacMemoryBus) {
+        let owner_id = Rc::as_ptr(&self.classic_owner) as usize;
+        let bus_allocator = bus.shared_classic_heap_allocator();
+        bus_allocator.claim_owner(owner_id);
         if let Some(allocator) = &self.classic_allocator {
-            bus.attach_classic_heap_allocator(allocator.clone());
+            if allocator.ptr_eq(&bus_allocator) {
+                return;
+            }
+            if allocator.is_pristine() && !bus_allocator.is_pristine() {
+                allocator.replace_pristine_state_from(&bus_allocator);
+                bus.replace_adopted_classic_heap_allocator(allocator.clone());
+            } else {
+                bus.attach_classic_heap_allocator(allocator.clone());
+            }
         } else {
             self.classic_allocator = Some(bus.shared_classic_heap_allocator());
         }
@@ -2082,11 +2375,27 @@ impl ProcessNativeMemoryManager {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) fn classic_allocation_size(&self, address: u32) -> Option<u32> {
+    fn classic_allocator(&self) -> &SharedClassicHeapAllocator {
         self.classic_allocator
             .as_ref()
-            .and_then(|allocator| allocator.allocation_size(address))
+            .expect("classic Memory Manager operation requires an attached bus")
+    }
+
+    pub(crate) fn classic_heap_bump_ptr(&self) -> u32 {
+        self.classic_allocator().heap_bump_ptr()
+    }
+
+    pub(crate) fn reserve_classic_heap(&mut self, size: u32) {
+        self.classic_allocator()
+            .reserve_until(0x20_0000 + ((size + 3) & !3));
+    }
+
+    pub(crate) fn reserve_classic_heap_range(&mut self, start_addr: u32, end_addr: u32) {
+        self.classic_allocator().reserve_range(start_addr, end_addr);
+    }
+
+    pub(crate) fn classic_allocation_size(&self, address: u32) -> Option<u32> {
+        self.classic_allocator().allocation_size(address)
     }
 
     /// Allocate a classic nonrelocatable block for this process.
@@ -2095,7 +2404,8 @@ impl ProcessNativeMemoryManager {
     /// `memFullErr`. Inside Macintosh: Memory (1992), pp. 2-36--2-37.
     pub(crate) fn new_classic_ptr(&mut self, bus: &mut MacMemoryBus, size: u32) -> u32 {
         self.assert_classic_memory_bus_attached(bus);
-        bus.alloc(size)
+        self.classic_allocator()
+            .allocate(size, 4, bus.classic_heap_limit())
     }
 
     /// Release a native or classic nonrelocatable block owned by this process.
@@ -2116,7 +2426,7 @@ impl ProcessNativeMemoryManager {
         {
             self.dispose_native_ptr(ptr)
         } else {
-            bus.free(ptr);
+            self.classic_allocator().free(ptr);
             None
         }
     }
@@ -2132,13 +2442,14 @@ impl ProcessNativeMemoryManager {
         size: u32,
     ) -> Result<(u32, u32), i16> {
         self.assert_classic_memory_bus_attached(bus);
-        let ptr = bus.alloc(size);
+        let allocator = self.classic_allocator();
+        let ptr = allocator.allocate(size, 4, bus.classic_heap_limit());
         if ptr == 0 && size > 0 {
             return Err(Self::MEM_FULL_ERR);
         }
-        let handle = bus.alloc(4);
+        let handle = allocator.allocate(4, 4, bus.classic_heap_limit());
         if handle == 0 {
-            bus.free(ptr);
+            allocator.free(ptr);
             return Err(Self::MEM_FULL_ERR);
         }
         bus.write_long(handle, ptr);
@@ -2178,10 +2489,10 @@ impl ProcessNativeMemoryManager {
             }
             return Ok(bus.read_bytes(ptr, record.size as usize));
         }
-        if bus.get_alloc_size(handle) != Some(4) {
+        if self.classic_allocator().allocation_size(handle) != Some(4) {
             return Err(Self::MEM_WZ_ERR);
         }
-        let Some(size) = bus.get_alloc_size(ptr) else {
+        let Some(size) = self.classic_allocator().allocation_size(ptr) else {
             return Err(Self::MEM_WZ_ERR);
         };
         Ok(bus.read_bytes(ptr, size as usize))
@@ -2233,7 +2544,7 @@ impl ProcessNativeMemoryManager {
                 .replace_native_handle_bytes(bus, handle, record.ptr, bytes)
                 .map_or_else(|error| error, |_| Self::NO_ERR);
         }
-        if bus.get_alloc_size(handle) != Some(4) {
+        if self.classic_allocator().allocation_size(handle) != Some(4) {
             return Self::MEM_WZ_ERR;
         }
         let Ok(size) = u32::try_from(bytes.len()) else {
@@ -2291,7 +2602,9 @@ impl ProcessNativeMemoryManager {
     /// Memory (1992), pp. 2-33--2-34.
     pub(crate) fn new_empty_classic_handle(&mut self, bus: &mut MacMemoryBus) -> Result<u32, i16> {
         self.assert_classic_memory_bus_attached(bus);
-        let handle = bus.alloc(4);
+        let handle = self
+            .classic_allocator()
+            .allocate(4, 4, bus.classic_heap_limit());
         if handle == 0 {
             return Err(Self::MEM_FULL_ERR);
         }
@@ -2317,9 +2630,9 @@ impl ProcessNativeMemoryManager {
         }
         let ptr = bus.read_long(handle);
         if dispose_data {
-            bus.free(ptr);
+            self.classic_allocator().free(ptr);
         }
-        bus.free(handle);
+        self.classic_allocator().free(handle);
         self.handle_state_bits.remove(&handle);
         self.handle_high_locked.remove(&handle);
     }
@@ -2383,7 +2696,7 @@ impl ProcessNativeMemoryManager {
             .as_ref()
             .and_then(|allocator| allocator.ptrs.iter().find(|record| record.ptr == ptr))
             .map(|record| record.size)
-            .or_else(|| bus.get_alloc_size(ptr))
+            .or_else(|| self.classic_allocator().allocation_size(ptr))
     }
 
     /// Change a native or classic nonrelocatable block's logical size without
@@ -2409,10 +2722,10 @@ impl ProcessNativeMemoryManager {
                     .and_then(|allocator| allocator.ptrs.get(index))
                     .map(|record| record.size)
             })
-            .or_else(|| bus.get_alloc_size(ptr))
+            .or_else(|| self.classic_allocator().allocation_size(ptr))
             .unwrap_or(0);
-        if MacMemoryBus::allocation_bucket_size(new_size)
-            > MacMemoryBus::allocation_bucket_size(old_size)
+        if SharedClassicHeapAllocator::allocation_bucket_size(new_size)
+            > SharedClassicHeapAllocator::allocation_bucket_size(old_size)
         {
             return Self::MEM_FULL_ERR;
         }
@@ -2428,7 +2741,7 @@ impl ProcessNativeMemoryManager {
             allocator.heap.last_mem_error = Self::NO_ERR;
             self.native_allocator_dirty = true;
         } else {
-            bus.set_alloc_size(ptr, new_size);
+            self.classic_allocator().set_allocation_size(ptr, new_size);
         }
         Self::NO_ERR
     }
@@ -2444,7 +2757,7 @@ impl ProcessNativeMemoryManager {
             .or_else(|| {
                 (handle != 0)
                     .then(|| bus.read_long(handle))
-                    .and_then(|ptr| bus.get_alloc_size(ptr))
+                    .and_then(|ptr| self.classic_allocator().allocation_size(ptr))
             })
     }
 
@@ -2516,20 +2829,26 @@ impl ProcessNativeMemoryManager {
         }
 
         let old_ptr = bus.read_long(handle);
-        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
+        let old_size = self
+            .classic_allocator()
+            .allocation_size(old_ptr)
+            .unwrap_or(0);
         if old_size == new_size
             || (old_ptr != 0
-                && MacMemoryBus::allocation_bucket_size(new_size)
-                    == MacMemoryBus::allocation_bucket_size(old_size))
+                && SharedClassicHeapAllocator::allocation_bucket_size(new_size)
+                    == SharedClassicHeapAllocator::allocation_bucket_size(old_size))
         {
             if new_size < old_size {
                 bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
             }
-            bus.set_alloc_size(old_ptr, new_size);
+            self.classic_allocator()
+                .set_allocation_size(old_ptr, new_size);
             return Self::NO_ERR;
         }
 
-        let new_ptr = bus.alloc(new_size);
+        let new_ptr = self
+            .classic_allocator()
+            .allocate(new_size, 4, bus.classic_heap_limit());
         if new_ptr == 0 && new_size > 0 {
             return Self::MEM_FULL_ERR;
         }
@@ -2538,7 +2857,7 @@ impl ProcessNativeMemoryManager {
             let bytes = bus.read_bytes(old_ptr, copy_len);
             bus.write_bytes(new_ptr, &bytes);
         }
-        bus.free(old_ptr);
+        self.classic_allocator().free(old_ptr);
         bus.write_long(handle, new_ptr);
         self.ptr_to_handle.remove(&old_ptr);
         self.ptr_to_handle.insert(new_ptr, handle);
@@ -2600,7 +2919,7 @@ impl ProcessNativeMemoryManager {
             return Ok((old_ptr, new_ptr));
         }
 
-        if bus.get_alloc_size(handle) != Some(4) {
+        if self.classic_allocator().allocation_size(handle) != Some(4) {
             return Err(Self::MEM_WZ_ERR);
         }
         let live_ptr = bus.read_long(handle);
@@ -2608,18 +2927,24 @@ impl ProcessNativeMemoryManager {
         if old_ptr == 0 && new_size == 0 {
             return Ok((0, 0));
         }
-        let old_size = bus.get_alloc_size(old_ptr).unwrap_or(0);
-        let old_capacity = MacMemoryBus::allocation_bucket_size(old_size);
-        let new_capacity = MacMemoryBus::allocation_bucket_size(new_size);
+        let old_size = self
+            .classic_allocator()
+            .allocation_size(old_ptr)
+            .unwrap_or(0);
+        let old_capacity = SharedClassicHeapAllocator::allocation_bucket_size(old_size);
+        let new_capacity = SharedClassicHeapAllocator::allocation_bucket_size(new_size);
         if old_ptr != 0 && new_capacity <= old_capacity {
             if new_size < old_size {
                 bus.fill_zeros(old_ptr.wrapping_add(new_size), old_size - new_size);
             }
-            bus.set_alloc_size(old_ptr, new_size);
+            self.classic_allocator()
+                .set_allocation_size(old_ptr, new_size);
             return Ok((old_ptr, old_ptr));
         }
 
-        let new_ptr = bus.alloc(new_size);
+        let new_ptr = self
+            .classic_allocator()
+            .allocate(new_size, 4, bus.classic_heap_limit());
         if new_ptr == 0 && new_size > 0 {
             return Err(Self::MEM_FULL_ERR);
         }
@@ -2628,7 +2953,7 @@ impl ProcessNativeMemoryManager {
             let bytes = bus.read_bytes(old_ptr, copy_len);
             bus.write_bytes(new_ptr, &bytes);
         }
-        bus.free(old_ptr);
+        self.classic_allocator().free(old_ptr);
         bus.write_long(handle, new_ptr);
         if old_ptr != 0 {
             self.ptr_to_handle.remove(&old_ptr);
@@ -2658,7 +2983,9 @@ impl ProcessNativeMemoryManager {
         }
 
         let native_record = self.native_allocation(handle);
-        if native_record.is_none() && (handle == 0 || bus.get_alloc_size(handle) != Some(4)) {
+        if native_record.is_none()
+            && (handle == 0 || self.classic_allocator().allocation_size(handle) != Some(4))
+        {
             return Err(Self::MEM_WZ_ERR);
         }
 
@@ -2700,13 +3027,15 @@ impl ProcessNativeMemoryManager {
                 true,
             )?
         } else {
-            let new_ptr = bus.alloc(size);
+            let new_ptr = self
+                .classic_allocator()
+                .allocate(size, 4, bus.classic_heap_limit());
             if new_ptr == 0 && size > 0 {
                 return Err(Self::MEM_FULL_ERR);
             }
             bus.fill_bytes(new_ptr, size, 0xA5);
             let old_ptr = bus.read_long(handle);
-            bus.free(old_ptr);
+            self.classic_allocator().free(old_ptr);
             bus.write_long(handle, new_ptr);
             self.ptr_to_handle.remove(&old_ptr);
             self.ptr_to_handle.insert(new_ptr, handle);
@@ -2745,7 +3074,7 @@ impl ProcessNativeMemoryManager {
             return Self::NO_ERR;
         }
 
-        if handle == 0 || bus.get_alloc_size(handle) != Some(4) {
+        if handle == 0 || self.classic_allocator().allocation_size(handle) != Some(4) {
             return Self::MEM_WZ_ERR;
         }
         if self.state_for_handle(handle).unwrap_or(0) & 0x80 != 0 {
@@ -2753,7 +3082,7 @@ impl ProcessNativeMemoryManager {
         }
         let ptr = bus.read_long(handle);
         if ptr != 0 {
-            bus.free(ptr);
+            self.classic_allocator().free(ptr);
             self.ptr_to_handle.remove(&ptr);
         }
         bus.write_long(handle, 0);
@@ -3324,6 +3653,55 @@ impl ProcessNativeMemoryManager {
             Self::NO_ERR
         });
         size
+    }
+
+    /// Return a fixed block's logical size for a native import, including a
+    /// classic block owned by an attached 68K Memory Manager. Native imports
+    /// have no `MacMemoryBus` parameter, so this lookup deliberately consults
+    /// only process-owned metadata. Inside Macintosh: Memory (1992),
+    /// pp. 2-41--2-44.
+    pub(crate) fn process_ptr_size_for_native_import(&mut self, ptr: u32) -> u32 {
+        if let Some(size) = self.native_allocator.as_ref().and_then(|allocator| {
+            allocator
+                .ptrs
+                .iter()
+                .find(|record| record.ptr == ptr)
+                .map(|record| record.size)
+        }) {
+            self.set_native_mem_error(if size == 0 {
+                Self::PARAM_ERR
+            } else {
+                Self::NO_ERR
+            });
+            return size;
+        }
+        if let Some(size) = self
+            .classic_allocator
+            .as_ref()
+            .and_then(|allocator| allocator.allocation_size(ptr))
+        {
+            self.set_native_mem_error(Self::NO_ERR);
+            return size;
+        }
+        self.set_native_mem_error(Self::PARAM_ERR);
+        0
+    }
+
+    /// Dispose a classic fixed block from a native import when the process
+    /// manager owns the classic allocator. The guest bytes remain in the bus
+    /// mapping; only the process-owned allocation metadata moves to its free
+    /// list, matching `DisposePtr`'s classic semantics. Inside Macintosh:
+    /// Memory (1992), pp. 2-38--2-39.
+    pub(crate) fn dispose_classic_ptr_from_native_import(&mut self, ptr: u32) -> bool {
+        let Some(allocator) = self.classic_allocator.as_ref() else {
+            return false;
+        };
+        if allocator.allocation_size(ptr).is_none() {
+            return false;
+        }
+        allocator.free(ptr);
+        self.set_native_mem_error(Self::NO_ERR);
+        true
     }
 
     /// Change the logical size of a native nonrelocatable block in place.
@@ -4166,6 +4544,17 @@ impl ProcessNativeMemoryManager {
     }
 
     pub(crate) fn adopt_handle_metadata(&mut self, source: &mut Self) {
+        if let Some(source_allocator) = source.classic_allocator.as_ref() {
+            assert!(
+                self.classic_allocator.is_none(),
+                "cannot adopt a standalone classic heap into an attached process allocator"
+            );
+            source_allocator.transfer_owner(
+                Rc::as_ptr(&source.classic_owner) as usize,
+                Rc::as_ptr(&self.classic_owner) as usize,
+            );
+            self.classic_allocator = source.classic_allocator.take();
+        }
         if self.ptr_to_handle.ptr_eq(&source.ptr_to_handle)
             && self.handle_state_bits.ptr_eq(&source.handle_state_bits)
             && self.handle_high_locked.ptr_eq(&source.handle_high_locked)
@@ -4284,6 +4673,27 @@ impl ProcessContext {
         self.memory_manager
             .borrow_mut()
             .attach_classic_memory_bus(bus);
+    }
+
+    /// Return the process-owned classic heap cursor used by launch-time
+    /// partition setup. `MacMemoryBus` remains the byte adapter; the cursor
+    /// belongs to the process Memory Manager so all attached adapters observe
+    /// it immediately. Inside Macintosh: Memory (1992), pp. 2-19--2-21.
+    pub(crate) fn classic_heap_bump_ptr(&self) -> u32 {
+        self.memory_manager.borrow().classic_heap_bump_ptr()
+    }
+
+    /// Reserve the process-owned classic heap's initial zone header.
+    pub(crate) fn reserve_classic_heap(&self, size: u32) {
+        self.memory_manager.borrow_mut().reserve_classic_heap(size);
+    }
+
+    /// Keep a direct-loaded guest span out of future classic allocations while
+    /// retaining any usable heap space before that span.
+    pub(crate) fn reserve_classic_heap_range(&self, start_addr: u32, end_addr: u32) {
+        self.memory_manager
+            .borrow_mut()
+            .reserve_classic_heap_range(start_addr, end_addr);
     }
 
     #[cfg(test)]
@@ -4670,6 +5080,163 @@ mod tests {
         assert_eq!(attached.alloc(16), attached_ptr);
         assert_eq!(detached.alloc(16), detached_ptr + 24);
         assert_eq!(detached.heap_bump_ptr(), 0x20_0000 + 40);
+    }
+
+    #[test]
+    fn detached_process_memory_manager_snapshots_classic_allocator_state() {
+        let mut context = ProcessContext::default();
+        let mut attached_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut attached_bus);
+        let manager = context.memory_manager_handle().clone();
+        let original_ptr = manager.borrow_mut().new_classic_ptr(&mut attached_bus, 24);
+        assert_ne!(original_ptr, 0);
+
+        let detached_manager = manager.detached_clone();
+        assert!(!manager.ptr_eq(&detached_manager));
+        let mut detached_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        detached_manager
+            .borrow_mut()
+            .attach_classic_memory_bus(&mut detached_bus);
+        assert_eq!(
+            detached_manager
+                .borrow()
+                .classic_allocation_size(original_ptr),
+            Some(24)
+        );
+
+        manager
+            .borrow_mut()
+            .dispose_process_ptr(&mut attached_bus, original_ptr);
+        let attached_reuse = manager.borrow_mut().new_classic_ptr(&mut attached_bus, 16);
+        let detached_next = detached_manager
+            .borrow_mut()
+            .new_classic_ptr(&mut detached_bus, 16);
+
+        assert_eq!(attached_reuse, original_ptr);
+        assert_eq!(detached_next, original_ptr + 24);
+        assert_eq!(
+            manager.borrow().classic_allocation_size(original_ptr),
+            Some(16)
+        );
+        assert_eq!(
+            detached_manager
+                .borrow()
+                .classic_allocation_size(original_ptr),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn attaching_a_second_populated_classic_allocator_is_rejected_without_mutation() {
+        let mut context = ProcessContext::default();
+        let mut primary = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut primary);
+        let primary_ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut primary, 24);
+        let cursor_before = context.classic_heap_bump_ptr();
+
+        let mut second = MacMemoryBus::new(8 * 1024 * 1024);
+        let second_ptr = second.alloc(24);
+        assert_ne!(second_ptr, 0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            context.attach_classic_memory_bus(&mut second);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(context.classic_heap_bump_ptr(), cursor_before);
+        assert_eq!(
+            context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(primary_ptr),
+            Some(24)
+        );
+        assert_eq!(second.get_alloc_size(second_ptr), Some(24));
+    }
+
+    #[test]
+    fn pristine_process_allocator_adopts_the_only_populated_bus() {
+        let mut context = ProcessContext::default();
+        let mut first_adapter = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut first_adapter);
+
+        let mut populated = MacMemoryBus::new(8 * 1024 * 1024);
+        let ptr = populated.alloc(24);
+        assert_ne!(ptr, 0);
+
+        context.attach_classic_memory_bus(&mut populated);
+
+        assert_eq!(
+            context.memory_manager.borrow().classic_allocation_size(ptr),
+            Some(24)
+        );
+        assert_eq!(first_adapter.get_alloc_size(ptr), Some(24));
+        context
+            .memory_manager_mut()
+            .dispose_process_ptr(&mut first_adapter, ptr);
+        assert_eq!(populated.get_alloc_size(ptr), None);
+    }
+
+    #[test]
+    fn process_owned_reservations_are_visible_to_every_attached_bus() {
+        let mut context = ProcessContext::default();
+        let mut first = MacMemoryBus::new(8 * 1024 * 1024);
+        let mut second = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut first);
+        context.attach_classic_memory_bus(&mut second);
+        context.reserve_classic_heap_range(0x20_0040, 0x20_0080);
+
+        assert_eq!(second.alloc(64), 0x20_0000);
+        assert_eq!(first.alloc(4), 0x20_0080);
+    }
+
+    #[test]
+    fn failed_classic_handle_master_pointer_allocation_rolls_back_data() {
+        let mut context = ProcessContext::default();
+        let mut bus = MacMemoryBus::new(0x29_0008);
+        context.attach_classic_memory_bus(&mut bus);
+
+        assert_eq!(
+            context.memory_manager_mut().new_classic_handle(&mut bus, 4),
+            Err(ProcessMemoryManager::MEM_FULL_ERR)
+        );
+        assert_eq!(context.classic_heap_bump_ptr(), 0x20_0004);
+        assert_eq!(bus.get_alloc_size(0x20_0000), None);
+        assert_eq!(
+            context.memory_manager_mut().new_classic_ptr(&mut bus, 4),
+            0x20_0000
+        );
+    }
+
+    #[test]
+    fn classic_allocator_cannot_be_owned_by_two_processes() {
+        let mut first_context = ProcessContext::default();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        first_context.attach_classic_memory_bus(&mut bus);
+        let ptr = first_context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut bus, 24);
+
+        let mut second_context = ProcessContext::default();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            second_context.attach_classic_memory_bus(&mut bus);
+        }));
+
+        assert!(result.is_err());
+        assert_eq!(
+            first_context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(ptr),
+            Some(24)
+        );
+        assert_eq!(bus.get_alloc_size(ptr), Some(24));
+        assert!(second_context
+            .memory_manager
+            .borrow()
+            .classic_allocator
+            .is_none());
     }
 
     #[test]
@@ -5507,6 +6074,25 @@ mod tests {
             .unwrap()
             .free_ptr_blocks
             .is_empty());
+    }
+
+    #[test]
+    fn transaction_restore_preserves_attached_classic_allocator_state() {
+        let mut manager = ProcessMemoryManager::default();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        manager.attach_classic_memory_bus(&mut bus);
+        let original = manager.new_classic_ptr(&mut bus, 24);
+        let snapshot = manager.detached_clone();
+
+        manager.dispose_process_ptr(&mut bus, original);
+        let replacement = manager.new_classic_ptr(&mut bus, 16);
+        assert_eq!(replacement, original);
+        manager.restore_native_snapshot(snapshot);
+
+        assert_eq!(manager.classic_allocation_size(original), Some(24));
+        assert_eq!(bus.get_alloc_size(original), Some(24));
+        let next = manager.new_classic_ptr(&mut bus, 16);
+        assert_eq!(next, original + 24);
     }
 
     #[test]
