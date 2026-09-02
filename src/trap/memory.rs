@@ -1861,12 +1861,13 @@ impl super::TrapDispatcher {
             // master-pointer-table scan.
             (false, 0x28) => {
                 let ptr = cpu.read_reg(Register::A0);
-                let handle = self.handle_for_ptr(ptr)
-                    .filter(|&handle| bus.read_long(handle) == ptr)
+                let memory_manager = self.process_memory_manager();
+                let handle = memory_manager
+                    .borrow()
+                    .recover_handle_from_master_pointer(ptr, |handle| {
+                        Some(bus.read_long(handle))
+                    })
                     .unwrap_or(0);
-                if handle == 0 {
-                    self.untrack_handle_ptr(ptr);
-                }
                 cpu.write_reg(Register::A0, handle);
                 cpu.write_reg(Register::D0, 0);
                 Ok(())
