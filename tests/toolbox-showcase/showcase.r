@@ -12,6 +12,7 @@
 #define rAboutAlert 130
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
+#define rShowcaseSound 151
 #define pmAnimatedExplicit 12
 
 #define mApple 128
@@ -89,7 +90,8 @@ resource 'MENU' (mPages, preload) {
         "Dialogs & Alerts", noIcon, noKey, noMark, plain;
         "TextEdit", noIcon, noKey, noMark, plain;
         "Palettes", noIcon, noKey, noMark, plain;
-        "Lists & Inventory", noIcon, noKey, noMark, plain
+        "Lists & Inventory", noIcon, noKey, noMark, plain;
+        "Sound & Channels", noIcon, noKey, noMark, plain
     }
 };
 
@@ -119,13 +121,42 @@ resource 'pltt' (rShowcasePalette, "Showcase Palette") {
     }
 };
 
+/*
+ * A deterministic format-1 sampled sound: one bufferCmd points at a standard
+ * sound header followed by 256 unsigned 8-bit mono samples. The repeating
+ * sixteen-sample waveform is intentionally small but long enough to expose
+ * active playback in the fixture's audio mixer. Sound (1994), pp. 2-76--2-77.
+ */
+data 'snd ' (rShowcaseSound, preload) {
+    $"0001 0000 0001 8051 0000 0000 000E"
+    $"0000 0000 0000 0100 56EE 8BA3 0000 0000"
+    $"0000 0000 003C"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+    $"80A0 C0E0 F0E0 C0A0 8060 4020 1020 4060"
+};
+
 resource 'MENU' (mState, preload) {
     mState, textMenuProc, allEnabled, enabled, "State",
     {
         "Button activated", noIcon, noKey, noMark, plain;
         "Checkbox selected", noIcon, noKey, noMark, plain;
         "Scrollbar moved", noIcon, noKey, noMark, plain;
-        "Auxiliary window open", noIcon, noKey, noMark, plain
+        "Auxiliary window open", noIcon, noKey, noMark, plain;
+        "Sound completion received", noIcon, noKey, noMark, plain
     }
 };
 

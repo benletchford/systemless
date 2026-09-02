@@ -92,16 +92,7 @@ fn sound_dispatch_param_bytes(selector: u32) -> u32 {
 }
 
 fn synth_sys_beep_samples() -> Vec<u8> {
-    let len = (sound::OUTPUT_RATE as usize * 90) / 1000;
-    let half_period = (sound::OUTPUT_RATE as usize / (880 * 2)).max(1);
-    let mut samples = Vec::with_capacity(len);
-    for i in 0..len {
-        let polarity = if (i / half_period) & 1 == 0 { 1 } else { -1 };
-        let envelope = (len - i) as i32;
-        let amplitude = 72 * envelope / len.max(1) as i32;
-        samples.push((0x80i32 + polarity * amplitude).clamp(0, 255) as u8);
-    }
-    samples
+    sound::synth_sys_beep_samples()
 }
 
 impl super::TrapDispatcher {
@@ -403,8 +394,10 @@ impl super::TrapDispatcher {
             });
 
         if let Some(chan) = self.sound_manager.take_channel(chan_ptr) {
-            self.clear_guest_sound_channel_state(bus, chan.guest_ptr);
-            if chan.allocated {
+            if chan.guest_visible() {
+                self.clear_guest_sound_channel_state(bus, chan.guest_ptr);
+            }
+            if chan.guest_visible() && chan.allocated {
                 bus.free(chan.guest_ptr);
             }
         }
@@ -1317,15 +1310,31 @@ impl super::TrapDispatcher {
             return -203; // queueFull
         }
 
+        // Record accepted commands at submission time as well as when the
+        // guest queue is later serviced. This keeps diagnostics truthful when
+        // an immediate flush intentionally removes a not-yet-executed entry.
+        if !self.sound_manager.debug_cmd_codes_seen.contains(&cmd.cmd) {
+            self.sound_manager.debug_cmd_codes_seen.push(cmd.cmd);
+        }
         let cmd_addr = chan_ptr + GUEST_SND_CHANNEL_QUEUE_OFFSET + (q_tail as u32) * 8;
         self.write_guest_snd_command(bus, cmd_addr, Some(cmd));
         bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET, next_tail as u16);
         0
     }
 
+    fn flush_guest_sound_queue(&self, bus: &mut MacMemoryBus, chan_ptr: u32) {
+        let q_tail = bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET);
+        bus.write_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET, q_tail);
+        self.write_guest_snd_command(
+            bus,
+            chan_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
+            None,
+        );
+    }
+
     pub(crate) fn sync_guest_sound_channel_state(&self, bus: &mut MacMemoryBus) {
         for chan in &self.sound_manager.channels {
-            if chan.guest_ptr == 0 {
+            if !chan.guest_visible() {
                 continue;
             }
 
@@ -1449,6 +1458,7 @@ impl super::TrapDispatcher {
             }
             sound::cmd::FLUSH => {
                 self.sound_manager.flush_channel(chan_ptr);
+                self.flush_guest_sound_queue(bus, chan_ptr);
             }
             sound::cmd::REST => {
                 // Sound 1994, 2-95: restCmd inserts a rest of `param1`
@@ -1468,6 +1478,8 @@ impl super::TrapDispatcher {
                         if callback_addr != 0 {
                             self.sound_manager.pending_sound_callbacks.push(
                                 crate::sound::PendingSoundCallback::Command {
+                                    architecture:
+                                        crate::callback_manager::CallbackTaskArchitecture::M68k,
                                     callback_addr,
                                     chan_ptr,
                                     cmd,
@@ -3005,6 +3017,7 @@ mod tests {
     use super::{
         decode_double_buffer_samples, decode_mace3_mono_to_u8, decode_mace6_mono_to_u8,
         extended80_to_f64, parse_aiff_samples, synth_sys_beep_samples,
+        GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET,
         GUEST_SND_CHANNEL_Q_HEAD_OFFSET, GUEST_SND_CHANNEL_Q_LENGTH_OFFSET,
         GUEST_SND_CHANNEL_Q_TAIL_OFFSET, GUEST_SND_CHANNEL_SIZE, MEM_FULL_ERR, SAMPLED_SYNTH_ID,
         SOUND_MANAGER_3_SYNTH_VERSION,
@@ -4514,6 +4527,7 @@ mod tests {
         disp.sound_manager
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
+                architecture: crate::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr: 0x00AB_CDEF,
                 chan_ptr,
                 cmd: crate::sound::SndCommand {
@@ -4668,6 +4682,70 @@ mod tests {
     }
 
     #[test]
+    fn snddoimmediate_flush_discards_guest_fifo_entries() {
+        let (mut disp, mut cpu, mut bus) = setup();
+        let create_sp = TEST_SP;
+        let chan_ptr_ptr = 0x2203A0;
+        bus.write_long(chan_ptr_ptr, 0);
+        bus.write_long(create_sp, 0);
+        bus.write_long(create_sp + 4, 0);
+        bus.write_word(create_sp + 8, 5);
+        bus.write_long(create_sp + 10, chan_ptr_ptr);
+        assert!(disp
+            .dispatch_sound(true, 0x007, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        let chan_ptr = bus.read_long(chan_ptr_ptr);
+        disp.sound_manager
+            .find_channel_mut(chan_ptr)
+            .expect("channel exists")
+            .play_buffer(
+                vec![0xa0; 8],
+                crate::sound::OUTPUT_RATE << 16,
+                PlaybackKind::Buffer,
+                0,
+            );
+
+        let cmd_ptr = 0x230030;
+        bus.write_word(cmd_ptr, cmd::VOLUME);
+        bus.write_word(cmd_ptr + 2, 0);
+        bus.write_long(cmd_ptr + 4, 0);
+        let sp = TEST_SP + 0x40;
+        cpu.write_reg(Register::A7, sp);
+        bus.write_word(sp, 1); // noWait = TRUE
+        bus.write_long(sp + 2, cmd_ptr);
+        bus.write_long(sp + 6, chan_ptr);
+        bus.write_word(sp + 10, 0xffff);
+        assert!(disp
+            .dispatch_sound(true, 0x003, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_ne!(
+            bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET),
+            bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET)
+        );
+
+        bus.write_word(cmd_ptr, cmd::FLUSH);
+        bus.write_long(sp, cmd_ptr); // SndDoImmediate cmd pointer
+        bus.write_long(sp + 4, chan_ptr);
+        bus.write_word(sp + 8, 0xffff);
+        cpu.write_reg(Register::A7, sp);
+        assert!(disp
+            .dispatch_sound(true, 0x004, &mut cpu, &mut bus)
+            .unwrap()
+            .is_ok());
+        assert_eq!(bus.read_word(sp + 8), 0);
+        assert_eq!(
+            bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_HEAD_OFFSET),
+            bus.read_word(chan_ptr + GUEST_SND_CHANNEL_Q_TAIL_OFFSET),
+            "flush must discard entries still resident in guest FIFO"
+        );
+        assert_eq!(bus.read_long(chan_ptr + GUEST_SND_CHANNEL_CMD_IN_PROGRESS_OFFSET), 0);
+        disp.service_guest_sound_queues(&mut bus);
+        assert_eq!(disp.sound_manager.mix_frame(4), vec![0xa0; 4]);
+    }
+
+    #[test]
     fn snddocommand_callbackcmd_on_busy_channel_fires_after_buffer_exhaustion() {
         // callBackCmd is completion work for the active sound command. If
         // it sits in the generic FIFO until after playback goes idle, games
@@ -4721,10 +4799,15 @@ mod tests {
         assert_eq!(disp.sound_manager.pending_sound_callbacks.len(), 1);
         match &disp.sound_manager.pending_sound_callbacks[0] {
             PendingSoundCallback::Command {
+                architecture,
                 callback_addr,
                 chan_ptr: callback_chan,
                 cmd,
             } => {
+                assert_eq!(
+                    *architecture,
+                    crate::callback_manager::CallbackTaskArchitecture::M68k
+                );
                 assert_eq!(*callback_addr, user_routine);
                 assert_eq!(*callback_chan, chan_ptr);
                 assert_eq!(cmd.cmd, cmd::CALLBACK);
@@ -4796,10 +4879,15 @@ mod tests {
         assert_eq!(disp.sound_manager.pending_sound_callbacks.len(), 1);
         match &disp.sound_manager.pending_sound_callbacks[0] {
             PendingSoundCallback::Command {
+                architecture,
                 callback_addr,
                 chan_ptr: callback_chan,
                 cmd,
             } => {
+                assert_eq!(
+                    *architecture,
+                    crate::callback_manager::CallbackTaskArchitecture::M68k
+                );
                 assert_eq!(*callback_addr, user_routine);
                 assert_eq!(*callback_chan, chan_ptr);
                 assert_eq!(cmd.cmd, cmd::CALLBACK);

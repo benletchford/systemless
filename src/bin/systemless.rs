@@ -3435,6 +3435,7 @@ mod tests {
             .sound_manager_mut()
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
+                architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
                 cmd: SndCommand {
@@ -3485,6 +3486,7 @@ mod tests {
             .sound_manager_mut()
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
+                architecture: systemless::callback_manager::CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0001_2340,
                 cmd: SndCommand {

@@ -21736,10 +21736,15 @@ mod tests {
         assert_eq!(disp.sound_manager.pending_sound_callbacks.len(), 1);
         match &disp.sound_manager.pending_sound_callbacks[0] {
             crate::sound::PendingSoundCallback::Command {
+                architecture,
                 callback_addr,
                 chan_ptr: queued_chan_ptr,
                 cmd,
             } => {
+                assert_eq!(
+                    *architecture,
+                    crate::callback_manager::CallbackTaskArchitecture::M68k
+                );
                 assert_eq!(*callback_addr, user_routine);
                 assert_eq!(*queued_chan_ptr, chan_ptr);
                 assert_eq!(cmd.cmd, crate::sound::cmd::CALLBACK);

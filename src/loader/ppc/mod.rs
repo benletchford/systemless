@@ -23316,6 +23316,8 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::SysBeep => {
             sound.sys_beep_count = sound.sys_beep_count.saturating_add(1);
             sound.last_sys_beep_duration = cpu.gpr[3] as u16 as i16;
+            let volume = sound.manager.sys_beep_volume();
+            sound.manager.play_sys_beep(volume);
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::SndSoundManagerVersion => {
@@ -43760,9 +43762,12 @@ fn ppc_snd_new_channel(
         return PPC_PARAM_ERR;
     }
     *last_mem_error = PPC_NO_ERR;
-    sound
-        .manager
-        .register_channel(channel, allocated, user_routine);
+    sound.manager.register_channel(
+        channel,
+        allocated,
+        user_routine,
+        CallbackTaskArchitecture::PowerPc,
+    );
     if ppc_sound_trace_enabled() {
         eprintln!(
             "[PPC-SOUND] SndNewChannel chan=${channel:08X} synth={synth} init=${:08X} user_routine=${user_routine:08X}",
@@ -43793,13 +43798,16 @@ fn ppc_snd_channel_status(
             return PPC_PARAM_ERR;
         }
     }
-    if let Some(paused) = sound.manager.file_playback_paused(channel) {
-        if byte_count > 12 && memory.write_u8(status_ptr + 12, 1).is_none() {
+    if let Some(busy) = sound.manager.channel_busy(channel) {
+        if byte_count > 12 && memory.write_u8(status_ptr + 12, u8::from(busy)).is_none() {
             return PPC_PARAM_ERR;
         }
         if byte_count > 14
             && memory
-                .write_u8(status_ptr + 14, u8::from(paused))
+                .write_u8(
+                    status_ptr + 14,
+                    u8::from(sound.manager.file_playback_paused(channel).unwrap_or(false)),
+                )
                 .is_none()
         {
             return PPC_PARAM_ERR;
@@ -43826,13 +43834,10 @@ fn ppc_snd_get_info(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &PpcSoundSt
         b"ssiz" => memory.write_u16_be(info_ptr, 8),
         b"chan" => memory.write_u16_be(info_ptr, 1),
         b"hwbs" => {
-            let busy = sound.manager.file_playback_paused(channel).is_some()
-                || sound
-                    .manager
-                    .double_buffer_playbacks
-                    .iter()
-                    .any(|record| record.channel == channel && record.active);
-            memory.write_u8(info_ptr, u8::from(busy))
+            memory.write_u8(
+                info_ptr,
+                u8::from(sound.manager.channel_busy(channel).unwrap_or(false)),
+            )
         }
         _ => return SI_UNKNOWN_INFO_TYPE,
     };
@@ -43987,18 +43992,27 @@ fn ppc_snd_do_immediate(
     let Some(command) = ppc_read_snd_command(memory, cmd_ptr) else {
         return PPC_PARAM_ERR;
     };
-    if command.command == 85 && command.param2 != 0 {
+    if command.command == crate::sound::cmd::GET_RATE && command.param2 != 0 {
         if !ppc_memory_can_write_bytes(memory, command.param2, 4)
-            || memory.write_u32_be(command.param2, 0x0001_0000).is_none()
+            || memory
+                .write_u32_be(
+                    command.param2,
+                    sound
+                        .manager
+                        .channel_rate(channel)
+                        .unwrap_or(0x0001_0000),
+                )
+                .is_none()
         {
             return PPC_PARAM_ERR;
         }
     }
     if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
-        sound.manager.play_buffer_command(
+        sound.manager.play_buffer_command_for_architecture(
             channel,
             decoded.samples,
             decoded.sample_rate_fixed,
+            CallbackTaskArchitecture::PowerPc,
         );
     } else {
         sound.manager.execute_immediate_command(
@@ -44031,41 +44045,33 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
     // Inside Macintosh: Sound (1994), pp. 2-130–2-131: SndDoCommand appends
     // the eight-byte SndCommand to the channel's FIFO queue. A callbackCmd
     // following sampled sound runs only when that sound has completed, with
-    // a copy of the queued command as the callback's second argument.
-    if command.command == 13 {
-        let completion = memory.read_u32_be(channel.saturating_add(8)).unwrap_or(0);
-        if completion != 0 {
-            if sound.manager.file_playback_paused(channel).is_some() {
-                if let Some(playback) = sound
-                    .file_playbacks
-                    .iter_mut()
-                    .rev()
-                    .find(|playback| playback.channel == channel)
-                {
-                    playback.completion = completion;
-                    playback.completion_command =
-                        Some(PpcSndCommandRecord { channel, ..command });
-                }
-            }
-        }
-    }
-    // The HLE queue is unbounded, so the noWait distinction cannot produce
-    // queueFull.
+    // a copy of the queued command as the callback's second argument. The
+    // process manager retains the command and selects the native callback ABI
+    // from the channel created by SndNewChannel; it is not a file-play
+    // completion routine.
+    // `noWait` controls whether the classic implementation may sleep until
+    // a FIFO slot opens. The host runner cannot block the guest, so both
+    // variants return queueFull when the process-owned FIFO is full.
     if let Some(decoded) = ppc_decode_buffer_command(memory, channel, command) {
-        sound.manager.play_buffer_command(
+        if !sound.manager.enqueue_buffer_command_for_architecture(
             channel,
             decoded.samples,
             decoded.sample_rate_fixed,
-        );
+            CallbackTaskArchitecture::PowerPc,
+        ) {
+            return -203; // queueFull
+        }
     } else {
-        let _ = sound.manager.enqueue_command(
+        if !sound.manager.enqueue_command(
             channel,
             crate::sound::SndCommand {
                 cmd: command.command,
                 param1: command.param1,
                 param2: command.param2,
             },
-        );
+        ) {
+            return -203; // queueFull
+        }
     }
     sound
         .queued_commands
@@ -44076,13 +44082,10 @@ fn ppc_snd_do_command(cpu: &PpcCpu, memory: &mut PpcSectionMem, sound: &mut PpcS
 fn ppc_snd_dispose_channel(cpu: &mut PpcCpu, sound: &mut PpcSoundState) -> i16 {
     let channel = cpu.gpr[3];
     sound.manager.remove_channel(channel);
-    for playback in sound
+    sound
         .decoded_file_playbacks
-        .iter_mut()
-        .filter(|record| record.channel == channel)
-    {
-        playback.samples.clear();
-    }
+        .retain(|record| record.channel != channel);
+    sound.file_playbacks.retain(|record| record.channel != channel);
     PPC_NO_ERR
 }
 
@@ -44103,55 +44106,75 @@ fn ppc_snd_play(
     let Some(bytes) = ppc_handle_bytes(memory, handles, sound_handle) else {
         return RES_PROBLEM;
     };
-    let Some(decoded) = ppc_decode_snd_resource_samples(&bytes) else {
+    let Some(commands) = ppc_decode_snd_resource_commands(&bytes) else {
         return BAD_FORMAT;
     };
-    let Ok(file_playback_index) = u32::try_from(sound.file_playbacks.len()) else {
-        return PPC_MEM_FULL_ERR;
+    let effective_channel = if channel == 0 {
+        // Sound 1994, p. 2-122: NIL ignores async and uses an internal
+        // channel for the duration of the sampled playback.
+        sound.manager.create_internal_channel()
+    } else {
+        channel
     };
-    let summary = decoded.summary;
-    let samples = decoded.samples;
     if ppc_sound_trace_enabled() {
         eprintln!(
-            "[PPC-SOUND] SndPlay chan=${channel:08X} handle=${sound_handle:08X} async={} samples={} rate=${:08X}",
+            "[PPC-SOUND] SndPlay chan=${channel:08X} effective=${effective_channel:08X} handle=${sound_handle:08X} async={} commands={}",
             async_play,
-            samples.len(),
-            summary.sample_rate_fixed
+            commands.len()
         );
     }
-    sound
-        .manager
-        .play_file_buffer(
-            channel,
-            samples.clone(),
-            summary.sample_rate_fixed,
-            Some((CallbackTaskArchitecture::PowerPc, 0)),
-        );
-    sound
-        .decoded_file_playbacks
-        .push(PpcDecodedAiffPlaybackRecord {
-            file_playback_index,
-            channel,
-            sample_rate_fixed: summary.sample_rate_fixed,
-            samples,
-        });
-    sound.file_playbacks.push(PpcSoundFilePlaybackRecord {
-        channel,
-        ref_num: 0,
-        resource_id: 0,
-        buffer_size: 0,
-        buffer: 0,
-        selection: 0,
-        completion: 0,
-        completion_command: None,
-        async_play,
-        aiff: None,
-        decoded_aiff: Some(summary),
-    });
-    // Inside Macintosh: Sound (1994), pp. 2-121--2-123: SndPlay accepts
-    // format-1/2 'snd ' data and queues its sampled command on the requested
-    // channel. The existing playback scheduler supplies timing and host audio.
-    sound.start_count = sound.start_count.saturating_add(1);
+
+    // Inside Macintosh: Sound (1994), pp. 2-121--2-123: preserve every
+    // resource command in order. An idle first buffer can start immediately;
+    // commands after it (and all commands on a busy channel) remain in the
+    // process-owned FIFO until the current buffer completes.
+    for command in commands {
+        match command {
+            PpcDecodedSndResourceCommand::Buffer {
+                samples,
+                sample_rate_fixed,
+            } => {
+                let busy = sound.manager.channel_busy(effective_channel).unwrap_or(false);
+                let queued = sound
+                    .manager
+                    .channel_has_queued_commands(effective_channel)
+                    .unwrap_or(false);
+                if busy || queued {
+                    if !sound.manager.enqueue_buffer_command_for_architecture(
+                        effective_channel,
+                        samples,
+                        sample_rate_fixed,
+                        CallbackTaskArchitecture::PowerPc,
+                    ) {
+                        return -203; // queueFull
+                    }
+                } else {
+                    sound.manager.play_buffer_command_for_architecture(
+                        effective_channel,
+                        samples,
+                        sample_rate_fixed,
+                        CallbackTaskArchitecture::PowerPc,
+                    );
+                }
+            }
+            PpcDecodedSndResourceCommand::Command(command) => {
+                let busy = sound.manager.channel_busy(effective_channel).unwrap_or(false);
+                let queued = sound
+                    .manager
+                    .channel_has_queued_commands(effective_channel)
+                    .unwrap_or(false);
+                if busy || queued || command.cmd == crate::sound::cmd::CALLBACK {
+                    if !sound.manager.enqueue_command(effective_channel, command) {
+                        return -203; // queueFull
+                    }
+                } else {
+                    sound
+                        .manager
+                        .execute_immediate_command(effective_channel, command);
+                }
+            }
+        }
+    }
     PPC_NO_ERR
 }
 
@@ -44516,7 +44539,18 @@ fn ppc_decode_aiff_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
     ppc_decoded_sound_data(samples, sample_rate_fixed)
 }
 
-fn ppc_decode_snd_resource_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
+#[derive(Debug)]
+enum PpcDecodedSndResourceCommand {
+    Command(crate::sound::SndCommand),
+    Buffer {
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+    },
+}
+
+fn ppc_decode_snd_resource_commands(
+    data: &[u8],
+) -> Option<Vec<PpcDecodedSndResourceCommand>> {
     const SOUND_CMD: u16 = 80;
     const BUFFER_CMD: u16 = 81;
     const DATA_OFFSET_FLAG: u16 = 0x8000;
@@ -44532,24 +44566,63 @@ fn ppc_decode_snd_resource_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
     };
     let command_count = usize::from(ppc_read_be_u16_from_slice(data, command_offset)?);
     command_offset = command_offset.checked_add(2)?;
+    let commands_end = command_offset.checked_add(command_count.checked_mul(8)?)?;
+    if commands_end > data.len() {
+        return None;
+    }
+
+    let mut commands = Vec::with_capacity(command_count);
+    let mut has_buffer = false;
 
     for index in 0..command_count {
         let command_ptr = command_offset.checked_add(index.checked_mul(8)?)?;
-        let mut command = ppc_read_be_u16_from_slice(data, command_ptr)?;
-        let parameter = ppc_read_be_u32_from_slice(data, command_ptr.checked_add(4)?)? as usize;
-        let has_data_offset = (command & DATA_OFFSET_FLAG) != 0;
-        command &= !DATA_OFFSET_FLAG;
+        let raw_command = ppc_read_be_u16_from_slice(data, command_ptr)?;
+        let mut command = raw_command & !DATA_OFFSET_FLAG;
+        let param1 = ppc_read_be_u16_from_slice(data, command_ptr.checked_add(2)?)? as i16;
+        let parameter = ppc_read_be_u32_from_slice(data, command_ptr.checked_add(4)?)?;
+        let has_data_offset = (raw_command & DATA_OFFSET_FLAG) != 0;
         if format == 2 && index == 0 && command == SOUND_CMD {
             command = BUFFER_CMD;
         }
-        if !has_data_offset || (command != BUFFER_CMD && command != SOUND_CMD) {
-            continue;
-        }
-        if let Some(decoded) = ppc_decode_snd_header_at(data, parameter) {
-            return Some(decoded);
+        if has_data_offset && (command == BUFFER_CMD || command == SOUND_CMD) {
+            let mut header_offset = parameter as usize;
+            if format == 2
+                && index == 0
+                && command == BUFFER_CMD
+                && header_offset == commands_end.checked_add(6)?
+            {
+                header_offset = commands_end;
+            }
+            let decoded = ppc_decode_snd_header_at(data, header_offset)?;
+            has_buffer = true;
+            commands.push(PpcDecodedSndResourceCommand::Buffer {
+                samples: decoded.samples,
+                sample_rate_fixed: decoded.summary.sample_rate_fixed,
+            });
+        } else {
+            commands.push(PpcDecodedSndResourceCommand::Command(
+                crate::sound::SndCommand {
+                    cmd: command,
+                    param1,
+                    param2: parameter,
+                },
+            ));
         }
     }
-    None
+    has_buffer.then_some(commands)
+}
+
+fn ppc_decode_snd_resource_samples(data: &[u8]) -> Option<PpcDecodedAiffData> {
+    ppc_decode_snd_resource_commands(data)?.into_iter().find_map(|command| {
+        let PpcDecodedSndResourceCommand::Buffer {
+            samples,
+            sample_rate_fixed,
+        } = command
+        else {
+            return None;
+        };
+        ppc_decoded_sound_data(samples, sample_rate_fixed)
+    })
 }
 
 fn ppc_decode_snd_header_at(data: &[u8], header_offset: usize) -> Option<PpcDecodedAiffData> {
@@ -84999,6 +85072,7 @@ pub(crate) mod tests {
     use crate::cpu::{CpuOps, Register};
     use crate::managers::resource::serialize_resource_fork;
     use crate::memory::MemoryBus;
+    use crate::sound::PendingSoundCallback;
     use crate::trap::test_helpers::{setup_with_port, TEST_SP};
     use ppc::PpcMemory;
 
@@ -161605,7 +161679,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hle_import_runner_records_sys_beep_without_audio_side_effects() {
+    fn hle_import_runner_records_sys_beep_and_queues_pcm() {
         let pef = synthetic_pef_with_import(b"SysBeep");
         let mut loaded = load_pef_application(&pef).unwrap();
         loaded.cpu.gpr[3] = 0x0000_003c;
@@ -161622,6 +161696,24 @@ pub(crate) mod tests {
         assert!(loaded.sound.decoded_file_playbacks.is_empty());
         assert!(loaded.sound.manager.pending_sound_callbacks.is_empty());
         assert!(loaded.sound.completion_invocations.is_empty());
+        assert_eq!(loaded.sound.manager.channels.len(), 1);
+        let beep_audio = loaded
+            .sound
+            .manager
+            .mix_frame(crate::sound::OUTPUT_RATE as usize);
+        assert!(
+            beep_audio.iter().any(|sample| *sample != 0x80),
+            "native SysBeep must enqueue non-silent PCM"
+        );
+        let beep_channel = loaded.sound.manager.channels[0].guest_ptr;
+        assert_ne!(beep_channel, 0);
+        assert!(loaded
+            .sound
+            .manager
+            .idle_auto_dispose_channel_ptrs()
+            .contains(&beep_channel));
+        loaded.sound.manager.remove_channel(beep_channel);
+        assert!(loaded.sound.manager.channels.is_empty());
 
         loaded.cpu.pc = loaded.entry_pc;
         loaded.cpu.lr = PPC_HALT_PC;
@@ -161696,6 +161788,12 @@ pub(crate) mod tests {
         loaded.memory.add_region(sound_ptr, resource.clone());
         loaded.memory.add_region(command_ptr, vec![0; 8]);
         loaded.memory.write_u32_be(channel + 8, completion).unwrap();
+        loaded.sound.manager.register_channel(
+            channel,
+            false,
+            completion,
+            CallbackTaskArchitecture::PowerPc,
+        );
         loaded.memory.write_u32_be(sound_handle, sound_ptr).unwrap();
         test_handles!(loaded).push(PpcHandleRecord {
             handle: sound_handle,
@@ -161716,8 +161814,9 @@ pub(crate) mod tests {
             ),
             PPC_NO_ERR
         );
-        assert_eq!(loaded.sound.file_playbacks[0].completion, 0);
-        assert!(loaded.sound.file_playbacks[0].async_play);
+        assert!(loaded.sound.file_playbacks.is_empty());
+        assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 1);
+        assert_eq!(loaded.sound.manager.debug_file_play_count, 0);
 
         loaded.memory.write_u16_be(command_ptr, 13).unwrap();
         loaded.memory.write_u16_be(command_ptr + 2, 0x5348).unwrap();
@@ -161738,12 +161837,201 @@ pub(crate) mod tests {
             param1: 0x5348,
             param2: 0x0200_0000,
         };
-        assert_eq!(loaded.sound.file_playbacks[0].completion, completion);
-        assert_eq!(
-            loaded.sound.file_playbacks[0].completion_command,
-            Some(command)
-        );
         assert_eq!(loaded.sound.queued_commands, vec![command]);
+
+        // The command FIFO is serviced after the short buffer exhausts. It
+        // must retain the native callback ABI and command record for the
+        // PPC runner, rather than pretending SndPlay was a file playback.
+        loaded.sound.manager.mix_frame(8);
+        loaded.sound.manager.mix_frame(1);
+        assert_eq!(loaded.sound.manager.pending_sound_callbacks.len(), 1);
+        match &loaded.sound.manager.pending_sound_callbacks[0] {
+            PendingSoundCallback::Command {
+                architecture,
+                callback_addr,
+                chan_ptr,
+                cmd,
+            } => {
+                assert_eq!(*architecture, CallbackTaskArchitecture::PowerPc);
+                assert_eq!(*callback_addr, completion);
+                assert_eq!(*chan_ptr, channel);
+                assert_eq!(
+                    PpcSndCommandRecord {
+                        channel: *chan_ptr,
+                        command: cmd.cmd,
+                        param1: cmd.param1,
+                        param2: cmd.param2,
+                    },
+                    command
+                );
+            }
+            other => panic!("expected native PPC command callback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sndplay_preserves_multiple_resource_commands_and_fires_callback_once() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let channel = PPC_DATA_BASE + 0x1800;
+        let sound_handle = PPC_DATA_BASE + 0x1900;
+        let sound_ptr = PPC_DATA_BASE + 0x1a00;
+        let callback = PPC_CODE_BASE + 0x180;
+        let mut resource = vec![0; 100];
+        let commands_end = 38usize;
+        let header_one = commands_end;
+        let header_two = 64usize;
+        write_u16(&mut resource, 0, 2); // format 2
+        write_u16(&mut resource, 4, 4); // four commands
+        write_u16(&mut resource, 6, 0x8050); // first soundCmd -> bufferCmd
+        write_u32(&mut resource, 10, header_one as u32);
+        write_u16(&mut resource, 14, crate::sound::cmd::VOLUME);
+        write_u32(&mut resource, 18, 0x0040_0040);
+        write_u16(&mut resource, 22, 0x8051); // second bufferCmd
+        write_u32(&mut resource, 26, header_two as u32);
+        write_u16(&mut resource, 30, crate::sound::cmd::CALLBACK);
+        write_u16(&mut resource, 32, 0x1234);
+        write_u32(&mut resource, 34, 0x5678_9abc);
+
+        for (header, samples) in [(header_one, [0xa0, 0xa0, 0xa0, 0xa0]),
+            (header_two, [0xa0, 0xa0, 0xa0, 0xa0])]
+        {
+            write_u32(&mut resource, header, 0); // inline sample area
+            write_u32(&mut resource, header + 4, samples.len() as u32);
+            write_u32(&mut resource, header + 8, crate::sound::OUTPUT_RATE << 16);
+            resource[header + 20] = 0; // stdSH
+            resource[header + 21] = 60;
+            resource[header + 22..header + 26].copy_from_slice(&samples);
+        }
+
+        loaded
+            .memory
+            .add_region(channel, vec![0; PPC_GUEST_SND_CHANNEL_SIZE as usize]);
+        loaded.memory.add_region(sound_handle, vec![0; 4]);
+        loaded.memory.add_region(sound_ptr, resource.clone());
+        loaded.memory.write_u32_be(channel + 8, callback).unwrap();
+        loaded.sound.manager.register_channel(
+            channel,
+            false,
+            callback,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        loaded.memory.write_u32_be(sound_handle, sound_ptr).unwrap();
+        test_handles!(loaded).push(PpcHandleRecord {
+            handle: sound_handle,
+            ptr: sound_ptr,
+            size: resource.len() as u32,
+            capacity: resource.len() as u32,
+        });
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = sound_handle;
+        loaded.cpu.gpr[5] = 1; // async; retained for the resource contract
+
+        assert_eq!(
+            ppc_snd_play(
+                &loaded.cpu,
+                &mut loaded.memory,
+                &test_handle_records!(loaded),
+                &mut loaded.sound,
+            ),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.sound.manager.debug_buffer_cmd_count, 2);
+        assert_eq!(loaded.sound.manager.channel_has_queued_commands(channel), Some(true));
+
+        // First buffer is full volume. The queued volume command must be
+        // applied before the second buffer starts, halving its excursion.
+        assert_eq!(loaded.sound.manager.mix_frame(4), vec![0xa0; 4]);
+        assert_eq!(loaded.sound.manager.mix_frame(1), vec![0x88]);
+        loaded.sound.manager.mix_frame(4);
+        loaded.sound.manager.mix_frame(1); // drain callback after buffer two
+        assert_eq!(loaded.sound.manager.pending_sound_callbacks.len(), 1);
+        loaded.sound.manager.mix_frame(1);
+        assert_eq!(
+            loaded.sound.manager.pending_sound_callbacks.len(),
+            1,
+            "one resource callback command must not be scheduled twice"
+        );
+        match &loaded.sound.manager.pending_sound_callbacks[0] {
+            PendingSoundCallback::Command { cmd, chan_ptr, .. } => {
+                assert_eq!(*chan_ptr, channel);
+                assert_eq!(cmd.cmd, crate::sound::cmd::CALLBACK);
+                assert_eq!(cmd.param1, 0x1234);
+                assert_eq!(cmd.param2, 0x5678_9abc);
+            }
+            other => panic!("expected command callback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snd_do_command_reports_queue_full_for_both_wait_modes() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let channel = PPC_DATA_BASE + 0x1b00;
+        let command_ptr = PPC_DATA_BASE + 0x1c00;
+        loaded.memory.add_region(command_ptr, vec![0; 8]);
+        loaded.sound.manager.register_channel(
+            channel,
+            false,
+            0,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        for _ in 0..128 {
+            assert!(loaded.sound.manager.enqueue_command(
+                channel,
+                crate::sound::SndCommand {
+                    cmd: crate::sound::cmd::NULL,
+                    param1: 0,
+                    param2: 0,
+                },
+            ));
+        }
+        loaded.memory.write_u16_be(command_ptr, crate::sound::cmd::NULL).unwrap();
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = command_ptr;
+        loaded.cpu.gpr[5] = 1; // noWait
+        assert_eq!(
+            ppc_snd_do_command(&loaded.cpu, &mut loaded.memory, &mut loaded.sound),
+            -203
+        );
+        loaded.cpu.gpr[5] = 0; // blocking wait is unsupported by the host
+        assert_eq!(
+            ppc_snd_do_command(&loaded.cpu, &mut loaded.memory, &mut loaded.sound),
+            -203
+        );
+    }
+
+    #[test]
+    fn snd_channel_status_reports_active_native_buffer_then_idle() {
+        let mut loaded = load_pef_application(&synthetic_pef()).unwrap();
+        let channel = PPC_DATA_BASE + 0x1d00;
+        let status_ptr = PPC_DATA_BASE + 0x1e00;
+        loaded.memory.add_region(status_ptr, vec![0xaa; 22]);
+        loaded.sound.manager.register_channel(
+            channel,
+            false,
+            0,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        loaded.sound.manager.play_buffer_command_for_architecture(
+            channel,
+            vec![0xa0, 0xa0],
+            crate::sound::OUTPUT_RATE << 16,
+            CallbackTaskArchitecture::PowerPc,
+        );
+        loaded.cpu.gpr[3] = channel;
+        loaded.cpu.gpr[4] = 22;
+        loaded.cpu.gpr[5] = status_ptr;
+        assert_eq!(
+            ppc_snd_channel_status(&mut loaded.cpu, &mut loaded.memory, &loaded.sound),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u8(status_ptr + 12), Some(1));
+        assert_eq!(loaded.memory.read_u8(status_ptr + 14), Some(0));
+        loaded.sound.manager.mix_frame(2);
+        assert_eq!(
+            ppc_snd_channel_status(&mut loaded.cpu, &mut loaded.memory, &loaded.sound),
+            PPC_NO_ERR
+        );
+        assert_eq!(loaded.memory.read_u8(status_ptr + 12), Some(0));
     }
 
     #[test]
@@ -161871,6 +162159,19 @@ pub(crate) mod tests {
             crate::sound::OUTPUT_RATE << 16,
             None,
         );
+        loaded.sound.decoded_file_playbacks.push(PpcDecodedAiffPlaybackRecord {
+            file_playback_index: 0,
+            channel,
+            sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
+            samples: vec![0xa0],
+        });
+        loaded.sound.manager.pending_sound_callbacks.push(
+            PendingSoundCallback::FileCompletion {
+                architecture: CallbackTaskArchitecture::PowerPc,
+                callback_addr: PPC_CODE_BASE + 0x220,
+                chan_ptr: channel,
+            },
+        );
         assert_eq!(loaded.sound.manager.toggle_file_paused(channel), Some(true));
         loaded.cpu.gpr[3] = channel;
 
@@ -161880,6 +162181,9 @@ pub(crate) mod tests {
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
         assert_eq!(loaded.sound.manager.file_playback_paused(channel), None);
+        assert!(loaded.sound.file_playbacks.is_empty());
+        assert!(loaded.sound.decoded_file_playbacks.is_empty());
+        assert!(loaded.sound.manager.pending_sound_callbacks.is_empty());
     }
 
     #[test]

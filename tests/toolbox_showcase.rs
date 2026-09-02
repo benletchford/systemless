@@ -1,4 +1,4 @@
-//! Integration test exercising Toolbox Showcase for issues #1078, #1081, and #1264.
+//! Integration test exercising Toolbox Showcase for issues #1078, #1081, #1264, and #1265.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
@@ -30,12 +30,14 @@ const ITEM_PAGE_DIALOGS: i16 = 6;
 const ITEM_PAGE_TEXTEDIT: i16 = 7;
 const ITEM_PAGE_PALETTES: i16 = 8;
 const ITEM_PAGE_LISTS: i16 = 9;
+const ITEM_PAGE_SOUND: i16 = 10;
 
 /* State menu items */
 const ITEM_STATE_BUTTON: i16 = 1;
 const ITEM_STATE_CHECKBOX: i16 = 2;
 const ITEM_STATE_SCROLLBAR: i16 = 3;
 const ITEM_STATE_AUX_WINDOW: i16 = 4;
+const ITEM_STATE_SOUND_COMPLETE: i16 = 5;
 
 /* Options menu items */
 const ITEM_OPT_DIFFICULTY: i16 = 1;
@@ -127,6 +129,26 @@ fn click_point(runner: &mut FixtureRunner, v: i16, h: i16) {
     runner.set_mouse_position(v, h);
     runner.push_mouse_down(v, h);
     runner.push_mouse_up(v, h);
+}
+
+fn sound_page_rendered(runner: &mut FixtureRunner, win_top: i16, win_left: i16) -> bool {
+    // SetPage updates the menu state before DrawMainWindow paints the page.
+    // The right-hand lifecycle panel is only present after DrawSoundPage has
+    // completed, so its border is a semantic rendering gate for page actions.
+    // Include the filled panel, its heading, and the final Dispose button:
+    // outer panel borders are drawn before their contents and DrawControls,
+    // so border-only checks can still catch a partial frame.
+    [(82, 420), (160, 420), (94, 318), (237, 420), (160, 305), (160, 534),
+     (290, 153), (313, 153)]
+        .iter()
+        .all(|(v, h)| {
+            let [red, green, blue] = screen_rgb(
+                runner,
+                (win_top + v) as u16,
+                (win_left + h) as u16,
+            );
+            red < 250 || green < 250 || blue < 250
+        })
 }
 
 fn screen_rgb(runner: &mut FixtureRunner, v: u16, h: u16) -> [u8; 3] {
@@ -238,6 +260,55 @@ fn run_ticks(runner: &mut FixtureRunner, label: &str, ticks: u32) {
             "emulation halted while waiting for {label}"
         );
     }
+}
+
+fn run_audio(runner: &mut FixtureRunner, label: &str, samples: usize) {
+    let (_steps, still_running) = runner.run_steps_with_audio(50_000, None, samples);
+    assert!(
+        still_running && !runner.is_halted(),
+        "emulation halted while waiting for {label}"
+    );
+}
+
+fn assert_non_silent_audio(audio: &[u8], label: &str) {
+    let minimum = *audio
+        .iter()
+        .min()
+        .unwrap_or_else(|| panic!("{label} must contain mixed PCM samples"));
+    let maximum = *audio
+        .iter()
+        .max()
+        .unwrap_or_else(|| panic!("{label} must contain mixed PCM samples"));
+    assert!(
+        maximum.saturating_sub(minimum) >= 32,
+        "{label} must contain a non-silent waveform, min={minimum} max={maximum}"
+    );
+}
+
+fn step_until_with_audio<F>(
+    runner: &mut FixtureRunner,
+    label: &str,
+    audio_samples: usize,
+    mut condition: F,
+) where
+    F: FnMut(&mut FixtureRunner) -> bool,
+{
+    const MAX_ITERATIONS: usize = 200;
+
+    for iteration in 0..MAX_ITERATIONS {
+        if condition(runner) {
+            return;
+        }
+        let (_steps, still_running) = runner.run_steps_with_audio(50_000, None, audio_samples);
+        assert!(
+            still_running && !runner.is_halted(),
+            "emulation halted while waiting for {label} at iteration {iteration}"
+        );
+    }
+    panic!(
+        "Timed out waiting for '{label}' after {} instructions",
+        runner.total_instructions()
+    );
 }
 
 fn assert_graphics_page_rendered(runner: &mut FixtureRunner) {
@@ -354,6 +425,14 @@ fn test_toolbox_showcase() {
     assert!(
         !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS),
         "Lists & Inventory page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SOUND),
+        "Sound & Channels page must not be checked initially"
+    );
+    assert!(
+        !menu_item_checked(&snapshot, MENU_STATE, ITEM_STATE_SOUND_COMPLETE),
+        "Sound completion must not be checked initially"
     );
 
     // Validate hierarchical menu structure in snapshot
@@ -976,6 +1055,7 @@ fn test_toolbox_showcase() {
     let snapshot = runner.guest_menu_snapshot();
     assert!(menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_LISTS));
     assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_GRAPHICS));
+    assert!(!menu_item_checked(&snapshot, MENU_PAGES, ITEM_PAGE_SOUND));
 
     runner.set_mouse_position(550, 760);
     assert_reference_frame(&mut runner, "15-lists.png");
@@ -1048,4 +1128,153 @@ fn test_toolbox_showcase() {
         "LActivate(TRUE) must change the rendered list/status state"
     );
     assert_reference_frame(&mut runner, "16-lists-interacted.png");
+
+    // 17. Activate Sound & Channels and exercise the high- and low-level
+    // Sound Manager paths, including deterministic PCM output.
+    assert!(
+        runner.select_guest_menu_item(MENU_PAGES, ITEM_PAGE_SOUND),
+        "failed to queue selection of Sound & Channels page"
+    );
+    let mut sound_page_rendered_streak = 0;
+    step_until(&mut runner, "switch to Sound & Channels page", |r| {
+        let ready = menu_item_checked(&r.guest_menu_snapshot(), MENU_PAGES, ITEM_PAGE_SOUND)
+            && sound_page_rendered(r, win_top, win_left);
+        if ready {
+            sound_page_rendered_streak += 1;
+        } else {
+            sound_page_rendered_streak = 0;
+        }
+        // One frame can observe the panel/control drawing between guest
+        // toolbox calls. Require the same semantic state after another slice
+        // so the page's idle redraw has completed before input is sent.
+        sound_page_rendered_streak >= 2
+    });
+    // Let the guest finish the redraw after the last semantic sample; the
+    // condition itself is evaluated before the next emulation slice.
+    run_ticks(&mut runner, "finish Sound & Channels page redraw", 1);
+    step_until(&mut runner, "render Sound & Channels controls", |r| {
+        sound_page_rendered(r, win_top, win_left)
+    });
+    assert!(
+        sound_page_rendered(&mut runner, win_top, win_left),
+        "Sound & Channels controls must be rendered before interaction"
+    );
+    assert_eq!(
+        runner.dispatcher().sound_manager().channels.len(),
+        1,
+        "entering Sound & Channels must allocate one channel"
+    );
+    let sound_snapshot = runner.guest_menu_snapshot();
+    assert!(
+        !menu_item_checked(&sound_snapshot, MENU_STATE, ITEM_STATE_SOUND_COMPLETE),
+        "sound completion must start unchecked"
+    );
+    runner.set_mouse_position(550, 760);
+    assert_reference_frame(&mut runner, "17-sound-controls.png");
+
+    // SysBeep uses the Sound Manager's internal alert channel and must produce
+    // captured PCM without changing the page's explicitly allocated channel.
+    click_point(&mut runner, win_top + 267, win_left + 62);
+    run_audio(&mut runner, "SysBeep output", 4096);
+    let beep_audio = runner.drain_audio();
+    assert_non_silent_audio(&beep_audio, "SysBeep output");
+    assert_eq!(
+        runner.dispatcher().sound_manager().channels.len(),
+        1,
+        "completed SysBeep must release its temporary channel"
+    );
+
+    // SndPlay decodes the resource-backed format-1 sample into bufferCmd
+    // playback. Queue a volume command and callback behind the sample, then
+    // exercise immediate flush and quiet. The immediate pair intentionally
+    // cancels the queued callback; the completion pass below queues a fresh
+    // callback and verifies its guest-visible effect.
+    click_point(&mut runner, win_top + 267, win_left + 157);
+    run_audio(&mut runner, "SndPlay output", 16);
+    let play_audio = runner.drain_audio();
+    assert_non_silent_audio(&play_audio, "SndPlay output");
+    assert!(
+        runner.dispatcher().sound_manager().debug_buffer_cmd_count >= 1,
+        "SndPlay must submit the resource's bufferCmd"
+    );
+
+    click_point(&mut runner, win_top + 267, win_left + 262);
+    run_audio(&mut runner, "queued Sound Manager commands", 16);
+    click_point(&mut runner, win_top + 267, win_left + 352);
+    run_audio(&mut runner, "immediate flush", 4);
+    click_point(&mut runner, win_top + 267, win_left + 422);
+    run_audio(&mut runner, "immediate quiet", 4);
+    let sound_manager = runner.dispatcher().sound_manager();
+    assert!(
+        sound_manager.debug_cmd_codes_seen.contains(&46),
+        "queued volumeCmd must reach the Sound Manager"
+    );
+    assert!(
+        sound_manager.debug_cmd_codes_seen.contains(&4),
+        "immediate flushCmd must reach the Sound Manager"
+    );
+    assert!(
+        sound_manager.debug_cmd_codes_seen.contains(&3),
+        "immediate quietCmd must reach the Sound Manager"
+    );
+    // Play again and wait for a fresh callback flag to be reflected in the
+    // State menu. The audio assertion covers the host PCM boundary; the menu
+    // assertion covers guest-visible completion semantics.
+    click_point(&mut runner, win_top + 302, win_left + 82);
+    step_until_with_audio(&mut runner, "Sound Manager callback completion", 512, |r| {
+        menu_item_checked(
+            &r.guest_menu_snapshot(),
+            MENU_STATE,
+            ITEM_STATE_SOUND_COMPLETE,
+        )
+    });
+    let completion_audio = runner.drain_audio();
+    assert_non_silent_audio(&completion_audio, "completed SndPlay output");
+    let sound_manager = runner.dispatcher().sound_manager();
+    assert!(
+        sound_manager.debug_buffer_cmd_count >= 2,
+        "completion pass must submit a second resource bufferCmd"
+    );
+    assert!(
+        sound_manager.debug_samples_mixed > 0,
+        "Sound Manager playback must contribute mixed samples"
+    );
+    assert!(
+        sound_manager.pending_sound_callbacks.is_empty(),
+        "completion callback must be consumed"
+    );
+    assert!(
+        sound_manager
+            .channels
+            .iter()
+            .all(|channel| !channel.has_active_playback()),
+        "completion pass must leave the channel idle"
+    );
+    let sound_snapshot = runner.guest_menu_snapshot();
+    assert!(menu_item_checked(
+        &sound_snapshot,
+        MENU_STATE,
+        ITEM_STATE_SOUND_COMPLETE
+    ));
+
+    // Hold State open so the callback checkmark is part of the exact frame,
+    // then dispose the explicitly allocated channel through its button.
+    runner.set_mouse_position(10, 108);
+    runner.push_mouse_down(10, 108);
+    run_ticks(&mut runner, "State menu to show sound completion", 4);
+    assert_reference_frame(&mut runner, "18-sound-complete.png");
+    runner.push_mouse_up(10, 108);
+    run_ticks(&mut runner, "State menu to close after sound completion", 1);
+    click_point(&mut runner, win_top + 302, win_left + 200);
+    step_until(&mut runner, "dispose Sound Manager channel", |r| {
+        r.dispatcher().sound_manager().channels.is_empty()
+    });
+    assert!(
+        menu_item_checked(
+            &runner.guest_menu_snapshot(),
+            MENU_STATE,
+            ITEM_STATE_SOUND_COMPLETE
+        ),
+        "sound completion checkmark must survive channel disposal"
+    );
 }

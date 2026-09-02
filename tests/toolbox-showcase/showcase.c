@@ -9,6 +9,8 @@
  *   (More Macintosh Toolbox ch 4)
  * - Control Manager & Standard CDEFs (Macintosh Toolbox Essentials ch 5)
  * - Dialog Manager & Alerts (Macintosh Toolbox Essentials ch 6)
+ * - Sound Manager channels, sampled playback & command queues
+ *   (Inside Macintosh: Sound ch 2)
  * - Palette Manager activation, indexed drawing & animation
  *   (Inside Macintosh Volume VI ch 20)
  * - QuickDraw Geometry, Arcs, Polygons, Regions, PICT, Icons & 3D Bevels
@@ -28,6 +30,7 @@
 #include <QDOffscreen.h>
 #include <Quickdraw.h>
 #include <Resources.h>
+#include <Sound.h>
 #include <TextEdit.h>
 #include <ToolUtils.h>
 #include <Windows.h>
@@ -56,6 +59,7 @@
 #define rAboutAlert 130
 #define rShowcaseIcon 128
 #define rShowcasePalette 150
+#define rShowcaseSound 151
 
 #define mApple 128
 #define mPages 129
@@ -77,12 +81,14 @@
 #define iTextEdit 7
 #define iPalettes 8
 #define iLists 9
+#define iSound 10
 
 /* State menu items */
 #define iButtonState 1
 #define iCheckboxState 2
 #define iScrollbarState 3
 #define iWindowState 4
+#define iSoundState 5
 
 /* Options menu items */
 #define iOptDifficulty 1
@@ -124,6 +130,7 @@
 #define pageTextEdit 7
 #define pagePalettes 8
 #define pageLists 9
+#define pageSound 10
 
 #define kInventoryRowCount 12
 #define listStatusNone 0
@@ -192,6 +199,218 @@ static short gListSelectedRow = -1;
 static short gListSelectedLength;
 static Boolean gListActive = true;
 static Boolean gListResized = false;
+
+/* Page 10: Sound Manager */
+static SndChannelPtr gShowcaseSoundChannel;
+static Handle gShowcaseSound;
+static SndCallBackUPP gShowcaseSoundCallbackUPP;
+static SCStatus gShowcaseSoundStatus;
+static ControlHandle gSoundBtnBeep;
+static ControlHandle gSoundBtnPlay;
+static ControlHandle gSoundBtnQueue;
+static ControlHandle gSoundBtnFlush;
+static ControlHandle gSoundBtnQuiet;
+static ControlHandle gSoundBtnComplete;
+static ControlHandle gSoundBtnDispose;
+static Boolean gSoundBeeped = false;
+static Boolean gSoundStarted = false;
+static Boolean gSoundQueued = false;
+static Boolean gSoundFlushed = false;
+static Boolean gSoundQuieted = false;
+static volatile Boolean gSoundCompleted = false;
+static Boolean gSoundDisposed = true;
+static Boolean gSoundResourceLocked = false;
+static OSErr gSoundLastError = noErr;
+static OSErr gSoundStatusError = noErr;
+
+static void SyncMenuState(void);
+static MenuHandle StateMenu(void);
+
+/*
+ * Sound Manager callbacks run at interrupt time. Store the completion flag
+ * address in the channel's application-owned userInfo field so the callback
+ * does not need to dereference the application's A5 world. Sound (1994),
+ * pp. 2-46--2-48 and 2-151--2-152.
+ */
+static pascal void ShowcaseSoundCallback(SndChannelPtr chan, SndCommand *cmd)
+{
+    (void)cmd;
+    if (chan != nil && chan->userInfo != 0) {
+        *((volatile Boolean *)chan->userInfo) = true;
+    }
+}
+
+static void MakeShowcaseSoundCommand(SndCommand *cmd, short command, long param2)
+{
+    cmd->cmd = command;
+    cmd->param1 = 0;
+    cmd->param2 = param2;
+}
+
+static void EnsureShowcaseSoundChannel(void)
+{
+    if (gShowcaseSoundChannel != nil) return;
+    if (gShowcaseSound == nil) {
+        gShowcaseSound = GetResource('snd ', rShowcaseSound);
+    }
+    if (gShowcaseSound == nil) {
+        gSoundLastError = resNotFound;
+        return;
+    }
+
+    if (gShowcaseSoundCallbackUPP == nil) {
+        gShowcaseSoundCallbackUPP = NewSndCallBackUPP(ShowcaseSoundCallback);
+    }
+    gSoundLastError = SndNewChannel(&gShowcaseSoundChannel, sampledSynth,
+                                    initMono, gShowcaseSoundCallbackUPP);
+    if (gSoundLastError == noErr && gShowcaseSoundChannel != nil) {
+        gShowcaseSoundChannel->userInfo = (long)&gSoundCompleted;
+        gSoundDisposed = false;
+    } else if (gShowcaseSoundCallbackUPP != nil) {
+        DisposeSndCallBackUPP(gShowcaseSoundCallbackUPP);
+        gShowcaseSoundCallbackUPP = nil;
+    }
+}
+
+static void ResetShowcaseSoundChannel(void)
+{
+    SndCommand cmd;
+
+    if (gShowcaseSoundChannel == nil) return;
+    MakeShowcaseSoundCommand(&cmd, quietCmd, 0);
+    SndDoImmediate(gShowcaseSoundChannel, &cmd);
+    MakeShowcaseSoundCommand(&cmd, flushCmd, 0);
+    SndDoImmediate(gShowcaseSoundChannel, &cmd);
+}
+
+static void PlayShowcaseSound(Boolean queueCompletion)
+{
+    SndCommand cmd;
+    Boolean lockedHere;
+
+    EnsureShowcaseSoundChannel();
+    if (gShowcaseSoundChannel == nil || gShowcaseSound == nil) return;
+
+    ResetShowcaseSoundChannel();
+    gSoundStarted = false;
+    gSoundQueued = false;
+    gSoundFlushed = false;
+    gSoundQuieted = false;
+    gSoundCompleted = false;
+    gSoundDisposed = false;
+    SyncMenuState();
+
+    lockedHere = false;
+    if (!gSoundResourceLocked) {
+        HLock(gShowcaseSound);
+        gSoundResourceLocked = true;
+        lockedHere = true;
+    }
+    gSoundLastError = SndPlay(gShowcaseSoundChannel,
+                               (SndListHandle)gShowcaseSound, true);
+    if (gSoundLastError != noErr) {
+        if (lockedHere) {
+            HUnlock(gShowcaseSound);
+            gSoundResourceLocked = false;
+        }
+        return;
+    }
+    gSoundStarted = true;
+
+    if (queueCompletion) {
+        MakeShowcaseSoundCommand(&cmd, volumeCmd, 0x00c000c0);
+        gSoundLastError = SndDoCommand(gShowcaseSoundChannel, &cmd, true);
+        if (gSoundLastError == noErr) {
+            MakeShowcaseSoundCommand(&cmd, callBackCmd, 0);
+            gSoundLastError = SndDoCommand(gShowcaseSoundChannel, &cmd, true);
+            gSoundQueued = gSoundLastError == noErr;
+        }
+    }
+}
+
+static void QueueShowcaseSoundCommands(void)
+{
+    SndCommand cmd;
+
+    if (gShowcaseSoundChannel == nil) return;
+    MakeShowcaseSoundCommand(&cmd, volumeCmd, 0x00800080);
+    gSoundLastError = SndDoCommand(gShowcaseSoundChannel, &cmd, true);
+    if (gSoundLastError == noErr) {
+        MakeShowcaseSoundCommand(&cmd, callBackCmd, 0);
+        gSoundLastError = SndDoCommand(gShowcaseSoundChannel, &cmd, true);
+        gSoundQueued = gSoundLastError == noErr;
+    }
+}
+
+static void FlushShowcaseSound(void)
+{
+    SndCommand cmd;
+
+    if (gShowcaseSoundChannel == nil) return;
+    MakeShowcaseSoundCommand(&cmd, flushCmd, 0);
+    gSoundLastError = SndDoImmediate(gShowcaseSoundChannel, &cmd);
+    gSoundFlushed = gSoundLastError == noErr;
+}
+
+static void QuietShowcaseSound(void)
+{
+    SndCommand cmd;
+
+    if (gShowcaseSoundChannel == nil) return;
+    MakeShowcaseSoundCommand(&cmd, quietCmd, 0);
+    gSoundLastError = SndDoImmediate(gShowcaseSoundChannel, &cmd);
+    gSoundQuieted = gSoundLastError == noErr;
+}
+
+static void DisposeShowcaseSoundChannel(void)
+{
+    if (gShowcaseSoundChannel == nil) {
+        gSoundDisposed = true;
+        if (gShowcaseSoundCallbackUPP != nil) {
+            DisposeSndCallBackUPP(gShowcaseSoundCallbackUPP);
+            gShowcaseSoundCallbackUPP = nil;
+        }
+        if (gSoundResourceLocked && gShowcaseSound != nil) {
+            HUnlock(gShowcaseSound);
+            gSoundResourceLocked = false;
+        }
+        SyncMenuState();
+        return;
+    }
+
+    ResetShowcaseSoundChannel();
+    gSoundLastError = SndDisposeChannel(gShowcaseSoundChannel, true);
+    gShowcaseSoundChannel = nil;
+    gSoundDisposed = true;
+    if (gShowcaseSoundCallbackUPP != nil) {
+        DisposeSndCallBackUPP(gShowcaseSoundCallbackUPP);
+        gShowcaseSoundCallbackUPP = nil;
+    }
+    if (gSoundResourceLocked && gShowcaseSound != nil) {
+        HUnlock(gShowcaseSound);
+        gSoundResourceLocked = false;
+    }
+    SyncMenuState();
+}
+
+static void RefreshShowcaseSoundStatus(void)
+{
+    if (gShowcaseSoundChannel == nil) {
+        gSoundStatusError = noErr;
+        gShowcaseSoundStatus.scChannelBusy = false;
+        gShowcaseSoundStatus.scChannelPaused = false;
+        return;
+    }
+    gSoundStatusError = SndChannelStatus(gShowcaseSoundChannel,
+                                         sizeof(SCStatus),
+                                         &gShowcaseSoundStatus);
+}
+
+static void PollShowcaseSound(void)
+{
+    RefreshShowcaseSoundStatus();
+    CheckItem(StateMenu(), iSoundState, gSoundCompleted);
+}
 
 static const char kTESampleText[] =
     "TextEdit manages styled and plain text formatting, automatic word wrapping, "
@@ -1344,6 +1563,83 @@ static void AnimateShowcasePalette(void)
 }
 
 /*
+ * Page 10: Sound Manager channels, sampled playback, command queues, and
+ * callbacks. The controls deliberately separate queued commands from
+ * immediate quiet/flush commands so their different lifecycles are visible.
+ * Sound (1994), pp. 2-19--2-29, 2-92--2-101, and 2-151--2-152.
+ */
+static void DrawSoundPage(void)
+{
+    Rect r;
+    Boolean busy;
+
+    RefreshShowcaseSoundStatus();
+    busy = gShowcaseSoundStatus.scChannelBusy;
+
+    DrawHeading("\pSound Manager: Channels & Sampled Playback");
+    MoveTo(24, 56);
+    DrawString("\pSysBeep, SndPlay, FIFO commands, immediate control, and callbacks.");
+    MoveTo(24, 70);
+    DrawString("\pThe small resource-backed sample is mixed into the deterministic audio stream.");
+
+    SetRect(&r, 20, 82, 290, 238);
+    DrawBeveledBox(&r, false);
+    SetRect(&r, 305, 82, 535, 238);
+    DrawBeveledBox(&r, false);
+
+    TextFont(systemFont);
+    TextSize(10);
+    TextFace(bold);
+    MoveTo(32, 101);
+    DrawString("\pChannel & status");
+    MoveTo(317, 101);
+    DrawString("\pCommand lifecycle");
+    TextFace(0);
+
+    TextFont(applFont);
+    TextSize(9);
+    MoveTo(32, 122);
+    DrawString("\pSndNewChannel: ");
+    DrawString(gShowcaseSoundChannel != nil ? "\pallocated" : "\pdisposed");
+    MoveTo(32, 140);
+    DrawString("\pSndChannelStatus: ");
+    DrawString(busy ? "\pbusy" : "\pidle");
+    MoveTo(32, 158);
+    DrawString("\pSndPlay resource: ");
+    DrawString(gSoundStarted ? "\pstarted" : "\pidle");
+    MoveTo(32, 176);
+    DrawString("\pSysBeep(30): ");
+    DrawString(gSoundBeeped ? "\prequested" : "\pnot requested");
+    MoveTo(32, 194);
+    DrawString("\pCompletion: ");
+    DrawString(gSoundCompleted ? "\preceived" : "\pwaiting");
+    MoveTo(32, 212);
+    DrawString("\pStatus error: ");
+    DrawString(gSoundStatusError == noErr ? "\pnoErr" : "\perror");
+
+    MoveTo(317, 122);
+    DrawString("\pSndDoCommand FIFO: ");
+    DrawString(gSoundQueued ? "\psent" : "\pidle");
+    MoveTo(317, 140);
+    DrawString("\pSndDoImmediate flush: ");
+    DrawString(gSoundFlushed ? "\pissued" : "\pidle");
+    MoveTo(317, 158);
+    DrawString("\pSndDoImmediate quiet: ");
+    DrawString(gSoundQuieted ? "\pissued" : "\pidle");
+    MoveTo(317, 176);
+    DrawString("\pCallback command: ");
+    DrawString(gSoundQueued ? "\pqueued" : "\pnot queued");
+    MoveTo(317, 194);
+    DrawString("\pResource: ");
+    DrawString(gShowcaseSound != nil ? "\ploaded" : "\pmissing");
+    MoveTo(317, 212);
+    DrawString("\pDispose: ");
+    DrawString(gSoundDisposed ? "\pcomplete" : "\pavailable");
+
+    DrawControls(gMainWindow);
+}
+
+/*
  * Page 8: TextEdit: Multiline Buffer, Justification, Scrap & Selection
  */
 static void DrawTextEditPage(void)
@@ -1727,6 +2023,9 @@ static void DrawMainWindow(void)
         case pageLists:
             DrawListsPage();
             break;
+        case pageSound:
+            DrawSoundPage();
+            break;
     }
 }
 
@@ -1750,6 +2049,7 @@ static void ShowAllControls(short page)
     Boolean isPalettes = (page == pagePalettes);
     Boolean isTextEdit = (page == pageTextEdit);
     Boolean isLists = (page == pageLists);
+    Boolean isSound = (page == pageSound);
 
     /* Page 2: Controls */
     if (isControls) {
@@ -1840,6 +2140,25 @@ static void ShowAllControls(short page)
         HideControl(gListResize);
         HideControl(gListActivate);
     }
+
+    /* Page 10: Sound Manager */
+    if (isSound) {
+        ShowControl(gSoundBtnBeep);
+        ShowControl(gSoundBtnPlay);
+        ShowControl(gSoundBtnQueue);
+        ShowControl(gSoundBtnFlush);
+        ShowControl(gSoundBtnQuiet);
+        ShowControl(gSoundBtnComplete);
+        ShowControl(gSoundBtnDispose);
+    } else {
+        HideControl(gSoundBtnBeep);
+        HideControl(gSoundBtnPlay);
+        HideControl(gSoundBtnQueue);
+        HideControl(gSoundBtnFlush);
+        HideControl(gSoundBtnQuiet);
+        HideControl(gSoundBtnComplete);
+        HideControl(gSoundBtnDispose);
+    }
 }
 
 static void SyncMenuState(void)
@@ -1852,7 +2171,7 @@ static void SyncMenuState(void)
 
     pages = GetMenuHandle(mPages);
     if (pages != nil) {
-        for (i = 1; i <= 9; i++) {
+        for (i = 1; i <= 10; i++) {
             CheckItem(pages, i, gPage == i);
         }
     }
@@ -1897,6 +2216,8 @@ static void SyncMenuState(void)
         SetControlValue(gTEJustCenter, gTEJust == teJustCenter ? 1 : 0);
         SetControlValue(gTEJustRight, gTEJust == teJustRight ? 1 : 0);
     }
+
+    CheckItem(StateMenu(), iSoundState, gSoundCompleted);
 }
 
 static void DoModalPrefsDialog(void)
@@ -1943,6 +2264,9 @@ static void SetPage(short page)
 {
     Rect bounds;
 
+    if (gPage == pageSound && page != pageSound) {
+        DisposeShowcaseSoundChannel();
+    }
     if (gPage == pageTextEdit && page != pageTextEdit) {
         if (gTE != nil) TEDeactivate(gTE);
     }
@@ -1966,6 +2290,9 @@ static void SetPage(short page)
         gListActive = true;
         LSetDrawingMode(true, gInventoryList);
         LActivate(true, gInventoryList);
+    }
+    if (page == pageSound) {
+        EnsureShowcaseSoundChannel();
     }
     ShowAllControls(page);
     SyncMenuState();
@@ -2159,6 +2486,29 @@ static void Initialize(void)
     gListActivate = NewControl(gMainWindow, &r, "\pToggle Activation", false, 0, 0, 1,
                                pushButProc, 0);
 
+    /* Page 10: Sound Manager Controls */
+    SetRect(&r, 20, 255, 105, 279);
+    gSoundBtnBeep = NewControl(gMainWindow, &r, "\pSysBeep", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 110, 255, 205, 279);
+    gSoundBtnPlay = NewControl(gMainWindow, &r, "\pPlay snd", false, 0, 0, 1,
+                               pushButProc, 0);
+    SetRect(&r, 210, 255, 315, 279);
+    gSoundBtnQueue = NewControl(gMainWindow, &r, "\pQueue cmds", false, 0, 0, 1,
+                                pushButProc, 0);
+    SetRect(&r, 320, 255, 385, 279);
+    gSoundBtnFlush = NewControl(gMainWindow, &r, "\pFlush", false, 0, 0, 1,
+                                pushButProc, 0);
+    SetRect(&r, 390, 255, 455, 279);
+    gSoundBtnQuiet = NewControl(gMainWindow, &r, "\pQuiet", false, 0, 0, 1,
+                                pushButProc, 0);
+    SetRect(&r, 20, 290, 145, 314);
+    gSoundBtnComplete = NewControl(gMainWindow, &r, "\pPlay to complete", false, 0, 0, 1,
+                                   pushButProc, 0);
+    SetRect(&r, 150, 290, 250, 314);
+    gSoundBtnDispose = NewControl(gMainWindow, &r, "\pDispose", false, 0, 0, 1,
+                                  pushButProc, 0);
+
     SetPage(pageGraphics);
 }
 
@@ -2170,7 +2520,7 @@ static void DoMenuChoice(long choice)
     menuID = HiWord(choice);
     item = LoWord(choice);
 
-    if (menuID == mPages && item >= iGraphics && item <= iLists) {
+    if (menuID == mPages && item >= iGraphics && item <= iSound) {
         SetPage(item);
     } else if (menuID == mDifficulty) {
         gDifficulty = item;
@@ -2342,6 +2692,21 @@ static void DoContentClick(WindowPtr window, EventRecord *event)
     } else if (control == gPaletteAnimate) {
         AnimateShowcasePalette();
         return;
+    } else if (control == gSoundBtnBeep) {
+        SysBeep(30);
+        gSoundBeeped = true;
+    } else if (control == gSoundBtnPlay) {
+        PlayShowcaseSound(false);
+    } else if (control == gSoundBtnQueue) {
+        QueueShowcaseSoundCommands();
+    } else if (control == gSoundBtnFlush) {
+        FlushShowcaseSound();
+    } else if (control == gSoundBtnQuiet) {
+        QuietShowcaseSound();
+    } else if (control == gSoundBtnComplete) {
+        PlayShowcaseSound(true);
+    } else if (control == gSoundBtnDispose) {
+        DisposeShowcaseSoundChannel();
     } else if (control == gTEJustLeft) {
         gTEJust = teJustLeft;
         TESetAlignment(teJustLeft, gTE);
@@ -2450,8 +2815,12 @@ void main(void)
             DoEvent(&event);
         } else if (gPage == pageTextEdit && gTE != nil) {
             TEIdle(gTE);
+        } else if (gPage == pageSound) {
+            PollShowcaseSound();
+            DrawMainWindow();
         }
     }
+    DisposeShowcaseSoundChannel();
     SetPalette(gMainWindow, nil, true);
     if (gShowcasePalette != nil) DisposePalette(gShowcasePalette);
     if (gOriginalPalette != nil) DisposePalette(gOriginalPalette);
