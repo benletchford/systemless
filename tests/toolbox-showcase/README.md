@@ -117,10 +117,11 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the fourteen interaction steps above. Use an 800×600,
-8-bit display for captures matching this gallery. The Pages, State, and nested
-menu checkmarks, window count, control values, modal sessions, visible drawing,
-and final page provide the comparison points between runs.
+PowerPC slice, then follow the fourteen interaction steps above. Use an 800×600
+8-bit display in BasiliskII and an 800×600 direct-color display in SheepShaver
+for captures matching this gallery. The Pages, State, and nested menu
+checkmarks, window count, control values, modal sessions, visible drawing, and
+final page provide the comparison points between runs.
 
 ## Reference screenshots
 
@@ -128,10 +129,12 @@ These full-frame 800×600 captures all come from the same committed archive.
 The Systemless images are exact RGB baselines checked by the integration test;
 the classic-Mac images are human-review oracles because system fonts, desktop
 patterns, and window chrome can vary between compatible OS installations.
-The three-way frames are therefore functional comparisons rather than
-pixel-identical targets. Cursor placement and preference values can also differ
-when a manual oracle capture is taken at a different point in the interaction
-sequence. The shared Systemless baseline is required for both CPU slices. The
+Each architecture is paired with its corresponding classic-Mac oracle. The
+frames are functional comparisons rather than whole-frame pixel-identical
+targets. Palette entry selection, colors before device-depth quantization, and
+animation behavior are strict comparison points rather than presentation
+variance. Cursor placement and preference values can differ when a manual
+oracle capture is taken at a different point in the interaction sequence. The
 PowerPC run also submits native QuickDraw 3D geometry before the fixture paints
 the same architecture-neutral visible result; classic operating-system
 presentation remains environment-dependent.
@@ -140,25 +143,47 @@ SheepShaver's oracle display is direct color, so its animation checkpoint is
 intentionally unchanged: *Inside Macintosh, Volume VI* (1991), p. 20-11 notes
 that color-table animation is unavailable on direct devices. Its same-device
 transfer band likewise uses an RGB fallback because positional CLUT indexes
-exist only on indexed devices. The Systemless 8-bit captures for both CPU
-slices and BasiliskII's 8-bit capture exercise the actual indexed paths.
+exist only on indexed devices. Systemless uses the same direct-color behavior
+for its PowerPC baseline. The Systemless 68K and BasiliskII captures exercise
+the actual 8-bit indexed paths.
 
-| Checkpoint | Shared Systemless baseline | BasiliskII (68K) | SheepShaver (PowerPC) |
-| --- | --- | --- | --- |
-| 1. Graphics | <img src="reference/systemless/01-graphics.png" alt="Shared Graphics baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="260"> | <img src="reference/sheepshaver-ppc/01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="260"> |
-| 2. Controls and State menu | <img src="reference/systemless/02-controls.png" alt="Shared Controls baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/02-controls.png" alt="Interacted Controls page and State menu in SheepShaver" width="260"> |
-| 3. Windows | <img src="reference/systemless/03-windows.png" alt="Shared Windows baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page and auxiliary window in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page and auxiliary window in SheepShaver" width="260"> |
-| 4. Drawing and QuickDraw 3D | <img src="reference/systemless/04-drawing.png" alt="Shared Drawing baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/04-drawing.png" alt="QuickDraw drawing and 68K bevel fallback in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/04-drawing.png" alt="QuickDraw drawing and native QuickDraw 3D TriMesh in SheepShaver" width="260"> |
-| 5. Game preferences | <img src="reference/systemless/05-preferences.png" alt="Shared Game Preferences baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/05-preferences.png" alt="Changed game preferences in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/05-preferences.png" alt="Changed game preferences in SheepShaver" width="260"> |
-| 6. Nested menus | <img src="reference/systemless/06-nested-menus.png" alt="Shared nested menus baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/06-nested-menus.png" alt="File and nested Game Options menus in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/06-nested-menus.png" alt="File and nested Game Options menus in SheepShaver" width="260"> |
-| 7. Modal dialog | <img src="reference/systemless/07-modal-dialog.png" alt="Shared modal dialog baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="260"> |
-| 8. Alert | <img src="reference/systemless/08-alert.png" alt="Shared alert baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/08-alert.png" alt="System alert in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="260"> |
-| 9. Dialog result | <img src="reference/systemless/09-dialogs.png" alt="Shared dialog result baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/09-dialogs.png" alt="Dialogs page after modal interactions in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="260"> |
-| 10. TextEdit | <img src="reference/systemless/10-textedit.png" alt="Shared TextEdit baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/10-textedit.png" alt="TextEdit interactive buffer in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/10-textedit.png" alt="TextEdit interactive buffer in SheepShaver" width="260"> |
-| 11. Palette activation | <img src="reference/systemless/11-palette.png" alt="Shared palette baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/11-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/11-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="260"> |
-| 12. Palette animation | <img src="reference/systemless/12-palette-animated.png" alt="Shared palette animation baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/12-palette-animated.png" alt="Animated explicit CLUT entries in SheepShaver" width="260"> |
-| 13. Menu-bar hover | <img src="reference/systemless/13-menu-hover.png" alt="Shared menu-bar hover baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="260"> |
-| 14. Palette restoration | <img src="reference/systemless/14-graphics-return.png" alt="Shared palette restoration baseline in Systemless" width="260"> | <img src="reference/basiliskii-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="260"> | <img src="reference/sheepshaver-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="260"> |
+### 68K
+
+| Checkpoint | Systemless | BasiliskII |
+| --- | --- | --- |
+| 1. Graphics | <img src="reference/systemless-68k/01-graphics.png" alt="Graphics page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/01-graphics.png" alt="Graphics page in BasiliskII running the 68K slice" width="360"> |
+| 2. Controls and State menu | <img src="reference/systemless-68k/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/02-controls.png" alt="Interacted Controls page and State menu in BasiliskII" width="360"> |
+| 3. Windows | <img src="reference/systemless-68k/03-windows.png" alt="Windows page and auxiliary window in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/03-windows.png" alt="Windows page and auxiliary window in BasiliskII" width="360"> |
+| 4. Drawing and 3D fallback | <img src="reference/systemless-68k/04-drawing.png" alt="QuickDraw drawing and 68K bevel fallback in Systemless" width="360"> | <img src="reference/basiliskii-68k/04-drawing.png" alt="QuickDraw drawing and 68K bevel fallback in BasiliskII" width="360"> |
+| 5. Game preferences | <img src="reference/systemless-68k/05-preferences.png" alt="Changed game preferences in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/05-preferences.png" alt="Changed game preferences in BasiliskII" width="360"> |
+| 6. Nested menus | <img src="reference/systemless-68k/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/06-nested-menus.png" alt="File and nested Game Options menus in BasiliskII" width="360"> |
+| 7. Modal dialog | <img src="reference/systemless-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/07-modal-dialog.png" alt="Resource-backed game configuration dialog in BasiliskII" width="360"> |
+| 8. Alert | <img src="reference/systemless-68k/08-alert.png" alt="System alert in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/08-alert.png" alt="System alert in BasiliskII" width="360"> |
+| 9. Dialog result | <img src="reference/systemless-68k/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/09-dialogs.png" alt="Dialogs page after modal interactions in BasiliskII" width="360"> |
+| 10. TextEdit | <img src="reference/systemless-68k/10-textedit.png" alt="TextEdit interactive buffer in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/10-textedit.png" alt="TextEdit interactive buffer in BasiliskII" width="360"> |
+| 11. Palette activation | <img src="reference/systemless-68k/11-palette.png" alt="Initial mixed-usage palette in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/11-palette.png" alt="Initial mixed-usage palette in BasiliskII" width="360"> |
+| 12. Palette animation | <img src="reference/systemless-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/12-palette-animated.png" alt="Animated explicit CLUT entries in BasiliskII" width="360"> |
+| 13. Menu-bar hover | <img src="reference/systemless-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/13-menu-hover.png" alt="Pages menu selected while dragging from File in BasiliskII" width="360"> |
+| 14. Palette restoration | <img src="reference/systemless-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the 68K interaction sequence" width="360"> | <img src="reference/basiliskii-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
+
+### PowerPC
+
+| Checkpoint | Systemless | SheepShaver |
+| --- | --- | --- |
+| 1. Graphics | <img src="reference/systemless-ppc/01-graphics.png" alt="Graphics page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/01-graphics.png" alt="Graphics page in SheepShaver running the PowerPC slice" width="360"> |
+| 2. Controls and State menu | <img src="reference/systemless-ppc/02-controls.png" alt="Interacted Controls page and State menu in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/02-controls.png" alt="Interacted Controls page and State menu in SheepShaver" width="360"> |
+| 3. Windows | <img src="reference/systemless-ppc/03-windows.png" alt="Windows page and auxiliary window in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/03-windows.png" alt="Windows page and auxiliary window in SheepShaver" width="360"> |
+| 4. Drawing and QuickDraw 3D | <img src="reference/systemless-ppc/04-drawing.png" alt="QuickDraw drawing and QuickDraw 3D pane in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/04-drawing.png" alt="QuickDraw drawing and native QuickDraw 3D TriMesh in SheepShaver" width="360"> |
+| 5. Game preferences | <img src="reference/systemless-ppc/05-preferences.png" alt="Changed game preferences in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/05-preferences.png" alt="Changed game preferences in SheepShaver" width="360"> |
+| 6. Nested menus | <img src="reference/systemless-ppc/06-nested-menus.png" alt="File and nested Game Options menus in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/06-nested-menus.png" alt="File and nested Game Options menus in SheepShaver" width="360"> |
+| 7. Modal dialog | <img src="reference/systemless-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/07-modal-dialog.png" alt="Resource-backed game configuration dialog in SheepShaver" width="360"> |
+| 8. Alert | <img src="reference/systemless-ppc/08-alert.png" alt="Live system alert in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/08-alert.png" alt="Live system alert in SheepShaver" width="360"> |
+| 9. Dialog result | <img src="reference/systemless-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/09-dialogs.png" alt="Dialogs page after modal interactions in SheepShaver" width="360"> |
+| 10. TextEdit | <img src="reference/systemless-ppc/10-textedit.png" alt="TextEdit interactive buffer in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/10-textedit.png" alt="TextEdit interactive buffer in SheepShaver" width="360"> |
+| 11. Palette activation | <img src="reference/systemless-ppc/11-palette.png" alt="Initial mixed-usage palette in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/11-palette.png" alt="Initial mixed-usage palette in SheepShaver" width="360"> |
+| 12. Palette animation | <img src="reference/systemless-ppc/12-palette-animated.png" alt="Direct-color palette after AnimateEntry in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/12-palette-animated.png" alt="Direct-color palette after AnimateEntry in SheepShaver" width="360"> |
+| 13. Menu-bar hover | <img src="reference/systemless-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/13-menu-hover.png" alt="Pages menu selected while dragging from File in SheepShaver" width="360"> |
+| 14. Palette restoration | <img src="reference/systemless-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the PowerPC interaction sequence" width="360"> | <img src="reference/sheepshaver-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
 state rather than relying on fixed delays, and compares all fourteen rendered
