@@ -73,8 +73,8 @@ use crate::menu_model::GuestMenuSnapshot;
 use crate::process_context::{
     ProcessAppleEventHandler, ProcessContext, ProcessCursorState, ProcessFileSystemState,
     ProcessHandleRecord, ProcessHandleStateRecord, ProcessInputState, ProcessMemoryManager,
-    ProcessNativeAllocatorState, ProcessNativeHeapState, ProcessNativeMemoryManager,
-    ProcessPtrRecord, ProcessResourceManagerState, ProcessVfsFileRecords,
+    ProcessNativeHeapState, ProcessNativeMemoryManager, ProcessPtrRecord,
+    ProcessResourceManagerState, ProcessVfsFileRecords,
     ProcessVfsResourceFileRecords, ProcessWorkingDirectory, SharedProcessAppleEventHandlers,
     SharedProcessCallbackScheduling, SharedProcessCursorState, SharedProcessDialogText,
     SharedProcessControlManager, SharedProcessEventQueue,
@@ -3721,53 +3721,8 @@ impl PpcLoadedApp {
         }
     }
 
-    fn initialize_process_memory_manager(
-        &self,
-        memory_manager: &mut ProcessMemoryManager,
-        pointer_records: Option<ProcessNativeAllocatorState>,
-    ) {
-        let existing_heap = memory_manager.native_heap_state();
-        let pointer_records =
-            pointer_records.or_else(|| memory_manager.native_allocator_snapshot());
-        let canonical_heap = pointer_records
-            .as_ref()
-            .map(|allocator| allocator.heap)
-            .or(existing_heap)
-            .or_else(|| self.process_memory_manager.0.borrow().native_heap_state());
-        memory_manager.publish_native_allocator(
-            ProcessNativeHeapState {
-                heap_base: canonical_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_base),
-                heap_cursor: canonical_heap.map_or(PPC_HEAP_BASE, |heap| heap.heap_cursor),
-                heap_limit: canonical_heap.map_or(self.stack_base, |heap| heap.heap_limit),
-                last_mem_error: canonical_heap.map_or(0, |heap| heap.last_mem_error),
-                heap_maximized: canonical_heap.is_some_and(|heap| heap.heap_maximized),
-                master_pointer_blocks_requested: canonical_heap
-                    .map_or(0, |heap| heap.master_pointer_blocks_requested),
-            },
-            pointer_records
-                .as_ref()
-                .map_or(&[], |allocator| allocator.ptrs.as_slice()),
-            pointer_records
-                .as_ref()
-                .map_or(&[], |allocator| allocator.free_ptr_blocks.as_slice()),
-            pointer_records
-                .as_ref()
-                .map_or(&[], |allocator| allocator.free_handle_blocks.as_slice()),
-        );
-    }
-
-    fn adopt_process_memory_manager(&mut self, memory_manager: &ProcessMemoryManager) {
-        if let Some(allocator) = memory_manager.native_allocator_snapshot() {
-            self.apply_process_native_allocator(allocator);
-        }
-    }
-
-    fn apply_process_native_allocator(&mut self, allocator: ProcessNativeAllocatorState) {
-        ppc_update_zone_free_bytes(
-            &mut self.memory,
-            allocator.heap.heap_cursor,
-            allocator.heap.heap_limit,
-        );
+    fn refresh_process_native_zone(&mut self, heap: ProcessNativeHeapState) {
+        ppc_update_zone_free_bytes(&mut self.memory, heap.heap_cursor, heap.heap_limit);
     }
 
     pub(crate) fn prepare_shared_system_reservation(&mut self, base: u32, len: u32) -> bool {
@@ -3905,6 +3860,16 @@ impl PpcLoadedApp {
     }
 
     pub(crate) fn attach_process_context(&mut self, context: &mut ProcessContext) {
+        let mut attached_memory_manager = None;
+        context.attach_memory_manager(&mut attached_memory_manager);
+        let attached_memory_manager =
+            attached_memory_manager.expect("process context supplies a Memory Manager");
+        if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
+            let standalone_memory_manager = self.process_memory_manager.0.borrow();
+            let memory_manager = attached_memory_manager.borrow();
+            memory_manager
+                .assert_can_adopt_process_memory_manager(&standalone_memory_manager);
+        }
         context.attach_file_system(&mut self.process_file_system);
         self.process_file_system.publish_native_vfs_catalogue();
         context.attach_sound_manager(&mut self.sound.manager);
@@ -3932,21 +3897,14 @@ impl PpcLoadedApp {
         context.attach_window_list(&mut self.window_list);
         context.attach_input_state(&mut self.process_input);
         context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
-        let mut attached_memory_manager = None;
-        context.attach_memory_manager(&mut attached_memory_manager);
-        let attached_memory_manager =
-            attached_memory_manager.expect("process context supplies a Memory Manager");
         if !self.process_memory_manager.ptr_eq(&attached_memory_manager) {
             {
                 let standalone_memory_manager = self.process_memory_manager.0.clone();
                 let mut standalone_memory_manager = standalone_memory_manager.borrow_mut();
                 let mut memory_manager = attached_memory_manager.borrow_mut();
-                memory_manager.adopt_handle_metadata(&mut standalone_memory_manager);
-                if memory_manager.has_native_allocator() {
-                    self.adopt_process_memory_manager(&memory_manager);
-                } else {
-                    let pointer_records = standalone_memory_manager.native_allocator_snapshot();
-                    self.initialize_process_memory_manager(&mut memory_manager, pointer_records);
+                memory_manager.adopt_process_memory_manager(&mut standalone_memory_manager);
+                if let Some(heap) = memory_manager.native_heap_state() {
+                    self.refresh_process_native_zone(heap);
                 }
             }
             self.process_memory_manager
@@ -91491,6 +91449,7 @@ pub(crate) mod tests {
     fn attaching_and_cloning_native_adapters_preserves_process_ownership() {
         let pef = synthetic_pef_with_import(b"NewHandleClear");
         let mut native = load_pef_application(&pef).unwrap();
+        let standalone_memory_manager = native.process_memory_manager.0.clone();
         native.cpu.gpr[3] = 24;
         run_test_import(
             &mut native,
@@ -91510,6 +91469,26 @@ pub(crate) mod tests {
         assert!(native
             .process_memory_manager
             .ptr_eq(&process_memory_manager));
+        assert!(!standalone_memory_manager.borrow().has_native_allocator());
+        assert!(standalone_memory_manager
+            .borrow()
+            .native_handle_records()
+            .is_empty());
+        let attached_heap = process_memory_manager.borrow().native_heap_state().unwrap();
+        let expected_free = ppc_heap_free_capacity(
+            &mut native.memory,
+            attached_heap.heap_cursor,
+            attached_heap.heap_limit,
+        )
+        .0;
+        assert_eq!(
+            native.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(expected_free)
+        );
+        assert_eq!(
+            native.memory.read_u32_be(PPC_SYSTEM_ZONE + 12),
+            Some(expected_free)
+        );
         let detached_heap_cursor = detached.heap_cursor();
         let detached_handle_record = detached.handles()[0];
         let attached_heap_cursor = native.heap_cursor() + 0x80;
@@ -91599,6 +91578,85 @@ pub(crate) mod tests {
         detached.cpu.gpr[3] = handle;
         run_test_import(&mut detached, PpcImportDispatcherTarget::HGetState);
         assert_eq!(detached.cpu.gpr[3], 0x40);
+    }
+
+    #[test]
+    fn attaching_a_pristine_native_adapter_retains_the_populated_process_allocator() {
+        let pef = synthetic_pef_with_import(b"NewPtrClear");
+        let mut owner = load_pef_application(&pef).unwrap();
+        owner.cpu.gpr[3] = 24;
+        run_test_import(
+            &mut owner,
+            PpcImportDispatcherTarget::NewPtr { clear: true },
+        );
+        let ptr = owner.cpu.gpr[3];
+        let mut context = ProcessContext::default();
+        owner.attach_process_context(&mut context);
+        let canonical = context.memory_manager_handle().clone();
+        let canonical_allocator = canonical.borrow().native_allocator_snapshot();
+
+        let mut observer = load_pef_application(&pef).unwrap();
+        let standalone = observer.process_memory_manager.0.clone();
+        observer.attach_process_context(&mut context);
+
+        assert!(observer.process_memory_manager.ptr_eq(&canonical));
+        assert_eq!(canonical.borrow().native_allocator_snapshot(), canonical_allocator);
+        assert_eq!(canonical.borrow_mut().native_ptr_size(ptr), 24);
+        assert!(!standalone.borrow().has_native_allocator());
+        let heap = canonical.borrow().native_heap_state().unwrap();
+        let expected_free =
+            ppc_heap_free_capacity(&mut observer.memory, heap.heap_cursor, heap.heap_limit).0;
+        assert_eq!(
+            observer.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            Some(expected_free)
+        );
+        assert_eq!(
+            observer.memory.read_u32_be(PPC_SYSTEM_ZONE + 12),
+            Some(expected_free)
+        );
+    }
+
+    #[test]
+    fn attaching_two_populated_native_adapters_is_atomic() {
+        let pef = synthetic_pef_with_import(b"NewPtrClear");
+        let mut owner = load_pef_application(&pef).unwrap();
+        owner.cpu.gpr[3] = 24;
+        run_test_import(
+            &mut owner,
+            PpcImportDispatcherTarget::NewPtr { clear: true },
+        );
+        let mut context = ProcessContext::default();
+        owner.attach_process_context(&mut context);
+        let canonical = context.memory_manager_handle().clone();
+
+        let mut rejected = load_pef_application(&pef).unwrap();
+        rejected.cpu.gpr[3] = 48;
+        run_test_import(
+            &mut rejected,
+            PpcImportDispatcherTarget::NewPtr { clear: true },
+        );
+        let standalone = rejected.process_memory_manager.0.clone();
+        let canonical_allocator = canonical.borrow().native_allocator_snapshot();
+        let standalone_allocator = standalone.borrow().native_allocator_snapshot();
+        let application_zone = rejected.memory.read_u32_be(PPC_APPLICATION_ZONE + 12);
+        let system_zone = rejected.memory.read_u32_be(PPC_SYSTEM_ZONE + 12);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rejected.attach_process_context(&mut context);
+        }));
+
+        assert!(result.is_err());
+        assert!(!rejected.process_memory_manager.ptr_eq(&canonical));
+        assert_eq!(canonical.borrow().native_allocator_snapshot(), canonical_allocator);
+        assert_eq!(standalone.borrow().native_allocator_snapshot(), standalone_allocator);
+        assert_eq!(
+            rejected.memory.read_u32_be(PPC_APPLICATION_ZONE + 12),
+            application_zone
+        );
+        assert_eq!(
+            rejected.memory.read_u32_be(PPC_SYSTEM_ZONE + 12),
+            system_zone
+        );
     }
 
     #[test]
