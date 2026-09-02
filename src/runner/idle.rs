@@ -194,7 +194,7 @@ impl IdleCycleHostSnapshot {
             mouse_button: dispatcher.input_state.mouse_button,
             key_map: *dispatcher.key_map_bytes(),
             caps_lock_physically_pressed: dispatcher.input_state.caps_lock_physically_pressed,
-            window_list: dispatcher.window_list.clone(),
+            window_list: dispatcher.window_list.to_vec(),
             pending_native_menu_selection: dispatcher.pending_native_menu_selection.snapshot(),
         }
     }

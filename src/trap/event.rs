@@ -179,7 +179,7 @@ impl super::TrapDispatcher {
         self.flushed_update_events
             .retain(|event| event.what == 6 && known_windows.contains(&event.message));
 
-        for &window in &self.window_list {
+        for &window in self.window_list.iter() {
             if !self.window_visible(bus, window) || !self.window_has_pending_update(bus, window) {
                 continue;
             }
@@ -2681,7 +2681,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         let front = make_dirty_visible_window(&mut bus);
         let back = make_dirty_visible_window(&mut bus);
-        disp.window_list = vec![front, back];
+        *disp.window_list = vec![front, back];
 
         disp.queue_window_update_event(front);
         disp.flush_events_with_masks(1 << 6, 0);
@@ -2706,7 +2706,7 @@ mod tests {
         let hidden = make_dirty_visible_window(&mut bus);
         bus.write_byte(hidden + 110, 0);
         let visible = make_dirty_visible_window(&mut bus);
-        disp.window_list = vec![hidden, visible];
+        *disp.window_list = vec![hidden, visible];
         disp.event_queue.push_back(QueuedEvent {
             what: 6,
             message: hidden,

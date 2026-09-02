@@ -2160,7 +2160,11 @@ pub struct TrapDispatcher {
     /// the parked-cycle host snapshot carries a copy besides. FrontWindow
     /// and FindWindow are admitted to proofs on that basis
     /// (`runner::idle_cycle_trap_is_journal_complete`).
-    pub(crate) window_list: Vec<u32>,
+    pub(crate) window_list: crate::process_context::SharedProcessWindowList,
+    /// Whether `window_list` is the process-owned registry rather than a
+    /// standalone dispatcher fixture. Attached dispatchers derive the cached
+    /// front window even when the process list becomes empty.
+    process_window_list_attached: bool,
     /// Set once the game has entered fullscreen (window covers entire screen
     /// and MBarHeight was 0). While set, the menu bar is suppressed even if
     /// the game temporarily restores MBarHeight (e.g. on cursor-at-top).
@@ -2786,6 +2790,8 @@ impl TrapDispatcher {
         context.attach_event_queue(&mut self.event_queue);
         context.attach_input_state(&mut self.input_state);
         context.attach_menu_tracking(&mut self.menu_tracking);
+        context.attach_window_list(&mut self.window_list);
+        self.process_window_list_attached = true;
         context.attach_classic_file_system(&mut self.vfs, &mut self.vfs_rsrc);
         context.attach_classic_vfs_catalogue(
             &mut self.vfs_metadata,
@@ -3821,7 +3827,8 @@ impl TrapDispatcher {
             control_aux_records: HashMap::new(),
             control_aux_head: 0,
             go_away_flag: false,
-            window_list: Vec::new(),
+            window_list: Default::default(),
+            process_window_list_attached: false,
             fullscreen_locked: false,
             menu_bar_policy: crate::runner::MenuBarPolicy::GuestControlled,
             initial_kiosk_guest_hide_observed: false,
@@ -7662,6 +7669,14 @@ impl TrapDispatcher {
         cpu: &mut C,
         bus: &mut MacMemoryBus,
     ) -> Result<()> {
+        if self.process_window_list_attached {
+            self.front_window = self
+                .window_list
+                .iter()
+                .copied()
+                .find(|window| bus.read_byte(window.wrapping_add(110)) != 0)
+                .unwrap_or(0);
+        }
         // Opt-in per-trap wall-clock timing.
         let timing_start = if trap_timing_enabled() {
             Some(std::time::Instant::now())
