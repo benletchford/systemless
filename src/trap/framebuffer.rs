@@ -1332,7 +1332,7 @@ impl super::TrapDispatcher {
     fn visible_window_count(&self, bus: &MacMemoryBus) -> usize {
         let mut count = 0usize;
         let mut saw = HashSet::new();
-        for &window in &self.window_list {
+        for &window in self.window_list.iter() {
             if window != 0 && saw.insert(window) && bus.read_byte(window + 110u32) != 0 {
                 count += 1;
             }
@@ -4822,8 +4822,15 @@ impl super::TrapDispatcher {
         // the content pixels of windows above each frame.
         // Macintosh Toolbox Essentials (1992), pp. 4-65 and 4-69.
         if !skip_chrome && menu_bar_height > 0 {
-            let list_snapshot = self.window_list.clone();
+            let list_snapshot = self.window_list.to_vec();
             for &w in list_snapshot.iter().rev() {
+                // Native PowerPC windows participate in the process-wide
+                // WindowList, but their adapter already rendered their WDEF
+                // chrome into the native front buffer. Only repaint windows
+                // whose classic adapter owns the per-window WDEF metadata.
+                if self.process_window_list_attached && !self.window_proc_ids.contains_key(&w) {
+                    continue;
+                }
                 if bus.read_byte(w + 110u32) == 0 {
                     continue;
                 }
@@ -5210,7 +5217,7 @@ mod redraw_chrome_tests {
         bus.write_word(PORT_PTR + 22, 640);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (60, 80, 540, 720);
         disp.window_proc_id = 2;
         disp.window_proc_ids.insert(PORT_PTR, 2);
@@ -5443,7 +5450,7 @@ mod redraw_chrome_tests {
         bus.write_word(PORT_PTR + 22, 640);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (60, 80, 540, 720);
         disp.window_proc_id = 2;
         disp.window_proc_ids.insert(PORT_PTR, 2);
@@ -5502,7 +5509,7 @@ mod redraw_chrome_tests {
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         set_window_structure_rect(&mut bus, PORT_PTR, (185, 232, 414, 568));
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_proc_ids.insert(PORT_PTR, 1);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
@@ -5582,7 +5589,7 @@ mod redraw_chrome_tests {
             bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
             set_window_structure_rect(&mut bus, PORT_PTR, structure);
             disp.front_window = PORT_PTR;
-            disp.window_list = vec![PORT_PTR];
+            *disp.window_list = vec![PORT_PTR];
             disp.window_proc_ids.insert(PORT_PTR, proc_id);
             disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
                 src_top: 0,
@@ -5634,7 +5641,7 @@ mod redraw_chrome_tests {
         bus.write_word(PORT_PTR + 22, 320);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_proc_ids.insert(PORT_PTR, 1);
         disp.last_screen_copybits_rect = Some(ScreenCopyBitsRect {
             src_top: 0,
@@ -5668,7 +5675,7 @@ mod redraw_chrome_tests {
         bus.write_word(PORT_PTR + 22, 640);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (60, 80, 540, 720);
         disp.window_proc_id = 0;
         disp.window_proc_ids.insert(PORT_PTR, 0);
@@ -5721,7 +5728,7 @@ mod redraw_chrome_tests {
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0);
         bus.write_word(crate::memory::globals::addr::MBAR_HEIGHT, 0);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (0, 0, screen_h as i16, screen_w as i16);
         disp.window_proc_id = 2;
         disp.window_proc_ids.remove(&PORT_PTR);
@@ -6473,7 +6480,7 @@ mod redraw_chrome_tests {
         disp.menu_bar_hidden = true;
         disp.fullscreen_locked = false;
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (100, 180, 208, 620);
         disp.window_proc_id = 5;
         disp.window_proc_ids.insert(PORT_PTR, 5);
@@ -6520,7 +6527,7 @@ mod redraw_chrome_tests {
         disp.menu_bar_hidden = true;
         disp.fullscreen_locked = false;
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (100, 180, 208, 620);
         disp.window_proc_id = 5;
         disp.window_proc_ids.insert(PORT_PTR, 5);
@@ -6817,7 +6824,7 @@ mod redraw_chrome_tests {
         set_window_structure_rect(&mut bus, front, (18, 18, 32, 32));
         bus.write_byte(dialog + 110, 0xFF);
         bus.write_byte(front + 110, 0xFF);
-        disp.window_list = vec![front, dialog];
+        *disp.window_list = vec![front, dialog];
         disp.front_window = front;
 
         for y in 2..48u32 {
@@ -7853,7 +7860,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
 
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
@@ -7928,7 +7935,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (0, 0, 600, 800);
 
         // SetOrigin and related port operations can shift the local
@@ -7968,7 +7975,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (185, 226, 415, 574);
 
         bus.write_word(PORT_PTR + 16, 0);
@@ -8009,7 +8016,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (185, 226, 415, 574);
 
         bus.write_word(PORT_PTR + 16, 0);
@@ -8048,7 +8055,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (0, 0, 600, 800);
 
         let manual_port = bus.alloc(200);
@@ -8094,7 +8101,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.window_bounds = (0, 0, 600, 800);
 
         let manual_port = bus.alloc(200);
@@ -8129,7 +8136,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
         disp.copybits_screen_count = 1;
 
         let manual_port = bus.alloc(200);
@@ -8161,7 +8168,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
 
         let manual_port = bus.alloc(200);
         let original_base = bus.alloc(800 * 600);
@@ -8209,7 +8216,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
 
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);
@@ -8246,7 +8253,7 @@ mod redraw_chrome_tests {
         install_8bpp_cgrafport(&mut bus, screen_base, 800, 800, 600, 0);
         bus.write_byte(PORT_PTR + WINDOW_VISIBLE_OFFSET, 0xFF);
         disp.front_window = PORT_PTR;
-        disp.window_list = vec![PORT_PTR];
+        *disp.window_list = vec![PORT_PTR];
 
         let manual_port = bus.alloc(200);
         let manual_base = bus.alloc(640 * 420);

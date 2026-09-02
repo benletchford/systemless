@@ -1233,6 +1233,7 @@ pub(crate) type SharedProcessSoundManager = SharedProcessValue<SoundManager>;
 pub(crate) type SharedProcessCursorState = SharedProcessValue<ProcessCursorState>;
 pub(crate) type SharedProcessEventQueue = SharedProcessValue<EventQueue>;
 pub(crate) type SharedProcessMenuTracking = SharedProcessValue<Option<ProcessMenuTrackingState>>;
+pub(crate) type SharedProcessWindowList = SharedProcessValue<Vec<u32>>;
 pub(crate) type SharedProcessInputState = SharedProcessValue<ProcessInputState>;
 pub(crate) type SharedProcessTimerTasks = SharedProcessValue<Vec<ProcessTimerTask>>;
 pub(crate) type SharedProcessVblTasks = SharedProcessValue<Vec<ProcessVblTask>>;
@@ -4186,6 +4187,7 @@ pub(crate) struct ProcessContext {
     event_queue: SharedProcessEventQueue,
     input_state: SharedProcessInputState,
     menu_tracking: SharedProcessMenuTracking,
+    window_list: SharedProcessWindowList,
     pending_native_menu_selection: SharedNativeMenuSelection,
     guest_calls: SharedGuestCallStack,
     apple_event_handlers: SharedProcessAppleEventHandlers,
@@ -4217,6 +4219,7 @@ impl Default for ProcessContext {
             event_queue: SharedProcessEventQueue::default(),
             input_state: SharedProcessInputState::default(),
             menu_tracking: SharedProcessMenuTracking::default(),
+            window_list: SharedProcessWindowList::default(),
             pending_native_menu_selection: SharedNativeMenuSelection::default(),
             guest_calls: SharedGuestCallStack::default(),
             apple_event_handlers: SharedProcessAppleEventHandlers::default(),
@@ -4391,6 +4394,15 @@ impl ProcessContext {
         // EventAvail observes it in place. Inside Macintosh Volume I (1985),
         // pp. I-244--I-245 and I-257--I-259; Processes (1994), pp. 2-15--2-16.
         adapter.attach_to(&self.event_queue, EventQueue::is_pristine);
+    }
+
+    /// Attach the Window Manager's canonical front-to-back process list.
+    ///
+    /// WindowRecords remain guest-memory objects, while this list models the
+    /// process-wide ordering used by FrontWindow, FindWindow, activation, and
+    /// occlusion. Macintosh Toolbox Essentials (1992), pp. 4-64--4-65.
+    pub(crate) fn attach_window_list(&self, adapter: &mut SharedProcessWindowList) {
+        adapter.attach_to(&self.window_list, Vec::is_empty);
     }
 
     pub(crate) fn attach_input_state(&self, adapter: &mut SharedProcessInputState) {
@@ -6285,6 +6297,26 @@ mod tests {
         assert_eq!(native.take().unwrap().menu_handle, 0x1234);
         assert!(classic.is_none());
         assert_eq!(detached.as_ref().unwrap().menu_handle, 0x1234);
+    }
+
+    #[test]
+    fn attached_window_lists_share_order_immediately_while_clones_detach() {
+        let context = ProcessContext::default();
+        let mut classic = SharedProcessWindowList::from_value(vec![0x1000, 0x2000]);
+        let mut native = SharedProcessWindowList::default();
+
+        context.attach_window_list(&mut classic);
+        context.attach_window_list(&mut native);
+        let detached = native.clone();
+
+        native.remove(1);
+        native.insert(0, 0x3000);
+        classic.push(0x4000);
+
+        assert!(classic.ptr_eq(&native));
+        assert_eq!(&*classic, &[0x3000, 0x1000, 0x4000]);
+        assert_eq!(&*native, &[0x3000, 0x1000, 0x4000]);
+        assert_eq!(&*detached, &[0x1000, 0x2000]);
     }
 
     #[test]

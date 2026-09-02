@@ -3405,6 +3405,7 @@ pub struct PpcLoadedApp {
     pub input: PpcInputSnapshot,
     pub(crate) process_input: SharedProcessInputState,
     pub(crate) event_queue: SharedProcessEventQueue,
+    pub(crate) window_list: crate::process_context::SharedProcessWindowList,
     pub(crate) guest_calls: SharedGuestCallStack,
     pub(crate) process_memory_manager: PpcProcessMemoryManager,
     pub draw_sprocket: PpcDrawSprocketState,
@@ -3921,6 +3922,7 @@ impl PpcLoadedApp {
             &mut self.device_gamma_explicit,
         );
         context.attach_event_queue(&mut self.event_queue);
+        context.attach_window_list(&mut self.window_list);
         context.attach_input_state(&mut self.process_input);
         context.attach_menu_tracking(&mut self.toolbox_startup.menu_tracking);
         let mut attached_memory_manager = None;
@@ -7204,6 +7206,16 @@ impl PpcLoadedApp {
         let mut controls = std::mem::take(&mut self.controls);
         let mut aliases = std::mem::take(&mut self.aliases);
         let mut gworlds = std::mem::take(&mut self.gworlds);
+        let mut window_list = self.window_list.shared_handle();
+        if window_list.is_empty() {
+            window_list.extend(
+                gworlds
+                    .iter()
+                    .rev()
+                    .map(|record| record.port)
+                    .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)),
+            );
+        }
         let mut q3_objects = std::mem::take(&mut self.q3_objects);
         let mut q3_object_refs = std::mem::take(&mut self.q3_object_refs);
         let mut next_q3_object = self.next_q3_object;
@@ -7749,6 +7761,7 @@ impl PpcLoadedApp {
                         &mut controls,
                         &mut aliases,
                         &mut gworlds,
+                        &mut window_list,
                         &mut q3_objects,
                         &mut q3_object_refs,
                         &mut next_q3_object,
@@ -7824,6 +7837,8 @@ impl PpcLoadedApp {
                         &mut draw_sprocket,
                     )
                 };
+
+                ppc_sync_process_window_list(memory, &window_list);
 
                 // MemError is process Memory Manager state even when a
                 // Toolbox helper reports it through the native ABI cache.
@@ -10319,7 +10334,7 @@ fn ppc_live_quickdraw_surface(
     gworlds: &[PpcGWorldRecord],
     gworld: u32,
 ) -> Option<PpcQuickDrawSurface> {
-    let record = gworlds.iter().find(|record| record.port == gworld)?;
+    let record = gworlds.iter().find(|record| record.port == gworld);
     // Color QuickDraw permits callers to replace a CGrafPort's portPixMap
     // after OpenCPort. Resolve that live Handle on every drawing operation;
     // the host-side GWorld record describes the port at creation time only.
@@ -10377,6 +10392,7 @@ fn ppc_live_quickdraw_surface(
             ctable_handle,
         })
         .or_else(|| {
+            let record = record?;
             let ctable_handle = (record.pixmap != 0)
                 .then_some(record.pixmap)
                 .and_then(|pixmap| pixmap.checked_add(42))
@@ -12814,6 +12830,7 @@ fn load_pef_application_with_config_and_optional_system_reservation(
         input: PpcInputSnapshot::default(),
         process_input: SharedProcessInputState::default(),
         event_queue: SharedProcessEventQueue::default(),
+        window_list: Default::default(),
         guest_calls: SharedGuestCallStack::default(),
         process_memory_manager,
         draw_sprocket: PpcDrawSprocketState::default(),
@@ -14984,6 +15001,7 @@ fn dispatch_supported_import(
     controls: &mut Vec<PpcControlRecord>,
     aliases: &mut Vec<PpcAliasRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     q3_objects: &mut Vec<PpcQ3ObjectRecord>,
     q3_object_refs: &mut Vec<PpcQ3ObjectReferenceRecord>,
     next_q3_object: &mut u32,
@@ -18367,7 +18385,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::NewCWindow => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -18380,6 +18398,7 @@ fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -18387,7 +18406,7 @@ fn dispatch_supported_import(
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
@@ -18403,7 +18422,7 @@ fn dispatch_supported_import(
                     quickdraw_fore_color,
                     quickdraw_back_color,
                 );
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18419,7 +18438,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::GetNewCWindow => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let window = ppc_get_new_cwindow(
                 cpu,
                 process_memory_manager,
@@ -18429,6 +18448,7 @@ fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 vfs_resources,
                 *current_resource_refnum,
@@ -18439,7 +18459,7 @@ fn dispatch_supported_import(
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
@@ -18455,7 +18475,7 @@ fn dispatch_supported_import(
                     quickdraw_fore_color,
                     quickdraw_back_color,
                 );
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18495,7 +18515,7 @@ fn dispatch_supported_import(
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -18508,7 +18528,7 @@ fn dispatch_supported_import(
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -18518,13 +18538,13 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::ShowWindow => {
             let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, true);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -18533,11 +18553,12 @@ fn dispatch_supported_import(
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
+                window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if !was_visible {
-                if ppc_front_visible_window(memory, gworlds) != Some(window) {
+                if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                     ppc_draw_existing_window_frame(
                         memory,
                         gworlds,
@@ -18547,7 +18568,7 @@ fn dispatch_supported_import(
                 }
                 ppc_enqueue_window_update_event(event_queue, window, input);
             }
-            if ppc_front_visible_window(memory, gworlds) != previous_front {
+            if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -18569,22 +18590,23 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::HideWindow => {
             let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let _ = ppc_set_window_visible(memory, window, false);
             let _ = ppc_set_window_hilited(memory, window, false);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
             );
-            let next_front = ppc_front_visible_window(memory, gworlds);
+            let next_front = ppc_front_visible_process_window(memory, window_list);
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
+                window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -18611,13 +18633,13 @@ fn dispatch_supported_import(
         PpcImportDispatcherTarget::ShowHide => {
             let window = cpu.gpr[3];
             let visible = cpu.gpr[4] != 0;
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let was_visible = ppc_window_is_visible(memory, window);
             let _ = ppc_set_window_visible(memory, window, visible);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -18626,11 +18648,12 @@ fn dispatch_supported_import(
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
+                window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
             if visible && !was_visible {
-                if ppc_front_visible_window(memory, gworlds) != Some(window) {
+                if ppc_front_visible_process_window(memory, window_list) != Some(window) {
                     ppc_draw_existing_window_frame(
                         memory,
                         gworlds,
@@ -18639,7 +18662,7 @@ fn dispatch_supported_import(
                     );
                 }
             }
-            if ppc_front_visible_window(memory, gworlds) != previous_front {
+            if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -18669,7 +18692,7 @@ fn dispatch_supported_import(
                     toolbox_startup.dispose_dialog_count.saturating_add(1);
                 toolbox_startup.last_disposed_dialog = window;
             }
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             if window != 0 {
                 let closed_palette = memory
                     .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
@@ -18687,10 +18710,11 @@ fn dispatch_supported_import(
                         || gworld.port == PPC_DSP_BACK_GWORLD
                         || gworld.port != window
                 });
+                window_list.retain(|candidate| *candidate != window);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
@@ -18699,18 +18723,12 @@ fn dispatch_supported_import(
                 ppc_transition_front_window_chrome(
                     memory,
                     gworlds,
+                    window_list,
                     previous_front,
                     toolbox_startup.host_menu_bar_hidden,
                 );
                 if *current_gworld == window {
-                    *current_gworld = gworlds
-                        .iter()
-                        .rev()
-                        .map(|gworld| gworld.port)
-                        .find(|candidate| {
-                            !matches!(*candidate, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                                && ppc_window_is_visible(memory, *candidate)
-                        })
+                    *current_gworld = ppc_front_visible_process_window(memory, window_list)
                         .unwrap_or(PPC_MAIN_GWORLD);
                     *current_gdevice =
                         ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
@@ -18753,7 +18771,7 @@ fn dispatch_supported_import(
                         quickdraw_back_color,
                     );
                 }
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18777,7 +18795,7 @@ fn dispatch_supported_import(
             Some(PpcImportAction::ReturnPreserve)
         }
         PpcImportDispatcherTarget::FrontWindow => {
-            let window = ppc_front_visible_window(memory, gworlds).unwrap_or(0);
+            let window = ppc_front_visible_process_window(memory, window_list).unwrap_or(0);
             Some(PpcImportAction::Return(window))
         }
         PpcImportDispatcherTarget::SetWinColor => {
@@ -18898,12 +18916,12 @@ fn dispatch_supported_import(
         }
         PpcImportDispatcherTarget::SelectWindow => {
             if cpu.gpr[3] != 0 {
-                let previous_front = ppc_front_visible_window(memory, gworlds);
-                ppc_reorder_window(gworlds, cpu.gpr[3], 0, true);
+                let previous_front = ppc_front_visible_process_window(memory, window_list);
+                ppc_reorder_window(gworlds, window_list, cpu.gpr[3], 0, true);
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
@@ -18921,6 +18939,7 @@ fn dispatch_supported_import(
                     ppc_transition_front_window_chrome(
                         memory,
                         gworlds,
+                        window_list,
                         previous_front,
                         toolbox_startup.host_menu_bar_hidden,
                     );
@@ -18936,7 +18955,7 @@ fn dispatch_supported_import(
                     quickdraw_back_color,
                 );
                 let _ = ppc_set_window_hilited(memory, *current_gworld, true);
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -18962,7 +18981,7 @@ fn dispatch_supported_import(
             // Inside Macintosh Volume VI (1991), p. 20-19: an explicit
             // ActivatePalette affects only the visible frontmost window;
             // calling it for an offscreen port has no effect.
-            let applied = ppc_front_visible_window(memory, gworlds) == Some(window_ptr)
+            let applied = ppc_front_visible_process_window(memory, window_list) == Some(window_ptr)
                 && ppc_gworld_device(gworlds, window_ptr).is_some_and(|gdevice| {
                     ppc_activate_window_palette(
                         memory,
@@ -19042,7 +19061,7 @@ fn dispatch_supported_import(
                 }
             }
             let previous_device_colors = *screen_clut;
-            let front_window = ppc_front_visible_window(memory, gworlds);
+            let front_window = ppc_front_visible_process_window(memory, window_list);
             let activation_window = if window_ptr == u32::MAX {
                 front_window.unwrap_or(PPC_MAIN_GWORLD)
             } else {
@@ -19991,7 +20010,7 @@ fn dispatch_supported_import(
             let (part, window) = if in_menu_bar {
                 (1, 0)
             } else if in_screen {
-                ppc_find_window_at_point(memory, gworlds, v, h, menu_bar_height)
+                ppc_find_window_at_point(memory, gworlds, window_list, v, h, menu_bar_height)
             } else {
                 (0, 0)
             };
@@ -20678,6 +20697,7 @@ fn dispatch_supported_import(
                 handles,
                 controls,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 vfs_resources,
                 *current_resource_refnum,
@@ -20702,6 +20722,7 @@ fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
             );
             let dialog = if dialog != 0
@@ -20746,6 +20767,7 @@ fn dispatch_supported_import(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
             );
             let dialog = if dialog != 0
@@ -23220,6 +23242,7 @@ fn dispatch_supported_import(
                     handles,
                     controls,
                     gworlds,
+                    window_list,
                     *current_gdevice,
                     vfs_resources,
                     *current_resource_refnum,
@@ -23285,6 +23308,7 @@ fn dispatch_supported_import(
                     handles,
                     controls,
                     gworlds,
+                    window_list,
                     current_gworld,
                     current_gdevice,
                     dialog,
@@ -25772,6 +25796,7 @@ fn dispatch_supported_import(
             handles,
             controls,
             gworlds,
+            window_list,
             current_gworld,
             current_gdevice,
             quickdraw_fore_color,
@@ -49834,6 +49859,7 @@ fn ppc_new_cwindow(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
 ) -> u32 {
     let storage_ptr = cpu.gpr[3];
@@ -50130,9 +50156,7 @@ fn ppc_new_cwindow(
         pixels_locked: false,
         pixels_no_purge: false,
     });
-    if behind != u32::MAX {
-        ppc_reorder_window(gworlds, port, behind, false);
-    }
+    ppc_reorder_window(gworlds, window_list, port, behind, false);
     if visible && proc_id == 1 {
         ppc_draw_dialog_box_frame(memory, gworlds, port, local_bottom, local_right);
     }
@@ -50272,18 +50296,35 @@ fn ppc_redraw_visible_window_frame(
     window: u32,
     host_menu_bar_hidden: bool,
 ) {
-    if gworlds.iter().any(|record| record.port == window) && ppc_window_is_visible(memory, window) {
+    if ppc_window_is_visible(memory, window) {
         ppc_draw_existing_window_frame(memory, gworlds, window, host_menu_bar_hidden);
+    }
+}
+
+fn ppc_sync_process_window_list(memory: &mut PpcSectionMem, window_list: &[u32]) {
+    const WINDOW_NEXT_WINDOW_OFFSET: u32 = 144;
+    const LOWMEM_WINDOW_LIST: u32 = 0x09D6;
+
+    for (index, &window) in window_list.iter().enumerate() {
+        let next = window_list.get(index + 1).copied().unwrap_or(0);
+        if memory.read_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET)) != Some(next) {
+            let _ = memory.write_u32_be(window.wrapping_add(WINDOW_NEXT_WINDOW_OFFSET), next);
+        }
+    }
+    let head = window_list.first().copied().unwrap_or(0);
+    if memory.read_u32_be(LOWMEM_WINDOW_LIST) != Some(head) {
+        let _ = memory.write_u32_be(LOWMEM_WINDOW_LIST, head);
     }
 }
 
 fn ppc_transition_front_window_chrome(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
     previous_front: Option<u32>,
     host_menu_bar_hidden: bool,
 ) {
-    let next_front = ppc_front_visible_window(memory, gworlds);
+    let next_front = ppc_front_visible_process_window(memory, window_list);
     if previous_front == next_front {
         return;
     }
@@ -50304,7 +50345,7 @@ fn ppc_transition_front_window_chrome(
 fn ppc_recalculate_window_vis_regions(
     process_memory_manager: &mut ProcessNativeMemoryManager,
     memory: &mut PpcSectionMem,
-    gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
     heap_cursor: &mut u32,
     heap_limit: u32,
     last_mem_error: &mut i16,
@@ -50313,12 +50354,7 @@ fn ppc_recalculate_window_vis_regions(
     let mut allocator = PpcProcessAllocatorView {
         memory_manager: process_memory_manager,
     };
-    let front_to_back: Vec<u32> = gworlds
-        .iter()
-        .rev()
-        .map(|record| record.port)
-        .filter(|port| !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD))
-        .collect();
+    let front_to_back = window_list.to_vec();
     for window in front_to_back.iter().copied() {
         let Some(vis_rgn) = memory.read_u32_be(window + PPC_CGRAF_PORT_VIS_RGN_OFFSET) else {
             continue;
@@ -50433,6 +50469,7 @@ fn ppc_get_new_cwindow(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
     vfs_resources: &[PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -50486,6 +50523,7 @@ fn ppc_get_new_cwindow(
         last_mem_error,
         handles,
         gworlds,
+        window_list,
         current_gdevice,
         host_menu_bar_hidden,
     );
@@ -52367,6 +52405,16 @@ fn ppc_front_visible_window(
     })
 }
 
+fn ppc_front_visible_process_window(
+    memory: &mut PpcSectionMem,
+    window_list: &[u32],
+) -> Option<u32> {
+    window_list
+        .iter()
+        .copied()
+        .find(|window| ppc_window_is_visible(memory, *window))
+}
+
 fn ppc_window_global_content_bounds(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
@@ -52386,15 +52434,14 @@ fn ppc_window_global_content_bounds(
 fn ppc_find_window_at_point(
     memory: &mut PpcSectionMem,
     gworlds: &[PpcGWorldRecord],
+    window_list: &[u32],
     v: i16,
     h: i16,
     menu_bar_height: i16,
 ) -> (i16, u32) {
-    let front_window = ppc_front_visible_window(memory, gworlds);
-    for window in gworlds.iter().rev().map(|record| record.port) {
-        if matches!(window, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-            || !ppc_window_is_visible(memory, window)
-        {
+    let front_window = ppc_front_visible_process_window(memory, window_list);
+    for &window in window_list {
+        if !ppc_window_is_visible(memory, window) {
             continue;
         }
         let Some((top, left, bottom, right)) =
@@ -61433,6 +61480,7 @@ fn ppc_new_alert_dialog(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -61530,6 +61578,7 @@ fn ppc_new_alert_dialog(
         last_mem_error,
         handles,
         gworlds,
+        window_list,
         current_gdevice,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
@@ -61573,6 +61622,7 @@ fn ppc_get_new_dialog(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
     vfs_resources: &mut [PpcVfsResourceRecord],
     current_resource_refnum: i16,
@@ -61667,6 +61717,7 @@ fn ppc_get_new_dialog(
         last_mem_error,
         handles,
         gworlds,
+        window_list,
         current_gdevice,
     );
     let _ = memory.write_u32_be(items_slot, saved_items_slot);
@@ -61705,6 +61756,7 @@ fn ppc_new_dialog(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
 ) -> u32 {
     let requested_storage = cpu.gpr[3];
@@ -61767,6 +61819,7 @@ fn ppc_new_dialog(
         last_mem_error,
         handles,
         gworlds,
+        window_list,
         current_gdevice,
     );
     if dialog == 0 {
@@ -66540,6 +66593,7 @@ fn ppc_dispatch_legacy_window(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     quickdraw_fore_color: &mut PpcRgbColor,
@@ -66558,7 +66612,7 @@ fn ppc_dispatch_legacy_window(
 ) -> Option<PpcImportAction> {
     match binding.symbol_name.as_str() {
         "NewWindow" => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let mut allocator = PpcProcessAllocatorView {
                 memory_manager: process_memory_manager,
             };
@@ -66571,6 +66625,7 @@ fn ppc_dispatch_legacy_window(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -66578,14 +66633,14 @@ fn ppc_dispatch_legacy_window(
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
                     handles,
                 );
                 *current_gworld = window;
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -66601,7 +66656,7 @@ fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::Return(window))
         }
         "GetNewWindow" => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let resource_id = cpu.gpr[3] as u16 as i16;
             let Some(index) = ppc_vfs_resource_index(
                 vfs_resources,
@@ -66645,6 +66700,7 @@ fn ppc_dispatch_legacy_window(
                 last_mem_error,
                 handles,
                 gworlds,
+                window_list,
                 *current_gdevice,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -66657,14 +66713,14 @@ fn ppc_dispatch_legacy_window(
                 ppc_recalculate_window_vis_regions(
                     process_memory_manager,
                     memory,
-                    gworlds,
+                    window_list,
                     heap_cursor,
                     heap_limit,
                     last_mem_error,
                     handles,
                 );
                 *current_gworld = window;
-                if ppc_front_visible_window(memory, gworlds) != previous_front {
+                if ppc_front_visible_process_window(memory, window_list) != previous_front {
                     let _ = ppc_activate_front_window_palette(
                         memory,
                         gworlds,
@@ -66718,7 +66774,7 @@ fn ppc_dispatch_legacy_window(
         }
         "DisposeWindow" => {
             let window = cpu.gpr[3];
-            let previous_front = ppc_front_visible_window(memory, gworlds);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
             let disposed_palette = memory
                 .read_u32_be(window.wrapping_add(PPC_CGRAF_PORT_PALETTE_HANDLE_OFFSET))
                 .unwrap_or(0);
@@ -66742,6 +66798,7 @@ fn ppc_dispatch_legacy_window(
                 handles,
                 controls,
                 gworlds,
+                window_list,
                 current_gworld,
                 current_gdevice,
                 window,
@@ -66749,7 +66806,7 @@ fn ppc_dispatch_legacy_window(
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
@@ -66758,6 +66815,7 @@ fn ppc_dispatch_legacy_window(
             ppc_transition_front_window_chrome(
                 memory,
                 gworlds,
+                window_list,
                 previous_front,
                 toolbox_startup.host_menu_bar_hidden,
             );
@@ -66796,7 +66854,7 @@ fn ppc_dispatch_legacy_window(
                     quickdraw_back_color,
                 );
             }
-            if ppc_front_visible_window(memory, gworlds) != previous_front {
+            if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -66824,18 +66882,18 @@ fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         "BringToFront" => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
-            ppc_reorder_window(gworlds, cpu.gpr[3], 0, true);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_reorder_window(gworlds, window_list, cpu.gpr[3], 0, true);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
             );
-            if ppc_front_visible_window(memory, gworlds) != previous_front {
+            if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -66850,18 +66908,18 @@ fn ppc_dispatch_legacy_window(
             Some(PpcImportAction::ReturnPreserve)
         }
         "SendBehind" => {
-            let previous_front = ppc_front_visible_window(memory, gworlds);
-            ppc_reorder_window(gworlds, cpu.gpr[3], cpu.gpr[4], false);
+            let previous_front = ppc_front_visible_process_window(memory, window_list);
+            ppc_reorder_window(gworlds, window_list, cpu.gpr[3], cpu.gpr[4], false);
             ppc_recalculate_window_vis_regions(
                 process_memory_manager,
                 memory,
-                gworlds,
+                window_list,
                 heap_cursor,
                 heap_limit,
                 last_mem_error,
                 handles,
             );
-            if ppc_front_visible_window(memory, gworlds) != previous_front {
+            if ppc_front_visible_process_window(memory, window_list) != previous_front {
                 let _ = ppc_activate_front_window_palette(
                     memory,
                     gworlds,
@@ -66957,6 +67015,7 @@ fn ppc_new_window_from_cpu(
     last_mem_error: &mut i16,
     handles: &mut Vec<PpcHandleRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gdevice: u32,
     host_menu_bar_hidden: bool,
 ) -> u32 {
@@ -66970,6 +67029,7 @@ fn ppc_new_window_from_cpu(
         last_mem_error,
         handles,
         gworlds,
+        window_list,
         current_gdevice,
     );
     if window == 0 {
@@ -67020,8 +67080,14 @@ fn ppc_new_window_from_cpu(
         *last_mem_error = PPC_PARAM_ERR;
         return 0;
     }
-    ppc_transition_front_window_chrome(memory, gworlds, previous_front, host_menu_bar_hidden);
-    if cpu.gpr[6] != 0 && ppc_front_visible_window(memory, gworlds) != Some(window) {
+    ppc_transition_front_window_chrome(
+        memory,
+        gworlds,
+        window_list,
+        previous_front,
+        host_menu_bar_hidden,
+    );
+    if cpu.gpr[6] != 0 && ppc_front_visible_process_window(memory, window_list) != Some(window) {
         ppc_draw_existing_window_frame(memory, gworlds, window, host_menu_bar_hidden);
     }
     *last_mem_error = PPC_NO_ERR;
@@ -67142,6 +67208,7 @@ fn ppc_dispose_window(
     handles: &mut Vec<PpcHandleRecord>,
     controls: &mut Vec<PpcControlRecord>,
     gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
     current_gworld: &mut u32,
     current_gdevice: &mut u32,
     window: u32,
@@ -67183,21 +67250,35 @@ fn ppc_dispose_window(
     gworlds.retain(|record| {
         record.port != window || matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     });
+    window_list.retain(|candidate| *candidate != window);
     if *current_gworld == window {
-        *current_gworld = gworlds
-            .iter()
-            .rev()
-            .map(|record| record.port)
-            .find(|port| {
-                !matches!(*port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
-                    && ppc_window_is_visible(memory, *port)
-            })
+        *current_gworld = ppc_front_visible_process_window(memory, window_list)
             .unwrap_or(PPC_MAIN_GWORLD);
         *current_gdevice = ppc_gworld_device(gworlds, *current_gworld).unwrap_or(PPC_MAIN_GDEVICE);
     }
 }
 
-fn ppc_reorder_window(gworlds: &mut Vec<PpcGWorldRecord>, window: u32, behind: u32, front: bool) {
+fn ppc_reorder_window(
+    gworlds: &mut Vec<PpcGWorldRecord>,
+    window_list: &mut Vec<u32>,
+    window: u32,
+    behind: u32,
+    front: bool,
+) {
+    window_list.retain(|candidate| *candidate != window);
+    if front || behind == u32::MAX {
+        window_list.insert(0, window);
+    } else if behind == 0 {
+        window_list.push(window);
+    } else if let Some(index) = window_list
+        .iter()
+        .position(|candidate| *candidate == behind)
+    {
+        window_list.insert(index + 1, window);
+    } else {
+        window_list.push(window);
+    }
+
     let Some(index) = gworlds.iter().position(|record| {
         record.port == window && !matches!(record.port, PPC_MAIN_GWORLD | PPC_DSP_BACK_GWORLD)
     }) else {
@@ -107387,6 +107468,57 @@ pub(crate) mod tests {
         assert_eq!(probe.handled_import_count, 1);
         assert_eq!(probe.unsupported_import_index, None);
         assert_eq!(loaded.cpu.gpr[3], 0);
+    }
+
+    #[test]
+    fn front_window_uses_the_process_order_without_native_gworld_metadata() {
+        let pef = synthetic_pef_with_import(b"FrontWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let back = PPC_DATA_BASE + 0x1000;
+        let front = back + 0x200;
+        loaded.memory.add_region(back, vec![0; 0x400]);
+        loaded
+            .memory
+            .write_u8(back + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded
+            .memory
+            .write_u8(front + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded.window_list.extend([front, back]);
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], front);
+        loaded.window_list.swap(0, 1);
+        loaded.cpu.pc = loaded.entry_pc;
+        loaded.cpu.lr = PPC_HALT_PC;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert_eq!(loaded.cpu.gpr[3], back);
+    }
+
+    #[test]
+    fn close_window_removes_process_membership_without_native_gworld_metadata() {
+        let pef = synthetic_pef_with_import(b"CloseWindow");
+        let mut loaded = load_pef_application(&pef).unwrap();
+        let window = PPC_DATA_BASE + 0x1000;
+        loaded.memory.add_region(window, vec![0; 0x200]);
+        loaded
+            .memory
+            .write_u8(window + PPC_CWINDOW_VISIBLE_OFFSET, 1)
+            .unwrap();
+        loaded.window_list.push(window);
+        loaded.cpu.gpr[3] = window;
+
+        let probe = loaded.run_with_hle_imports(64);
+
+        assert_eq!(probe.handled_import_count, 1);
+        assert!(loaded.window_list.is_empty());
+        assert_eq!(loaded.memory.read_u32_be(0x09D6), Some(0));
     }
 
     #[test]
@@ -150662,6 +150794,7 @@ pub(crate) mod tests {
             &mut last_mem_error,
             test_handles!(loaded),
             &mut loaded.gworlds,
+            &mut loaded.window_list,
             *loaded.current_gdevice,
         );
         assert_ne!(window, 0);
@@ -150748,6 +150881,7 @@ pub(crate) mod tests {
             &mut last_mem_error,
             test_handles!(loaded),
             &mut loaded.gworlds,
+            &mut loaded.window_list,
             *loaded.current_gdevice,
         );
         assert_ne!(window, 0);
@@ -161012,6 +161146,7 @@ pub(crate) mod tests {
 
         assert!(matches!(probe.result, PpcRunResult::CycleLimit { .. }));
         let dialog = *loaded.current_gworld;
+        assert_eq!(loaded.window_list.first().copied(), Some(dialog));
         assert_eq!(
             loaded
                 .memory
@@ -161038,6 +161173,8 @@ pub(crate) mod tests {
         ));
         assert_eq!(loaded.cpu.gpr[3], 1);
         assert!(!loaded.gworlds.iter().any(|record| record.port == dialog));
+        assert!(!loaded.window_list.contains(&dialog));
+        assert_eq!(loaded.memory.read_u32_be(0x09D6), Some(0));
     }
 
     #[test]

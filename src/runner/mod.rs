@@ -11773,6 +11773,29 @@ mod tests {
     }
 
     #[test]
+    fn init_ppc_app_attaches_one_bidirectional_process_window_list() {
+        let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
+        runner.dispatcher.window_list.extend([0x1000, 0x2000]);
+        let mut app = halted_ppc_app_with_sound(PpcSoundState::default());
+        app.ppc
+            .as_mut()
+            .expect("synthetic PPC app")
+            .memory
+            .add_region(PPC_HALT_PC, vec![0; 64 * 1024]);
+
+        runner.init_app(&app);
+
+        let ppc_app = runner.ppc_app.as_mut().expect("PPC app installed");
+        let detached = ppc_app.window_list.clone();
+        assert_eq!(&*ppc_app.window_list, &[0x1000, 0x2000]);
+        ppc_app.window_list.insert(0, 0x3000);
+        assert_eq!(&*runner.dispatcher.window_list, &[0x3000, 0x1000, 0x2000]);
+        runner.dispatcher.window_list.retain(|window| *window != 0x1000);
+        assert_eq!(&*ppc_app.window_list, &[0x3000, 0x2000]);
+        assert_eq!(&*detached, &[0x1000, 0x2000]);
+    }
+
+    #[test]
     fn ppc_slice_keeps_ticks_coherent_across_runner_and_guest_memory() {
         use crate::memory::globals::addr;
 
@@ -13372,6 +13395,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
@@ -15791,6 +15815,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
@@ -16593,6 +16618,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
@@ -16745,6 +16771,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE,
@@ -17145,6 +17172,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE + 8,
@@ -17456,6 +17484,7 @@ mod tests {
             input: PpcInputSnapshot::default(),
             process_input: Default::default(),
             event_queue: Default::default(),
+            window_list: Default::default(),
             guest_calls: Default::default(),
             process_memory_manager: PpcProcessMemoryManager::with_heap(
                 PPC_HEAP_BASE + 8 * 16,

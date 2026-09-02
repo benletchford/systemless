@@ -18908,7 +18908,7 @@ mod tests {
         let (mut disp, mut cpu, mut bus) = setup();
         // Seed an existing window that will stay in front.
         let existing = 0x200040u32;
-        disp.window_list = vec![existing];
+        *disp.window_list = vec![existing];
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF); // visible
 
@@ -18973,7 +18973,7 @@ mod tests {
         // creation path as NewDialog but returns a color dialog pointer.
         let (mut disp, mut cpu, mut bus) = setup();
         let existing = 0x200040u32;
-        disp.window_list = vec![existing];
+        *disp.window_list = vec![existing];
         disp.front_window = existing;
         bus.write_byte(existing + 110u32, 0xFF); // visible
 
@@ -23048,7 +23048,7 @@ mod tests {
         *close_disp.current_port = close_dialog_ptr;
         close_disp.window_bounds = bounds;
         close_disp.window_proc_id = 2;
-        close_disp.window_list = vec![close_dialog_ptr, close_previous_window];
+        *close_disp.window_list = vec![close_dialog_ptr, close_previous_window];
         close_disp.window_stack.push((
             close_previous_window,
             previous_bounds,
@@ -23134,7 +23134,7 @@ mod tests {
         *dispose_disp.current_port = dispose_dialog_ptr;
         dispose_disp.window_bounds = bounds;
         dispose_disp.window_proc_id = 2;
-        dispose_disp.window_list = vec![
+        *dispose_disp.window_list = vec![
             dispose_dialog_ptr,
             dispose_previous_window,
             dispose_other_dialog_ptr,
@@ -23415,7 +23415,7 @@ mod tests {
             new_dialog_ptr,
             new_stack_after: new_cpu.read_reg(Register::A7),
             new_result_slot: new_bus.read_long(new_sp + 30),
-            new_window_list: new_disp.window_list.clone(),
+            new_window_list: new_disp.window_list.to_vec(),
             new_front_window: new_disp.front_window,
             new_current_port: *new_disp.current_port,
             new_the_port: new_bus.read_long(crate::memory::globals::addr::THE_PORT),
@@ -23441,7 +23441,7 @@ mod tests {
             get_dialog_ptr,
             get_stack_after: get_cpu.read_reg(Register::A7),
             get_result_slot: get_bus.read_long(TEST_SP + 10),
-            get_window_list: get_disp.window_list.clone(),
+            get_window_list: get_disp.window_list.to_vec(),
             get_front_window: get_disp.front_window,
             get_current_port: *get_disp.current_port,
             get_the_port: get_bus.read_long(crate::memory::globals::addr::THE_PORT),
@@ -26726,7 +26726,7 @@ mod tests {
         // update region. A NIL region should not trigger redraw work.
         let (mut disp, mut cpu, mut bus) = setup();
         let existing = 0x200040u32;
-        disp.window_list = vec![existing];
+        *disp.window_list = vec![existing];
         disp.front_window = existing;
         bus.write_byte(existing + 110, 0xFF);
 
@@ -27167,7 +27167,7 @@ mod tests {
         *disp.current_port = dialog_ptr;
         disp.window_bounds = (0, 0, 100, 220);
         disp.window_proc_id = proc_id;
-        disp.window_list = vec![dialog_ptr, prev_window];
+        *disp.window_list = vec![dialog_ptr, prev_window];
         disp.window_stack
             .push((prev_window, (0, 0, 342, 512), 0, "Game".to_string()));
         disp.dialog_items.insert(
@@ -27277,7 +27277,7 @@ mod tests {
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = (100, 120, 220, 320);
-        disp.window_list = vec![dialog_ptr, visible_window];
+        *disp.window_list = vec![dialog_ptr, visible_window];
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
         bus.write_long(crate::memory::globals::addr::THE_PORT, dialog_ptr);
 
@@ -27486,7 +27486,7 @@ mod tests {
         let dialog_ptr = 0x200000u32;
         let prev_window = 0x181000u32;
 
-        disp.window_list = vec![dialog_ptr, prev_window];
+        *disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         bus.write_byte(dialog_ptr + 110, 0xFF);
@@ -27514,7 +27514,7 @@ mod tests {
         let user_item_proc = 0x00016178u32;
 
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
-        disp.window_list = vec![dialog_ptr, prev_window];
+        *disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = (110, 155, 380, 645);
@@ -27554,7 +27554,7 @@ mod tests {
         let stale_proc_arg = 0x00016178u32;
 
         seed_window_regions(&mut bus, prev_window, (0, 0, 342, 512));
-        disp.window_list = vec![dialog_ptr, prev_window];
+        *disp.window_list = vec![dialog_ptr, prev_window];
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = (110, 155, 380, 645);
@@ -27721,7 +27721,7 @@ mod tests {
     fn dispose_dialog_clears_visible_snapshot() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
-        disp.window_list = vec![dialog_ptr];
+        *disp.window_list = vec![dialog_ptr];
         disp.dialog_visible_snapshots.insert(
             dialog_ptr,
             PersistentDialogSnapshot {
@@ -27742,7 +27742,7 @@ mod tests {
     fn dispose_dialog_clears_retained_click_state() {
         let (mut disp, mut cpu, mut bus) = setup();
         let dialog_ptr = bus.alloc(170);
-        disp.window_list = vec![dialog_ptr];
+        *disp.window_list = vec![dialog_ptr];
         disp.retained_modal_dialog_click = Some(RetainedModalDialogClickState {
             dialog_ptr,
             item_no: 1,
@@ -28395,7 +28395,7 @@ mod tests {
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
         disp.window_bounds = bounds;
-        disp.window_list = vec![dialog_ptr];
+        *disp.window_list = vec![dialog_ptr];
         disp.window_stack.push((0, (0, 0, 0, 0), -1, String::new()));
 
         bus.write_long(TEST_SP, dialog_ptr);
@@ -28547,7 +28547,7 @@ mod tests {
         disp.front_window = child_ptr;
         *disp.current_port = child_ptr;
         disp.window_bounds = child_bounds;
-        disp.window_list = vec![child_ptr, parent_ptr];
+        *disp.window_list = vec![child_ptr, parent_ptr];
         disp.window_stack
             .push((parent_ptr, parent_bounds, 2, "Parent".to_string()));
         disp.dialog_modal_entered.insert(child_ptr);
@@ -30390,7 +30390,7 @@ mod tests {
         disp.window_bounds = bounds;
         disp.window_proc_id = 2;
         disp.window_title.clear();
-        disp.window_list = vec![dialog_ptr];
+        *disp.window_list = vec![dialog_ptr];
         bus.write_word(dialog_ptr + 108, 2);
         bus.write_word(dialog_ptr + 164, 0);
         bus.write_word(dialog_ptr + 168, 0);
@@ -31902,7 +31902,7 @@ mod tests {
         seed_window_regions(&mut bus, previous_window, (0, 0, 342, 512));
         disp.front_window = dialog_ptr;
         *disp.current_port = dialog_ptr;
-        disp.window_list = vec![dialog_ptr, previous_window];
+        *disp.window_list = vec![dialog_ptr, previous_window];
         disp.window_stack
             .push((previous_window, (0, 0, 342, 512), 0, String::from("Map")));
         disp.dialog_items.insert(
@@ -31989,7 +31989,7 @@ mod tests {
         seed_window_regions(&mut bus, parent, (0, 0, 342, 512));
         disp.front_window = child;
         *disp.current_port = child;
-        disp.window_list = vec![child, parent];
+        *disp.window_list = vec![child, parent];
         disp.window_stack
             .push((parent, (0, 0, 342, 512), 2, String::new()));
         disp.dialog_items.insert(child, Vec::new());

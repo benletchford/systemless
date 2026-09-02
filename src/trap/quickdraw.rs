@@ -17292,7 +17292,7 @@ impl super::TrapDispatcher {
         bus: &mut MacMemoryBus,
         active_window: u32,
     ) {
-        let windows = self.window_list.clone();
+        let windows = self.window_list.to_vec();
         for window in windows {
             let palette = self.window_palette_handle_exact(window);
             if palette == 0 {
