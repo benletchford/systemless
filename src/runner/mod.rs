@@ -10880,15 +10880,16 @@ mod tests {
     use crate::loader::{ApplicationSizeResource, Code0Header, LoadedApp};
     use crate::menu_manager::TrackedMenuPaneView;
     use crate::process_context::{
-        ProcessFileSystemState, SharedProcessFileSystem, SharedProcessValue,
+        PendingFileCompletion, ProcessFileSystemState, SharedProcessFileSystem,
+        SharedProcessValue,
     };
     use crate::sound::{
         DoubleBufferState, PendingDoubleBackCallback, PendingSoundCallback, PlaybackKind,
         SndChannel, SndCommand, OUTPUT_RATE,
     };
     use crate::trap::dispatch::{
-        DialogItem, DialogTrackingState, LoadedResources, PendingFileCompletion,
-        PendingWaitNextEventReturn, QueuedEvent, ResourceFileMap, TimerTask, VblTask,
+        DialogItem, DialogTrackingState, LoadedResources, PendingWaitNextEventReturn,
+        QueuedEvent, ResourceFileMap, TimerTask, VblTask,
     };
     use ppc::{PpcCpu, PpcNativeReturnGpr3};
     use std::cell::RefCell;
