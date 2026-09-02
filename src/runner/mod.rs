@@ -7459,12 +7459,10 @@ impl FixtureRunner {
                 .iter_mut()
                 .enumerate()
                 .rev()
-                .find(|(_, playback)| playback.channel == chan_ptr && playback.active)
+                .find(|(_, playback)| playback.channel == chan_ptr)
             else {
                 continue;
             };
-            playback.active = false;
-            playback.paused = false;
             if callback_addr == 0 {
                 continue;
             }
@@ -13454,9 +13452,6 @@ mod tests {
             completion,
             completion_command: None,
             async_play: true,
-            paused: false,
-            active: true,
-            quiet_now: false,
             aiff: None,
             decoded_aiff: None,
         });
@@ -16131,9 +16126,6 @@ mod tests {
                 completion,
                 completion_command: None,
                 async_play: true,
-                paused: false,
-                active: true,
-                quiet_now: false,
                 aiff: None,
                 decoded_aiff: Some(PpcDecodedAiffSamples {
                     sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
@@ -16220,8 +16212,7 @@ mod tests {
         assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 4);
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-        assert!(!ppc_app.sound.file_playbacks[0].active);
-        assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
@@ -16271,9 +16262,6 @@ mod tests {
                 completion: callback_entry,
                 completion_command: None,
                 async_play: true,
-                paused: false,
-                active: true,
-                quiet_now: false,
                 aiff: None,
                 decoded_aiff: Some(PpcDecodedAiffSamples {
                     sample_rate_fixed: crate::sound::OUTPUT_RATE << 16,
@@ -16327,8 +16315,10 @@ mod tests {
         assert!(running);
         {
             let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-            let playback = &ppc_app.sound.file_playbacks[0];
-            assert!(playback.active);
+            assert_eq!(
+                ppc_app.sound.manager.file_playback_paused(channel),
+                Some(false)
+            );
             assert!(ppc_app.sound.completion_invocations.is_empty());
         }
 
@@ -16341,7 +16331,10 @@ mod tests {
         assert_eq!(runner.dispatcher().sound_manager.debug_file_play_count, 1);
         assert_eq!(runner.dispatcher().sound_manager.debug_samples_mixed, 0);
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-        assert!(ppc_app.sound.file_playbacks[0].active);
+        assert_eq!(
+            ppc_app.sound.manager.file_playback_paused(channel),
+            Some(false)
+        );
         assert!(ppc_app.sound.completion_invocations.is_empty());
 
         let (steps, running) = runner.run_steps_with_audio(1, None, samples.len());
@@ -16349,8 +16342,7 @@ mod tests {
         assert!(running);
         assert_eq!(runner.drain_audio(), samples);
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-        assert!(!ppc_app.sound.file_playbacks[0].active);
-        assert!(!ppc_app.sound.file_playbacks[0].paused);
+        assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         let mut memory = ppc_app.memory.clone();
         assert_eq!(memory.read_u32_be(PPC_DATA_BASE), Some(channel));
@@ -16393,9 +16385,6 @@ mod tests {
             completion: 0,
             completion_command: None,
             async_play: true,
-            paused: true,
-            active: true,
-            quiet_now: false,
             aiff: None,
             decoded_aiff: None,
         });
@@ -16405,25 +16394,30 @@ mod tests {
             crate::sound::OUTPUT_RATE << 16,
             Some((CallbackTaskArchitecture::PowerPc, 0)),
         );
-        sound.manager.set_file_paused(channel, true);
+        assert_eq!(sound.manager.toggle_file_paused(channel), Some(true));
         let app = halted_ppc_app_with_sound(sound);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
         runner.init_app(&app);
 
         runner.mix_host_audio(samples.len());
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-        assert!(ppc_app.sound.file_playbacks[0].active);
+        assert_eq!(
+            ppc_app.sound.manager.file_playback_paused(channel),
+            Some(true)
+        );
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
 
-        runner
-            .dispatcher
-            .sound_manager
-            .set_file_paused(channel, false);
-        runner.ppc_app.as_mut().unwrap().sound.file_playbacks[0].paused = false;
+        assert_eq!(
+            runner
+                .dispatcher
+                .sound_manager
+                .toggle_file_paused(channel),
+            Some(false)
+        );
         runner.mix_host_audio(samples.len());
 
         let ppc_app = runner.ppc_app.as_ref().expect("PPC app should stay loaded");
-        assert!(!ppc_app.sound.file_playbacks[0].active);
+        assert_eq!(ppc_app.sound.manager.file_playback_paused(channel), None);
         assert!(ppc_app.sound.manager.pending_sound_callbacks.is_empty());
         assert!(ppc_app.sound.completion_invocations.is_empty());
     }

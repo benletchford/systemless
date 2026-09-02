@@ -6191,6 +6191,10 @@ mod tests {
                 0x5000,
             )),
         );
+        assert_eq!(classic.toggle_file_paused(0x4000), Some(true));
+        assert_eq!(native.file_playback_paused(0x4000), Some(true));
+        assert_eq!(detached.file_playback_paused(0x4000), None);
+        assert_eq!(native.toggle_file_paused(0x4000), Some(false));
         native.mix_frame(1);
         native.double_buffer_playbacks.push(
             crate::sound::ProcessSoundDoubleBufferPlayback {
