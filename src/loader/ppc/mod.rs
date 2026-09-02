@@ -15130,8 +15130,9 @@ fn dispatch_supported_import(
             Some(PpcImportAction::Return(size))
         }
         PpcImportDispatcherTarget::SetPtrSize => {
-            *last_mem_error =
-                process_memory_manager.set_native_ptr_size(memory, cpu.gpr[3], cpu.gpr[4]);
+            *last_mem_error = process_memory_manager.set_process_ptr_size_for_native_import(
+                memory, cpu.gpr[3], cpu.gpr[4],
+            );
             ppc_apply_process_native_allocator(
                 process_memory_manager,
                 memory,
@@ -91443,6 +91444,152 @@ pub(crate) mod tests {
         });
 
         assert_eq!(classic_bus.get_alloc_size(ptr), None);
+    }
+
+    #[test]
+    fn ppc_set_ptr_size_mutates_a_classic_pointer_without_moving_it() {
+        let pef = synthetic_pef_with_import(b"SetPtrSize");
+        let mut native = load_pef_application(&pef).unwrap();
+        let mut context = ProcessContext::default();
+        native.attach_process_context(&mut context);
+
+        let mut classic_bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut classic_bus);
+        let classic_heap = classic_bus
+            .shared_ram_region(0x0020_0000, 0x1000)
+            .expect("classic adapter owns its heap range");
+        context.attach_memory(0x0020_0000, classic_heap, &mut native.memory);
+
+        let original = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 64);
+        classic_bus.fill_bytes(original, 64, 0x6a);
+        context
+            .memory_manager_mut()
+            .dispose_process_ptr(&mut classic_bus, original);
+        let ptr = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        assert_eq!(ptr, original);
+        classic_bus.fill_bytes(ptr, 16, 0x5a);
+        let neighbor = context
+            .memory_manager_mut()
+            .new_classic_ptr(&mut classic_bus, 16);
+        classic_bus.fill_bytes(neighbor, 16, 0xa5);
+        let cursor = context.classic_heap_bump_ptr();
+        let mut detached = native.clone();
+
+        context
+            .memory_manager_mut()
+            .set_native_mem_error(PPC_PARAM_ERR);
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .set_process_ptr_size(&mut classic_bus, ptr, 12),
+            PPC_NO_ERR
+        );
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MemError;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+        });
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .set_process_ptr_size(&mut classic_bus, ptr, 65),
+            PPC_MEM_FULL_ERR
+        );
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MemError;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetPtrSize;
+        });
+
+        native.with_process_memory_manager(|native, memory_manager| {
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.cpu.gpr[4] = 8;
+            let probe = native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(probe.handled_import_count, 1);
+            assert_eq!(native.cpu.gpr[3], ptr);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(8));
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MemError;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_NO_ERR));
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::SetPtrSize;
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.cpu.gpr[4] = 48;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ptr);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(48));
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_NO_ERR)
+            );
+
+            let bytes_before_failure = ppc_memory_read_bytes(&mut native.memory, ptr, 64).unwrap();
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.cpu.gpr[3] = ptr;
+            native.cpu.gpr[4] = 65;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ptr);
+            assert_eq!(memory_manager.classic_allocation_size(ptr), Some(48));
+            assert_eq!(
+                memory_manager
+                    .native_heap_state()
+                    .map(|heap| heap.last_mem_error),
+                Some(PPC_MEM_FULL_ERR)
+            );
+            assert_eq!(
+                ppc_memory_read_bytes(&mut native.memory, ptr, 64),
+                Some(bytes_before_failure)
+            );
+
+            native.cpu.pc = native.entry_pc;
+            native.cpu.lr = PPC_HALT_PC;
+            native.imports[0].dispatcher_target = PpcImportDispatcherTarget::MemError;
+            native.run_with_process_memory_manager(64, false, false, memory_manager);
+            assert_eq!(native.cpu.gpr[3], ppc_i16_result(PPC_MEM_FULL_ERR));
+        });
+
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(classic_bus.get_alloc_size(ptr), Some(48));
+        assert_eq!(classic_bus.read_bytes(ptr, 8), vec![0x5a; 8]);
+        assert_eq!(classic_bus.read_bytes(ptr + 8, 8), vec![0; 8]);
+        assert_eq!(classic_bus.read_bytes(neighbor, 16), vec![0xa5; 16]);
+        assert_eq!(
+            detached
+                .process_memory_manager
+                .0
+                .borrow()
+                .classic_allocation_size(ptr),
+            Some(16)
+        );
+        assert_eq!(
+            ppc_memory_read_bytes(&mut detached.memory, ptr, 16),
+            Some(vec![0x5a; 16])
+        );
     }
 
     #[test]
