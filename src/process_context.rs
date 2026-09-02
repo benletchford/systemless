@@ -1897,6 +1897,18 @@ impl SharedClassicHeapAllocator {
         self.0.borrow().alloc_sizes.get(&address).copied()
     }
 
+    pub(crate) fn allocation_capacity(&self, address: u32) -> Option<u32> {
+        let state = self.0.borrow();
+        let size = state.alloc_sizes.get(&address).copied()?;
+        Some(
+            state
+                .alloc_bucket_sizes
+                .get(&address)
+                .copied()
+                .unwrap_or_else(|| Self::allocation_bucket_size(size)),
+        )
+    }
+
     pub(crate) fn allocation_bucket_size(size: u32) -> u32 {
         ((size + 3) & !3).max(4)
     }
@@ -2039,7 +2051,13 @@ impl SharedClassicHeapAllocator {
 
     pub(crate) fn set_allocation_size(&self, address: u32, size: u32) {
         let mut state = self.0.borrow_mut();
-        if state.alloc_sizes.contains_key(&address) {
+        if let Some(old_size) = state.alloc_sizes.get(&address).copied() {
+            let capacity = state
+                .alloc_bucket_sizes
+                .get(&address)
+                .copied()
+                .unwrap_or_else(|| Self::allocation_bucket_size(old_size));
+            state.alloc_bucket_sizes.insert(address, capacity);
             state.alloc_sizes.insert(address, size);
         }
     }
@@ -2736,24 +2754,39 @@ impl ProcessNativeMemoryManager {
     ) -> i16 {
         self.assert_classic_memory_bus_attached(bus);
         if ptr == 0 {
+            self.set_native_mem_error(Self::NIL_HANDLE_ERR);
             return Self::NIL_HANDLE_ERR;
         }
         let native_index = self
             .native_allocator
             .as_ref()
             .and_then(|allocator| allocator.ptrs.iter().position(|record| record.ptr == ptr));
-        let old_size = native_index
-            .and_then(|index| {
-                self.native_allocator
-                    .as_ref()
-                    .and_then(|allocator| allocator.ptrs.get(index))
-                    .map(|record| record.size)
-            })
-            .or_else(|| self.classic_allocator().allocation_size(ptr))
-            .unwrap_or(0);
-        if SharedClassicHeapAllocator::allocation_bucket_size(new_size)
-            > SharedClassicHeapAllocator::allocation_bucket_size(old_size)
-        {
+        let (old_size, capacity) = if let Some(index) = native_index {
+            let old_size = self
+                .native_allocator
+                .as_ref()
+                .and_then(|allocator| allocator.ptrs.get(index))
+                .map(|record| record.size)
+                .unwrap_or(0);
+            (
+                old_size,
+                SharedClassicHeapAllocator::allocation_bucket_size(old_size),
+            )
+        } else {
+            let allocator = self.classic_allocator();
+            let Some(old_size) = allocator.allocation_size(ptr) else {
+                self.set_native_mem_error(Self::MEM_WZ_ERR);
+                return Self::MEM_WZ_ERR;
+            };
+            (
+                old_size,
+                allocator
+                    .allocation_capacity(ptr)
+                    .expect("classic pointer retains its allocation capacity"),
+            )
+        };
+        if SharedClassicHeapAllocator::allocation_bucket_size(new_size) > capacity {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
             return Self::MEM_FULL_ERR;
         }
         if new_size < old_size {
@@ -2765,11 +2798,11 @@ impl ProcessNativeMemoryManager {
                 .as_mut()
                 .expect("native pointer record retains its allocator");
             allocator.ptrs[index].size = new_size;
-            allocator.heap.last_mem_error = Self::NO_ERR;
             self.native_allocator_dirty = true;
         } else {
             self.classic_allocator().set_allocation_size(ptr, new_size);
         }
+        self.set_native_mem_error(Self::NO_ERR);
         Self::NO_ERR
     }
 
@@ -3712,6 +3745,60 @@ impl ProcessNativeMemoryManager {
         }
         self.set_native_mem_error(Self::PARAM_ERR);
         0
+    }
+
+    /// Resize a native or classic fixed block from a native import without
+    /// moving its guest address. Classic allocations retain their physical
+    /// bucket capacity even when their logical size shrinks. Inside
+    /// Macintosh: Memory (1992), pp. 2-42--2-44.
+    pub(crate) fn set_process_ptr_size_for_native_import(
+        &mut self,
+        memory: &mut GuestAddressSpace,
+        ptr: u32,
+        new_size: u32,
+    ) -> i16 {
+        if self
+            .native_allocator
+            .as_ref()
+            .is_some_and(|allocator| allocator.ptrs.iter().any(|record| record.ptr == ptr))
+        {
+            return self.set_native_ptr_size(memory, ptr, new_size);
+        }
+
+        let Some(allocator) = self.classic_allocator.clone() else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        };
+        let Some(old_size) = allocator.allocation_size(ptr) else {
+            self.set_native_mem_error(Self::MEM_WZ_ERR);
+            return Self::MEM_WZ_ERR;
+        };
+        let capacity = allocator
+            .allocation_capacity(ptr)
+            .expect("classic pointer retains its allocation capacity");
+        if SharedClassicHeapAllocator::allocation_bucket_size(new_size) > capacity {
+            self.set_native_mem_error(Self::MEM_FULL_ERR);
+            return Self::MEM_FULL_ERR;
+        }
+
+        if new_size < old_size {
+            let Some(tail) = ptr.checked_add(new_size) else {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            };
+            let Ok(tail_len) = usize::try_from(old_size - new_size) else {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            };
+            if memory.write_bytes(tail, &vec![0; tail_len]).is_none() {
+                self.set_native_mem_error(Self::PARAM_ERR);
+                return Self::PARAM_ERR;
+            }
+        }
+
+        allocator.set_allocation_size(ptr, new_size);
+        self.set_native_mem_error(Self::NO_ERR);
+        Self::NO_ERR
     }
 
     /// Dispose a classic fixed block from a native import when the process
@@ -5390,6 +5477,53 @@ mod tests {
 
         assert_eq!(second.alloc(64), 0x20_0000);
         assert_eq!(first.alloc(4), 0x20_0080);
+    }
+
+    #[test]
+    fn classic_ptr_resize_retains_reused_bucket_capacity() {
+        let mut context = ProcessContext::default();
+        let mut bus = MacMemoryBus::new(8 * 1024 * 1024);
+        context.attach_classic_memory_bus(&mut bus);
+
+        let original = context.memory_manager_mut().new_classic_ptr(&mut bus, 64);
+        context
+            .memory_manager_mut()
+            .dispose_process_ptr(&mut bus, original);
+        let reused = context.memory_manager_mut().new_classic_ptr(&mut bus, 16);
+        assert_eq!(reused, original);
+        let cursor = context.classic_heap_bump_ptr();
+        let detached = context.memory_manager_mut().detached_clone();
+
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .set_process_ptr_size(&mut bus, reused, 48),
+            ProcessMemoryManager::NO_ERR
+        );
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(
+            context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(reused),
+            Some(48)
+        );
+        assert_eq!(detached.classic_allocation_size(reused), Some(16));
+
+        assert_eq!(
+            context
+                .memory_manager_mut()
+                .set_process_ptr_size(&mut bus, reused, 65),
+            ProcessMemoryManager::MEM_FULL_ERR
+        );
+        assert_eq!(context.classic_heap_bump_ptr(), cursor);
+        assert_eq!(
+            context
+                .memory_manager
+                .borrow()
+                .classic_allocation_size(reused),
+            Some(48)
+        );
     }
 
     #[test]
