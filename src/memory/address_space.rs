@@ -288,6 +288,38 @@ impl GuestAddressSpace {
         holes
     }
 
+    /// Return the disjoint occupied spans of ordinary sparse mappings.
+    ///
+    /// Shared flat-RAM overlays are intentionally not subtracted: callers
+    /// use these spans to keep process allocators away from the native PEF
+    /// layout before those overlays are installed. Inside Macintosh: Memory
+    /// (1992), pp. 2-19--2-21.
+    pub(crate) fn ordinary_mapping_ranges(&self) -> Vec<(u32, u32)> {
+        let mut ranges = self
+            .state()
+            .ordinary_regions
+            .iter()
+            .filter_map(|mapping| {
+                let end = u64::from(mapping.base).checked_add(mapping.len as u64)?;
+                (u64::from(mapping.base) < end)
+                    .then_some((mapping.base, u32::try_from(end).ok()?))
+            })
+            .collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|&(base, _)| base);
+
+        let mut merged = Vec::new();
+        for (base, end) in ranges {
+            if let Some((_, merged_end)) = merged.last_mut() {
+                if base <= *merged_end {
+                    *merged_end = (*merged_end).max(end);
+                    continue;
+                }
+            }
+            merged.push((base, end));
+        }
+        merged
+    }
+
     /// Overlay a runner-owned RAM range without copying it.
     ///
     /// Shared mappings remain authoritative over ordinary sparse mappings so
@@ -545,6 +577,33 @@ impl GuestAddressSpace {
                 .expect("located shared byte remains mapped");
         }
         Some(())
+    }
+
+    /// Verify that a non-wrapping range is mapped and writable without
+    /// changing its bytes. The write-back is deliberately byte-identical;
+    /// it exercises the same protection and shared-overlay path used by the
+    /// eventual commit while retaining atomicity for each chunk.
+    pub(crate) fn preflight_writable_range(&mut self, addr: u32, len: u32) -> bool {
+        if len == 0 {
+            return true;
+        }
+        if u64::from(addr) + u64::from(len) > (1u64 << 32) {
+            return false;
+        }
+        const PREFLIGHT_CHUNK: u32 = 4096;
+        let mut offset = 0;
+        while offset < len {
+            let chunk_len = (len - offset).min(PREFLIGHT_CHUNK) as usize;
+            let address = addr + offset;
+            let mut bytes = vec![0; chunk_len];
+            if self.read_bytes_into(address, &mut bytes).is_none()
+                || self.write_bytes(address, &bytes).is_none()
+            {
+                return false;
+            }
+            offset += chunk_len as u32;
+        }
+        true
     }
 
     /// Return a cached writable span contained in one mapped region.
@@ -1061,6 +1120,10 @@ mod tests {
             memory.ordinary_mapping_holes(0x1000, 0x1800),
             vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
         );
+        assert_eq!(
+            memory.ordinary_mapping_ranges(),
+            vec![(0x1200, 0x1300), (0x1400, 0x1700)]
+        );
         assert!(memory.ordinary_mapping_overlaps(0x1280, 0x100));
         assert!(!memory.ordinary_mapping_overlaps(0x1300, 0x100));
 
@@ -1068,6 +1131,10 @@ mod tests {
         assert_eq!(
             detached.ordinary_mapping_holes(0x1000, 0x1800),
             vec![(0x1000, 0x1200), (0x1300, 0x1400), (0x1700, 0x1800)]
+        );
+        assert_eq!(
+            detached.ordinary_mapping_ranges(),
+            vec![(0x1200, 0x1300), (0x1400, 0x1700)]
         );
     }
 }
