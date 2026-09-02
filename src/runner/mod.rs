@@ -7,8 +7,8 @@ use crate::loader::ppc::{
     PpcDrawSprocketTraceEntry, PpcFrontBuffer, PpcGWorldRecord, PpcHleImportTraceEntry,
     PpcImportBinding, PpcImportDispatcherTarget, PpcInputSnapshot,
     PpcInputSprocketSimpleStateTraceEntry, PpcLoadedApp, PpcQ3GpuFrame, PpcQ3SceneReplay,
-    PpcQ3SoftwareRenderStats, PpcRgbColor, PpcSoundCompletionRecord, PpcSoundDoubleBackRecord,
-    PpcSoundDoubleBufferPlaybackRecord,
+    PpcQ3SoftwareRenderStats, PpcRgbColor, PpcSndCommandRecord, PpcSoundCompletionRecord,
+    PpcSoundDoubleBackRecord, PpcSoundDoubleBufferPlaybackRecord,
 };
 use crate::loader::{
     decode_retro68_relocations, ApplicationSizeResource, Code0Header, CodeSegmentHeader,
@@ -2655,11 +2655,19 @@ impl FixtureRunner {
             .pending_sound_callbacks
             .iter()
             .any(|callback| match callback {
-                crate::sound::PendingSoundCallback::Command { .. }
+                crate::sound::PendingSoundCallback::Command {
+                    architecture: CallbackTaskArchitecture::M68k,
+                    ..
+                }
                 | crate::sound::PendingSoundCallback::FileCompletion {
                     architecture: CallbackTaskArchitecture::M68k,
                     ..
                 } => true,
+                crate::sound::PendingSoundCallback::Command {
+                    architecture: CallbackTaskArchitecture::PowerPc,
+                    ..
+                }
+                |
                 crate::sound::PendingSoundCallback::FileCompletion {
                     architecture: CallbackTaskArchitecture::PowerPc,
                     ..
@@ -7414,7 +7422,10 @@ impl FixtureRunner {
             .all(|callback| {
                 !matches!(
                     callback,
-                    crate::sound::PendingSoundCallback::FileCompletion {
+                    crate::sound::PendingSoundCallback::Command {
+                        architecture: CallbackTaskArchitecture::PowerPc,
+                        ..
+                    } | crate::sound::PendingSoundCallback::FileCompletion {
                         architecture: CallbackTaskArchitecture::PowerPc,
                         ..
                     }
@@ -7442,7 +7453,10 @@ impl FixtureRunner {
                 .position(|callback| {
                     matches!(
                         callback,
-                        crate::sound::PendingSoundCallback::FileCompletion {
+                        crate::sound::PendingSoundCallback::Command {
+                            architecture: CallbackTaskArchitecture::PowerPc,
+                            ..
+                        } | crate::sound::PendingSoundCallback::FileCompletion {
                             architecture: CallbackTaskArchitecture::PowerPc,
                             ..
                         }
@@ -7451,36 +7465,59 @@ impl FixtureRunner {
             else {
                 break;
             };
-            let crate::sound::PendingSoundCallback::FileCompletion {
-                callback_addr,
-                chan_ptr,
-                ..
-            } = ppc_app
+            let pending = ppc_app
                 .sound
                 .manager
                 .pending_sound_callbacks
-                .remove(pending_index)
-            else {
-                unreachable!("selected callback must be a native file completion");
-            };
-            let Some((file_playback_index, playback)) = ppc_app
-                .sound
-                .file_playbacks
-                .iter_mut()
-                .enumerate()
-                .rev()
-                .find(|(_, playback)| playback.channel == chan_ptr)
-            else {
-                continue;
+                .remove(pending_index);
+            let (callback_addr, chan_ptr, file_playback_index, command) = match pending {
+                crate::sound::PendingSoundCallback::Command {
+                    callback_addr,
+                    chan_ptr,
+                    cmd,
+                    ..
+                } => (
+                    callback_addr,
+                    chan_ptr,
+                    u32::MAX,
+                    Some(PpcSndCommandRecord {
+                        channel: chan_ptr,
+                        command: cmd.cmd,
+                        param1: cmd.param1,
+                        param2: cmd.param2,
+                    }),
+                ),
+                crate::sound::PendingSoundCallback::FileCompletion {
+                    callback_addr,
+                    chan_ptr,
+                    ..
+                } => {
+                    let Some((file_playback_index, playback)) = ppc_app
+                        .sound
+                        .file_playbacks
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, playback)| playback.channel == chan_ptr)
+                    else {
+                        continue;
+                    };
+                    (
+                        callback_addr,
+                        chan_ptr,
+                        u32::try_from(file_playback_index).unwrap_or(u32::MAX),
+                        playback.completion_command,
+                    )
+                }
             };
             if callback_addr == 0 {
                 continue;
             }
             let completion = PpcSoundCompletionRecord {
-                file_playback_index: u32::try_from(file_playback_index).unwrap_or(u32::MAX),
+                file_playback_index,
                 channel: chan_ptr,
                 completion: callback_addr,
-                command: playback.completion_command,
+                command,
                 tick: self.dispatcher.tick_count,
                 instruction_count: self.total_instructions,
                 scheduled_tick: self.dispatcher.tick_count,
@@ -9261,7 +9298,10 @@ impl FixtureRunner {
             .position(|callback| {
                 matches!(
                     callback,
-                    crate::sound::PendingSoundCallback::Command { .. }
+                    crate::sound::PendingSoundCallback::Command {
+                        architecture: CallbackTaskArchitecture::M68k,
+                        ..
+                    }
                         | crate::sound::PendingSoundCallback::FileCompletion {
                             architecture: CallbackTaskArchitecture::M68k,
                             ..
@@ -9279,6 +9319,7 @@ impl FixtureRunner {
             .remove(callback_index);
         match cb {
             crate::sound::PendingSoundCallback::Command {
+                architecture: _,
                 callback_addr,
                 chan_ptr,
                 cmd,
@@ -13127,10 +13168,12 @@ mod tests {
         assert!(matches!(
             &runner.dispatcher.sound_manager.pending_sound_callbacks[0],
             PendingSoundCallback::Command {
+                architecture: actual_architecture,
                 callback_addr: actual_callback,
                 chan_ptr: actual_channel,
                 cmd,
-            } if *actual_callback == callback_addr
+            } if *actual_architecture == CallbackTaskArchitecture::M68k
+                && *actual_callback == callback_addr
                 && *actual_channel == chan_ptr
                 && cmd.cmd == callback_cmd.cmd
                 && cmd.param1 == callback_cmd.param1
@@ -13512,7 +13555,12 @@ mod tests {
             ppc_app
                 .sound
                 .manager
-                .register_channel(0x0050_1000, false, 0x0012_3456);
+                .register_channel(
+                    0x0050_1000,
+                    false,
+                    0x0012_3456,
+                    CallbackTaskArchitecture::M68k,
+                );
             ppc_app
                 .sound
                 .manager
@@ -16101,10 +16149,11 @@ mod tests {
         let channel = 0x0500_1000;
         let samples = vec![0x80, 0x90, 0x70, 0xa0];
         let mut sound = PpcSoundState::default();
-        sound.manager.play_buffer_command(
+        sound.manager.play_buffer_command_for_architecture(
             channel,
             samples.clone(),
             crate::sound::OUTPUT_RATE << 16,
+            CallbackTaskArchitecture::M68k,
         );
         let app = halted_ppc_app_with_sound(sound);
         let mut runner = FixtureRunner::new(8 * 1024 * 1024, FixtureRunnerConfig::default());
@@ -19775,6 +19824,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(crate::sound::PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr: 0x0004_5678,
                 chan_ptr: 0x0039_38C8,
                 cmd: crate::sound::SndCommand {
@@ -19828,6 +19878,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(crate::sound::PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 cmd: crate::sound::SndCommand {
@@ -19971,6 +20022,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(crate::sound::PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 cmd: crate::sound::SndCommand {
@@ -20101,6 +20153,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 cmd: SndCommand {
@@ -20140,6 +20193,7 @@ mod tests {
             .sound_manager
             .pending_sound_callbacks
             .push(PendingSoundCallback::Command {
+                architecture: CallbackTaskArchitecture::M68k,
                 callback_addr,
                 chan_ptr: 0x0039_38C8,
                 cmd: SndCommand {

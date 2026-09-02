@@ -5,9 +5,10 @@ Macintosh fat application. The same `showcase.c` is compiled into a 68K
 `CODE` slice and a native PowerPC PEF slice. The PEF remains in the data fork;
 the 68K code, `cfrg`, menus, windows, dialogs, and other resources share the
 resource fork. Both forks are committed in `toolbox-showcase.sit`.
+The public coverage is tracked by issues #1078, #1081, #1264, and #1265.
 
 The application deliberately uses ordinary Toolbox APIs rather than a private
-test protocol. Its Pages menu selects nine interactive views:
+test protocol. Its Pages menu selects ten interactive views:
 
 1. Graphics exercises patterns, clipping, indexed color, lines, shapes, and
    text.
@@ -39,6 +40,10 @@ test protocol. Its Pages menu selects nine interactive views:
 9. Lists & Inventory creates a default text list with a vertical scroll bar,
    selects and inspects a cell, mutates its contents, scrolls and resizes the
    list, and toggles List Manager activation.
+10. Sound & Channels creates a sampled channel, plays a format-1 `snd `
+    resource, verifies SysBeep PCM, queues volume and callback commands,
+    flushes and quiets the channel immediately, observes completion, and
+    disposes the channel.
 
 The menus also cover checkmarks, keyboard equivalents, three levels of
 hierarchical game options, and switching menu-bar selections while a menu is
@@ -53,6 +58,8 @@ With QuickDraw* (1994), pp. 3-38, 3-55–3-95, and 4-68. Palette activation,
 usage categories, indexed drawing, and animation follow *Inside Macintosh,
 Volume VI* (1991), pp. 20-8–20-22. Lists follow *Inside Macintosh: More
 Macintosh Toolbox* (1993), pp. 4-26–4-42 and 4-65–4-95.
+Sound follows *Inside Macintosh: Sound* (1994), pp. 2-19–2-29, 2-92–2-101,
+2-121–2-123, and 2-151–2-152.
 
 ## Rebuild and verify
 
@@ -115,6 +122,9 @@ exact Systemless framebuffer references while performing the same sequence:
     with `LSize`, capturing each resulting list state.
 17. Toggle the list inactive and active with `LActivate`, capturing both
     activation states.
+18. Activate Sound & Channels (item 10), verify SysBeep and `SndPlay` produce
+    PCM, queue volume/callback commands, issue immediate flush/quiet, wait for
+    the callback checkmark, then dispose the channel.
 
 For a manual launch from the public repository:
 
@@ -127,11 +137,13 @@ SYSTEMLESS_PREFER_POWERPC=1 cargo run --release -- tests/toolbox-showcase/toolbo
 
 Expand the same `toolbox-showcase.sit` on a shared HFS volume. Launch **Toolbox
 Showcase** in BasiliskII for the 68K slice and in SheepShaver for the native
-PowerPC slice, then follow the seventeen interaction steps above. Use an 800×600
+PowerPC slice, then follow the eighteen interaction steps above. Use an 800×600
 8-bit display in BasiliskII and an 800×600 32-bit direct-color display in
 SheepShaver for captures matching this gallery. The Pages, State, and nested
 menu checkmarks, window count, control values, modal sessions, visible drawing,
-and final page provide the comparison points between runs.
+and final page provide the comparison points between runs. Sound checkpoints
+17 and 18 include classic-Mac captures from BasiliskII and SheepShaver; their
+Systemless references document the expected PCM and callback state.
 
 ## Reference screenshots
 
@@ -139,8 +151,8 @@ These full-frame 800×600 captures all come from the same committed archive.
 The Systemless images are exact RGB baselines checked by the integration test;
 the classic-Mac images are human-review oracles because system fonts, desktop
 patterns, and window chrome can vary between compatible OS installations.
-Each architecture is paired with its corresponding classic-Mac oracle. The
-frames are functional comparisons rather than whole-frame pixel-identical
+Each existing checkpoint is paired with its corresponding classic-Mac oracle.
+The frames are functional comparisons rather than whole-frame pixel-identical
 targets. Palette entry selection, colors before device-depth quantization, and
 animation behavior are strict comparison points rather than presentation
 variance. Cursor placement can differ between captures. Checkpoints 5 and 6
@@ -179,6 +191,8 @@ indexed paths.
 | 14. Palette restoration | <img src="reference/systemless-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the 68K interaction sequence" width="360"> | <img src="reference/basiliskii-68k/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in BasiliskII" width="360"> |
 | 15. Lists & Inventory | <img src="reference/systemless-68k/15-lists.png" alt="Initial Lists and Inventory page in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/15-lists.png" alt="Initial Lists and Inventory page in BasiliskII" width="360"> |
 | 16. Interacted inventory list | <img src="reference/systemless-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in BasiliskII" width="360"> |
+| 17. Sound controls | <img src="reference/systemless-68k/17-sound-controls.png" alt="Sound controls in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/17-sound-controls.png" alt="Sound controls in BasiliskII" width="360"> |
+| 18. Sound completion | <img src="reference/systemless-68k/18-sound-complete.png" alt="Sound completion in Systemless running the 68K slice" width="360"> | <img src="reference/basiliskii-68k/18-sound-complete.png" alt="Sound completion in BasiliskII" width="360"> |
 
 ### PowerPC
 
@@ -200,9 +214,11 @@ indexed paths.
 | 14. Palette restoration | <img src="reference/systemless-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in Systemless after the PowerPC interaction sequence" width="360"> | <img src="reference/sheepshaver-ppc/14-graphics-return.png" alt="Returned Graphics page with the default palette restored in SheepShaver" width="360"> |
 | 15. Lists & Inventory | <img src="reference/systemless-ppc/15-lists.png" alt="Initial Lists and Inventory page in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/15-lists.png" alt="Initial Lists and Inventory page in SheepShaver" width="360"> |
 | 16. Interacted inventory list | <img src="reference/systemless-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/16-lists-interacted.png" alt="Mutated, scrolled, resized, and reactivated inventory list in SheepShaver" width="360"> |
+| 17. Sound controls | <img src="reference/systemless-ppc/17-sound-controls.png" alt="Sound controls in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/17-sound-controls.png" alt="Sound controls in SheepShaver" width="360"> |
+| 18. Sound completion | <img src="reference/systemless-ppc/18-sound-complete.png" alt="Sound completion in Systemless running the PowerPC slice" width="360"> | <img src="reference/sheepshaver-ppc/18-sound-complete.png" alt="Sound completion in SheepShaver" width="360"> |
 
 The test loads the `.sit` once per CPU slice, waits on semantic menu and window
-state rather than relying on fixed delays, and compares all sixteen rendered
+state rather than relying on fixed delays, and compares all eighteen rendered
 frames. To review and accept an intentional rendering change, regenerate the
 Systemless sources and inspect the resulting PNG diff before committing it:
 

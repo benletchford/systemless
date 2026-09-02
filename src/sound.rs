@@ -12,6 +12,23 @@ pub const RATE_22KHZ_FIXED: u32 = 0x56EE_8BA3;
 /// Classic Sound Manager `rate11khz` fixed-point value (11127.27273 Hz).
 pub const RATE_11KHZ_FIXED: u32 = 0x2B77_45D1;
 
+/// Generate the compact alert waveform used by SysBeep on both CPU slices.
+/// The classic API's duration argument is a timing hint; System 7's alert
+/// sound uses a short fixed tone, so keeping the PCM source shared makes the
+/// 68K and native PowerPC paths produce the same host audio.
+pub(crate) fn synth_sys_beep_samples() -> Vec<u8> {
+    let len = (OUTPUT_RATE as usize * 90) / 1000;
+    let half_period = (OUTPUT_RATE as usize / (880 * 2)).max(1);
+    let mut samples = Vec::with_capacity(len);
+    for i in 0..len {
+        let polarity = if (i / half_period) & 1 == 0 { 1 } else { -1 };
+        let envelope = (len - i) as i32;
+        let amplitude = 72 * envelope / len.max(1) as i32;
+        samples.push((0x80i32 + polarity * amplitude).clamp(0, 255) as u8);
+    }
+    samples
+}
+
 /// Standard command queue depth (Sound 1994, 2-93).
 const STD_Q_LENGTH: usize = 128;
 /// Full volume for one speaker in volumeCmd units (Sound 1994, 2-96).
@@ -22,6 +39,10 @@ const FULL_STEREO_VOLUME: u32 = ((FULL_VOLUME as u32) << 16) | FULL_VOLUME as u3
 const UNITY_RATE_FIXED: u32 = 0x0001_0000;
 /// Maximum decoded double-buffer frames retained for waveform diagnostics.
 pub(crate) const DEBUG_DOUBLE_BUFFER_CAPTURE_LIMIT: usize = OUTPUT_RATE as usize * 60;
+/// Guest-pointer range reserved for native Sound Manager channels that have no
+/// guest record. Keeping these pointers distinct from NIL prevents an
+/// overlapping SysBeep/SndPlay from disposing the wrong temporary channel.
+const INTERNAL_CHANNEL_PTR_START: u32 = 0xFFFF_FF00;
 
 /// Sound command constants (Sound 1994, 2-92 to 2-97).
 pub mod cmd {
@@ -174,6 +195,7 @@ pub enum PendingSoundCallback {
     /// Signature (Sound 1994, 2-152):
     ///   PROCEDURE MyCallbackProcedure(theChan: SndChannelPtr; theCmd: SndCommand);
     Command {
+        architecture: CallbackTaskArchitecture,
         callback_addr: u32,
         chan_ptr: u32,
         cmd: SndCommand,
@@ -234,7 +256,7 @@ pub struct SndChannel {
     /// Whether we allocated this channel (vs game-provided).
     pub allocated: bool,
     /// Command queue (circular buffer).
-    queue: Vec<SndCommand>,
+    queue: Vec<QueuedSoundCommand>,
     q_head: usize,
     q_tail: usize,
     /// Currently playing buffer, if any.
@@ -243,6 +265,9 @@ pub struct SndChannel {
     playback_kind: Option<PlaybackKind>,
     /// Callback procedure installed by SndNewChannel in the guest channel record.
     pub callback_addr: u32,
+    /// Instruction set of the callback procedure. Native PowerPC channels
+    /// store a RoutineDescriptor; classic channels store a 68K procedure.
+    pub callback_architecture: CallbackTaskArchitecture,
     /// Current channel volume as packed stereo values (right in high word).
     volume: u32,
     /// Current playback rate relative to the channel's base sample rate.
@@ -275,6 +300,19 @@ pub struct SndChannel {
     /// such as NIL-channel SndPlay/SysBeep. These should be released after
     /// their queued playback drains, not immediately after the trap returns.
     auto_dispose_when_idle: bool,
+    /// Native-only channels do not have a corresponding classic memory
+    /// record. They must not be synchronized into the 68K bus.
+    guest_visible: bool,
+}
+
+#[derive(Clone, Debug)]
+enum QueuedSoundCommand {
+    Command(SndCommand),
+    Buffer {
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
+    },
 }
 
 impl SndChannel {
@@ -288,6 +326,7 @@ impl SndChannel {
             playing: None,
             playback_kind: None,
             callback_addr: 0,
+            callback_architecture: CallbackTaskArchitecture::M68k,
             volume: FULL_STEREO_VOLUME,
             rate_fixed: UNITY_RATE_FIXED,
             pending_callback_cmds: Vec::new(),
@@ -301,21 +340,45 @@ impl SndChannel {
             debug_double_buffer_non_silent_frames: 0,
             debug_double_buffer_captured_samples: Vec::new(),
             auto_dispose_when_idle: false,
+            guest_visible: true,
         }
+    }
+
+    fn new_internal(guest_ptr: u32) -> Self {
+        let mut channel = Self::new(guest_ptr, false);
+        channel.guest_visible = false;
+        channel
     }
 
     /// Enqueue a command. Returns false if queue is full.
     pub fn enqueue(&mut self, cmd: SndCommand) -> bool {
         if self.queue.len() < STD_Q_LENGTH {
-            self.queue.push(cmd);
+            self.queue.push(QueuedSoundCommand::Command(cmd));
             true
         } else {
             false
         }
     }
 
+    fn enqueue_buffer(
+        &mut self,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
+    ) -> bool {
+        if self.queue.len() >= STD_Q_LENGTH {
+            return false;
+        }
+        self.queue.push(QueuedSoundCommand::Buffer {
+            samples,
+            sample_rate_fixed,
+            architecture,
+        });
+        true
+    }
+
     /// Dequeue the next command, if any.
-    fn dequeue(&mut self) -> Option<SndCommand> {
+    fn dequeue(&mut self) -> Option<QueuedSoundCommand> {
         if self.queue.is_empty() {
             None
         } else {
@@ -383,6 +446,10 @@ impl SndChannel {
 
     pub fn has_active_playback(&self) -> bool {
         self.playing.is_some() || self.file_paused
+    }
+
+    pub(crate) fn guest_visible(&self) -> bool {
+        self.guest_visible
     }
 
     pub fn queue_callback(&mut self, cmd: SndCommand) {
@@ -492,6 +559,7 @@ pub struct SoundManager {
     /// setting, distinct from channel `volumeCmd` gain and current
     /// output-port volume.
     default_output_volume: u32,
+    next_internal_channel_ptr: u32,
 }
 
 impl Default for SoundManager {
@@ -517,6 +585,7 @@ impl SoundManager {
             debug_file_play_count: 0,
             sys_beep_volume: FULL_STEREO_VOLUME,
             default_output_volume: FULL_STEREO_VOLUME,
+            next_internal_channel_ptr: INTERNAL_CHANNEL_PTR_START,
         }
     }
 
@@ -555,10 +624,12 @@ impl SoundManager {
         guest_ptr: u32,
         allocated: bool,
         callback_addr: u32,
+        callback_architecture: CallbackTaskArchitecture,
     ) {
         self.remove_channel(guest_ptr);
         let mut channel = SndChannel::new(guest_ptr, allocated);
         channel.callback_addr = callback_addr;
+        channel.callback_architecture = callback_architecture;
         self.channels.push(channel);
     }
 
@@ -581,23 +652,74 @@ impl SoundManager {
         }
     }
 
-    /// Submit decoded `bufferCmd` samples directly to the process channel.
-    /// Sound commands belong to the channel managed by the Sound Manager,
-    /// irrespective of the ISA that submitted them. Sound 1994, pp. 2-92--2-97.
-    pub(crate) fn play_buffer_command(
+    /// Submit decoded bufferCmd samples from a specific CPU adapter. The
+    /// playback itself is shared, while callback ABI dispatch follows the
+    /// channel's owning architecture.
+    pub(crate) fn play_buffer_command_for_architecture(
         &mut self,
         guest_ptr: u32,
         samples: Vec<u8>,
         sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
     ) {
         self.record_command(cmd::BUFFER);
         self.debug_buffer_cmd_count = self.debug_buffer_cmd_count.saturating_add(1);
-        self.ensure_channel_mut(guest_ptr).play_buffer(
-            samples,
-            sample_rate_fixed,
+        let channel = self.ensure_channel_mut(guest_ptr);
+        channel.callback_architecture = architecture;
+        channel.play_buffer(samples, sample_rate_fixed, PlaybackKind::Buffer, 0);
+    }
+
+    /// Queue decoded bufferCmd samples behind any active playback. The
+    /// command remains in FIFO order with ordinary volume/rate/callback
+    /// commands, while the sample bytes are retained by the process manager.
+    pub(crate) fn enqueue_buffer_command_for_architecture(
+        &mut self,
+        guest_ptr: u32,
+        samples: Vec<u8>,
+        sample_rate_fixed: u32,
+        architecture: CallbackTaskArchitecture,
+    ) -> bool {
+        self.record_command(cmd::BUFFER);
+        self.debug_buffer_cmd_count = self.debug_buffer_cmd_count.saturating_add(1);
+        let can_start_now = self
+            .channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .map(|channel| {
+                !channel.has_active_playback()
+                    && channel.double_buffer.is_none()
+                    && channel.queue.is_empty()
+            })
+            .unwrap_or(true);
+        if can_start_now {
+            let channel = self.ensure_channel_mut(guest_ptr);
+            channel.callback_architecture = architecture;
+            channel.play_buffer(samples, sample_rate_fixed, PlaybackKind::Buffer, 0);
+            true
+        } else {
+            self.ensure_channel_mut(guest_ptr)
+                .enqueue_buffer(samples, sample_rate_fixed, architecture)
+        }
+    }
+
+    /// Queue one Sound Manager-owned alert tone for SysBeep. Native PowerPC
+    /// imports do not have a guest 68K channel record to allocate, but the
+    /// PCM still belongs to this process manager and is released by the same
+    /// idle-channel lifecycle as a 68K internal beep.
+    pub(crate) fn play_sys_beep(&mut self, volume: u32) {
+        if volume & 0xFFFF == 0 && (volume >> 16) & 0xFFFF == 0 {
+            return;
+        }
+        let mut channel = SndChannel::new_internal(self.allocate_internal_channel_ptr());
+        channel.set_volume(volume);
+        channel.mark_auto_dispose_when_idle();
+        channel.play_buffer(
+            synth_sys_beep_samples(),
+            OUTPUT_RATE << 16,
             PlaybackKind::Buffer,
             0,
         );
+        self.channels.push(channel);
     }
 
     /// Start decoded file playback on the canonical process channel.
@@ -678,6 +800,38 @@ impl SoundManager {
             .and_then(SndChannel::file_playback_paused)
     }
 
+    pub(crate) fn channel_busy(&self, guest_ptr: u32) -> Option<bool> {
+        self.channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .map(|channel| channel.has_active_playback() || channel.double_buffer.is_some())
+    }
+
+    pub(crate) fn channel_rate(&self, guest_ptr: u32) -> Option<u32> {
+        self.channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .map(SndChannel::current_rate)
+    }
+
+    pub(crate) fn channel_has_queued_commands(&self, guest_ptr: u32) -> Option<bool> {
+        self.channels
+            .iter()
+            .find(|channel| channel.guest_ptr == guest_ptr)
+            .map(|channel| !channel.queue.is_empty())
+    }
+
+    /// Create a Sound Manager-owned channel for a native high-level call
+    /// whose channel argument is NIL. It has no guest record and is released
+    /// by the normal idle auto-disposal pass.
+    pub(crate) fn create_internal_channel(&mut self) -> u32 {
+        let guest_ptr = self.allocate_internal_channel_ptr();
+        let mut channel = SndChannel::new_internal(guest_ptr);
+        channel.mark_auto_dispose_when_idle();
+        self.channels.push(channel);
+        guest_ptr
+    }
+
     pub(crate) fn toggle_file_paused(&mut self, guest_ptr: u32) -> Option<bool> {
         self.find_channel_mut(guest_ptr)
             .and_then(SndChannel::toggle_file_playback_paused)
@@ -730,6 +884,25 @@ impl SoundManager {
         self.ensure_channel_mut(guest_ptr).enqueue(command)
     }
 
+    fn allocate_internal_channel_ptr(&mut self) -> u32 {
+        loop {
+            let candidate = self.next_internal_channel_ptr;
+            self.next_internal_channel_ptr = if candidate <= 0xFFFF_0000 {
+                INTERNAL_CHANNEL_PTR_START
+            } else {
+                candidate - 1
+            };
+            if candidate != 0
+                && !self
+                    .channels
+                    .iter()
+                    .any(|channel| channel.guest_ptr == candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+
     pub fn sys_beep_volume(&self) -> u32 {
         self.sys_beep_volume
     }
@@ -754,6 +927,12 @@ impl SoundManager {
     /// Remove and return a channel by guest pointer.
     pub fn take_channel(&mut self, guest_ptr: u32) -> Option<SndChannel> {
         self.stop_double_buffer_playbacks(guest_ptr);
+        self.pending_callbacks
+            .retain(|pending| pending.chan_ptr != guest_ptr);
+        self.pending_sound_callbacks.retain(|pending| match pending {
+            PendingSoundCallback::Command { chan_ptr, .. }
+            | PendingSoundCallback::FileCompletion { chan_ptr, .. } => *chan_ptr != guest_ptr,
+        });
         self.channels
             .iter()
             .position(|c| c.guest_ptr == guest_ptr)
@@ -805,24 +984,42 @@ impl SoundManager {
                 continue;
             }
 
-            while let Some(cmd) = chan.dequeue() {
-                match cmd.cmd {
-                    cmd::NULL => {}
-                    cmd::QUIET => chan.quiet(),
-                    cmd::FLUSH => chan.flush(),
-                    cmd::CALLBACK => {
-                        if chan.callback_addr != 0 {
-                            queued_callbacks.push(PendingSoundCallback::Command {
-                                callback_addr: chan.callback_addr,
-                                chan_ptr: chan.guest_ptr,
-                                cmd,
-                            });
+            while let Some(queued) = chan.dequeue() {
+                match queued {
+                    QueuedSoundCommand::Command(cmd) => match cmd.cmd {
+                        cmd::NULL => {}
+                        cmd::QUIET => chan.quiet(),
+                        cmd::FLUSH => chan.flush(),
+                        cmd::CALLBACK => {
+                            if chan.callback_addr != 0 {
+                                queued_callbacks.push(PendingSoundCallback::Command {
+                                    architecture: chan.callback_architecture,
+                                    callback_addr: chan.callback_addr,
+                                    chan_ptr: chan.guest_ptr,
+                                    cmd,
+                                });
+                            }
                         }
+                        cmd::VOLUME => chan.set_volume(cmd.param2),
+                        cmd::RATE => chan.set_rate(cmd.param2),
+                        cmd::BUFFER | cmd::SOUND => {
+                            // Raw guest buffer pointers are decoded by the
+                            // architecture adapter before they enter this
+                            // process-owned FIFO.
+                        }
+                        _ => {}
+                    },
+                    QueuedSoundCommand::Buffer {
+                        samples,
+                        sample_rate_fixed,
+                        architecture,
+                    } => {
+                        chan.callback_architecture = architecture;
+                        chan.play_buffer(samples, sample_rate_fixed, PlaybackKind::Buffer, 0);
+                        // A buffer occupies the channel until the next mix
+                        // boundary; commands after it must remain queued.
+                        break;
                     }
-                    cmd::BUFFER | cmd::SOUND => {
-                        // Buffer data should already be loaded by the trap handler.
-                    }
-                    _ => {}
                 }
             }
         }
@@ -913,6 +1110,7 @@ impl SoundManager {
                         for cmd in callback_cmds {
                             self.pending_sound_callbacks
                                 .push(PendingSoundCallback::Command {
+                                    architecture: chan.callback_architecture,
                                     callback_addr,
                                     chan_ptr,
                                     cmd,
@@ -2728,10 +2926,12 @@ mod tests {
         for (i, pending) in sm.pending_sound_callbacks.iter().enumerate() {
             match pending {
                 PendingSoundCallback::Command {
+                    architecture,
                     callback_addr,
                     chan_ptr,
                     cmd,
                 } => {
+                    assert_eq!(*architecture, CallbackTaskArchitecture::M68k);
                     assert_eq!(*callback_addr, 0xBEEF_0000, "callback_addr propagates");
                     assert_eq!(*chan_ptr, 0x1234_0000, "chan_ptr propagates");
                     let expected_param1 = if i == 0 { 7 } else { 9 };
